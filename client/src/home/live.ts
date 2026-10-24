@@ -14,7 +14,6 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
-import { canHost } from '../browser/host';
 import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
@@ -122,7 +121,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // own `stateOf`; this declaration is for the install with no other
     // answerer, where an ask raised while this page is away would be cancelled
     // unseen.
-    held = connection.subscribe('home', { answering: true, browser: canHost() });
+    held = connection.subscribe('home', { answering: true });
     reading = false;
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'snapshot' || message.kind === 'error') {

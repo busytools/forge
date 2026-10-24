@@ -7,18 +7,12 @@ export default tseslint.config(
   // The shell's crate target dir holds generated .js (tauri-build's API script
   // and the codegen'd assets), which this project has no tsconfig for, and
   // Stryker's sandbox and reports carry bundled .js this project does not own.
-  //
-  // `src-tauri/browser-stack/` is the vendored driver: node and
-  // @playwright/mcp, none of it this project's code and none of it covered by
-  // a tsconfig.
   {
     ignores: [
       'dist/',
       'node_modules/',
       'src-tauri/target/',
       'src-tauri/gen/',
-      'src-tauri/browser-stack/',
-      'src-tauri/cef-bundle/',
       '.stryker-tmp/',
       'reports/',
     ],
@@ -91,13 +85,16 @@ export default tseslint.config(
     },
   },
   // LAST, because it has to override the blocks above rather than be
-  // overridden by them: the client's own config files are Node scripts
-  // outside the TypeScript project, so the project service refuses them and
-  // every type-aware rule has nothing to read. The standard's type-aware half
-  // is for the app.
+  // overridden by them: the client's own config files and the shell's
+  // maintenance scripts are Node programs outside the TypeScript project, so
+  // the project service refuses them and every type-aware rule has nothing to
+  // read. The standard's type-aware half is for the app.
   {
-    files: ['*.config.js'],
-    languageOptions: { globals: globals.node },
+    files: ['*.config.js', 'src-tauri/scripts/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      ...tseslint.configs.disableTypeChecked.languageOptions,
+      globals: globals.node,
+    },
   },
 );

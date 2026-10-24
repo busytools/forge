@@ -70,63 +70,38 @@ as its own boolean `--ci` flag, so a `CI` holding anything but `true` or
 starts; passing `--ci` explicitly overrides it. And `npm` swallows a bare
 `--`, so a cargo flag has to arrive as `run tauri -- build -- <flags>`.
 
-## The browser host
+## The browser
 
-The client hosts the browser a session's `browser_*` tools drive: it owns
-the browser process, its profile and the driver, and answers the asks the
-socket routes to it. `just vendor-browser-stack` fetches and verifies the
-driver into the gitignored `src-tauri/browser-stack/` directory - node
-and `@playwright/mcp` - and `bundle.resources` carries that tree into the
-bundle, so nothing downloads at first use. **The engine is the app's own
-Chromium**: `just stage-cef` stages the CEF framework and its five helper
-apps before `tauri build`, which copies them into `Contents/Frameworks`; each
-profile's browser is a windowless
-host process launched from that bundle - a hand-off's Open, or the strip's
-show, draws its frames as the full-window takeover. No installed browser is
-needed, and a bundle built without the framework refuses the browser doors
-by name. The bundling recipes run both steps themselves;
-`just client-tauri-check` does not, because it copies no resources.
+**The client is a viewer.** The browser a session's `browser_*` tools drive
+belongs to the SERVER - its CEF host, its Playwright driver and its profiles
+all live there (`crates/forge-browser`, staged by `scripts/install.sh`) - and
+this app carries no engine, no driver and no profile. A surface attaches to
+a profile over the socket, receives the frames the server relays, and sends
+the person's gestures back.
 
-`src-tauri/src/browser/` is the host, and four things in it are worth
+`src-tauri/src/browser/` is the viewer, and three things in it are worth
 knowing before changing them:
 
-- **The browser host is launched detached, and it dies with the client that
-  launched it**: the client claims each profile it launches or adopts, reaps
-  its hosts on exit, and sweeps at boot for the ones a dead client left. The
-  profile under the app's data directory is what survives a restart: the CEF
-  cache path is the profile itself, and the host's DevTools port and ring
-  name are recorded beside it. The client picks the port and writes the
-  record before it waits, so a host that dies mid-launch is swept rather
-  than left holding the profile's singleton lock.
-- **The driver is upstream's own** `@playwright/mcp`, spawned as a child
-  process and spoken to as an MCP client through `rmcp`, pointed at the
-  browser's CDP endpoint with `--no-webmcp` (without which the tool surface
-  would depend on what the open page chooses to expose).
-- **The capability is declared only where a host is really there**
-  (`canHost`, `src/browser/host.ts`): the subscribe carries `browser: true`
-  from the shell and never from a page opened outside it, because an ask
-  routed to a client that cannot serve it arrives as a session's tool call
-  failing.
-- **A named profile is a browser of its own.** `profile: "name"` on a tool
-  call launches (or attaches to) a browser on its OWN data directory, and the
-  driver attaches to it exactly as it attaches to the shared one. Logins,
-  cookies and sessions persist natively, the session that opened it owns it
-  (another session is refused by name until it is released), and a hand-off
-  naming it raises THAT profile's window on THAT profile's page - a CAPTCHA
-  solved in the right session, not a lookalike in the wrong one.
+- **The picture has two painters.** On macOS the shell lays a native view
+  over the takeover's page area and decodes each WebP frame into it; on the
+  phone there is no native layer, so the Rust half hands each frame to the
+  page and `src/browser/BrowserSurface.svelte` paints it on a canvas. The
+  page reports the page area's rect either way, and every gesture's point is
+  scaled from that layout into the page's viewport.
+- **Exactly one viewer controls the browser.** A surface attaches as a
+  watcher; the bar's **take control** sends `browser_control`, the server
+  moves the role, and only the holder's input reaches the page. The server
+  pushes who holds it (with this connection's own viewer id), so the bar
+  draws take or release from the server's truth rather than a guess.
+- **A named profile is a browser of its own, owned by the seat that opened
+  it.** `profile: "name"` on a tool call uses that profile's own cache root
+  and logins; another seat naming or deleting it is refused by name. A
+  hand-off naming it opens THAT profile's page - a CAPTCHA solved in the
+  right session, not a lookalike in the wrong one.
 
-`client/src-tauri/tests/cef_host.rs` pins the host's own decisions with a
-stand-in binary - the record, the ring's name, the endpoint wait, the kill
-by pid, the sweep that respects another client's claim and the one that
-cleans a stale record. It is macOS-gated because the engine is.
-`client/src-tauri/tests/bridge_live.rs` drives the whole chain - a real
-session's `browser_navigate` answered by the vendored driver while no page
-is drawing - and is `#[ignore]`d because it needs a scratch forge and the
-vendored stack; run it where both are present:
-
-```sh
-cargo nextest run --manifest-path client/src-tauri/Cargo.toml --run-ignored ignored-only
-```
+`src-tauri/src/socket.rs` and `src/socket.ts` are the two transports' frame
+readers; `src/browser/host.ts` is the page's window onto the shell's viewer
+commands, and exists only where `canHost()` finds the Tauri marker.
 
 A start has no terminal to report to, so it writes to
 `~/Library/Logs/dev.vedhavyas.forge/forge.log` instead. That file is
@@ -351,22 +326,17 @@ genuinely cannot.
 
 `src-tauri/gen/android/` is the Gradle project `tauri android init`
 generates, and it is committed: the manifest, the Kotlin activity and the
-Gradle files are project source rather than build output, so its four
-local edits - the manifest's mic permissions and its
-`REQUEST_INSTALL_PACKAGES`, the activity's back handling and the window
-insets it hands the page, the update plugin
-(`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`) and the release
-signing block in `app/build.gradle.kts` - survive a clean clone. The browser
-host's own files sit beside them as project source too -
-`app/src/main/java/dev/vedhavyas/forge/BrowserPlugin.kt` and `NodeHost.kt`,
-`app/src/main/cpp/` (the JNI shim the in-app libnode needs) and
-`app/src/main/assets/forge-browser/` (the driver's bootstrap); only
-`jniLibs/*.so` and `cpp/nodejs-mobile/` are vendored rather than committed,
-put there by `just vendor-browser-stack-android`. Re-running
-`tauri android init` overwrites the generated files, so re-apply the edits
-after one. The debug
-APK is one command, and it builds the frontend first the same way the
-desktop build does:
+Gradle files are project source rather than build output, so its local
+edits - the manifest's mic permissions and its `REQUEST_INSTALL_PACKAGES`,
+the activity's back handling and the window insets it hands the page, the
+update plugin (`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`) and
+the release signing block in `app/build.gradle.kts` - survive a clean clone.
+**The phone carries no browser**: it is a viewer of the server's, and its
+page paints the frames on a canvas (the APK check in `just
+client-android-release` refuses one carrying a driver tree or a libnode).
+Re-running `tauri android init` overwrites the generated files, so re-apply
+the edits after one. The debug APK is one command, and it builds the
+frontend first the same way the desktop build does:
 
 ```sh
 npm run tauri -- android build --debug --apk --ci --target aarch64
@@ -375,13 +345,8 @@ npm run tauri -- android build --debug --apk --ci --target aarch64
 It lands at
 `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`,
 signed with the debug keystore under `~/.android/`, and side-loads onto a
-phone. **`--target aarch64` is required, not a preference**: the vendored
-libnode is arm64-only, so the other ABIs have nothing to link against. The
-build fetches the SDK's CMake for the JNI shim on first run; the SDK, a JDK
-17+, and `rustup target add aarch64-linux-android` are the prerequisites.
-On a host that is not macOS, `just vendor-browser-stack`'s desktop half
-refuses (its node tarball is pinned for Apple Silicon) - run
-`just vendor-browser-stack-android` alone and build with the CLI directly.
+phone. The debug keystore and `rustup target add aarch64-linux-android` are
+the prerequisites; a device is arm64.
 
 The manifest declares `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`: wry's
 `WebChromeClient` requests both together for a `getUserMedia` prompt, so one

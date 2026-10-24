@@ -96,11 +96,6 @@ function connection(): Connection {
     dispatch: () => null,
     more: () => false,
     frame: refuse,
-    onBrowserAsk: refuse,
-    browserRole: refuse,
-    onBrowserRole: refuse,
-    onProfilesChanged: quiet,
-    takeBrowserRole: refuse,
     onMessage: quiet,
     onStatus: (fn: (status: ConnectionStatus) => void) => {
       fn('open');

@@ -1,7 +1,7 @@
 # forge - project guide
 
 A Rust workspace around Anthropic's `claude` CLI: a server that runs
-multi-session orchestration, and the clients that draw it. Eleven crates,
+multi-session orchestration, and the clients that draw it. Twelve crates,
 layered acyclically:
 
 ```
@@ -14,7 +14,8 @@ forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
 forge-agent      ───→ primitives + sdk + gateway
 forge-workspace  ───→ primitives + agent + sdk + dictate + gateway + connectors
-forge-server     ───→ primitives + workspace + sdk
+forge-browser    ───→ primitives + sdk
+forge-server     ───→ primitives + workspace + sdk + browser
 forge-test-harness ─→ primitives + sdk + workspace + server
 ```
 
@@ -78,6 +79,15 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   workspace facade. This crate ships the `forge` binary; forge's
   in-process MCP server is unrelated and is named as the `forge` MCP
   server.
+- **`forge-browser`** - the server's browser: one CEF host process per
+  profile, shipped as its own signed `Forge Browser.app` beside the
+  server's state so the server never links CEF; the vendored Playwright
+  driver it speaks MCP to over that host's DevTools endpoint; WebP frames
+  encoded into a local socket; the profile store and its one-time copy
+  from the client's own tree; the idle release; and the service the
+  browser tools and every viewer call. `forge-workspace` carries only the
+  `BrowserHost` port; the frame's wire shape is a `forge-primitives` type,
+  and a viewer's drawing is the client's.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
   scope): replay-based offline tests + opt-in live capture. Dev tooling,
   not a published crate.
@@ -156,24 +166,29 @@ Work top-down; first match wins.
    -> `forge-agent`: `env::*` for environment, `cloud::*` for Anthropic
    API / OAuth, `userdata::*` for `~/.claude*` files. Async, may shell
    out.
-9. **Orchestration across projects, sessions, accounts, `forge.toml`,
-   or the command bus?** -> `forge-workspace`. Adds `Workspace` methods,
-   `Command` variants, `SessionUpdate` events. A read a VIEW needs is a
-   verb on the view surface below, not a bare method.
-10. **A session record as a view sees it, or a decision any view would
-   make over one?** (the render-ready record, the reducer that derives
-   it, the transcript fold that says where a conversation's turns sit, the
-   peer envelope parsing) -> `forge-server`. Sits
-   between workspace and the views; the test is "does this render?" -
-   if it does, it is the view's.
-11. **A widget, screen, layout, or per-view presentation state?** -> the
+9. **The browser the sessions drive?** (a host process, the driver, a
+   frame, a profile, the idle clock) -> `forge-browser`, which the server
+   owns as a fleet and the workspace reaches through the `BrowserHost`
+   port. A frame's wire shape is a `forge-primitives` type; a viewer's
+   drawing is the client's.
+10. **Orchestration across projects, sessions, accounts, `forge.toml`,
+    or the command bus?** -> `forge-workspace`. Adds `Workspace` methods,
+    `Command` variants, `SessionUpdate` events. A read a VIEW needs is a
+    verb on the view surface below, not a bare method.
+11. **A session record as a view sees it, or a decision any view would
+    make over one?** (the render-ready record, the reducer that derives
+    it, the transcript fold that says where a conversation's turns sit, the
+    peer envelope parsing) -> `forge-server`. Sits
+    between workspace and the views; the test is "does this render?" -
+    if it does, it is the view's.
+12. **A widget, screen, layout, or per-view presentation state?** -> the
     client: draw it in `client/src/`, and take anything that needs the
     OS, a process or the socket to the shell behind the typed invoke
     surface. A further Rust view is a crate of its own, built against
     the socket in `forge-server` rather than against the core: it reads
     through the view surface in `forge-server` and never
     `forge-workspace`, and starts no subsystem of its own.
-12. **A wire-conformance scenario?** -> `forge-test-harness`.
+13. **A wire-conformance scenario?** -> `forge-test-harness`.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,

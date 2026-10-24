@@ -22,7 +22,6 @@
   import { subagents } from './subagents.svelte';
   import { tasks } from './tasks.svelte';
   import { hrefFor } from '../routes';
-  import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import type { TurnInfo } from './units';
 
@@ -44,14 +43,9 @@
    */
   let {
     info,
-    connection,
     slot = null,
   }: {
     info: TurnInfo | null;
-    connection: Pick<
-      Connection,
-      'browserRole' | 'onBrowserRole' | 'onProfilesChanged' | 'takeBrowserRole'
-    >;
     slot?: SessionSlot | null;
   } = $props();
 
@@ -76,8 +70,8 @@
     <div class="ti">
       {#if info !== null}<Strip {info} />{/if}
       <span class="sg-fill"
-        ><BrowserSegment {connection} {slot} /><SubagentSegment /><ProcessesSegment
-        /><ConnectorsSegment /><SchedulesSegment /><McpSegment /><FilesSegment
+        ><BrowserSegment {slot} /><SubagentSegment /><ProcessesSegment /><ConnectorsSegment
+        /><SchedulesSegment /><McpSegment /><FilesSegment
           href={slot === null ? null : hrefFor({ name: 'files', slot })}
         /><GitSegment /><ReviewSegment
           href={slot === null ? null : hrefFor({ name: 'review', slot })}

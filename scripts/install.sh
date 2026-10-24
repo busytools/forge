@@ -102,6 +102,24 @@ FORGE_BIN="$FORGE_BIN_DIR/forge"
 log_success "forge installed at $FORGE_BIN"
 log_success "  forge @ $CURRENT_SHA (branch: $CURRENT_BRANCH, build: $BUILD_LABEL)"
 
+# The browser host: its own signed bundle beside forge's machine-local state.
+# `cargo install` builds only the server binary, so the host executable is
+# built here and handed to the script that owns the bundle's layout.
+if [ "$(uname -s)" = "Darwin" ]; then
+    log_info "Building and staging the browser host bundle"
+    (
+        cd "$FORGE_REPO"
+        cargo build --release --locked -p forge-browser --bin forge-browser
+    )
+    "$FORGE_REPO/scripts/stage-browser-host.sh"
+    # The driver (node + @playwright/mcp) beside the host, where the server
+    # reads it. Idempotent at the vendoring's pins, so a reinstall with the
+    # stack already in place touches nothing.
+    log_info "Vendoring the browser driver stack"
+    FORGE_BROWSER_STACK_DIR="$HOME/Library/Application Support/forge/browser/stack" \
+        "$FORGE_REPO/scripts/vendor_browser_stack.sh"
+fi
+
 # zsh completion. The hidden `--generate-completion` flag landed with
 # the workspace migration; older builds won't have it, so we silently
 # skip when the binary doesn't recognise it.

@@ -8,15 +8,363 @@
    */
   import { onMount } from 'svelte';
 
-  import { setRegion, surface } from './surface.svelte';
+  import type { BrowserInputEvent, InputModifiers } from '../protocol';
+  import type { BrowserFrame, Connection } from '../socket';
+  import { drawsCanvas, keptFrame } from './host';
+  import { pagePoint } from './point';
+  import { closeSurface, holdsControl, pageArea, setRegion, surface } from './surface.svelte';
+
+  let { connection }: { connection: Connection } = $props();
 
   let pageEl: HTMLDivElement;
+
+  /** The page's own picture, on a platform with no native overlay. */
+  let canvasEl = $state<HTMLCanvasElement | null>(null);
+  const painting = drawsCanvas();
+
+  /**
+   * **The phone paints the frames itself.** The server relays each one to
+   * this page (a WebP still); the canvas takes it whole, and a frame that
+   * cannot be decoded is dropped rather than tearing the surface down - the
+   * next paint is a fresh picture.
+   */
+  $effect(() => {
+    if (!painting) return;
+    return connection.onBrowserFrame((frame) => void paint(frame));
+  });
+
+  // **A surface that mounts late asks for the newest frame.** The attach's
+  // key frame lands while this component is still `opening` - the canvas
+  // exists only in the live branch - and a still page never repaints; the
+  // shell keeps the newest one, so the ask waits for the canvas.
+  $effect(() => {
+    if (!painting || surface.phase !== 'live') return;
+    void keptFrame().then((frame) => {
+      if (frame !== null) void paint(frame);
+    });
+  });
+
+  async function paint(frame: BrowserFrame): Promise<void> {
+    const canvas = canvasEl;
+    if (canvas === null) return;
+    // **Only the viewed profile paints, and only once its id is named.** A
+    // frame that raced the attach (the previous profile's, after a re-attach)
+    // would otherwise paint under a null id; the kept-frame ask waits for
+    // `live`, which is the same `browser_view` that sets the id.
+    if (surface.id === null || frame.profile !== surface.id) {
+      console.debug('a frame for another profile was dropped', frame.profile, surface.id);
+      return;
+    }
+    let bitmap: ImageBitmap;
+    try {
+      // A fresh backing buffer: the frame's view may be a slice of a shared
+      // one, which a Blob refuses.
+      const part = new Uint8Array(frame.bytes);
+      bitmap = await createImageBitmap(new Blob([part], { type: 'image/webp' }));
+    } catch (why) {
+      // **A frame this page cannot decode is said**, not dropped quietly:
+      // the desktop's overlay logs the same event.
+      console.debug(
+        'a relayed frame did not decode (event_name client_browser_frame_undecodable)',
+        frame.width,
+        frame.height,
+        why,
+      );
+      return;
+    }
+    canvas.width = frame.width;
+    canvas.height = frame.height;
+    canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+    bitmap.close();
+  }
+
+  /** A gesture's point, in the PAGE's own CSS pixels.
+   *
+   *  **The canvas is scaled to fit and may be letterboxed**, so its element's
+   *  pixels are not always the page's: the page area is the viewport the
+   *  page was laid out at, and the gesture maps through both. */
+  function point(event: { clientX: number; clientY: number }): { x: number; y: number } {
+    const canvas = canvasEl;
+    const area = pageArea();
+    if (canvas === null || area === null) return { x: 0, y: 0 };
+    return pagePoint(event.clientX, event.clientY, canvas.getBoundingClientRect(), area);
+  }
+
+  function modifiers(event: {
+    altKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    shiftKey: boolean;
+  }): InputModifiers {
+    return {
+      alt: event.altKey,
+      control: event.ctrlKey,
+      meta: event.metaKey,
+      shift: event.shiftKey,
+    };
+  }
+
+  /** **Only the controller's gestures go out**: the server refuses the rest,
+   *  and the bar's Take control is the door to the role. */
+  function send(action: 'move' | 'press' | 'release', event: PointerEvent): void {
+    if (!holdsControl()) return;
+    const { x, y } = point(event);
+    const gesture: BrowserInputEvent = {
+      kind: 'mouse',
+      action,
+      x,
+      y,
+      button: 0,
+      clicks: 1,
+      modifiers: modifiers(event),
+    };
+    connection.browserInput(gesture);
+  }
+
+  /** One-finger state, for the phone's own gestures. */
+  let touch: {
+    id: number;
+    x: number;
+    y: number;
+    lastX: number;
+    lastY: number;
+    moved: boolean;
+  } | null = null;
+  /** The field the phone's keyboard types into. */
+  let imeEl = $state<HTMLInputElement | null>(null);
+  /**
+   * The text the last composition committed. **Some platforms re-fire it as
+   * an `input` after `compositionend`**; matching it once keeps the page from
+   * receiving the same words twice. **The latch is one turn's**: a later
+   * direct insert of the same string is not the commit re-firing, so the
+   * latch is cleared on the next task rather than kept until a mismatch.
+   *
+   * **Not device-verified**: the emulator run drove typed text, Backspace and
+   * swipe; the composition path itself is not.
+   */
+  let composedText: string | null = null;
+
+  function press(event: PointerEvent): void {
+    if (event.pointerType === 'touch') {
+      if (!holdsControl()) return;
+      // One finger at a time: a second finger's press is not a new gesture.
+      if (touch !== null) return;
+      canvasEl?.setPointerCapture?.(event.pointerId);
+      touch = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        moved: false,
+      };
+      return;
+    }
+    canvasEl?.setPointerCapture?.(event.pointerId);
+    send('press', event);
+  }
+
+  function move(event: PointerEvent): void {
+    if (event.pointerType === 'touch') {
+      if (touch === null || touch.id !== event.pointerId || !holdsControl()) return;
+      // **Both axes count.** A horizontal drag measured only on y never
+      // became a scroll, so the lift sent a click at the end of it.
+      const liftedX = Math.abs(event.clientX - touch.x);
+      const liftedY = Math.abs(event.clientY - touch.y);
+      if (!touch.moved && (liftedX > 6 || liftedY > 6)) touch.moved = true;
+      if (touch.moved) {
+        // **A finger's drag is a scroll, not a mouse drag.** A page scrolls
+        // under a swipe; sending it as a held mouse button selected text and
+        // dragged links instead.
+        const { x, y } = point(event);
+        // **The wire's deltas are the wheel's own**, so each is inverted
+        // from the finger's motion: a finger moving up scrolls down, and a
+        // finger moving left scrolls right.
+        const dx = event.clientX - touch.lastX;
+        const dy = event.clientY - touch.lastY;
+        connection.browserInput({
+          kind: 'wheel',
+          x,
+          y,
+          delta_x: -dx,
+          delta_y: -dy,
+          modifiers: modifiers(event),
+        });
+        touch.lastX = event.clientX;
+        touch.lastY = event.clientY;
+      }
+      return;
+    }
+    if (event.buttons !== 0) send('move', event);
+  }
+
+  function release(event: PointerEvent): void {
+    if (event.pointerType === 'touch') {
+      if (touch === null || touch.id !== event.pointerId) return;
+      const tapped = !touch.moved;
+      touch = null;
+      if (tapped && holdsControl()) {
+        // **The tap is also how the keyboard gets the field**: a phone opens
+        // its keyboard on a real control's focus, and the canvas is not one.
+        // A swipe does not focus it - the keyboard's resize would cancel the
+        // swipe it interrupted.
+        imeEl?.focus({ preventScroll: true });
+        // **The WebView clears the focus its own tap handling did not set.**
+        // A canvas is not focusable, so Chromium takes the keyboard back to
+        // the body right after the gesture; the next frame puts it on the
+        // field that types into the page (measured on the dev stack).
+        const refocus = (): void => {
+          if (holdsControl() && document.activeElement !== imeEl) {
+            imeEl?.focus({ preventScroll: true });
+          }
+        };
+        if (typeof requestAnimationFrame === 'undefined') refocus();
+        else requestAnimationFrame(refocus);
+        // A tap is the page's click: one press and its release at the point.
+        const { x, y } = point(event);
+        const gesture: BrowserInputEvent = {
+          kind: 'mouse',
+          action: 'press',
+          x,
+          y,
+          button: 0,
+          clicks: 1,
+          modifiers: modifiers(event),
+        };
+        connection.browserInput(gesture);
+        connection.browserInput({ ...gesture, action: 'release' });
+      }
+      return;
+    }
+    send('release', event);
+  }
+
+  /**
+   * **A cancelled touch is dropped, never turned into a click.** The system
+   * cancels a gesture for an edge-back, the notification shade, a
+   * backgrounding or the keyboard sliding up; running the tap path there
+   * activated whatever was under the finger. A mouse cancellation still owes
+   * the page its release.
+   */
+  function cancel(event: PointerEvent): void {
+    if (event.pointerType === 'touch') {
+      if (touch !== null && touch.id === event.pointerId) touch = null;
+      return;
+    }
+    send('release', event);
+  }
+
+  /**
+   * **The phone's keyboard types into the page.** The canvas has no fields of
+   * its own, so a hidden field takes the keyboard and the IME; printable text
+   * crosses whole, and the named keys (Enter, Backspace, Tab, the arrows)
+   * cross as key events. **A tap on the page focuses it**; taking control
+   * alone does not, so a swipe is never interrupted by the keyboard's
+   * resize, and a watcher never gets a keyboard over a page it cannot drive.
+   */
+  function keydown(event: KeyboardEvent): void {
+    if (!holdsControl() || event.isComposing) return;
+    const named = event.key.length > 1 || event.ctrlKey || event.metaKey || event.altKey;
+    if (!named) return;
+    if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(event.key)) return;
+    const gesture: BrowserInputEvent = {
+      kind: 'key',
+      down: true,
+      key: event.key,
+      code: event.code,
+      // **Chromium edits named keys by their virtual key code**: Backspace
+      // and Enter with a zero code move nothing on the page.
+      windows_vk: event.keyCode,
+      modifiers: modifiers(event),
+    };
+    connection.browserInput(gesture);
+    connection.browserInput({ ...gesture, down: false });
+    if (
+      event.key === 'Enter' ||
+      event.key === 'Backspace' ||
+      event.key === 'Tab' ||
+      event.key === 'Escape' ||
+      event.key.startsWith('Arrow')
+    ) {
+      event.preventDefault();
+    }
+  }
+
+  function beforeinput(event: InputEvent): void {
+    if (!holdsControl() || event.isComposing) return;
+    if (event.inputType === 'insertText' && typeof event.data === 'string' && event.data !== '') {
+      connection.browserInput({ kind: 'text', text: event.data });
+      event.preventDefault();
+    }
+  }
+
+  /**
+   * **A keyboard that inserts without a `beforeinput` still types.** Some
+   * WebView IME paths set the field's value directly (and so does Chromium's
+   * own `Input.insertText`); the value that landed is the text the page is
+   * owed, and it is cleared so the next entry does not append to it.
+   */
+  function typed(event: Event): void {
+    if (!holdsControl()) return;
+    if (event instanceof InputEvent && event.isComposing) return;
+    const value = imeEl?.value ?? '';
+    if (value === '') return;
+    if (composedText !== null && value === composedText) {
+      // The composition's own commit, re-fired as an input: already sent.
+      composedText = null;
+      if (imeEl !== null) imeEl.value = '';
+      return;
+    }
+    composedText = null;
+    connection.browserInput({ kind: 'text', text: value });
+    if (imeEl !== null) imeEl.value = '';
+  }
+
+  function composed(event: CompositionEvent): void {
+    const data = event.data;
+    if (holdsControl() && data !== '') {
+      connection.browserInput({ kind: 'text', text: data });
+      composedText = data;
+      // **A re-fired input lands in this turn**; clearing on the next task
+      // keeps a later identical insert from being swallowed.
+      setTimeout(() => {
+        if (composedText === data) composedText = null;
+      }, 0);
+    }
+    // The committed text belongs to the page now; the field must not keep a
+    // copy that the next composition would append to.
+    if (imeEl !== null) imeEl.value = '';
+  }
+
+  // **A watcher never keeps the keyboard.** A surface that loses control
+  // gives the field up; taking control alone does not focus it - a tap on the
+  // page is what raises the keyboard, so a swipe is never interrupted by it.
+  $effect(() => {
+    if (!painting) return;
+    if (!holdsControl()) imeEl?.blur();
+  });
+
+  function wheel(event: WheelEvent): void {
+    event.preventDefault();
+    if (!holdsControl()) return;
+    const { x, y } = point(event);
+    const gesture: BrowserInputEvent = {
+      kind: 'wheel',
+      x,
+      y,
+      delta_x: -event.deltaX,
+      delta_y: -event.deltaY,
+      modifiers: modifiers(event),
+    };
+    connection.browserInput(gesture);
+  }
 
   function measure(): void {
     if (!pageEl) return;
     const box = pageEl.getBoundingClientRect();
     setRegion(
       { x: box.x, y: box.y, width: box.width, height: box.height },
+      { width: window.innerWidth, height: window.innerHeight },
       window.devicePixelRatio || 1,
       surface.epoch,
     );
@@ -28,6 +376,10 @@
    * it measures is unchanged (a retry, or a reopen at the same size).
    */
   $effect(() => {
+    // **The bar's height moves the page area**: a row that grows over the
+    // picture (the control changing hands) must be re-measured, or the
+    // overlay keeps the old top and draws over the bar.
+    void surface.barHeight;
     measure();
   });
 
@@ -57,27 +409,19 @@
     };
   });
 
-  /**
-   * **The takeover IS full screen.** The shell takes the window to its simple
-   * full screen when the surface opens and gives it back when the surface
-   * closes (the store's phase). The app's green button is not the door.
-   */
-  async function fullscreen(on: boolean): Promise<void> {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('browser_takeover', { on });
-    } catch (why) {
-      console.warn('the takeover could not change full screen', why);
-    }
-  }
-
   onMount(() => {
-    void fullscreen(true);
-    return () => void fullscreen(false);
-  });
-
-  $effect(() => {
-    if (surface.phase === 'closed') void fullscreen(false);
+    // **The takeover takes the keyboard with it.** A composer focused on the
+    // page behind keeps the software keyboard up in the WebView, and it
+    // would sit over the page the person just opened.
+    if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    // **The shell's takeover is the store's**: the open and the lower both go
+    // through it, so full screen and the viewer follow one door each. Leaving
+    // the page is the only case the store does not see, and this closes it.
+    return () => {
+      if (surface.phase !== 'closed') void closeSurface();
+    };
   });
 </script>
 
@@ -87,6 +431,35 @@
       <p class="surface-tx">opening the browser…</p>
     {:else if surface.phase === 'failed'}
       <p class="surface-tx bad">{surface.reason}</p>
+    {:else if painting}
+      <canvas
+        class="surface-canvas"
+        bind:this={canvasEl}
+        aria-label="the browser's page"
+        onpointerdown={press}
+        onpointermove={move}
+        onpointerup={release}
+        onpointercancel={cancel}
+        onwheel={wheel}
+      ></canvas>
+      <!-- The phone's keyboard and IME: invisible, but a tap on the page
+           focuses it, so its keys and composed text reach the page through
+           the same input vocabulary the desktop overlay uses. -->
+      <input
+        class="surface-ime"
+        bind:this={imeEl}
+        type="text"
+        data-editor="nowhere"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        aria-hidden="true"
+        tabindex="-1"
+        onbeforeinput={beforeinput}
+        oninput={typed}
+        oncompositionend={composed}
+        onkeydown={keydown}
+      />
     {/if}
   </div>
 </div>

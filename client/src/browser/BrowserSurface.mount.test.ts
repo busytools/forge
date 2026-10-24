@@ -5,14 +5,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./host', () => ({
   canHost: vi.fn(() => true),
   drawsSurface: vi.fn(() => true),
+  drawsCanvas: vi.fn(() => false),
+  keptFrame: vi.fn(() => Promise.resolve(null)),
   showBrowser: vi.fn(() => Promise.resolve({ profile: '@shared' })),
   hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
+  resizeBrowser: vi.fn(() => Promise.resolve()),
+  takeControl: vi.fn(() => Promise.resolve()),
 }));
 
 import { reportSurfaceRect } from './host';
 import BrowserSurface from './BrowserSurface.svelte';
 import { surface } from './surface.svelte';
+import type { Connection } from '../socket';
+
+/**
+ * The connection this surface draws through. The page area's measurement is
+ * the whole subject here, so the two members the surface can reach are stubs.
+ */
+const connection = {
+  onBrowserFrame: () => () => {},
+  browserInput: () => {},
+} as unknown as Connection;
 
 let shown: ReturnType<typeof mount> | null = null;
 
@@ -22,7 +36,7 @@ function open(phase: 'opening' | 'live' | 'failed'): HTMLElement {
   surface.reason = phase === 'failed' ? 'the browser host did not start' : null;
   const target = document.createElement('div');
   document.body.appendChild(target);
-  shown = mount(BrowserSurface, { target });
+  shown = mount(BrowserSurface, { target, props: { connection } });
   flushSync();
   return target;
 }
@@ -45,8 +59,12 @@ describe('the browser surface', () => {
   it("reports the page area's box to the shell on mount", () => {
     open('live');
     expect(reportSurfaceRect).toHaveBeenCalledTimes(1);
-    const [rect, scale, epoch] = vi.mocked(reportSurfaceRect).mock.calls[0] ?? [];
+    const [rect, viewport, scale, epoch] = vi.mocked(reportSurfaceRect).mock.calls[0] ?? [];
     expect(rect).toMatchObject({ x: 0, y: 0 });
+    expect(viewport, "the page's own viewport rides with the area").toMatchObject({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
     expect(scale).toBe(window.devicePixelRatio || 1);
     expect(epoch, 'the report names the open it belongs to').toBe(42);
   });
@@ -63,7 +81,7 @@ describe('the browser surface', () => {
     expect(reportSurfaceRect, 'the new open is measured by its own report').toHaveBeenCalledTimes(
       2,
     );
-    const [, , epoch] = vi.mocked(reportSurfaceRect).mock.calls[1] ?? [];
+    const [, , , epoch] = vi.mocked(reportSurfaceRect).mock.calls[1] ?? [];
     expect(epoch).toBe(43);
   });
 

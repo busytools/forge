@@ -44,12 +44,11 @@ function fakeConnection() {
       refreshed.push(what);
       return true;
     },
-    onBrowserAsk: () => () => {},
-    browserRole: () => false,
-    browserRoleKnown: () => false,
-    onBrowserRole: () => () => {},
-    onProfilesChanged: () => () => {},
-    takeBrowserRole: () => {},
+    browserView: () => false,
+    browserControl: () => false,
+    browserNav: () => false,
+    browserInput: () => false,
+    onBrowserFrame: () => () => {},
     onMessage(fn) {
       messages.add(fn);
       return () => {

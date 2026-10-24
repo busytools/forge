@@ -71,12 +71,11 @@ function untouched(): Connection {
     readDocument: refuse,
     seatRange: refuse,
     frame: refuse,
-    onBrowserAsk: refuse,
-    browserRole: refuse,
-    browserRoleKnown: refuse,
-    onBrowserRole: refuse,
-    onProfilesChanged: refuse,
-    takeBrowserRole: refuse,
+    browserView: refuse,
+    browserControl: refuse,
+    browserNav: refuse,
+    browserInput: refuse,
+    onBrowserFrame: refuse,
     onMessage: refuse,
     onStatus: refuse,
     store: refuse,
@@ -88,21 +87,6 @@ function untouched(): Connection {
     status: refuse,
     close: refuse,
   };
-}
-
-/**
- * A connection the strip's own segments may read: the browser segment
- * registers a role listener and reads the role as it draws, so this answers
- * those and refuses nothing - the check never presses override.
- */
-function browserIdle(): Connection {
-  return {
-    browserRole: () => false,
-    browserRoleKnown: () => false,
-    onBrowserRole: () => () => {},
-    onProfilesChanged: () => () => {},
-    takeBrowserRole: () => {},
-  } as unknown as Connection;
 }
 
 /** Every violation id, which is what a failure should name. */
@@ -630,7 +614,7 @@ describe('axe over the rendered pages', () => {
   it('draws the strip with every row populated, with no violations', async () => {
     seedStrip(true);
     try {
-      const html = render(Pinned, { props: { info: null, connection: browserIdle() } }).body;
+      const html = render(Pinned, { props: { info: null } }).body;
       // Every row drew, so axe saw all of them.
       for (const [mark, what] of [
         ['i-subagents', 'the agents row'],

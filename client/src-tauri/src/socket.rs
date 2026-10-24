@@ -39,6 +39,11 @@ const MAX_RETRY_MS: u64 = 2000;
 /// minutes (#1922, #1113), so no finite bound is honest.
 const REPLY_BOUND: Duration = Duration::from_secs(10);
 
+/// The bound an attach gets: the server starts a host and its driver before
+/// it answers, which a cold machine measured at about 14 seconds, so this
+/// sits above that rather than above a socket round trip.
+const ATTACH_BOUND: Duration = Duration::from_secs(30);
+
 /// The dispatch error a bound produces: the command went, and no reply came
 /// before the bound. Shared so a caller can tell it from a connection that is
 /// down, which is not the same problem.
@@ -67,16 +72,14 @@ pub enum SocketEvent {
     /// The connection opened, dropped, or was closed by our own hand.
     Status(Status),
     /// A server frame, verbatim: the greeting, snapshots, updates, pages,
-    /// asks and errors alike. The receiver reads `kind`. `bytes` is the raw
-    /// frame's length and `parse_ms` how long this half's parse took - the
-    /// page's perf log carries both for a snapshot (#2513).
+    /// browser state and errors alike. The receiver reads `kind`. `bytes` is
+    /// the raw frame's length and `parse_ms` how long this half's parse took -
+    /// the page's perf log carries both for a snapshot (#2513).
     Message { value: Value, bytes: usize, parse_ms: f64 },
     /// A subscribe frame finished its write, with how long it waited in this
     /// half (the queue plus the write) - the page's perf log times the switch
     /// to it (#2513).
     Written { key: String, declared: bool, waited_ms: f64 },
-    /// The browser role moved - granted, taken, or released with the drop.
-    Role { hosting: bool },
     /// A subscribe the core refused, attributed to the oldest ask still
     /// waiting, exactly as `socket.ts`'s queue does.
     Refused { key: String, why: String },
@@ -92,7 +95,6 @@ impl SocketEvent {
             Self::Status(_) => "status",
             Self::Message { .. } => "message",
             Self::Written { .. } => "written",
-            Self::Role { .. } => "role",
             Self::Refused { .. } => "refused",
             Self::Malformed(_) => "malformed",
         }
@@ -108,7 +110,6 @@ struct Held {
     key: String,
     what: Value,
     answering: bool,
-    browser: bool,
     count: usize,
 }
 
@@ -119,8 +120,6 @@ impl Held {
                 "kind": "subscribe",
                 "what": self.what,
                 "answering": self.answering,
-                "browser": self.browser,
-                "declare": false,
             })
             .to_string()
             .into(),
@@ -132,7 +131,7 @@ impl Held {
 /// flags in place and adds to its count, an unsubscribe takes one off. Both
 /// the connected loop and the disconnected wait fold through here, so their
 /// bookkeeping cannot drift.
-fn hold(held: &mut Vec<Held>, what: Value, answering: bool, browser: bool) -> Option<String> {
+fn hold(held: &mut Vec<Held>, what: Value, answering: bool) -> Option<String> {
     let key = subject_key(&what);
     if key.is_empty() {
         return None;
@@ -140,10 +139,9 @@ fn hold(held: &mut Vec<Held>, what: Value, answering: bool, browser: bool) -> Op
     match held.iter_mut().find(|h| h.key == key) {
         Some(h) => {
             h.answering |= answering;
-            h.browser |= browser;
             h.count += 1;
         }
-        None => held.push(Held { key: key.clone(), what, answering, browser, count: 1 }),
+        None => held.push(Held { key: key.clone(), what, answering, count: 1 }),
     }
     Some(key)
 }
@@ -169,24 +167,11 @@ enum Outbound {
     Subscribe {
         what: Value,
         answering: bool,
-        browser: bool,
         /// When the page's command reached this half: the write's own wait is
         /// measured from here, so a subscribe queued behind a frame the loop
         /// is parsing is on the record (#2513).
         queued: tokio::time::Instant,
     },
-    /// One subscribe frame on the wire with nothing held: the role's own
-    /// re-declaration (the page's `declare`), which must not add to the
-    /// counts a reconnect re-asks by.
-    Declare {
-        what: Value,
-        answering: bool,
-        queued: tokio::time::Instant,
-    },
-    /// A browser answer's image, header included: a frame that cannot go
-    /// ends the connection (the answer is already out and its images never
-    /// all arriving would leave the ask hanging).
-    Image(Vec<u8>),
     Unsubscribe {
         what: Value,
     },
@@ -236,12 +221,53 @@ enum Outbound {
     ForgetReply {
         id: u64,
     },
-    Answer {
+    /// An attach whose answer has stopped being waited for.
+    ForgetAttach {
         id: u64,
-        parts: Value,
-        error: Option<String>,
     },
-    TakeRole,
+    /// Attach this connection to a profile's browser as a viewer. The
+    /// server's answer rides a reply: a raise it refused must fail the
+    /// surface rather than leave it dark.
+    BrowserView {
+        seat: Value,
+        profile: Option<String>,
+        reply: Option<u64>,
+        answered: Option<oneshot::Sender<Result<String, String>>>,
+    },
+    /// Stop viewing the attached profile: the takeover lowered.
+    BrowserDetach,
+    /// One input event from the controlling viewer.
+    BrowserInput {
+        seq: u64,
+        event: forge_primitives::browser::BrowserInputEvent,
+    },
+    /// Take the controller role, or give it back.
+    BrowserControl {
+        take: bool,
+    },
+    /// Move through the page's history: the takeover bar's arrows.
+    BrowserNav {
+        back: bool,
+    },
+    /// A page's file chooser, answered with the person's files.
+    BrowserFileAnswer {
+        id: u64,
+        files: Value,
+    },
+    /// The controller's surface changed size: device pixels and the ratio
+    /// they draw at.
+    BrowserResize {
+        width: u32,
+        height: u32,
+        scale: f64,
+    },
+    /// One of the strip's asks - the profile list, a close, a delete - as the
+    /// wire's own object with `reply_to` added. The answer is the reply body.
+    StripAsk {
+        body: Value,
+        reply: Option<u64>,
+        replied: Option<oneshot::Sender<Result<Value, String>>>,
+    },
     Binary(Vec<u8>),
     Close,
 }
@@ -258,7 +284,19 @@ impl Socket {
     /// Dial `url` and keep the connection up for as long as this handle
     /// lives. Events land on `events`; the task ends on [`Socket::close`].
     pub fn open(url: String, events: mpsc::UnboundedSender<SocketEvent>) -> Self {
-        Self::open_with_reply_bound(url, events, REPLY_BOUND)
+        Self::open_with_reply_bound(url, events, Arc::new(|_| {}), Arc::new(|_| {}), REPLY_BOUND)
+    }
+
+    /// [`Socket::open`] with the browser-frame and audio sinks given: every
+    /// relayed frame and each packet of the page's sound lands there, drawn
+    /// or dropped by the viewer.
+    pub fn open_with_frames(
+        url: String,
+        events: mpsc::UnboundedSender<SocketEvent>,
+        frames: FrameSink,
+        audio: AudioSink,
+    ) -> Self {
+        Self::open_with_reply_bound(url, events, frames, audio, REPLY_BOUND)
     }
 
     /// The same, with the reply bound stated: tests inject a short one rather
@@ -266,24 +304,24 @@ impl Socket {
     fn open_with_reply_bound(
         url: String,
         events: mpsc::UnboundedSender<SocketEvent>,
+        frames: FrameSink,
+        audio: AudioSink,
         reply_bound: Duration,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         let next_reply = Arc::new(AtomicU64::new(1));
         let socket = Self { tx: tx.clone(), next_reply: Arc::clone(&next_reply), reply_bound };
-        tokio::spawn(run(url, events, rx));
+        tokio::spawn(run(url, events, rx, frames, audio));
         socket
     }
 
-    /// Watch a subject, declaring whether this client can answer its prompts
-    /// and whether it hosts the browser. Both flags only ever rise while the
-    /// connection lives, and the flags stated here are what a reconnect
-    /// re-asks with.
-    pub fn subscribe(&self, what: Value, answering: bool, browser: bool) {
+    /// Watch a subject, declaring whether this client can answer its prompts.
+    /// The flag only ever rises while the connection lives, and what is
+    /// stated here is what a reconnect re-asks with.
+    pub fn subscribe(&self, what: Value, answering: bool) {
         let _ = self.tx.send(Outbound::Subscribe {
             what,
             answering,
-            browser,
             queued: tokio::time::Instant::now(),
         });
     }
@@ -291,22 +329,6 @@ impl Socket {
     /// Give one subscription back.
     pub fn unsubscribe(&self, what: Value) {
         let _ = self.tx.send(Outbound::Unsubscribe { what });
-    }
-
-    /// Re-declare the browser capability on a subject this connection already
-    /// watches: one frame, one outstanding ask, **and nothing held**. A
-    /// declare that went through `subscribe` would raise the Held count with
-    /// no reader behind it, and every reconnect from then on would re-ask a
-    /// surplus - a released seat asked for forever (`socket.ts`'s `declare`
-    /// asks the same way, through `askFor`). **The frame says it is a
-    /// declare**, which is what keeps the server's own bookkeeping out of it
-    /// too: the client cannot give back what it never counted.
-    pub fn declare(&self, what: Value, answering: bool) {
-        let _ = self.tx.send(Outbound::Declare {
-            what,
-            answering,
-            queued: tokio::time::Instant::now(),
-        });
     }
 
     /// Ask for more turns of a conversation.
@@ -379,31 +401,111 @@ impl Socket {
         Ok(None)
     }
 
-    /// Answer one browser ask: the parts it returned, or the reason it failed.
-    pub fn answer(&self, id: u64, parts: Value, error: Option<String>) {
-        let _ = self.tx.send(Outbound::Answer { id, parts, error });
-    }
-
-    /// Claim the browser role from whoever holds it.
-    pub fn take_role(&self) {
-        let _ = self.tx.send(Outbound::TakeRole);
-    }
-
-    /// One dictation frame: a take's audio, best-effort. It rides under the
-    /// take's own stream, in order - **not** an answer's image, which has a
-    /// header and a failure policy of its own (`send_image`).
+    /// One dictation frame: a take's audio, best-effort.
     pub fn send_binary(&self, bytes: Vec<u8>) {
         let _ = self.tx.send(Outbound::Binary(bytes));
     }
 
-    /// One browser answer's image, as the wire carries it: the caller hands
-    /// the bytes with the answer's own header already on them
-    /// (`asks::image_frame`). **A frame that cannot be sent ends the
-    /// connection** - the answer is already out, so its images never all
-    /// arriving is an ask left hanging, and the drop fails it instead (the
-    /// webview's own `socket.ts` closes for the same reason).
-    pub fn send_image(&self, bytes: Vec<u8>) {
-        let _ = self.tx.send(Outbound::Image(bytes));
+    /// Attach this connection to a profile's browser as a viewer, and wait
+    /// for the server's answer: the profile it actually attached, or the
+    /// sentence the surface draws. **A raise that named none was resolved to
+    /// the asking seat's own**, and this is the name its Done lowers.
+    pub async fn browser_view(
+        &self,
+        seat: Value,
+        profile: Option<String>,
+    ) -> Result<String, String> {
+        let id = self.next_reply.fetch_add(1, Ordering::Relaxed);
+        let (answered, answer) = oneshot::channel();
+        self.tx
+            .send(Outbound::BrowserView {
+                seat,
+                profile,
+                reply: Some(id),
+                answered: Some(answered),
+            })
+            .map_err(|_| "the socket is closed".to_owned())?;
+        match tokio::time::timeout(ATTACH_BOUND, answer).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("the socket dropped before answering the attach".to_owned()),
+            Err(_) => {
+                let _ = self.tx.send(Outbound::ForgetAttach { id });
+                Err("the server did not answer the attach".to_owned())
+            }
+        }
+    }
+
+    /// Stop viewing the attached profile: the takeover lowered.
+    pub fn browser_detach(&self) {
+        let _ = self.tx.send(Outbound::BrowserDetach);
+    }
+
+    /// One input event from the controlling viewer.
+    pub fn browser_input(&self, seq: u64, event: forge_primitives::browser::BrowserInputEvent) {
+        let _ = self.tx.send(Outbound::BrowserInput { seq, event });
+    }
+
+    /// Take the controller role, or give it back.
+    pub fn browser_control(&self, take: bool) {
+        let _ = self.tx.send(Outbound::BrowserControl { take });
+    }
+
+    /// Move through the page's history.
+    pub fn browser_nav(&self, back: bool) {
+        let _ = self.tx.send(Outbound::BrowserNav { back });
+    }
+
+    /// Answer a page's file chooser: the files the person picked, base64.
+    pub fn browser_file_answer(&self, id: u64, files: Value) {
+        let _ = self.tx.send(Outbound::BrowserFileAnswer { id, files });
+    }
+
+    /// The controller's surface changed size: device pixels and the ratio.
+    pub fn browser_resize(&self, width: u32, height: u32, scale: f64) {
+        let _ = self.tx.send(Outbound::BrowserResize { width, height, scale });
+    }
+
+    /// The profiles this server holds, as the strip's rows.
+    pub async fn browser_profiles(&self, seat: Value) -> Result<Value, String> {
+        self.ask(json!({ "kind": "browser_profiles", "seat": seat })).await
+    }
+
+    /// Close a named profile's browser, keeping its logins.
+    pub async fn browser_profile_close(&self, seat: Value, name: &str) -> Result<(), String> {
+        self.ask(json!({ "kind": "browser_profile_close", "seat": seat, "name": name }))
+            .await
+            .map(|_| ())
+    }
+
+    /// Delete a named profile and its logins.
+    pub async fn browser_profile_delete(&self, seat: Value, name: &str) -> Result<(), String> {
+        self.ask(json!({ "kind": "browser_profile_delete", "seat": seat, "name": name }))
+            .await
+            .map(|_| ())
+    }
+
+    /// One strip ask, answered through its reply: `{ok: false, why}` is the
+    /// server's refusal and comes back as `Err`.
+    async fn ask(&self, body: Value) -> Result<Value, String> {
+        let id = self.next_reply.fetch_add(1, Ordering::Relaxed);
+        let (replied, answer) = oneshot::channel();
+        self.tx
+            .send(Outbound::StripAsk { body, reply: Some(id), replied: Some(replied) })
+            .map_err(|_| "the socket is closed".to_owned())?;
+        match tokio::time::timeout(REPLY_BOUND, answer).await {
+            Ok(Ok(Ok(body))) if body.get("ok").and_then(Value::as_bool) == Some(true) => Ok(body),
+            Ok(Ok(Ok(body))) => Err(body
+                .get("why")
+                .and_then(Value::as_str)
+                .unwrap_or("the server refused the ask")
+                .to_owned()),
+            Ok(Ok(Err(why))) => Err(why),
+            Ok(Err(_)) => Err("the socket dropped before answering the ask".to_owned()),
+            Err(_) => {
+                let _ = self.tx.send(Outbound::ForgetReply { id });
+                Err("the server did not answer the ask".to_owned())
+            }
+        }
     }
 
     /// End the connection for good: no retry follows.
@@ -450,24 +552,20 @@ fn subject_key(what: &Value) -> String {
 
 /// Apply one outbound message taken while there is NO connection. Only the
 /// local bookkeeping can move: a subscribe or unsubscribe updates the held
-/// list (the reconnect re-asks it), a dispatch is refused, and an answer,
-/// take or frame has nowhere to go and is dropped - which is what
-/// `socket.ts`'s own `isOpen()` guards do. Answers `true` when the task
-/// should end.
+/// list (the reconnect re-asks it), a dispatch is refused, and everything
+/// else has nowhere to go and is dropped - which is what `socket.ts`'s own
+/// `isOpen()` guards do. Answers `true` when the task should end.
 fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String>) -> bool {
     match next {
         Outbound::Close => true,
-        Outbound::Subscribe { what, answering, browser, .. } => {
+        Outbound::Subscribe { what, answering, .. } => {
             // The key is NOT queued here: nothing is outstanding until the
             // frame really goes, which is the reconnect's own re-ask. Queuing
             // it here as well would push it twice, and the extra entry would
             // let one refusal pop the key belonging to the next ask.
-            hold(held, what, answering, browser);
+            hold(held, what, answering);
             false
         }
-        // A declare has nothing held to move, and no frame to send while
-        // down: it is dropped, as the page's own `declare` is when closed.
-        Outbound::Declare { .. } => false,
         Outbound::Unsubscribe { what } => {
             unhold(held, awaiting, &what);
             false
@@ -476,24 +574,51 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             let _ = sent.send(Err("the socket is not open".to_owned()));
             false
         }
+        // A raise over a down socket fails by name rather than waiting out
+        // its bound: no answer is coming. So does a strip ask.
+        Outbound::BrowserView { answered: Some(answered), .. } => {
+            let _ = answered.send(Err("the socket is not open".to_owned()));
+            false
+        }
+        Outbound::StripAsk { replied: Some(replied), .. } => {
+            let _ = replied.send(Err("the socket is not open".to_owned()));
+            false
+        }
         Outbound::More { .. }
         | Outbound::CommitDiff { .. }
         | Outbound::FileContent { .. }
         | Outbound::SeatRange { .. }
         | Outbound::DocumentRead { .. }
         | Outbound::ForgetReply { .. }
-        | Outbound::Answer { .. }
-        | Outbound::TakeRole
-        | Outbound::Binary(_)
-        | Outbound::Image(_) => false,
+        | Outbound::ForgetAttach { .. }
+        | Outbound::BrowserView { .. }
+        | Outbound::BrowserDetach
+        | Outbound::BrowserInput { .. }
+        | Outbound::BrowserControl { .. }
+        | Outbound::BrowserNav { .. }
+        | Outbound::BrowserFileAnswer { .. }
+        | Outbound::BrowserResize { .. }
+        | Outbound::StripAsk { replied: None, .. }
+        | Outbound::Binary(_) => false,
     }
 }
+
+/// The frame sink a connection hands every relayed browser frame to: the
+/// bytes are the host's own frame wire, already header-stripped of the
+/// socket's kind tag.
+pub type FrameSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
+/// The audio sink a connection hands every packet of the viewed page's sound
+/// to: the profile, sequence, rate and channels, then interleaved samples.
+pub type AudioSink = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
 /// The owning task: connect, read, retry - for the life of the handle.
 async fn run(
     url: String,
     events: mpsc::UnboundedSender<SocketEvent>,
     mut outbound: mpsc::UnboundedReceiver<Outbound>,
+    frames: FrameSink,
+    audio: AudioSink,
 ) {
     let mut held: Vec<Held> = Vec::new();
     // The subscribes sent over the wire and not yet answered, oldest first -
@@ -579,6 +704,9 @@ async fn run(
             }
         }
         let mut pending: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
+        // Attaches waiting on their answer, kept apart from a dispatch's:
+        // their reply body is a verdict on the attach, not a command's value.
+        let mut attaches: HashMap<u64, oneshot::Sender<Result<String, String>>> = HashMap::new();
         let mut closing = false;
         loop {
             tokio::select! {
@@ -593,12 +721,25 @@ async fn run(
                                 text.len(),
                                 parse_ms,
                                 &mut pending,
+                                &mut attaches,
                                 &mut awaiting,
                                 &events,
                             ),
                             Err(why) => say(&events, SocketEvent::Malformed(why.to_string())),
                         }
                     }
+                    // **A binary frame is the browser's or the microphone's,
+                    // by its kind tag.** Kind 1 is one relayed browser frame:
+                    // the sink draws it, and anything else on this stream is
+                    // not this half's to read.
+                    Some(Ok(Message::Binary(bytes))) => match bytes.first() {
+                        Some(&1) => frames(&bytes[1..]),
+                        Some(&2) => audio(&bytes[1..]),
+                        // **A binary frame of another kind is said**, not
+                        // dropped in silence: a short one has no kind at all,
+                        // and both leave a reader guessing what went missing.
+                        other => unreadable_binary(other.copied(), bytes.len()),
+                    },
                     Some(Ok(_)) => {}
                     Some(Err(why)) => {
                         say(&events, SocketEvent::Malformed(why.to_string()));
@@ -617,8 +758,8 @@ async fn run(
                             let _ = writer.send(Message::Close(None)).await;
                             break;
                         }
-                        Outbound::Subscribe { what, answering, browser, queued } => {
-                            if let Some(key) = hold(&mut held, what, answering, browser) {
+                        Outbound::Subscribe { what, answering, queued } => {
+                            if let Some(key) = hold(&mut held, what, answering) {
                                 if let Some(h) = held.iter().find(|h| h.key == key)
                                     && writer.send(h.subscribe_frame()).await.is_ok()
                                 {
@@ -627,38 +768,6 @@ async fn run(
                                         SocketEvent::Written {
                                             key: key.clone(),
                                             declared: false,
-                                            waited_ms: queued.elapsed().as_secs_f64() * 1000.0,
-                                        },
-                                    );
-                                }
-                                awaiting.push(key);
-                            }
-                        }
-                        Outbound::Declare { what, answering, queued } => {
-                            // One frame with the browser capability, one
-                            // outstanding ask, and nothing held: see
-                            // `Socket::declare`.
-                            let key = subject_key(&what);
-                            if !key.is_empty() {
-                                let sent = writer
-                                    .send(Message::Text(
-                                        json!({
-                                            "kind": "subscribe",
-                                            "what": what,
-                                            "answering": answering,
-                                            "browser": true,
-                                            "declare": true,
-                                        })
-                                        .to_string()
-                                        .into(),
-                                    ))
-                                    .await;
-                                if sent.is_ok() {
-                                    say(
-                                        &events,
-                                        SocketEvent::Written {
-                                            key: key.clone(),
-                                            declared: true,
                                             waited_ms: queued.elapsed().as_secs_f64() * 1000.0,
                                         },
                                     );
@@ -740,17 +849,103 @@ async fn run(
                         Outbound::ForgetReply { id } => {
                             pending.remove(&id);
                         }
-                        Outbound::Answer { id, parts, error } => {
+                        Outbound::ForgetAttach { id } => {
+                            attaches.remove(&id);
+                        }
+                        Outbound::BrowserView { seat, profile, reply, answered } => {
+                            let ok = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "browser_view",
+                                        "seat": seat,
+                                        "profile": profile,
+                                        "reply_to": reply,
+                                    })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await
+                                .is_ok();
+                            match (ok, reply, answered) {
+                                (true, Some(id), Some(tx)) => {
+                                    attaches.insert(id, tx);
+                                }
+                                (_, _, Some(tx)) => {
+                                    let _ = tx.send(Err(
+                                        "the socket is open but the frame did not go".to_owned()
+                                    ));
+                                }
+                                (_, _, None) => {}
+                            }
+                        }
+                        Outbound::BrowserDetach => {
                             let _ = writer
                                 .send(Message::Text(
-                                    json!({ "kind": "browser_answer", "id": id, "parts": parts, "error": error })
+                                    json!({ "kind": "browser_detach" }).to_string().into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::BrowserInput { seq, event } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "browser_input", "seq": seq, "event": event })
                                         .to_string()
                                         .into(),
                                 ))
                                 .await;
                         }
-                        Outbound::TakeRole => {
-                            let _ = writer.send(Message::Text(json!({ "kind": "browser_take_role" }).to_string().into())).await;
+                        Outbound::BrowserControl { take } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "browser_control", "take": take })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::BrowserNav { back } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "browser_nav", "back": back })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::BrowserFileAnswer { id, files } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "browser_file_answer", "id": id, "files": files })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::BrowserResize { width, height, scale } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({
+                                        "kind": "browser_resize",
+                                        "width": width,
+                                        "height": height,
+                                        "scale": scale,
+                                    })
+                                    .to_string()
+                                    .into(),
+                                ))
+                                .await;
+                        }
+                        Outbound::StripAsk { mut body, reply, replied } => {
+                            if let Some(map) = body.as_object_mut() {
+                                map.insert("reply_to".to_owned(), json!(reply));
+                            }
+                            let ok =
+                                writer.send(Message::Text(body.to_string().into())).await.is_ok();
+                            if ok
+                                && let (Some(id), Some(tx)) = (reply, replied)
+                            {
+                                pending.insert(id, tx);
+                            }
                         }
                         Outbound::Binary(bytes) => {
                             // Best-effort by contract - the take's own ring
@@ -762,19 +957,6 @@ async fn run(
                                 tauri_plugin_log::log::debug!(
                                     "socket_frame_not_sent: {why}"
                                 );
-                            }
-                        }
-                        Outbound::Image(bytes) => {
-                            if let Err(why) = writer.send(Message::Binary(bytes.into())).await {
-                                tauri_plugin_log::log::warn!(
-                                    "socket_image_not_sent: ending the connection: {why}"
-                                );
-                                // A clean close even on this path, as the
-                                // webview's `socket.ts` closes rather than
-                                // dropping the stream (`socket.ts` does the
-                                // same on an image frame it cannot send).
-                                let _ = writer.send(Message::Close(None)).await;
-                                break;
                             }
                         }
                     }
@@ -793,14 +975,28 @@ async fn run(
         for (_, tx) in pending.drain() {
             let _ = tx.send(Err(why.to_owned()));
         }
+        for (_, tx) in attaches.drain() {
+            let _ = tx.send(Err(why.to_owned()));
+        }
         awaiting.clear();
-        say(&events, SocketEvent::Role { hosting: false });
         if closing {
             say(&events, SocketEvent::Status(Status::Closed));
             return;
         }
         say(&events, SocketEvent::Status(Status::Connecting));
     }
+}
+
+/// Say a binary frame this half cannot read.
+///
+/// **Info, not debug**: the client logger keeps `Info`, so a debug line here
+/// would never reach `forge.log` - the refusal would be silent in the one
+/// place a reader looks.
+fn unreadable_binary(kind: Option<u8>, bytes: usize) {
+    tauri_plugin_log::log::info!(
+        "a binary frame carried an unknown kind (event_name client_socket_binary_unknown, \
+         kind {kind:?}, {bytes} bytes)"
+    );
 }
 
 fn say(events: &mpsc::UnboundedSender<SocketEvent>, event: SocketEvent) {
@@ -815,6 +1011,7 @@ fn receive(
     bytes: usize,
     parse_ms: f64,
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value, String>>>,
+    attaches: &mut HashMap<u64, oneshot::Sender<Result<String, String>>>,
     awaiting: &mut Vec<String>,
     events: &mpsc::UnboundedSender<SocketEvent>,
 ) {
@@ -822,6 +1019,24 @@ fn receive(
         Some("reply") => {
             let id = value.get("reply_to").and_then(Value::as_u64);
             let body = value.get("body").cloned().unwrap_or(Value::Null);
+            // **An attach's answer first**: its body is a verdict, and a
+            // refusal is the surface's own sentence.
+            if let Some(tx) = id.and_then(|id| attaches.remove(&id)) {
+                let verdict = if body.get("ok").and_then(Value::as_bool) == Some(true) {
+                    body.get("profile")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .ok_or_else(|| "the server attached without naming the profile".to_owned())
+                } else {
+                    Err(body
+                        .get("why")
+                        .and_then(Value::as_str)
+                        .unwrap_or("the browser could not be attached")
+                        .to_owned())
+                };
+                let _ = tx.send(verdict);
+                return;
+            }
             match id.and_then(|id| pending.remove(&id)) {
                 Some(tx) => {
                     let _ = tx.send(Ok(body));
@@ -836,10 +1051,6 @@ fn receive(
                     "socket_reply_unmatched: id {id:?} has nothing waiting on it"
                 ),
             }
-        }
-        Some("browser_role") => {
-            let hosting = value.get("hosting").and_then(Value::as_bool).unwrap_or(false);
-            say(events, SocketEvent::Role { hosting });
         }
         Some("snapshot") => {
             // **A snapshot answers ONE subscription**, so one of its keys
@@ -880,6 +1091,41 @@ fn receive(
 pub(crate) mod tests {
     use super::*;
     use tokio::net::TcpListener;
+
+    /// **An unknown binary frame is said at a level the client keeps.** The
+    /// logger's filter is `Info`, so the line at `debug` never reached
+    /// `forge.log`; the level is the mutation this test reds.
+    #[test]
+    fn an_unknown_binary_frame_is_said_at_info() {
+        let _held = crate::log_capture::capture();
+        unreadable_binary(Some(7), 12);
+        let lines = crate::log_capture::lines();
+        assert!(
+            lines.iter().any(|line| {
+                line.contains("client_socket_binary_unknown")
+                    && line.contains("Some(7)")
+                    && line.contains("12 bytes")
+            }),
+            "the refusal names the kind and the size: {lines:?}",
+        );
+    }
+
+    /// **The desktop's only subscribe mark is this event (#2513).** A
+    /// subscribe crosses as a command; the frame's own write is what says it
+    /// left, and the page's perf log reads that as the subscribe mark.
+    #[tokio::test]
+    async fn a_subscribe_write_is_reported_to_the_page() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true);
+        let SocketEvent::Written { key, declared, waited_ms } = event_of(&mut rx, "written").await
+        else {
+            unreachable!("filtered to written");
+        };
+        assert_eq!(key, "home", "the mark names the subject the frame asked for");
+        assert!(!declared, "a held subscription is not the role's declare");
+        assert!(waited_ms.is_finite(), "the wait is measured, not a placeholder");
+    }
 
     /// A stub forge: accepts connections, forwards every text frame it hears,
     /// and broadcasts whatever the test pushes. `kill` drops the live
@@ -966,18 +1212,6 @@ pub(crate) mod tests {
                 if ok(&value) {
                     return value;
                 }
-            }
-        }
-    }
-
-    /// A socket already past its open, with the event stream dropped: for
-    /// tests that only care about what the wire hears.
-    pub(crate) async fn open_connected(stub: &Stub) -> Socket {
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let socket = Socket::open(stub.url.clone(), tx);
-        loop {
-            if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
-                return socket;
             }
         }
     }
@@ -1078,55 +1312,9 @@ pub(crate) mod tests {
     async fn holds_a_subscribe_made_before_the_socket_opened() {
         let mut stub = stub().await;
         let (socket, _rx) = opened(&stub);
-        socket.subscribe(json!("home"), true, true);
+        socket.subscribe(json!("home"), true);
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
-        assert_eq!(first["browser"], true);
-    }
-
-    /// **A v8 server's answer to an unknown `board` subscribe is
-    /// `client_message`**, because it could not read the frame at all. The
-    /// oldest outstanding subscribe is what it refused, and the page must
-    /// learn that as a refusal rather than wait on an answer never coming
-    /// (#2517).
-    #[tokio::test]
-    async fn an_unknown_message_error_refuses_the_outstanding_subscribe() {
-        let mut stub = stub().await;
-        let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("board"), false, false);
-        let subscribed = stub.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(subscribed["what"], json!("board"));
-
-        stub.say
-            .send(json!({
-                "kind": "error",
-                "what": "client_message",
-                "why": "that is not a message this server knows",
-            }))
-            .expect("the stub broadcasts");
-        let SocketEvent::Refused { key, why } = event_of(&mut rx, "refused").await else {
-            unreachable!("filtered to refused");
-        };
-        assert_eq!(key, "board", "the refusal was not attributed to the subscribe that failed");
-        assert_eq!(why, "that is not a message this server knows");
-        assert!(rx.try_recv().is_err(), "the error was both refused and forwarded");
-    }
-
-    /// **The desktop's only subscribe mark is this event (#2513).** A
-    /// subscribe crosses as a command; the frame's own write is what says it
-    /// left, and the page's perf log reads that as the subscribe mark.
-    #[tokio::test]
-    async fn a_subscribe_write_is_reported_to_the_page() {
-        let stub = stub().await;
-        let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true, true);
-        let SocketEvent::Written { key, declared, waited_ms } = event_of(&mut rx, "written").await
-        else {
-            unreachable!("filtered to written");
-        };
-        assert_eq!(key, "home", "the mark names the subject the frame asked for");
-        assert!(!declared, "a held subscription is not the role's declare");
-        assert!(waited_ms.is_finite(), "the wait is measured, not a placeholder");
     }
 
     /// A document read crosses as its own frame, with the seat, the path
@@ -1152,12 +1340,11 @@ pub(crate) mod tests {
     async fn declares_the_flags_it_was_given_and_attributes_a_refusal_to_the_oldest() {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true, true);
-        socket.subscribe(json!("usage"), true, false);
+        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("usage"), true);
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
         assert_eq!(first["answering"], true);
-        assert_eq!(first["browser"], true);
         let second = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(second["what"], json!("usage"));
         stub.say
@@ -1180,6 +1367,98 @@ pub(crate) mod tests {
             json!({ "session": { "org": "Busytools", "project": "forge", "label": "lead" } });
         assert_eq!(subject_key(&seat), "session:Busytools\u{0}forge\u{0}lead");
         assert_eq!(subject_key(&json!("home")), "home");
+    }
+
+    /// **An attach's refusal comes back as its own sentence**, so the surface
+    /// can fail on it rather than going live over nothing.
+    #[tokio::test]
+    async fn an_attach_answers_its_refusal_by_name() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let waiting = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .browser_view(json!({ "org": "a", "project": "b", "label": "lead" }), None)
+                    .await
+            }
+        });
+        let sent = stub.heard_until(|v| v["kind"] == "browser_view").await;
+        let id = sent["reply_to"].as_u64().expect("the asker minted a reply id");
+        stub.say
+            .send(json!({
+                "kind": "reply",
+                "reply_to": id,
+                "body": { "ok": false, "why": "the profile 'held' belongs to another seat" },
+            }))
+            .expect("broadcast");
+        let why = waiting.await.expect("the task joins").expect_err("the attach was refused");
+        assert!(why.contains("belongs to another seat"), "{why}");
+    }
+
+    /// **A lowered takeover gives its viewer up on the wire.** Both shells
+    /// send this - the phone's picture is a canvas in its page, but it
+    /// attaches as a viewer like the desktop's overlay, and a lower that
+    /// said nothing kept its profile warm.
+    #[tokio::test]
+    async fn lowering_sends_the_detach() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        socket.browser_detach();
+        let sent = stub.heard_until(|v| v["kind"] == "browser_detach").await;
+        assert_eq!(sent["kind"], "browser_detach", "the lowered viewer says so");
+    }
+
+    /// **A strip ask carries its fields and answers through its own reply**:
+    /// the rows on success, the server's sentence on a refusal.
+    #[tokio::test]
+    async fn a_strip_ask_answers_through_its_reply() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let asking = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .browser_profiles(json!({ "org": "a", "project": "b", "label": "lead" }))
+                    .await
+            }
+        });
+        let sent = stub.heard_until(|v| v["kind"] == "browser_profiles").await;
+        assert_eq!(sent["seat"]["label"], "lead", "the seat crosses with the ask");
+        let id = sent["reply_to"].as_u64().expect("the asker minted a reply id");
+        stub.say
+            .send(json!({
+                "kind": "reply",
+                "reply_to": id,
+                "body": { "ok": true, "rows": [{ "name": "shared" }] },
+            }))
+            .expect("broadcast");
+        let body = asking.await.expect("the task joins").expect("the rows");
+        assert_eq!(body["rows"][0]["name"], "shared");
+
+        let deleting = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .browser_profile_delete(
+                        json!({ "org": "a", "project": "b", "label": "lead" }),
+                        "hunt",
+                    )
+                    .await
+            }
+        });
+        let sent = stub.heard_until(|v| v["kind"] == "browser_profile_delete").await;
+        assert_eq!(sent["name"], "hunt", "the name crosses with the ask");
+        let id = sent["reply_to"].as_u64().expect("a reply id");
+        stub.say
+            .send(json!({
+                "kind": "reply",
+                "reply_to": id,
+                "body": { "ok": false, "why": "the profile 'hunt' belongs to another seat" },
+            }))
+            .expect("broadcast");
+        let why = deleting.await.expect("the task joins").expect_err("the delete was refused");
+        assert!(why.contains("belongs to"), "{why}");
     }
 
     /// A reply is handed to the caller that asked, by its own id.
@@ -1244,26 +1523,20 @@ pub(crate) mod tests {
     async fn re_asks_every_held_subscription_after_a_drop() {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true, true);
+        socket.subscribe(json!("home"), true);
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
         // Drop the connection under the socket; the listener lives on, so the
         // reconnect lands and its re-ask is what this reads.
         stub.kill.send(()).expect("the stub drops its connections");
-        // The drop must also release the role and say where the connection is.
-        let mut saw_role = false;
         loop {
-            match next_event(&mut rx).await {
-                SocketEvent::Role { hosting: false } => saw_role = true,
-                SocketEvent::Status(Status::Connecting) => break,
-                _ => {}
+            if let SocketEvent::Status(Status::Connecting) = next_event(&mut rx).await {
+                break;
             }
         }
-        assert!(saw_role, "the role goes back with the drop");
         let again = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], json!("home"));
-        assert_eq!(again["browser"], true, "the declaration is carried, not defaulted");
-        assert_eq!(again["answering"], true);
+        assert_eq!(again["answering"], true, "the declaration is carried, not defaulted");
     }
 
     /// An unsubscribe drops its held entry: the reconnect that follows does
@@ -1272,8 +1545,8 @@ pub(crate) mod tests {
     async fn an_unsubscribe_drops_one_held_entry() {
         let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true, false);
-        socket.subscribe(json!("usage"), false, false);
+        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("usage"), false);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
         let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("usage")).await;
         socket.unsubscribe(json!("home"));
@@ -1291,18 +1564,15 @@ pub(crate) mod tests {
     async fn a_snapshot_takes_its_key_off_the_outstanding_list() {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
         stub.say
             .send(json!({ "kind": "snapshot", "subject": "home", "data": {} }))
             .expect("the stub answers");
         // The answer really landed before the second ask goes out.
         let _ = event_of(&mut rx, "message").await;
-        socket.subscribe(
-            json!({ "session": { "org": "a", "project": "b", "label": "lead" } }),
-            true,
-            false,
-        );
+        socket
+            .subscribe(json!({ "session": { "org": "a", "project": "b", "label": "lead" } }), true);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         stub.say
             .send(json!({ "kind": "error", "what": "subscribe", "why": "no session there" }))
@@ -1324,8 +1594,8 @@ pub(crate) mod tests {
     async fn a_subject_two_callers_hold_is_asked_for_twice() {
         let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true, false);
-        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true);
         // Both went out, in order.
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
@@ -1376,7 +1646,7 @@ pub(crate) mod tests {
                 break;
             }
         }
-        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true);
         // The reconnect's re-ask is the ONE frame: the hold queued the
         // subscription, not an outstanding key as well.
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
@@ -1435,8 +1705,8 @@ pub(crate) mod tests {
     async fn one_snapshot_answers_one_of_a_subjects_asks() {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true, false);
-        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         stub.say
@@ -1468,7 +1738,13 @@ pub(crate) mod tests {
     async fn a_dispatch_whose_reply_never_comes_gives_up_on_its_bound() {
         let mut stub = stub().await;
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let socket = Socket::open_with_reply_bound(stub.url.clone(), tx, Duration::from_millis(50));
+        let socket = Socket::open_with_reply_bound(
+            stub.url.clone(),
+            tx,
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Duration::from_millis(50),
+        );
         loop {
             if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
                 break;
@@ -1514,7 +1790,13 @@ pub(crate) mod tests {
     async fn a_despawn_whose_reply_never_comes_is_not_bounded() {
         let mut stub = stub().await;
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let socket = Socket::open_with_reply_bound(stub.url.clone(), tx, Duration::from_millis(50));
+        let socket = Socket::open_with_reply_bound(
+            stub.url.clone(),
+            tx,
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            Duration::from_millis(50),
+        );
         loop {
             if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
                 break;
