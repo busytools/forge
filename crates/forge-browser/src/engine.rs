@@ -116,6 +116,20 @@ pub fn pump() {
     do_message_loop_work();
 }
 
+/// The Chromium switches every host adds before the feature list is built.
+///
+/// **`MacAppCodeSignClone` is the disk one.** Chromium clones the whole app
+/// bundle into `/var/folders/.../X` per launch to keep a staged update's
+/// signature valid; a CEF host has no updater, and 172 test launches filled a
+/// disk. The rest are the keychain and windowless-browser rules above.
+pub(crate) const HOST_SWITCHES: &[(&str, Option<&str>)] = &[
+    ("use-mock-keychain", None),
+    ("password-store", Some("basic")),
+    ("disable-renderer-backgrounding", None),
+    ("disable-backgrounding-occluded-windows", None),
+    ("disable-features", Some("MacAppCodeSignClone")),
+];
+
 // The app rules every browser this host runs obeys, decided before CEF
 // parses its command line.
 cef::wrap_app! {
@@ -132,21 +146,31 @@ cef::wrap_app! {
             command_line: Option<&mut CommandLine>,
         ) {
             let Some(cmd) = command_line else { return };
-            // **Never the OS keychain.** Untold, Chromium reaches for
-            // "Chromium Safe Storage" and macOS raises a dialog at whoever
-            // is at the machine, once per ask.
-            cmd.append_switch(Some(&CefString::from("use-mock-keychain")));
-            cmd.append_switch_with_value(
-                Some(&CefString::from("password-store")),
-                Some(&CefString::from("basic")),
-            );
-            // **A windowless browser keeps working.** The surface is not a
-            // native window; without these the renderer treats it as
-            // backgrounded and stalls the sessions' calls.
-            cmd.append_switch(Some(&CefString::from("disable-renderer-backgrounding")));
-            cmd.append_switch(Some(&CefString::from(
-                "disable-backgrounding-occluded-windows",
-            )));
+            for (name, value) in HOST_SWITCHES {
+                match value {
+                    Some(value) => cmd.append_switch_with_value(
+                        Some(&CefString::from(*name)),
+                        Some(&CefString::from(*value)),
+                    ),
+                    None => cmd.append_switch(Some(&CefString::from(*name))),
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HOST_SWITCHES;
+
+    /// **The code-sign clone is off before the feature list exists.** It is
+    /// the per-launch disk cost; the keychain and windowless rules stay.
+    #[test]
+    fn the_host_disables_the_mac_app_code_sign_clone() {
+        assert!(
+            HOST_SWITCHES.contains(&("disable-features", Some("MacAppCodeSignClone"))),
+            "without this every launch clones the app bundle into the temp tree",
+        );
+        assert!(HOST_SWITCHES.contains(&("use-mock-keychain", None)), "the keychain rule stays");
     }
 }
