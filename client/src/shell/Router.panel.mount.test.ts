@@ -169,7 +169,7 @@ describe("the dictation panel through a turn's frames", () => {
         route: { name: 'session', slot: LEAD },
         settings: DEFAULT_SETTINGS,
         address: '127.0.0.1:8790',
-        home: { wire: offered(), refused: null, report: null },
+        home: { wire: offered(), refused: null, failed: null, report: null },
         failure: null,
         connected: true,
         connection: wire.connection,

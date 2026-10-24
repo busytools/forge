@@ -139,7 +139,7 @@ function draw(route: Route, wire = offered()): void {
       route,
       settings: DEFAULT_SETTINGS,
       address: '127.0.0.1:8790',
-      home: { wire, refused: null, report: null },
+      home: { wire, refused: null, failed: null, report: null },
       failure: null,
       connected: true,
       connection: connection(),

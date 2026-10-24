@@ -115,8 +115,8 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       if (tasks !== null) {
         // The chase sweep re-announces every project every 30 s with the set
         // unchanged; a full board re-read for that is a loop with no news.
-        if (lastTasks.get(tasks.project) === tasks.encoded) return;
-        lastTasks.set(tasks.project, tasks.encoded);
+        if (lastTasks.get(tasks.project) === tasks.digest) return;
+        lastTasks.set(tasks.project, tasks.digest);
       }
       if (reading) {
         stale = true;

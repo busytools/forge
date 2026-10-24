@@ -110,22 +110,46 @@ export interface Task {
 }
 
 /**
- * A `tasks_changed` update as its project and the exact tasks it carries, for
- * a store that skips a re-read when the set has not moved.
+ * A `tasks_changed` update as its project and a digest of the tasks it
+ * carries, for a store that skips a re-read when the set has not moved.
  *
  * **The chase sweep announces every project every 30 s with the set
  * unchanged** (#2540). A board that re-read 628 KB for that, or a home that
- * re-read 72 KB, is a loop with no news in it. `null` for any other update,
- * and for an empty task set, which names no project to compare.
+ * re-read 72 KB, is a loop with no news in it. The project comes from the
+ * update's key, so an empty set is comparable too: the store's last digest
+ * tells an empty-to-empty sweep from a deletion that emptied the project.
  */
-export function tasksChanged(update: SessionUpdate): { project: string; encoded: string } | null {
-  const payload = (update as { tasks_changed?: { tasks?: unknown } }).tasks_changed;
-  const tasks = payload?.tasks;
-  if (!Array.isArray(tasks) || tasks.length === 0) return null;
-  const first = tasks[0] as { project_name?: unknown };
-  const project = typeof first?.project_name === 'string' ? first.project_name : null;
-  if (project === null) return null;
-  return { project, encoded: JSON.stringify(tasks) };
+export function tasksChanged(update: SessionUpdate): { project: string; digest: string } | null {
+  const payload = (update as {
+    tasks_changed?: { key?: { project?: unknown }; tasks?: unknown };
+  }).tasks_changed;
+  if (payload === undefined) return null;
+  const tasks = payload.tasks;
+  if (!Array.isArray(tasks)) return null;
+  const named = (tasks[0] as { project_name?: unknown } | undefined)?.project_name;
+  const project =
+    typeof payload.key?.project === 'string'
+      ? payload.key.project
+      : typeof named === 'string'
+        ? named
+        : null;
+  if (project === null || project === '') return null;
+  return { project, digest: digestOf(tasks) };
+}
+
+/**
+ * A short, stable digest of one project's task set. A hash rather than the
+ * encoded set: 16 projects of exact JSON is ~315 KB held for the loop the
+ * digest exists to stop.
+ */
+function digestOf(tasks: unknown[]): string {
+  const text = JSON.stringify(tasks);
+  let hash = 2166136261;
+  for (let at = 0; at < text.length; at += 1) {
+    hash ^= text.charCodeAt(at);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${(hash >>> 0).toString(16)}`;
 }
 
 /**
@@ -642,7 +666,9 @@ export function homeFrom(data: HomeWire): HomeWire {
       misses: (Array.isArray(row.misses) ? row.misses : []).map(missFrom),
     })),
     accounts: {
-      ...data.accounts,
+      all_loaded: data.accounts?.all_loaded === true,
+      gateway: data.accounts?.gateway ?? { ready: false, port: 0, bind_error: null },
+      usage: Array.isArray(data.accounts?.usage) ? data.accounts.usage : [],
       loading: (Array.isArray(data.accounts?.loading) ? data.accounts.loading : []).map((row) => ({
         ...row,
         state: narrow(row.state, LOADING, 'loading'),
@@ -652,6 +678,7 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...data.dictate,
       snapshot: {
         ...data.dictate?.snapshot,
+        failure: data.dictate?.snapshot?.failure ?? null,
         models: (Array.isArray(data.dictate?.snapshot?.models)
           ? data.dictate.snapshot.models
           : []

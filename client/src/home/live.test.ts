@@ -80,6 +80,7 @@ function fakeConnection() {
 
   return {
     connection,
+    stores,
     subscribed,
     options,
     unsubscribed,
@@ -258,13 +259,77 @@ describe('the home over a connection', () => {
     forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
     await settle();
 
-    forge.arrive(same);
+    // A fresh deep-equal object, not the same reference: the dedupe must
+    // read the set, not the object identity.
+    forge.arrive({
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [{ ...task }] } },
+    });
     await settle();
     expect(forge.refreshed, 'an unchanged task set asked for another read').toEqual([HOME]);
 
     forge.arrive(moved);
     await settle();
     expect(forge.refreshed, 'a moved task set did not ask for a read').toEqual([HOME, HOME]);
+    stop();
+  });
+
+  /** An empty project must compare too: `[]` again is no read, a deletion is. */
+  it('skips an unchanged empty set and reads a deletion', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+    const empty: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [] } },
+    };
+    const one: ServerMessage = {
+      kind: 'update',
+      update: {
+        tasks_changed: {
+          key: LEAD,
+          tasks: [{ id: 't1', project_name: 'proj', subject: 'a row', status: 'pending' } as unknown as Task],
+        },
+      },
+    };
+
+    forge.arrive(empty);
+    await settle();
+    expect(forge.refreshed, 'the first empty set asked for a read').toEqual([HOME]);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
+    await settle();
+
+    forge.arrive(empty);
+    await settle();
+    expect(forge.refreshed, 'an unchanged empty set asked again').toEqual([HOME]);
+
+    forge.arrive(one);
+    await settle();
+    expect(forge.refreshed, 'a task added did not ask for a read').toEqual([HOME, HOME]);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
+    await settle();
+
+    forge.arrive(empty);
+    await settle();
+    expect(forge.refreshed, 'a deletion did not ask for a read').toEqual([HOME, HOME, HOME]);
+    stop();
+  });
+
+  /**
+   * **A malformed read is a failed state, not a healthy empty one** (#2540):
+   * the store is already `ready` and its bound cleared by the time the page
+   * narrows it, so an empty home would stand with nothing saying why.
+   */
+  it('draws a malformed read as failed rather than an empty home', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+
+    forge.stores.get(HOME)?.set({ agents: undefined, projects: [] });
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: { agents: undefined, projects: [] } });
+    await settle();
+
+    expect(seen.at(-1)?.wire, 'a malformed read drew a wire').toBeNull();
+    expect(seen.at(-1)?.failed, 'a malformed read drew no failed words').toContain('agents');
     stop();
   });
 

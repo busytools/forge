@@ -36,6 +36,15 @@ export interface HomeRead {
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
   /**
+   * Why the snapshot could not be read, in this client's words, or `null`.
+   *
+   * **A malformed read is its own state, not an empty home**: the store is
+   * already `ready` and its bound cleared before the page narrows it, so a
+   * healthy-empty drawing would stand forever with nothing saying why. The
+   * page draws this instead and the next read tries again.
+   */
+  failed: string | null;
+  /**
    * The core's last service report, or `null`.
    *
    * **It is carried rather than read off the snapshot**, because the reports
@@ -47,7 +56,27 @@ export interface HomeRead {
   report: ServiceReport | null;
 }
 
-const NOTHING: HomeRead = { wire: null, refused: null, report: null };
+const NOTHING: HomeRead = { wire: null, refused: null, failed: null, report: null };
+
+/**
+ * The collections a v9 home must carry. **Absent is not the older-server
+ * shape here**: `homeFrom` already defaults what a v8 server omits (`fleet`,
+ * a row's `misses`), so a missing `agents`, `projects`, `accounts.loading`
+ * or `dictate.snapshot.models` is a read this client cannot draw as healthy.
+ */
+function malformedOf(data: unknown): string | null {
+  if (data === null || typeof data !== 'object') return 'the snapshot was not an object';
+  const held = data as Record<string, unknown>;
+  const missing: string[] = [];
+  if (!Array.isArray(held['agents'])) missing.push('agents');
+  if (!Array.isArray(held['projects'])) missing.push('projects');
+  if (held['fleet'] !== undefined && !Array.isArray(held['fleet'])) missing.push('fleet');
+  const accounts = held['accounts'] as { loading?: unknown } | undefined;
+  if (!Array.isArray(accounts?.loading)) missing.push('accounts');
+  const dictate = held['dictate'] as { snapshot?: { models?: unknown } } | undefined;
+  if (!Array.isArray(dictate?.snapshot?.models)) missing.push('dictate');
+  return missing.length === 0 ? null : `the snapshot was missing ${missing.join(', ')}`;
+}
 
 /**
  * Watch the home.
@@ -96,15 +125,21 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
-      view.set({ wire: null, refused: state.why, report });
+      view.set({ wire: null, refused: state.why, failed: null, report });
       return;
     }
     const data = held.snapshot();
+    const malformed = data === null ? null : malformedOf(data);
+    if (malformed !== null) {
+      view.set({ wire: null, refused: null, failed: malformed, report });
+      return;
+    }
     // The snapshot is JSON the server wrote from its own type, and `homeFrom`
     // narrows every union member in it straight afterwards.
     view.set({
       wire: data === null ? null : homeFrom(data as unknown as HomeWire),
       refused: null,
+      failed: null,
       report,
     });
   }
@@ -156,14 +191,12 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       // re-reading with nothing to say why.
       const said = serviceReport(message.update);
       if (said !== null) report = said;
-      if (said === null) {
-        const tasks = tasksChanged(message.update);
-        if (tasks !== null) {
-          // The chase sweep re-announces every project every 30 s with the set
-          // unchanged; a full home re-read for that is a loop with no news.
-          if (lastTasks.get(tasks.project) === tasks.encoded) return;
-          lastTasks.set(tasks.project, tasks.encoded);
-        }
+      const tasks = tasksChanged(message.update);
+      if (tasks !== null) {
+        // The chase sweep re-announces every project every 30 s with the set
+        // unchanged; a full home re-read for that is a loop with no news.
+        if (lastTasks.get(tasks.project) === tasks.digest) return;
+        lastTasks.set(tasks.project, tasks.digest);
       }
       if (reading) {
         stale = true;

@@ -1179,6 +1179,12 @@ describe('what a row says', () => {
     expect(parsed.fleet).toEqual([]);
     expect(parsed.accounts.loading).toEqual([]);
     expect(parsed.dictate.snapshot.models).toEqual([]);
+    // A missing `accounts` used to leave no `gateway`, and the band read
+    // `gateway.bind_error`: the throw moved from the read to the render.
+    expect(() => homeView(parsed, '')).not.toThrow();
+    expect(homeView(parsed, '').band.find((entry) => entry.title === 'accounts')?.value).toBe(
+      'none',
+    );
   });
 
   /**
