@@ -19,9 +19,11 @@
    * grandchildren and detached processes are not batch work.
    *
    * **Nothing here pops.** A row leaving the registry is the settlement - it
-   * is kept to the turn's close and nothing flashes for it. What rides along
-   * is the agents row's own marks: the work spinner while anything is in
-   * flight, the check once everything has settled.
+   * is kept to the turn's close and nothing flashes for it - and so is a row
+   * the conversation reports stopped while the registry still lists it, which
+   * is what a `TaskStop` leaves behind. What rides along is the agents row's
+   * own marks: the work spinner while anything is in flight, the check once
+   * everything has settled.
    */
 
   /** Whether the list is open: hover, tap, focus and Escape all speak to it. */

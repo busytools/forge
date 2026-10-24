@@ -251,11 +251,11 @@ describe('the batch rows', () => {
 
   it('stops counting a task the TaskStop tool stopped, which the registry still lists', () => {
     // The tool path emits no `background_tasks_changed` and no task frame:
-    // measured on the live seat (session 4b35ed0e), the strip read `1 running`
-    // over a bash with no process behind it minutes after `TaskStop` answered
-    // "Successfully stopped task". The conversation's own stop is the only
-    // thing that says the task ended, and the launch result's sentence is the
-    // only link from that task id to the call - no `task_started` fired.
+    // on the live seat (4b35ed0e) the strip read `1 running` over a bash with
+    // no process behind it minutes after `TaskStop` answered "Successfully
+    // stopped task". The conversation's own stop is the only thing that says
+    // the task ended, and the launch result's sentence is the only link from
+    // that task id to the call - no `task_started` fired.
     const LAUNCH = 'call_33a76dda7de84b5698ade3cafe64ddce';
     const STOP = 'call_6bab1bdfaa0c4c7785c2774040aa92a5';
     const TASK = 'bwhz36mlt';
@@ -320,26 +320,52 @@ describe('the batch rows', () => {
       tool_use_id: null,
     });
     const other = registryRow({ task_id: 't-other', description: 'Watch the release' });
+    // Both calls' processes are in the walk, and stay there after the stop:
+    // a stopped row must not adopt the process its command names, while a
+    // live one beside it still does.
+    const scanned = walk([
+      { pid: 8842, parent_pid: 1, name: 'nice', command, memory_bytes: 512 },
+      {
+        pid: 9001,
+        parent_pid: 1,
+        name: 'cargo',
+        command: 'cargo nextest run',
+        memory_bytes: 900,
+      },
+    ]);
+    const rowOf = (store: Processes, task: string) =>
+      store.rows().find((held) => held.key === `task:${task}`);
 
     const store = new Processes();
-    store.sync(walk([]), [row, other], true, outcomesFrom([{ messages: [launch, launched] }]));
+    store.sync(scanned, [row, other], true, outcomesFrom([{ messages: [launch, launched] }]));
     expect(store.running(), 'the registry is the only voice before the stop').toBe(2);
+    expect(rowOf(store, TASK), 'and the running row adopts its process').toMatchObject({
+      pid: 8842,
+      memory_bytes: 512,
+      settled: false,
+    });
 
     store.sync(
-      walk([]),
+      scanned,
       [row, other],
       true,
       outcomesFrom([{ messages: [launch, launched, stop, stopped] }]),
     );
     expect(store.running(), 'and the conversation ends the one it stopped').toBe(1);
-    const stoppedRow = store.rows().find((held) => held.key === `task:${TASK}`);
-    expect(stoppedRow, 'the stopped row is kept, saying what happened').toMatchObject({
+    expect(store.settledCount(), 'the row it draws settled is counted as one').toBe(1);
+    expect(rowOf(store, TASK), 'the stopped row is kept, saying what happened').toMatchObject({
       settled: true,
       failed: false,
       tool_use_id: LAUNCH,
       memory_bytes: null,
       pid: null,
     });
+    expect(rowOf(store, 't-other'), 'a live row beside it still adopts its own').toMatchObject({
+      settled: false,
+      pid: 9001,
+      memory_bytes: 900,
+    });
+    expect(store.totalBytes(), 'and the stopped family no longer counts').toBe(900);
   });
 
   it("counts the matched process's whole family, not its own line", () => {

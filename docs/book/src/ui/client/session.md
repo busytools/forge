@@ -123,12 +123,7 @@ read as one system.
   its question glyph and the question it asked, opening on the omission.
 - **A backgrounded call** is held open by its task fact, its result
   saying the command started, and the ending landing later as a frame of
-  its own. **A call the `TaskStop` tool stopped has no ending frame of its
-  own**: the tool path sends no task frame and no registry change, so its
-  own success answer settles the call, the row states `stopped` beside its
-  title, and the processes row stops counting it. A stop whose call this
-  page does not hold draws as a row of its own, named with the task it
-  stopped. **Its output box follows a call that is still out**: while the
+  its own. **Its output box follows a call that is still out**: while the
   row stays open and the call runs, the row re-reads the command's own
   output file on a one-second tick, and the tail it draws carries a `live`
   mark saying the box is still being written. A read that found nothing
@@ -137,6 +132,13 @@ read as one system.
   lands, so the settled wording about a call that never recorded one would
   be a claim the row cannot make yet. Once the call settles the mark goes
   and the tail is the finished output.
+  **A call the `TaskStop` tool stopped has no ending frame of its own**:
+  the tool path sends no task frame and no registry change, so its own
+  success answer settles the call - in whichever held turn the call sits,
+  which is not always the turn the stop lands in - the row states `stopped`
+  beside its title, and the processes row stops counting it. A stop whose
+  call the page does not hold draws as a row of its own, named with the
+  task it stopped.
   **The box draws the command's own colours**: every terminal box reads the
   escape sequences a command wrote - colour, bold, dim, italic, underline -
   into the theme's palette, so a coloured compile looks like the terminal's.

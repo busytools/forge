@@ -8,10 +8,10 @@
  * whether its call failed and when it ended - the same frames the chat's own
  * row reads, joined at the same ids.
  *
- * **A `TaskStop` carries an ending of its own, and no frame follows it.** The
- * tool path emits no `task_started` and no task frame at all (measured:
- * session 4b35ed0e), so the sentence the launch result wrote is the only link
- * from the task to its call, and the tool's success answer is the only ending.
+ * **A `TaskStop` carries an ending of its own, and no frame follows it**
+ * (4b35ed0e): the tool path emits no `task_started` and no task frame at all,
+ * so the sentence the launch result wrote is the only link from the task to
+ * its call, and the tool's success answer is the only ending.
  */
 
 import { blocksOf, launchedTask, stopSucceeded, type Block } from './leaves';
@@ -54,7 +54,7 @@ export function outcomesFrom(turns: readonly { messages: readonly unknown[] }[])
   /** The call a task belongs to, from `task_started` and launch results. */
   const owners = new Map<string, string>();
   const out = new Map<string, Outcome>();
-  /** The result each call answered with, by the call it ended. */
+  /** The result each call answered with, by the call it answered. */
   const results = new Map<string, Block>();
   /** The `TaskStop` calls the conversation holds, by the task each names. */
   const stopAsks: Array<{ call: string; task: string }> = [];
@@ -112,9 +112,9 @@ export function outcomesFrom(turns: readonly { messages: readonly unknown[] }[])
     }
   }
 
-  // **A stop's own answer ends the call it names**, where the conversation
-  // holds both halves: the tool reports success, the launch result named the
-  // task, and the link between them is what says which call stopped.
+  // **A stop's own answer ends the call it names**, wherever on the page the
+  // launch sits: the strip's rows are the registry's, and the registry keeps
+  // listing a task the tool stopped.
   for (const ask of stopAsks) {
     if (!stopSucceeded(results.get(ask.call))) continue;
     const call = owners.get(ask.task);

@@ -55,6 +55,109 @@ import {
 import { formatRateLimitSummary, rateLimitNoticeKey } from './rate-limit';
 import { firstLine, isSlackId, stripEscapes } from './text';
 
+/**
+ * The stops the held turns carry, resolved across every one of them.
+ *
+ * **Page-level, because a prompt opens a turn.** A job started in one prompt
+ * and stopped in the next has its launch in an earlier turn than its stop, so
+ * a fold that resolved stops within the turn it was folding would mark nothing
+ * and draw the stop as a stray row. The held turns are the page, and `fold`
+ * reads these.
+ */
+export interface PageStops {
+  /** The task a stop ended, by the call it settled - only calls whose
+   * `tool_use` the page holds, because those are the rows a mark can land on. */
+  settled: ReadonlyMap<string, string>;
+  /** The stop calls whose target the page holds, by the stop's own call id:
+   * the stops drawn on a call's row rather than as rows of their own. */
+  drawn: ReadonlySet<string>;
+}
+
+/** What a page with no stops gets: one shared value, so its turns memoize as they did before. */
+export const NO_STOPS: PageStops = { settled: new Map(), drawn: new Set() };
+
+/** One turn's stop facts, read once and carried as the turn grows. */
+interface StopFacts {
+  /** The call a task belongs to, from `task_started` and launch results. */
+  owners: Map<string, string>;
+  /** The calls whose `tool_use` the turn holds. */
+  held: Set<string>;
+  /** The `TaskStop` calls the turn holds, by the task each names. */
+  asks: Map<string, string>;
+  /** Whether each stop's own answer reported success, by the stop's call. */
+  answers: Map<string, boolean>;
+}
+
+/** A turn with no stop facts yet: the seed `carriedValue` builds on a miss. */
+function seedStopFacts(): StopFacts {
+  return { owners: new Map(), held: new Set(), asks: new Map(), answers: new Map() };
+}
+
+/** Fold one frame into a turn's stop facts. */
+function addStopFacts(facts: StopFacts, frame: unknown): void {
+  const held = frame as Frame | null;
+  if (held === null || typeof held !== 'object') return;
+  if (held.type === 'assistant' || held.type === 'user') {
+    for (const block of blocksOf(held.message?.content)) {
+      if (block.type === 'tool_use' && typeof block.id === 'string') {
+        facts.held.add(block.id);
+        if (block.name === 'TaskStop') {
+          const task = str(block.input, 'task_id');
+          if (task !== null) facts.asks.set(block.id, task);
+        }
+      }
+      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        const task = launchedTask(block.content);
+        // `task_started` is the CLI's own link and wins where both exist.
+        if (task !== null && !facts.owners.has(task)) facts.owners.set(task, block.tool_use_id);
+        if (facts.asks.has(block.tool_use_id)) {
+          facts.answers.set(block.tool_use_id, stopSucceeded(block));
+        }
+      }
+    }
+    return;
+  }
+  if (held.type !== 'system' || held.subtype !== 'task_started') return;
+  const task = str(held, 'task_id');
+  const call = str(held, 'tool_use_id');
+  if (task !== null && call !== null) facts.owners.set(task, call);
+}
+
+/**
+ * The stops the held turns carry, resolved as a folded turn reads them.
+ *
+ * **Carried per turn, not walked per frame**: the derive that asks this sits in
+ * the live path, and a walk of the page per arriving frame is the cost the
+ * carry exists to delete (`fold-cost.test.ts`). Only a turn that grew is
+ * extended, and only by the frames it gained.
+ */
+export function stopsOf(turns: readonly { messages: readonly unknown[] }[]): PageStops {
+  const owners = new Map<string, string>();
+  const held = new Set<string>();
+  const resolved: Array<{ stop: string; task: string }> = [];
+  for (const turn of turns) {
+    const facts = carriedValue(turn, 'stops', seedStopFacts, addStopFacts);
+    for (const [task, call] of facts.owners) owners.set(task, call);
+    for (const id of facts.held) held.add(id);
+    for (const [stop, task] of facts.asks) {
+      if (facts.answers.get(stop) === true) resolved.push({ stop, task });
+    }
+  }
+  // **The page's own rows are the only place a mark can land.** A page cut
+  // through a turn can hold a launch's result without its call, and a stop
+  // resolved onto a call no row carries would vanish - so it draws instead
+  // (rule 25).
+  const settled = new Map<string, string>();
+  const drawn = new Set<string>();
+  for (const { stop, task } of resolved) {
+    const call = owners.get(task);
+    if (call === undefined || !held.has(call)) continue;
+    settled.set(call, task);
+    drawn.add(stop);
+  }
+  return settled.size === 0 ? NO_STOPS : { settled, drawn };
+}
+
 /** One question the assistant asked, with what was answered. */
 export interface AnsweredQuestion {
   question: string;
@@ -1612,12 +1715,18 @@ function noticeFields(words: string): {
  * finished writing, so a call the frames never answered is the restart's
  * unterminated call and settles failed. The resume in the view this client
  * replaced did the same, where leaving it pending spins the row forever.
+ *
+ * `stops` is the PAGE's own facts, not this turn's: a prompt opens a turn, so
+ * a job started in one prompt and stopped in the next has its launch in a
+ * turn this fold does not hold. The caller resolves them across every held
+ * turn (`stopsOf`); the default is a page that carries none.
  */
 export function fold(
   messages: readonly unknown[],
   self: Self | null = null,
   live = false,
   ended = false,
+  stops: PageStops = NO_STOPS,
 ): Unit[] {
   const frames = messages as Frame[];
   /** Every result the turn holds, by the call it answers. */
@@ -1655,16 +1764,6 @@ export function fold(
   const tasks = new Map<string, TaskFact>();
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
-  /** The call each backgrounded launch opened, by the task its result named. */
-  const launches = new Map<string, string>();
-  /** The `TaskStop` calls this turn holds, by the task each asked to stop. */
-  const stopAsks: Array<{ call: string; task: string }> = [];
-  /** The task a stop ended, by the call it settled. */
-  const stopOf = new Map<string, string>();
-  /** The stop calls drawn onto a call this turn holds rather than as rows. */
-  const settledStops = new Set<string>();
-  /** The call ids whose `tool_use` this turn holds, which is where a stop may land. */
-  const heldCalls = new Set<string>();
   /**
    * The `Skill` calls this turn holds, by the name each asked for and with the
    * row each drew, so a body arriving behind its call still finds the row that
@@ -1726,16 +1825,6 @@ export function fold(
       }
       continue;
     }
-    if (frame.type === 'assistant') {
-      for (const block of blocksOf(frame.message?.content)) {
-        if (block.type !== 'tool_use' || typeof block.id !== 'string' || block.id === '') continue;
-        heldCalls.add(block.id);
-        if (block.name !== 'TaskStop') continue;
-        const task = str(block.input, 'task_id');
-        if (task !== null) stopAsks.push({ call: block.id, task });
-      }
-      continue;
-    }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
       // The transcript's own ending for a backgrounded call, which arrives as
@@ -1764,11 +1853,6 @@ export function fold(
         continue;
       }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        // The sentence a backgrounded launch answers with names the task it
-        // opened, which is the only link a `TaskStop` has when the CLI sent no
-        // `task_started`.
-        const task = launchedTask(block.content);
-        if (task !== null) launches.set(task, block.tool_use_id);
         results.set(block.tool_use_id, block);
         // The result's own record rides beside the block, keyed the same way:
         // a question is drawn from it rather than from the result's text -
@@ -1779,22 +1863,6 @@ export function fold(
         }
       }
     }
-  }
-
-  // **A stop's own answer settles the call it ended.** The tool path sends no
-  // `task_started` for the task and no ending after the stop, so nothing else
-  // would ever walk that call off its launch result. It lands only where the
-  // target's row is held here: a stop whose call this page does not carry
-  // draws as a row of its own below, named with the task (rule 25).
-  for (const ask of stopAsks) {
-    if (!stopSucceeded(results.get(ask.call))) continue;
-    const target = launches.get(ask.task) ?? owners.get(ask.task) ?? null;
-    if (target === null || !heldCalls.has(target)) continue;
-    // Not `backgrounded`: that flag makes the row ask for the command's own
-    // output, and the task link the server resolves that through never fired.
-    tasks.set(target, { status: 'killed', backgrounded: false, note: null });
-    stopOf.set(target, ask.task);
-    settledStops.add(ask.call);
   }
 
   /** What names a unit for the list: the frame it came from, and the part in it. */
@@ -2527,9 +2595,9 @@ export function fold(
         const name = typeof block.name === 'string' ? block.name : 'tool';
         const id = typeof block.id === 'string' ? block.id : '';
 
-        // A stop that settled a call this turn holds draws as that call's own
-        // mark rather than as a second row beside it.
-        if (name === 'TaskStop' && id !== '' && settledStops.has(id)) continue;
+        // A stop whose call the page holds draws as that call's own mark, in
+        // the call's turn, rather than as a second row beside it.
+        if (name === 'TaskStop' && id !== '' && stops.drawn.has(id)) continue;
 
         const card = outbound(
           name,
@@ -2566,7 +2634,7 @@ export function fold(
           records.get(id),
           tasks.get(id),
           abandoned,
-          stopOf.get(id) ?? null,
+          stops.settled.get(id) ?? null,
         );
         if (name.toLowerCase() === 'skill') {
           // A skill's body follows its call as a user frame; the claim is
@@ -2666,6 +2734,8 @@ interface TurnMemo {
   self: Self | null;
   live: boolean;
   ended: boolean;
+  /** The page's stops this memo folded with, compared by value below. */
+  stops: PageStops;
   /** The fold this memo holds. */
   units: Unit[];
   /** The running row this fold drew, when it drew one, whose figures move. */
@@ -2675,6 +2745,26 @@ interface TurnMemo {
 }
 
 const memos = new WeakMap<object, TurnMemo>();
+
+/**
+ * Whether two pages' stops say the same thing.
+ *
+ * **By value, not by identity.** The stops are re-derived from the held turns
+ * on every arriving frame, and a fresh object with the same content must not
+ * cost a re-fold of every turn on screen - which is what identity would do to
+ * every turn for as long as any stop is on the page.
+ */
+function sameStops(a: PageStops, b: PageStops): boolean {
+  if (a === b) return true;
+  if (a.settled.size !== b.settled.size || a.drawn.size !== b.drawn.size) return false;
+  for (const [call, task] of a.settled) {
+    if (b.settled.get(call) !== task) return false;
+  }
+  for (const stop of a.drawn) {
+    if (!b.drawn.has(stop)) return false;
+  }
+  return true;
+}
 
 /**
  * Whether `next` is `held` with frames appended, which is an append's growth.
@@ -2905,6 +2995,7 @@ function memoOf(
   self: Self | null,
   live: boolean,
   ended: boolean,
+  stops: PageStops,
 ): TurnMemo {
   const last = units[units.length - 1];
   const report =
@@ -2914,6 +3005,7 @@ function memoOf(
     self,
     live,
     ended,
+    stops,
     units,
     report,
     // Scanned rather than recovered from the running row's own span: the row
@@ -2926,14 +3018,16 @@ function memoOf(
 /**
  * The fold of one turn, carried between frames: see [`TurnMemo`].
  *
- * A turn that did not grow since the last fold, folded with the same seat and
- * the same running facts, is answered from the memo as it stands.
+ * A turn that did not grow since the last fold, folded with the same seat, the
+ * same running facts and the same page stops, is answered from the memo as it
+ * stands.
  */
 export function turnFold(
   turn: { messages: readonly unknown[] },
   self: Self | null,
   live: boolean,
   ended: boolean,
+  stops: PageStops = NO_STOPS,
 ): Unit[] {
   const messages = turn.messages;
   const head = messages[0];
@@ -2943,6 +3037,7 @@ export function turnFold(
     memo.self === self &&
     memo.live === live &&
     memo.ended === ended &&
+    sameStops(memo.stops, stops) &&
     extendsFrom(memo.messages, messages)
   ) {
     const tail = messages.slice(memo.messages.length) as Frame[];
@@ -2952,9 +3047,9 @@ export function turnFold(
       return units;
     }
   }
-  const units = fold(messages, self, live, ended);
+  const units = fold(messages, self, live, ended, stops);
   if (head !== null && typeof head === 'object') {
-    memos.set(head, memoOf(messages, units, self, live, ended));
+    memos.set(head, memoOf(messages, units, self, live, ended, stops));
   }
   return units;
 }

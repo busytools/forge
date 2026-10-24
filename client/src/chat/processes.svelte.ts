@@ -109,10 +109,10 @@ export class Processes {
    * The verdict the conversation has on a registry row's call, when it has one.
    *
    * **The registry is not always the whole truth.** A task stopped by the
-   * `TaskStop` tool sends no `background_tasks_changed` (measured: session
-   * 4b35ed0e - the strip read "1 running" over a bash with no process behind
-   * it after the tool answered "Successfully stopped task"), so the
-   * conversation's own answer is what ends the row.
+   * `TaskStop` tool sends no `background_tasks_changed` (4b35ed0e: the strip
+   * read "1 running" over a bash with no process behind it after the tool
+   * answered "Successfully stopped task"), so the conversation's own answer
+   * is what ends the row.
    */
   #verdictOf(task: BackgroundTask): Outcome | null {
     const call = this.#callOf(task);

@@ -128,9 +128,9 @@ export interface ToolLeaf {
    * touched.
    *
    * **The tool path sends no ending of its own** - no `task_updated`, no
-   * `task_notification`, and no registry change (measured: session
-   * 4b35ed0e) - so the tool's own answer is the only thing that settles the
-   * call, and the row states it by this task id.
+   * `task_notification`, and no registry change (4b35ed0e) - so the tool's
+   * own answer is the only thing that settles the call, and the row states
+   * it by this task id.
    */
   stop: string | null;
   /** What the row opens on. Empty for a call that has not come back yet. */
@@ -324,9 +324,12 @@ function plainText(content: unknown): string {
 /**
  * The task a backgrounded launch opened, when its result names one.
  *
- * **The tool path's only link.** A task stopped by the `TaskStop` tool gets no
- * `task_started` at all (measured: session 4b35ed0e), so the sentence the
- * launch result carries is what joins the task to its call.
+ * **The tool path's only link.** Measured in session 4b35ed0e on CLI 2.1.280:
+ * the model called `TaskStop`, the tool answered "Successfully stopped task",
+ * and the whole transcript carried no `task_started`, `task_updated` or
+ * `task_notification` for that task and no registry change - the background
+ * registry kept listing it. So the sentence the launch result carries is what
+ * joins the task to its call, and the tool's answer is the only ending.
  */
 export function launchedTask(content: unknown): string | null {
   const found = /Command running in background with ID: ([A-Za-z0-9_-]+)/.exec(plainText(content));
@@ -729,9 +732,11 @@ export function leafOf(
   // call, and an input-keyed exemption would leave exactly the #1836 spinner
   // standing for a backgrounded call killed mid-launch.
   const settled =
-    task !== undefined && (task.backgrounded || task.status !== 'in_progress')
-      ? task.status
-      : settledBy(result, abandoned);
+    stop !== null
+      ? 'killed'
+      : task !== undefined && (task.backgrounded || task.status !== 'in_progress')
+        ? task.status
+        : settledBy(result, abandoned);
   const forge = forgeCardOf(name, input, result);
   const drawn = drawnBody(name, body, result, settled === 'failed' || settled === 'killed');
   // A settled call with nothing to open onto says so in words, whichever way
