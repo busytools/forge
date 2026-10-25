@@ -215,7 +215,26 @@ impl Bridge {
     /// seat's own current one.
     pub async fn browser_view(&self, seat: Value, tab: Option<u16>) -> Result<Value, String> {
         let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
-        let attached = socket.browser_view(seat.clone(), tab).await?;
+        let attached = match socket.browser_view(seat.clone(), tab).await {
+            Ok(attached) => attached,
+            Err(why) => {
+                // **A refused attach is the surface's failure, not the last
+                // tab's picture left standing over it.** The old attachment
+                // is dropped so a reconnect does not ask for the dead tab,
+                // and the overlay is lowered under the sentence.
+                let mut state = self.lock();
+                state.attach = None;
+                state.attach_generation = state.attach_generation.wrapping_add(1);
+                drop(state);
+                if let Some(app) = &self.app {
+                    crate::browser::lost(app);
+                }
+                self.emit(ClientEvent::Inbound(
+                    json!({ "kind": "browser_surface_failed", "reason": why }),
+                ));
+                return Err(why);
+            }
+        };
         // **A landed attach is the takeover's to keep**: the next reconnect
         // asks for it again, so the surface never outlives its viewer. The
         // resolved tab is kept, not the request's own, so a reconnect asks
@@ -1803,6 +1822,47 @@ mod tests {
             bridge.lock().attach.is_none(),
             "a failed attach is not asked for again on the next reconnect"
         );
+    }
+
+    /// **A refused Open is the surface's failure, not the last tab's
+    /// picture.** The page's own Open asks directly; its refusal must lower
+    /// the overlay and clear the attach, exactly as a reconnect's does.
+    #[tokio::test]
+    async fn a_refused_open_lowers_the_previous_surface() {
+        let (bridge, mut rx) = bridge();
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        let opening = tokio::spawn({
+            let bridge = Arc::clone(&bridge);
+            async move { bridge.browser_view(seat(), Some(4)).await }
+        });
+        answer_attach(&mut server).await;
+        opening.await.expect("the task joins").expect("the attach landed");
+
+        let refused = tokio::spawn({
+            let bridge = Arc::clone(&bridge);
+            async move { bridge.browser_view(seat(), Some(9)).await }
+        });
+        let asked = server.heard_until(|v| v["kind"] == "browser_view").await;
+        let id = asked["reply_to"].as_u64().expect("the asker minted a reply id");
+        server
+            .say
+            .send(json!({
+                "kind": "reply",
+                "reply_to": id,
+                "body": { "ok": false, "why": "tab 9 is not open" },
+            }))
+            .expect("broadcast");
+
+        assert!(
+            refused.await.expect("the task joins").is_err(),
+            "the refusal is the caller's answer"
+        );
+        let caught = event(&mut rx, is_inbound_kind("browser_surface_failed")).await;
+        let ClientEvent::Inbound(frame) = caught else { unreachable!("filtered to inbound") };
+        assert_eq!(frame["reason"], json!("tab 9 is not open"));
+        assert!(bridge.lock().attach.is_none(), "the dead tab is not asked for again");
     }
 
     /// **A lowered takeover stays lowered across a reconnect.** The re-attach

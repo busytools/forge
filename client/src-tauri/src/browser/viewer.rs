@@ -213,12 +213,6 @@ fn undecodable_frame(profile: u16, tab: u16, width: u16, height: u16, bytes: usi
     );
 }
 
-/// The server named the tab the page is viewing.
-#[tauri::command]
-pub fn browser_attached(viewer: tauri::State<'_, Arc<Viewer>>, id: u16, tab: u16) {
-    viewer.attached(id, tab);
-}
-
 /// The page's page area, as the takeover's layout reports it.
 #[tauri::command]
 pub fn browser_surface_rect(viewer: tauri::State<'_, Arc<Viewer>>, rect: Rect, viewport: Viewport) {

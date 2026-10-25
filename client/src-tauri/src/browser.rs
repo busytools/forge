@@ -78,9 +78,6 @@ pub mod viewer {
     use super::Rect;
 
     #[tauri::command]
-    pub fn browser_attached(_id: u16, _tab: u16) {}
-
-    #[tauri::command]
     pub fn browser_surface_rect(_rect: Rect, _viewport: super::Viewport) {}
 }
 
@@ -259,6 +256,17 @@ pub fn audio(app: &tauri::AppHandle, bytes: &[u8]) {
     {
         use base64::Engine as _;
         use tauri::Emitter as _;
+        // **Another tab's sound is not this surface's**, the same way its
+        // frame is not.
+        if !sound_is_viewed(&sound) {
+            tauri_plugin_log::log::debug!(
+                "sound for another tab was dropped (event_name \
+                 client_browser_audio_other_tab, profile {}, tab {})",
+                sound.profile,
+                sound.tab
+            );
+            return;
+        }
         let mut pcm = Vec::with_capacity(sound.samples.len() * 2);
         for sample in &sound.samples {
             pcm.extend_from_slice(&sample.to_le_bytes());
@@ -345,6 +353,20 @@ pub fn browser_kept_frame() -> Option<serde_json::Value> {
 #[cfg(not(target_os = "macos"))]
 static KEPT: std::sync::Mutex<Option<serde_json::Value>> = std::sync::Mutex::new(None);
 
+/// The pair this client last attached to, for the page-played sound: a
+/// packet for another tab is not this surface's to hear.
+static VIEWED: std::sync::Mutex<Option<(u16, u16)>> = std::sync::Mutex::new(None);
+
+/// Whether one sound packet belongs to the tab this client views. **A
+/// packet that beat the attach's own frame is taken as that tab's**, so an
+/// opening page is not silent until a text frame lands. The desktop's shell
+/// player filters for itself, so this is the phone's path and the tests'.
+#[cfg(any(not(target_os = "macos"), test))]
+fn sound_is_viewed(sound: &Sound) -> bool {
+    let viewed = *VIEWED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    viewed.is_none_or(|(profile, tab)| profile == sound.profile && tab == sound.tab)
+}
+
 /// Whether the kept phone frame belongs to the tab this attach names.
 ///
 /// **A new attach drops another tab's frame**: the canvas mounts before the
@@ -359,6 +381,9 @@ fn keeps_kept(kept: Option<&serde_json::Value>, id: u16, tab: u16) -> bool {
 
 /// The server named the viewed profile's wire id and tab.
 pub fn attached(app: &tauri::AppHandle, id: u16, tab: u16) {
+    // **The page's sound is this pair's**, on the platform where the page
+    // plays it; another tab's packet is not this surface's to hear.
+    *VIEWED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((id, tab));
     #[cfg(target_os = "macos")]
     {
         if let Some(viewer) = app.try_state::<std::sync::Arc<Viewer>>() {
@@ -413,6 +438,26 @@ mod tests {
             !keeps_kept(Some(&serde_json::json!({ "profile": "5", "tab": 2 })), 5, 2),
             "a value this half cannot read is not a match",
         );
+    }
+
+    /// **Only the viewed tab's packets reach the phone's page.** The shell
+    /// relays every packet it is sent; the page must not hear another tab's.
+    #[test]
+    fn a_sound_for_another_tab_is_not_the_pages() {
+        let sound = |profile, tab| super::Sound {
+            profile,
+            tab,
+            seq: 1,
+            sample_rate: 48_000,
+            channels: 2,
+            samples: vec![0, 0],
+        };
+        *super::VIEWED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((5, 2));
+        assert!(super::sound_is_viewed(&sound(5, 2)), "the viewed tab's packet plays");
+        assert!(!super::sound_is_viewed(&sound(5, 3)), "another tab's is dropped");
+        assert!(!super::sound_is_viewed(&sound(6, 2)), "another profile's is dropped");
+        *super::VIEWED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        assert!(super::sound_is_viewed(&sound(9, 9)), "with no attach yet, nothing is refused",);
     }
 
     /// **A relayed frame splits into the fields both arms draw by.** The

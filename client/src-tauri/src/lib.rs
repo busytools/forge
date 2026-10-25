@@ -422,7 +422,6 @@ pub fn run() {
         })
         .invoke_handler(
         tauri::generate_handler![
-            browser::viewer::browser_attached,
             browser::viewer::browser_surface_rect,
             browser::browser_takeover,
             browser::browser_kept_frame,
@@ -475,7 +474,6 @@ pub fn run() {
         .plugin(android::init())
         .plugin(micstate::init())
         .invoke_handler(tauri::generate_handler![
-            browser::viewer::browser_attached,
             browser::viewer::browser_surface_rect,
             browser::browser_takeover,
             browser::browser_kept_frame,
