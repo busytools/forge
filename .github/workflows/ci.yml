@@ -91,12 +91,26 @@ jobs:
             # when no client file moved. **The live gate is the server's
             # browser_service test** over the workspace's browser port, so the
             # files it compiles or drives are this job's paths too.
+            # **The list is forge-server's dependency graph**, because the
+            # macOS job compiles forge-server and its live test: every crate
+            # that may break that build runs it, and so does the lockfile
+            # that resolves them. forge-test-harness is not on this graph.
             browser:
               - 'crates/forge-browser/**'
               - 'crates/forge-server/**'
               - 'crates/forge-workspace/**'
-              - 'crates/forge-primitives/**'
+              - 'crates/forge-agent/**'
+              - 'crates/forge-gateway/**'
+              - 'crates/forge-connectors/**'
+              - 'crates/forge-dictate/**'
+              - 'crates/forge-capture/**'
+              - 'crates/forge-system-one/**'
               - 'crates/forge-sdk/**'
+              - 'crates/forge-primitives/**'
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'rust-toolchain.toml'
+              - 'clippy.toml'
               - 'scripts/**'
               - '.config/nextest.toml'
             scripts:
