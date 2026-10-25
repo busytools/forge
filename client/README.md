@@ -98,11 +98,11 @@ knowing before changing them:
   moves the role, and only the holder's input reaches the page. The server
   pushes who holds it (with this connection's own viewer id), so the bar
   draws take or release from the server's truth rather than a guess.
-- **A named profile is a browser of its own, owned by the seat that opened
-  it.** `profile: "name"` on a tool call uses that profile's own cache root
-  and logins; another seat naming or deleting it is refused by name. A
-  hand-off naming it opens THAT profile's page - a CAPTCHA solved in the
-  right session, not a lookalike in the wrong one.
+- **The browser's profile is the org's, and each tab belongs to the session
+  that opened it.** No tool names a profile: `forge.toml` resolves the org's
+  (or a project's override), and a session's calls land on its own tab. A
+  hand-off names the tab to show, so the person sees exactly the page the
+  agent meant, and the bar carries a picker over the profile's tabs.
 
 `src-tauri/src/socket.rs` and `src/socket.ts` are the two transports' frame
 readers; `src/browser/host.ts` is the page's window onto the shell's viewer

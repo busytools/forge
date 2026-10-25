@@ -51,9 +51,9 @@ Neither client has a WebView engine or an in-process node any more.
 browser is a server process of its own, started on its first real need - a
 session call, a hand-off's Open, the strip's show - and never at server
 start. Closing the surface ends nothing: the sessions keep driving the same
-tabs, and the next Open shows one as it stands. A close ends the host and its
-tabs and keeps the profile's cache and logins; the next call starts a fresh
-host. Every page call logs its seat, tool, profile, host pid, port and cache
+tabs, and the next Open shows one as it stands. An idle close ends the host
+and its tabs and keeps the profile's cache and logins; the next call starts a
+fresh host. Every page call logs its seat, tool, profile, host pid, port and cache
 root, so a call's browser is answerable after the fact.
 
 **A profile is `forge.toml`'s, not a seat's.** Its key is `<org>/<name>`: the
@@ -71,12 +71,13 @@ with its session: the sweep of dead seats, a `/new` or `/resume` on the slot,
 and the host ending - except a tab a parked hand-off still holds. Nothing
 outlives the host.
 
-**The old per-seat trees go once.** The first server that finds no marker
-deletes the old `shared/` tree and every per-seat `profiles/<name>/` tree,
-then writes `legacy-profiles-deleted` beside the root; a later boot does
-nothing. Org profiles live one level deeper, at
-`profiles/<org>/<name>/cef`, and a stray file under `profiles/` is not a
-profile.
+**The old profile trees go once.** The first server that finds no marker
+deletes the client's old in-process CEF caches - `browser/cef-profile` and
+`browser/profiles/<name>/cef` under its bundle identifier - and the server's
+own pre-org `shared/` and per-seat `profiles/<name>/cef` trees, then writes
+`legacy-profiles-deleted` beside the root; a later boot does nothing. Org
+profiles live one level deeper, at `profiles/<org>/<name>/cef`, and a stray
+file under `profiles/` is not a profile.
 
 **A hand-off names a tab.** `browser_hand_off` requires the number of one of
 the session's own tabs, and **Open** raises that tab. The tab is held while
