@@ -200,6 +200,50 @@ async fn a_stale_host_is_ended_and_its_trail_cleared() {
     );
 }
 
+/// **A host whose server was SIGKILLed closes itself.** The server's own
+/// teardown is the fast path; this is the backstop for a kill that runs no
+/// exit path. The stand-in parent stands where the server would: the real
+/// launch line's `--parent` is pinned in `spawn`'s own test.
+#[ignore = "needs the installed Forge Browser.app; scripts/stage-browser-host.sh stages it"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_whose_parent_was_sigkilled_closes_itself() {
+    let scratch = tempfile::tempdir().expect("a scratch dir");
+    let exe = installed_host();
+    let root = scratch.path().join("browser");
+    let profile = profile_in(&root);
+    let port = support::free_port();
+    let ring = format!("/forge-reap-parent-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+    let mut parent =
+        std::process::Command::new("/bin/sleep").arg("60").spawn().expect("a stand-in server");
+    let parent_pid = parent.id();
+    let extra = ["--parent".to_owned(), parent_pid.to_string()];
+    let mut host = support::Host::start(&exe, &profile, port, &ring, "800x600", &extra, &log);
+    let _ring = RingOnly(ring.clone());
+    spawn::wait_ready_for(host.pid(), port, &ring, &profile).await.unwrap_or_else(|why| {
+        panic!("the host never came ready: {why} (log: {})", profile.join("cef-host.log").display())
+    });
+
+    // **SIGKILL, and reap it**: a zombie still answers `kill(pid, 0)`, so the
+    // watch only sees a gone parent once the process table has let it go.
+    // SAFETY: a SIGKILL to this test's own child, by the pid it saved.
+    unsafe { libc::kill(i32::try_from(parent_pid).unwrap_or(i32::MAX), libc::SIGKILL) };
+    let _ = parent.wait();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if host.try_wait().is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host outlived the server that spawned it (log: {})",
+            host.log(),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// **A host named only by its singleton lock is not reaped while it is
 /// ours.** Chromium's own lock is the fallback identity when the record was
 /// lost; a live child of this process named there keeps it and its lock.

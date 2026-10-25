@@ -158,6 +158,47 @@ pub fn spawn(
     spawn_with(&exe, profile, port, ring, width, height, profile_id, encoding, frames)
 }
 
+/// The host's command line, without the pipes or the detachment: the spawn
+/// adds those, and a test reads the arguments a real launch carries.
+fn host_command(
+    exe: &Path,
+    profile: &Path,
+    port: u16,
+    ring: &str,
+    width: u32,
+    height: u32,
+    profile_id: u16,
+    encoding: (u16, u8),
+    frames: &Path,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("--cef-host")
+        .arg("--profile")
+        .arg(profile)
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--ring")
+        .arg(ring)
+        .arg("--frames")
+        .arg(frames)
+        .arg("--size")
+        .arg(format!("{width}x{height}"))
+        .arg("--profile-id")
+        .arg(profile_id.to_string())
+        .arg("--fps")
+        .arg(encoding.0.to_string())
+        .arg("--quality")
+        .arg(encoding.1.to_string())
+        // **The host outlives an orderly server and not a killed one.** The
+        // pid is the server's own, recorded here because the host's parent
+        // races the server's death; the host takes its SIGTERM path when the
+        // pid is gone, since a SIGKILL runs no exit path to reap it.
+        .arg("--parent")
+        .arg(std::process::id().to_string());
+    command
+}
+
 /// The spawn itself, with the binary given: the server passes the bundle's
 /// executable; a test passes a stand-in. `encoding` is the `[browser]` pair:
 /// frames per second and lossy quality, and `frames` the socket the server
@@ -180,25 +221,9 @@ pub fn spawn_with(
         .append(true)
         .open(profile.join("cef-host.log"))
         .map_err(|why| format!("the host's log cannot be opened: {why}"))?;
-    let mut command = std::process::Command::new(exe);
+    let mut command =
+        host_command(exe, profile, port, ring, width, height, profile_id, encoding, frames);
     command
-        .arg("--cef-host")
-        .arg("--profile")
-        .arg(profile)
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("--ring")
-        .arg(ring)
-        .arg("--frames")
-        .arg(frames)
-        .arg("--size")
-        .arg(format!("{width}x{height}"))
-        .arg("--profile-id")
-        .arg(profile_id.to_string())
-        .arg("--fps")
-        .arg(encoding.0.to_string())
-        .arg("--quality")
-        .arg(encoding.1.to_string())
         // **Pointer input rides this pipe.** CEF's own mouse calls are what
         // route into a windowless popup, so the host's gestures come down
         // its stdin rather than over the page's DevTools target.
@@ -1006,6 +1031,32 @@ mod tests {
         assert!(!is_our_binary(1), "launchd is not");
         clear_singleton(profile);
         assert_eq!(singleton_pid(profile), None, "and the lock is gone");
+    }
+
+    /// **The launch line names the server as the host's parent.** A SIGKILL
+    /// runs no server exit path, so the pid on this line is the watch's only
+    /// way to know the host has been left behind.
+    #[test]
+    fn the_launch_line_names_the_server_as_the_parent() {
+        let command = host_command(
+            Path::new("/tmp/Forge Browser"),
+            Path::new("/tmp/forge-profile/cef"),
+            9411,
+            "/forge-ring",
+            1440,
+            900,
+            1,
+            (30, 75),
+            Path::new("/tmp/forge-frames.sock"),
+        );
+        let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
+        let at =
+            args.iter().position(|arg| *arg == "--parent").expect("the parent flag is on the line");
+        assert_eq!(
+            args.get(at + 1).map(|pid| pid.to_string_lossy().into_owned()),
+            Some(std::process::id().to_string()),
+            "the pid is the spawning server's own"
+        );
     }
 
     /// **A recycled pid is never signalled.** This test's own pid stands in
