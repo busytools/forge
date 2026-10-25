@@ -4611,6 +4611,64 @@ impl Workspace {
         (cwd, launch_settings)
     }
 
+    /// Start a seat on an id when no task is running for it: the `/resume
+    /// <old-id>` recovery a failed handoff names.
+    ///
+    /// A lead goes through the project wake, so a failed start surfaces the
+    /// same `ConnectionFailed` and the same fallback a wake has. The id named
+    /// is recorded first because that path resumes the slot's stored id; it
+    /// names a transcript that already exists, so a failed start leaves a real
+    /// id rather than an unrun one. A worker goes through the spawn its boot
+    /// re-spawn uses, with the row's own charter, tree and family selection.
+    fn resume_without_task(
+        self: &Arc<Self>,
+        key: &SessionSlot,
+        session_id: &str,
+        launch_settings: SessionLaunchSettings,
+    ) -> Result<(), DispatchError> {
+        if key.is_lead() {
+            self.note_running_session_id(key, session_id);
+            crate::spawn::handle_spawn_project(self, key.project(), launch_settings);
+            return Ok(());
+        }
+        let Some(view) = self
+            .list_projects()
+            .into_iter()
+            .find(|view| view.org == key.org() && view.name == key.project())
+        else {
+            return Err(DispatchError::UnknownSession(key.clone()));
+        };
+        let row = match self.stored_worker_row(&view.key, key.label()) {
+            Ok(Some(row)) => row,
+            Ok(None) => return Err(DispatchError::UnknownSession(key.clone())),
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    event_name = "resume_worker_row_unreadable",
+                    slot = %key.display(),
+                    %error,
+                    "the worker's row could not be read; a task-less resume needs it for the charter and tree",
+                );
+                return Err(DispatchError::UnknownSession(key.clone()));
+            }
+        };
+        let (return_to, _reply) = tokio::sync::oneshot::channel();
+        self.dispatch(Command::SpawnWorker {
+            project_key: view.key,
+            label: key.label().to_owned(),
+            charter: row.charter.unwrap_or_default(),
+            spawned_by: SessionSlot::lead(key.org(), key.project()),
+            resume_existing: Some(session_id.to_owned()),
+            kick: row.resume_kick.or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned())),
+            resume_kick: None,
+            interactive: row.interactive.unwrap_or(false),
+            mcp_families: row.mcp_families,
+            cwd: row.cwd,
+            from_boot_respawn: false,
+            return_to: Some(return_to),
+        })
+    }
+
     /// Fill in the launch settings a caller did not build.
     ///
     /// A caller with its own snapshot of the documents builds them and
@@ -4942,6 +5000,22 @@ impl Workspace {
                 return sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key));
             }
             drop(senders);
+            // **`/resume` on a seat whose task has exited is the recovery
+            // the handoff promises.** The task leaves with its child, so the
+            // command lands here with no sender; start the seat on the id it
+            // names rather than answering `UnknownSession`. A failed start
+            // still surfaces as `ConnectionFailed`, and the project wake
+            // remains the fallback beside it.
+            // A test that wired a stub handle expects the synchronous fallback
+            // below to take the command; only a genuinely ownerless seat goes
+            // through the wake.
+            let stub_fallback_can_take_it =
+                cfg!(any(test, feature = "testing")) && self.agent_handle_for(&key).is_some();
+            if !stub_fallback_can_take_it
+                && let Command::ResumeSession { key, session_id, launch_settings, .. } = &cmd
+            {
+                return self.resume_without_task(key, session_id, launch_settings.clone());
+            }
             // In production this branch returns `UnknownSession`: a
             // per-session `Command` arrives before a `SessionTask`
             // exists, which is the contract violation the error
@@ -10933,6 +11007,190 @@ provider = "anthropic"
             Some("gone".to_owned()),
             "the project resolves from the slot, with no transcript to read it from",
         );
+    }
+
+    /// A mock `claude` that reports the id the spawn was told to resume, so
+    /// a test can see which session the seat actually runs under. The
+    /// fixture always names `mock-session-001`; awk rewrites that on each
+    /// line and flushes, because a buffered init line would stall the
+    /// handshake instead of arriving.
+    fn id_preserving_mock(dir: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh");
+        let path = dir.join("mock_claude_id.sh");
+        fs::write(
+            &path,
+            format!(
+                r#"#!/bin/sh
+id=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--resume" ] || [ "$prev" = "--session-id" ]; then
+    id="$arg"
+  fi
+  prev="$arg"
+done
+if [ -z "$id" ]; then id="mock-session-001"; fi
+"{fixture}" "$@" | awk -v id="$id" '{{ gsub("mock-session-001", id); print; fflush() }}'
+"#
+            ),
+        )
+        .expect("write the id-preserving mock");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod the mock");
+        path.to_string_lossy().into_owned()
+    }
+
+    /// A workspace whose lead slot has no task, a ready account and a mock
+    /// CLI that reports the resumed id.
+    fn resume_workspace(dir: &std::path::Path, project: &std::path::Path) -> Arc<Workspace> {
+        let forge_dir = crate::config::ensure_forge_data_dir(dir).expect("forge dir");
+        fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "{}"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                project.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace = Arc::new(Workspace::new_for_test(dir.to_owned()).expect("workspace"));
+        workspace
+            .install_db_for_test(crate::store::Db::open(&dir.join("db.redb")).expect("open db"));
+        workspace.seed_test_ready_account("Stargate");
+        workspace.seed_test_gateway_ready(true);
+        workspace
+    }
+
+    /// **A `/resume` on a slot whose task has exited must start the seat.**
+    /// The task leaves with its child, so the forge command lands with no
+    /// sender; answering `UnknownSession` is the defect the handoff's
+    /// recovery promises against. The lead goes through the project wake.
+    #[tokio::test]
+    async fn a_resume_with_no_task_starts_the_lead_on_the_named_id() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = resume_workspace(dir.path(), project.path());
+        forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
+        let mut updates = workspace.subscribe_observer();
+        let key = SessionSlot::lead("Default", "forge");
+        let known = "11111111-2222-3333-4444-555555555555";
+
+        let sent = workspace.dispatch_from_view(Command::Prompt {
+            key: key.clone(),
+            text: format!("/resume {known}"),
+            attachments: Vec::new(),
+        });
+        assert!(sent.is_ok(), "the resume is taken rather than refused: {sent:?}");
+
+        let connected = tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(seat) = updates.recv().await {
+                if let SessionUpdate::Connected { key: seen, session_id, .. } = &seat.update
+                    && *seen == key
+                {
+                    return session_id.to_string();
+                }
+                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &seat.update
+                    && *seen == key
+                {
+                    panic!("the resume's start failed: {message}");
+                }
+            }
+            panic!("the update stream closed before the resumed seat connected");
+        })
+        .await
+        .expect("the task-less resume reaches Connected");
+        assert_eq!(connected, known, "the seat runs under the id that was named");
+        let domain = workspace.domain_session_for(&key).expect("the task registered its domain");
+        assert_eq!(
+            domain.lock().session_id.as_ref().map(std::string::ToString::to_string),
+            Some(known.to_owned()),
+            "and the domain is the resumed occupant",
+        );
+        let stored = {
+            let db = workspace.db.lock();
+            let db = db.as_ref().expect("db");
+            crate::store::sessions::get(db, "Default", "forge", "lead")
+                .expect("read")
+                .and_then(|row| row.session_id)
+        };
+        assert_eq!(stored.as_deref(), Some(known), "and the row names it for the next boot");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// The same door on a worker slot: the row's own charter and tree carry
+    /// the spawn, and the worker resumes under the id the person named.
+    #[tokio::test]
+    async fn a_resume_with_no_task_starts_the_worker_on_the_named_id() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = resume_workspace(dir.path(), project.path());
+        let project_key = workspace.project_key_for_name("forge").expect("project");
+        let known = "22222222-3333-4444-5555-666666666666";
+        workspace
+            .record_worker_row(
+                &project_key,
+                "labourer",
+                known,
+                "the stored charter",
+                None,
+                None,
+                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
+            )
+            .expect("seed the worker row");
+        forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
+        let mut updates = workspace.subscribe_observer();
+        let key = SessionSlot::worker("Default", "forge", "labourer");
+
+        let sent = workspace.dispatch_from_view(Command::Prompt {
+            key: key.clone(),
+            text: format!("/resume {known}"),
+            attachments: Vec::new(),
+        });
+        assert!(sent.is_ok(), "the resume is taken rather than refused: {sent:?}");
+
+        let connected = tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(seat) = updates.recv().await {
+                if let SessionUpdate::Connected { key: seen, session_id, .. } = &seat.update
+                    && *seen == key
+                {
+                    return session_id.to_string();
+                }
+                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &seat.update
+                    && *seen == key
+                {
+                    panic!("the resume's start failed: {message}");
+                }
+            }
+            panic!("the update stream closed before the resumed worker connected");
+        })
+        .await
+        .expect("the task-less worker resume reaches Connected");
+        assert_eq!(connected, known, "the worker runs under the id that was named");
+        let domain = workspace.domain_session_for(&key).expect("the task registered its domain");
+        assert_eq!(
+            domain.lock().session_id.as_ref().map(std::string::ToString::to_string),
+            Some(known.to_owned()),
+            "and the domain is the resumed occupant",
+        );
+        forge_agent::set_test_sdk_binary(None);
     }
 
     /// An update merges only the supplied fields onto the stored row and
