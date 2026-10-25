@@ -349,7 +349,7 @@ impl BrowserService {
             id: self.ids.fetch_add(1, Ordering::Relaxed),
             dir,
             frames: watch::channel(None).0,
-            nav: watch::channel(None).0,
+            nav: Mutex::new(HashMap::new()),
             failures: watch::channel(None).0,
             files: watch::channel(None).0,
             playwright_ask: Mutex::new(None),
@@ -1659,7 +1659,7 @@ impl BrowserService {
         self.detach(viewer).await;
         let frames = profile.frames.subscribe();
         let view = profile.view_for(tab).subscribe();
-        let nav = profile.nav.subscribe();
+        let nav = profile.nav_receiver(tab);
         let failures = profile.failures.subscribe();
         let files = profile.files.subscribe();
         let downloads = profile.downloads.subscribe();
@@ -2196,7 +2196,7 @@ impl BrowserService {
             .await
             .ok()?;
         let nav = input::history_state(&reply)?;
-        profile.publish_nav(nav);
+        profile.publish_nav(tab, nav);
         Some(nav)
     }
 
@@ -2261,7 +2261,7 @@ impl BrowserService {
             call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({})).await?;
         let nav = input::history_state(&reply)
             .ok_or_else(|| "the page's history could not be read".to_owned())?;
-        profile.publish_nav(nav);
+        profile.publish_nav(tab, nav);
         Ok(nav)
     }
 
@@ -2463,7 +2463,9 @@ pub struct Profile {
     frames: watch::Sender<Option<BrowserFrame>>,
     /// Where the page's history sits, published when it moves: a link click
     /// moves the bar's arrows without anyone asking.
-    nav: watch::Sender<Option<BrowserNavState>>,
+    /// **Each tab's history is its own**: a watch per tab, so a viewer's
+    /// arrows never show another tab's page.
+    nav: Mutex<HashMap<u16, watch::Sender<Option<BrowserNavState>>>>,
     /// Why the browser stopped, when it stopped under a viewer.
     failures: watch::Sender<Option<String>>,
     /// A page's file chooser waiting on the person, as it is raised.
@@ -2861,6 +2863,7 @@ impl Profile {
         self.controls.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
         self.viewers.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
         self.views.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
+        self.nav.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
     }
 
     /// **A chooser outliving the person who could answer it is cancelled.**
@@ -3047,9 +3050,24 @@ impl Profile {
         );
     }
 
-    /// Publish where the page's history sits, when it is news.
-    fn publish_nav(&self, nav: BrowserNavState) {
-        self.nav.send_if_modified(|current| {
+    /// One tab's history watch, made on demand.
+    fn nav_sender(&self, tab: u16) -> watch::Sender<Option<BrowserNavState>> {
+        self.nav
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(tab)
+            .or_insert_with(|| watch::channel(None).0)
+            .clone()
+    }
+
+    /// The watch a viewer on `tab` follows.
+    fn nav_receiver(&self, tab: u16) -> watch::Receiver<Option<BrowserNavState>> {
+        self.nav_sender(tab).subscribe()
+    }
+
+    /// Publish where a tab's history sits, when it is news.
+    fn publish_nav(&self, tab: u16, nav: BrowserNavState) {
+        self.nav_sender(tab).send_if_modified(|current| {
             if *current == Some(nav) {
                 false
             } else {
@@ -3556,7 +3574,7 @@ impl Profile {
         let mut state = self.state.lock().await;
         self.teardown(&mut state).await;
         self.frames.send_replace(None);
-        self.nav.send_replace(None);
+        self.nav.lock().unwrap_or_else(PoisonError::into_inner).clear();
         // **Nothing of a gone browser's chooser or its staged files stays.**
         self.files.send_replace(None);
         *self.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -3658,7 +3676,7 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
                     continue;
                 }
                 last = Some(nav);
-                profile.publish_nav(nav);
+                profile.publish_nav(tab, nav);
             }
             // The page's connection closed (a tab change, a dying renderer):
             // follow the focused page target again.
@@ -4190,6 +4208,33 @@ mod tests {
         let refused =
             service.answer_files("TestOrg/default", tab, 5, Vec::new()).await.expect_err("refused");
         assert!(refused.contains("is on tab 2, not tab 1"), "{refused}");
+    }
+
+    /// **Each tab's arrows are its own.** A history published for tab 1 is
+    /// not the state a viewer on tab 2 follows: one profile-wide watch showed
+    /// the focused tab's history on every viewer's bar.
+    #[tokio::test]
+    async fn a_tabs_history_is_its_own_watch() {
+        use forge_primitives::browser::BrowserNavState;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let profile = service.entry(&seat).await.expect("a profile entry");
+        let one = seed_tab(&profile, &seat);
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(2, seat.clone(), "p2", "t2", "two", "http://b/")
+            .expect("a second tab");
+        let first = profile.nav_receiver(one);
+        let second = profile.nav_receiver(2);
+        let moved = BrowserNavState { can_back: true, can_forward: false };
+        profile.publish_nav(one, moved);
+
+        assert_eq!(*first.borrow(), Some(moved), "tab 1's bar follows tab 1");
+        assert_eq!(*second.borrow(), None, "tab 2's bar is not tab 1's");
     }
 
     /// **A tab a person is driving reads in use in the strip.** The spec's
