@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { flushSync, mount, unmount } from 'svelte';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import HandoffRow from './HandoffRow.svelte';
 import type { HandoffRecord } from '../wire/handoff';
@@ -76,7 +76,50 @@ describe('the handoff row, mounted', () => {
       expect(body, 'and its facts with it').toContain('Busytools/forge/lead');
       expect(body, 'PART 2 draws').toContain('PART 2');
       expect(body, 'and the judgment with it').toContain('the client row');
+      expect(body, 'the full previous id is shown').toContain(
+        '9cfe315c-1111-2222-3333-444444444444',
+      );
+      expect(body, 'and the successor id').toContain('4b21e0a7-5555-6666-7777-888888888888');
+      expect(body, 'the recovery command is named').toContain('/resume');
+      expect(
+        document.querySelectorAll('.hbody button.cp').length,
+        'each id carries the control that copies it',
+      ).toBe(2);
     } finally {
+      void unmount(app);
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('copies the previous full id, which is what /resume needs', async () => {
+    const writes: string[] = [];
+    vi.stubGlobal('navigator', {
+      clipboard: {
+        writeText: async (text: string) => {
+          writes.push(text);
+        },
+      },
+    });
+    const app = mount(HandoffRow, {
+      target: document.body,
+      props: { handoff: a_handoff() },
+    });
+    try {
+      flushSync();
+      const row = document.querySelector('details');
+      if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
+      row.open = true;
+      row.dispatchEvent(new Event('toggle'));
+      flushSync();
+      const first = document.querySelector('.hbody button.cp');
+      if (!(first instanceof HTMLButtonElement)) throw new Error('the row drew no copy control');
+      first.click();
+      await Promise.resolve();
+      expect(writes, 'the whole previous id lands on the clipboard').toEqual([
+        '9cfe315c-1111-2222-3333-444444444444',
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
       void unmount(app);
       document.body.innerHTML = '';
     }

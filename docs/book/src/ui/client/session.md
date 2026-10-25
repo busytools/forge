@@ -161,10 +161,11 @@ saying where.
 session with a fresh one that continues from a brief - at a turn boundary
 past 85% of its window by default, after a compaction, or when one is asked
 for - the row names the pair and the reason it fired for: the fill it
-crossed, or the compaction that forced it (a manual ask says so), and opens
-onto the brief the successor
-was given: the ground truth forge read off the transcript, git and the
-board, then the judgment the handing-over session wrote. The previous
+crossed, or the compaction that forced it (a manual ask says so). Opened, it
+carries both full session ids, each with the control that copies it - the
+recovery `/resume <old-id>` needs is on the row itself - and the brief the
+successor was given: the ground truth forge read off the transcript, git and
+the board, then the judgment the handing-over session wrote. The previous
 conversation stays above it, so a swap reads as a seam in the page rather
 than a seat that emptied, and the old session is one `/resume` away. A
 client that attaches after the swap draws the row from the seat's record:

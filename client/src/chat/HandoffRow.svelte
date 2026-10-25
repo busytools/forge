@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
 
   import Chevron from '../components/Chevron.svelte';
+  import CopyButton from '../session/CopyButton.svelte';
   import { grouped } from './numbers';
   import { shortId, type HandoffRecord, type HandoffSection } from '../wire/handoff';
 
@@ -83,6 +84,22 @@
   {#if opened}
     <div class="hbody">
       <div class="meta">{meta}</div>
+      <!-- **The recovery's own door.** `/resume` needs the whole id, and
+           the closed row names both sessions short, so the open row carries
+           each full id with the control that copies it. -->
+      <div class="sessions">
+        <div class="sid">
+          <span class="k">previous</span>
+          <span class="v">{handoff.from}</span>
+          <CopyButton id={handoff.from} />
+        </div>
+        <div class="sid">
+          <span class="k">this session</span>
+          <span class="v">{handoff.to}</span>
+          <CopyButton id={handoff.to} />
+        </div>
+        <div class="hint">copy the previous id and run /resume &lt;old-id&gt; to bring it back</div>
+      </div>
       <div class="lbl">PART 1 &#183; GROUND TRUTH</div>
       {#each handoff.ground_truth as section, at (section.label + ':' + at)}
         <div class="fact">

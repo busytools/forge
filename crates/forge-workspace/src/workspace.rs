@@ -4429,9 +4429,11 @@ impl Workspace {
     /// # Errors
     ///
     /// Returns [`DispatchError::UnknownSession`] when no `SessionTask`
-    /// is registered for the requested key (e.g., the session was
-    /// just closed), or [`DispatchError::SessionClosed`] when the
-    /// task's command receiver has been dropped.
+    /// is registered for the requested key (e.g., the session was just
+    /// closed), with one exception: a `ResumeSession` starts the seat on the
+    /// id it names, which is the recovery a failed start leaves. Returns
+    /// [`DispatchError::SessionClosed`] when the task's command receiver has
+    /// been dropped.
     pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
         self.dispatch_with_origin(cmd, PromptOrigin::Ui)
     }
@@ -4652,6 +4654,11 @@ impl Workspace {
                 return Err(DispatchError::UnknownSession(key.clone()));
             }
         };
+        // **The failure this resume replaces goes first.** A failed spawn
+        // leaves its entry for a worker with no worktree; it is not live, so
+        // the insert below would append a second entry for the slot and the
+        // by-slot reads would move the tombstone instead of the new entry.
+        self.clear_failed_worker(&view.key, key.label());
         let (return_to, _reply) = tokio::sync::oneshot::channel();
         self.dispatch(Command::SpawnWorker {
             project_key: view.key,
@@ -4664,7 +4671,12 @@ impl Workspace {
             interactive: row.interactive.unwrap_or(false),
             mcp_families: row.mcp_families,
             cwd: row.cwd,
-            from_boot_respawn: false,
+            // **A user-driven restore is the row restore a boot re-spawn
+            // does.** The row already holds the worker's cap slot and tree,
+            // and this reply is dropped like the boot wave's, so the
+            // restore semantics (no cap check, a failure kept as the
+            // visible tombstone) are the right ones here too.
+            from_boot_respawn: true,
             return_to: Some(return_to),
         })
     }
@@ -4910,6 +4922,7 @@ impl Workspace {
             let key = key.clone();
             // /new and /resume re-spawn on the already-pooled handle, where
             // get_agent_handle_at_key's stamp never runs.
+            let resuming = matches!(&cmd, Command::ResumeSession { .. });
             if let Command::NewSession { launch_settings, .. }
             | Command::ResumeSession { launch_settings, .. } = &mut cmd
             {
@@ -4919,6 +4932,16 @@ impl Workspace {
                     .get(&key)
                     .map(|p| (p.permission_mode, p.registration.clone(), p.account.clone()));
                 match pooled {
+                    // A resume on a seat whose task has gone has no pooled
+                    // handle by design; the wake's own spawn stamps it. The
+                    // warning is for a live seat caught between teardown and
+                    // release.
+                    None if resuming => tracing::debug!(
+                        target: "forge_workspace::workspace",
+                        event_name = "resume_without_pool_entry",
+                        slot = %key.display(),
+                        "a task-less resume has no pooled handle to stamp; the wake's spawn stamps itself",
+                    ),
                     None => tracing::warn!(
                         target: "forge_workspace::workspace",
                         slot = %key.display(),
@@ -7683,6 +7706,22 @@ impl Workspace {
             .lock()
             .get(project_key)
             .map_or(0, |entries| crate::mcp::workers::types::live_worker_count(entries))
+    }
+
+    /// Drop any failed tombstone for `label` before a restore appends its
+    /// own entry.
+    ///
+    /// A failed spawn keeps its entry for a worker that has no worktree, so
+    /// the failure stays on screen. That entry is not live, so the insert
+    /// would append a second entry for the same slot, and the by-slot reads
+    /// take the first match: the tombstone would move as the new session
+    /// connects while the new entry stayed behind as a phantom. A restore
+    /// supersedes the failure it replaces.
+    pub(crate) fn clear_failed_worker(&self, project_key: &ProjectKey, label: &str) {
+        let mut workers = self.live_workers.lock();
+        if let Some(entries) = workers.get_mut(project_key) {
+            entries.retain(|entry| !(entry.label == label && !entry.is_live()));
+        }
     }
 
     /// Remove the latest-spawned worker matching `label` from
@@ -11133,20 +11172,111 @@ provider = "anthropic"
         forge_agent::set_test_sdk_binary(None);
     }
 
-    /// The same door on a worker slot: the row's own charter and tree carry
-    /// the spawn, and the worker resumes under the id the person named.
+    /// **The worker restore dispatches the row's own spawn.** The id named
+    /// wins over the stale id its row still holds, and the row's charter,
+    /// kick, tree, families and interactive flag carry the spawn. The boot
+    /// re-spawn's tests are the pattern for reading the command.
     #[tokio::test]
-    async fn a_resume_with_no_task_starts_the_worker_on_the_named_id() {
+    async fn a_resume_with_no_task_dispatches_the_workers_stored_spawn() {
         let dir = tempdir().expect("tempdir");
         let project = tempdir().expect("project");
         let workspace = resume_workspace(dir.path(), project.path());
         let project_key = workspace.project_key_for_name("forge").expect("project");
-        let known = "22222222-3333-4444-5555-666666666666";
+        let stale = "33333333-4444-5555-6666-777777777777";
+        let named = "22222222-3333-4444-5555-666666666666";
         workspace
             .record_worker_row(
                 &project_key,
                 "labourer",
-                known,
+                stale,
+                "the stored charter",
+                Some("the first kick"),
+                Some("the stored resume kick"),
+                true,
+                crate::mcp::workers::types::WorkerTree {
+                    is_git_repo: false,
+                    cwd: Some(project.path().to_string_lossy().into_owned()),
+                },
+                Some(&["tasks".to_owned(), "agents".to_owned()]),
+            )
+            .expect("seed the worker row");
+        workspace.enable_test_dispatch_intercept();
+        let key = SessionSlot::worker("Default", "forge", "labourer");
+
+        // The intercept sits on the route, so it would capture the outer
+        // `ResumeSession` itself; the fields under test are the spawn the
+        // task-less route dispatches, so drive that route's own call. The
+        // forged-prompt path is covered by the lead test and the refusals
+        // below.
+        workspace
+            .resume_without_task(&key, named, SessionLaunchSettings::default())
+            .expect("the restore is accepted");
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        let Some(Command::SpawnWorker {
+            project_key: seen_project,
+            label,
+            charter,
+            resume_existing,
+            kick,
+            resume_kick,
+            interactive,
+            mcp_families,
+            cwd,
+            from_boot_respawn,
+            ..
+        }) = dispatched.iter().find(|command| matches!(command, Command::SpawnWorker { .. }))
+        else {
+            panic!("the restore dispatches a worker spawn: {dispatched:?}");
+        };
+        assert_eq!(seen_project.as_str(), project_key.as_str(), "the row's project");
+        assert_eq!(label, "labourer");
+        assert_eq!(
+            resume_existing.as_deref(),
+            Some(named),
+            "the id that was named, not the row's stale one",
+        );
+        assert_eq!(charter, "the stored charter");
+        assert_eq!(
+            kick.as_deref(),
+            Some("the stored resume kick"),
+            "the row's resume kick, not its first kick",
+        );
+        assert!(resume_kick.is_none());
+        assert!(*interactive, "the row's interactive flag");
+        assert_eq!(
+            mcp_families.as_ref().map(|families| families.join(",")).as_deref(),
+            Some("tasks,agents"),
+            "the row's family selection",
+        );
+        assert_eq!(
+            cwd.as_deref(),
+            Some(project.path().to_string_lossy().as_ref()),
+            "the row's tree",
+        );
+        assert!(*from_boot_respawn, "a restore carries the boot re-spawn's row semantics");
+    }
+
+    /// **A failed tombstone is replaced, not doubled.** A failed spawn keeps
+    /// its entry for a worker with no worktree; it is not live, so an insert
+    /// that ignored it would append a second entry for the slot and the
+    /// by-slot reads would move the tombstone while the new entry stranded as
+    /// a phantom. The restore leaves exactly one entry, the live one.
+    #[tokio::test]
+    async fn a_worker_resume_replaces_the_failed_tombstone() {
+        use forge_primitives::WorkerLiveness;
+
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = resume_workspace(dir.path(), project.path());
+        let project_key = workspace.project_key_for_name("forge").expect("project");
+        let stale = "33333333-4444-5555-6666-777777777777";
+        let named = "22222222-3333-4444-5555-666666666666";
+        workspace
+            .record_worker_row(
+                &project_key,
+                "labourer",
+                stale,
                 "the stored charter",
                 None,
                 None,
@@ -11155,13 +11285,31 @@ provider = "anthropic"
                 None,
             )
             .expect("seed the worker row");
+        let slot = SessionSlot::worker("Default", "forge", "labourer");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "labourer".to_owned(),
+                charter: "the stored charter".to_owned(),
+                slot: slot.clone(),
+                session_id: Some(forge_primitives::SessionId::new(stale)),
+                status: WorkerLiveness::Failed,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("Default", "forge"),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: Some("the failed start's reason".to_owned()),
+                kick: None,
+            },
+        );
+        assert_eq!(workspace.count_live_workers(&project_key), 0, "the tombstone is not live");
         forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
         let mut updates = workspace.subscribe_observer();
-        let key = SessionSlot::worker("Default", "forge", "labourer");
 
         let sent = workspace.dispatch_from_view(Command::Prompt {
-            key: key.clone(),
-            text: format!("/resume {known}"),
+            key: slot.clone(),
+            text: format!("/resume {named}"),
             attachments: Vec::new(),
         });
         assert!(sent.is_ok(), "the resume is taken rather than refused: {sent:?}");
@@ -11169,28 +11317,81 @@ provider = "anthropic"
         let connected = tokio::time::timeout(Duration::from_secs(30), async {
             while let Some(seat) = updates.recv().await {
                 if let SessionUpdate::Connected { key: seen, session_id, .. } = &seat.update
-                    && *seen == key
+                    && *seen == slot
                 {
                     return session_id.to_string();
                 }
                 if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &seat.update
-                    && *seen == key
+                    && *seen == slot
                 {
-                    panic!("the resume's start failed: {message}");
+                    panic!("the restore's start failed: {message}");
                 }
             }
-            panic!("the update stream closed before the resumed worker connected");
+            panic!("the update stream closed before the restored worker connected");
         })
         .await
-        .expect("the task-less worker resume reaches Connected");
-        assert_eq!(connected, known, "the worker runs under the id that was named");
-        let domain = workspace.domain_session_for(&key).expect("the task registered its domain");
+        .expect("the restore reaches Connected");
+        assert_eq!(connected, named, "the restored worker runs under the named id");
+
+        let entries = {
+            let workers = workspace.live_workers.lock();
+            workers.get(&project_key).cloned().unwrap_or_default()
+        };
+        assert_eq!(entries.len(), 1, "the tombstone is replaced, not doubled: {entries:?}");
+        assert!(entries[0].is_live(), "and the entry left is the live one, not the tombstone");
         assert_eq!(
-            domain.lock().session_id.as_ref().map(std::string::ToString::to_string),
-            Some(known.to_owned()),
-            "and the domain is the resumed occupant",
+            entries[0].session_id.as_ref().map(std::string::ToString::to_string),
+            Some(named.to_owned()),
+            "carrying the resumed id",
         );
+        assert_eq!(workspace.count_live_workers(&project_key), 1, "and one cap slot");
         forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// The worker door refuses, by name, what it cannot restore: a project
+    /// the config does not declare, a label with no row, and a row the store
+    /// cannot read.
+    #[tokio::test]
+    async fn a_resume_with_no_task_refuses_a_worker_it_cannot_restore() {
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = resume_workspace(dir.path(), project.path());
+
+        let unknown = SessionSlot::worker("Default", "gone", "labourer");
+        let sent = workspace.dispatch_from_view(Command::Prompt {
+            key: unknown.clone(),
+            text: "/resume 22222222-3333-4444-5555-666666666666".to_owned(),
+            attachments: Vec::new(),
+        });
+        assert!(
+            matches!(sent, Err(DispatchError::UnknownSession(_))),
+            "an undeclared project is refused: {sent:?}",
+        );
+
+        let absent = SessionSlot::worker("Default", "forge", "absent");
+        let sent = workspace.dispatch_from_view(Command::Prompt {
+            key: absent.clone(),
+            text: "/resume 22222222-3333-4444-5555-666666666666".to_owned(),
+            attachments: Vec::new(),
+        });
+        assert!(
+            matches!(sent, Err(DispatchError::UnknownSession(_))),
+            "a label with no row is refused: {sent:?}",
+        );
+
+        // No store at all: the row cannot be read, which is a refusal rather
+        // than a spawn composed from defaults.
+        *workspace.db.lock() = None;
+        let unreadable = SessionSlot::worker("Default", "forge", "labourer");
+        let sent = workspace.dispatch_from_view(Command::Prompt {
+            key: unreadable.clone(),
+            text: "/resume 22222222-3333-4444-5555-666666666666".to_owned(),
+            attachments: Vec::new(),
+        });
+        assert!(
+            matches!(sent, Err(DispatchError::UnknownSession(_))),
+            "an unreadable row is refused: {sent:?}",
+        );
     }
 
     /// An update merges only the supplied fields onto the stored row and

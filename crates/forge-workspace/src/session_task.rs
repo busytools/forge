@@ -1930,7 +1930,16 @@ impl SessionTask {
         key: &SessionSlot,
         why: &str,
     ) {
-        domain.lock().handoff = crate::domain_session::HandoffState::default();
+        {
+            let mut guard = domain.lock();
+            guard.handoff = crate::domain_session::HandoffState::default();
+            // **The judgment prompt's committed turn settles here.** The
+            // prompt was routed at `begin_handoff`, so its commit is open;
+            // these paths end the handoff without the Result that would
+            // serve it, and a seat left with an outstanding turn bails out
+            // of every later trigger at the idle gate.
+            guard.serve_turn();
+        }
         let held = workspace.end_swap(key);
         if !update_tx.send(SessionUpdate::Notice {
             key: key.clone(),
@@ -4266,6 +4275,51 @@ mod tests {
         );
     }
 
+    /// **The judgment prompt's committed turn settles on the abort.** The
+    /// real sender path commits it, so a test that arms the handoff state by
+    /// hand cannot see the leak; this one routes the prompt through a
+    /// registered sender and cancels it before it starts.
+    #[tokio::test]
+    async fn a_cancelled_judgment_short_settles_the_committed_turn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        workspace.domain_handles.lock().insert(slot.clone(), Arc::clone(&task.domain));
+        let (commands, mut routed) = mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(slot.clone(), commands);
+
+        task.begin_handoff(None);
+
+        assert!(
+            matches!(
+                routed.try_recv(),
+                Ok(Command::PromptUnder { text, .. }) if text == crate::handoff::JUDGMENT_PROMPT
+            ),
+            "the judgment prompt reached the seat's sender",
+        );
+        assert!(task.domain.lock().turn_pending, "and its turn is committed");
+        let judgment_uuid = task
+            .domain
+            .lock()
+            .handoff
+            .judgment_uuid
+            .clone()
+            .expect("the handoff recorded its prompt id");
+
+        task.translate_event(AgentEvent::PromptCancelResolved {
+            uuid: judgment_uuid,
+            cancelled: true,
+        });
+
+        let domain = task.domain.lock();
+        assert!(!domain.turn_pending, "the abort settles the judgment prompt's turn",);
+        assert!(domain.is_idle_for_handoff(), "so the seat is idle again");
+        assert!(!domain.handoff.awaiting, "and the handoff is over");
+    }
+
     /// A judgment prompt the CLI refuses or discards without running is the
     /// same dead end, whichever state names it.
     #[tokio::test]
@@ -5130,44 +5184,6 @@ mod tests {
         assert!(!task.domain.lock().handoff.probing, "and the boundary is spent");
     }
 
-    /// **A moved compaction count fires the handoff even when the fill
-    /// reading is under the share.** That is the backstop's case: the CLI cut
-    /// the conversation inside a turn, so the boundary reads small while the
-    /// count says the turn crossed the window.
-    #[tokio::test]
-    async fn a_moved_compaction_count_fires_below_the_fill_share() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (workspace, _rx) =
-            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
-        workspace.enable_test_dispatch_intercept();
-        let (mut task, mut agent_rx) = trigger_task(&workspace, 1);
-
-        task.maybe_trigger_handoff();
-        assert!(
-            matches!(
-                agent_rx.try_recv(),
-                Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
-            ),
-            "the boundary asks for the reading",
-        );
-        task.translate_event(reading(Some(12), Some(24_000), Some(200_000)));
-
-        let dispatched = workspace.drain_test_dispatch_buffer();
-        assert!(
-            dispatched.iter().any(|command| matches!(
-                command,
-                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
-            )),
-            "the compaction backstop starts the handoff: {dispatched:?}",
-        );
-        assert_eq!(
-            task.domain.lock().handoff.reason,
-            Some(forge_primitives::HandoffReason::Compaction),
-            "and the row's reason is the count, not the fill",
-        );
-        assert!(workspace.swap_in_progress(&task.key), "with its gate open");
-    }
-
     /// The denominator is the CLI's effective window, not the share it
     /// reports: a window lowered for auto-compact fires earlier, which is
     /// the whole reason the trigger is a percentage rather than a count.
@@ -5201,9 +5217,16 @@ mod tests {
         let (workspace, _rx) =
             crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
         workspace.enable_test_dispatch_intercept();
-        let (mut task, _agent_rx) = trigger_task(&workspace, 1);
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 1);
 
         task.maybe_trigger_handoff();
+        assert!(
+            matches!(
+                agent_rx.try_recv(),
+                Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
+            ),
+            "the boundary asks for the reading",
+        );
         task.translate_event(reading(Some(10), Some(100_000), Some(1_000_000)));
 
         assert!(
@@ -5218,6 +5241,7 @@ mod tests {
             Some(forge_primitives::HandoffReason::Compaction),
             "and the row says a compaction came first",
         );
+        assert!(workspace.swap_in_progress(&task.key), "with its gate open");
     }
 
     /// `enabled = false` is the one off switch: not even a reading is asked

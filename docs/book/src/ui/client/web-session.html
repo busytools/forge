@@ -34,8 +34,10 @@
      line, a hairline carrying the word and the count read before the cut),
      details.handoff (the row between two sessions: the pair it swapped, the
      reason it fired for (the fill it crossed or the compaction that forced
-     it), and the two halves of the brief the successor was given - the
-     previous conversation stays above it).
+     it), the two halves of the brief the successor was given, and - open -
+     both full session ids with the control that copies each, so the recovery
+     `/resume <old-id>` needs is on the row itself; the previous conversation
+     stays above it).
      A run of peer messages is a tool run, and a thought is one too: each is a
      details.leaf row - .mk, .k and .org for a counterparty, the bubble for the
      thinking - so traffic, reasoning and work read as one system rather than
@@ -926,12 +928,20 @@
   details.handoff[open] > summary .arw { color: var(--accent); }
   .handoff .hbody { padding: 8px 0 4px 0; }
   .handoff .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .handoff .sessions { display: grid; gap: 4px; margin: 2px 0 10px; }
+  .handoff .sid { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .handoff .sid .k { flex: none; min-width: 82px; color: var(--dim); }
+  .handoff .sid .v { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+  .handoff .sessions .cp { color: var(--dim); background: none; border: 1px solid var(--line);
+    border-radius: 5px; padding: 2px 5px; display: inline-flex; align-items: center; }
+  .handoff .hint { color: var(--dim); font-size: 12px; }
   .handoff .lbl { color: var(--accent); font-size: 11px; letter-spacing: .08em; margin: 14px 0 6px 0; }
   .handoff .fact { display: flex; gap: 18px; padding: 2px 0; font-size: 12px; color: var(--text); }
   .handoff .fact .k { flex: 0 0 88px; color: var(--muted); }
   .handoff .fact .v { flex: 1; white-space: pre-wrap; word-break: break-word; }
   @media (pointer: coarse) {
     details.handoff > summary { min-height: 44px; }
+    .handoff .sessions .cp { min-width: 44px; min-height: 44px; justify-content: center; }
   }
   .cpoint .cpbody { margin: 6px 0 2px; color: var(--muted); }
   .cpoint .cpbody b { color: var(--text); font-weight: 500; }
