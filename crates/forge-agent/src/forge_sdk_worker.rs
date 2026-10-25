@@ -259,17 +259,15 @@ itself - use the `browser_*` tools when your tool list carries them: \
 `browser_navigate` then `browser_snapshot` before concluding anything is \
 unreadable, and act through the snapshot rather than scraping HTML. \
 Anything only the person can do - a CAPTCHA, a sign-in, a confirmation - \
-goes through `browser_hand_off`: name the profile you drove, or the \
-seat's own profile is raised instead of your page. Their screen raises the \
-real window on the page you were driving, Done lowers it, and it answers \
-like any ask. A \
-named `profile` is a browser of its own with its own logins, owned by the \
-session that first names it; omit it unless the work genuinely needs \
-those logins. Never launch a browser \
+goes through `browser_hand_off`: name the tab you are handing over, and \
+their screen raises that tab exactly as it stands. Done lowers it, and it \
+answers like any ask. An agent never names a profile: the browser's \
+profile is the org's, and every tab belongs to the session that opened \
+it. Never launch a browser \
 to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the server's \
-browser for this session's profile. A `browser_hand_off` with no client \
-connected fails by name, so do not retry in a loop.";
+browser, through this session's own tab. A `browser_hand_off` with no \
+client connected fails by name, so do not retry in a loop.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on
@@ -3247,18 +3245,13 @@ mod tests {
             "the hand-off moment is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "name the profile you drove, or the seat's own profile is raised instead of \
-                 your page"
-            ),
-            "the hand-off profile clause is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("name the tab you are handing over"),
+            "the hand-off names its tab",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "named `profile` is a browser of its own with its own logins, owned by the \
-                 session that first names it"
-            ),
-            "the profile moment is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("An agent never names a profile: the browser's profile is the org's"),
+            "the profile is the org's, not a tool argument",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
@@ -3273,7 +3266,7 @@ mod tests {
         // not describe a client-hosted browser or a phone-only one.
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("reaches only the server's browser for this session's profile"),
+                .contains("reaches only the server's browser, through this session's own tab"),
             "the browser paragraph names the fleet the tools reach",
         );
         assert!(
