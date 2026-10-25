@@ -22,6 +22,7 @@ mod support;
 use forge_browser::osr::Ring;
 use forge_browser::service::BrowserService;
 use forge_browser::spawn;
+use std::path::Path;
 
 /// End this test's host and drop its ring however the test ends.
 struct Guard {
@@ -53,6 +54,28 @@ fn installed_host() -> std::path::PathBuf {
     )
 }
 
+/// A profile in the store's org-rooted shape, made and returned.
+fn profile_in(root: &Path) -> std::path::PathBuf {
+    let profile = root.join("profiles").join("shared").join("default").join("cef");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    profile
+}
+
+/// **The walk's denominator, for a survivor test.** A second profile whose
+/// record names a pid no host owns; the reaper clears that record, so a test
+/// that only asserts its own host survived can also prove the sweep reached
+/// the store instead of walking an empty tree.
+fn stale_sibling(root: &Path) -> std::path::PathBuf {
+    let profile = root.join("profiles").join("sibling").join("default").join("cef");
+    std::fs::create_dir_all(&profile).expect("the sibling profile dir");
+    spawn::write_record(
+        &profile,
+        &spawn::Record { pid: 1, port: 1, ring: "/forge-reap-sibling".to_owned() },
+    )
+    .expect("the sibling record");
+    profile
+}
+
 /// **A host this process started survives the boot reap.** The record names a
 /// live host of this profile, so the reaper leaves it and its trail alone.
 #[ignore = "needs the installed Forge Browser.app; scripts/stage-browser-host.sh stages it"]
@@ -61,8 +84,7 @@ async fn a_host_this_process_started_survives_the_boot_reap() {
     let scratch = tempfile::tempdir().expect("a scratch dir");
     let exe = installed_host();
     let root = scratch.path().join("browser");
-    let profile = root.join("shared").join("cef");
-    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let profile = profile_in(&root);
     let port = support::free_port();
     let ring = format!("/forge-reap-{}", std::process::id());
 
@@ -85,9 +107,14 @@ async fn a_host_this_process_started_survives_the_boot_reap() {
     spawn::write_record(&profile, &spawn::Record { pid, port, ring: ring.clone() })
         .expect("the record");
 
+    let sibling = stale_sibling(&root);
     let service = BrowserService::at(root.clone(), scratch.path().join("stack"));
     service.reap_stale().await;
 
+    assert!(
+        spawn::read_record(&sibling).is_none(),
+        "the sweep reached the store: the sibling's record is cleared"
+    );
     assert!(spawn::alive(pid), "the reaper left a host this process started");
     assert_eq!(
         spawn::read_record(&profile).map(|record| record.pid),
@@ -108,8 +135,7 @@ async fn a_stale_host_is_ended_and_its_trail_cleared() {
     let scratch = tempfile::tempdir().expect("a scratch dir");
     let exe = installed_host();
     let root = scratch.path().join("browser");
-    let profile = root.join("shared").join("cef");
-    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let profile = profile_in(&root);
     let port = support::free_port();
     let ring = format!("/forge-reap-stale-{}", std::process::id());
     let log = scratch.path().join("host.log");
@@ -183,8 +209,7 @@ async fn a_host_named_only_by_its_singleton_survives_the_boot_reap() {
     let scratch = tempfile::tempdir().expect("a scratch dir");
     let exe = installed_host();
     let root = scratch.path().join("browser");
-    let profile = root.join("shared").join("cef");
-    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let profile = profile_in(&root);
     let port = support::free_port();
     let ring = format!("/forge-reap-singleton-{}", std::process::id());
 
@@ -214,9 +239,14 @@ async fn a_host_named_only_by_its_singleton_survives_the_boot_reap() {
         target.display(),
     );
 
+    let sibling = stale_sibling(&root);
     let service = BrowserService::at(root.clone(), scratch.path().join("stack"));
     service.reap_stale().await;
 
+    assert!(
+        spawn::read_record(&sibling).is_none(),
+        "the sweep reached the store: the sibling's record is cleared"
+    );
     assert!(spawn::alive(pid), "the reaper left a host this process started");
     assert!(
         std::fs::symlink_metadata(&lock).is_ok(),
