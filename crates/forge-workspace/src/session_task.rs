@@ -5130,6 +5130,44 @@ mod tests {
         assert!(!task.domain.lock().handoff.probing, "and the boundary is spent");
     }
 
+    /// **A moved compaction count fires the handoff even when the fill
+    /// reading is under the share.** That is the backstop's case: the CLI cut
+    /// the conversation inside a turn, so the boundary reads small while the
+    /// count says the turn crossed the window.
+    #[tokio::test]
+    async fn a_moved_compaction_count_fires_below_the_fill_share() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, mut agent_rx) = trigger_task(&workspace, 1);
+
+        task.maybe_trigger_handoff();
+        assert!(
+            matches!(
+                agent_rx.try_recv(),
+                Ok(forge_primitives::AgentCommand::GetContextUsage { .. })
+            ),
+            "the boundary asks for the reading",
+        );
+        task.translate_event(reading(Some(12), Some(24_000), Some(200_000)));
+
+        let dispatched = workspace.drain_test_dispatch_buffer();
+        assert!(
+            dispatched.iter().any(|command| matches!(
+                command,
+                Command::PromptUnder { text, .. } if text == crate::handoff::JUDGMENT_PROMPT
+            )),
+            "the compaction backstop starts the handoff: {dispatched:?}",
+        );
+        assert_eq!(
+            task.domain.lock().handoff.reason,
+            Some(forge_primitives::HandoffReason::Compaction),
+            "and the row's reason is the count, not the fill",
+        );
+        assert!(workspace.swap_in_progress(&task.key), "with its gate open");
+    }
+
     /// The denominator is the CLI's effective window, not the share it
     /// reports: a window lowered for auto-compact fires earlier, which is
     /// the whole reason the trigger is a percentage rather than a count.
