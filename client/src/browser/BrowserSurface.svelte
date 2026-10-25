@@ -63,7 +63,7 @@
 
   /** The newest sequence the canvas drew, per tab: an older frame for any
    *  tab must not paint over the one already there. */
-  const painted = new Map<string, number>();
+  const painted: Record<string, number> = {};
 
   /** Draw one frame, answering whether it became the picture. */
   async function paint(frame: BrowserFrame): Promise<boolean> {
@@ -92,7 +92,7 @@
     // page; painting it would put a stale picture over the newest. The tab's
     // own last sequence is the one it compares against.
     const key = `${frame.profile}:${frame.tab}`;
-    const drawn = painted.get(key);
+    const drawn = painted[key];
     if (drawn !== undefined && frame.seq <= drawn) return false;
     let bitmap: ImageBitmap;
     try {
@@ -115,7 +115,7 @@
     canvas.height = frame.height;
     canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
     bitmap.close();
-    painted.set(key, frame.seq);
+    painted[key] = frame.seq;
     return true;
   }
 
