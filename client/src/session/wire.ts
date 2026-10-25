@@ -322,6 +322,12 @@ export interface SessionRecord {
   /** The instances the session dispatched, joined by the core. */
   subagent_instances: SubagentCard[];
   file_index: unknown;
+  /**
+   * The sessions this seat can jump back to, which `/resume` offers: the
+   * project's own for a lead, the seat's own label's for a worker, newest
+   * first.
+   */
+  resume_sessions: unknown;
   /** What this seat's composer is doing. */
   composer: ComposerState;
   /** The prompts still waiting in the CLI's queue, oldest first: the pile. */
@@ -583,6 +589,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     subagents: list(held['subagents']),
     subagent_instances: list(held['subagent_instances']).map(subagentCardFrom),
     file_index: held['file_index'] ?? null,
+    resume_sessions: held['resume_sessions'] ?? null,
     composer: composerFrom(held['composer']),
     pending_asks: asksFrom(held['pending_asks'], held['pending_ask']),
     conversation: {

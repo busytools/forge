@@ -20,7 +20,7 @@ every list it opens is a live read.
 | Field | the box: the draft, the caret, the key hints, and the controls - the mic at the row's end, `send` once there is content, `stop` while a turn runs | the host's composer store |
 | Dock | the front of the seat's parked asks: a question's options, or a permission's actions, over the reader's own words row | `pending_asks` |
 | Hints | one line above the box where there is something to say: a sign-in, a cancelled turn resubmitting, a suggestion | `notice`, the take, the CLI's own frames |
-| Autocomplete | one popover over the box: the four lists below | the CLI's advertised commands, this seat's file index, the subagent catalogue, the bundle's emoji set |
+| Autocomplete | one popover over the box: the five lists below | the CLI's advertised commands, this seat's file index, the subagent catalogue, the bundle's emoji set, the sessions this seat can resume |
 | Dictation | the take card and the panel: the axes, the models each role runs, the input device | the greeting's dictate axes; `dictate` subject |
 
 **The field's row is the whole composer when there is nothing else to
@@ -34,9 +34,9 @@ sends the words under it, which is what makes the CLI emit the lifecycle
 frames [the queue page](./queue.md) reads; without a stamp the CLI emits
 none.
 
-## The four lists
+## The five lists
 
-Four triggers, one popover shape, each row carrying the real icon for its
+Five triggers, one popover shape, each row carrying the real icon for its
 kind rather than a character-cell prefix and the matched span highlighted:
 
 | Trigger | List | Source |
@@ -45,6 +45,15 @@ kind rather than a character-cell prefix and the matched span highlighted:
 | `@` | this seat's files, by path from the session's root | the file index walk |
 | `&` | the subagent types the CLI names | the subagents catalogue |
 | `:name` | emoji, by shortcode | the bundle's own set |
+| `/resume ` and `/resume <partial>` | the sessions this seat can jump back to, newest first: the id, and the transcript's own title beside it | the record's `resume_sessions` read |
+
+**The `/resume` list is the set that command can actually resume.** The
+argument has to be a whole word, so a second word opens nothing rather than
+composing a line the core answers as a misuse. A lead is offered its own
+project's sessions and never its workers'; a worker is offered only the runs
+carrying its own label, and only from the directory its own resume runs in.
+The session the seat is already on is not offered: every row is a real jump.
+A pick writes the id alone, so the send is the ordinary `/resume <id>`.
 
 A query drops the headings and leaves the order; a list with no rows opens
 nothing, because a popover holding only a header reads as a list that lost

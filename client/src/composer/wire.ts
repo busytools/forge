@@ -443,6 +443,29 @@ export function agentTypesFrom(value: unknown): AgentType[] {
   });
 }
 
+/** One session a seat can resume, as the `/resume` list draws it. */
+export interface ResumeSession {
+  id: string;
+  summary: string;
+}
+
+/**
+ * The sessions the core says this seat can jump back to, newest first.
+ *
+ * The order is the core's and is kept: it is recency, which the row itself
+ * cannot say, and the list offers it in that order rather than re-sorting.
+ */
+export function resumeSessionsFrom(value: unknown): ResumeSession[] {
+  const rows: ResumeSession[] = [];
+  for (const entry of list(value)) {
+    const row = record(entry);
+    const id = text(row['session_id']);
+    if (id === null || id === '') continue;
+    rows.push({ id, summary: text(row['summary']) ?? '' });
+  }
+  return rows;
+}
+
 /** One file the seat's index holds, as the `@` list ranks it. */
 export interface FileEntry {
   relPath: string;

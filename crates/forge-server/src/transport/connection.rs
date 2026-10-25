@@ -1144,6 +1144,7 @@ where
                             tree_reviews_ms = timings.tree_reviews_ms,
                             state_ms = timings.state_ms,
                             index_ms = timings.index_ms,
+                            resume_ms = timings.resume_ms,
                             tail_ms = timings.tail_ms,
                             encode_ms = timings.encode_ms,
                             pr_age_s = timings.pr_age_s,
@@ -1155,7 +1156,8 @@ where
                              conversation the copy's arrival, page its cut and fold, cards \
                              the subagent cards, work the tree scan, content the diff's \
                              changed files, reviews and tree_reviews the review reads, state \
-                             the seat's own state, index the file walk, tail the process read \
+                             the seat's own state, index the file walk, resume the `/resume` \
+                             list's read, tail the process read \
                              and the \
                              record's assembly, and encode the record's value; pr_age_s is \
                              how old the PR attempt the record carries is, absent until one \

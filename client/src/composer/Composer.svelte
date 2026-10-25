@@ -51,7 +51,7 @@
     signInLine,
     type ComposerProps,
   } from './view';
-  import { advisoriesFrom, agentTypesFrom, filesFrom } from './wire';
+  import { advisoriesFrom, agentTypesFrom, filesFrom, resumeSessionsFrom } from './wire';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 
   /** How long a landed take's border holds its green beat, which the book states. */
@@ -515,7 +515,7 @@
    * The lists a draft is matched against, pulled when a list is opened rather
    * than on every frame.
    *
-   * All four are built together on the pull, which is what keeps `held`'s
+   * All five are built together on the pull, which is what keeps `held`'s
    * dependencies equal to the sources it reads. What the pull saves is the
    * record being replaced per frame, so a draft that opens nothing never
    * rebuilds a list it will not draw.
@@ -526,6 +526,7 @@
       advertised: advisoriesFrom(record.slash_commands),
       files: filesFrom(record.file_index),
       agents: agentTypesFrom(record.subagents),
+      sessions: resumeSessionsFrom(record.resume_sessions),
     };
   }
   const held = $derived(offer(box.draft, sources));

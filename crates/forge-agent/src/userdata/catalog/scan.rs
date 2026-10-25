@@ -1173,7 +1173,11 @@ struct LiteSessionFile {
 /// sessions whose files have permission errors / are mid-truncation
 /// / have a bad fd, which presents to the user as missing sessions
 /// with no triage signal.
-fn read_session_lite(path: &Path, cache: Option<&SessionTagCache>) -> Option<LiteSessionFile> {
+fn read_session_lite(
+    path: &Path,
+    cache: Option<&SessionTagCache>,
+    scan_tag: bool,
+) -> Option<LiteSessionFile> {
     let mut file = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
@@ -1233,12 +1237,18 @@ fn read_session_lite(path: &Path, cache: Option<&SessionTagCache>) -> Option<Lit
         String::from_utf8_lossy(&tail_bytes).into_owned()
     };
 
-    let tag = match tag_of(path, &mut file, size, cache) {
-        Ok(tag) => tag,
-        Err(e) => {
-            tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "seek_tag_scan", "lite-read tag-scan failed; resume will treat as untagged");
-            None
+    // The tag scan is the whole file. A caller that wants only the title
+    // passes `false` and is not billed for the bytes that scan would read.
+    let tag = if scan_tag {
+        match tag_of(path, &mut file, size, cache) {
+            Ok(tag) => tag,
+            Err(e) => {
+                tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "seek_tag_scan", "lite-read tag-scan failed; resume will treat as untagged");
+                None
+            }
         }
+    } else {
+        None
     };
 
     Some(LiteSessionFile { mtime, size, head, tail, tag })
@@ -1619,9 +1629,31 @@ pub(crate) fn should_skip_first_prompt(s: &str) -> bool {
     false
 }
 
+/// The one transcript at `path`, read for its title and clock.
+///
+/// A row the catalog mirrored at `Connected` carries a placeholder title
+/// until the next scan reads the transcript; this reads that one file for a
+/// caller that needs the title now, and `None` when there is no readable
+/// transcript there.
+///
+/// **The tag is not read**, and is `None` on the answer: a tag scan covers
+/// the whole file, and a caller that only needs the title must not pay for
+/// bytes it does not use.
+pub fn read_session_info_at(path: &Path) -> Option<SDKSessionInfo> {
+    read_session_info_with(path, None, false)
+}
+
 fn read_session_info(path: &Path, cache: Option<&SessionTagCache>) -> Option<SDKSessionInfo> {
+    read_session_info_with(path, cache, true)
+}
+
+fn read_session_info_with(
+    path: &Path,
+    cache: Option<&SessionTagCache>,
+    scan_tag: bool,
+) -> Option<SDKSessionInfo> {
     let session_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
-    let lite = read_session_lite(path, cache)?;
+    let lite = read_session_lite(path, cache, scan_tag)?;
     let storage_key = path
         .parent()
         .and_then(Path::file_name)
@@ -2521,6 +2553,24 @@ mod tests {
         assert_eq!(info.tag.as_deref(), Some("forge:worker:tester"));
     }
 
+    /// **The title read does not scan for the tag.** A tag scan covers the
+    /// whole file, and the caller that reads one transcript for its title (a
+    /// catalog row mirrored at Connected) must not pay for bytes it does not
+    /// use; routing that call back through the full read would restore the
+    /// scan, and the tag on the answer is what says so.
+    #[test]
+    fn a_title_read_carries_the_title_and_not_the_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tagged = "{\"type\":\"user\",\"message\":{\"content\":\"the work I left\"}}\n\
+                      {\"type\":\"tag\",\"tag\":\"forge:worker:gone\"}\n";
+        let path = write_session_jsonl(tmp.path(), "abc", tagged);
+
+        let info = read_session_info_at(&path).expect("a readable transcript");
+
+        assert_eq!(info.summary, "the work I left", "the title is read");
+        assert_eq!(info.tag, None, "and the tag is not, because that scan is the whole file");
+    }
+
     /// A transcript that shrank was truncated or replaced, so an offset
     /// recorded against the old bytes describes nothing in the new ones.
     /// Resuming past the end of the replacement would read no bytes at
@@ -2534,7 +2584,7 @@ mod tests {
 
         let cache = SessionTagCache::default();
         assert_eq!(
-            read_session_lite(&path, Some(&cache)).unwrap().tag.as_deref(),
+            read_session_lite(&path, Some(&cache), true).unwrap().tag.as_deref(),
             Some("forge:worker:gone"),
             "the first scan must find the tag it will later be asked to forget"
         );
@@ -2545,7 +2595,7 @@ mod tests {
         std::fs::write(&path, "{\"type\":\"user\",\"message\":{\"content\":\"x\"}}\n").unwrap();
 
         assert_eq!(
-            read_session_lite(&path, Some(&primed)).unwrap().tag,
+            read_session_lite(&path, Some(&primed), true).unwrap().tag,
             None,
             "a replaced transcript must be re-scanned, not answered from the old offset"
         );

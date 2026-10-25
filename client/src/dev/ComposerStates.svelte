@@ -70,6 +70,7 @@
         { name: 'cli-audit', description: 'never run' },
       ],
       file_index: { entries: {} },
+      resume_sessions: [],
     };
   }
 

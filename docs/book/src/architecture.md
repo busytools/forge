@@ -95,7 +95,8 @@ through named verbs by subject - `roster`, `session`, `agents`,
 `dictate`,
 `dictate_models`, `cli_version`, `conversation`, `slash_commands`,
 `forge_commands`, `subagents`, `subagent_cards`,
-`file_index`, `walk_file_index`, `respect_gitignore`, `header`, `mcp_servers`,
+`file_index`, `resumable_sessions`, `walk_file_index`, `respect_gitignore`,
+`header`, `mcp_servers`,
 `processes`, `work`, `board`, `background_tasks`, `monitors`, `pending_asks`,
 `fatal_error`, `service_status`
 and `usage` - receives changes through
@@ -107,7 +108,7 @@ task board's fleet and per-project rows through `board`, the
 account pool, the worker registry, connector subscriptions and dictation
 state, the claude version through `cli_version`, its
 composer's data through `slash_commands`, `forge_commands`, `subagents`,
-`file_index` and `respect_gitignore`, and the conversation,
+`file_index`, `respect_gitignore` and `resumable_sessions`, and the conversation,
 header, inspector and the asks it answers through
 `conversation`, `header`, `mcp_servers`, `processes`, `monitors` and
 `pending_asks`, and dispatches its composer's send, its prompt answers and

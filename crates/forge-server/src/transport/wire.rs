@@ -388,6 +388,15 @@ pub struct SessionWire {
     /// per subscriber: the walk is a whole tree. Serialises as the index
     /// itself.
     pub file_index: Arc<FileIndex>,
+    /// The sessions this seat can jump back to with `/resume`, newest first.
+    ///
+    /// Carried on the record because the composer's other sources are: a
+    /// `/resume` list is only asked for while a draft's argument is being
+    /// typed, and a read on demand would need its own ask, its own answer and
+    /// a shell command to carry it - the record already reaches every reader
+    /// the composer draws on. Both a lead's and a worker's read is one scan of
+    /// the directory that seat's own resume runs in.
+    pub resume_sessions: Vec<ResumableSessionWire>,
     pub reviews: ReviewsWire,
     /// The seat-tree review half, beside the branch's: the files page's
     /// comments, each thread placed against the seat's working files. Same
@@ -428,6 +437,15 @@ pub struct SessionWire {
     /// forge-agent's `git_diff::content`, which is where the read's shape
     /// is decided.
     pub diff: DiffContent,
+}
+
+/// One session a seat can resume, as `/resume`'s list draws it: the id a pick
+/// writes into the draft, and the transcript's own title beside it.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ResumableSessionWire {
+    pub session_id: String,
+    pub summary: String,
 }
 
 /// Where a session's reads find their own working tree.
@@ -1659,6 +1677,7 @@ pub struct OpenTimings {
     pub tree_reviews_ms: f64,
     pub state_ms: f64,
     pub index_ms: f64,
+    pub resume_ms: f64,
     pub tail_ms: f64,
     /// How old the PR attempt behind this record is, in seconds; absent when
     /// the scan has never attempted one. The record can carry a PR past its
@@ -2284,9 +2303,24 @@ async fn session(
     // list, so the two cannot disagree.
     let asks = surface.pending_asks(slot);
 
+    // `/resume`'s list, on the record with the composer's other sources: a
+    // lead reads the boot catalog's group, keeping a row only where its
+    // transcript is still on disk, and a worker scans its own directory -
+    // filesystem work both ways, so it is timed like the other reads and kept
+    // out of the tail slice.
+    let resume_at = std::time::Instant::now();
+    let resume_sessions = surface
+        .resumable_sessions(slot)
+        .await
+        .into_iter()
+        .map(|info| ResumableSessionWire { session_id: info.session_id, summary: info.summary })
+        .collect();
+    timings.resume_ms = slice_ms(resume_at);
+
     let wire = SessionWire {
         slot: slot.clone(),
         file_index,
+        resume_sessions,
         slash_commands: surface.slash_commands(slot),
         subagents: surface.subagents(slot),
         subagent_instances: instances,
@@ -2363,7 +2397,11 @@ async fn session(
         closes: held.diff.closes,
         diff,
     };
-    timings.tail_ms = slice_ms(at);
+    // The tail clock opened before the process read and the resume read falls
+    // inside its window, so its slice is the elapsed less that read: the
+    // numbers a reader subtracts are disjoint, and the glue that remains is
+    // the record's own assembly.
+    timings.tail_ms = slice_ms(at) - timings.resume_ms;
     Ok(wire)
 }
 
@@ -3684,6 +3722,63 @@ mod tests {
         assert_eq!(
             encoded["header"]["session_id"], "d4f70669-1f2a",
             "the occupant the core named crosses on the header: {encoded}"
+        );
+    }
+
+    /// `/resume`'s list rides the record, because the composer's other sources
+    /// do: a field that never reached the JSON would leave the popover with
+    /// nothing to offer and nothing on screen saying why.
+    #[tokio::test]
+    async fn a_session_snapshot_carries_the_sessions_the_seat_can_resume() {
+        let dir = tempfile::tempdir().expect("fleet dir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let cwd =
+            fleet.workspace().cwd_for_session(&fixture_seat()).expect("the project's directory");
+        let key = forge_workspace::userdata::catalog::scan::project_key_for_directory(Some(&cwd));
+        let project_dir = dir.path().join("projects").join(key);
+        std::fs::create_dir_all(&project_dir).expect("the project's transcripts");
+        for (id, summary, secs) in [
+            ("aaaa-0000", "the older session", 1_700_000_100_u64),
+            ("bbbb-1111", "the newer session", 1_700_000_200),
+        ] {
+            let path = project_dir.join(format!("{id}.jsonl"));
+            std::fs::write(
+                &path,
+                format!(
+                    "{{\"type\":\"user\",\"cwd\":\"{cwd}\",\"message\":{{\"content\":\"{summary}\"}}}}\n"
+                ),
+            )
+            .expect("write a transcript");
+            let file = std::fs::File::options().write(true).open(&path).expect("open it");
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+                .expect("pin the transcript's mtime");
+        }
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            client: forge_primitives::ClientConfig::default(),
+            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            heartbeat: Heartbeat::default(),
+        };
+
+        let encoded =
+            encode_subject(&state, &Subject::Session(fixture_seat())).await.expect("encode");
+
+        assert_eq!(
+            encoded["resume_sessions"][0]["session_id"], "bbbb-1111",
+            "the newest session leads, by the id a pick writes: {encoded}"
+        );
+        assert_eq!(
+            encoded["resume_sessions"][0]["summary"], "the newer session",
+            "with the transcript's own title beside it: {encoded}"
+        );
+        assert_eq!(
+            encoded["resume_sessions"][1]["session_id"], "aaaa-0000",
+            "and the older one follows: {encoded}"
         );
     }
 

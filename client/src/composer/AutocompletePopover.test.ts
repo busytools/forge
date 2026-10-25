@@ -30,6 +30,7 @@ const sources = (): Sources => ({
   ],
   files: [],
   agents: [],
+  sessions: [],
 });
 
 /** The list every test here reads out of the DOM rather than out of the offer. */
@@ -58,6 +59,7 @@ const files =
     advertised: [],
     files: paths.map(file),
     agents: [],
+    sessions: [],
   });
 
 /** The list a draft opens, or a throw, since every test here is about one. */

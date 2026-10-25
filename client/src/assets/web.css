@@ -2872,7 +2872,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   background: none; border: 0; padding: 0; cursor: pointer; }
 .pop .rst:hover { color: var(--muted); }
 
-/* ---------- autocomplete: four triggers, one popover shape ---------- */
+/* ---------- autocomplete: five triggers, one popover shape ---------- */
 
 .ac { border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
   background: rgba(13,17,26,.96); box-shadow: 0 18px 44px rgba(0,0,0,.5); }

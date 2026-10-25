@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { backgroundTaskFrom, diffFrom, gitFrom, reviewThreadFrom, reviewsFrom } from './wire';
+import {
+  backgroundTaskFrom,
+  diffFrom,
+  gitFrom,
+  reviewThreadFrom,
+  reviewsFrom,
+  sessionFrom,
+} from './wire';
 
 describe('the background-task registry parse', () => {
   it('drops a row missing its id, its kind or its words rather than drawing it blank', () => {
@@ -239,5 +246,28 @@ describe('the diff parse', () => {
       state: 'unknown',
       raw: 'absent',
     });
+  });
+});
+
+/**
+ * The seat's resumable sessions travel on the record, and this decode is the
+ * one link a fixture carrying `[]` cannot see: a wrong key or a dropped line
+ * leaves the live composer offering nothing, with the popover's empty-list
+ * rule as the only trace.
+ */
+describe("the seat's resumable sessions", () => {
+  it('carries each row the core sent, in its order', () => {
+    const record = sessionFrom({
+      resume_sessions: [
+        { session_id: '7f3a92e0-1c2b', summary: 'the resume picker' },
+        { session_id: 'c40d18aa-2b3c', summary: 'the auth timeout fix' },
+      ],
+    });
+
+    expect(record.resume_sessions, 'the rows cross the record decode').toEqual([
+      { session_id: '7f3a92e0-1c2b', summary: 'the resume picker' },
+      { session_id: 'c40d18aa-2b3c', summary: 'the auth timeout fix' },
+    ]);
+    expect(sessionFrom({}).resume_sessions, 'and a record without them states none').toBeNull();
   });
 });
