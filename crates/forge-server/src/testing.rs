@@ -42,9 +42,12 @@ pub struct ViewFacts {
     pub context: Option<forge_workspace::ContextUsage>,
     pub mcp: Option<forge_workspace::McpServers>,
     pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
-    /// The CLI's background-task registry, as `background_tasks_changed`
-    /// would have left it.
+    /// The CLI's background registry, as `background_tasks_changed` would
+    /// have left it.
     pub background_tasks: Vec<forge_workspace::BackgroundTask>,
+    /// The announced holds the registry does not name - a long foreground
+    /// call the CLI is tracking - which no wire in a fixture can produce.
+    pub live_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<forge_primitives::MonitorRecord>,
     /// The instances the session task's fold has folded. Seeded by hand
     /// because the list a record reads is the one the session task pushes,
@@ -605,6 +608,7 @@ impl Fleet {
         held.mcp_servers = facts.mcp;
         held.process_snapshot = facts.process_snapshot;
         held.background_tasks = facts.background_tasks;
+        held.seed_live_tasks(facts.live_tasks);
         held.monitors = facts.monitors;
         held.cards_snapshot = facts.cards;
     }

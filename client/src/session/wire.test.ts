@@ -20,8 +20,35 @@ describe('the background-task registry parse', () => {
       backgroundTaskFrom({ task_id: 't', task_type: 'local_bash', description: 'x' }),
       'a full row parses, with no command',
     ).toEqual([
-      { task_id: 't', task_type: 'local_bash', description: 'x', command: null, tool_use_id: null },
+      {
+        task_id: 't',
+        is_backgrounded: true,
+        task_type: 'local_bash',
+        description: 'x',
+        command: null,
+        tool_use_id: null,
+      },
     ]);
+  });
+
+  it('reads only an explicit false as a foreground hold', () => {
+    // A server older than the field states nothing, and its registry rows are
+    // backgrounded: reading the absent value as foreground would relabel every
+    // backgrounded call on a skew.
+    expect(
+      backgroundTaskFrom({ task_id: 't', task_type: 'local_bash', description: 'x' })[0]
+        ?.is_backgrounded,
+      'an absent flag is a backgrounded row',
+    ).toBe(true);
+    expect(
+      backgroundTaskFrom({
+        task_id: 't',
+        is_backgrounded: false,
+        task_type: 'local_bash',
+        description: 'x',
+      })[0]?.is_backgrounded,
+      'an explicit false is a foreground hold',
+    ).toBe(false);
   });
 });
 

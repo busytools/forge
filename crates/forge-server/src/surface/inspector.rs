@@ -255,18 +255,19 @@ impl ViewSurface {
             .map_or_else(Vec::new, |domain| domain.lock().monitors.clone())
     }
 
-    /// The CLI's background-task registry for this seat, each entry with the
-    /// command its own card carried.
+    /// The seat's live tasks, each entry with the command its own card
+    /// carried: the CLI's background registry plus the long foreground calls
+    /// it announced, which never enter that registry.
     ///
     /// Empty when nothing is running. A view draws the processes feed's
-    /// leading rows from this: the tasks are the CLI's own registry, held on
-    /// the session so a view that attached after the snapshot arrived still
-    /// reads them, and the command is what tells it whether the OS walk has
-    /// already adopted the process behind one.
+    /// leading rows from this: the tasks are held on the session so a view
+    /// that attached after the snapshot arrived still reads them, and the
+    /// command is what tells it whether the OS walk has already adopted the
+    /// process behind one.
     pub fn background_tasks(&self, slot: &SessionSlot) -> Vec<forge_workspace::BackgroundTask> {
         self.workspace
             .domain_session_for(slot)
-            .map_or_else(Vec::new, |domain| domain.lock().background_tasks.clone())
+            .map_or_else(Vec::new, |domain| domain.lock().task_rows())
     }
 }
 
@@ -301,6 +302,35 @@ mod tests {
         surface.hold_seat(&seat);
 
         assert!(workspace.work_snapshot(&seat).is_none(), "the tree is not read on the hold path");
+    }
+
+    /// **The surface reads the holds the registry does not name.** A long
+    /// foreground call never enters `background_tasks_changed`, so a read
+    /// that served only that registry would draw nothing for it.
+    #[test]
+    fn the_read_includes_the_announced_holds_the_registry_does_not_name() {
+        let fleet = crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let seat = seat("forge");
+        fleet.seed_view_facts(
+            &seat,
+            crate::testing::ViewFacts {
+                live_tasks: vec![forge_workspace::BackgroundTask {
+                    task_id: "t-live".to_owned(),
+                    is_backgrounded: false,
+                    task_type: "local_bash".to_owned(),
+                    description: "the gate".to_owned(),
+                    command: Some("cargo nextest run".to_owned()),
+                    tool_use_id: Some("tu-live".to_owned()),
+                }],
+                ..crate::testing::ViewFacts::default()
+            },
+        );
+
+        let rows = fleet.surface().background_tasks(&seat);
+        assert_eq!(rows.len(), 1, "the announced hold is read: {rows:?}");
+        assert_eq!(rows[0].task_id, "t-live", "under its own id");
+        assert!(!rows[0].is_backgrounded, "and its own flag crosses with it");
     }
 
     /// The output read is an ask routed by the slot like every other

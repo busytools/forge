@@ -1,21 +1,22 @@
 /**
- * The seat's batch work: the CLI's registry, joined to the OS walk.
+ * The seat's batch work: the CLI's live tasks, joined to the OS walk.
  *
- * **The row is the registry's, and only the registry's.** A backgrounded
- * call is the unit a reader cares about here - something that was started
- * and is still running - and the registry names exactly those. The walk
- * supplies each row's figure: a registry row adopts a scanned process by
- * the same matching rule the view this client replaced used, PORTED into
- * `cmdline.ts` rather than approximated - whitespace-normalized,
- * wrapper-unwrapped, quotes un-escaped, an empty command matching nothing -
- * and the figure counts
- * that process AND its descendant family: a cargo over four rustc workers
- * reads as what they all hold together. A row the walk missed still draws,
- * without a figure. No other process ever appears: MCP servers and detached
- * work are not batch work, and the full tree is not this row's job.
+ * **The row is the task's, and only the task's.** A running call is the unit
+ * a reader cares about here - something that was started and is still running
+ * - and the CLI announces exactly those: its background registry carries the
+ * backgrounded ones, and a long foreground call reaches `task_started` and is
+ * ended by its own notification. The walk supplies each row's figure: a
+ * task row adopts a scanned process by the same matching rule the view this
+ * client replaced used, PORTED into `cmdline.ts` rather than approximated -
+ * whitespace-normalized, wrapper-unwrapped, quotes un-escaped, an empty
+ * command matching nothing - and the figure counts that process AND its
+ * descendant family: a cargo over four rustc workers reads as what they all
+ * hold together. A row the walk missed still draws, without a figure. No
+ * other process ever appears: MCP servers and detached work are not batch
+ * work, and the full tree is not this row's job.
  *
  * Held as the record is: one seat is on screen, so one pair, replaced whole
- * when either side moves. The registry carries only what is running - a
+ * when either side moves. The live set carries only what is running - a
  * finished task leaves it - so a row's absence is the settlement. **A task the
  * `TaskStop` tool stopped leaves no change behind**, so the conversation's own
  * stop is what settles that row (`#verdictOf`).
@@ -31,15 +32,15 @@ import type { Outcome, Outcomes } from './outcomes';
 /** The verdict a task the conversation says stopped carries. */
 const STOPPED: Outcome = { failed: false, ended_ms: null, stopped: true };
 
-/** One row of the batch list: a registry row and the figure its process gave. */
+/** One row of the batch list: a live task and the figure its process gave. */
 export interface ProcessRow {
-  /** Stable across beats: the registry's task id. */
+  /** Stable across beats: the task's own id. */
   key: string;
   /** The line the row leads with: the CLI's own description. */
   headline: string;
   /** What the row runs, or the kind when the call carried no command. */
   command: string;
-  /** The registry kind, shown where no figure was measured. */
+  /** The task kind, shown where no figure was measured. */
   kind: string;
   /** The tool call that began the task, which the row click reveals. */
   tool_use_id: string | null;
@@ -57,11 +58,11 @@ export interface ProcessRow {
 
 export class Processes {
   #walk = $state<ProcessSnapshot | null>(null);
-  #registry = $state<BackgroundTask[]>([]);
-  /** Calls that left the registry while the turn ran: settled, until it closes. */
+  #tasks = $state<BackgroundTask[]>([]);
+  /** Calls that left the live set while the turn ran: settled, until it closes. */
   #settled = $state<BackgroundTask[]>([]);
   /** The conversation's task facts, handed in with each sync: verdicts by
-   * call, and the call by task, which fills an id the registry row lacks. */
+   * call, and the call by task, which fills an id the task row lacks. */
   #outcomes: Outcomes = {
     calls: new SvelteMap(),
     owners: new SvelteMap(),
@@ -71,7 +72,7 @@ export class Processes {
   /** Take the seat's pair whole: what the record holds is what a row reads. */
   sync(
     walk: ProcessSnapshot | null | undefined,
-    registry: readonly BackgroundTask[] | null | undefined,
+    tasks: readonly BackgroundTask[] | null | undefined,
     turnLive: boolean,
     outcomes: Outcomes = {
       calls: new SvelteMap(),
@@ -80,12 +81,12 @@ export class Processes {
     },
   ): void {
     this.#outcomes = outcomes;
-    const next = [...(registry ?? [])];
+    const next = [...(tasks ?? [])];
     // Read the store's own prior state UNTRACKED: a caller may be an effect
     // (the session page's sync effect), and a tracked read here would make
     // that effect depend on what this same call goes on to write - an
     // update loop, not a join.
-    const [previous, priorSettled] = untrack(() => [this.#registry, this.#settled] as const);
+    const [previous, priorSettled] = untrack(() => [this.#tasks, this.#settled] as const);
     // The turn's own edge is what bounds the settled side: a call that
     // settles mid-turn is kept until the turn closes, then cleaned - the
     // agents rule, applied here because the strip no longer dies with the
@@ -95,7 +96,7 @@ export class Processes {
     if (turnLive) {
       settled = [...priorSettled];
       const live = new SvelteSet(next.map((task) => task.task_id));
-      // The registry arrives whole each change, so a task that was held and
+      // The live set arrives whole each change, so a task that was held and
       // is gone has settled. It keeps its words, held from the row it was.
       for (const held of previous) {
         if (held.task_type !== 'local_bash' || live.has(held.task_id)) continue;
@@ -104,22 +105,22 @@ export class Processes {
     }
     this.#settled = settled;
     this.#walk = walk ?? null;
-    this.#registry = next;
+    this.#tasks = next;
   }
 
   /**
-   * The registry rows this row owns: batch calls only. An agent kind is the
+   * The live task rows this row owns: batch calls only. An agent kind is the
    * agents row's, and a workflow is not batch work - the filter the view this
    * client replaced used, so the two rows can never list the same task.
    */
   #batches(): BackgroundTask[] {
-    return this.#registry.filter((task) => task.task_type === 'local_bash');
+    return this.#tasks.filter((task) => task.task_type === 'local_bash');
   }
 
   /**
-   * The verdict the conversation has on a registry row, when it has one.
+   * The verdict the conversation has on a live task, when it has one.
    *
-   * **The registry is not always the whole truth.** A task stopped by the
+   * **The live set is not always the whole truth.** A task stopped by the
    * `TaskStop` tool sends no `background_tasks_changed` (4b35ed0e: the strip
    * read "1 running" over a bash with no process behind it after the tool
    * answered "Successfully stopped task"), so the conversation's own answer
@@ -141,8 +142,8 @@ export class Processes {
     return this.#batches().filter((task) => this.#verdictOf(task)?.stopped !== true);
   }
 
-  /** How many batch calls are running: the registry holds the living, and a
-   * stopped task is not one of them however long the registry lags. */
+  /** How many batch calls are running: the set holds the living, and a
+   * stopped task is not one of them however long the set lags. */
   running(): number {
     return this.#live().length;
   }
@@ -195,7 +196,7 @@ export class Processes {
   /**
    * Every batch row, biggest first, a row nothing measured last.
    *
-   * One registry row adopts at most one process - the first unclaimed one
+   * One task row adopts at most one process - the first unclaimed one
    * its command names - so two calls sharing a command do not both wear the
    * same process's figure.
    */
@@ -254,7 +255,7 @@ export class Processes {
   }
 
   /**
-   * The call a registry row belongs to.
+   * The call a live task belongs to.
    *
    * The row's own id is often null by wire order - the CLI announces the
    * task BEFORE it names its call, and the snapshot the client holds is the

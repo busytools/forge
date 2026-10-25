@@ -20,6 +20,7 @@ const walk = (tick: number, memory = 512): ProcessSnapshot => ({
 
 const registryRow = (over: Partial<BackgroundTask> = {}): BackgroundTask => ({
   task_id: 't-1',
+  is_backgrounded: true,
   task_type: 'local_bash',
   description: 'Run the full suite',
   command: 'cargo nextest run',
