@@ -69,7 +69,42 @@ const TAB_NEEDLE = readFileSync(
   "utf8",
 ).replace(/\n$/, "");
 
+// **A page guid survives a navigation; a CEF target id does not.** The
+// service keys its tabs by the guid and reads the target id afresh on every
+// listing, because CEF swaps it when the page navigates and CDP input is
+// addressed by it.
 const TAB_REPLACEMENT = [
+  "        const forgeOpenTabs = context.tabs();",
+  "        const tabHeaders = await Promise.all(forgeOpenTabs.map((tab2) => tab2.headerSnapshot()));",
+  "        const result2 = renderTabsMarkdown(tabHeaders);",
+  "        // FORGE_TAB_IDS_PATCH 2: the guid names the tab, the target id is",
+  "        // where CDP drives it right now.",
+  "        const forgeRows = [];",
+  "        for (let i = 0; i < forgeOpenTabs.length; i++) {",
+  "          const forgeTab = forgeOpenTabs[i];",
+  '          let forgeTarget = "";',
+  "          try {",
+  "            const forgeSession = await forgeTab.page.context().newCDPSession(forgeTab.page);",
+  '            const forgeInfo = await forgeSession.send("Target.getTargetInfo");',
+  '            forgeTarget = (forgeInfo && forgeInfo.targetInfo && forgeInfo.targetInfo.targetId) || "";',
+  "            await forgeSession.detach().catch(() => {});",
+  "          } catch (forgeWhy) {",
+  '            forgeTarget = "";',
+  "          }",
+  "          forgeRows.push({",
+  "            i,",
+  '            id: forgeTab.page._guid || "",',
+  "            target: forgeTarget,",
+  "            title: tabHeaders[i].title,",
+  "            url: tabHeaders[i].url,",
+  "            current: tabHeaders[i].current",
+  "          });",
+  "        }",
+  '        response2.addTextResult("FORGE-TABS " + JSON.stringify(forgeRows) + "\\n" + result2.join("\\n"));',
+].join("\n");
+
+/// The version-1 replacement, rewritten in place on an existing stack.
+const OLD_TAB_REPLACEMENT = [
   "        const forgeOpenTabs = context.tabs();",
   "        const tabHeaders = await Promise.all(forgeOpenTabs.map((tab2) => tab2.headerSnapshot()));",
   "        const result2 = renderTabsMarkdown(tabHeaders);",
@@ -126,14 +161,14 @@ const PATCHES = [
   },
   {
     label: "tab ids",
-    marker: "FORGE_TAB_IDS_PATCH 1",
+    marker: "FORGE_TAB_IDS_PATCH 2",
     needle: TAB_NEEDLE,
     replacement: TAB_REPLACEMENT,
-    old: undefined,
+    old: OLD_TAB_REPLACEMENT,
     missing:
       "the pinned Playwright bundle does not carry the tab listing this patch " +
-      "expects (page.delegate._targetId). Bump scripts/patch_browser_stack.mjs with the " +
-      "@playwright/mcp version.",
+      "expects (page._guid and a Target.getTargetInfo session). Bump " +
+      "scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
     twice: "the tab listing appears more than once; refusing to guess.",
   },
 ];

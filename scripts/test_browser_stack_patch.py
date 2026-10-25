@@ -24,7 +24,7 @@ FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-filechooser.t
 TABS_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tabids.txt"
 VENDOR = Path(__file__).resolve().parent / "vendor_browser_stack.sh"
 MARKER = "FORGE_FILE_CHOOSER_SOCKET"
-TABS_MARKER = "FORGE_TAB_IDS_PATCH 1"
+TABS_MARKER = "FORGE_TAB_IDS_PATCH 2"
 
 
 def run_patcher(*args: str) -> "subprocess.CompletedProcess[str]":
@@ -127,13 +127,14 @@ class BrowserStackPatchTest(unittest.TestCase):
         patched = bundle.read_text()
         self.assertEqual(patched.count(TABS_MARKER), 1, "the tab patch marker appears once")
         self.assertEqual(patched.count("FORGE-TABS "), 1, "the export line appears once")
-        self.assertEqual(patched.count("_targetId"), 1, "one borrowed private field")
+        self.assertEqual(patched.count("_guid"), 1, "one borrowed private field")
+        self.assertEqual(patched.count("Target.getTargetInfo"), 1, "the page's live target id")
         self.assertEqual(
             patched.count("context.tabs()"), 1, "the tab list is captured once, before the awaits"
         )
         self.assertEqual(patched.count("FORGE_FILE_CHOOSER_PATCH 2"), 1)
-        self.assertIn('JSON.stringify(forgeTabs)', patched)
-        self.assertIn('"FORGE-TABS " + JSON.stringify(forgeTabs) + "\\n"', patched)
+        self.assertIn("JSON.stringify(forgeRows)", patched)
+        self.assertIn('"FORGE-TABS " + JSON.stringify(forgeRows) + "\\n"', patched)
 
         second = run_patcher("--bundle", str(bundle))
         self.assertEqual(second.returncode, 0, second.stderr)
