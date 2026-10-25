@@ -3605,18 +3605,22 @@ impl Profile {
                 // same lock an answer or a role change takes, and the
                 // profile is marked down so a queued chooser event cannot
                 // publish against the dead host.
-                // **The cause is published before the tab senders close.** A
-                // viewer woken by a dead tab otherwise reads "tab N was
-                // closed" first and never hears why the browser went.
-                failures.send_replace(Some(format!(
-                    "the browser host exited ({cause}; pid {pid}); the next call brings it back"
-                )));
                 if let Some(profile) = profile.upgrade() {
                     let _decision = profile.file_decision.lock().await;
                     *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = None;
                     *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
                         ChooserLedger::default();
                     profile.up.store(false, Ordering::Release);
+                    // **A dead host's chooser and its staged files go with
+                    // it** before anything is said about the death.
+                    files.send_replace(None);
+                    let _ = std::fs::remove_dir_all(dir.join("uploads"));
+                    // **The cause is published before the tab senders
+                    // close.** A viewer woken by a dead tab otherwise reads
+                    // "tab N was closed" first and never hears why.
+                    failures.send_replace(Some(format!(
+                        "the browser host exited ({cause}; pid {pid}); the next call brings it back"
+                    )));
                     // **A dead host's numbers die with it**, before a call
                     // arrives to start its successor: a strip must not point
                     // at tabs nothing runs, and a parked hand-off on one of
@@ -3624,8 +3628,6 @@ impl Profile {
                     profile.host_gone();
                     *profile.host_tab_events.lock().await = None;
                 }
-                files.send_replace(None);
-                let _ = std::fs::remove_dir_all(dir.join("uploads"));
                 return;
             }
         });
