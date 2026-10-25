@@ -3188,6 +3188,11 @@ impl Profile {
             return Ok(());
         }
         state.driver = None;
+        // **A replaced driver's chooser goes with it.** Its ask's id belongs
+        // to a driver that no longer exists, and the next real chooser would
+        // be cancelled as that stale id. The clear is synchronous, before
+        // the new driver's reader starts, so it cannot wipe a fresh ask.
+        self.clear_chooser_state();
         let Some(host) = state.host.as_ref() else {
             return Err(format!("the browser for '{}' is not up", self.key));
         };
