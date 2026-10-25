@@ -7726,7 +7726,7 @@ impl Workspace {
     pub(crate) fn clear_failed_worker(&self, project_key: &ProjectKey, label: &str) {
         let mut workers = self.live_workers.lock();
         if let Some(entries) = workers.get_mut(project_key) {
-            entries.retain(|entry| !(entry.label == label && !entry.is_live()));
+            entries.retain(|entry| entry.label != label || entry.is_live());
         }
     }
 

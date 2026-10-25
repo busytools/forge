@@ -4315,7 +4315,7 @@ mod tests {
         });
 
         let domain = task.domain.lock();
-        assert!(!domain.turn_pending, "the abort settles the judgment prompt's turn",);
+        assert!(!domain.turn_pending, "the abort settles the judgment prompt's turn");
         assert!(domain.is_idle_for_handoff(), "so the seat is idle again");
         assert!(!domain.handoff.awaiting, "and the handoff is over");
     }
