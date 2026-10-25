@@ -135,8 +135,14 @@ pub enum HostInput {
         modifiers: InputModifiers,
     },
     /// Open a new tab at `url`, or blank. **A trusted server command**: unlike
-    /// a page's popup it accepts any address the server names.
-    TabNew { url: Option<String> },
+    /// a page's popup it accepts any address the server names. `request` is
+    /// echoed on the tab's birth so a caller can tell its tab from a popup
+    /// that was queued beside it.
+    TabNew {
+        url: Option<String>,
+        #[serde(default)]
+        request: Option<u64>,
+    },
     /// Close one tab.
     TabClose { tab: u16 },
     /// The files a person chose for a page's file dialog: server-local paths
@@ -349,7 +355,7 @@ mod tests {
         assert_eq!(tab, 2);
         assert_eq!(
             parse_host_line(r#"{"kind":"tab_new","url":null}"#),
-            Some(HostInput::TabNew { url: None })
+            Some(HostInput::TabNew { url: None, request: None })
         );
         assert_eq!(
             parse_host_line(r#"{"kind":"tab_close","tab":4}"#),

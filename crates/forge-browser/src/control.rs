@@ -16,7 +16,15 @@ use serde::{Deserialize, Serialize};
 pub enum HostEvent {
     /// A tab the host created: the page the server asked for, or the popup a
     /// page opened under `opener`.
-    TabCreated { tab: u16, opener: Option<u16>, url: String },
+    TabCreated {
+        tab: u16,
+        opener: Option<u16>,
+        url: String,
+        /// The server command's id, when one asked for this tab; a popup
+        /// carries none.
+        #[serde(default)]
+        request: Option<u64>,
+    },
     /// A tab the host closed.
     TabClosed { tab: u16 },
     /// A page's file chooser: the client's picker answers with the files'
@@ -71,12 +79,18 @@ mod tests {
             tab: 2,
             opener: Some(1),
             url: "https://example.com/".to_owned(),
+            request: Some(9),
         };
         let line = serde_json::to_string(&created).expect("a line");
         assert!(line.contains("tab_created"), "the server matches the kind: {line}");
         assert_eq!(parse(&line), Some(created));
 
-        let popup = HostEvent::TabCreated { tab: 3, opener: None, url: "about:blank".to_owned() };
+        let popup = HostEvent::TabCreated {
+            tab: 3,
+            opener: None,
+            url: "about:blank".to_owned(),
+            request: None,
+        };
         let line = serde_json::to_string(&popup).expect("a line");
         assert_eq!(parse(&line), Some(popup), "a requested tab has no opener");
 

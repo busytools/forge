@@ -72,6 +72,10 @@ pub const VIEW_HEIGHT: u32 = 900;
 /// How long a creation waits for the host's own `TabCreated` line.
 const TAB_EVENT_BOUND: Duration = Duration::from_secs(10);
 
+/// The id a requested tab carries to its birth, so a popup queued beside it
+/// cannot be mistaken for it.
+static TAB_REQUESTS: AtomicU64 = AtomicU64::new(1);
+
 /// How long a creation waits for the page target its tab pairs with.
 const TAB_TARGET_BOUND: Duration = Duration::from_secs(5);
 
@@ -858,21 +862,28 @@ impl BrowserService {
         // between the snapshot and the creation.
         let before_targets: HashSet<String> =
             spawn::page_targets(port).await.into_iter().map(|(id, _)| id).collect();
+        // **The birth is asked for by id.** A popup the host created beside
+        // this request queues its own `TabCreated`, and taking the first one
+        // named a popup as the requested tab; the id tells them apart, and
+        // everything that is not this request's is kept for the reconcile
+        // pass rather than dropped.
+        let request = TAB_REQUESTS.fetch_add(1, Ordering::Relaxed);
         input
-            .send(input::host_line(&input::HostInput::TabNew { url: None }))
+            .send(input::host_line(&input::HostInput::TabNew { url: None, request: Some(request) }))
             .map_err(|_| format!("the browser for '{}' is not taking a tab", profile.key))?;
-        let numbers = {
+        let number = {
             let mut queue = profile.host_tab_events.lock().await;
             let events = queue.as_mut().ok_or_else(|| {
                 format!("the browser for '{}' is not reporting its tabs", profile.key)
             })?;
-            let mut numbers: Vec<(u16, Option<u16>)> = Vec::new();
+            let mut found: Option<u16> = None;
+            let mut other: Vec<HostEvent> = Vec::new();
             let event_deadline = tokio::time::Instant::now() + TAB_EVENT_BOUND;
             loop {
                 while let Ok(event) = events.try_recv() {
-                    note_created(&event, &mut numbers);
+                    classify_birth(event, request, &mut found, &mut other);
                 }
-                if !numbers.is_empty() {
+                if found.is_some() {
                     break;
                 }
                 if tokio::time::Instant::now() >= event_deadline {
@@ -882,7 +893,7 @@ impl BrowserService {
                     ));
                 }
                 match tokio::time::timeout(Duration::from_millis(50), events.recv()).await {
-                    Ok(Some(event)) => note_created(&event, &mut numbers),
+                    Ok(Some(event)) => classify_birth(event, request, &mut found, &mut other),
                     Ok(None) => {
                         return Err(format!(
                             "the browser for '{}' stopped reporting its tabs",
@@ -892,8 +903,16 @@ impl BrowserService {
                     Err(_) => {}
                 }
             }
-            numbers
+            if !other.is_empty() {
+                profile
+                    .deferred_tab_events
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .extend(other);
+            }
+            found.unwrap_or_default()
         };
+        let numbers = vec![(number, None)];
         // **A CEF browser the host created after the driver attached is not
         // reported to that driver's context.** A fresh driver enumerates the
         // context's pages, so the tab a create or a popup just added is only
@@ -3445,12 +3464,13 @@ impl Profile {
                     },
                 };
                 match event {
-                    HostEvent::TabCreated { tab, opener, url } => {
+                    HostEvent::TabCreated { tab, opener, url, request } => {
                         tracing::debug!(
                             "a host tab opened (event_name browser_tab_created, profile {key}, \
-                             tab {tab}, opener {opener:?}, url {url})"
+                             tab {tab}, opener {opener:?}, request {request:?}, url {url})"
                         );
-                        let _ = tab_sender.send(HostEvent::TabCreated { tab, opener, url });
+                        let _ =
+                            tab_sender.send(HostEvent::TabCreated { tab, opener, url, request });
                     }
                     HostEvent::TabClosed { tab } => {
                         tracing::debug!(
@@ -4014,11 +4034,21 @@ fn left(deadline: tokio::time::Instant) -> Duration {
 }
 
 /// Collect one host tab birth from the event queue.
-fn note_created(event: &HostEvent, numbers: &mut Vec<(u16, Option<u16>)>) {
-    if let HostEvent::TabCreated { tab, opener, .. } = event
-        && !numbers.iter().any(|(number, _)| number == tab)
-    {
-        numbers.push((*tab, *opener));
+/// Sort one host tab event against a requested birth: **the request's own id
+/// is the tab that was asked for**, and everything else is kept for the
+/// reconcile pass rather than being taken for it or dropped.
+fn classify_birth(
+    event: HostEvent,
+    request: u64,
+    found: &mut Option<u16>,
+    other: &mut Vec<HostEvent>,
+) {
+    match event {
+        HostEvent::TabCreated { tab, request: Some(id), .. } if id == request => {
+            *found = Some(tab);
+        }
+        HostEvent::TabCreated { .. } | HostEvent::TabClosed { .. } => other.push(event),
+        _ => {}
     }
 }
 
@@ -4038,7 +4068,7 @@ fn pair_tab_events(
             HostEvent::TabClosed { tab } => {
                 tabs.close(tab);
             }
-            HostEvent::TabCreated { tab, opener, url } => {
+            HostEvent::TabCreated { tab, opener, url, request } => {
                 if tabs.target(tab).is_some() {
                     continue;
                 }
@@ -4058,7 +4088,7 @@ fn pair_tab_events(
                     .find(|row| unclaimed(row) && (url.is_empty() || row.url == url))
                     .or_else(|| listing.iter().find(unclaimed))
                 else {
-                    unmatched.push(HostEvent::TabCreated { tab, opener, url });
+                    unmatched.push(HostEvent::TabCreated { tab, opener, url, request });
                     continue;
                 };
                 if let Some(opener) = opener {
@@ -6075,6 +6105,37 @@ mod tests {
         }
     }
 
+    /// **A popup queued beside a requested tab is not taken for it.** The
+    /// birth carries the request's id; every other event - a popup's birth or
+    /// a close - is kept for the reconcile pass rather than dropped.
+    #[test]
+    fn a_popup_beside_a_requested_birth_is_not_taken_for_it() {
+        use super::classify_birth;
+        use crate::control::HostEvent;
+
+        let popup = HostEvent::TabCreated {
+            tab: 5,
+            opener: Some(1),
+            url: "http://pop/".to_owned(),
+            request: None,
+        };
+        let ours = HostEvent::TabCreated {
+            tab: 6,
+            opener: None,
+            url: "about:blank".to_owned(),
+            request: Some(42),
+        };
+        let closed = HostEvent::TabClosed { tab: 4 };
+        let mut found = None;
+        let mut other = Vec::new();
+        classify_birth(popup.clone(), 42, &mut found, &mut other);
+        classify_birth(closed.clone(), 42, &mut found, &mut other);
+        assert_eq!(found, None, "a popup is not this request's tab");
+        classify_birth(ours, 42, &mut found, &mut other);
+        assert_eq!(found, Some(6), "the id says which birth was asked for");
+        assert_eq!(other, vec![popup, closed], "the others are kept, not dropped");
+    }
+
     /// **A host tab the driver has not listed waits for the next pass.** The
     /// popup is adopted when its page appears, never guessed at by position.
     #[test]
@@ -6082,8 +6143,12 @@ mod tests {
         let seat = SessionSlot::lead("O", "p");
         let mut tabs = crate::tabs::TabRegistry::default();
         tabs.adopt(1, seat.clone(), "p1", "T1", "", "about:blank").expect("the opener");
-        let event =
-            crate::control::HostEvent::TabCreated { tab: 2, opener: Some(1), url: "u".to_owned() };
+        let event = crate::control::HostEvent::TabCreated {
+            tab: 2,
+            opener: Some(1),
+            url: "u".to_owned(),
+            request: None,
+        };
         let waiting = pair_tab_events(&mut tabs, &[], vec![event.clone()]);
         assert_eq!(waiting, vec![event], "no page, no adoption");
         let listing = [crate::tabs::DriverTab {

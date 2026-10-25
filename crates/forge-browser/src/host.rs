@@ -355,6 +355,8 @@ impl Tabs {
 struct CreateRequest {
     url: String,
     opener: u16,
+    /// A server command's own id, echoed on the birth; a popup carries none.
+    request: Option<u64>,
 }
 
 /// The most popup tabs a page may queue before the pump has made room.
@@ -492,7 +494,7 @@ struct HostRuntime {
 impl HostRuntime {
     /// Open one tab at `url`. **The one place a browser is created**: the
     /// first tab, a server command and a page's popup all come through here.
-    fn create_tab(&self, tab: u16, url: &str, opener: Option<u16>) -> bool {
+    fn create_tab(&self, tab: u16, url: &str, opener: Option<u16>, request: Option<u64>) -> bool {
         if self.tabs.lock().unwrap_or_else(PoisonError::into_inner).open.contains_key(&tab) {
             return false;
         }
@@ -582,6 +584,7 @@ impl HostRuntime {
             tab,
             opener,
             url: url.to_owned(),
+            request,
         });
         true
     }
@@ -659,7 +662,7 @@ impl HostRuntime {
             };
             let Some(request) = request else { return };
             let tab = self.next_tab();
-            if !self.create_tab(tab, &request.url, Some(request.opener)) {
+            if !self.create_tab(tab, &request.url, Some(request.opener), request.request) {
                 eprintln!(
                     "cef host: a page's popup tab was not created (event_name \
                      cef_tab_create_failed, opener {}, url {})",
@@ -716,10 +719,10 @@ impl HostRuntime {
                 // **A server command opens any address it names.** Unlike a
                 // page's popup this is trusted, so a `data:` document is a
                 // page like any other.
-                crate::input::HostInput::TabNew { url } => {
+                crate::input::HostInput::TabNew { url, request } => {
                     let tab = self.next_tab();
                     let url = url.as_deref().unwrap_or("about:blank");
-                    if !self.create_tab(tab, url, None) {
+                    if !self.create_tab(tab, url, None, request) {
                         eprintln!(
                             "cef host: a requested tab was not created (event_name \
                              cef_tab_create_failed, tab {tab}, url {url})"
@@ -908,7 +911,7 @@ pub fn run(args: &Args) -> ExitCode {
     // **A browser with no host is not a live host**: the state and the log
     // below are what the server reads to say this profile is up, so a
     // browser that cannot be driven fails here rather than reporting live.
-    if !runtime.create_tab(runtime.next_tab(), "about:blank", None) {
+    if !runtime.create_tab(runtime.next_tab(), "about:blank", None, None) {
         ring.set_state(STATE_FAILED);
         return fail("the windowless browser was not created");
     }
@@ -1136,7 +1139,11 @@ cef::wrap_life_span_handler! {
                 // **A page cannot grow this without end**: a scripted popup
                 // loop floods the pump faster than it drains.
                 if creates.len() < MAX_TAB_REQUESTS {
-                    creates.push_back(CreateRequest { url: url.to_owned(), opener: self.tab });
+                    creates.push_back(CreateRequest {
+                        url: url.to_owned(),
+                        opener: self.tab,
+                        request: None,
+                    });
                 }
             }
             1
