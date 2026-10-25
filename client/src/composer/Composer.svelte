@@ -1156,7 +1156,11 @@
     const rows = surface.tabs?.rows ?? [];
     const named = (tab: number | null): tab is number =>
       tab !== null && rows.some((row) => row.number === tab);
-    void openSurface(surface.profile, slot, named(asked) ? asked : named(surface.tab) ? surface.tab : null);
+    void openSurface(
+      surface.profile,
+      slot,
+      named(asked) ? asked : named(surface.tab) ? surface.tab : null,
+    );
   }
 
   /**

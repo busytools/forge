@@ -164,8 +164,11 @@ describe('the canvas viewer', () => {
   /// decode concurrently; the older one resolving last must not paint over
   /// the newer picture.
   it('does not paint an older frame that decoded last', async () => {
-    let releaseOlder: (bitmap: { width: number; height: number; close: () => void }) => void =
-      () => {};
+    let releaseOlder: (bitmap: {
+      width: number;
+      height: number;
+      close: () => void;
+    }) => void = () => {};
     const older = new Promise<{ width: number; height: number; close: () => void }>((resolve) => {
       releaseOlder = resolve;
     });

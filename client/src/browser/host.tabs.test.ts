@@ -68,9 +68,9 @@ describe("the strip's tab rows", () => {
     expect(() => tabListOf({ profile: 'p', id: 1, up: true, rows: [] })).toThrow(
       /whether its host is up/,
     );
-    expect(() =>
-      tabListOf({ profile: 'p', id: 1, up: true, connected: 'yes', rows: [] }),
-    ).toThrow(/whether its host is up/);
+    expect(() => tabListOf({ profile: 'p', id: 1, up: true, connected: 'yes', rows: [] })).toThrow(
+      /whether its host is up/,
+    );
   });
 
   /// **A state this page has not seen reads as itself**, including a word

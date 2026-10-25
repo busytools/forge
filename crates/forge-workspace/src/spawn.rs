@@ -6684,11 +6684,7 @@ provider = "anthropic"
             }
         };
         assert_eq!(what, "sweep_sessions", "the fleet is told the seats that remain");
-        assert_eq!(
-            ended.len(),
-            1,
-            "the despawned seat was told ended before the sweep: {ended:?}",
-        );
+        assert_eq!(ended.len(), 1, "the despawned seat was told ended before the sweep: {ended:?}");
         let labels: Vec<&str> = seats
             .as_array()
             .expect("a seat set")
