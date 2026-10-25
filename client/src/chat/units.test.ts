@@ -3855,4 +3855,44 @@ describe('a page seam that re-serves a result', () => {
     const stray = fold([heard([result('tu_elsewhere', 'answering a call in another row')])]);
     expect(kinds(stray), 'an unpaired result is drawn nowhere at all').toEqual([]);
   });
+
+  it('draws the handoff brief nowhere but the handoff row', () => {
+    const brief = fold([
+      heard([{ type: 'text', text: 'HANDOFF - old -> new\n\nPART 1: GROUND TRUTH\nseat: x' }], {
+        uuid: 'forge_nudge_12_ab12cd34',
+      }),
+    ]);
+    expect(kinds(brief), 'the brief reaches the page through the handoff row').toEqual([]);
+    const typed = fold([
+      heard([{ type: 'text', text: 'HANDOFF - my own notes for the next session' }], {
+        uuid: 'forge_prompt_13_99aa88bb',
+      }),
+    ]);
+    expect(kinds(typed), 'a reader typing the same words keeps their own row').toEqual(['user']);
+    const real = fold([heard([{ type: 'text', text: 'a real prompt' }])]);
+    expect(kinds(real), "and a person's own words still draw").toEqual(['user']);
+  });
+
+  it('folds a handoff frame into the row that joins two sessions', () => {
+    const units = fold([
+      said([{ type: 'text', text: 'the work so far' }]),
+      {
+        type: 'forge_handoff',
+        handoff: {
+          from: 'old-session-id',
+          to: 'new-session-id',
+          reason: 'fill',
+          fill_percent: 85,
+          brief: { ground_truth: [], judgment: [] },
+        },
+      },
+      said([{ type: 'text', text: 'picked up' }]),
+    ]);
+    expect(kinds(units), 'prose, the row, then the successor').toEqual(['text', 'handoff', 'text']);
+    const row = units.find((unit) => unit.kind === 'handoff');
+    expect(
+      row?.kind === 'handoff' ? row.handoff.to : null,
+      'the row names the session that continues',
+    ).toBe('new-session-id');
+  });
 });

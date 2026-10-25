@@ -92,10 +92,33 @@ const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
  * That snapshot IS the newest page a switch needs (#2420), so a test that
  * opens a conversation the way a switch does sends this rather than a page.
  */
-const record = (turns: PageTurn[], cursor: string | null = null): ServerMessage => ({
+const record = (
+  turns: PageTurn[],
+  cursor: string | null = null,
+  handoff: unknown = null,
+): ServerMessage => ({
   kind: 'snapshot',
   subject: { session: LEAD },
-  data: { header: {}, conversation: { turns, cursor, compaction_count: 0 } },
+  data: { header: {}, conversation: { turns, cursor, compaction_count: 0, handoff } },
+});
+
+/** One handoff record, as the wire carries it. */
+const handoffRecord = (from: string, to: string): unknown => ({
+  slot: LEAD,
+  from,
+  to,
+  reason: 'fill',
+  fill_percent: 85,
+  total_tokens: 850_000,
+  max_tokens: 1_000_000,
+  compaction_count: 0,
+  at_percent: 85,
+  brief: {
+    ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
+    judgment: [{ label: 'Next', lines: ['the client row'] }],
+  },
+  transcript_path: '/tmp/old.jsonl',
+  at: '2026-10-24T08:00:00Z',
 });
 
 /** One live hook frame, as the stream sends a run's lifecycle. */
@@ -4323,6 +4346,100 @@ describe('the conversation the chat draws', () => {
 
     server.update({ session_replaced: { key: LEAD, session_id: 'new-occupant' } });
     expect(get(chat.value).askedFor, 'a swap starts from nothing').toBeNull();
+    stop();
+  });
+
+  it('keeps the conversation above a handoff and clears it on a plain swap', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'the work so far')]));
+    expect(
+      get(chat.value).turns.map((held) => held.key),
+      'precondition: the page landed',
+    ).toContain('t1');
+
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new') } });
+    expect(
+      get(chat.value).turns.map((held) => held.key),
+      'the row joins the conversation where the swap happens',
+    ).toContain('handoff:old:new');
+
+    const asked = server.more().length;
+    server.update({ session_replaced: { key: LEAD, session_id: 'new' } });
+    const after = get(chat.value).turns.map((held) => held.key);
+    expect(after, 'the previous conversation stays above the row').toContain('t1');
+    expect(after, 'and the row stays with it').toContain('handoff:old:new');
+    expect(server.more(), 'a fresh successor has no page to ask for').toHaveLength(asked);
+
+    // A plain `/new` under the same seat made no such join, so it clears.
+    server.update({ session_replaced: { key: LEAD, session_id: 'other' } });
+    expect(get(chat.value).turns, 'a plain swap clears the conversation').toHaveLength(0);
+    expect(server.more().length, 'and asks for the new occupant page').toBe(asked + 1);
+    stop();
+  });
+
+  it('draws the handoff row a seat record carries', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    server.send(record([], null, handoffRecord('old', 'new')));
+
+    expect(
+      get(chat.value).turns.map((held) => held.key),
+      'a client attaching after the swap draws the row from the record',
+    ).toContain('handoff:old:new');
+    stop();
+  });
+
+  it('draws the recorded handoff row above the successor turns a page carries', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    server.send(record([turn('t1', 'picked up')], null, handoffRecord('old', 'new')));
+
+    const keys = get(chat.value).turns.map((held) => held.key);
+    expect(keys, 'the row leads the work that came after it').toContain('handoff:old:new');
+    expect(keys[0], 'and it is the head of the conversation, not its tail').toBe('handoff:old:new');
+    expect(keys).toContain('t1');
+    stop();
+  });
+
+  it('puts a row a later snapshot carries above the successor turns already held', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'the successor is working')]));
+
+    // A reconnect's snapshot is not the first load, so it does not reseed the
+    // page - the row it carries still has to lead what is already drawn.
+    server.send(record([], null, handoffRecord('old', 'new')));
+
+    expect(
+      get(chat.value).turns.map((held) => held.key)[0],
+      'the row is the head of the conversation, not appended below it',
+    ).toBe('handoff:old:new');
+    stop();
+  });
+
+  it('carries the conversation only onto the successor the row names', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([turn('t1', 'the work so far')]));
+
+    // A swap that never lands: the handoff row is drawn, then a plain /new
+    // replaces the seat under another id. The occupant check alone has to
+    // clear it - a drop that clears beforehand would hide this.
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new') } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'someone-else' } });
+
+    expect(
+      get(chat.value).turns,
+      'a conversation is not carried onto a successor the row never named',
+    ).toHaveLength(0);
     stop();
   });
 

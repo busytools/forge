@@ -552,6 +552,7 @@ mod resolve_scope_tests {
             max_workers: None,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
             vault_roots: Vec::new(),
+            handoff: None,
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(
             PathBuf::from("/tmp/forge-review-testing-stub"),

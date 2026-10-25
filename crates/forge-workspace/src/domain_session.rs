@@ -53,6 +53,64 @@ pub struct PendingAutoContinue {
     pub reason: String,
 }
 
+/// A handoff request that arrived while a turn was running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParkedHandoff {
+    /// The caller supplied its own judgment half.
+    Supplied(String),
+    /// The judgment half is asked of the session at the boundary.
+    Ask,
+}
+
+impl ParkedHandoff {
+    /// The caller's own half, when it supplied one.
+    pub fn supplied(self) -> Option<String> {
+        match self {
+            Self::Supplied(text) => Some(text),
+            Self::Ask => None,
+        }
+    }
+}
+
+/// The handoff this session is running, if any.
+///
+/// The request is parked rather than acted on while a turn runs: a handoff
+/// never interrupts one. The judgment turn is forge's own prompt, so the
+/// reply it captures is the last assistant text before that turn ends - and
+/// only that turn's end finishes the handoff.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HandoffState {
+    /// A request that arrived while a turn was running.
+    pub parked: Option<ParkedHandoff>,
+    /// Why this handoff runs, which the row and the record both state.
+    pub reason: Option<forge_primitives::HandoffReason>,
+    /// A fill reading was asked for at the last turn boundary, and the
+    /// trigger is waiting to judge it.
+    pub probing: bool,
+    /// The reading that fired this handoff, carried to the row.
+    pub fill: Option<crate::handoff::FillReading>,
+    /// The token of the swap gate this handoff opened, so a build that lost
+    /// the seat cannot spawn.
+    pub swap_token: Option<u64>,
+    /// The judgment turn forge sent is running.
+    pub awaiting: bool,
+    /// The id the judgment prompt was sent under, so the swap waits for
+    /// THAT prompt's turn rather than for whatever turn ends next.
+    pub judgment_uuid: Option<String>,
+    /// The CLI's own lifecycle frame said the judgment prompt started. A
+    /// turn that ends without it is not the judgment turn.
+    pub judgment_started: bool,
+    /// The last assistant text seen while that turn ran.
+    pub judgment: Option<String>,
+}
+
+impl HandoffState {
+    /// Whether a handoff owns this seat's next turn boundary.
+    pub fn in_progress(&self) -> bool {
+        self.parked.is_some() || self.awaiting
+    }
+}
+
 /// Workspace's owned per-session state. One `DomainSession` per
 /// active `SessionTask`. Single writer (the `SessionTask`); accessed
 /// via `Arc<parking_lot::Mutex<DomainSession>>` so the `Workspace`
@@ -186,7 +244,17 @@ pub struct DomainSession {
     pub runtime_state: Option<RuntimeSessionState>,
     /// Turn committed at `Command::Prompt` routing, ahead of the
     /// wire-lagged `runtime_state`; the guards OR it in.
+    ///
+    /// **Derived from the commit count, not a bare flag.** A Result ends ONE
+    /// turn, and a prompt committed before that Result landed belongs to the
+    /// next one - so clearing a flag at the Result would erase the next
+    /// turn's stamp and make a running seat read idle. `commit_turn` and
+    /// `serve_turn` are the only writers.
     pub turn_pending: bool,
+    /// Prompts committed as turns on this occupant.
+    pub turn_commits: u64,
+    /// Results (or transport errors) that closed one of them.
+    pub turns_served: u64,
     /// Frame-derived liveness: the model's own output proves a turn is
     /// running, and a `Result`/`Error` ends it.
     ///
@@ -327,6 +395,11 @@ pub struct DomainSession {
     pub mcp_servers: Option<McpServers>,
     /// How full the context window was at the last poll.
     pub context_usage: Option<ContextUsage>,
+    /// The handoff this occupant is running, if any. Belongs to the
+    /// occupant: a swap that completes resets it, and a request that was
+    /// parked for a seat whose occupant changed describes a session that
+    /// is gone.
+    pub handoff: HandoffState,
     /// The model the session resolved to, from its connect and from
     /// every later init frame that names a different one.
     pub current_model: Option<CurrentModel>,
@@ -506,6 +579,8 @@ impl DomainSession {
             spawn_wrote_row: false,
             runtime_state: None,
             turn_pending: false,
+            turn_commits: 0,
+            turns_served: 0,
             turn_open: false,
             pending_cancel: false,
             failed_turn_at: None,
@@ -528,6 +603,7 @@ impl DomainSession {
             configured_permission_mode: None,
             mcp_servers: None,
             context_usage: None,
+            handoff: HandoffState::default(),
             current_model: None,
             available_models: Vec::new(),
             monitors: Vec::new(),
@@ -556,6 +632,58 @@ impl DomainSession {
                 self.runtime_state,
                 Some(RuntimeSessionState::Running | RuntimeSessionState::RequiresAction)
             )
+    }
+
+    /// A prompt was committed as a turn.
+    ///
+    /// **A prompt queued into a turn already running joins that turn.** The
+    /// CLI runs it inside the same turn and emits one Result for both, so
+    /// counting it as another turn would leave the outstanding count
+    /// permanently ahead and close the handoff's idle gate for the life of
+    /// the seat. A prompt sent while the task still reads a turn in flight
+    /// but the CLI has started a new one is held busy by `prompt_queue`
+    /// until its own Result serves the boundary.
+    pub fn commit_turn(&mut self) {
+        if self.turn_in_flight() {
+            return;
+        }
+        self.turn_commits = self.turn_commits.saturating_add(1);
+        self.turn_pending = true;
+    }
+
+    /// One Result (or transport error) closed the oldest outstanding turn.
+    ///
+    /// **One, not all of them.** A prompt committed before this Result
+    /// landed belongs to the next turn, so the flag is derived from what is
+    /// still outstanding rather than cleared outright.
+    pub fn serve_turn(&mut self) {
+        self.turns_served = self.turns_served.saturating_add(1);
+        self.turn_pending = self.turn_commits > self.turns_served;
+    }
+
+    /// Whether a committed turn is still waiting for its Result.
+    pub fn turns_outstanding(&self) -> bool {
+        self.turn_commits > self.turns_served
+    }
+
+    /// Drop the turn accounting with the occupant it described.
+    pub fn reset_turns(&mut self) {
+        self.turn_commits = 0;
+        self.turns_served = 0;
+        self.turn_pending = false;
+    }
+
+    /// Whether a handoff may start here: nothing running, nothing waiting in
+    /// the CLI's queue, and nothing parked on an answer.
+    ///
+    /// **All three, not just the turn.** A prompt already queued is a turn
+    /// the handoff's own prompt would be folded into, and a parked
+    /// interaction is a turn that has not ended; the document names both as
+    /// the "otherwise idle" condition.
+    pub fn is_idle_for_handoff(&self) -> bool {
+        !self.turn_in_flight()
+            && self.prompt_queue.is_empty()
+            && self.pending_interactions.is_empty()
     }
 
     /// Fold one frame's own claim about the turn into the liveness mirror.
@@ -701,6 +829,22 @@ mod tests {
             None,
             "no pin is no answer, rather than a mode forged from nothing",
         );
+    }
+
+    /// **A prompt the CLI queues inside a running turn shares that turn's
+    /// one Result.** Counting it as another turn leaves the outstanding
+    /// count permanently ahead, which closes the handoff's idle gate for the
+    /// life of the seat.
+    #[test]
+    fn a_prompt_queued_into_a_running_turn_joins_its_single_result() {
+        let mut domain = DomainSession::new(SessionSlot::lead("Org", "proj"), None);
+        domain.commit_turn();
+        domain.commit_turn();
+
+        assert_eq!(domain.turn_commits, 1, "the queued prompt joins the running turn");
+        domain.serve_turn();
+        assert!(!domain.turns_outstanding(), "the one Result serves both prompts");
+        assert!(!domain.turn_pending, "and the seat reads idle at the boundary");
     }
 
     /// A mode forge cannot name is a mode it cannot report.

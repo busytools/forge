@@ -10,6 +10,7 @@ pub mod documents;
 pub mod file_index;
 pub mod git_command;
 pub mod git_diff;
+pub mod git_state;
 pub mod lsp_path;
 pub mod processes;
 pub mod timezone;

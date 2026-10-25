@@ -368,6 +368,19 @@ impl ViewSurface {
         .map_err(|refusal| refusal.to_string())
     }
 
+    /// The handoff row a seat's occupant arrived by, for a record built
+    /// where the transport holds no live copy of the conversation.
+    ///
+    /// Looked up by the occupant, not by recency: a later handoff that never
+    /// reached its successor must not hide the row of the session running.
+    pub fn handoff_record(
+        &self,
+        slot: &SessionSlot,
+        occupant: &str,
+    ) -> Option<forge_primitives::HandoffRecord> {
+        self.workspace.handoff_record_for(slot, occupant)
+    }
+
     /// The conversation the session at `slot` holds, read from its own
     /// transcript on disk: the same read a resume performs, for a view
     /// that arrived after the session was already running or one opening a

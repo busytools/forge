@@ -34,8 +34,9 @@ pub(crate) fn add_shared_tools(
 ) -> forge_sdk::mcp::server::McpServerBuilder {
     let whoami = Whoami { dispatcher: dispatcher.clone(), slot: slot.clone() };
     let list = List { dispatcher: dispatcher.clone() };
+    let handoff = Handoff { dispatcher: dispatcher.clone(), slot: slot.clone() };
     let send = SendMessage { dispatcher, slot };
-    builder.tool(whoami).tool(list).tool(send)
+    builder.tool(whoami).tool(list).tool(send).tool(handoff)
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -127,6 +128,73 @@ impl TargetArgs {
         };
         AgentTarget::parse(known, org, project, self.label.as_deref())
             .map_err(|err| target_error_message(&err, known))
+    }
+}
+
+/// `agents__handoff` - hand this seat over to a fresh session, from the
+/// session itself.
+pub(crate) struct Handoff {
+    pub(crate) dispatcher: Arc<AgentDispatcher>,
+    pub(crate) slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct HandoffArgs {
+    #[serde(default)]
+    brief: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Handoff {
+    fn name(&self) -> &'static str {
+        "agents__handoff"
+    }
+
+    fn description(&self) -> &'static str {
+        "Hand this seat over to a fresh session that continues the work. forge writes the \
+         ground truth itself - the seat, the asks, the constraints quoted verbatim, the files \
+         and the dirty list, the last gate and its verdict, the board rows and the transcript \
+         path - and the new session gets it as its first turn, below a handoff row that keeps \
+         the previous conversation on screen. \
+         \
+         The swap happens after the current turn ends, never in the middle of it. With no \
+         `brief`, forge asks for the judgment half as its own next turn and you write it then. \
+         Pass `brief` only when you have already written that half yourself, under the five \
+         headings forge asks for: Now, Tried and failed, Do not, Next, Done means. \
+         \
+         Use this when the context is nearly full and you want the work to continue cleanly \
+         rather than compact. A session is normally handed over automatically at 85% of its \
+         window, so a call here is for the cases that number does not know about: a task \
+         whose next step is expensive to get wrong, or a seat that has run long enough that \
+         a fresh start is worth the seam."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "brief": {
+                    "type": "string",
+                    "description": "Optional. The judgment half, already written, under the headings Now, Tried and failed, Do not, Next and Done means. Omit it and forge asks for it in a turn of its own.",
+                },
+            },
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: HandoffArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let brief = args.brief.filter(|brief| !brief.trim().is_empty());
+        match self.dispatcher.peers().handoff(&self.slot, brief) {
+            Ok(()) => json_output(&serde_json::json!({
+                "status": "handoff asked for",
+                "runs": "after this turn ends",
+            })),
+            Err(err) => tool_error(err.to_string()),
+        }
     }
 }
 
@@ -1189,6 +1257,43 @@ mod tests {
         let mut args = serde_json::json!({ "message": message });
         fill_address(&mut args, &to);
         tool.call(ToolInput { value: args }).await
+    }
+
+    /// `agents__handoff` is a shared verb: either kind hands its OWN seat
+    /// over, never another's, and the brief it passes rides through rather
+    /// than being re-asked for.
+    #[tokio::test]
+    async fn handoff_hands_the_callers_own_seat_over() {
+        for slot in [caller(), worker_caller()] {
+            let host = host();
+            let tool = Handoff { dispatcher: Arc::clone(&host.dispatcher), slot: slot.clone() };
+            let output = tool
+                .call(ToolInput {
+                    value: serde_json::json!({ "brief": "Now: the cut is half in." }),
+                })
+                .await;
+            assert!(!output.is_error, "a handoff must not error: {:?}", output.blocks);
+            assert_eq!(
+                host.peers.handoff_calls.lock().as_slice(),
+                &[(slot, Some("Now: the cut is half in.".to_owned()))],
+                "the caller's own seat, with the brief it wrote",
+            );
+        }
+    }
+
+    /// An empty brief is no brief: forge asks for one rather than swapping
+    /// on a blank judgment half.
+    #[tokio::test]
+    async fn a_blank_brief_is_an_ask() {
+        let host = host();
+        let tool = Handoff { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let output = tool.call(ToolInput { value: serde_json::json!({ "brief": "   " }) }).await;
+        assert!(!output.is_error, "{:?}", output.blocks);
+        assert_eq!(
+            host.peers.handoff_calls.lock().as_slice(),
+            &[(caller(), None)],
+            "a blank half is the ask, not a supplied brief",
+        );
     }
 
     async fn call_list(host: &Host, project_filter: Option<&str>) -> Vec<serde_json::Value> {

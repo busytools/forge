@@ -68,6 +68,18 @@ pub trait WorkspaceFacade: Send + Sync {
         target_project: &str,
         wrapped: WrappedPrompt,
     ) -> Result<(), DeliverError>;
+
+    /// Hand `caller`'s own seat over to a fresh session that continues the
+    /// work. `brief` is the caller's judgment half; `None` asks it of the
+    /// session at the next turn boundary.
+    fn handoff(&self, caller: &SessionSlot, brief: Option<String>) -> Result<(), HandoffError>;
+}
+
+/// Why a handoff could not be asked for.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HandoffError {
+    #[error("the seat {slot} is not running; a handoff needs a live session to hand over")]
+    SessionGone { slot: String },
 }
 
 /// Production impl. Holds a `Weak<Workspace>` rather than
@@ -181,6 +193,14 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         }
         Ok(())
     }
+
+    fn handoff(&self, caller: &SessionSlot, brief: Option<String>) -> Result<(), HandoffError> {
+        let Some(ws) = self.0.upgrade() else {
+            return Err(HandoffError::SessionGone { slot: caller.display() });
+        };
+        ws.dispatch(Command::Handoff { key: caller.clone(), brief })
+            .map_err(|_| HandoffError::SessionGone { slot: caller.display() })
+    }
 }
 
 /// Mock for unit tests in the Tool impls. Captures every dispatched call
@@ -197,6 +217,8 @@ pub struct MockWorkspaceFacade {
     /// running the normal lookup path. Lets tests force-test the
     /// failure surface.
     pub force_deliver_error: parking_lot::Mutex<Option<DeliverError>>,
+    /// Captured calls to `handoff`.
+    pub handoff_calls: parking_lot::Mutex<Vec<(SessionSlot, Option<String>)>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -242,6 +264,11 @@ impl WorkspaceFacade for MockWorkspaceFacade {
             return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
         }
         self.deliver_calls.lock().push((caller.clone(), target_project.to_owned(), wrapped));
+        Ok(())
+    }
+
+    fn handoff(&self, caller: &SessionSlot, brief: Option<String>) -> Result<(), HandoffError> {
+        self.handoff_calls.lock().push((caller.clone(), brief));
         Ok(())
     }
 }

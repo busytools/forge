@@ -3,6 +3,7 @@
   import Card from './Card.svelte';
   import CompactionPoint from './CompactionPoint.svelte';
   import { beingWritten, type Turn as HeldTurn } from './conversation';
+  import HandoffRow from './HandoffRow.svelte';
   import Leaves from './Leaves.svelte';
   import Hooks from './Hooks.svelte';
   import Notice from './Notice.svelte';
@@ -180,6 +181,8 @@
               postTokens={unit.postTokens}
               summary={unit.summary}
             />
+          {:else if unit.kind === 'handoff'}
+            <HandoffRow handoff={unit.handoff} />
           {:else if unit.kind === 'report'}
             <Report info={unit.info} />
           {/if}

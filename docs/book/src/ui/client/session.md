@@ -18,7 +18,7 @@ its connector sets. The drawing it is held against is
 |---|---|---|
 | Rail | every declared project grouped by the strongest state among its rows, the current seat marked, sleepers folded; its footer carries the account and what it is costing | the home's snapshot, the board's snapshot for each row's task, and `accounts` |
 | Header | the chip, the seat's own mark, org and name, and the facts: session id, model with its effort, mode, context fill, and the compaction count | `header`, `conversation.compaction_count` |
-| Conversation | the turns and everything inside them, in the column's own scroll viewport | `conversation` |
+| Conversation | the turns and everything inside them, and the handoff row where two sessions met, in the column's own scroll viewport | `conversation` |
 | Queue | the prompts waiting, drawn against what is running | `queue`, `queue_ended` |
 | Strip | the segments this seat has anything to say in, in one order, standing whenever it has something to say | the seat's record, the project's board row, the page's clock |
 | Foot | the strip lane, the dock or the box | the composer's own record |
@@ -156,6 +156,21 @@ The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it
 happened, collapsed, with the header's count saying how many and the mark
 saying where.
+
+**A handoff draws a row between two conversations.** When forge replaces a
+session with a fresh one that continues from a brief - at a turn boundary
+past 85% of its window by default, after a compaction, or when one is asked
+for - the row names the pair and the reason it fired for: the fill it
+crossed, or the compaction that forced it (a manual ask says so). Opened, it
+carries both full session ids, each with the control that copies it - the
+recovery `/resume <old-id>` needs is on the row itself - and the brief the
+successor was given: the ground truth forge read off the transcript, git and
+the board, then the judgment the handing-over session wrote. The previous
+conversation stays above it, so a swap reads as a seam in the page rather
+than a seat that emptied, and the old session is one `/resume` away. A
+client that attaches after the swap draws the row from the seat's record:
+it sees where the work continues, not the closed turns above it, which
+belong to the client that watched them.
 
 **A row is drawn before the list has measured it.** The virtualised list
 places a row on an estimate-derived offset and corrects it the moment the

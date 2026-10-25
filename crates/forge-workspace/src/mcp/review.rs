@@ -1378,6 +1378,7 @@ mod tests {
             max_workers: None,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
             vault_roots: Vec::new(),
+            handoff: None,
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
             .expect("the stub config is well-formed");

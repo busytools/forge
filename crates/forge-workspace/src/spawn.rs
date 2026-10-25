@@ -163,7 +163,7 @@ const DEFAULT_LEAD_CHARTER: &str = include_str!("spawn/lead_charter.md");
 /// Stamp [`DEFAULT_LEAD_CHARTER`] onto the launch settings so every lead
 /// session carries one. No-op when a charter is already set - worker
 /// spawns supply their own and we never overwrite it.
-fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
+pub(crate) fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
     if settings.charter.is_some() {
         return;
     }
@@ -371,9 +371,9 @@ pub(crate) fn handle_deliver_peer_prompt(
         let uuid = forge_sdk::request_id::next_prompt_id();
         push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
         let text = wrapped.to_prose();
-        if let Err(err) =
-            workspace.dispatch_workspace_prompt_under(&target_key, text, PromptSource::Peer, uuid)
-        {
+        // The peer path keeps the sender: a swap's hold answers that seat if
+        // the handoff never reaches a successor.
+        if let Err(err) = workspace.dispatch_peer_prompt_under(caller, &target_key, text, uuid) {
             tracing::warn!(
                 target: "forge_workspace::spawn",
                 target_project = %target_project,
@@ -2911,19 +2911,12 @@ fn answer_delivery(
 /// between the hold and the turn end - is told to its sender rather than
 /// dropped, which is the whole point of holding it.
 ///
-/// The turn's whole hold signal is ended here, before the bucket is taken:
-/// the take shares its lock with a concurrent hold's check-and-enqueue, so a
-/// delivery decides on `delivery_hold_signal` either before this drain (and
-/// is delivered by it) or after (and is delivered directly).
-pub(crate) fn drain_turn_held_for_slot(
-    workspace: &Arc<Workspace>,
-    domain: &Arc<parking_lot::Mutex<crate::domain_session::DomainSession>>,
-    slot: &SessionSlot,
-) {
-    let mut guard = domain.lock();
-    guard.turn_pending = false;
-    guard.turn_open = false;
-    drop(guard);
+/// **The boundary's own settle is the session task's**, since it knows which
+/// turn ended; this drain clears no liveness. The take shares its lock with a
+/// concurrent hold's check-and-enqueue, so a delivery decides on
+/// [`delivery_hold_signal`] either before this drain (and is delivered by it)
+/// or after (and is delivered directly).
+pub(crate) fn drain_turn_held_for_slot(workspace: &Arc<Workspace>, slot: &SessionSlot) {
     for crate::parked::ParkedPeer { sender, wrapped } in workspace.take_turn_held_for_slot(slot) {
         let text = wrapped.to_prose();
         let uuid = forge_sdk::request_id::next_prompt_id();

@@ -149,6 +149,12 @@ pub struct Conversation {
     /// between the two would otherwise pair the new epoch's count with the old
     /// run's rows: a copy whose occupant is not the seat's is no copy at all.
     occupant: Option<forge_primitives::SessionId>,
+    /// The seat's newest handoff, if the last swap under it was one.
+    ///
+    /// Held beside the messages rather than as a row among them: a handoff
+    /// describes the join between two conversations and survives the second
+    /// one's seed, while a message row would be wiped by it.
+    handoff: Option<forge_primitives::HandoffRecord>,
     /// Whether the seat's turn is in flight right now, folded off the frames
     /// this copy has seen (`liveness_of` - the delivered rule: the model's
     /// own frames open a turn, its `Result` or error closes it).
@@ -197,6 +203,7 @@ impl Conversation {
             folding: false,
             forged: std::collections::HashSet::new(),
             occupant: None,
+            handoff: None,
             live,
         }
     }
@@ -404,6 +411,22 @@ impl Conversation {
 
     pub fn compaction_count(&self) -> u32 {
         self.compaction_count
+    }
+
+    /// The handoff row this copy draws, if the last swap under its occupant
+    /// was one.
+    ///
+    /// **A record only stands for the occupant it names.** A `/new` or a
+    /// resume after a handoff leaves the row describing a session this copy
+    /// no longer holds, and drawing it would put a join in a conversation it
+    /// did not join.
+    pub fn handoff(&self) -> Option<&forge_primitives::HandoffRecord> {
+        let occupant = self.occupant.as_ref()?;
+        self.handoff.as_ref().filter(|record| record.to == occupant.as_str())
+    }
+
+    pub fn set_handoff(&mut self, handoff: forge_primitives::HandoffRecord) {
+        self.handoff = Some(handoff);
     }
 
     /// How many messages the cap has dropped off the front, which is what
@@ -824,6 +847,19 @@ impl Conversations {
                     seq.unwrap_or(0),
                 );
             }
+            // The row between two conversations. Held on the copy rather
+            // than appended, so the successor's reseed below keeps it - and
+            // set before that reseed arrives, because the row names the pair
+            // and the new run is what it points at.
+            SessionUpdate::Handoff { handoff, .. } => {
+                if let Some(held) = self.get(slot) {
+                    let mut conversation = held.lock();
+                    conversation.set_handoff(handoff.clone());
+                    if let Some(seq) = seq {
+                        conversation.set_watermark(seq);
+                    }
+                }
+            }
             SessionUpdate::ChatAppended { msg, .. } => {
                 // **A compaction boundary is a frame like any other.** It
                 // once dropped the seat so the next ask would replay it, and
@@ -1087,6 +1123,68 @@ mod tests {
 
     fn a_replay(history: Vec<Message>, compaction_count: u32) -> SessionUpdate {
         SessionUpdate::HistoryReplayed { key: a_seat(), history, compaction_count }
+    }
+
+    fn a_swap_to(occupant: &str) -> SessionUpdate {
+        SessionUpdate::SessionReplaced {
+            key: a_seat(),
+            session_id: SessionId::new(occupant),
+            cwd: "/tmp".to_owned(),
+            current_model: a_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+            dropped: 0,
+            compaction_count: 0,
+        }
+    }
+
+    fn a_handoff_record(from: &str, to: &str) -> forge_primitives::HandoffRecord {
+        forge_primitives::HandoffRecord {
+            slot: a_seat(),
+            from: from.to_owned(),
+            to: to.to_owned(),
+            reason: forge_primitives::HandoffReason::Fill,
+            fill_percent: Some(85),
+            total_tokens: Some(850_000),
+            max_tokens: Some(1_000_000),
+            compaction_count: 0,
+            at_percent: 85,
+            brief: forge_primitives::HandoffBrief::default(),
+            transcript_path: "/tmp/old.jsonl".to_owned(),
+            at: "2026-10-24T08:00:00Z".to_owned(),
+            cycle: forge_primitives::HandoffCycle::default(),
+            successor: None,
+        }
+    }
+
+    /// The row describes the join between two conversations, so it is held
+    /// beside them: the successor's own seed keeps it, and a later occupant
+    /// stops drawing it because the record names a session that seat is no
+    /// longer.
+    #[test]
+    fn a_handoff_row_survives_the_successors_seed_and_stops_at_the_next_occupant() {
+        let held = Conversations::new();
+        held.apply(&a_swap_to("old"), None);
+        held.apply(
+            &SessionUpdate::Handoff { key: a_seat(), handoff: a_handoff_record("old", "new") },
+            None,
+        );
+        assert!(
+            held.get(&a_seat()).expect("held").lock().handoff().is_none(),
+            "the row does not draw while the session that handed over is still the occupant",
+        );
+
+        held.apply(&a_swap_to("new"), None);
+        let drawn =
+            held.get(&a_seat()).expect("held").lock().handoff().map(|record| record.to.clone());
+        assert_eq!(drawn, Some("new".to_owned()), "the successor's seed keeps the row");
+
+        held.apply(&a_swap_to("other"), None);
+        assert!(
+            held.get(&a_seat()).expect("held").lock().handoff().is_none(),
+            "a later /new under the same seat does not draw a join it did not make",
+        );
     }
 
     /// **The property the whole seed rests on: both routes are a reseed, not
