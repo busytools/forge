@@ -1622,10 +1622,13 @@ pub enum SessionUpdate {
         key: SessionSlot,
         monitors: Vec<forge_primitives::MonitorRecord>,
     },
-    /// The CLI's background-task registry moved, as the whole set.
+    /// The seat's live task set moved, as the whole set.
     ///
-    /// The CLI announces the whole registry on each change, so this mirrors
-    /// it: a task entering, leaving or being cleared by a dead connection.
+    /// Both halves move it: the CLI announces its background registry whole on
+    /// each change, and a long foreground call enters on its `task_started`
+    /// and leaves on its `task_notification`, a terminal `task_updated`, or
+    /// the end of the turn that ran it. So this mirrors a task entering,
+    /// leaving or being cleared by a dead connection.
     BackgroundTasksChanged {
         key: SessionSlot,
         tasks: Vec<crate::BackgroundTask>,

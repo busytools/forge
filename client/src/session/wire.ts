@@ -142,8 +142,9 @@ export interface ProcessSnapshot {
 }
 
 /**
- * One entry of the CLI's background-task registry, as `forge-primitives`
- * carries it: the row a backgrounded tool call left behind.
+ * One of the seat's live tasks, as `forge-primitives` carries it: the row a
+ * running tool call leaves behind, backgrounded or - for a long foreground
+ * call the CLI tracks - not.
  *
  * `task_type` routes the row - `local_bash` is the processes feed, an agent
  * kind belongs to the dispatch rows. `description` is the line the row leads
@@ -152,6 +153,12 @@ export interface ProcessSnapshot {
  */
 export interface BackgroundTask {
   task_id: string;
+  /**
+   * Whether the CLI put the call in the background. A server that predates
+   * the field reads as backgrounded: its registry's own rows are, and only an
+   * explicit `false` claims a foreground hold.
+   */
+  is_backgrounded: boolean;
   task_type: string;
   description: string;
   command: string | null;
@@ -314,7 +321,8 @@ export interface SessionRecord {
   mcp: McpServers | null;
   processes: ProcessSnapshot | null;
   monitors: MonitorRecord[];
-  /** The CLI's background-task registry: what this seat has running out of band. */
+  /** The seat's live tasks: what it has running, backgrounded or a long
+   *  foreground call the CLI tracks while it runs. */
   background_tasks: BackgroundTask[];
   /**
    * The composer's three lists: the CLI's commands for `/`, the agent types
@@ -794,7 +802,7 @@ export function processesFrom(value: unknown): ProcessSnapshot | null {
 }
 
 /**
- * One registry row, or nothing when it is not a row.
+ * One live task, or nothing when it is not one.
  *
  * A row needs its id, its kind and its words: an entry missing any is not
  * something a view can draw, and it is dropped rather than drawn blank.
@@ -808,6 +816,7 @@ export function backgroundTaskFrom(value: unknown): BackgroundTask[] {
   return [
     {
       task_id,
+      is_backgrounded: held['is_backgrounded'] !== false,
       task_type,
       description,
       command: text(held['command']),

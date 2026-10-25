@@ -8,11 +8,10 @@
 //! that's still alive at scan time.
 //!
 //! Why not key off the wire alone? The wire's `task_started` /
-//! `task_updated` pair covers `Bash` with `run_in_background:true`
-//! and the `Monitor` tool's streaming watcher, but it doesn't
-//! surface:
-//! - Foreground Bash invocations (claude blocks on them; no
-//!   `task_started`).
+//! `task_updated` pair covers `Bash` with `run_in_background:true`, a
+//! foreground call that outlives a beat, and the `Monitor` tool's
+//! streaming watcher, but it doesn't surface:
+//! - A foreground Bash that ends within a beat, which leaves no frame.
 //! - Grandchild processes the spawned shell forks off (e.g. a
 //!   `cargo build` that fans out into `rustc` workers).
 //! - Anything that detaches from claude's tool registry but stays

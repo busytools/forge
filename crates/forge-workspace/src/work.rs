@@ -1587,6 +1587,7 @@ provider = "anthropic"
         let tasks = vec![
             crate::BackgroundTask {
                 task_id: "t1".to_owned(),
+                is_backgrounded: true,
                 task_type: "local_bash".to_owned(),
                 description: "gh run watch".to_owned(),
                 command: Some("gh run watch 123 --exit-status".to_owned()),
@@ -1597,6 +1598,7 @@ provider = "anthropic"
             // it out of the walk.
             crate::BackgroundTask {
                 task_id: "t2".to_owned(),
+                is_backgrounded: true,
                 task_type: "local_agent".to_owned(),
                 description: "a sub-agent".to_owned(),
                 command: Some("investigate".to_owned()),
@@ -1604,6 +1606,7 @@ provider = "anthropic"
             },
             crate::BackgroundTask {
                 task_id: "t3".to_owned(),
+                is_backgrounded: true,
                 task_type: "local_bash".to_owned(),
                 description: "a bash whose card forge never saw".to_owned(),
                 command: None,

@@ -233,6 +233,13 @@ never a guess) and plain `files` for the project's checkout, with the
 browser's own mark beside it and no count. No hover dialog, no panel -
 there is nothing here but the way in.
 
+**The processes row is the seat's running calls.** A call the model
+backgrounded and a long foreground one the CLI is tracking while it runs
+both draw, led by the CLI's own description and joined to the OS walk for
+the memory and pid its command names. A foreground call settles with the
+turn that ran it; a backgrounded one outlives its turn and leaves when the
+CLI's own registry stops naming it.
+
 **Every cell is a read, not a computation.** The schedules row keeps the
 seat's own set - a cron names the seat that created it - and its
 countdowns re-derive against the page's own clock, as the monitors' ages

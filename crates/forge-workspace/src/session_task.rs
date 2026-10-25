@@ -284,7 +284,7 @@ impl SessionTask {
             if moved.background_tasks {
                 self.emit(SessionUpdate::BackgroundTasksChanged {
                     key: self.key.clone(),
-                    tasks: guard.background_tasks.clone(),
+                    tasks: guard.task_rows(),
                 });
             }
             if moved.commands {
@@ -2853,6 +2853,7 @@ pub(crate) enum MovedTurnEnd {
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) -> Moved {
     let held_monitors = domain.monitors.clone();
     let held_tasks = domain.background_tasks.clone();
+    let held_live_tasks = domain.live_tasks.clone();
     let held_walk = domain.process_snapshot.is_some();
     let held_commands = domain.available_commands.clone();
     let held_agents = domain.available_agents.clone();
@@ -2903,6 +2904,11 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         } else {
             MovedTurnEnd::Complete { terminal_reason: *terminal_reason }
         });
+        // A foreground call cannot outlive the turn that ran it, and its own
+        // ending frame does not always come: the `TaskStop` tool path sends
+        // none, and a cancelled turn can bury the one it would have sent. A
+        // backgrounded call outlives its turn and stays in the registry.
+        domain.settle_foreground_holds();
         // An errored `Result` marks the slot for the rail, unless the
         // reader asked for the interruption - a cancel ends with the same
         // failed result a genuine error does.
@@ -2945,6 +2951,9 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
                 let entry = task.as_object()?;
                 Some(crate::BackgroundTask {
                     task_id: entry.get("task_id")?.as_str()?.to_owned(),
+                    // The registry names the background set by definition,
+                    // and its entries carry no flag of their own.
+                    is_backgrounded: true,
                     task_type: entry.get("task_type")?.as_str()?.to_owned(),
                     description: entry.get("description")?.as_str()?.to_owned(),
                     command: None,
@@ -2969,8 +2978,8 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     // ANY card that carries a command, not only one whose input asked to run
     // in the background: the CLI backgrounds a bash three ways, and two of
     // them (`backgroundedByUser`, `assistantAutoBackgrounded`) cannot show on
-    // the card. The registry and the `task_started` link are what scope it -
-    // a command no roster entry resolves to is never read.
+    // the card. The `task_started` link is what scopes it - a command no
+    // live task names is never read.
     if let AgentEvent::SdkMessage {
         msg: forge_primitives::Message::Assistant { message, .. },
         ..
@@ -2986,13 +2995,65 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         }
     }
     // `task_started` is what links a task to the card that began it, and so
-    // to the command.
+    // to the command. **A `local_bash` task it announces is a call this seat
+    // is running**, backgrounded or not: the registry names only the
+    // backgrounded ones, so a long foreground call is held here until the
+    // `task_notification` that ends it.
     if let AgentEvent::SdkMessage {
-        msg: forge_primitives::Message::TaskStarted { task_id, tool_use_id: Some(tool_use_id), .. },
+        msg:
+            forge_primitives::Message::TaskStarted {
+                task_id,
+                description,
+                tool_use_id,
+                task_type,
+                extras,
+                ..
+            },
         ..
     } = event
     {
-        domain.hold_task_tool_use(task_id.clone(), tool_use_id.clone());
+        if let Some(tool_use_id) = tool_use_id {
+            domain.hold_task_tool_use(task_id.clone(), tool_use_id.clone());
+        }
+        // Two flags ride the frame's unmodelled fields: the dispatch marker
+        // (a sub-agent's call is not this seat's row) and the CLI's own
+        // backgrounding, which a consumer reads off the hold. A frame that
+        // states neither is a session call the CLI did not background.
+        let dispatched = extras.get("parent_tool_use_id").and_then(serde_json::Value::as_str);
+        let backgrounded =
+            extras.get("is_backgrounded").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        if task_type.as_deref() == Some("local_bash")
+            && !forge_primitives::names_a_dispatch(dispatched)
+        {
+            domain.note_live_task(crate::BackgroundTask {
+                task_id: task_id.clone(),
+                is_backgrounded: backgrounded,
+                task_type: "local_bash".to_owned(),
+                description: description.clone(),
+                command: None,
+                tool_use_id: tool_use_id.clone(),
+            });
+        }
+    }
+    // A task's own ending withdraws it from the live set. The notification is
+    // the ending frame - it rides beside a terminal `task_updated` and names
+    // the output file - and a terminal patch is the same answer a frame
+    // earlier.
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::TaskNotification { task_id, tool_use_id, .. },
+        ..
+    } = event
+    {
+        domain.settle_live_task(task_id, tool_use_id.as_deref());
+    }
+    if let AgentEvent::SdkMessage {
+        msg: forge_primitives::Message::TaskUpdated { task_id, patch, .. },
+        ..
+    } = event
+        && patch.status.as_deref().is_some_and(task_status_is_terminal)
+    {
+        // The patch names only the task, so the id is the only match here.
+        domain.settle_live_task(task_id, None);
     }
     if let AgentEvent::Connected { session_id, .. } = event {
         domain.session_id = Some(SessionId::new(session_id.clone()));
@@ -3179,7 +3240,8 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     }
     Moved {
         monitors: domain.monitors != held_monitors,
-        background_tasks: domain.background_tasks != held_tasks,
+        background_tasks: domain.background_tasks != held_tasks
+            || domain.live_tasks != held_live_tasks,
         processes: held_walk && domain.process_snapshot.is_none(),
         commands: domain.available_commands != held_commands,
         agents: domain.available_agents != held_agents,
@@ -3320,6 +3382,11 @@ fn reconcile_model_from_init(domain: &mut DomainSession, data: &serde_json::Valu
         None,
         &domain.available_models,
     ));
+}
+
+/// Whether a `task_updated` patch names a status that ends the task.
+fn task_status_is_terminal(status: &str) -> bool {
+    monitor_status_from_wire(status).is_some()
 }
 
 /// The status a terminal `task_updated` names, in the vocabulary the
@@ -7944,7 +8011,7 @@ provider = "anthropic"
         assert_eq!(announced.len(), 1, "the frame that fills the registry announces it");
         assert_eq!(
             announced[0],
-            task.domain.lock().background_tasks,
+            task.domain.lock().task_rows(),
             "and what it announces is what the core holds",
         );
 
@@ -11218,8 +11285,421 @@ provider = "anthropic"
         assert_eq!(tasks[0].command, None, "and its command is absent rather than invented");
     }
 
+    /// **A long foreground call is a row too.** The CLI tracks it like a
+    /// backgrounded one - `task_started` when it outlives a beat, its own
+    /// `task_notification` at the end - but never lists it in the registry,
+    /// which is the background set. The set a view draws has to carry it in
+    /// between, or a seat running a gate draws no processes at all.
+    #[test]
+    fn a_foreground_call_is_a_row_while_it_runs() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-fg");
+        let (mut task, mut updates) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_fg", "sleep 110", None));
+        send(&mut task, a_task_started("t-fg", "toolu_fg"));
+
+        let held = task.domain.lock().task_rows();
+        assert_eq!(held.len(), 1, "the announced foreground call is a row: {held:?}");
+        assert_eq!(held[0].task_id, "t-fg", "under the id the CLI gave it");
+        assert!(!held[0].is_backgrounded, "and the CLI ran it in the foreground");
+        assert_eq!(held[0].task_type, "local_bash", "with the kind a view routes on");
+        assert_eq!(held[0].description, "gh run watch", "and the line the row leads with");
+        assert_eq!(
+            held[0].command.as_deref(),
+            Some("sleep 110"),
+            "and the command its own card carried, which the walk matches the process on",
+        );
+        assert_eq!(held[0].tool_use_id.as_deref(), Some("toolu_fg"), "its own reveal link");
+
+        let announced = announced_tasks(&mut updates);
+        assert_eq!(announced.len(), 1, "the update that pushes it to a view went out");
+        assert_eq!(
+            announced[0].iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
+            held.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
+            "and it carries exactly the set the record reads, not the registry alone",
+        );
+    }
+
+    /// The call's own ending frame withdraws its row, and the registry's
+    /// whole-set snapshot never takes a running foreground task with it.
+    #[test]
+    fn a_foreground_row_is_held_across_a_snapshot_and_ends_with_its_notification() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-fg");
+        let (mut task, mut updates) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_fg", "sleep 110", None));
+        send(&mut task, a_task_started("t-fg", "toolu_fg"));
+        send(&mut task, background_tasks(Vec::new()));
+
+        assert_eq!(
+            task.domain.lock().task_rows().len(),
+            1,
+            "the registry snapshot carries the background set, so it neither adds nor wipes a \
+             foreground task",
+        );
+
+        send(&mut task, a_task_notification("t-fg", "completed", None));
+        assert!(
+            task.domain.lock().task_rows().is_empty(),
+            "the notification is that call's ending, so its row leaves",
+        );
+        let announced = announced_tasks(&mut updates);
+        assert_eq!(
+            announced.last().map(Vec::len),
+            Some(0),
+            "and the withdrawal is pushed: {announced:?}",
+        );
+    }
+
+    /// A task the registry already names is one row, not two: a backgrounded
+    /// call reaches both the snapshot and `task_started`.
+    #[test]
+    fn a_background_task_announced_twice_is_one_row() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_backgrounded_bash("toolu_1", "gh run watch 123"));
+        send(&mut task, background_tasks(one_live_task()));
+        send(&mut task, a_task_started("t1", "toolu_1"));
+
+        let held = task.domain.lock().task_rows();
+        assert_eq!(held.len(), 1, "one task, one row: {held:?}");
+        assert!(
+            held[0].is_backgrounded,
+            "the registry's own entry is the one read, and it is backgrounded",
+        );
+        assert_eq!(
+            held[0].command.as_deref(),
+            Some("gh run watch 123"),
+            "read from the registry's entry, which filled from the link",
+        );
+    }
+
+    /// Background and foreground calls live at once are two rows, each saying
+    /// which it is. A seat running a gate beside a backgrounded watch is this
+    /// shape.
+    #[test]
+    fn a_background_and_a_foreground_call_live_at_once_are_two_rows() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-both");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_backgrounded_bash("toolu_bg", "gh run watch 123"));
+        send(&mut task, background_tasks(one_live_task()));
+        send(&mut task, a_task_started("t1", "toolu_bg"));
+        send(&mut task, a_bash_card("toolu_fg", "sleep 110", None));
+        send(&mut task, a_task_started("t-fg", "toolu_fg"));
+
+        let held = task.domain.lock().task_rows();
+        assert_eq!(held.len(), 2, "two live calls, two rows: {held:?}");
+        let background = held.iter().find(|row| row.task_id == "t1").expect("the registry row");
+        assert!(background.is_backgrounded, "the registry row says backgrounded");
+        let foreground = held.iter().find(|row| row.task_id == "t-fg").expect("the held row");
+        assert!(!foreground.is_backgrounded, "the announced call says foreground");
+        assert_eq!(foreground.command.as_deref(), Some("sleep 110"), "its own command");
+    }
+
+    /// One call, one row: a call the registry later names under another task
+    /// id does not draw beside the hold that already had it.
+    #[test]
+    fn a_call_the_registry_names_under_another_task_id_is_one_row() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-call");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_shared", "sleep 60", None));
+        send(&mut task, a_task_started("t-hold", "toolu_shared"));
+        // The CLI restates the same call under a registry task id of its own.
+        send(
+            &mut task,
+            background_tasks(vec![serde_json::json!({
+                "task_id": "t-reg",
+                "task_type": "local_bash",
+                "description": "sleep 60",
+            })]),
+        );
+        send(&mut task, a_task_started("t-reg", "toolu_shared"));
+
+        let held = task.domain.lock().task_rows();
+        assert_eq!(held.len(), 1, "one call, one row: {held:?}");
+        assert_eq!(held[0].task_id, "t-reg", "the CLI's own row is the one read");
+        assert_eq!(held[0].tool_use_id.as_deref(), Some("toolu_shared"));
+    }
+
+    /// A cancelled turn settles its foreground row even though no ending frame
+    /// ever comes: a foreground call cannot outlive the turn that ran it.
+    #[test]
+    fn a_cancelled_turn_settles_its_foreground_row() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-cancel");
+        let (mut task, mut updates) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_fg", "sleep 110", None));
+        send(&mut task, a_task_started("t-fg", "toolu_fg"));
+        task.domain.lock().pending_cancel = true;
+        send(&mut task, result_message("error_during_execution", true));
+
+        assert!(
+            task.domain.lock().task_rows().is_empty(),
+            "the cancelled turn takes its own foreground hold with it",
+        );
+        let announced = announced_tasks(&mut updates);
+        assert_eq!(
+            announced.last().map(Vec::len),
+            Some(0),
+            "and the withdrawal is pushed: {announced:?}",
+        );
+    }
+
+    /// Only a `local_bash` task is this feed's. A sub-agent's task belongs to
+    /// the dispatch rows, and a frame a sub-agent produced is not the
+    /// session's own row at all.
+    #[test]
+    fn an_agents_task_is_not_a_process_row() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-fg");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(
+            &mut task,
+            serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_started",
+                "task_id": "t-agent",
+                "tool_use_id": "toolu_agent",
+                "description": "a dispatched agent",
+                "task_type": "local_agent",
+                "uuid": "u4",
+                "session_id": "worker",
+            }))
+            .expect("parse a local_agent task_started"),
+        );
+        send(
+            &mut task,
+            serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_started",
+                "task_id": "t-sub",
+                "tool_use_id": "toolu_sub",
+                "description": "a sub-agent's own bash",
+                "task_type": "local_bash",
+                "parent_tool_use_id": "toolu_task",
+                "uuid": "u5",
+                "session_id": "worker",
+            }))
+            .expect("parse a dispatched task_started"),
+        );
+
+        assert!(
+            task.domain.lock().task_rows().is_empty(),
+            "neither an agent's task nor a dispatched call's belongs in the processes feed",
+        );
+    }
+
+    /// A terminal `task_updated` settles the hold; a progress patch does not.
+    #[test]
+    fn a_terminal_task_update_settles_a_hold_and_a_progress_one_does_not() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-update");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_fg", "sleep 110", None));
+        send(&mut task, a_task_started("t-fg", "toolu_fg"));
+
+        send(&mut task, a_task_updated("t-fg", "running"));
+        assert_eq!(
+            task.domain.lock().task_rows().len(),
+            1,
+            "a progress patch states no ending, so the hold stands",
+        );
+
+        send(&mut task, a_task_updated("t-fg", "completed"));
+        assert!(task.domain.lock().task_rows().is_empty(), "the terminal patch ends the hold");
+    }
+
+    /// A backgrounded hold is not the turn's to settle: the call outlives the
+    /// turn that started it, and the registry is where its life is read.
+    #[test]
+    fn a_background_hold_survives_the_turn_end() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bg-turn");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_task_started_with("t-bg", Some("toolu_bg"), true));
+        task.domain.lock().pending_cancel = true;
+        send(&mut task, result_message("error_during_execution", true));
+
+        let held = task.domain.lock().task_rows();
+        assert_eq!(held.len(), 1, "the backgrounded hold outlives the turn: {held:?}");
+        assert!(held[0].is_backgrounded, "and it still says so");
+    }
+
+    /// A new occupant's calls are its own: the previous CLI's holds go with
+    /// it, exactly as its registry does.
+    #[test]
+    fn a_new_occupant_clears_the_announced_holds() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-occupant");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_fg", "sleep 110", None));
+        send(&mut task, a_task_started("t-fg", "toolu_fg"));
+        assert_eq!(task.domain.lock().task_rows().len(), 1, "the hold is up");
+
+        task.translate_event(a_connected("worker-2"));
+        assert!(
+            task.domain.lock().task_rows().is_empty(),
+            "a new occupant starts with no holds of the last one's",
+        );
+    }
+
+    /// Two announcements of one call are one row even before the registry
+    /// names either: the call is the identity.
+    #[test]
+    fn two_announcements_of_one_call_are_one_row() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-call-only");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_shared", "sleep 60", None));
+        send(&mut task, a_task_started("t-one", "toolu_shared"));
+        send(&mut task, a_task_started("t-two", "toolu_shared"));
+
+        let held = task.domain.lock().task_rows();
+        assert_eq!(held.len(), 1, "one call, one row: {held:?}");
+        assert_eq!(held[0].task_id, "t-one", "the first announcement holds the call");
+    }
+
+    /// A task announced with no call still draws: the row is the task's.
+    #[test]
+    fn a_task_with_no_call_still_draws() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-bare");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_task_started_with("t-bare", None, false));
+
+        let held = task.domain.lock().task_rows();
+        assert_eq!(held.len(), 1, "a call-less task is still a row: {held:?}");
+        assert_eq!(held[0].tool_use_id, None, "with no reveal link rather than a guess");
+    }
+
+    /// The ending may name the other task id: one call can be announced
+    /// twice, and the frame's own call is the join.
+    #[test]
+    fn an_ending_frame_settles_the_hold_by_its_call_too() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-end-call");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_bash_card("toolu_shared", "sleep 60", None));
+        send(&mut task, a_task_started("t-one", "toolu_shared"));
+        send(&mut task, a_task_notification("t-other", "completed", Some("toolu_shared")));
+
+        assert!(
+            task.domain.lock().task_rows().is_empty(),
+            "the call's own ending settles it, whichever task id it names",
+        );
+    }
+
+    /// The `TaskStop` path's shape, in the wire's own order: the registry
+    /// snapshot names the task BEFORE `task_started` links it (the CLI's
+    /// captured order), the stop sends no ending and no registry change, and
+    /// a later change to the set leaves the task out. The registry is the
+    /// whole background set, so the row goes with it instead of resurfacing.
+    #[test]
+    fn a_background_hold_leaves_when_the_registry_stops_naming_its_task() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("w-stop");
+        let (mut task, _update_rx) = review_task_for(&workspace, &key);
+        let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
+            task.translate_event(AgentEvent::SdkMessage { session_id: "worker".to_owned(), msg });
+        };
+
+        send(&mut task, a_backgrounded_bash("toolu_stop", "gh run watch 9"));
+        send(
+            &mut task,
+            background_tasks(vec![serde_json::json!({
+                "task_id": "t-stop",
+                "task_type": "local_bash",
+                "description": "a stopped watch",
+            })]),
+        );
+        send(&mut task, a_task_started_with("t-stop", Some("toolu_stop"), true));
+        assert_eq!(task.domain.lock().task_rows().len(), 1, "named while it runs");
+
+        // The stop sends no ending and no registry change, so the only
+        // evidence left is a set that stops naming the task.
+        send(&mut task, background_tasks(Vec::new()));
+        assert!(
+            task.domain.lock().task_rows().is_empty(),
+            "a backgrounded hold is the registry's to keep, and the set that leaves it out takes it",
+        );
+    }
+
     fn a_backgrounded_bash(id: &str, command: &str) -> forge_primitives::Message {
         a_bash_card(id, command, Some(true))
+    }
+
+    fn a_task_notification(
+        task_id: &str,
+        status: &str,
+        tool_use_id: Option<&str>,
+    ) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": task_id,
+            "tool_use_id": tool_use_id,
+            "status": status,
+            "output_file": "",
+            "summary": "done",
+            "uuid": "u3",
+            "session_id": "worker",
+        }))
+        .expect("parse a task_notification message")
     }
 
     /// A Bash card, with the `run_in_background` flag only when the caller
@@ -11253,6 +11733,16 @@ provider = "anthropic"
     }
 
     fn a_task_started(task_id: &str, tool_use_id: &str) -> forge_primitives::Message {
+        a_task_started_with(task_id, Some(tool_use_id), false)
+    }
+
+    /// The same frame with the CLI's backgrounding flag as the wire carried
+    /// it, and the call optional - a task can be announced with no call.
+    fn a_task_started_with(
+        task_id: &str,
+        tool_use_id: Option<&str>,
+        is_backgrounded: bool,
+    ) -> forge_primitives::Message {
         serde_json::from_value(serde_json::json!({
             "type": "system",
             "subtype": "task_started",
@@ -11260,10 +11750,48 @@ provider = "anthropic"
             "tool_use_id": tool_use_id,
             "description": "gh run watch",
             "task_type": "local_bash",
+            "is_backgrounded": is_backgrounded,
             "uuid": "u2",
             "session_id": "worker",
         }))
         .expect("parse a task_started message")
+    }
+
+    fn a_task_updated(task_id: &str, status: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": task_id,
+            "patch": { "status": status },
+            "uuid": "u6",
+            "session_id": "worker",
+        }))
+        .expect("parse a task_updated message")
+    }
+
+    /// A fresh occupant in the same slot, which resets everything a previous
+    /// CLI process owned.
+    fn a_connected(session_id: &str) -> AgentEvent {
+        AgentEvent::Connected {
+            session_id: session_id.to_owned(),
+            cwd: "/tmp/connected".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+            compaction_count: 0,
+        }
     }
 
     /// The session's own registry follows the CLI's snapshot, which

@@ -6,19 +6,20 @@
   import { panelStyle, portal } from './strip-panel';
 
   /**
-   * The batch row in the strip above the composer: the seat's backgrounded
-   * work, agents-style - how many calls are running, what they hold together,
-   * and the way into each.
+   * The batch row in the strip above the composer: the seat's running calls,
+   * agents-style - how many there are, what they hold together, and the way
+   * into each.
    *
-   * **The registry names the rows; the walk supplies the figures.** A row is
-   * a backgrounded call, led by the CLI's own description, and adopts the
+   * **The live task set names the rows; the walk supplies the figures.** A
+   * row is a running call - backgrounded, or a long foreground one the CLI
+   * tracks while it runs - led by the CLI's own description, and adopts the
    * scanned process its command names for memory and pid - the join the view
    * this client replaced made, ported, read from one store so the glance and
    * the list cannot disagree. A call the walk missed still draws, without a
    * figure, wearing its kind tag. Nothing else walks in: MCP servers,
    * grandchildren and detached processes are not batch work.
    *
-   * **Nothing here pops.** A row leaving the registry is the settlement - it
+   * **Nothing here pops.** A row leaving the live set is the settlement - it
    * is kept to the turn's close and nothing flashes for it - and so is a row
    * the conversation reports stopped while the registry still lists it, which
    * is what a `TaskStop` leaves behind. What rides along is the agents row's

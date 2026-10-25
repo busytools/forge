@@ -1015,6 +1015,7 @@ function seedStrip(on: boolean): void {
       ? [
           {
             task_id: 't-1',
+            is_backgrounded: true,
             task_type: 'local_bash',
             description: 'run the gate',
             command: 'cargo test',
