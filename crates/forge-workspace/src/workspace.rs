@@ -21915,7 +21915,8 @@ provider = "anthropic"
     /// picks from: the record is re-encoded on every seat open and reread, so
     /// the payload cannot grow with the project's history. The catalog branch
     /// is the one that answers a lead in steady state, so that is the branch
-    /// the cap is pinned on.
+    /// the cap and the worker filter are pinned on: the newest transcript here
+    /// is a worker's, and it must be gone before the cap is spent.
     #[tokio::test]
     async fn resume_sessions_are_bounded_to_the_newest_fifty() {
         let dir = scan_fixture_dir();
@@ -21926,14 +21927,20 @@ provider = "anthropic"
             write_session_fixture(dir.path(), &project_path, &id, None);
             pin_transcript(&dir, &project_path, &id, 1_700_000_000 + n);
         }
+        write_session_fixture(dir.path(), &project_path, WORKER_UUID, Some("forge:worker:alpha"));
+        pin_transcript(&dir, &project_path, WORKER_UUID, 1_700_000_500);
         pin_transcript(&dir, &project_path, LEAD_UUID, 1_699_999_999);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         ready_catalog(&workspace).await;
 
         let found = workspace.resumable_sessions(&SessionSlot::lead("Default", "proj")).await;
 
+        assert!(
+            found.iter().all(|info| info.session_id != WORKER_UUID),
+            "a worker's transcript is never a lead's jump, even as the newest row: {found:?}",
+        );
         assert_eq!(found.len(), 50, "the cap is the newest fifty rows");
-        assert_eq!(found[0].session_id, "t59", "the newest leads");
+        assert_eq!(found[0].session_id, "t59", "the newest of the lead's own leads");
         assert_eq!(found[49].session_id, "t10", "and the oldest ten are the ones cut");
         assert!(
             found.iter().all(|info| info.session_id != "t09" && info.session_id != LEAD_UUID),
