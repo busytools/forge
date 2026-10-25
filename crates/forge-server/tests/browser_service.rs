@@ -4,7 +4,8 @@
 //! **A live browser, not a mock.** The test spawns the installed host bundle
 //! and the vendored Playwright driver, so it needs both in place:
 //! `scripts/stage-browser-host.sh` and `scripts/vendor_browser_stack.sh`
-//! (with `FORGE_BROWSER_STACK_DIR` naming the server's stack directory).
+//! (which installs to `FORGE_BROWSER_STACK_DIR`); the test reads that
+//! directory from **`FORGE_BROWSER_TEST_STACK`**.
 
 #![cfg(target_os = "macos")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -54,7 +55,8 @@ async fn a_profile_drives_a_page_serves_frames_and_has_one_controller() {
     assert!(
         stack.join("node/bin/node").is_file(),
         "the vendored driver stack is not installed at {} - run \
-         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR",
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
         stack.display()
     );
     let scratch = tempfile::tempdir().expect("a scratch root");
@@ -134,7 +136,8 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
     assert!(
         stack.join("node/bin/node").is_file(),
         "the vendored driver stack is not installed at {} - run \
-         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR",
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
         stack.display()
     );
     let scratch = tempfile::tempdir().expect("a scratch root");
@@ -186,7 +189,8 @@ async fn a_killed_host_publishes_no_tabs_and_its_successor_starts_empty() {
     assert!(
         stack.join("node/bin/node").is_file(),
         "the vendored driver stack is not installed at {} - run \
-         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR",
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
         stack.display()
     );
     let scratch = tempfile::tempdir().expect("a scratch root");

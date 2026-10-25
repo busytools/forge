@@ -566,10 +566,11 @@ fn emit(
     state: &mut PaintState,
     dirty: Option<&[Rect]>,
     distinct: bool,
+    expected: Option<(u32, u32)>,
 ) {
     let Some((pixels, width, height)) = state.frame() else { return };
     // The composed buffer is a BGRA view of exactly width*height.
-    paint(ring, dirty, pixels.as_ptr(), width, height);
+    paint(ring, dirty, pixels.as_ptr(), width, height, expected);
     // **The frame stream and the ring see the same frame.** A size the ring
     // would refuse is still a frame with its own dimensions on the wire.
     if let Some(sink) = sink {
@@ -617,6 +618,14 @@ impl ViewSize {
             self.scale_milli.load(Ordering::Relaxed),
         )
     }
+}
+
+/// The paint size a tab's own layout expects, when it has one.
+fn expected_of(size: Option<&Arc<ViewSize>>) -> Option<(u32, u32)> {
+    size.map(|size| {
+        let (width, height, scale_milli) = size.get();
+        painted_size(width, height, scale_milli)
+    })
 }
 
 cef::wrap_render_handler! {
@@ -693,7 +702,7 @@ cef::wrap_render_handler! {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.popup = None;
             state.bounds = None;
-            emit(&self.ring, self.paint.as_ref(), &mut state, None, true);
+            emit(&self.ring, self.paint.as_ref(), &mut state, None, true, expected_of(self.size.as_ref()));
         }
 
         fn on_popup_size(&self, _browser: Option<&mut Browser>, rect: Option<&Rect>) {
@@ -730,14 +739,21 @@ cef::wrap_render_handler! {
             match type_ {
                 PaintElementType::VIEW => {
                     state.take_view(pixels, width, height);
-                    emit(&self.ring, self.paint.as_ref(), &mut state, dirty_rects, false);
+                    emit(
+                        &self.ring,
+                        self.paint.as_ref(),
+                        &mut state,
+                        dirty_rects,
+                        false,
+                        expected_of(self.size.as_ref()),
+                    );
                 }
                 PaintElementType::POPUP => {
                     state.take_popup(pixels, width, height);
                     // A popup paint is a full composite - the view's dirty
                     // rects are not the popup's - and the one frame that
                     // carries the menu, so the stream must not coalesce it.
-                    emit(&self.ring, self.paint.as_ref(), &mut state, None, true);
+                    emit(&self.ring, self.paint.as_ref(), &mut state, None, true, expected_of(self.size.as_ref()));
                 }
                 _ => {}
             }
@@ -765,15 +781,27 @@ fn within_budget(width: u32, height: u32) -> bool {
 
 /// Copy one delivered frame into the ring, unless it is a frame from before
 /// the last resize or one the ring cannot hold.
-fn paint(ring: &Ring, dirty_rects: Option<&[Rect]>, buffer: *const u8, width: u32, height: u32) {
-    // SAFETY: the header is mapped for this process's whole life.
-    let header = unsafe { &*ring.header() };
-    let requested = (
-        header.request_width.load(Ordering::Relaxed),
-        header.request_height.load(Ordering::Relaxed),
-        header.request_scale_milli.load(Ordering::Relaxed),
-    );
-    let expected = painted_size(requested.0, requested.1, requested.2);
+fn paint(
+    ring: &Ring,
+    dirty_rects: Option<&[Rect]>,
+    buffer: *const u8,
+    width: u32,
+    height: u32,
+    expected: Option<(u32, u32)>,
+) {
+    // **A tab laid out apart from the profile's request expects its own
+    // size**: a take records at 1280x720 while its viewer surfaces ask for
+    // another size, and the profile-wide request would drop every take frame
+    // as stale.
+    let expected = expected.unwrap_or_else(|| {
+        // SAFETY: the header is mapped for this process's whole life.
+        let header = unsafe { &*ring.header() };
+        painted_size(
+            header.request_width.load(Ordering::Relaxed),
+            header.request_height.load(Ordering::Relaxed),
+            header.request_scale_milli.load(Ordering::Relaxed),
+        )
+    });
     // **A paint at a size the driver no longer asks for is a frame from
     // before the resize, and it is dropped.** Adopting its size undid the
     // newer request and left the page laid out at the old size under a fresh
@@ -803,6 +831,8 @@ fn paint(ring: &Ring, dirty_rects: Option<&[Rect]>, buffer: *const u8, width: u3
     }
     // **The delivered size is the view's size.** The host adopts what CEF
     // actually painted, so the ring always describes its frame.
+    // SAFETY: the header is mapped for this process's whole life.
+    let header = unsafe { &*ring.header() };
     header.width.store(width, Ordering::Relaxed);
     header.height.store(height, Ordering::Relaxed);
     // SAFETY: CEF hands a BGRA frame of exactly this size, and the budget
@@ -993,7 +1023,7 @@ mod tests {
         // Request 2x4 at 0.5x: the view is 4x8 and CEF paints it at 1x.
         ring.request(2, 4, 0.5);
         let buffer = [0_u8; 4 * 8 * 4];
-        paint(&ring, None, buffer.as_ptr(), 4, 8);
+        paint(&ring, None, buffer.as_ptr(), 4, 8, None);
         // SAFETY: the ring is mapped for the test's use of it.
         let header = unsafe { &*ring.header() };
         assert_eq!(
@@ -1092,11 +1122,11 @@ mod tests {
         let ring = Ring::create(name, 8, 8).expect("a test ring");
         let buffer: Vec<u8> =
             (0..8 * 8 * 4).map(|at| u8::try_from(at % 256).unwrap_or_default()).collect();
-        paint(&ring, None, buffer.as_ptr(), 4, 4);
+        paint(&ring, None, buffer.as_ptr(), 4, 4, None);
         let header = unsafe { &*ring.header() };
         assert_eq!(header.paints.load(Ordering::Relaxed), 0, "a stale frame is not adopted");
         assert_eq!(header.width.load(Ordering::Relaxed), 8, "and does not overwrite the size");
-        paint(&ring, None, buffer.as_ptr(), 8, 8);
+        paint(&ring, None, buffer.as_ptr(), 8, 8, None);
         assert_eq!(header.paints.load(Ordering::Relaxed), 1, "the matching frame is written");
         assert_eq!(header.width.load(Ordering::Relaxed), 8);
         Ring::unlink(name);
@@ -1116,7 +1146,7 @@ mod tests {
         header.request_width.store(MAX_WIDTH, Ordering::Relaxed);
         header.request_height.store(MAX_HEIGHT, Ordering::Relaxed);
         header.request_scale_milli.store(1_000, Ordering::Relaxed);
-        paint(&ring, None, buffer.as_ptr(), MAX_WIDTH, MAX_HEIGHT + 1);
+        paint(&ring, None, buffer.as_ptr(), MAX_WIDTH, MAX_HEIGHT + 1, None);
         assert_eq!(header.paints.load(Ordering::Relaxed), 0, "past the budget is dropped");
         assert_eq!(header.width.load(Ordering::Relaxed), MAX_WIDTH, "and the size is not adopted");
         assert!(within_budget(MAX_WIDTH, MAX_HEIGHT), "exactly the budget fits");
@@ -1448,6 +1478,41 @@ mod tests {
         };
         assert_eq!(size_of(recorded), (1280, 720), "the recorded tab takes the take's size");
         assert_eq!(size_of(other), (1440, 900), "another tab keeps the profile's request");
+
+        // **The paint gate follows the tab's own size.** The take's frames
+        // are 1280x720 while the profile's request is 1440x900; a gate keyed
+        // only on the profile request dropped every recorded frame as stale.
+        let take = vec![0_u8; 1280 * 720 * 4];
+        super::paint(
+            &ring,
+            None,
+            take.as_ptr(),
+            1280,
+            720,
+            Some(super::painted_size(1280, 720, 1_000)),
+        );
+        // SAFETY: the header is this test's mapped ring.
+        let header = unsafe { &*ring.header() };
+        assert_eq!(
+            (header.width.load(Ordering::Relaxed), header.height.load(Ordering::Relaxed)),
+            (1280, 720),
+            "the take's frame is the one the ring holds",
+        );
+        // The same frame is stale for a tab that still expects the profile's
+        // request, and does not replace what the recorded tab wrote.
+        super::paint(
+            &ring,
+            None,
+            take.as_ptr(),
+            1280,
+            720,
+            Some(super::painted_size(1440, 900, 1_000)),
+        );
+        assert_eq!(
+            (header.width.load(Ordering::Relaxed), header.height.load(Ordering::Relaxed)),
+            (1280, 720),
+            "another tab's gate does not adopt the take's size",
+        );
         Ring::unlink(&name);
     }
 }

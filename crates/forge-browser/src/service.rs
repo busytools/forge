@@ -220,10 +220,13 @@ impl BrowserService {
     pub fn installed() -> Result<Self, String> {
         let root = crate::host_bundle::app_support()?.join("browser");
         let store = Store::at(&root);
-        match store.delete_legacy() {
+        // **The deletion can be gigabytes, so it does not hold up boot.** It
+        // runs once off this thread; the marker keeps a later boot off it,
+        // and the one INFO line names every path that went.
+        std::thread::spawn(move || match store.delete_legacy() {
             Ok(legacy) if legacy.ran => tracing::info!(
                 "the legacy browser profiles are deleted (event_name \
-                 browser_profiles_legacy_deleted, removed {})",
+                 browser_profiles_legacy_deleted, removed {:?})",
                 legacy.removed,
             ),
             Ok(_) => {}
@@ -231,7 +234,7 @@ impl BrowserService {
                 "the legacy browser profiles could not be deleted (event_name \
                  browser_profiles_legacy_delete_failed): {why}"
             ),
-        }
+        });
         Ok(Self::at(root.clone(), root.join("stack")))
     }
 
@@ -362,6 +365,7 @@ impl BrowserService {
             id: self.ids.fetch_add(1, Ordering::Relaxed),
             dir,
             frames: Mutex::new(HashMap::new()),
+            frame_seqs: Mutex::new(HashMap::new()),
             nav: Mutex::new(HashMap::new()),
             failures: watch::channel(None).0,
             files: watch::channel(None).0,
@@ -393,6 +397,7 @@ impl BrowserService {
             ended: AtomicBool::new(false),
             up: AtomicBool::new(false),
             restarted: AtomicBool::new(false),
+            host_epoch: AtomicU64::new(0),
             rows: self.rows_sender(key.as_str()),
         });
         profiles.insert(key.as_str().to_owned(), Arc::clone(&profile));
@@ -573,6 +578,10 @@ impl BrowserService {
     /// inherited tabs close (except a held one) and the slot's current-tab
     /// pointer clears.
     pub async fn replace_seat(&self, seat: &SessionSlot) {
+        // **The seat this replacement retires is no longer live.** A held
+        // tab survives the swap for a parked hand-off, and its Done must see
+        // the old owner gone rather than the last sweep's set.
+        self.live.lock().unwrap_or_else(PoisonError::into_inner).remove(seat);
         let Ok(key) = self.profile_for(seat) else { return };
         let Ok(profile) = self.find(key.as_str()).await else { return };
         let doomed: Vec<u16> = {
@@ -665,7 +674,6 @@ impl BrowserService {
         tool: &str,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
-        let (_, args) = take_profile(args)?;
         self.note_live(seat);
         // The fleet's own doors: these never reach a driver.
         match tool {
@@ -868,43 +876,52 @@ impl BrowserService {
         };
         // **The host's own target list names the tab it is about to make.**
         // The driver's pages and a host tab are both `about:blank` at birth,
-        // so the only exact pairing is the one page target that appears
-        // between the snapshot and the creation.
+        // so the only exact pairing is the page targets that appear between
+        // the snapshot and the creation.
         let before_targets: HashSet<String> =
             spawn::page_targets(port).await.into_iter().map(|(id, _)| id).collect();
-        // **The birth is asked for by id.** A popup the host created beside
-        // this request queues its own `TabCreated`, and taking the first one
-        // named a popup as the requested tab; the id tells them apart, and
-        // everything that is not this request's is kept for the reconcile
-        // pass rather than dropped.
+        // **The birth is asked for by id, and every birth is kept in order.**
+        // A popup the host created beside this request is its own
+        // `TabCreated`, and the births and the page targets are both
+        // creation-ordered: the request's place among the births is its place
+        // among the new pages. Taking the first new page let a popup be
+        // adopted as the requested tab.
+        let epoch = profile.host_epoch.load(Ordering::Acquire);
         let request = TAB_REQUESTS.fetch_add(1, Ordering::Relaxed);
         input
             .send(input::host_line(&input::HostInput::TabNew { url: None, request: Some(request) }))
             .map_err(|_| format!("the browser for '{}' is not taking a tab", profile.key))?;
-        let number = {
+        let mut events: Vec<HostEvent> = Vec::new();
+        let mut ours_at: Option<usize> = None;
+        let (ours, ours_event) = {
             let mut queue = profile.host_tab_events.lock().await;
-            let events = queue.as_mut().ok_or_else(|| {
-                format!("the browser for '{}' is not reporting its tabs", profile.key)
-            })?;
-            let mut found: Option<u16> = None;
-            let mut other: Vec<HostEvent> = Vec::new();
+            let Some(queue) = queue.as_mut() else {
+                return Err(format!("the browser for '{}' is not reporting its tabs", profile.key));
+            };
             let event_deadline = tokio::time::Instant::now() + TAB_EVENT_BOUND;
             loop {
-                while let Ok(event) = events.try_recv() {
-                    classify_birth(event, request, &mut found, &mut other);
+                while let Ok(event) = queue.try_recv() {
+                    let _ = collect_event(event, request, &mut events, &mut ours_at);
                 }
-                if found.is_some() {
+                // **The birth may have arrived through either read.** The
+                // recv below sets `ours_at` too, so the loop tests it rather
+                // than a per-iteration `found` the next pass would reset.
+                if ours_at.is_some() {
                     break;
                 }
                 if tokio::time::Instant::now() >= event_deadline {
+                    defer_events(profile, epoch, &mut events, None);
                     return Err(format!(
                         "the browser did not open a tab within {} s",
                         TAB_EVENT_BOUND.as_secs()
                     ));
                 }
-                match tokio::time::timeout(Duration::from_millis(50), events.recv()).await {
-                    Ok(Some(event)) => classify_birth(event, request, &mut found, &mut other),
+                match tokio::time::timeout(Duration::from_millis(50), queue.recv()).await {
+                    Ok(Some(event)) => {
+                        let _ = collect_event(event, request, &mut events, &mut ours_at);
+                    }
                     Ok(None) => {
+                        defer_events(profile, epoch, &mut events, None);
                         return Err(format!(
                             "the browser for '{}' stopped reporting its tabs",
                             profile.key
@@ -913,67 +930,75 @@ impl BrowserService {
                     Err(_) => {}
                 }
             }
-            if !other.is_empty() {
-                profile
-                    .deferred_tab_events
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .extend(other);
-            }
-            found.unwrap_or_default()
+            let ours_event = ours_at.unwrap_or_else(|| events.len().saturating_sub(1));
+            let ours = events[..=ours_event]
+                .iter()
+                .filter(|event| matches!(event, HostEvent::TabCreated { .. }))
+                .count()
+                .saturating_sub(1);
+            (ours, ours_event)
         };
-        let numbers = [(number, None)];
+        let number = match events.get(ours_event) {
+            Some(HostEvent::TabCreated { tab, .. }) => *tab,
+            _ => 0,
+        };
         // **A CEF browser the host created after the driver attached is not
         // reported to that driver's context.** A fresh driver enumerates the
-        // context's pages, so the tab a create or a popup just added is only
-        // visible to one.
+        // context's pages, so wait until at least the requested birth's page
+        // exists, then let the listing name them in creation order.
         let target_deadline = tokio::time::Instant::now() + TAB_TARGET_BOUND;
-        let created_targets: Vec<String> = loop {
-            let fresh: Vec<String> = spawn::page_targets(port)
+        loop {
+            let fresh = spawn::page_targets(port)
                 .await
                 .into_iter()
                 .map(|(id, _)| id)
                 .filter(|id| !before_targets.contains(id))
-                .collect();
-            if fresh.len() >= numbers.len() || tokio::time::Instant::now() >= target_deadline {
-                break fresh;
+                .count();
+            if fresh > ours || tokio::time::Instant::now() >= target_deadline {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
-        };
-        // **A CEF browser the host created after the driver attached is not
-        // reported to that driver's context.** A fresh driver enumerates the
-        // context's pages, and the target the host just reported is the row
-        // this tab owns.
+        }
         *driver = self.recover_driver(profile).await?;
         let listing = driver.tabs_within(left(deadline)).await?;
-        let mut requested = None;
-        {
+        let requested = {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            for (index, (number, opener)) in numbers.iter().enumerate() {
-                let Some(created) = created_targets.get(index) else { break };
-                let Some(row) = listing.iter().find(|row| &row.target == created) else {
-                    continue;
-                };
-                if tabs.target(*number).is_some() {
-                    continue;
-                }
-                let owner = opener
-                    .and_then(|opener| tabs.owner(opener).cloned())
-                    .unwrap_or_else(|| seat.clone());
-                if tabs.adopt(*number, owner, &row.id, &row.target, &row.title, &row.url).is_ok()
-                    && opener.is_none()
-                    && requested.is_none()
-                {
-                    requested = Some(*number);
-                }
-            }
-        }
+            let known: HashSet<String> = tabs
+                .numbers()
+                .into_iter()
+                .filter_map(|tab| tabs.target(tab).map(str::to_owned))
+                .collect();
+            let new_rows: Vec<crate::tabs::DriverTab> = listing
+                .iter()
+                .filter(|row| {
+                    !row.target.is_empty()
+                        && !before_targets.contains(&row.target)
+                        && !known.contains(&row.target)
+                })
+                .cloned()
+                .collect();
+            // **Births and pages are both creation-ordered**, so the request's
+            // place among the host's births is its place among the new pages.
+            new_rows
+                .get(ours)
+                .map(|row| {
+                    tabs.adopt(number, seat.clone(), &row.id, &row.target, &row.title, &row.url)
+                })
+                .and_then(Result::ok)
+        };
         let Some(requested) = requested else {
+            defer_events(profile, epoch, &mut events, None);
             return Err(format!(
                 "the browser's new tab did not appear in its page list (profile '{}')",
                 profile.key
             ));
         };
+        // **The boot page is only special while nothing else is open.** A
+        // create as a profile's first call adopts a tab of its own, and a
+        // boot marker left standing would let the next reconcile spare a page
+        // nothing owns.
+        *profile.boot.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        defer_events(profile, epoch, &mut events, Some(ours_event));
         let target = profile
             .tabs
             .lock()
@@ -1293,6 +1318,9 @@ impl BrowserService {
     /// driver created on its own is not a host tab and must not shift the
     /// indices**.
     async fn reconcile(&self, profile: &Arc<Profile>, driver: &Arc<dyn TabDriver>, port: u16) {
+        // **A reconcile in flight across a host death must not write its
+        // events back** over the empty list the death just made.
+        let epoch = profile.host_epoch.load(Ordering::Acquire);
         let Ok(mut listing) = driver.tabs_within(driver::CALL_TIMEOUT).await else {
             tracing::debug!(
                 event_name = "browser_reconcile_unlisted",
@@ -1334,18 +1362,20 @@ impl BrowserService {
                 listing = fresh_listing;
             }
         }
-        *profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner) = unmatched;
+        if profile.host_epoch.load(Ordering::Acquire) == epoch {
+            *profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner) = unmatched;
+        }
         // **A page the driver made for itself is not a host tab.** It is
         // closed by its target, which is also what keeps the driver's tab
         // list from growing pages nothing paints.
         let orphaned: Vec<String> = {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             // **A fresh host's current page is its boot tab, not an
-            // orphan.** No session has adopted it yet, so the registry does
-            // not know it; closing it would take the page the first call is
-            // meant to adopt.
-            let boot_pending =
-                profile.boot.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+            // orphan**, and only while nothing else is open. Once any tab is
+            // adopted the marker is gone, and a registry with tabs never
+            // spares an unowned page.
+            let boot_pending = tabs.numbers().is_empty()
+                && profile.boot.lock().unwrap_or_else(PoisonError::into_inner).is_some();
             closed_as_orphans(&tabs, &listing, boot_pending)
         };
         for target in orphaned {
@@ -1805,6 +1835,7 @@ impl BrowserService {
     /// End the seat's browser and forget it. The next call relaunches it over
     /// the same directory, so a close ends the run and never the logins.
     pub async fn close(&self, seat: &SessionSlot) -> Result<(), String> {
+        self.live.lock().unwrap_or_else(PoisonError::into_inner).remove(seat);
         let key = self.target(seat)?;
         // **The entry leaves the map before its host is ended, and the
         // map lock is released with it**: a same-key call waits on the
@@ -1933,6 +1964,11 @@ impl BrowserService {
         if profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).is_none() {
             return Err(format!("tab {tab} is not open"));
         }
+        // **The person's own input re-focuses their tab.** Another session's
+        // call focuses its own, and the history watch follows the focused
+        // tab; without this the arrows freeze on a tab the person is not
+        // looking at.
+        self.focus(&profile, tab).await;
         let (input, port) = {
             let state = profile.state.lock().await;
             let host = state
@@ -1967,11 +2003,32 @@ impl BrowserService {
                 Ok(())
             }
             input::Route::Page(method, params) => {
-                let target = live_target(&profile, tab)
-                    .await
+                // **Typing must not pay a driver round trip per key.** The
+                // registry's target is what the nav watch and the mouse
+                // refresh keep current; a page that moved under a navigation
+                // refuses the send once, and only then is the driver asked.
+                let target = profile
+                    .tabs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .target(tab)
+                    .map(str::to_owned)
                     .ok_or_else(|| format!("tab {tab} is not open"))?;
                 let mut state = profile.state.lock().await;
-                send_page(&mut state, port, &target, method, params).await
+                match send_page(&mut state, port, &target, method, params.clone()).await {
+                    Ok(()) => Ok(()),
+                    Err(first) => {
+                        drop(state);
+                        let Some(fresh) = live_target(&profile, tab).await else {
+                            return Err(first);
+                        };
+                        if fresh == target {
+                            return Err(first);
+                        }
+                        let mut state = profile.state.lock().await;
+                        send_page(&mut state, port, &fresh, method, params).await
+                    }
+                }
             }
         }
     }
@@ -2260,12 +2317,29 @@ impl BrowserService {
     /// Where one tab's history sits, or nothing when it cannot be read.
     pub async fn nav_state(&self, profile: &str, tab: u16) -> Option<BrowserNavState> {
         let profile = self.find(profile).await.ok()?;
-        let target = live_target(&profile, tab).await?;
+        // **The attach path reads the cached target.** A driver listing per
+        // attach is a Node round trip in front of the first arrows; only a
+        // page that refuses the cached target is asked about.
+        let target = profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .target(tab)
+            .map(str::to_owned)?;
         let mut state = profile.state.lock().await;
         let port = state.host.as_ref().map(|host| host.port)?;
-        let reply = call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({}))
-            .await
-            .ok()?;
+        let reply = if let Ok(reply) =
+            call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({})).await
+        {
+            reply
+        } else {
+            drop(state);
+            let target = live_target(&profile, tab).await?;
+            let mut state = profile.state.lock().await;
+            call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({}))
+                .await
+                .ok()?
+        };
         let nav = input::history_state(&reply)?;
         profile.publish_nav(tab, nav);
         Some(nav)
@@ -2530,6 +2604,10 @@ pub struct Profile {
     /// let a background tab's paint replace the viewed tab's, and an attach
     /// burst - every tab asked for a key frame - could blank the surface.
     frames: Mutex<HashMap<u16, watch::Sender<Option<BrowserFrame>>>>,
+    /// The sequence the relayed frames carry for each tab. **A host restarts
+    /// its own count at zero**, so the wire's sequence is kept here and never
+    /// goes backwards across a host death.
+    frame_seqs: Mutex<HashMap<u16, u32>>,
     /// Where the page's history sits, published when it moves: a link click
     /// moves the bar's arrows without anyone asking.
     /// **Each tab's history is its own**: a watch per tab, so a viewer's
@@ -2608,6 +2686,10 @@ pub struct Profile {
     /// A host this entry lost since the service last looked, so the service
     /// can forget the hand-offs that host held before its numbers come back.
     restarted: AtomicBool,
+    /// Bumped whenever a host goes. A birth or a reconcile in flight against
+    /// the old host must not write its events back over the successor's empty
+    /// list.
+    host_epoch: AtomicU64,
     /// **The same rows channel the service publishes on**, so a host's death
     /// can say so at once instead of waiting for a sweep.
     rows: watch::Sender<BrowserTabList>,
@@ -3045,11 +3127,27 @@ impl Profile {
     /// watcher is never asked and never cancels it. With no controller the
     /// chooser waits for an agent's own `browser_file_upload`, which is the
     /// same MCP tool that owns the captured chooser.
-    async fn file_chooser(self: &Arc<Self>, chooser: driver::FileChooser) {
+    async fn file_chooser(
+        self: &Arc<Self>,
+        chooser: driver::FileChooser,
+        generation: u64,
+        tab: u16,
+    ) {
         // **The whole decision is one critical section**: the previous ask's
         // clear and cancel, the role read, and the new ask's publication.
         let _decision = self.file_decision.lock().await;
         if self.ended.load(Ordering::Acquire) || !self.up.load(Ordering::Acquire) {
+            return;
+        }
+        // **A chooser from a replaced driver is not published.** Its ask's id
+        // belongs to a driver that no longer exists, and answering it would
+        // cancel the next real chooser as that stale id.
+        if self.state.lock().await.chooser_generation != generation {
+            tracing::debug!(
+                "a chooser from a replaced driver is dropped (event_name \
+                 browser_file_chooser_stale, profile {})",
+                self.key
+            );
             return;
         }
         if !chooser.current {
@@ -3118,9 +3216,9 @@ impl Profile {
         };
         let id = self.next_file_ask.fetch_add(1, Ordering::Relaxed);
         *self.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(id);
-        // **The chooser belongs to the tab the driver is on**, which is the
-        // tab the call focused before it drove the page.
-        let tab = self.focused.lock().unwrap_or_else(PoisonError::into_inner).unwrap_or(0);
+        // **The chooser belongs to the tab the driver was on when it
+        // surfaced**, captured by the reader rather than read here: a queued
+        // event can otherwise name whichever tab a later call focused.
         self.files.send_replace(Some(BrowserFileAsk { id, tab, multiple: chooser.multiple }));
         tracing::info!(
             "a page's file chooser went to the controller (event_name browser_file_chooser, \
@@ -3128,6 +3226,19 @@ impl Profile {
             self.key,
             chooser.url,
         );
+    }
+
+    /// The sequence the next relayed frame for `tab` carries.
+    ///
+    /// **The host's own count restarts at zero with every host**, and a
+    /// viewer drops a frame whose sequence is not newer than the one it
+    /// painted; across a host death that rule would reject every new frame
+    /// and leave the dead host's picture up.
+    fn next_frame_seq(&self, tab: u16) -> u32 {
+        let mut seqs = self.frame_seqs.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = seqs.entry(tab).or_insert(0);
+        *next = next.saturating_add(1);
+        *next
     }
 
     /// One tab's frame watch, made on demand.
@@ -3266,10 +3377,23 @@ impl Profile {
         // with the Arc, and `recv` then closes.
         let mut choosers = driver.file_choosers();
         let this = Arc::clone(self);
+        let generation = installed_generation(state);
+        state.chooser_generation = generation;
         tokio::spawn(async move {
             loop {
                 match choosers.recv().await {
-                    Ok(chooser) => this.file_chooser(chooser).await,
+                    Ok(chooser) => {
+                        // **The tab and the driver are captured when the
+                        // chooser arrives**: by the time a queued event runs,
+                        // `focused` may belong to another tab and this reader
+                        // may belong to a replaced driver.
+                        let tab = this
+                            .focused
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .unwrap_or(0);
+                        this.file_chooser(chooser, generation, tab).await;
+                    }
                     // **A lagged reader keeps reading**: the newest chooser
                     // still matters, and a dropped event is not a closed
                     // channel.
@@ -3285,7 +3409,6 @@ impl Profile {
                 }
             }
         });
-        state.chooser_generation = installed_generation(state);
         state.driver = Some(driver);
         self.watch_nav(state);
         Ok(())
@@ -3321,10 +3444,11 @@ impl Profile {
                 // tab's paint replace the viewed tab's.
                 let encoded = frame.encode();
                 if let Some(profile) = profile.upgrade() {
+                    let seq = profile.next_frame_seq(frame.tab);
                     profile.frame_sender(frame.tab).send_replace(Some(BrowserFrame {
                         profile: frame.profile,
                         tab: frame.tab,
-                        seq: frame.seq,
+                        seq,
                         encoded,
                     }));
                 }
@@ -3481,6 +3605,12 @@ impl Profile {
                 // same lock an answer or a role change takes, and the
                 // profile is marked down so a queued chooser event cannot
                 // publish against the dead host.
+                // **The cause is published before the tab senders close.** A
+                // viewer woken by a dead tab otherwise reads "tab N was
+                // closed" first and never hears why the browser went.
+                failures.send_replace(Some(format!(
+                    "the browser host exited ({cause}; pid {pid}); the next call brings it back"
+                )));
                 if let Some(profile) = profile.upgrade() {
                     let _decision = profile.file_decision.lock().await;
                     *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -3496,9 +3626,6 @@ impl Profile {
                 }
                 files.send_replace(None);
                 let _ = std::fs::remove_dir_all(dir.join("uploads"));
-                failures.send_replace(Some(format!(
-                    "the browser host exited ({cause}; pid {pid}); the next call brings it back"
-                )));
                 return;
             }
         });
@@ -3615,6 +3742,14 @@ impl Profile {
         self.views.lock().unwrap_or_else(PoisonError::into_inner).clear();
         // **A stale popup event must not pair against the successor.**
         self.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        // **A birth or reconcile already in flight must not write its events
+        // back** over the empty list this death just made.
+        self.host_epoch.fetch_add(1, Ordering::AcqRel);
+        // **The dead host's frames and history go with its numbers.** A kept
+        // frame would paint the old page onto the successor's tab, and a kept
+        // history would draw arrows for a page that no longer exists.
+        self.frames.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.nav.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.restarted.store(true, Ordering::Release);
         // **The strip hears the death now**, not at the next sweep: a
         // subscribed strip with no takeover otherwise keeps dead tabs and a
@@ -4104,32 +4239,12 @@ fn chooser_socket_path(profile_dir: &Path, profile: u16) -> Result<PathBuf, Stri
         .join(format!("chooser-{}-{profile}.sock", std::process::id())))
 }
 
-/// Take the `profile` argument off a call.
-///
-/// No driver's schema declares it, so it never reaches a tool. **`context` is
-/// read as the same thing**: an older schema names the argument that way, and
-/// an argument left in the call would reach the driver as an unknown key.
-pub fn take_profile(mut args: Value) -> Result<(Option<String>, Value), String> {
-    let Some(fields) = args.as_object_mut() else {
-        return Ok((None, args));
-    };
-    let Some(profile) = fields.remove("profile").or_else(|| fields.remove("context")) else {
-        return Ok((None, args));
-    };
-    match profile {
-        Value::Null => Ok((None, args)),
-        Value::String(name) => Ok((Some(name), args)),
-        other => Err(format!("`profile` is the name of a profile, not {other}")),
-    }
-}
-
 /// What is left of a call's budget - at least enough to send the call, so a
 /// spent budget answers a timeout rather than a silent skip.
 fn left(deadline: tokio::time::Instant) -> Duration {
     deadline.saturating_duration_since(tokio::time::Instant::now()).max(Duration::from_millis(1))
 }
 
-/// Collect one host tab birth from the event queue.
 /// The pages reconcile closes: every page target the registry does not know,
 /// except a fresh host's boot page while no session has adopted it yet.
 fn closed_as_orphans(
@@ -4149,19 +4264,43 @@ fn closed_as_orphans(
 /// Sort one host tab event against a requested birth: **the request's own id
 /// is the tab that was asked for**, and everything else is kept for the
 /// reconcile pass rather than being taken for it or dropped.
-fn classify_birth(
+/// Record one host tab event in arrival order, answering whether it is this
+/// request's own birth.
+fn collect_event(
     event: HostEvent,
     request: u64,
-    found: &mut Option<u16>,
-    other: &mut Vec<HostEvent>,
-) {
-    match event {
-        HostEvent::TabCreated { tab, request: Some(id), .. } if id == request => {
-            *found = Some(tab);
-        }
-        HostEvent::TabCreated { .. } | HostEvent::TabClosed { .. } => other.push(event),
-        _ => {}
+    events: &mut Vec<HostEvent>,
+    ours_at: &mut Option<usize>,
+) -> bool {
+    let ours = matches!(
+        &event,
+        HostEvent::TabCreated { request: Some(asked), .. } if *asked == request
+    );
+    if ours {
+        *ours_at = Some(events.len());
     }
+    events.push(event);
+    ours
+}
+
+/// Keep this attempt's events for the next reconcile, unless the host they
+/// belong to is gone. **Rule 25**: an event the call read is re-injected
+/// rather than dropped when the call cannot use it.
+fn defer_events(profile: &Profile, epoch: u64, events: &mut Vec<HostEvent>, skip: Option<usize>) {
+    let taken = std::mem::take(events);
+    if profile.host_epoch.load(Ordering::Acquire) != epoch {
+        return;
+    }
+    let kept: Vec<HostEvent> = taken
+        .into_iter()
+        .enumerate()
+        .filter(|(at, _)| Some(*at) != skip)
+        .map(|(_, event)| event)
+        .collect();
+    if kept.is_empty() {
+        return;
+    }
+    profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).extend(kept);
 }
 
 /// Pair host tab events with the driver's pages: a `TabClosed` removes the
@@ -4248,8 +4387,7 @@ mod tests {
         Profile, State, UploadRequest, agent_upload_paths, agent_upload_refused, attach_failure,
         begin_upload, captured_generation, clear_if_dead, controller_size, dead_page_answer,
         death_cause, file_name, installed_generation, note_agent_answered, note_surfaced_opened,
-        note_upload_finished, pair_tab_events, stage_agent_uploads, take_profile, upload_request,
-        write_uploads,
+        note_upload_finished, pair_tab_events, stage_agent_uploads, upload_request, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::ProfileKey;
@@ -4474,11 +4612,11 @@ mod tests {
         profile.up.store(true, Ordering::Release);
 
         profile
-            .file_chooser(FileChooser {
-                multiple: true,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: true, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(
             profile.files.borrow().is_none(),
@@ -4491,11 +4629,11 @@ mod tests {
 
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         let ask = profile
             .files
@@ -4518,6 +4656,40 @@ mod tests {
         );
     }
 
+    /// **A chooser from a replaced driver is not published.** Its ask's id
+    /// belongs to a driver that no longer exists, and answering it would
+    /// cancel the next real chooser as that stale id. The generation is the
+    /// one the reader captured when the event arrived, checked under the
+    /// decision lock.
+    #[tokio::test]
+    async fn a_chooser_from_a_replaced_driver_is_not_published() {
+        use crate::driver::FileChooser;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
+        profile.up.store(true, Ordering::Release);
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role");
+        // The profile's installed driver is generation 2; the chooser below
+        // was read from the driver generation 1 replaced.
+        profile.state.lock().await.chooser_generation = 2;
+
+        let chooser =
+            || FileChooser { multiple: false, current: true, url: "http://x/".to_owned() };
+        profile.file_chooser(chooser(), 1, tab).await;
+        assert!(profile.files.borrow().is_none(), "the replaced driver's chooser is not asked");
+        profile.file_chooser(chooser(), 2, tab).await;
+        let ask = profile
+            .files
+            .borrow()
+            .as_ref()
+            .copied()
+            .expect("the installed driver's chooser is asked");
+        assert_eq!(ask.tab, tab, "and it names the tab captured with it");
+    }
+
     /// **An answer for the chooser the newer ask replaced is refused**, and
     /// the newer ask stands. The answer's check and its driver call are one
     /// critical section, so the in-flight answer cannot upload the older
@@ -4536,19 +4708,19 @@ mod tests {
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
 
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         let first = profile.files.borrow().as_ref().copied().expect("the first ask");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         let second = profile.files.borrow().as_ref().copied().expect("the second ask");
         assert_ne!(first.id, second.id, "the second chooser is a new ask");
@@ -4591,11 +4763,11 @@ mod tests {
         profile.up.store(true, Ordering::Release);
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
 
         assert!(agent_upload_refused(&profile), "the person's picker is open");
@@ -4621,11 +4793,11 @@ mod tests {
 
         note_agent_answered(&profile);
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(profile.files.borrow().is_none(), "the owed event is consumed, not asked");
         {
@@ -4634,11 +4806,11 @@ mod tests {
         }
 
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(profile.files.borrow().is_some(), "the next chooser is the person's");
     }
@@ -4659,11 +4831,11 @@ mod tests {
 
         // No controller: the chooser is surfaced and held for the agent.
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         {
             let ledger = profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner);
@@ -4677,11 +4849,11 @@ mod tests {
 
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(
             profile.files.borrow().is_some(),
@@ -4718,11 +4890,11 @@ mod tests {
         profile.up.store(true, Ordering::Release);
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
 
         let refused = begin_upload(&profile, Some(&UploadRequest::Cancel))
@@ -4764,11 +4936,11 @@ mod tests {
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         let first = profile.files.borrow().as_ref().copied().expect("the first ask");
 
@@ -4776,11 +4948,11 @@ mod tests {
             let profile = Arc::clone(&profile);
             tokio::spawn(async move {
                 profile
-                    .file_chooser(FileChooser {
-                        multiple: false,
-                        current: true,
-                        url: "http://y/".to_owned(),
-                    })
+                    .file_chooser(
+                        FileChooser { multiple: false, current: true, url: "http://y/".to_owned() },
+                        0,
+                        0,
+                    )
                     .await;
             })
         };
@@ -4829,22 +5001,22 @@ mod tests {
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
 
         let waiting = {
             let profile = Arc::clone(&profile);
             tokio::spawn(async move {
                 profile
-                    .file_chooser(FileChooser {
-                        multiple: false,
-                        current: true,
-                        url: "http://y/".to_owned(),
-                    })
+                    .file_chooser(
+                        FileChooser { multiple: false, current: true, url: "http://y/".to_owned() },
+                        0,
+                        0,
+                    )
                     .await;
             })
         };
@@ -4882,11 +5054,11 @@ mod tests {
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(profile.files.borrow().is_some());
         // Two more surfaces than the open ask: a drain that consumed a
@@ -4901,11 +5073,11 @@ mod tests {
 
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves back");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://y/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://y/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(
             profile.files.borrow().is_some(),
@@ -4965,11 +5137,11 @@ mod tests {
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                tab,
+            )
             .await;
         let ask = profile.files.borrow().as_ref().copied().expect("the ask");
 
@@ -5260,11 +5432,15 @@ mod tests {
             ChooserLedger { surfaced: 0, pre_answered: 1 };
 
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: false,
-                url: "http://background/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser {
+                    multiple: false,
+                    current: false,
+                    url: "http://background/".to_owned(),
+                },
+                0,
+                0,
+            )
             .await;
         {
             let ledger = profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner);
@@ -5277,11 +5453,15 @@ mod tests {
         assert!(profile.files.borrow().is_none(), "the background chooser is not asked");
 
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://foreground/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser {
+                    multiple: false,
+                    current: true,
+                    url: "http://foreground/".to_owned(),
+                },
+                0,
+                0,
+            )
             .await;
         assert!(
             profile.files.borrow().is_some(),
@@ -5304,11 +5484,11 @@ mod tests {
         profile.up.store(true, Ordering::Release);
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(profile.files.borrow().is_some());
 
@@ -5320,11 +5500,11 @@ mod tests {
         );
 
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(
             profile.files.borrow().is_none(),
@@ -5348,11 +5528,11 @@ mod tests {
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
 
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: false,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: false, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(profile.files.borrow().is_none(), "the background tab is not asked");
         assert!(profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner).is_none(),);
@@ -5362,11 +5542,11 @@ mod tests {
         }
 
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                0,
+            )
             .await;
         assert!(profile.files.borrow().is_some(), "the current tab's chooser is asked");
     }
@@ -5387,11 +5567,11 @@ mod tests {
         profile.up.store(true, Ordering::Release);
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         profile
-            .file_chooser(FileChooser {
-                multiple: false,
-                current: true,
-                url: "http://x/".to_owned(),
-            })
+            .file_chooser(
+                FileChooser { multiple: false, current: true, url: "http://x/".to_owned() },
+                0,
+                tab,
+            )
             .await;
         let ask = profile.files.borrow().as_ref().copied().expect("the ask");
 
@@ -5727,26 +5907,6 @@ mod tests {
         );
         let left = service.stop_all().await;
         assert!(left.is_empty(), "the test's host is ended with the service: {left:?}");
-    }
-
-    /// **A profile argument is taken off and must be a name.** A number is the
-    /// call's own mistake, answered before any directory is consulted; a bare
-    /// call is the asking seat's own profile (see
-    /// [`BrowserService::target`]).
-    #[test]
-    fn a_profile_argument_is_taken_off_and_must_be_a_name() {
-        let (name, rest) = take_profile(json!({ "url": "https://example.com", "profile": "hunt" }))
-            .expect("a profile");
-        assert_eq!(name.as_deref(), Some("hunt"));
-        assert_eq!(rest, json!({ "url": "https://example.com" }));
-        assert_eq!(take_profile(json!({ "url": "https://example.com" })).expect("none").0, None);
-        assert_eq!(take_profile(serde_json::Value::Null).expect("bare").0, None);
-        assert_eq!(take_profile(json!({ "profile": null })).expect("null").0, None);
-        assert!(take_profile(json!({ "profile": 7 })).is_err(), "a number is not a name");
-        assert_eq!(
-            take_profile(json!({ "context": "hunt" })).expect("a v6 name").0.as_deref(),
-            Some("hunt"),
-        );
     }
 
     /// **A dead page is answered in the client's words, never the driver's
@@ -6252,11 +6412,11 @@ mod tests {
     }
 
     /// **A popup queued beside a requested tab is not taken for it.** The
-    /// birth carries the request's id; every other event - a popup's birth or
-    /// a close - is kept for the reconcile pass rather than dropped.
+    /// birth carries the request's id, and every event is kept in arrival
+    /// order so its place among the births can pair it with its page.
     #[test]
     fn a_popup_beside_a_requested_birth_is_not_taken_for_it() {
-        use super::classify_birth;
+        use super::collect_event;
         use crate::control::HostEvent;
 
         let popup = HostEvent::TabCreated {
@@ -6272,14 +6432,17 @@ mod tests {
             request: Some(42),
         };
         let closed = HostEvent::TabClosed { tab: 4 };
-        let mut found = None;
-        let mut other = Vec::new();
-        classify_birth(popup.clone(), 42, &mut found, &mut other);
-        classify_birth(closed.clone(), 42, &mut found, &mut other);
-        assert_eq!(found, None, "a popup is not this request's tab");
-        classify_birth(ours, 42, &mut found, &mut other);
-        assert_eq!(found, Some(6), "the id says which birth was asked for");
-        assert_eq!(other, vec![popup, closed], "the others are kept, not dropped");
+        let mut events = Vec::new();
+        let mut ours_at = None;
+        assert!(!collect_event(popup, 42, &mut events, &mut ours_at), "a popup is not ours");
+        assert!(!collect_event(closed, 42, &mut events, &mut ours_at), "a close is not ours");
+        assert!(collect_event(ours, 42, &mut events, &mut ours_at), "the id says which birth");
+        assert_eq!(ours_at, Some(2), "the request's birth is the third event, in order");
+        assert_eq!(events.len(), 3, "the others are kept, not dropped");
+        assert!(matches!(
+            events.get(2),
+            Some(HostEvent::TabCreated { tab: 6, request: Some(42), .. })
+        ));
     }
 
     /// **A fresh host's boot page is not closed as an orphan.** The first

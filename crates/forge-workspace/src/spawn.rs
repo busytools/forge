@@ -6593,6 +6593,39 @@ provider = "anthropic"
         assert_eq!(args, serde_json::json!(seat));
     }
 
+    /// **The warm rides the lead's spawn path, not a call of its own.** A
+    /// lead spawned through `handle_spawn_project` asks the fleet to bring
+    /// its profile up as it starts, so the first browser call does not pay
+    /// the host launch.
+    #[tokio::test]
+    async fn a_spawned_lead_warms_its_browser_through_the_spawn_path() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
+        workspace.seed_test_gateway_ready(true);
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        workspace.install_browser_host(Arc::new(crate::browser::testing::StubHost { calls }));
+        forge_agent::set_test_sdk_binary(Some(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh")
+                .to_owned(),
+        ));
+
+        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
+
+        let (what, args) = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+            .await
+            .expect("the spawn path hears the warm")
+            .expect("the stub's channel");
+        assert_eq!(what, "warm", "the spawn path is what asks the fleet");
+        assert_eq!(
+            args,
+            serde_json::json!(SessionSlot::lead("Default", "forge")),
+            "the lead's own seat is warmed",
+        );
+        forge_agent::set_test_sdk_binary(None);
+    }
+
     /// **A despawn sweeps the browsers to the seats that remain.** The seat
     /// that went is not in the set and the project's lead is, which is the
     /// whole of what the fleet needs to close exactly the down seat's tabs.

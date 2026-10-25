@@ -319,10 +319,22 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
             // **The tab's own senders go when the tab does**, and the
             // refusal names it so the client lowers that surface and can pick
             // another. The profile's senders going is the browser's end.
+            // **A host's death is the cause when it has one**: the failure
+            // watch is published before the per-tab senders close, and a
+            // viewer that woke on the close alone would read the tab as
+            // closed and never hear why.
             Err(10 | 11 | 13) => {
+                if let Some(reason) = viewing.failures.borrow().clone() {
+                    return ViewEvent::Failed(reason);
+                }
                 return ViewEvent::Failed(format!("tab {} was closed", viewing.tab));
             }
-            Err(_) => return ViewEvent::Failed("the browser was closed".to_owned()),
+            Err(_) => {
+                if let Some(reason) = viewing.failures.borrow().clone() {
+                    return ViewEvent::Failed(reason);
+                }
+                return ViewEvent::Failed("the browser was closed".to_owned());
+            }
         }
     }
 }

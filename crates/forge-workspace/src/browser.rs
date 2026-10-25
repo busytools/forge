@@ -155,9 +155,10 @@ pub trait BrowserHost: Send + Sync {
 
     /// End every open browser and its driver, keeping the profiles on disk.
     /// **The hosts are the server's children**, so a clean stop ends them; a
-    /// profile's logins stay, and the next boot opens its carried page.
-    /// Answers the profiles whose host outlived the teardown, named, so a
-    /// stop that leaves a process behind cannot report success.
+    /// profile's logins stay, and **no tab survives a host** - the next boot's
+    /// first call opens a fresh tab. Answers the profiles whose host outlived
+    /// the teardown, named, so a stop that leaves a process behind cannot
+    /// report success.
     async fn stop(&self) -> Vec<String>;
 }
 

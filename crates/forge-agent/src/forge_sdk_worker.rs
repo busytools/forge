@@ -261,9 +261,10 @@ unreadable, and act through the snapshot rather than scraping HTML. \
 Anything only the person can do - a CAPTCHA, a sign-in, a confirmation - \
 goes through `browser_hand_off`: name the tab you are handing over, and \
 their screen raises that tab exactly as it stands. Done lowers it, and it \
-answers like any ask. An agent never names a profile: the browser's \
-profile is the org's, and every tab belongs to the session that opened \
-it. Never launch a browser \
+answers like any ask. An agent never names a profile: forge resolves it \
+from the session's org and project - the org's profile, or the project's \
+own override - and every tab belongs to the session that opened it. Never \
+launch a browser \
 to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the server's \
 browser, through this session's own tab. A `browser_hand_off` with no \
@@ -3249,9 +3250,11 @@ mod tests {
             "the hand-off names its tab",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("An agent never names a profile: the browser's profile is the org's"),
-            "the profile is the org's, not a tool argument",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "An agent never names a profile: forge resolves it from the session's org and \
+                 project"
+            ),
+            "the profile is resolved, not a tool argument",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(

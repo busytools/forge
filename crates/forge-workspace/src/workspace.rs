@@ -6650,13 +6650,16 @@ impl Workspace {
     /// every worker the store holds - running or not, because a durable
     /// worker's seat exists until it is despawned.
     ///
-    /// The browser-profile sweep reads this: a profile whose owning seat is
-    /// not here is an orphan and goes. Two rules hold it safe, since an
-    /// under-reported set deletes a seat's saved logins:
+    /// The browser sweep reads this: a tab whose owning seat is not here is
+    /// an orphan and closes. **No profile is deleted by that sweep** - a
+    /// profile's logins are the org's and stay until the idle clock closes
+    /// the host - so the cost of a wrong answer is a closed tab, not a lost
+    /// login. It still holds two rules, because a closed tab is a page an
+    /// agent was working in:
     ///
-    /// - **It errs toward INCLUSION**: a seat wrongly present leaves one
-    ///   profile to the next sweep, while a seat wrongly absent would take
-    ///   logins.
+    /// - **It errs toward INCLUSION**: a seat wrongly present leaves one tab
+    ///   to the next sweep, while a seat wrongly absent would close a live
+    ///   session's page.
     /// - **It fails closed**: `None` when the store cannot be read, so no
     ///   caller can mistake an unread store for "no seats exist" and sweep
     ///   everything. Nothing sends a set it could not read.
@@ -23329,6 +23332,65 @@ mod prompt_frame_origin_tests {
         assert!(
             rx.try_recv().is_err(),
             "a refused prompt opened a turn in every view but the sender",
+        );
+    }
+
+    /// **The config's profile names reach the fleet's resolver.** The boot
+    /// copies this pair straight into `configure_profiles`; an org's fallback
+    /// arrives keyed by its name, and a project's override by its
+    /// `(org, project)`.
+    #[test]
+    fn the_configs_profile_names_reach_the_fleet_as_org_and_project_maps() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = crate::config::ensure_forge_data_dir(dir.path()).expect("forge/ dir");
+        std::fs::write(
+            forge.join("forge.toml"),
+            r#"
+[[accounts]]
+display_name = "main"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[orgs]]
+name = "Busytools"
+accounts = ["main"]
+browser_profile = "work"
+
+  [[orgs.projects]]
+  name = "forge"
+  path = "/tmp/forge"
+
+  [[orgs.projects]]
+  name = "apply"
+  path = "/tmp/apply"
+  browser_profile = "job"
+
+[[orgs]]
+name = "Personal"
+accounts = ["main"]
+
+  [[orgs.projects]]
+  name = "notes"
+  path = "/tmp/notes"
+"#,
+        )
+        .expect("the config is written");
+        let config = load_from_dir(dir.path()).expect("the config loads");
+        let (ws, _rx) =
+            Workspace::testing_stub_with_config(dir.path().to_owned(), config).expect("the stub");
+        let (orgs, projects) = ws.browser_profile_config();
+        assert_eq!(orgs.get("Busytools").map(String::as_str), Some("work"), "the org's key");
+        assert_eq!(orgs.get("Personal").map(String::as_str), Some("default"), "no key is default");
+        assert_eq!(
+            projects.get(&("Busytools".to_owned(), "apply".to_owned())).map(String::as_str),
+            Some("job"),
+            "the project's override, keyed by its org and name",
+        );
+        assert_eq!(
+            projects.get(&("Busytools".to_owned(), "forge".to_owned())).map(String::as_str),
+            Some("work"),
+            "a project with no key carries the org's",
         );
     }
 }

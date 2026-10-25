@@ -118,9 +118,9 @@ fn run() -> anyhow::Result<()> {
         let unready = workspace.shutdown().await;
         // **The browser hosts are this process's children too.** A clean
         // stop ends them before the store goes; the profiles stay on disk,
-        // and the next boot opens each browser on its carried page. A host
-        // that outlived its teardown is named rather than reported as a
-        // clean exit.
+        // and **no tab outlives a host**, so the next boot's first call
+        // opens a fresh tab. A host that outlived its teardown is named
+        // rather than reported as a clean exit.
         let stray = match workspace.browser_host() {
             Some(host) => host.stop().await,
             None => Vec::new(),

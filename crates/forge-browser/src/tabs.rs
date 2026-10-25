@@ -432,4 +432,22 @@ mod tests {
         let text = "FORGE-TABS []\n- 0: (current) [one](http://a/)\n";
         assert_eq!(strip_export(text), "- 0: (current) [one](http://a/)\n");
     }
+
+    /// **A page is found by its guid, never by the target a navigation
+    /// swapped.** A dead-page retry that looked up the old target found
+    /// nothing and drove whatever page the fresh driver called current.
+    #[test]
+    fn a_page_is_found_by_its_guid_after_the_target_moved() {
+        let listing = [super::DriverTab {
+            index: 3,
+            id: "page@1".to_owned(),
+            target: "T-after".to_owned(),
+            title: "one".to_owned(),
+            url: "http://a/".to_owned(),
+            current: false,
+        }];
+        assert_eq!(super::index_of(&listing, "page@1"), Some(3), "the guid finds the page");
+        assert_eq!(super::index_of(&listing, "T-before"), None, "the old target is gone");
+        assert_eq!(super::index_of(&listing, "T-after"), None, "the target is not the identity");
+    }
 }
