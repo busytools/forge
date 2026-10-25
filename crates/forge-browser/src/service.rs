@@ -130,6 +130,11 @@ pub struct BrowserService {
     /// The sessions a sweep last saw alive, so a hand-off resolving after its
     /// owner went can tell the difference.
     live: Mutex<HashSet<SessionSlot>>,
+    /// **Seats the workspace has said ended.** A sweep rebuilds `live` from
+    /// configuration, which still lists every project's lead, so a closed
+    /// lead would come back with it; this set is what the sweep cannot
+    /// re-add. A successor clears its slot by warming or by its first call.
+    ended_slots: Mutex<HashSet<SessionSlot>>,
     /// Which tab each attached viewer is looking at, so a detach knows what
     /// to leave.
     where_viewing: Mutex<HashMap<u64, (String, u16)>>,
@@ -174,6 +179,7 @@ impl BrowserService {
             rows: Mutex::new(HashMap::new()),
             holds: Mutex::new(HashSet::new()),
             live: Mutex::new(HashSet::new()),
+            ended_slots: Mutex::new(HashSet::new()),
             where_viewing: Mutex::new(HashMap::new()),
             encoding: Mutex::new((15, 75)),
             launch: Arc::new(AsyncMutex::new(())),
@@ -397,7 +403,7 @@ impl BrowserService {
             ended: AtomicBool::new(false),
             up: AtomicBool::new(false),
             restarted: AtomicBool::new(false),
-            host_epoch: AtomicU64::new(0),
+            host_generation: AtomicU64::new(0),
             rows: self.rows_sender(key.as_str()),
         });
         profiles.insert(key.as_str().to_owned(), Arc::clone(&profile));
@@ -549,10 +555,24 @@ impl BrowserService {
     /// the browser through a call, so the two agree from the first call on.
     fn note_live(&self, seat: &SessionSlot) {
         self.live.lock().unwrap_or_else(PoisonError::into_inner).insert(seat.clone());
+        // **A call is a live session**: the successor clears the tombstone a
+        // replaced occupant left, even before a sweep would see it.
+        self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner).remove(seat);
+    }
+
+    /// **The workspace says a session ended.** Synchronous, so the tombstone
+    /// lands before the close work that follows it; the sweep cannot re-add
+    /// the seat from configuration, and a hand-off resolved later answers
+    /// from this fact rather than from the last sweep's set.
+    pub fn session_ended(&self, seat: &SessionSlot) {
+        self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner).insert(seat.clone());
+        self.live.lock().unwrap_or_else(PoisonError::into_inner).remove(seat);
     }
 
     pub async fn sweep_sessions(&self, seats: &[SessionSlot]) {
-        *self.live.lock().unwrap_or_else(PoisonError::into_inner) = seats.iter().cloned().collect();
+        let ended = self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        *self.live.lock().unwrap_or_else(PoisonError::into_inner) =
+            seats.iter().filter(|seat| !ended.contains(*seat)).cloned().collect();
         let held = self.holds.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let profiles: Vec<Arc<Profile>> = self.profiles.lock().await.values().cloned().collect();
         for profile in profiles {
@@ -578,10 +598,11 @@ impl BrowserService {
     /// inherited tabs close (except a held one) and the slot's current-tab
     /// pointer clears.
     pub async fn replace_seat(&self, seat: &SessionSlot) {
-        // **The seat this replacement retires is no longer live.** A held
-        // tab survives the swap for a parked hand-off, and its Done must see
-        // the old owner gone rather than the last sweep's set.
-        self.live.lock().unwrap_or_else(PoisonError::into_inner).remove(seat);
+        // **The occupant this replacement retires is gone now.** The
+        // tombstone is what a sweep cannot re-add; the successor clears it
+        // by warming or by its first call. A held tab survives the swap for
+        // a parked hand-off, and its Done must see the old owner gone.
+        self.session_ended(seat);
         let Ok(key) = self.profile_for(seat) else { return };
         let Ok(profile) = self.find(key.as_str()).await else { return };
         let doomed: Vec<u16> = {
@@ -647,7 +668,8 @@ impl BrowserService {
         if !owned {
             return;
         }
-        let gone = !self.live.lock().unwrap_or_else(PoisonError::into_inner).contains(seat);
+        let gone = self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner).contains(seat)
+            || !self.live.lock().unwrap_or_else(PoisonError::into_inner).contains(seat);
         if gone {
             self.orphan_tab(&profile, tab).await;
         }
@@ -657,6 +679,7 @@ impl BrowserService {
     /// Create the seat's profile entry and start its host, with no tab. The
     /// first call is what opens a tab.
     pub async fn warm(&self, seat: &SessionSlot) {
+        // A spawn is the successor arriving: its slot is live again.
         self.note_live(seat);
         if let Err(why) = self.open(seat).await {
             tracing::warn!(
@@ -874,6 +897,28 @@ impl BrowserService {
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
             (host.port, host.input.clone())
         };
+        // **A birth queued before this request is not this request's.** A
+        // popup the host reported earlier can still be sitting in the queue;
+        // draining it first means only births AFTER the send can occupy a
+        // new-page slot, which is what the snapshot below counts. Rule 25:
+        // the drained events go to the deferred list, not away.
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        {
+            let mut queue = profile.host_tab_events.lock().await;
+            if let Some(receiver) = queue.as_mut() {
+                let mut drained = Vec::new();
+                while let Ok(notice) = receiver.try_recv() {
+                    drained.push(notice);
+                }
+                if !drained.is_empty() {
+                    profile
+                        .deferred_tab_events
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .extend(drained);
+                }
+            }
+        }
         // **The host's own target list names the tab it is about to make.**
         // The driver's pages and a host tab are both `about:blank` at birth,
         // so the only exact pairing is the page targets that appear between
@@ -886,12 +931,11 @@ impl BrowserService {
         // creation-ordered: the request's place among the births is its place
         // among the new pages. Taking the first new page let a popup be
         // adopted as the requested tab.
-        let epoch = profile.host_epoch.load(Ordering::Acquire);
         let request = TAB_REQUESTS.fetch_add(1, Ordering::Relaxed);
         input
             .send(input::host_line(&input::HostInput::TabNew { url: None, request: Some(request) }))
             .map_err(|_| format!("the browser for '{}' is not taking a tab", profile.key))?;
-        let mut events: Vec<HostEvent> = Vec::new();
+        let mut events: Vec<(u64, HostEvent)> = Vec::new();
         let mut ours_at: Option<usize> = None;
         let (ours, ours_event) = {
             let mut queue = profile.host_tab_events.lock().await;
@@ -901,7 +945,7 @@ impl BrowserService {
             let event_deadline = tokio::time::Instant::now() + TAB_EVENT_BOUND;
             loop {
                 while let Ok(event) = queue.try_recv() {
-                    let _ = collect_event(event, request, &mut events, &mut ours_at);
+                    let _ = collect_event(event, generation, request, &mut events, &mut ours_at);
                 }
                 // **The birth may have arrived through either read.** The
                 // recv below sets `ours_at` too, so the loop tests it rather
@@ -910,7 +954,7 @@ impl BrowserService {
                     break;
                 }
                 if tokio::time::Instant::now() >= event_deadline {
-                    defer_events(profile, epoch, &mut events, None);
+                    defer_events(profile, &mut events, None);
                     return Err(format!(
                         "the browser did not open a tab within {} s",
                         TAB_EVENT_BOUND.as_secs()
@@ -918,10 +962,11 @@ impl BrowserService {
                 }
                 match tokio::time::timeout(Duration::from_millis(50), queue.recv()).await {
                     Ok(Some(event)) => {
-                        let _ = collect_event(event, request, &mut events, &mut ours_at);
+                        let _ =
+                            collect_event(event, generation, request, &mut events, &mut ours_at);
                     }
                     Ok(None) => {
-                        defer_events(profile, epoch, &mut events, None);
+                        defer_events(profile, &mut events, None);
                         return Err(format!(
                             "the browser for '{}' stopped reporting its tabs",
                             profile.key
@@ -933,13 +978,15 @@ impl BrowserService {
             let ours_event = ours_at.unwrap_or_else(|| events.len().saturating_sub(1));
             let ours = events[..=ours_event]
                 .iter()
-                .filter(|event| matches!(event, HostEvent::TabCreated { .. }))
+                .filter(|(event_generation, event)| {
+                    *event_generation == generation && matches!(event, HostEvent::TabCreated { .. })
+                })
                 .count()
                 .saturating_sub(1);
             (ours, ours_event)
         };
         let number = match events.get(ours_event) {
-            Some(HostEvent::TabCreated { tab, .. }) => *tab,
+            Some((_, HostEvent::TabCreated { tab, .. })) => *tab,
             _ => 0,
         };
         // **A CEF browser the host created after the driver attached is not
@@ -987,7 +1034,7 @@ impl BrowserService {
                 .and_then(Result::ok)
         };
         let Some(requested) = requested else {
-            defer_events(profile, epoch, &mut events, None);
+            defer_events(profile, &mut events, None);
             return Err(format!(
                 "the browser's new tab did not appear in its page list (profile '{}')",
                 profile.key
@@ -998,7 +1045,7 @@ impl BrowserService {
         // boot marker left standing would let the next reconcile spare a page
         // nothing owns.
         *profile.boot.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        defer_events(profile, epoch, &mut events, Some(ours_event));
+        defer_events(profile, &mut events, Some(ours_event));
         let target = profile
             .tabs
             .lock()
@@ -1319,8 +1366,9 @@ impl BrowserService {
     /// indices**.
     async fn reconcile(&self, profile: &Arc<Profile>, driver: &Arc<dyn TabDriver>, port: u16) {
         // **A reconcile in flight across a host death must not write its
-        // events back** over the empty list the death just made.
-        let epoch = profile.host_epoch.load(Ordering::Acquire);
+        // events back over the empty list** the death just made. The
+        // generation names the host this pass is pairing for.
+        let generation = profile.host_generation.load(Ordering::Acquire);
         let Ok(mut listing) = driver.tabs_within(driver::CALL_TIMEOUT).await else {
             tracing::debug!(
                 event_name = "browser_reconcile_unlisted",
@@ -1330,7 +1378,7 @@ impl BrowserService {
             self.publish_rows(&profile.key).await;
             return;
         };
-        let mut events: Vec<HostEvent> = {
+        let mut events: Vec<(u64, HostEvent)> = {
             let mut deferred =
                 profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner);
             std::mem::take(&mut *deferred)
@@ -1345,9 +1393,9 @@ impl BrowserService {
         }
         let mut unmatched = {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            pair_tab_events(&mut tabs, &listing, events)
+            pair_tab_events(&mut tabs, &listing, events, generation)
         };
-        if unmatched.iter().any(|event| matches!(event, HostEvent::TabCreated { .. })) {
+        if unmatched.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { .. })) {
             // **A CEF browser the host created after the driver attached is
             // not reported to that driver's context**, so a popup is only a
             // tab to a driver that attached after it existed. A fresh one
@@ -1357,13 +1405,23 @@ impl BrowserService {
             {
                 unmatched = {
                     let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-                    pair_tab_events(&mut tabs, &fresh_listing, unmatched)
+                    pair_tab_events(&mut tabs, &fresh_listing, unmatched, generation)
                 };
                 listing = fresh_listing;
             }
         }
-        if profile.host_epoch.load(Ordering::Acquire) == epoch {
+        // **An event read from a receiver that has since been replaced goes
+        // back for the next pass rather than away** (rule 25); that pass
+        // refuses it by generation. Only a death with no successor leaves the
+        // list as this pass found it.
+        if profile.host_generation.load(Ordering::Acquire) == generation {
             *profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner) = unmatched;
+        } else {
+            profile
+                .deferred_tab_events
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend(unmatched);
         }
         // **A page the driver made for itself is not a host tab.** It is
         // closed by its target, which is also what keeps the driver's tab
@@ -1545,6 +1603,13 @@ impl BrowserService {
         let mut state = profile.state.lock().await;
         let alive = state.driver.as_ref().is_some_and(|driver| driver.is_running());
         if clear_if_dead(&mut state, generation, alive && host_up, profile) && !host_up {
+            // **The cause is published before the tab senders close.** A
+            // call that finds the host gone may be the first to notice it;
+            // without this a viewer reads "tab N was closed" and never
+            // hears that the browser went.
+            profile.failures.send_replace(Some(format!(
+                "the browser host stopped answering (pid {pid}); the next call brings it back"
+            )));
             profile.teardown(&mut state).await;
         }
         Err(why)
@@ -1835,7 +1900,9 @@ impl BrowserService {
     /// End the seat's browser and forget it. The next call relaunches it over
     /// the same directory, so a close ends the run and never the logins.
     pub async fn close(&self, seat: &SessionSlot) -> Result<(), String> {
-        self.live.lock().unwrap_or_else(PoisonError::into_inner).remove(seat);
+        // **The session stays live when its browser closes.** Only the
+        // profile ends here; the next call opens it again, so this must not
+        // tombstone the seat as session-ended.
         let key = self.target(seat)?;
         // **The entry leaves the map before its host is ended, and the
         // map lock is released with it**: a same-key call waits on the
@@ -2668,11 +2735,11 @@ pub struct Profile {
     call_lock: AsyncMutex<()>,
     /// The host's own tab births and ends, for the call path that pairs them
     /// with page targets. `None` until a host starts.
-    host_tab_events: AsyncMutex<Option<mpsc::UnboundedReceiver<HostEvent>>>,
+    host_tab_events: AsyncMutex<Option<mpsc::UnboundedReceiver<(u64, HostEvent)>>>,
     /// Host tab events a reconcile could not pair yet: **the host reports a
     /// popup before the driver lists its page**, so an unmatched event waits
     /// for the next pass rather than being lost.
-    deferred_tab_events: Mutex<Vec<HostEvent>>,
+    deferred_tab_events: Mutex<Vec<(u64, HostEvent)>>,
     state: AsyncMutex<State>,
     /// When a seat last used this profile.
     touch: Mutex<Touch>,
@@ -2686,10 +2753,11 @@ pub struct Profile {
     /// A host this entry lost since the service last looked, so the service
     /// can forget the hand-offs that host held before its numbers come back.
     restarted: AtomicBool,
-    /// Bumped whenever a host goes. A birth or a reconcile in flight against
-    /// the old host must not write its events back over the successor's empty
-    /// list.
-    host_epoch: AtomicU64,
+    /// **The identity of the host this profile is on.** Bumped on every
+    /// successful launch and again when a host goes, so a tab birth or close
+    /// carries the host that reported it; an event from a receiver that was
+    /// replaced is refused even when the tab numbers collide.
+    host_generation: AtomicU64,
     /// **The same rows channel the service publishes on**, so a host's death
     /// can say so at once instead of waiting for a sweep.
     rows: watch::Sender<BrowserTabList>,
@@ -3575,6 +3643,16 @@ impl Profile {
             "the browser host is up (event_name browser_host_up, profile {}, pid {pid}, port {port})",
             self.key
         );
+        // **This launch is the profile's host identity.** Every tab event the
+        // host reports carries this value, so a birth or a close from a
+        // receiver that has since been replaced cannot touch the successor's
+        // tabs even when the numbers collide.
+        let generation = self.host_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        // **A successor starts with no failure**: the watch describes the
+        // host that is up, not the one before it. Left standing, a dead
+        // host's sentence would be read as the cause of the successor's own
+        // tab close.
+        self.failures.send_replace(None);
         // **A host that dies under a viewer is said, not left as a frozen
         // frame.** The watch carries the reason to every attached client; a
         // deliberate close aborts this first, so it never reads as a crash.
@@ -3660,8 +3738,10 @@ impl Profile {
                             "a host tab opened (event_name browser_tab_created, profile {key}, \
                              tab {tab}, opener {opener:?}, request {request:?}, url {url})"
                         );
-                        let _ =
-                            tab_sender.send(HostEvent::TabCreated { tab, opener, url, request });
+                        let _ = tab_sender.send((
+                            generation,
+                            HostEvent::TabCreated { tab, opener, url, request },
+                        ));
                     }
                     HostEvent::TabClosed { tab } => {
                         tracing::debug!(
@@ -3672,7 +3752,7 @@ impl Profile {
                             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close(tab);
                             profile.forget_tab(tab);
                         }
-                        let _ = tab_sender.send(HostEvent::TabClosed { tab });
+                        let _ = tab_sender.send((generation, HostEvent::TabClosed { tab }));
                     }
                     HostEvent::FileDialog { id, tab, multiple } => {
                         // **The CEF fallback is a chooser decision too**: it
@@ -3746,7 +3826,7 @@ impl Profile {
         self.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clear();
         // **A birth or reconcile already in flight must not write its events
         // back** over the empty list this death just made.
-        self.host_epoch.fetch_add(1, Ordering::AcqRel);
+        self.host_generation.fetch_add(1, Ordering::AcqRel);
         // **The dead host's frames and history go with its numbers.** A kept
         // frame would paint the old page onto the successor's tab, and a kept
         // history would draw arrows for a page that no longer exists.
@@ -4263,37 +4343,36 @@ fn closed_as_orphans(
     orphaned
 }
 
-/// Sort one host tab event against a requested birth: **the request's own id
-/// is the tab that was asked for**, and everything else is kept for the
-/// reconcile pass rather than being taken for it or dropped.
 /// Record one host tab event in arrival order, answering whether it is this
-/// request's own birth.
+/// request's own birth. **The host generation is part of the event's
+/// identity**: a birth or close from a receiver that has been replaced is
+/// kept for the next pass, but never taken for the current host's.
 fn collect_event(
-    event: HostEvent,
+    (event_generation, event): (u64, HostEvent),
+    generation: u64,
     request: u64,
-    events: &mut Vec<HostEvent>,
+    events: &mut Vec<(u64, HostEvent)>,
     ours_at: &mut Option<usize>,
 ) -> bool {
-    let ours = matches!(
-        &event,
-        HostEvent::TabCreated { request: Some(asked), .. } if *asked == request
-    );
+    let ours = event_generation == generation
+        && matches!(
+            &event,
+            HostEvent::TabCreated { request: Some(asked), .. } if *asked == request
+        );
     if ours {
         *ours_at = Some(events.len());
     }
-    events.push(event);
+    events.push((event_generation, event));
     ours
 }
 
-/// Keep this attempt's events for the next reconcile, unless the host they
-/// belong to is gone. **Rule 25**: an event the call read is re-injected
-/// rather than dropped when the call cannot use it.
-fn defer_events(profile: &Profile, epoch: u64, events: &mut Vec<HostEvent>, skip: Option<usize>) {
-    let taken = std::mem::take(events);
-    if profile.host_epoch.load(Ordering::Acquire) != epoch {
-        return;
-    }
-    let kept: Vec<HostEvent> = taken
+/// Keep this attempt's events for the next reconcile. **Rule 25**: an event
+/// the call read is re-injected rather than dropped when the call cannot use
+/// it. An event from a receiver that was replaced is kept too; the pairing
+/// pass refuses it by generation, which is why a death cannot be re-created
+/// here.
+fn defer_events(profile: &Profile, events: &mut Vec<(u64, HostEvent)>, skip: Option<usize>) {
+    let kept: Vec<(u64, HostEvent)> = std::mem::take(events)
         .into_iter()
         .enumerate()
         .filter(|(at, _)| Some(*at) != skip)
@@ -4313,10 +4392,23 @@ fn defer_events(profile: &Profile, epoch: u64, events: &mut Vec<HostEvent>, skip
 fn pair_tab_events(
     tabs: &mut TabRegistry,
     listing: &[crate::tabs::DriverTab],
-    events: Vec<HostEvent>,
-) -> Vec<HostEvent> {
+    events: Vec<(u64, HostEvent)>,
+    generation: u64,
+) -> Vec<(u64, HostEvent)> {
     let mut unmatched = Vec::new();
-    for event in events {
+    for (event_generation, event) in events {
+        // **A receiver that was replaced speaks for a dead host.** Its tab
+        // numbers belong to a registry this profile no longer holds, so an
+        // event from another generation is refused rather than paired.
+        if event_generation != generation {
+            tracing::debug!(
+                event_name = "browser_tab_event_stale_generation",
+                event_generation,
+                generation,
+                "a tab event from a replaced host is dropped"
+            );
+            continue;
+        }
         match event {
             HostEvent::TabClosed { tab } => {
                 tabs.close(tab);
@@ -4341,7 +4433,10 @@ fn pair_tab_events(
                     .find(|row| unclaimed(row) && (url.is_empty() || row.url == url))
                     .or_else(|| listing.iter().find(unclaimed))
                 else {
-                    unmatched.push(HostEvent::TabCreated { tab, opener, url, request });
+                    unmatched.push((
+                        event_generation,
+                        HostEvent::TabCreated { tab, opener, url, request },
+                    ));
                     continue;
                 };
                 if let Some(opener) = opener {
@@ -4349,7 +4444,7 @@ fn pair_tab_events(
                         tabs.create_under(opener, tab, &row.id, &row.target, &row.title, &row.url);
                 }
             }
-            other => unmatched.push(other),
+            other => unmatched.push((event_generation, other)),
         }
     }
     unmatched
@@ -6436,15 +6531,37 @@ mod tests {
         let closed = HostEvent::TabClosed { tab: 4 };
         let mut events = Vec::new();
         let mut ours_at = None;
-        assert!(!collect_event(popup, 42, &mut events, &mut ours_at), "a popup is not ours");
-        assert!(!collect_event(closed, 42, &mut events, &mut ours_at), "a close is not ours");
-        assert!(collect_event(ours, 42, &mut events, &mut ours_at), "the id says which birth");
+        assert!(
+            !collect_event((7, popup), 7, 42, &mut events, &mut ours_at),
+            "a popup is not ours",
+        );
+        assert!(
+            !collect_event((7, closed), 7, 42, &mut events, &mut ours_at),
+            "a close is not ours",
+        );
+        assert!(
+            collect_event((7, ours), 7, 42, &mut events, &mut ours_at),
+            "the id says which birth",
+        );
         assert_eq!(ours_at, Some(2), "the request's birth is the third event, in order");
         assert_eq!(events.len(), 3, "the others are kept, not dropped");
         assert!(matches!(
             events.get(2),
-            Some(HostEvent::TabCreated { tab: 6, request: Some(42), .. })
+            Some((7, HostEvent::TabCreated { tab: 6, request: Some(42), .. }))
         ));
+        // **A birth from a receiver that was replaced is not this one's**
+        // even when its request id agrees: the host generation is part of
+        // the identity, so a stale birth can never be taken for the current
+        // host's tab.
+        let mut events = Vec::new();
+        let mut ours_at = None;
+        let stale =
+            HostEvent::TabCreated { tab: 8, opener: None, url: String::new(), request: Some(42) };
+        assert!(
+            !collect_event((6, stale), 7, 42, &mut events, &mut ours_at),
+            "another generation's birth is not ours",
+        );
+        assert_eq!(ours_at, None);
     }
 
     /// **A fresh host's boot page is not closed as an orphan.** The first
@@ -6500,8 +6617,8 @@ mod tests {
             url: "u".to_owned(),
             request: None,
         };
-        let waiting = pair_tab_events(&mut tabs, &[], vec![event.clone()]);
-        assert_eq!(waiting, vec![event], "no page, no adoption");
+        let waiting = pair_tab_events(&mut tabs, &[], vec![(1, event.clone())], 1);
+        assert_eq!(waiting, vec![(1, event)], "no page, no adoption");
         let listing = [crate::tabs::DriverTab {
             index: 0,
             id: "p2".to_owned(),
@@ -6510,10 +6627,18 @@ mod tests {
             url: "u".to_owned(),
             current: true,
         }];
-        let waiting = pair_tab_events(&mut tabs, &listing, waiting);
+        let waiting = pair_tab_events(&mut tabs, &listing, waiting, 1);
         assert!(waiting.is_empty(), "the next pass adopts it");
         assert_eq!(tabs.number_of("p2"), Some(2));
         assert_eq!(tabs.owner(2), Some(&seat), "the opener's owner");
+
+        // **A replaced receiver's close cannot close the successor's tab.**
+        // Tab 1 is live on generation 1; a close from generation 0 names a
+        // tab the registry no longer holds and is refused by generation.
+        let stale = crate::control::HostEvent::TabClosed { tab: 1 };
+        let waiting = pair_tab_events(&mut tabs, &listing, vec![(0, stale)], 1);
+        assert!(waiting.is_empty(), "a stale close is dropped, not re-deferred");
+        assert_eq!(tabs.number_of("p2"), Some(2), "and the live tab survives it");
     }
 
     /// **A stale listing is a stale driver.** The `_page` error drops the
@@ -6982,6 +7107,53 @@ mod tests {
         assert_eq!(rows[0].owner, worker);
     }
 
+    /// **A closed seat's held tab goes when Done lands**, even though the
+    /// sweep rebuilds `live` from configuration and still lists the lead.
+    /// The workspace's session-ended tombstone is what the fleet answers
+    /// from, and the sweep cannot re-add it.
+    #[tokio::test]
+    async fn a_closed_seats_held_tab_goes_when_done_lands() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts tab 1, which makes it live");
+        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+
+        // The sweep sees both configured seats and would call the worker
+        // live again; the tombstone is what it cannot re-add.
+        service.sweep_sessions(&[lead.clone(), worker.clone()]).await;
+        service.session_ended(&worker);
+        service.sweep_sessions(&[lead, worker.clone()]).await;
+        service.hand_off_finished(&worker, 1).await;
+
+        let rows = service.tabs(&worker).await.expect("rows").rows;
+        assert!(rows.is_empty(), "Done closes the tab of a seat that ended");
+    }
+
+    /// **The relayed sequence never goes backwards across hosts.** A host
+    /// restarts its own count at zero; the service's counter is what the
+    /// viewer's newest-wins gate reads.
+    #[tokio::test]
+    async fn the_relayed_frame_sequence_is_the_services_and_only_rises() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let profile = service.entry(&seat).await.expect("a profile entry");
+        let first = profile.next_frame_seq(1);
+        let second = profile.next_frame_seq(1);
+        assert_eq!(second, first + 1, "one tab's frames rise one at a time");
+        profile.host_gone();
+        let after = profile.next_frame_seq(1);
+        assert!(after > second, "a host's death does not reset the wire's sequence");
+    }
+
     /// **The tool's own rows name the caller's tab and its owner.** A list
     /// that cannot say which row is the current one, or whose it is, leaves
     /// the session driving by a number it has to guess at.
@@ -7084,14 +7256,15 @@ mod tests {
         assert_eq!(service.tabs(&worker).await.expect("rows").rows.len(), 1);
 
         let profile = service.find("O/default").await.expect("the profile");
-        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push((
+            profile.host_generation.load(Ordering::Acquire),
             crate::control::HostEvent::TabCreated {
                 tab: 9,
                 opener: Some(1),
                 url: "http://stale/".to_owned(),
                 request: None,
             },
-        );
+        ));
         profile.host_gone();
 
         // **The death is pushed at once**, so a subscribed strip with no

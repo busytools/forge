@@ -4103,6 +4103,10 @@ provider = "anthropic"
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
         ws.seed_test_ready_account("Stargate");
         ws.seed_test_gateway_ready(true);
+        // **The worker's spawn is a warm too**, not only the lead's: the
+        // fleet hears the seat before the worker's first browser call.
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        ws.install_browser_host(Arc::new(crate::browser::testing::StubHost { calls }));
         let key = ws
             .list_projects()
             .into_iter()
@@ -4142,6 +4146,23 @@ provider = "anthropic"
             "the recorded worktree must be the directory the CLI creates",
         );
         let slot = SessionSlot::worker("Default", "forge", "labourer");
+        let mut warmed = None;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Ok(Some((what, args))) = tokio::time::timeout(left, heard.recv()).await else {
+                break;
+            };
+            if what == "warm" {
+                warmed = Some(args);
+                break;
+            }
+        }
+        assert_eq!(
+            warmed,
+            Some(serde_json::json!(slot)),
+            "the worker's spawn path warms its own seat",
+        );
         assert_eq!(
             ws.cwd_for_session(&slot),
             Some(created.to_string_lossy().into_owned()),
@@ -6646,11 +6667,28 @@ provider = "anthropic"
         handle_despawn_worker(&workspace, &project, "gone", false, tx);
         let _ = resp_rx.await.expect("despawn result");
 
-        let (what, seats) = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
-            .await
-            .expect("the sweep is asked")
-            .expect("the channel is fed");
+        // **The close's own signals come first**: the seat is ended and its
+        // tabs replaced before the sweep names the seats that remain.
+        let mut ended = Vec::new();
+        let (what, seats) = loop {
+            let (what, args) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+                    .await
+                    .expect("the sweep is asked")
+                    .expect("the channel is fed");
+            if what == "sweep_sessions" {
+                break (what, args);
+            }
+            if what == "session_ended" {
+                ended.push(args);
+            }
+        };
         assert_eq!(what, "sweep_sessions", "the fleet is told the seats that remain");
+        assert_eq!(
+            ended.len(),
+            1,
+            "the despawned seat was told ended before the sweep: {ended:?}",
+        );
         let labels: Vec<&str> = seats
             .as_array()
             .expect("a seat set")

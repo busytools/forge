@@ -4783,6 +4783,18 @@ impl Workspace {
         runtime.spawn(async move { host.replace_seat(&seat).await });
     }
 
+    /// **A session ended**, told to the fleet as a fact rather than left to
+    /// the next sweep: a sweep rebuilds its set from configuration, so a
+    /// closed lead is still in it. The tombstone is synchronous, so it lands
+    /// before the release work; the tab close is the fleet's own async work.
+    fn release_browser_seat(&self, seat: &SessionSlot) {
+        let Some(host) = self.browser_host() else { return };
+        host.session_ended(seat);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let seat = seat.clone();
+        runtime.spawn(async move { host.replace_seat(&seat).await });
+    }
+
     /// The cwd and settings a re-spawn on `key` carries.
     fn spawn_inputs(&self, key: &SessionSlot) -> (String, SessionLaunchSettings) {
         let cwd = self.cwd_for_session(key).unwrap_or_default();
@@ -6486,10 +6498,6 @@ impl Workspace {
         // workers this cascade takes with it (#1930). A viewer's mark is a
         // set, so a second announcement would be spent.
         self.announce_release(session_key);
-        // **A closed seat takes its tabs with it.** The browser's tabs belong
-        // to the session that opened them, so a close is a replacement with
-        // nobody in the seat; a parked hand-off's tab is the fleet's to keep.
-        self.replace_browser_seat(session_key);
         // The cascade is the lead's, and a lead's slot is the one whose
         // label says so: a worker's slot carries its own label, so a
         // closed worker cannot be misidentified as its lead however far
@@ -6510,8 +6518,8 @@ impl Workspace {
                     status: entry.to_status(),
                     worktree,
                 });
-                // The cascade takes a worker's browser tabs with it too.
-                self.replace_browser_seat(&entry.slot);
+                // The cascade takes a worker's browser tabs with it too;
+                // `release_session` is the one door that tells the fleet.
                 self.release_session(&entry.slot);
             }
         }
@@ -6544,6 +6552,11 @@ impl Workspace {
     /// Use `release_session_with_cascade` instead when the caller is
     /// the lead-row close gesture.
     pub(crate) fn release_session(self: &Arc<Self>, session_key: &SessionSlot) {
+        // **A closed seat is gone now, not at the next sweep.** The fleet
+        // hears the tombstone before the close work, so a hand-off resolved
+        // after it does not keep the tab for a session that has ended; the
+        // async tab close follows.
+        self.release_browser_seat(session_key);
         crate::dictate::teardown_for_closed_session(self, session_key);
         // Anything parked for this session's owner was waiting on a
         // session that is now gone: fail the peer asks so their callers
@@ -15736,21 +15749,32 @@ provider = "anthropic"
             workspace.list_live_workers(&project_key).is_empty(),
             "workers must be cascade-closed"
         );
-        // **Every closed seat takes its tabs with it**, the cascaded workers'
-        // included: the fleet hears a replacement for the lead and each worker.
+        // **Every closed seat is ended and takes its tabs with it**, the
+        // cascaded workers' included: the fleet hears the session-ended fact
+        // for the lead and each worker, and a replacement for each.
         let mut replaced = Vec::new();
-        for _ in 0..3 {
-            let (what, args) =
-                tokio::time::timeout(std::time::Duration::from_secs(2), heard.recv())
-                    .await
-                    .expect("the fleet hears every close")
-                    .expect("a replacement");
-            assert_eq!(what, "replace_seat");
-            replaced.push(args);
+        let mut ended = Vec::new();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while (replaced.len() < 3 || ended.len() < 3) && tokio::time::Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Ok(Some((what, args))) = tokio::time::timeout(left, heard.recv()).await else {
+                break;
+            };
+            match what.as_str() {
+                "replace_seat" => replaced.push(args),
+                "session_ended" => ended.push(args),
+                other => panic!("unexpected fleet call {other}"),
+            }
         }
+        assert_eq!(replaced.len(), 3, "every closed seat is replaced: {replaced:?}");
+        assert_eq!(ended.len(), 3, "and every one is ended first: {ended:?}");
         assert!(
             replaced.contains(&serde_json::json!(lead_key)),
             "the lead's seat is replaced: {replaced:?}",
+        );
+        assert!(
+            ended.contains(&serde_json::json!(lead_key)),
+            "the lead's end is told, not inferred: {ended:?}",
         );
 
         // Drain the channel and confirm we saw a Removed

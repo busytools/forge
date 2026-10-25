@@ -46,26 +46,6 @@ pub fn history_event(method: &str, event: &Value, main: Option<&str>) -> bool {
     }
 }
 
-/// The URL a history-moving event names, when it names one.
-///
-/// **A same-document entry has no frame navigation to read it from** - a
-/// `pushState` or a fragment moves the history and fires only its own event -
-/// so a carry that watched `frameNavigated` alone kept the page the person
-/// was on before it. Only the main frame's entry names the page; a
-/// subframe's would carry the frame's URL as the profile's.
-pub fn navigation_url<'a>(method: &str, event: &'a Value, main: Option<&str>) -> Option<&'a str> {
-    match method {
-        "Page.frameNavigated" => event.pointer("/params/frame/url").and_then(Value::as_str),
-        "Page.navigatedWithinDocument" => event
-            .pointer("/params/frameId")
-            .and_then(Value::as_str)
-            .filter(|frame| Some(*frame) == main)
-            .and_then(|_| event.pointer("/params/url"))
-            .and_then(Value::as_str),
-        _ => None,
-    }
-}
-
 /// The main frame's id, from a `Page.getFrameTree` reply.
 pub fn main_frame_id(reply: &Value) -> Option<&str> {
     reply.pointer("/frameTree/frame/id").and_then(Value::as_str)
@@ -423,60 +403,6 @@ mod tests {
         assert!(
             !history_event("Page.navigatedWithinDocument", &within, None),
             "with no main frame known, no move is the page's yet",
-        );
-    }
-
-    /// **A same-document move names the page a restart reopens.** The carry
-    /// reads this event's own URL; the frame-navigation shape has no frame
-    /// for it, and a carry that only read that one kept the previous page.
-    #[test]
-    fn a_same_document_move_names_its_page() {
-        let within = serde_json::json!({ "params": {
-            "frameId": "A",
-            "url": "https://example.com/jobs#two",
-        } });
-        assert_eq!(
-            navigation_url("Page.navigatedWithinDocument", &within, Some("A")),
-            Some("https://example.com/jobs#two"),
-            "the event's own url",
-        );
-        let committed = serde_json::json!({ "params": { "frame": {
-            "url": "https://example.com/jobs",
-        } } });
-        assert_eq!(
-            navigation_url("Page.frameNavigated", &committed, Some("A")),
-            Some("https://example.com/jobs"),
-            "a committed navigation keeps naming its frame's url",
-        );
-        assert_eq!(
-            navigation_url("Page.loadEventFired", &serde_json::json!({}), Some("A")),
-            None,
-            "a load names no URL of its own",
-        );
-    }
-
-    /// **A subframe's pushState never becomes the carried page.** The main
-    /// frame moved to `/jobs#two`, then an ad iframe pushStated its own URL;
-    /// the carry must stay the main frame's, or the next launch reopens the
-    /// ad.
-    #[test]
-    fn a_subframes_same_document_move_never_names_the_page() {
-        let main_move = serde_json::json!({ "params": {
-            "frameId": "MAIN",
-            "url": "https://example.com/jobs#two",
-        } });
-        let frame_move = serde_json::json!({ "params": {
-            "frameId": "AD",
-            "url": "https://ads.example/click",
-        } });
-        assert_eq!(
-            navigation_url("Page.navigatedWithinDocument", &main_move, Some("MAIN")),
-            Some("https://example.com/jobs#two"),
-        );
-        assert_eq!(
-            navigation_url("Page.navigatedWithinDocument", &frame_move, Some("MAIN")),
-            None,
-            "the iframe's URL is not the page's",
         );
     }
 

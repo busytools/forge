@@ -113,7 +113,13 @@ fn remove_named_profiles(profiles: &Path) -> Result<Vec<PathBuf>, String> {
             for entry in entries {
                 let entry = entry.map_err(|why| format!("the profiles cannot be read: {why}"))?;
                 let path = entry.path();
-                if path.join("cef").is_dir() && path.is_dir() {
+                let cache = path.join("cef");
+                // **A profile literally named `cef` under an org looks like
+                // a cache at this depth.** The new layout is one level
+                // deeper, so an entry whose `cef` child itself holds a
+                // `cef` child is an org directory, never a legacy profile;
+                // deleting it would take a live org's tree.
+                if cache.is_dir() && path.is_dir() && !cache.join("cef").is_dir() {
                     remove_tree(&path)?;
                     removed.push(path);
                 }
@@ -152,6 +158,18 @@ mod tests {
         );
     }
 
+    /// **The client root hangs off app-support's parent**, not the server's
+    /// own directory: a sibling bundle-id directory, which is where the
+    /// client's in-process caches really lived.
+    #[test]
+    fn the_client_root_is_derived_from_app_supports_parent() {
+        let support = forge_sdk::app_support_dir().expect("this machine has an app-support dir");
+        assert_eq!(
+            Store::client_root(),
+            support.parent().map(|parent| parent.join("dev.vedhavyas.forge/browser")),
+        );
+    }
+
     #[test]
     fn an_org_profile_is_one_directory_deeper() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -169,6 +187,10 @@ mod tests {
         std::fs::write(dir.path().join("profiles/owner.json"), b"{}").expect("a stray file");
         std::fs::create_dir_all(dir.path().join("profiles/Busytools/work/cef"))
             .expect("an org tree");
+        // **A profile literally named `cef`** makes its org directory look
+        // like a legacy cache at the direct-child depth; the org must stay.
+        std::fs::create_dir_all(dir.path().join("profiles/Busytools/cef/cef"))
+            .expect("a profile named cef under an org");
         // **The real client layout**: its shared cache is `cef-profile`,
         // beside `profiles/`, not a directory named `shared`.
         std::fs::create_dir_all(client.join("cef-profile")).expect("the client's shared cache");
@@ -181,6 +203,10 @@ mod tests {
         assert!(!dir.path().join("shared").exists());
         assert!(!dir.path().join("profiles/lead").exists());
         assert!(dir.path().join("profiles/Busytools/work/cef").exists(), "an org tree stays");
+        assert!(
+            dir.path().join("profiles/Busytools/cef/cef").exists(),
+            "an org whose profile is literally named `cef` stays",
+        );
         assert!(dir.path().join("profiles/owner.json").exists(), "a stray file is not a profile");
         assert!(!client.join("cef-profile").exists(), "the client's shared cache goes");
         assert!(!client.join("profiles/lead").exists(), "its per-profile cache goes");

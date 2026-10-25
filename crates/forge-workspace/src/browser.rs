@@ -140,6 +140,12 @@ pub trait BrowserHost: Send + Sync {
     /// close, except a tab a parked hand-off holds.
     async fn replace_seat(&self, seat: &SessionSlot);
 
+    /// **The seat has ended**, as opposed to a sweep's guess: the fleet must
+    /// answer a hand-off resolution from this fact, so a closed lead's held
+    /// tab does not survive Done. Synchronous, so it lands before the close
+    /// work that follows it. A successor clears it by warming or calling.
+    fn session_ended(&self, seat: &SessionSlot);
+
     /// A hand-off parked on one of the seat's tabs: the tab is held against
     /// the sweep and the idle clock until it resolves. **Refused when the tab
     /// is not open or not this seat's**, before any ask reaches a person.
@@ -387,6 +393,10 @@ pub(crate) mod testing {
 
         async fn replace_seat(&self, seat: &SessionSlot) {
             self.heard("replace_seat", serde_json::json!(seat));
+        }
+
+        fn session_ended(&self, seat: &SessionSlot) {
+            self.heard("session_ended", serde_json::json!(seat));
         }
 
         async fn hand_off_started(&self, seat: &SessionSlot, tab: u16) -> Result<(), String> {

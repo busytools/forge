@@ -1515,4 +1515,39 @@ mod tests {
         );
         Ring::unlink(&name);
     }
+
+    /// **`emit` carries the tab's own size through to the ring gate.** The
+    /// handler's expected size is the only thing that lets a take's 1280x720
+    /// frame into a ring whose profile request is 1440x900, and it is also
+    /// what refuses that frame for a tab still laid out at the request.
+    #[test]
+    fn the_emitted_frame_is_gated_by_the_tabs_own_size() {
+        use super::{PaintState, emit, painted_size};
+
+        let name = format!("/forge-cef-test-emit-{}", std::process::id());
+        let ring = Ring::create(&name, 4, 4).expect("a test ring");
+        ring.request(1440, 900, 1.0);
+        let pixels = vec![0_u8; 1280 * 720 * 4];
+
+        let mut recorded = PaintState::default();
+        recorded.take_view(&pixels, 1280, 720);
+        emit(&ring, None, &mut recorded, None, false, Some(painted_size(1280, 720, 1_000)));
+        // SAFETY: the header is this test's mapped ring.
+        let header = unsafe { &*ring.header() };
+        assert_eq!(
+            (header.width.load(Ordering::Relaxed), header.height.load(Ordering::Relaxed)),
+            (1280, 720),
+            "the take's frame is written",
+        );
+
+        let mut other = PaintState::default();
+        other.take_view(&pixels, 1280, 720);
+        emit(&ring, None, &mut other, None, false, Some(painted_size(1440, 900, 1_000)));
+        assert_eq!(
+            (header.width.load(Ordering::Relaxed), header.height.load(Ordering::Relaxed)),
+            (1280, 720),
+            "a tab laid out at the profile request refuses it",
+        );
+        Ring::unlink(&name);
+    }
 }

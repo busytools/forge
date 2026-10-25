@@ -73,6 +73,16 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
 /// the durable store needs; the vendored driver stack is not required at
 /// boot, so a server without it boots and its browser calls name what is
 /// missing instead of the whole server refusing to start.
+/// **The join between the config and the fleet's resolver.** The workspace
+/// resolves `forge.toml`'s org and project names; the fleet resolves a seat
+/// against those maps. Both ends have tests, and this is the copy between
+/// them, so it is one named call rather than two lines inside a boot.
+#[cfg(target_os = "macos")]
+fn configure_fleet_profiles(workspace: &Workspace, fleet: &forge_browser::service::BrowserService) {
+    let (orgs, projects) = workspace.browser_profile_config();
+    fleet.configure_profiles(orgs, projects);
+}
+
 #[cfg(target_os = "macos")]
 fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
     let fleet = Arc::new(
@@ -86,8 +96,7 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
     fleet.configure_idle(browser.idle_minutes);
     // **The profile names are config's, not a client's**: every seat resolves
     // its profile from `forge.toml` here, at boot, rather than naming one.
-    let (orgs, projects) = workspace.browser_profile_config();
-    fleet.configure_profiles(orgs, projects);
+    configure_fleet_profiles(workspace, &fleet);
     fleet.start_idle();
     // **A host an unclean exit left behind is reaped before any profile is
     // used.** It still holds the profile's singleton lock, and the first
@@ -228,6 +237,10 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
 
     async fn replace_seat(&self, seat: &forge_primitives::SessionSlot) {
         self.0.replace_seat(seat).await;
+    }
+
+    fn session_ended(&self, seat: &forge_primitives::SessionSlot) {
+        self.0.session_ended(seat);
     }
 
     async fn hand_off_started(
@@ -505,6 +518,8 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::configure_fleet_profiles;
     use super::{BOOT_WAVE_WAIT, start_subsystems, stop_result, wait_for_accounts};
     use std::sync::Arc;
     use std::time::Duration;
@@ -574,6 +589,68 @@ port = {port}
         .expect("write forge.toml");
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
         (Arc::new(workspace), dir)
+    }
+
+    /// **The config's names are the fleet's maps.** The workspace's own
+    /// resolution and the fleet's lookup both have tests; this is the boot's
+    /// copy between them, so a rename on either side fails here.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_fleets_profile_names_are_the_configs() {
+        use forge_primitives::SessionSlot;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            "\
+[[orgs]]
+name = \"Busytools\"
+accounts = [\"Stub\"]
+browser_profile = \"work\"
+
+[[orgs.projects]]
+name = \"forge\"
+path = \"/tmp\"
+
+[[orgs.projects]]
+name = \"apply\"
+path = \"/tmp\"
+browser_profile = \"job\"
+
+[[accounts]]
+display_name = \"Stub\"
+token = \"t\"
+provider = \"openrouter\"
+base_url = \"http://127.0.0.1:9/api\"
+models = [\"claude-sonnet-5\"]
+
+[server]
+enabled = false
+
+[gateway]
+port = 49201
+",
+        )
+        .expect("write forge.toml");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
+        let fleet = forge_browser::service::BrowserService::at(
+            dir.path().join("browser"),
+            dir.path().join("browser/stack"),
+        );
+
+        configure_fleet_profiles(&workspace, &fleet);
+
+        let key = |project: &str| {
+            fleet
+                .profile_for(&SessionSlot::lead("Busytools", project))
+                .expect("a seat resolves")
+                .as_str()
+                .to_owned()
+        };
+        assert_eq!(key("forge"), "Busytools/work", "the org's name arrives");
+        assert_eq!(key("apply"), "Busytools/job", "the project's override arrives");
     }
 
     /// The wave starts the 60 s usage poller. Its first tick is a minute out

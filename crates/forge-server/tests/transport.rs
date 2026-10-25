@@ -7982,6 +7982,8 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
 
     async fn replace_seat(&self, _seat: &SessionSlot) {}
 
+    fn session_ended(&self, _seat: &SessionSlot) {}
+
     async fn hand_off_started(&self, _seat: &SessionSlot, _tab: u16) -> Result<(), String> {
         Ok(())
     }
