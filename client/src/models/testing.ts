@@ -296,11 +296,6 @@ export function fakeConnection() {
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     close: () => {},
-    openBrowser: () => false,
-    selectTab: () => false,
-    requestTabs: () => false,
-    browserControl: () => false,
-    browserNav: () => false,
     browserInput: () => false,
     onBrowserFrame: () => () => {},
   };

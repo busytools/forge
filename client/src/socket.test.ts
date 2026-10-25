@@ -1331,38 +1331,6 @@ describe('the connection', () => {
 
 describe('the browser viewer', () => {
   /**
-   * **An attach names the seat and the tab.** A null tab is the asking seat's
-   * current one; a tab number is that tab, which is how the strip's show and
-   * the bar's picker reach a page.
-   */
-  it('opens a seat on a tab and switches the viewed tab', async () => {
-    const { server, conn } = await connected();
-    conn.openBrowser(LEAD, 2);
-    await until(() => server.received.length === 1, 'the attach to arrive');
-    expect(server.received[0]).toEqual({ kind: 'browser_view', seat: LEAD, tab: 2 });
-
-    conn.selectTab(LEAD, 3);
-    await until(() => server.received.length === 2, 'the switch to arrive');
-    expect(server.received[1]).toEqual({ kind: 'browser_view', seat: LEAD, tab: 3 });
-
-    conn.requestTabs(LEAD);
-    await until(() => server.received.length === 3, 'the tab ask to arrive');
-    expect(server.received[2]).toEqual({ kind: 'browser_tabs', seat: LEAD });
-  });
-
-  it('asks for control and history on the wire', async () => {
-    const { server, conn } = await connected();
-
-    conn.browserControl(true);
-    await until(() => server.received.length === 1, 'the take to arrive');
-    expect(server.received[0]).toEqual({ kind: 'browser_control', take: true });
-
-    conn.browserNav(true);
-    await until(() => server.received.length === 2, 'the move to arrive');
-    expect(server.received[1]).toEqual({ kind: 'browser_nav', back: true });
-  });
-
-  /**
    * **A gesture crosses as itself, with its own sequence.** The server
    * drops an event at or below the last one the role carried, so the
    * sequence is the wire's own ordering.
@@ -1438,11 +1406,6 @@ describe('the browser viewer', () => {
   it('refuses a viewer call while the socket is down', async () => {
     const { server, conn } = await connected();
     conn.close();
-    expect(conn.openBrowser(LEAD, null)).toBe(false);
-    expect(conn.selectTab(LEAD, 1)).toBe(false);
-    expect(conn.requestTabs(LEAD)).toBe(false);
-    expect(conn.browserControl(true)).toBe(false);
-    expect(conn.browserNav(false)).toBe(false);
     expect(conn.browserInput({ kind: 'text', text: 'x' })).toBe(false);
     expect(server.received).toEqual([]);
   });

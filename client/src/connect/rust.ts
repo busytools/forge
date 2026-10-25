@@ -63,10 +63,9 @@ const HEARTBEAT_MS = 5_000;
  * The commands a PAGE dispatches that answer through a reply.
  *
  * The server's own set is `answers_through_a_reply`, which also carries
- * commands the server dispatches itself, like `browser_idle_warning` from its
- * idle sweep. These are the page commands with nothing behind them on the
- * wire: a client that omits `reply_to` for one of them has no second way to
- * learn what happened.
+ * commands the server dispatches itself, like a hand-off's answer. These are
+ * the page commands with nothing behind them on the wire: a client that omits
+ * `reply_to` for one of them has no second way to learn what happened.
  */
 const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
@@ -488,47 +487,6 @@ class RustConnection implements Connection {
     // JSON, so a typed array would arrive as an object and not as bytes.
     void invoke('client_frame', { bytes: Array.from(bytes) }).catch((why: unknown) => {
       report('a dictation frame could not reach the shell', why);
-    });
-    return true;
-  }
-
-  openBrowser(seat: SessionSlot, tab: number | null): boolean {
-    return this.attach(seat, tab);
-  }
-
-  selectTab(seat: SessionSlot, tab: number): boolean {
-    return this.attach(seat, tab);
-  }
-
-  requestTabs(seat: SessionSlot): boolean {
-    if (this.state !== 'open') return false;
-    void invoke('client_browser_tabs', { seat }).catch((why: unknown) => {
-      report('the browser tabs could not reach the shell', why);
-    });
-    return true;
-  }
-
-  /** An attach and a switch are the same verb: the tab says which page. */
-  private attach(seat: SessionSlot, tab: number | null): boolean {
-    if (this.state !== 'open') return false;
-    void invoke('client_browser_view', { seat, tab }).catch((why: unknown) => {
-      report('the browser view could not reach the shell', why);
-    });
-    return true;
-  }
-
-  browserControl(take: boolean): boolean {
-    if (this.state !== 'open') return false;
-    void invoke('client_browser_control', { take }).catch((why: unknown) => {
-      report('the browser control could not reach the shell', why);
-    });
-    return true;
-  }
-
-  browserNav(back: boolean): boolean {
-    if (this.state !== 'open') return false;
-    void invoke('client_browser_nav', { back }).catch((why: unknown) => {
-      report('the browser move could not reach the shell', why);
     });
     return true;
   }

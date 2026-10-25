@@ -1425,11 +1425,6 @@ function drivable(refusedAtFirst = false): Driveable {
       return true;
     },
     frame: () => false,
-    openBrowser: () => false,
-    selectTab: () => false,
-    requestTabs: () => false,
-    browserControl: () => false,
-    browserNav: () => false,
     browserInput: () => false,
     onBrowserFrame: () => () => {},
     onMessage: (fn) => {

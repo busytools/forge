@@ -166,28 +166,6 @@ export interface Connection {
    */
   frame(bytes: Uint8Array): boolean;
   /**
-   * Attach this connection to one of a seat's browser tabs as a viewer.
-   *
-   * `tab` is the tab to drive, and `null` its current tab (else the
-   * profile's first). The answer is a `browser_view` message naming the
-   * profile's wire id and the tab, then `browser_nav_state`, then frames.
-   */
-  openBrowser(seat: SessionSlot, tab: number | null): boolean;
-  /** Move this connection to another of the profile's tabs: a re-attach. */
-  selectTab(seat: SessionSlot, tab: number): boolean;
-  /** Ask for the seat's tabs and follow their changes. */
-  requestTabs(seat: SessionSlot): boolean;
-  /**
-   * Take the controller role for the viewed surface, or give it back.
-   *
-   * **Exactly one viewer holds it.** A take moves the role to this
-   * connection; the previous holder becomes a watcher, and every viewer is
-   * told the new state in a `browser_view` message.
-   */
-  browserControl(take: boolean): boolean;
-  /** Move the viewed page through its own history: the bar's arrows. */
-  browserNav(back: boolean): boolean;
-  /**
    * One input event from the controlling viewer.
    *
    * **The wire carries the gesture, not CDP**: a press, a wheel, a key or
@@ -238,10 +216,9 @@ export interface Connection {
  * The commands a PAGE dispatches that answer through a reply.
  *
  * The server's own set is `answers_through_a_reply`, which also carries
- * commands the server dispatches itself, like `browser_idle_warning` from its
- * idle sweep. These are the page commands with nothing behind them on the
- * wire: a client that omits `reply_to` for one of them has no second way to
- * learn what happened.
+ * commands the server dispatches itself, like a hand-off's answer. These are
+ * the page commands with nothing behind them on the wire: a client that omits
+ * `reply_to` for one of them has no second way to learn what happened.
  */
 const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
@@ -900,31 +877,6 @@ export function connect(
         report('a dictation frame could not be sent', why);
         return false;
       }
-      return true;
-    },
-    openBrowser(seat, tab) {
-      if (!isOpen()) return false;
-      sendNow({ kind: 'browser_view', seat, tab });
-      return true;
-    },
-    selectTab(seat, tab) {
-      if (!isOpen()) return false;
-      sendNow({ kind: 'browser_view', seat, tab });
-      return true;
-    },
-    requestTabs(seat) {
-      if (!isOpen()) return false;
-      sendNow({ kind: 'browser_tabs', seat });
-      return true;
-    },
-    browserControl(take) {
-      if (!isOpen()) return false;
-      sendNow({ kind: 'browser_control', take });
-      return true;
-    },
-    browserNav(back) {
-      if (!isOpen()) return false;
-      sendNow({ kind: 'browser_nav', back });
       return true;
     },
     browserInput(event) {
