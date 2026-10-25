@@ -248,12 +248,16 @@ enum ViewEvent {
 async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
     let Some(viewing) = viewing.as_mut() else { return std::future::pending().await };
     loop {
+        // **A sender that ends says which one it was.** The tab's own state
+        // and history end with the tab; the profile's senders end with the
+        // browser. One refusal for both told a viewer on a closed tab that
+        // the whole browser had gone.
         let ready = tokio::select! {
-            changed = viewing.frames.changed() => changed.map(|()| 0_u8),
-            changed = viewing.view.changed() => changed.map(|()| 1_u8),
-            changed = viewing.failures.changed() => changed.map(|()| 2_u8),
-            changed = viewing.nav.changed() => changed.map(|()| 3_u8),
-            changed = viewing.files.changed() => changed.map(|()| 4_u8),
+            changed = viewing.frames.changed() => changed.map(|()| 0_u8).map_err(|_| 10_u8),
+            changed = viewing.view.changed() => changed.map(|()| 1_u8).map_err(|_| 11_u8),
+            changed = viewing.failures.changed() => changed.map(|()| 2_u8).map_err(|_| 12_u8),
+            changed = viewing.nav.changed() => changed.map(|()| 3_u8).map_err(|_| 13_u8),
+            changed = viewing.files.changed() => changed.map(|()| 4_u8).map_err(|_| 14_u8),
             download = viewing.downloads.recv() => match download {
                 Ok(download) => return ViewEvent::Download(download),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -312,7 +316,12 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
                 }
             }
             Ok(_) => {}
-            // Every sender is gone: the profile was closed or deleted.
+            // **The tab's own senders go when the tab does**, and the
+            // refusal names it so the client lowers that surface and can pick
+            // another. The profile's senders going is the browser's end.
+            Err(11 | 13) => {
+                return ViewEvent::Failed(format!("tab {} was closed", viewing.tab));
+            }
             Err(_) => return ViewEvent::Failed("the browser was closed".to_owned()),
         }
     }
@@ -4647,6 +4656,50 @@ mod tests {
             served.into_iter().flatten().chain(window_numbers).collect();
         for turn in &expected {
             assert!(served.contains(turn), "the walk serves turn {turn}");
+        }
+    }
+
+    /// **A closed tab names itself, not the browser.** The tab's own state
+    /// and history end with it; a viewer told "the browser was closed"
+    /// lowered the whole surface instead of that tab.
+    #[tokio::test]
+    async fn a_closed_tab_names_itself_in_the_failure() {
+        use forge_primitives::browser::{BrowserTabList, BrowserViewState};
+
+        let (_frames, frames_rx) = tokio::sync::watch::channel(None);
+        let (view, view_rx) = tokio::sync::watch::channel(BrowserViewState::default());
+        drop(view);
+        let (_nav, nav_rx) = tokio::sync::watch::channel(None);
+        let (_failures, failures_rx) = tokio::sync::watch::channel(None::<String>);
+        let (_files, files_rx) = tokio::sync::watch::channel(None);
+        let (_downloads, downloads_rx) = tokio::sync::broadcast::channel(4);
+        let (_audio, audio_rx) = tokio::sync::broadcast::channel(4);
+        let (_tabs, tabs_rx) = tokio::sync::watch::channel(BrowserTabList {
+            profile: "O/default".to_owned(),
+            id: 1,
+            up: true,
+            connected: true,
+            closing_at_ms: None,
+            rows: Vec::new(),
+        });
+        let attachment = forge_workspace::browser::BrowserAttachment {
+            key: "O/default".to_owned(),
+            id: 1,
+            tab: 3,
+            frames: frames_rx,
+            view: view_rx,
+            tabs: tabs_rx,
+            nav: nav_rx,
+            failures: failures_rx,
+            files: files_rx,
+            downloads: downloads_rx,
+            audio: audio_rx,
+        };
+        let mut viewing = Some(Viewing::new(attachment));
+
+        match next_view_event(&mut viewing).await {
+            ViewEvent::Failed(reason) => assert_eq!(reason, "tab 3 was closed"),
+            _ => panic!("the tab's own end is the surface's refusal"),
         }
     }
 }
