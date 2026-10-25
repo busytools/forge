@@ -61,6 +61,13 @@
   } = $props();
 
   let feedbackOpen = $state(false);
+  /** The tab picker's own select: **its value is set here rather than by the
+   *  select's binding**, which does not take when the options arrive after
+   *  the viewed tab does. */
+  let picker = $state<HTMLSelectElement | null>(null);
+  $effect(() => {
+    if (picker !== null && surface.tab !== null) picker.value = String(surface.tab);
+  });
   let barEl = $state<HTMLDivElement | null>(null);
 
   // The page area starts under the bar; a row the bar grows by (a take's card)
@@ -140,11 +147,12 @@
         aria-label="the tab to view"
         title="the profile's tabs"
         disabled={surface.phase !== 'live'}
+        bind:this={picker}
         value={surface.tab === null ? '' : String(surface.tab)}
         onchange={pick}
       >
         {#each tabs as row (row.number)}
-          <option value={row.number}>
+          <option value={row.number} selected={surface.tab === row.number}>
             {row.number} · {row.title !== ''
               ? row.title
               : row.url !== ''
