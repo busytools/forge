@@ -1,10 +1,10 @@
 //! The Playwright driver's tab list, as the service reads it.
 //!
-//! **Upstream's list is positional and renumbers on every close**; forge
-//! needs a stable name per tab, and the patched driver appends one line with
-//! each tab's CDP target id. The target id is the identity: it survives a
-//! renumber, it is what the host's frames and the CDP input target already
-//! speak, and the service maps it to its own small tab number.
+//! **Upstream's list is positional and renumbers on every close**, and CEF
+//! swaps a page's CDP target id when it navigates. The patched driver appends
+//! one line naming each tab's page guid (the stable identity) and its target
+//! id right now (where CDP drives it); the service keys its own small tab
+//! numbers by the guid and refreshes the target from every listing.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -17,7 +17,9 @@ use serde::Deserialize;
 pub struct DriverTab {
     #[serde(rename = "i")]
     pub index: usize,
-    #[serde(rename = "id")]
+    /// The page guid: the one name that survives a navigation.
+    pub id: String,
+    /// The page's CDP target id right now; CEF swaps it on navigation.
     pub target: String,
     pub title: String,
     pub url: String,
@@ -45,9 +47,25 @@ pub fn strip_export(text: &str) -> String {
     listing
 }
 
-/// The Playwright index of the tab a target id names.
-pub fn index_of(tabs: &[DriverTab], target: &str) -> Option<usize> {
-    tabs.iter().find(|tab| tab.target == target).map(|tab| tab.index)
+/// The Playwright index of the tab a page guid names.
+pub fn index_of(tabs: &[DriverTab], page: &str) -> Option<usize> {
+    tabs.iter().find(|tab| tab.id == page).map(|tab| tab.index)
+}
+
+/// The pages the driver lists that no tab claims. **A page the driver made
+/// for itself is not a host tab**, and it is closed by its target so the
+/// listing cannot grow pages nothing paints.
+pub fn orphan_targets(tabs: &TabRegistry, listing: &[DriverTab]) -> Vec<String> {
+    let known: HashSet<String> = tabs
+        .numbers()
+        .into_iter()
+        .filter_map(|number| tabs.target(number).map(str::to_owned))
+        .collect();
+    listing
+        .iter()
+        .filter(|row| !row.target.is_empty() && !known.contains(&row.target))
+        .map(|row| row.target.clone())
+        .collect()
 }
 
 /// The profile's tabs, keyed by the host's own tab number. **The registry
@@ -65,6 +83,9 @@ pub struct TabRegistry {
 
 pub(crate) struct Tab {
     pub(crate) owner: SessionSlot,
+    /// The page guid the driver names the tab by; stable across navigation.
+    pub(crate) id: String,
+    /// The page's current CDP target id; CEF swaps it on navigation.
     pub(crate) target: String,
     title: String,
     url: String,
@@ -79,6 +100,7 @@ impl TabRegistry {
         &mut self,
         number: u16,
         owner: SessionSlot,
+        id: &str,
         target: &str,
         title: &str,
         url: &str,
@@ -95,6 +117,7 @@ impl TabRegistry {
             number,
             Tab {
                 owner,
+                id: id.to_owned(),
                 target: target.to_owned(),
                 title: title.to_owned(),
                 url: url.to_owned(),
@@ -109,6 +132,7 @@ impl TabRegistry {
         &mut self,
         opener: u16,
         number: u16,
+        id: &str,
         target: &str,
         title: &str,
         url: &str,
@@ -117,7 +141,7 @@ impl TabRegistry {
             .owner(opener)
             .cloned()
             .ok_or_else(|| format!("the popup's opener tab {opener} is not open"))?;
-        self.adopt(number, owner, target, title, url)
+        self.adopt(number, owner, id, target, title, url)
     }
 
     /// Remove one tab and answer the session that owned it.
@@ -152,8 +176,13 @@ impl TabRegistry {
         Ok(())
     }
 
-    pub fn number_of(&self, target: &str) -> Option<u16> {
-        self.tabs.iter().find(|(_, tab)| tab.target == target).map(|(number, _)| *number)
+    pub fn number_of(&self, page: &str) -> Option<u16> {
+        self.tabs.iter().find(|(_, tab)| tab.id == page).map(|(number, _)| *number)
+    }
+
+    /// The page guid the driver names this tab by.
+    pub fn id(&self, tab: u16) -> Option<&str> {
+        self.tabs.get(&tab).map(|tab| tab.id.as_str())
     }
 
     pub fn target(&self, tab: u16) -> Option<&str> {
@@ -174,6 +203,16 @@ impl TabRegistry {
         if let Some(entry) = self.tabs.get_mut(&tab) {
             title.clone_into(&mut entry.title);
             url.clone_into(&mut entry.url);
+        }
+    }
+
+    /// **A navigation can swap the page target id.** CEF gives a navigated
+    /// page a new DevTools target, while the driver's Tab survives it; the
+    /// registry follows the driver's row so the next call selects the page
+    /// that is really there.
+    pub fn retarget(&mut self, tab: u16, target: &str) {
+        if let Some(entry) = self.tabs.get_mut(&tab) {
+            target.clone_into(&mut entry.target);
         }
     }
 
@@ -217,7 +256,7 @@ impl TabRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::{TabRegistry, parse_export, strip_export};
+    use super::{DriverTab, TabRegistry, orphan_targets, parse_export, strip_export};
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::BrowserTabState;
     use std::collections::HashSet;
@@ -226,17 +265,20 @@ mod tests {
     fn the_hosts_number_is_the_tabs_name() {
         let seat = SessionSlot::lead("O", "p");
         let mut registry = TabRegistry::default();
-        let one = registry.adopt(1, seat.clone(), "A", "one", "http://a/").expect("the first tab");
-        let two = registry.adopt(2, seat.clone(), "B", "two", "http://b/").expect("the second tab");
+        let one =
+            registry.adopt(1, seat.clone(), "p1", "t1", "one", "http://a/").expect("the first tab");
+        let two = registry
+            .adopt(2, seat.clone(), "p2", "t2", "two", "http://b/")
+            .expect("the second tab");
         assert_eq!((one, two), (1, 2));
         assert!(
-            registry.adopt(2, seat.clone(), "C", "three", "http://c/").is_err(),
+            registry.adopt(2, seat.clone(), "p3", "t3", "three", "http://c/").is_err(),
             "a number is never reused",
         );
         registry.close(one);
-        assert_eq!(registry.number_of("B"), Some(two), "a target keeps its number");
+        assert_eq!(registry.number_of("p2"), Some(two), "a page keeps its number");
         assert!(
-            registry.adopt(1, seat, "D", "four", "http://d/").is_err(),
+            registry.adopt(1, seat, "p4", "t4", "four", "http://d/").is_err(),
             "a closed number stays retired",
         );
     }
@@ -246,7 +288,7 @@ mod tests {
         let lead = SessionSlot::lead("O", "p");
         let worker = SessionSlot::worker("O", "p", "w");
         let mut registry = TabRegistry::default();
-        let mine = registry.adopt(1, lead.clone(), "A", "one", "u").expect("the tab");
+        let mine = registry.adopt(1, lead.clone(), "p1", "t1", "one", "u").expect("the tab");
         assert_eq!(registry.current(&lead), Some(mine), "a new tab is its owner's current");
         assert!(registry.select(&worker, mine).is_err(), "a foreign tab is refused");
         assert!(registry.close_owned(&worker, mine).is_err(), "and not closed");
@@ -261,9 +303,11 @@ mod tests {
         let lead = SessionSlot::lead("O", "p");
         let worker = SessionSlot::worker("O", "p", "w");
         let mut registry = TabRegistry::default();
-        let held = registry.adopt(1, lead.clone(), "A", "one", "http://a/").expect("the held tab");
-        let busy =
-            registry.adopt(2, worker.clone(), "B", "two", "http://b/").expect("the busy tab");
+        let held =
+            registry.adopt(1, lead.clone(), "p1", "t1", "one", "http://a/").expect("the held tab");
+        let busy = registry
+            .adopt(2, worker.clone(), "p2", "t2", "two", "http://b/")
+            .expect("the busy tab");
         registry.mark_busy(busy, true);
         let rows = registry.rows(&HashSet::from([held]));
         assert_eq!(rows[0].state, BrowserTabState::Held);
@@ -279,20 +323,72 @@ mod tests {
         assert_eq!(rows[0].state, BrowserTabState::Held);
     }
 
+    /// **A page the driver made for itself is an orphan; a host tab is
+    /// not.** The orphan is closed by target, and a row whose target the
+    /// driver could not read is left alone rather than closed blind.
+    #[test]
+    fn only_a_driver_made_page_is_an_orphan() {
+        let seat = SessionSlot::lead("O", "p");
+        let mut registry = TabRegistry::default();
+        registry.adopt(1, seat, "p1", "T1", "one", "http://a/").expect("the host tab");
+        let listing = [
+            DriverTab {
+                index: 0,
+                id: "p1".into(),
+                target: "T1".into(),
+                title: String::new(),
+                url: String::new(),
+                current: false,
+            },
+            DriverTab {
+                index: 1,
+                id: "p2".into(),
+                target: "T2".into(),
+                title: String::new(),
+                url: String::new(),
+                current: true,
+            },
+            DriverTab {
+                index: 2,
+                id: "p3".into(),
+                target: String::new(),
+                title: String::new(),
+                url: String::new(),
+                current: false,
+            },
+        ];
+        assert_eq!(orphan_targets(&registry, &listing), vec!["T2".to_owned()]);
+    }
+
+    #[test]
+    fn a_navigation_retargets_the_tabs_page() {
+        let seat = SessionSlot::lead("O", "p");
+        let mut registry = TabRegistry::default();
+        let tab = registry
+            .adopt(1, seat.clone(), "page1", "old-target", "", "about:blank")
+            .expect("the tab");
+        registry.retarget(tab, "new-target");
+        assert_eq!(registry.target(tab), Some("new-target"), "the CDP target follows the page");
+        assert_eq!(registry.number_of("page1"), Some(tab), "the page guid is the stable name");
+        assert_eq!(registry.number_of("old-target"), None, "a test does not need the target");
+        assert_eq!(registry.owner(tab), Some(&seat), "the number and owner stay");
+    }
+
     #[test]
     fn a_popup_belongs_to_its_openers_owner() {
         let worker = SessionSlot::worker("O", "p", "w");
         let mut registry = TabRegistry::default();
-        let opener = registry.adopt(1, worker.clone(), "A", "one", "u").expect("the opener");
-        let popup =
-            registry.create_under(opener, 2, "B", "two", "http://b/").expect("the opener exists");
+        let opener = registry.adopt(1, worker.clone(), "p1", "t1", "one", "u").expect("the opener");
+        let popup = registry
+            .create_under(opener, 2, "p2", "t2", "two", "http://b/")
+            .expect("the opener exists");
         assert_eq!(
             registry.owner(popup),
             Some(&worker),
             "the popup is the opener's, not the caller's"
         );
         assert!(
-            registry.create_under(99, 3, "C", "three", "http://c/").is_err(),
+            registry.create_under(99, 3, "p3", "t3", "three", "http://c/").is_err(),
             "an unknown opener is refused",
         );
     }
@@ -301,13 +397,15 @@ mod tests {
     /// agent never sees it: the service re-renders the list in forge's words.
     #[test]
     fn the_export_names_each_tab_target_and_position() {
-        let text = "FORGE-TABS [{\"i\":0,\"id\":\"ABC\",\"title\":\"one\",\"url\":\"http://a/\",\
-                    \"current\":true},{\"i\":1,\"id\":\"DEF\",\"title\":\"two\",\"url\":\"http://b/\",\
-                    \"current\":false}]\n- 0: (current) [one](http://a/)\n- 1: [two](http://b/)\n";
+        let text = "FORGE-TABS [{\"i\":0,\"id\":\"page@1\",\"target\":\"T1\",\"title\":\"one\",\
+                    \"url\":\"http://a/\",\"current\":true},{\"i\":1,\"id\":\"page@2\",\
+                    \"target\":\"T2\",\"title\":\"two\",\"url\":\"http://b/\",\"current\":false}]\n\
+                    - 0: (current) [one](http://a/)\n- 1: [two](http://b/)\n";
         let tabs = parse_export(text).expect("the export parses");
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs[1].index, 1);
-        assert_eq!(tabs[1].target, "DEF");
+        assert_eq!(tabs[1].id, "page@2", "the guid is the stable name");
+        assert_eq!(tabs[1].target, "T2", "and the target is where CDP drives it now");
         assert_eq!(tabs[1].title, "two");
         assert!(tabs[0].current, "the first tab is the current one");
         assert!(

@@ -48,7 +48,7 @@ pub(super) const START_TIMEOUT: Duration = Duration::from_secs(15);
 /// fake in the profile's driver slot without a child process.
 #[async_trait::async_trait]
 pub trait TabDriver: Send + Sync {
-    /// The driver's tabs, with the target ids that name them.
+    /// The driver's tabs: each page's guid, its live target id and its row.
     async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String>;
 
     /// Bring one tab to the front by its Playwright index.
@@ -291,7 +291,7 @@ impl Driver {
         self.tabs_within(CALL_TIMEOUT).await
     }
 
-    /// The driver's tabs, with the target ids that name them.
+    /// The driver's tabs: each page's guid, its live target id and its row.
     pub async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String> {
         let parts =
             self.call_raw("browser_tabs", serde_json::json!({ "action": "list" }), bound).await?;
@@ -694,11 +694,13 @@ mod tests {
     /// fresh listing, so a close by another session since the last call cannot
     /// leave the selection one tab off.
     #[test]
-    fn a_listing_gives_the_index_of_a_known_target() {
-        let listing = "FORGE-TABS [{\"i\":0,\"id\":\"A\",\"title\":\"x\",\"url\":\"u\",\"current\":false},\
-                       {\"i\":1,\"id\":\"B\",\"title\":\"y\",\"url\":\"v\",\"current\":true}]\n";
+    fn a_listing_gives_the_index_of_a_known_page() {
+        let listing = "FORGE-TABS [{\"i\":0,\"id\":\"A\",\"target\":\"tA\",\"title\":\"x\",\
+                       \"url\":\"u\",\"current\":false},{\"i\":1,\"id\":\"B\",\"target\":\"tB\",\
+                       \"title\":\"y\",\"url\":\"v\",\"current\":true}]\n";
         let tabs = crate::tabs::parse_export(listing).expect("the export parses");
-        assert_eq!(index_of(&tabs, "B"), Some(1));
+        assert_eq!(index_of(&tabs, "B"), Some(1), "the page guid names the tab");
+        assert_eq!(index_of(&tabs, "tB"), None, "a target id is not the name");
         assert_eq!(index_of(&tabs, "C"), None);
     }
 
