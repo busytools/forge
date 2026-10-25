@@ -683,7 +683,7 @@ impl BrowserService {
         // the host it drove**, so a failure is diagnosed against the browser
         // that was there rather than whatever replaced it. A test profile has
         // a driver and no host, and answers no host identity.
-        let (driver, generation, pid, port) = {
+        let (mut driver, generation, pid, port) = {
             let state = profile.state.lock().await;
             let Some(driver) = state.driver.as_ref() else {
                 return Err(format!("the browser for '{}' is not up", profile.key));
@@ -713,10 +713,10 @@ impl BrowserService {
         let bound = if upload.is_some() { Duration::from_secs(10) } else { driver::CALL_TIMEOUT };
         let (tab, created) = match tool {
             "browser_tabs" => {
-                return self.tabs_tool(&profile, seat, &driver, args).await;
+                return self.tabs_tool(&profile, seat, &mut driver, args).await;
             }
             "browser_close" => return self.close_current_tab(&profile, seat).await,
-            _ => self.ensure_tab(&profile, seat, &driver, bound).await?,
+            _ => self.ensure_tab(&profile, seat, &mut driver, bound).await?,
         };
         let retry_args = args.clone();
         let (tab, outcome) = self
@@ -755,7 +755,7 @@ impl BrowserService {
         &self,
         profile: &Arc<Profile>,
         seat: &SessionSlot,
-        driver: &Arc<dyn TabDriver>,
+        driver: &mut Arc<dyn TabDriver>,
         bound: Duration,
     ) -> Result<(u16, bool), String> {
         if let Some(tab) = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).current(seat)
@@ -763,15 +763,22 @@ impl BrowserService {
             return Ok((tab, false));
         }
         let boot = profile.boot.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some((number, target)) = boot {
-            let adopted = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).adopt(
-                number,
-                seat.clone(),
-                &target,
-                "",
-                "about:blank",
-            );
-            return adopted.map(|number| (number, true));
+        if let Some((number, _)) = boot {
+            // **The boot tab's target is the driver's, not the endpoint's.**
+            // The driver's listing is what a call selects by, so the adoption
+            // takes its row rather than a target read before the driver
+            // attached.
+            let listing = self.tabs_recovering(profile, driver, "boot", bound).await?;
+            if let Some(first) = listing.first() {
+                let adopted = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).adopt(
+                    number,
+                    seat.clone(),
+                    &first.target,
+                    &first.title,
+                    &first.url,
+                );
+                return adopted.map(|number| (number, true));
+            }
         }
         let number = self.create_tab(profile, seat, driver, bound).await?;
         Ok((number, true))
@@ -784,7 +791,7 @@ impl BrowserService {
         &self,
         profile: &Arc<Profile>,
         seat: &SessionSlot,
-        driver: &Arc<dyn TabDriver>,
+        driver: &mut Arc<dyn TabDriver>,
         bound: Duration,
     ) -> Result<u16, String> {
         let deadline = tokio::time::Instant::now() + bound;
@@ -819,8 +826,12 @@ impl BrowserService {
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
             (host.port, host.input.clone())
         };
-        let before: HashSet<String> =
-            spawn::page_targets(port).await.into_iter().map(|(id, _)| id).collect();
+        let before: HashSet<String> = self
+            .tabs_recovering(profile, driver, "create", left(deadline))
+            .await?
+            .into_iter()
+            .map(|tab| tab.target)
+            .collect();
         input
             .send(input::host_line(&input::HostInput::TabNew { url: None }))
             .map_err(|_| format!("the browser for '{}' is not taking a tab", profile.key))?;
@@ -837,12 +848,15 @@ impl BrowserService {
                     note_created(&event, &mut numbers);
                 }
                 if !numbers.is_empty() {
-                    let opened: Vec<(String, String)> = spawn::page_targets(port)
-                        .await
-                        .into_iter()
-                        .filter(|(id, _)| !before.contains(id))
-                        .collect();
-                    if opened.len() >= numbers.len() {
+                    // **The driver's listing is the pairing authority**: the
+                    // endpoint's order and ids can carry a page the driver
+                    // did not open, and a target the driver never lists is a
+                    // tab no call could select.
+                    let opened = self
+                        .tabs_recovering(profile, driver, "create", left(deadline))
+                        .await?;
+                    let fresh = opened.iter().filter(|tab| !before.contains(&tab.target)).count();
+                    if fresh >= numbers.len() {
                         break;
                     }
                     let deadline = *target_deadline
@@ -869,23 +883,24 @@ impl BrowserService {
             }
             numbers
         };
-        let opened: Vec<(String, String)> = spawn::page_targets(port)
-            .await
+        let opened: Vec<crate::tabs::DriverTab> = self
+            .tabs_recovering(profile, driver, "create", left(deadline))
+            .await?
             .into_iter()
-            .filter(|(id, _)| !before.contains(id))
+            .filter(|tab| !before.contains(&tab.target))
             .collect();
         let mut requested = None;
         {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             for (index, (number, opener)) in numbers.iter().enumerate() {
-                let Some((target, url)) = opened.get(index) else { break };
+                let Some(row) = opened.get(index) else { break };
                 if tabs.target(*number).is_some() {
                     continue;
                 }
                 let owner = opener
                     .and_then(|opener| tabs.owner(opener).cloned())
                     .unwrap_or_else(|| seat.clone());
-                if tabs.adopt(*number, owner, target, "", url).is_ok()
+                if tabs.adopt(*number, owner, &row.target, &row.title, &row.url).is_ok()
                     && opener.is_none()
                     && requested.is_none()
                 {
@@ -930,7 +945,7 @@ impl BrowserService {
         &self,
         profile: &Arc<Profile>,
         seat: &SessionSlot,
-        driver: &Arc<dyn TabDriver>,
+        driver: &mut Arc<dyn TabDriver>,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
         let action = args.get("action").and_then(Value::as_str).unwrap_or("list");
@@ -1032,6 +1047,7 @@ impl BrowserService {
         let Drive { tool, args, retry_args, bound, generation, pid, port } = call;
         let deadline = tokio::time::Instant::now() + bound;
         let mut tab = tab;
+        let mut driver = Arc::clone(driver);
         let mut target = profile
             .tabs
             .lock()
@@ -1039,8 +1055,10 @@ impl BrowserService {
             .target(tab)
             .map(str::to_owned)
             .unwrap_or_default();
-        let listing = driver.tabs_within(left(deadline)).await;
-        let mut index = match listing {
+        let mut index = match self
+            .tabs_recovering(profile, &mut driver, tool, left(deadline))
+            .await
+        {
             Ok(listing) => Self::tab_index(profile, tab, &target, &listing),
             Err(why) => return (tab, Err(why)),
         };
@@ -1049,7 +1067,7 @@ impl BrowserService {
             // outside the service): drop the dead tab and make a new one for
             // this call, once.
             self.orphan_tab(profile, tab).await;
-            let fresh = match self.create_tab(profile, seat, driver, left(deadline)).await {
+            let fresh = match self.create_tab(profile, seat, &mut driver, left(deadline)).await {
                 Ok(fresh) => fresh,
                 Err(why) => return (tab, Err(why)),
             };
@@ -1061,7 +1079,10 @@ impl BrowserService {
                 .target(tab)
                 .map(str::to_owned)
                 .unwrap_or_default();
-            index = match driver.tabs_within(left(deadline)).await {
+            index = match self
+                .tabs_recovering(profile, &mut driver, tool, left(deadline))
+                .await
+            {
                 Ok(listing) => Self::tab_index(profile, tab, &target, &listing),
                 Err(why) => return (tab, Err(why)),
             };
@@ -1097,6 +1118,48 @@ impl BrowserService {
             )
             .await;
         (tab, outcome)
+    }
+
+    /// The driver's tabs, recovering a driver whose held page outlived its
+    /// renderer. **The backend holds Tab -> Page**, and a CEF renderer death
+    /// leaves the target listed so upstream never resets it (#2463); a fresh
+    /// driver re-reads the context's pages and works again.
+    async fn tabs_recovering(
+        &self,
+        profile: &Arc<Profile>,
+        driver: &mut Arc<dyn TabDriver>,
+        tool: &str,
+        bound: Duration,
+    ) -> Result<Vec<crate::tabs::DriverTab>, String> {
+        match driver.tabs_within(bound).await {
+            Err(why) if driver::stale_page(&why) => {
+                tracing::warn!(
+                    event_name = "browser_driver_stale",
+                    profile = %profile.key,
+                    tool,
+                    "the driver's held page outlived its renderer; a fresh driver is attached: {why}"
+                );
+                *driver = self.recover_driver(profile).await?;
+                driver.tabs_within(bound).await
+            }
+            other => other,
+        }
+    }
+
+    /// Drop the profile's driver and attach a fresh one to the same host.
+    async fn recover_driver(&self, profile: &Arc<Profile>) -> Result<Arc<dyn TabDriver>, String> {
+        let _rebuilding = profile.rebuild.lock().await;
+        {
+            let mut state = profile.state.lock().await;
+            state.driver = None;
+        }
+        profile.ensure(&self.root, self.stack()).await?;
+        let state = profile.state.lock().await;
+        state
+            .driver
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| format!("the browser driver for '{}' did not come back", profile.key))
     }
 
     /// The Playwright index of `tab` in one listing, updating the row's title
@@ -3121,18 +3184,12 @@ impl Profile {
                 _ => break,
             }
         }
-        let mut boot_target = None;
         if booted {
-            for _ in 0..20 {
-                if let Some((target, _)) = spawn::page_targets(port).await.into_iter().next() {
-                    boot_target = Some(target);
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-        if let Some(target) = boot_target {
-            *self.boot.lock().unwrap_or_else(PoisonError::into_inner) = Some((1, target));
+            // **The target is the driver's to name.** A target read from the
+            // endpoint before the driver attaches is not necessarily the page
+            // the driver lists, so the adoption takes its row at the first
+            // page call instead.
+            *self.boot.lock().unwrap_or_else(PoisonError::into_inner) = Some((1, String::new()));
         } else {
             tracing::warn!(
                 "a browser host reported no boot tab to adopt (event_name \
