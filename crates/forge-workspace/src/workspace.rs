@@ -15083,8 +15083,8 @@ mod worker_activity_tests {
     /// **A parked browser hand-off is in the READ as well as on the stream**:
     /// a view that attached after it landed has nothing else to draw the dock
     /// from, and the dock is the only place its answer can come from.
-    #[test]
-    fn a_parked_hand_off_is_in_the_pending_asks_read() {
+    #[tokio::test]
+    async fn a_parked_hand_off_is_in_the_pending_asks_read() {
         let (ws, _rx) = Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("caller-uuid");
         let handoff = forge_primitives::browser::HandOff {
@@ -15093,7 +15093,9 @@ mod worker_activity_tests {
             tab: 2,
         };
         let id = handoff.id;
-        let (_asked, _answer) = ws.register_browser_hand_off(&key, handoff);
+        let (calls, _heard) = tokio::sync::mpsc::unbounded_channel();
+        ws.install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
+        let (_asked, _answer) = ws.register_browser_hand_off(&key, handoff).await.expect("parks");
 
         assert!(
             ws.pending_asks(&key)
@@ -15560,7 +15562,9 @@ mod worker_activity_tests {
             reason: "solve the CAPTCHA".to_owned(),
             tab: 2,
         };
-        let (_id, _answer) = ws.register_browser_hand_off(&seat, handoff);
+        let (calls, _heard) = tokio::sync::mpsc::unbounded_channel();
+        ws.install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
+        let (_id, _answer) = ws.register_browser_hand_off(&seat, handoff).await.expect("parks");
 
         assert_eq!(
             ws.session_activity(&seat),

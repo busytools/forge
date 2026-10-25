@@ -583,29 +583,28 @@ impl BrowserService {
     }
 
     /// A parked hand-off marks its tab held, so a sweep or the idle clock
-    /// leaves it alone until the resolution lands.
-    pub async fn hand_off_started(&self, seat: &SessionSlot, tab: u16) {
-        let Ok(key) = self.profile_for(seat) else { return };
-        let Ok(profile) = self.find(key.as_str()).await else {
-            tracing::debug!(
-                "a hand-off named a tab on a profile that is not open (event_name \
-                 browser_hand_off_started_stale, seat {}, tab {tab})",
-                seat.display()
-            );
-            return;
-        };
-        let owned =
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).owned(seat, tab).is_ok();
-        if !owned {
-            tracing::debug!(
-                "a hand-off named a tab the seat does not own (event_name \
-                 browser_hand_off_started_refused, seat {}, tab {tab})",
-                seat.display()
-            );
-            return;
-        }
+    /// leaves it alone until the resolution lands. **A tab that is not this
+    /// seat's is refused by name**: an ask parked on a stranger's tab would
+    /// send the person to a page the session never opened.
+    pub async fn hand_off_started(&self, seat: &SessionSlot, tab: u16) -> Result<(), String> {
+        let key = self.profile_for(seat)?;
+        let profile = self
+            .find(key.as_str())
+            .await
+            .map_err(|_| format!("tab {tab} is not open on this session's browser"))?;
+        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).owned(seat, tab).map_err(
+            |why| {
+                tracing::debug!(
+                    "a hand-off named a tab the seat does not own (event_name \
+                     browser_hand_off_started_refused, seat {}, tab {tab}): {why}",
+                    seat.display()
+                );
+                why
+            },
+        )?;
         self.holds.lock().unwrap_or_else(PoisonError::into_inner).insert((seat.clone(), tab));
         self.publish_rows(key.as_str()).await;
+        Ok(())
     }
 
     /// A hand-off resolved. **Only a tab still held is acted on**: a
@@ -5653,7 +5652,7 @@ mod tests {
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab");
         let tab = service.tabs(&seat).await.expect("rows").rows[0].number;
         service.sweep_sessions(std::slice::from_ref(&seat)).await;
-        service.hand_off_started(&seat, tab).await;
+        service.hand_off_started(&seat, tab).await.expect("the tab is held");
 
         service.idle_pass().await;
         assert!(
@@ -6093,7 +6092,7 @@ mod tests {
         service.call(&worker, "browser_snapshot", json!({})).await.expect("the worker's tab");
         let worker_tab = service.tabs(&worker).await.expect("rows").rows[1].number;
 
-        service.hand_off_started(&worker, worker_tab).await;
+        service.hand_off_started(&worker, worker_tab).await.expect("the tab is held");
         service.sweep_sessions(std::slice::from_ref(&lead)).await;
         let rows = service.tabs(&lead).await.expect("rows").rows;
         assert!(rows.iter().any(|row| row.number == lead_tab));
@@ -6204,7 +6203,7 @@ mod tests {
             .call(&worker, "browser_snapshot", json!({}))
             .await
             .expect("the worker adopts tab 1");
-        service.hand_off_started(&worker, 1).await;
+        service.hand_off_started(&worker, 1).await.expect("the tab is held");
 
         // The host ends; the registry and holds go with it.
         let profile = service.find("O/default").await.expect("the profile");
@@ -6223,6 +6222,39 @@ mod tests {
         assert_eq!(rows[0].owner, lead);
     }
 
+    /// **A hand-off is refused by name on a tab that is not the seat's.** An
+    /// ask parked on a stranger's tab sends the person to a page the session
+    /// never opened; an unknown or closed number is the same refusal.
+    #[tokio::test]
+    async fn a_hand_off_is_refused_on_a_tab_that_is_not_the_seats() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service.install_fake(&lead, FakeDriver::with_blank("T1")).await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts tab 1");
+
+        assert_eq!(
+            service.hand_off_started(&lead, 1).await,
+            Err(format!("tab 1 belongs to {}", worker.display())),
+            "another session's tab is refused",
+        );
+        assert_eq!(
+            service.hand_off_started(&worker, 9).await,
+            Err("tab 9 is not open".to_owned()),
+            "an unknown number is refused",
+        );
+        service.call(&worker, "browser_close", json!({})).await.expect("the tab closes");
+        assert_eq!(
+            service.hand_off_started(&worker, 1).await,
+            Err("tab 1 is not open".to_owned()),
+            "a closed tab is refused",
+        );
+    }
+
     /// **A host that dies takes its parks with it.** A hold that outlived its
     /// host would keep the successor from ever closing on its idle clock,
     /// with nothing left to answer it.
@@ -6239,7 +6271,7 @@ mod tests {
             .call(&worker, "browser_snapshot", json!({}))
             .await
             .expect("the worker adopts tab 1");
-        service.hand_off_started(&worker, 1).await;
+        service.hand_off_started(&worker, 1).await.expect("the tab is held");
         assert!(!service.held_tabs("O/default").is_empty(), "the park is held");
 
         // The host dies as the monitor records it; the next open reads the

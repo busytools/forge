@@ -230,8 +230,12 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
         self.0.replace_seat(seat).await;
     }
 
-    async fn hand_off_started(&self, seat: &forge_primitives::SessionSlot, tab: u16) {
-        self.0.hand_off_started(seat, tab).await;
+    async fn hand_off_started(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+        tab: u16,
+    ) -> Result<(), String> {
+        self.0.hand_off_started(seat, tab).await
     }
 
     async fn hand_off_finished(&self, seat: &forge_primitives::SessionSlot, tab: u16) {

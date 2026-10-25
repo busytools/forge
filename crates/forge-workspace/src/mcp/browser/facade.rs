@@ -82,7 +82,7 @@ impl BrowserFacade for ProdBrowserFacade {
             return Err("the workspace went away before the hand-off was staged".to_owned());
         };
         let handoff = HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab };
-        let (id, answer) = workspace.register_browser_hand_off(seat, handoff);
+        let (id, answer) = workspace.register_browser_hand_off(seat, handoff).await?;
         let guard =
             ResolveHandOffOnDrop { workspace: Arc::clone(&workspace), id, caller: seat.clone() };
         let ending = answer.await.map_err(|_| {
@@ -206,6 +206,8 @@ mod tests {
     #[tokio::test]
     async fn a_hand_off_waiter_that_dies_is_reported_as_abandoned() {
         let (workspace, mut rx) = Workspace::testing_stub();
+        let (calls, _heard) = mpsc::unbounded_channel();
+        workspace.install_browser_host(Arc::new(StubHost { calls }));
         let facade = ProdBrowserFacade::from_workspace(&workspace);
         let seat = SessionSlot::lead("TestOrg", "proj");
         let task = tokio::spawn({
@@ -255,5 +257,23 @@ mod tests {
             .call(&SessionSlot::lead("TestOrg", "proj"), "browser_close", serde_json::json!({}))
             .await;
         assert_eq!(refused, Err(crate::browser::NO_BROWSER_HOST.to_owned()));
+    }
+
+    /// **A hand-off on a tab that is not the session's never reaches a
+    /// person.** The fleet's refusal is the tool call's, and no ask is
+    /// parked or drawn.
+    #[tokio::test]
+    async fn a_hand_off_on_an_unknown_tab_is_refused_by_name() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let (calls, _heard) = mpsc::unbounded_channel();
+        workspace.install_browser_host(Arc::new(StubHost { calls }));
+        let facade = ProdBrowserFacade::from_workspace(&workspace);
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        let refused = facade.hand_off(&seat, "look at this", 0).await;
+
+        assert_eq!(refused, Err("tab 0 is not open".to_owned()));
+        assert!(workspace.browser_handoffs.lock().is_empty(), "nothing is parked");
+        assert!(rx.try_recv().is_err(), "and no view is told to draw a dock");
     }
 }
