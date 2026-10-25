@@ -259,6 +259,11 @@ export async function selectTab(tab: number): Promise<string | null> {
   }
   surface.profile = answer.profile;
   surface.tab = answer.tab;
+  // **A successful pick is a live surface again.** Attaching from the failed
+  // state used to leave the phase (and the reason) behind, so the phone never
+  // painted and the desktop controlled an overlay its bar called failed.
+  surface.phase = 'live';
+  surface.reason = null;
   void readSurfaceTabs(surface.seat);
   return null;
 }

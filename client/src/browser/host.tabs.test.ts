@@ -62,6 +62,17 @@ describe("the strip's tab rows", () => {
     ).toThrow(/state/);
   });
 
+  /// **A host's state is read, not guessed.** Coercing a missing or
+  /// malformed value to false drew "down" over a list that never said so.
+  it('refuses a list that does not say whether its host is up', () => {
+    expect(() => tabListOf({ profile: 'p', id: 1, up: true, rows: [] })).toThrow(
+      /whether its host is up/,
+    );
+    expect(() =>
+      tabListOf({ profile: 'p', id: 1, up: true, connected: 'yes', rows: [] }),
+    ).toThrow(/whether its host is up/);
+  });
+
   /// **A state this page has not seen reads as itself**, including a word
   /// that collides with an object property: the lookup is the map's own, not
   /// whatever `Object.prototype` carries.

@@ -103,6 +103,22 @@ describe('the browser surface', () => {
     expect(surface.tab).toBe(3);
   });
 
+  /// **A pick out of a failed surface makes it live again.** Attaching used
+  /// to leave the phase and the reason behind, so the bar called a working
+  /// page failed and the phone never painted.
+  it('recovers a failed surface when a pick attaches', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce('the browser host exited');
+    await openSurface('hunt', seat, 2);
+    expect(surface.phase).toBe('failed');
+    expect(surface.reason).toBe('the browser host exited');
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 4 });
+    expect(await selectTab(4)).toBeNull();
+    expect(surface.phase).toBe('live');
+    expect(surface.reason).toBeNull();
+    expect(surface.tab).toBe(4);
+  });
+
   it("carries the shell's own sentence when it could not open", async () => {
     show.mockResolvedValue('the profile is held by Busytools/forge/lead');
     expect(await openSurface(null)).toBe('the profile is held by Busytools/forge/lead');

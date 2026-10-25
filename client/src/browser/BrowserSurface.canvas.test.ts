@@ -32,7 +32,7 @@ vi.mock('./host', () => ({
 
 import BrowserSurface from './BrowserSurface.svelte';
 import { keptFrame } from './host';
-import { setRegion, surface } from './surface.svelte';
+import { selectTab, setRegion, surface } from './surface.svelte';
 import type { BrowserFrame, Connection } from '../socket';
 import type { BrowserInputEvent } from '../protocol';
 
@@ -93,6 +93,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // **A live surface's unmount closes itself asynchronously.** Left to do
+  // that after this test, its reset lands in the next one and clears the id
+  // the test just set; a synchronous close first keeps the teardown here.
+  surface.phase = 'closed';
   if (shown !== null) void unmount(shown);
   shown = null;
   document.body.innerHTML = '';
@@ -100,6 +104,39 @@ afterEach(() => {
 });
 
 describe('the canvas viewer', () => {
+  /// **A pick out of a failed surface paints.** The surface store now moves
+  /// the phase to live on a successful attach; this is the page's half of
+  /// that contract, where the failed state had no canvas at all.
+  it('paints on a surface that recovered from failed by a pick', async () => {
+    vi.stubGlobal('createImageBitmap', () =>
+      Promise.resolve({ width: 320, height: 200, close: () => {} }),
+    );
+    vi.mocked(keptFrame).mockResolvedValue(frame(1));
+    const { showBrowser } = await import('./host');
+    vi.mocked(showBrowser).mockResolvedValue({ profile: 'hunt', tab: 2 });
+    const { connection } = stubConnection();
+    surface.phase = 'failed';
+    surface.profile = 'hunt';
+    surface.reason = 'the browser host exited';
+    surface.seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(BrowserSurface, { target, props: { connection } });
+    flushSync();
+    expect(target.querySelector('canvas'), 'failed draws no canvas').toBeNull();
+
+    // The shell's `browser_view` names the profile id the frame filter
+    // reads; it rides the same attach this pick asks for.
+    surface.id = 1;
+    expect(await selectTab(2)).toBeNull();
+    flushSync();
+    expect(surface.phase, 'the pick recovered the surface').toBe('live');
+    expect(surface.reason).toBeNull();
+    const canvas = target.querySelector('canvas');
+    expect(canvas, 'the live surface draws its canvas').not.toBeNull();
+    await vi.waitFor(() => expect(canvas?.width, 'and the kept frame paints').toBe(100));
+  });
+
   /// **A kept-frame ask that missed is asked again.** It can land before the
   /// canvas is bound, or before the attach's key frame reaches the shell; a
   /// single ask that returned null left a still page blank for good.
@@ -121,6 +158,48 @@ describe('the canvas viewer', () => {
       },
       { timeout: 2000 },
     );
+  });
+
+  /// **A decode finishes after the frame it was for is stale.** Two frames
+  /// decode concurrently; the older one resolving last must not paint over
+  /// the newer picture.
+  it('does not paint an older frame that decoded last', async () => {
+    let releaseOlder: (bitmap: { width: number; height: number; close: () => void }) => void =
+      () => {};
+    const older = new Promise<{ width: number; height: number; close: () => void }>((resolve) => {
+      releaseOlder = resolve;
+    });
+    let calls = 0;
+    vi.stubGlobal('createImageBitmap', () => {
+      calls += 1;
+      if (calls === 1) return older;
+      return Promise.resolve({ width: 222, height: 200, close: () => {} });
+    });
+    const { connection, listeners } = stubConnection();
+    surface.id = 1;
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('the canvas is not drawn');
+
+    const first: BrowserFrame = {
+      profile: 1,
+      tab: 2,
+      seq: 6,
+      width: 111,
+      height: 50,
+      key: false,
+      bytes: new Uint8Array([1]),
+    };
+    const second: BrowserFrame = { ...first, seq: 7, width: 222 };
+    for (const listener of listeners) listener(first);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    for (const listener of listeners) listener(second);
+    await vi.waitFor(() => expect(canvas.width, 'the newer frame paints').toBe(222));
+
+    releaseOlder({ width: 111, height: 50, close: () => {} });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(canvas.width, 'the older decode does not paint over the newer').toBe(222);
   });
 
   /// **A surface that mounts late paints the frame it missed.** In

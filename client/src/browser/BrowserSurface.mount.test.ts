@@ -60,6 +60,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // **A live surface's unmount closes itself asynchronously**, and that
+  // reset can land in the next test; close it synchronously first.
+  surface.phase = 'closed';
   if (shown !== null) void unmount(shown);
   shown = null;
   document.body.innerHTML = '';
