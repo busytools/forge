@@ -4659,8 +4659,8 @@ impl Workspace {
         // the insert below would append a second entry for the slot and the
         // by-slot reads would move the tombstone instead of the new entry.
         self.clear_failed_worker(&view.key, key.label());
-        let (return_to, _reply) = tokio::sync::oneshot::channel();
-        self.dispatch(Command::SpawnWorker {
+        let (return_to, mut reply) = tokio::sync::oneshot::channel();
+        let outcome = self.dispatch(Command::SpawnWorker {
             project_key: view.key,
             label: key.label().to_owned(),
             charter: row.charter.unwrap_or_default(),
@@ -4673,12 +4673,18 @@ impl Workspace {
             cwd: row.cwd,
             // **A user-driven restore is the row restore a boot re-spawn
             // does.** The row already holds the worker's cap slot and tree,
-            // and this reply is dropped like the boot wave's, so the
-            // restore semantics (no cap check, a failure kept as the
-            // visible tombstone) are the right ones here too.
+            // so the restore semantics fit: no cap check, and a failure kept
+            // as the visible tombstone. The refusal the handler does answer
+            // is surfaced below rather than dropped.
             from_boot_respawn: true,
             return_to: Some(return_to),
-        })
+        });
+        // The handler answers before it returns, so a restore that was
+        // refused says why instead of echoing as accepted.
+        if let Ok(Err(reason)) = reply.try_recv() {
+            self.notice(key, NoticeSeverity::Error, &format!("the resume was refused: {reason}"));
+        }
+        outcome
     }
 
     /// Fill in the launch settings a caller did not build.
@@ -11346,6 +11352,75 @@ provider = "anthropic"
         );
         assert_eq!(workspace.count_live_workers(&project_key), 1, "and one cap slot");
         forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A refused restore says so.** The spawn handler answers a refusal
+    /// with its reason; the route surfaces that as a Notice rather than
+    /// echoing the `/resume` as accepted.
+    #[tokio::test]
+    async fn a_refused_worker_restore_says_so() {
+        use forge_primitives::WorkerLiveness;
+
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let workspace = resume_workspace(dir.path(), project.path());
+        let project_key = workspace.project_key_for_name("forge").expect("project");
+        let named = "22222222-3333-4444-5555-666666666666";
+        workspace
+            .record_worker_row(
+                &project_key,
+                "labourer",
+                "33333333-4444-5555-6666-777777777777",
+                "the stored charter",
+                None,
+                None,
+                false,
+                crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
+            )
+            .expect("seed the worker row");
+        let slot = SessionSlot::worker("Default", "forge", "labourer");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "labourer".to_owned(),
+                charter: "the stored charter".to_owned(),
+                slot: slot.clone(),
+                session_id: Some(forge_primitives::SessionId::new(named)),
+                status: WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("Default", "forge"),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let mut updates = workspace.subscribe_observer();
+
+        let sent = workspace.dispatch_from_view(Command::Prompt {
+            key: slot.clone(),
+            text: format!("/resume {named}"),
+            attachments: Vec::new(),
+        });
+        assert!(sent.is_ok(), "the route takes the request: {sent:?}");
+
+        let said = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(seat) = updates.recv().await {
+                if let SessionUpdate::Notice { key: seen, severity, text } = &seat.update
+                    && *seen == slot
+                {
+                    return (*severity, text.clone());
+                }
+            }
+            panic!("the update stream closed before the refusal was announced");
+        })
+        .await
+        .expect("the refusal is announced");
+        assert_eq!(said.0, NoticeSeverity::Error, "as a failure the reader can act on");
+        assert!(said.1.contains("the resume was refused"), "and it says what happened: {}", said.1);
+        assert!(said.1.contains("already live"), "with the handler's own reason: {}", said.1);
     }
 
     /// The worker door refuses, by name, what it cannot restore: a project

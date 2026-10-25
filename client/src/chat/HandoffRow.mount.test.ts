@@ -95,8 +95,9 @@ describe('the handoff row, mounted', () => {
     const writes: string[] = [];
     vi.stubGlobal('navigator', {
       clipboard: {
-        writeText: async (text: string) => {
+        writeText: (text: string) => {
           writes.push(text);
+          return Promise.resolve();
         },
       },
     });
