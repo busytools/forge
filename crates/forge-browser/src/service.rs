@@ -62,6 +62,9 @@ struct Candidate {
     touch: Touch,
     /// Whether a viewer is attached: **a viewer is a use**.
     viewed: bool,
+    /// The host died since the last call read it, so its parks are not a
+    /// person's wait and must not hold the profile open.
+    restarted: bool,
 }
 
 /// The view a profile's browser starts at, in device pixels. A controlling
@@ -274,6 +277,12 @@ impl BrowserService {
         let _held = gate.lock().await;
         let profile = self.entry_locked(seat).await?;
         profile.ensure(&self.root, self.stack()).await?;
+        // **A host this entry lost took its hand-offs with it.** The park was
+        // a number in that host; the same number in the new one belongs to
+        // whoever adopted it, and must not be closed by that old answer.
+        if profile.restarted.swap(false, Ordering::AcqRel) {
+            self.forget_holds(key.as_str());
+        }
         self.publish_rows(key.as_str()).await;
         Ok(profile)
     }
@@ -373,6 +382,7 @@ impl BrowserService {
             touch: Mutex::new(Touch::now()),
             ended: AtomicBool::new(false),
             up: AtomicBool::new(false),
+            restarted: AtomicBool::new(false),
         });
         profiles.insert(key.as_str().to_owned(), Arc::clone(&profile));
         Ok(profile)
@@ -401,11 +411,15 @@ impl BrowserService {
                         .unwrap_or_else(PoisonError::into_inner)
                         .values()
                         .all(HashSet::is_empty),
+                    restarted: profile.restarted.load(Ordering::Acquire),
                 })
                 .collect::<Vec<_>>()
         };
         for candidate in candidates {
             self.publish_rows(&candidate.key).await;
+            if candidate.restarted {
+                self.forget_holds(&candidate.key);
+            }
             if candidate.viewed || !self.held_tabs(&candidate.key).is_empty() {
                 continue;
             }
@@ -1216,6 +1230,11 @@ impl BrowserService {
             state.driver = None;
         }
         profile.ensure(&self.root, self.stack()).await?;
+        // The host can die between a stale page and its rebuild; that rebuild
+        // starts a new host, and the old one's hand-offs must not outlive it.
+        if profile.restarted.swap(false, Ordering::AcqRel) {
+            self.forget_holds(&profile.key);
+        }
         let state = profile.state.lock().await;
         state
             .driver
@@ -2475,6 +2494,9 @@ pub struct Profile {
     /// Whether the host is up, for the strip's read: a lock-free flag so the
     /// list never waits on a call in flight.
     up: AtomicBool,
+    /// A host this entry lost since the service last looked, so the service
+    /// can forget the hand-offs that host held before its numbers come back.
+    restarted: AtomicBool,
 }
 
 /// The most a finished download may carry to a viewer.
@@ -3298,6 +3320,12 @@ impl Profile {
                     *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
                         ChooserLedger::default();
                     profile.up.store(false, Ordering::Release);
+                    // **A dead host's numbers die with it**, before a call
+                    // arrives to start its successor: a strip must not point
+                    // at tabs nothing runs, and a parked hand-off on one of
+                    // them must not close whichever tab takes the number.
+                    profile.host_gone();
+                    *profile.host_tab_events.lock().await = None;
                 }
                 files.send_replace(None);
                 let _ = std::fs::remove_dir_all(dir.join("uploads"));
@@ -3405,20 +3433,28 @@ impl Profile {
         })
     }
 
-    /// End whatever is up: the driver, then the host, then the frames.
-    async fn teardown(&self, state: &mut State) {
-        // **The profile is down before its chooser is cleared.** A chooser
-        // event parked inside the driver's cancel resumes after this and must
-        // see the profile down, or it would publish an ask for a dead host.
-        self.up.store(false, Ordering::Release);
-        // **A host's tab numbers die with the host**: a new host starts again
-        // at tab 1, so nothing may point at the old numbering.
+    /// Take everything a host owned when it goes: its tab numbers, the boot
+    /// tab and every viewer's place on them. **A new host starts again at tab
+    /// 1**, so nothing may point at the old numbering - and a park a viewer
+    /// left on one of those numbers must not survive to close its successor,
+    /// which is why the service is told to forget this host's holds.
+    fn host_gone(&self) {
         *self.tabs.lock().unwrap_or_else(PoisonError::into_inner) = TabRegistry::default();
         *self.boot.lock().unwrap_or_else(PoisonError::into_inner) = None;
         *self.focused.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.controls.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.viewers.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.views.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        self.restarted.store(true, Ordering::Release);
+    }
+
+    /// End whatever is up: the driver, then the host, then the frames.
+    async fn teardown(&self, state: &mut State) {
+        // **The profile is down before its chooser is cleared.** A chooser
+        // event parked inside the driver's cancel resumes after this and must
+        // see the profile down, or it would publish an ask for a dead host.
+        self.up.store(false, Ordering::Release);
+        self.host_gone();
         *self.host_tab_events.lock().await = None;
         // **A driver or host going takes its chooser with it.** These are
         // cleared without the decision lock because teardown runs under the
@@ -6131,5 +6167,57 @@ mod tests {
         let rows = service.tabs(&lead).await.expect("rows").rows;
         assert_eq!(rows.len(), 1, "the new host's tab 1 is not the old hand-off's");
         assert_eq!(rows[0].owner, lead);
+    }
+
+    /// **A host that dies takes its parks with it.** A hold that outlived its
+    /// host would keep the successor from ever closing on its idle clock,
+    /// with nothing left to answer it.
+    #[tokio::test]
+    async fn a_dead_host_takes_its_parks_with_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts tab 1");
+        service.hand_off_started(&worker, 1).await;
+        assert!(!service.held_tabs("O/default").is_empty(), "the park is held");
+
+        // The host dies as the monitor records it; the next open reads the
+        // restart and forgets the park.
+        let profile = service.find("O/default").await.expect("the profile");
+        profile.host_gone();
+        service.open(&worker).await.expect("open");
+
+        assert!(service.held_tabs("O/default").is_empty(), "the dead host's park is gone");
+    }
+
+    /// **A dead host's rows go with it**, so a strip never points at tabs
+    /// nothing is running.
+    #[tokio::test]
+    async fn a_dead_host_takes_its_rows_with_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts tab 1");
+        assert_eq!(service.tabs(&worker).await.expect("rows").rows.len(), 1);
+
+        let profile = service.find("O/default").await.expect("the profile");
+        profile.host_gone();
+
+        let rows = service.tabs(&worker).await.expect("rows").rows;
+        assert!(rows.is_empty(), "the dead host's rows are gone");
     }
 }
