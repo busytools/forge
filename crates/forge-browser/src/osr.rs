@@ -577,30 +577,82 @@ fn emit(
     }
 }
 
+/// One tab's view size, in the ring's own units: device pixels and the
+/// milli-scale. **A tab may be laid out apart from the profile's request**
+/// while a take records it; every other tab reads what the controller asked
+/// for.
+#[derive(Debug)]
+pub struct ViewSize {
+    width: std::sync::atomic::AtomicU32,
+    height: std::sync::atomic::AtomicU32,
+    scale_milli: std::sync::atomic::AtomicU32,
+}
+
+impl ViewSize {
+    /// The size a tab is born at: the profile's current request.
+    pub fn of_ring(ring: &Ring) -> Arc<Self> {
+        // SAFETY: the header is mapped for this process's whole life.
+        let header = unsafe { &*ring.header() };
+        Arc::new(Self {
+            width: std::sync::atomic::AtomicU32::new(header.request_width.load(Ordering::Relaxed)),
+            height: std::sync::atomic::AtomicU32::new(
+                header.request_height.load(Ordering::Relaxed),
+            ),
+            scale_milli: std::sync::atomic::AtomicU32::new(
+                header.request_scale_milli.load(Ordering::Relaxed),
+            ),
+        })
+    }
+
+    pub fn set(&self, width: u32, height: u32, scale: f64) {
+        self.width.store(width.clamp(1, MAX_WIDTH), Ordering::Relaxed);
+        self.height.store(height.clamp(1, MAX_HEIGHT), Ordering::Relaxed);
+        self.scale_milli.store(scale_milli(scale), Ordering::Relaxed);
+    }
+
+    fn get(&self) -> (u32, u32, u32) {
+        (
+            self.width.load(Ordering::Relaxed),
+            self.height.load(Ordering::Relaxed),
+            self.scale_milli.load(Ordering::Relaxed),
+        )
+    }
+}
+
 cef::wrap_render_handler! {
     struct OsrRenderHandler {
         ring: Arc<Ring>,
         paint: Option<PaintSink>,
         state: Arc<Mutex<PaintState>>,
+        // This tab's own size; `None` reads the ring's request, which is what
+        // a handler built without a tab does.
+        size: Option<Arc<ViewSize>>,
     }
 
     impl RenderHandler {
         fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
             let Some(rect) = rect else { return };
-            // SAFETY: the header is mapped for this process's whole life.
-            let header = unsafe { &*self.ring.header() };
             rect.x = 0;
             rect.y = 0;
             // **The view rect is DIP; the paint buffer is device pixels.**
             // **It is derived from the REQUEST, never the adopted paint size**:
             // below a raster of 1 the paint is larger than the request, and
             // dividing that by the request's scale would inflate the page and
-            // stale every later frame.
-            let (width, height) = view_size(
-                header.request_width.load(Ordering::Relaxed),
-                header.request_height.load(Ordering::Relaxed),
-                header.request_scale_milli.load(Ordering::Relaxed),
-            );
+            // stale every later frame. A tab's own size wins while it is
+            // recorded; every other tab reads the ring's request.
+            let (request_w, request_h, scale_milli) = match &self.size {
+                Some(size) => size.get(),
+                None => {
+                    // SAFETY: the header is mapped for this process's whole life.
+                    let header = unsafe { &*self.ring.header() };
+                    (
+                        header.request_width.load(Ordering::Relaxed),
+                        header.request_height.load(Ordering::Relaxed),
+                        header.request_scale_milli.load(Ordering::Relaxed),
+                    )
+                }
+            };
+            let (width, height) = view_size(request_w, request_h, scale_milli);
             rect.width = width;
             rect.height = height;
         }
@@ -611,18 +663,23 @@ cef::wrap_render_handler! {
             info: Option<&mut ScreenInfo>,
         ) -> i32 {
             let Some(info) = info else { return 0 };
-            // SAFETY: the header is mapped for this process's whole life.
-            let header = unsafe { &*self.ring.header() };
-            let scale_milli = header.request_scale_milli.load(Ordering::Relaxed);
+            let (request_w, request_h, scale_milli) = match &self.size {
+                Some(size) => size.get(),
+                None => {
+                    // SAFETY: the header is mapped for this process's whole life.
+                    let header = unsafe { &*self.ring.header() };
+                    (
+                        header.request_width.load(Ordering::Relaxed),
+                        header.request_height.load(Ordering::Relaxed),
+                        header.request_scale_milli.load(Ordering::Relaxed),
+                    )
+                }
+            };
             info.device_scale_factor = screen_scale(scale_milli);
             info.depth = 24;
             info.depth_per_component = 8;
             info.is_monochrome = 0;
-            let (width, height) = view_size(
-                header.request_width.load(Ordering::Relaxed),
-                header.request_height.load(Ordering::Relaxed),
-                scale_milli,
-            );
+            let (width, height) = view_size(request_w, request_h, scale_milli);
             info.rect = Rect { x: 0, y: 0, width, height };
             info.available_rect = info.rect.clone();
             1
@@ -759,7 +816,21 @@ fn paint(ring: &Ring, dirty_rects: Option<&[Rect]>, buffer: *const u8, width: u3
 
 /// The render handler: the view's size and the paint destination.
 pub fn handler(ring: Arc<Ring>, paint: Option<PaintSink>) -> RenderHandler {
-    OsrRenderHandler::new(ring, paint, Arc::new(Mutex::new(PaintState::default())))
+    OsrRenderHandler::new(ring, paint, Arc::new(Mutex::new(PaintState::default())), None)
+}
+
+/// One tab's render handler, with the size it lays out at.
+pub fn handler_for_tab(
+    ring: Arc<Ring>,
+    paint: Option<PaintSink>,
+    size: Arc<ViewSize>,
+) -> RenderHandler {
+    OsrRenderHandler::new(ring, paint, Arc::new(Mutex::new(PaintState::default())), Some(size))
+}
+
+/// A scale as the ring stores it, for a per-tab resize line.
+pub(crate) fn scale_milli(scale: f64) -> u32 {
+    rounded_u32((scale * 1000.0).clamp(100.0, 8_000.0), 1_000)
 }
 
 /// Whether a paint is for the view size the driver last asked for.
@@ -893,6 +964,7 @@ mod tests {
             ring: Arc::clone(&ring),
             paint: None,
             state: Arc::new(Mutex::new(PaintState::default())),
+            size: None,
             cef_object: std::ptr::null_mut(),
         };
         let mut rect = Rect { x: 0, y: 0, width: 0, height: 0 };
@@ -1287,6 +1359,7 @@ mod tests {
             ring: Arc::clone(&ring),
             paint: Some(sink),
             state: Arc::new(Mutex::new(PaintState::default())),
+            size: None,
             cef_object: std::ptr::null_mut(),
         };
         let view = vec![0_u8; 8 * 8 * 4];
@@ -1346,5 +1419,37 @@ mod tests {
         blit_popup(&mut negative, 4, 4, &left);
         assert_eq!(negative[0], 7, "a negative origin keeps its visible corner");
         assert_eq!(negative[4], 0, "and only that");
+    }
+
+    /// **A take lays out its own tab, not the profile's.** The recorded
+    /// tab's handler reports the take's size while every other tab keeps
+    /// what the controller's surface asked for.
+    #[test]
+    fn a_tabs_view_size_can_differ_from_the_profiles_request() {
+        use super::ViewSize;
+        use std::sync::Arc;
+
+        let name = format!("/forge-cef-test-view-size-{}", std::process::id());
+        let ring = Arc::new(Ring::create(&name, 4, 4).expect("a test ring"));
+        ring.request(1440, 900, 1.0);
+        let recorded = ViewSize::of_ring(&ring);
+        let other = ViewSize::of_ring(&ring);
+        recorded.set(1280, 720, 1.0);
+
+        let size_of = |size: Arc<ViewSize>| {
+            let handler = OsrRenderHandler {
+                ring: Arc::clone(&ring),
+                paint: None,
+                state: Arc::new(Mutex::new(PaintState::default())),
+                size: Some(size),
+                cef_object: std::ptr::null_mut(),
+            };
+            let mut rect = Rect { x: 0, y: 0, width: 0, height: 0 };
+            handler.view_rect(None, Some(&mut rect));
+            (rect.width, rect.height)
+        };
+        assert_eq!(size_of(recorded), (1280, 720), "the recorded tab takes the take's size");
+        assert_eq!(size_of(other), (1440, 900), "another tab keeps the profile's request");
+        Ring::unlink(&name);
     }
 }

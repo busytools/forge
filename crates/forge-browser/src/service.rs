@@ -2129,30 +2129,37 @@ impl BrowserService {
                 free / (1024 * 1024)
             ));
         }
-        let (input, ring) = {
+        let input = {
             let state = profile.state.lock().await;
             let host = state
                 .host
                 .as_ref()
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
-            (host.input.clone(), Arc::clone(&host.ring))
+            host.input.clone()
         };
         prune_recordings(&dir, KEEP);
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
         let path = dir.join(format!("{}-{stamp}.mp4", profile.key));
         profile.recorded.send_replace(None);
         let mut recorded = profile.recorded.subscribe();
-        *profile.recording.lock().unwrap_or_else(PoisonError::into_inner) = Some(path.clone());
-        // **The layout follows the take**: the controller's resize is held
-        // for the duration, and restored after the stop.
-        ring.request(crate::record::WIDTH, crate::record::HEIGHT, 1.0);
+        *profile.recording.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((tab, path.clone()));
+        // **The layout follows the take, on the recorded tab alone.** The
+        // profile's request would resize every tab; a per-tab resize leaves
+        // the others as their viewers laid them out.
+        let resize = input::host_line(&crate::input::HostInput::TabResize {
+            tab,
+            width: crate::record::WIDTH,
+            height: crate::record::HEIGHT,
+            scale_milli: 1_000,
+        });
         let line = input::host_line(&crate::input::HostInput::RecordStart {
             tab,
             path: path.to_string_lossy().into_owned(),
         });
-        if let Err(why) = input.send(line) {
+        if let Err(why) = input.send(resize).and_then(|()| input.send(line)) {
             *profile.recording.lock().unwrap_or_else(PoisonError::into_inner) = None;
-            restore_surface(&profile, &ring);
+            restore_tab_surface(&profile, &input, tab);
             return Err(format!(
                 "the browser for '{}' is not taking a recording: {why}",
                 profile.key
@@ -2169,7 +2176,7 @@ impl BrowserService {
             }]),
             Some(state) => {
                 *profile.recording.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                restore_surface(&profile, &ring);
+                restore_tab_surface(&profile, &input, tab);
                 Err(state.error.unwrap_or_else(|| "the recording writer did not start".to_owned()))
             }
             // The host never answered; a writer that did open is recording,
@@ -2194,16 +2201,16 @@ impl BrowserService {
             return Err(format!("no recording is running for '{}'", key.as_str()));
         };
         let taken = profile.recording.lock().unwrap_or_else(PoisonError::into_inner).take();
-        let Some(path) = taken else {
+        let Some((tab, path)) = taken else {
             return Err(format!("no recording is running for '{}'", profile.key));
         };
-        let (input, ring) = {
+        let input = {
             let state = profile.state.lock().await;
             let host = state
                 .host
                 .as_ref()
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
-            (host.input.clone(), Arc::clone(&host.ring))
+            host.input.clone()
         };
         let mut recorded = profile.recorded.subscribe();
         let delivered = input.send(input::host_line(&crate::input::HostInput::RecordStop));
@@ -2213,7 +2220,7 @@ impl BrowserService {
             None
         };
         profile.recorded.send_replace(None);
-        restore_surface(&profile, &ring);
+        restore_tab_surface(&profile, &input, tab);
         if delivered.is_err() {
             return Err(format!("the browser for '{}' is not taking a stop", profile.key));
         }
@@ -2551,8 +2558,8 @@ pub struct Profile {
     audio: broadcast::Sender<BrowserAudio>,
     /// What the host last said about a recording.
     recorded: watch::Sender<Option<RecordingState>>,
-    /// The running take's file, when one runs.
-    recording: Mutex<Option<PathBuf>>,
+    /// The running take's tab and file, when one runs.
+    recording: Mutex<Option<(u16, PathBuf)>>,
     /// The controller's last requested view, restored when a take ends.
     surface: Mutex<(u32, u32, f64)>,
     /// The tab this profile's tabs are, keyed by the host's own numbers.
@@ -2816,9 +2823,16 @@ async fn recording_answer(
 }
 
 /// Put the controller's last requested view back after a take.
-fn restore_surface(profile: &Profile, ring: &Arc<crate::osr::Ring>) {
+/// Put one tab back on the profile's surface after a take ends.
+fn restore_tab_surface(profile: &Profile, input: &spawn::InputSender, tab: u16) {
     let (width, height, scale) = *profile.surface.lock().unwrap_or_else(PoisonError::into_inner);
-    ring.request(width, height, scale);
+    let line = input::host_line(&crate::input::HostInput::TabResize {
+        tab,
+        width,
+        height,
+        scale_milli: crate::osr::scale_milli(scale),
+    });
+    let _ = input.send(line);
 }
 
 /// The bytes free under `path`, when the kernel reports them.

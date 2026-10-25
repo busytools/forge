@@ -327,6 +327,9 @@ struct Tab {
     stop: Arc<AtomicBool>,
     /// A viewer's key cue: the tab's next frame is full quality.
     key: Arc<AtomicBool>,
+    /// The size this tab lays out at; the profile's request unless a take
+    /// has laid this one out apart.
+    size: Arc<crate::osr::ViewSize>,
 }
 
 /// The profile's open tabs, numbered in creation order and never renumbered.
@@ -520,7 +523,12 @@ impl HostRuntime {
             let pending = Arc::clone(&pending);
             Arc::new(move |packet: crate::channel::Audio| push_audio(&pending, packet))
         };
-        let render = crate::osr::handler(Arc::clone(&self.ring), Some(Arc::clone(&paint)));
+        let size = crate::osr::ViewSize::of_ring(&self.ring);
+        let render = crate::osr::handler_for_tab(
+            Arc::clone(&self.ring),
+            Some(Arc::clone(&paint)),
+            Arc::clone(&size),
+        );
         let page_audio = crate::audio::handler(self.profile, tab, Arc::clone(&audio));
         let mut client = HostClient::new(
             tab,
@@ -570,6 +578,7 @@ impl HostRuntime {
                     pending: Arc::clone(&pending),
                     stop: Arc::clone(&stop),
                     key: Arc::clone(&key),
+                    size: Arc::clone(&size),
                 },
             );
         }
@@ -629,6 +638,29 @@ impl HostRuntime {
             if let Some(host) = browser.host() {
                 f(&host);
             }
+        }
+    }
+
+    /// The profile's requested size: every tab takes it and repaints. **A
+    /// tab laid out apart by a take is included** - the controller's resize
+    /// ends its exception.
+    fn apply_size(&self, width: u32, height: u32, scale: f64) {
+        let hosts: Vec<BrowserHost> = {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            for tab in tabs.open.values() {
+                tab.size.set(width, height, scale);
+            }
+            tabs.open.values().filter_map(|tab| tab.browser.host()).collect()
+        };
+        for host in hosts {
+            // The pixel ratio first: it changes the DIP rect as well as the
+            // buffer, and CEF lays out against both.
+            host.notify_screen_info_changed();
+            host.was_resized();
+            // **A resize repaints even a still page**: a blank or static
+            // document has no layout change to trigger one, and the viewer
+            // would keep the old size until something else moved.
+            host.invalidate(PaintElementType::VIEW);
         }
     }
 
@@ -730,6 +762,22 @@ impl HostRuntime {
                     }
                 }
                 crate::input::HostInput::TabClose { tab } => self.close_tab(tab),
+                // **One tab's layout, not the profile's.** A take records at
+                // 1280x720 without resizing every other tab.
+                crate::input::HostInput::TabResize { tab, width, height, scale_milli } => {
+                    let size = {
+                        let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                        tabs.open.get(&tab).map(|tab| Arc::clone(&tab.size))
+                    };
+                    if let Some(size) = size {
+                        size.set(width, height, f64::from(scale_milli) / 1000.0);
+                        if let Some(host) = self.tab_host(tab) {
+                            host.notify_screen_info_changed();
+                            host.was_resized();
+                            host.invalidate(PaintElementType::VIEW);
+                        }
+                    }
+                }
                 crate::input::HostInput::File { id, paths } => {
                     if !crate::dialog::answer(id, &paths) {
                         eprintln!(
@@ -984,16 +1032,7 @@ pub fn run(args: &Args) -> ExitCode {
             header_ref.width.store(width, Ordering::Relaxed);
             header_ref.height.store(height, Ordering::Relaxed);
             header_ref.scale_milli.store(scale, Ordering::Relaxed);
-            runtime.each_host(|host| {
-                // The pixel ratio first: it changes the DIP rect as well as
-                // the buffer, and CEF lays out against both.
-                host.notify_screen_info_changed();
-                host.was_resized();
-                // **A resize repaints even a still page**: a blank or static
-                // document has no layout change to trigger one, and the
-                // viewer would keep the old size until something else moved.
-                host.invalidate(PaintElementType::VIEW);
-            });
+            runtime.apply_size(width, height, f64::from(scale) / 1000.0);
         }
         // **Every call the driver makes re-asserts the page visible.** A
         // windowless browser's only visibility lever is this call; a page

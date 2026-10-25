@@ -145,6 +145,9 @@ pub enum HostInput {
     },
     /// Close one tab.
     TabClose { tab: u16 },
+    /// Lay one tab out apart from the profile's request: a take records at
+    /// its own size without resizing every other tab.
+    TabResize { tab: u16, width: u32, height: u32, scale_milli: u32 },
     /// The files a person chose for a page's file dialog: server-local paths
     /// already written for CEF, or none when the dialog was dismissed.
     File { id: u64, paths: Vec<String> },
