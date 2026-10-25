@@ -1892,6 +1892,11 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
   .bz-list .bz-state { gap: 7px; padding: 6px 10px; }
   .bz-list .bz-cost { padding: 0 10px 6px; }
   .bz-list .bz-it { gap: 7px; padding: 5px 10px; }
+  /* A phone's strip is one chip wide, and the row's title and owner as two
+     nowrap cells truncate each to a few characters. They take a line each;
+     the toggle stays on the first line beside the number. */
+  .bz-list .bz-it { flex-wrap: wrap; }
+  .bz-list .bz-it .tx { order: 1; flex: 1 1 100%; white-space: normal; }
 }
 .sg-seg .sg-tog { display: flex; align-items: center; gap: 8px; background: none;
   border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
