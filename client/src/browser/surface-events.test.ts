@@ -108,9 +108,9 @@ describe('the shell listeners', () => {
       expect(surface.id, 'a value this page cannot read is no id at all').toBeNull();
       expect(surface.controller, 'and a missing role holder is nobody').toBeNull();
 
-      // **The remeasure ask reaches the page.** The shell refuses a report and
-      // asks through this listener; deleting the relay leaves every refusal
-      // unanswerable and the surface dark.
+      // **The remeasure ask reaches the page.** The shell asks through this
+      // listener once a native resize has settled; deleting the relay leaves
+      // the overlay laid from the old geometry.
       const remeasure = listen.mock.calls
         .filter((entry) => entry[0] === 'browser_surface_remeasure')
         .at(-1)?.[1] as (() => void) | undefined;

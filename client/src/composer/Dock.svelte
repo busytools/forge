@@ -588,10 +588,11 @@
    *
    * **The takeover, not a separate window**: the SERVER runs the CEF host
    * over the profile the agents drive, and Open attaches this client as a
-   * viewer and puts the relayed page over the whole window under the bar. A
-   * host that had closed relaunches on its carried page, so the page the
-   * session prepared is the page that comes up. An open that does not land
-   * says so rather than claiming the browser is up.
+   * viewer to the tab the hand-off names, over the whole window under the
+   * bar. **No tab outlives its host**: a profile whose host had closed comes
+   * back with the session's next tab, and an ask naming a tab that is gone
+   * is refused by name rather than shown. An open that does not land says so
+   * rather than claiming the browser is up.
    */
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;

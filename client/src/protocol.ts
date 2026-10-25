@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 11;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -247,9 +247,6 @@ function isSlot(value: unknown): value is SessionSlot {
  * kind it was handed instead of one label for everything unknown.
  */
 export type DocumentKind = 'markdown' | 'pdf' | 'text' | { other: string };
-
-/** What one tab is doing, as the strip's mark says it. */
-export type BrowserTabState = 'in_use' | 'idle' | 'held';
 
 /** One tab as a client's browser strip draws it. */
 export interface BrowserTabRow {

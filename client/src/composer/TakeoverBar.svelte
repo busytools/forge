@@ -158,7 +158,7 @@
         class="tb-pick"
         aria-label="the tab to view"
         title="the profile's tabs"
-        disabled={surface.phase !== 'live'}
+        disabled={surface.phase !== 'live' && surface.phase !== 'failed'}
         bind:this={picker}
         value={surface.tab === null ? '' : String(surface.tab)}
         onchange={pick}

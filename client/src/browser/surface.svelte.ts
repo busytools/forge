@@ -246,7 +246,11 @@ export async function openSurface(
  */
 export async function selectTab(tab: number): Promise<string | null> {
   if (!canHost()) return 'this page is not the client';
-  if (surface.phase !== 'live' || surface.seat === null) return 'no browser is open';
+  // **A failed surface can still pick a live tab**: the page it was showing
+  // may be gone while the profile's other tabs are not.
+  if ((surface.phase !== 'live' && surface.phase !== 'failed') || surface.seat === null) {
+    return 'no browser is open';
+  }
   const answer = await showBrowser(surface.profile, surface.seat, tab);
   if (typeof answer === 'string') {
     surface.phase = 'failed';
@@ -322,10 +326,10 @@ let inFlight: Promise<void> | null = null;
  * it up, rather than being dismissed by it.
  */
 export async function installSurfaceEvents(): Promise<void> {
-  if (installed === 6 || !canHost()) return;
+  if (installed >= 7 || !canHost()) return;
   while (inFlight !== null) {
     await inFlight;
-    if (installed === 6) return;
+    if (installed >= 7) return;
   }
   inFlight = installOnce();
   try {

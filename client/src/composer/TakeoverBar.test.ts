@@ -157,4 +157,52 @@ describe("the takeover bar's tab picker", () => {
     }
     expect(selectTab).toHaveBeenCalledWith(3);
   });
+
+  /// **The list can land after the bar.** The socket's pushed list arrives
+  /// once the attach has answered, so the select is drawn after its options
+  /// exist; the effect is what makes it show the tab being viewed rather
+  /// than its first option. Mounting with the list already present hides
+  /// that, because the option's own `selected` attribute agrees by luck.
+  it('takes the viewed tab when the list arrives after the bar', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.tab = 3;
+    surface.tabs = null;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: { title: 'browser hand-off', onback: () => {} },
+    });
+    flushSync();
+    expect(target.querySelector('.tb-pick'), 'no list, no picker').toBeNull();
+
+    surface.tabs = {
+      profile: 'Busytools/work',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 2,
+          title: 'two',
+          url: 'http://b/',
+          owner: { org: 'Busytools', project: 'forge', label: 'lead' },
+          state: 'idle',
+        },
+        {
+          number: 3,
+          title: 'three',
+          url: 'http://c/',
+          owner: { org: 'Busytools', project: 'forge', label: 'lead' },
+          state: 'idle',
+        },
+      ],
+    };
+    flushSync();
+    const picker = target.querySelector<HTMLSelectElement>('.tb-pick');
+    expect(picker, 'the bar draws the picker once the list lands').not.toBeNull();
+    expect(picker?.value, 'the viewed tab is the one the picker shows').toBe('3');
+  });
 });

@@ -111,6 +111,14 @@
       );
       return false;
     }
+    // **The decode is an await, and a newer paint can land inside it.** The
+    // sequence is checked again here or the older decode finishes last and
+    // paints over the newer picture.
+    const now = painted[key];
+    if (now !== undefined && frame.seq <= now) {
+      bitmap.close();
+      return false;
+    }
     canvas.width = frame.width;
     canvas.height = frame.height;
     canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
@@ -425,10 +433,10 @@
   });
 
   /**
-   * **A refused measurement is taken again once the frame has settled.** The
-   * shell refused the last report as not this window's page area; the page is
-   * the only one that can read the settled layout, and a transient that moved
-   * the box without resizing it fires no ResizeObserver.
+   * **The measurement is taken again once the window has settled.** A native
+   * resize moves the webview's frame, and the page's own re-measure can land
+   * before AppKit has; the shell asks again after it settles, because a
+   * transient that moved the box without resizing it fires no ResizeObserver.
    */
   function remeasure(): void {
     if (typeof requestAnimationFrame === 'undefined') {

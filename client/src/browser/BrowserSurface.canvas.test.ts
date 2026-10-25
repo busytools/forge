@@ -100,6 +100,29 @@ afterEach(() => {
 });
 
 describe('the canvas viewer', () => {
+  /// **A kept-frame ask that missed is asked again.** It can land before the
+  /// canvas is bound, or before the attach's key frame reaches the shell; a
+  /// single ask that returned null left a still page blank for good.
+  it('asks the kept frame again when the first answer is nothing', async () => {
+    vi.stubGlobal('createImageBitmap', () =>
+      Promise.resolve({ width: 320, height: 200, close: () => {} }),
+    );
+    vi.mocked(keptFrame).mockResolvedValueOnce(null).mockResolvedValueOnce(frame(5));
+    const { connection } = stubConnection();
+    surface.id = 1;
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('the canvas is not drawn');
+
+    await vi.waitFor(
+      () => {
+        expect(vi.mocked(keptFrame).mock.calls.length, 'the miss is retried').toBeGreaterThan(1);
+        expect(canvas.width, 'and the retried frame is painted').toBe(100);
+      },
+      { timeout: 2000 },
+    );
+  });
+
   /// **A surface that mounts late paints the frame it missed.** In
   /// production the component mounts at `opening` and the canvas appears
   /// only when the attach's reply lands as `live`; the kept frame is asked

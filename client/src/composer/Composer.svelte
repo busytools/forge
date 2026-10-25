@@ -1148,8 +1148,13 @@
    * sentence.
    */
   function takeoverRetry(): void {
-    const tab = takeoverAsk?.request.tab ?? surface.tab;
-    void openSurface(surface.profile, slot, tab);
+    const asked = takeoverAsk?.request.tab ?? null;
+    // **A retry does not reopen a dead tab.** The tab the surface failed on
+    // is only retried when the list still names it; otherwise the server's
+    // current tab is asked for, which is what a fresh host has.
+    const rows = surface.tabs?.rows ?? [];
+    const alive = rows.some((row) => row.number === surface.tab) ? surface.tab : null;
+    void openSurface(surface.profile, slot, asked ?? alive);
   }
 
   /**

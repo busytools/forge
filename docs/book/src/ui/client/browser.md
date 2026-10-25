@@ -48,9 +48,9 @@ Neither client has a WebView engine or an in-process node any more.
 ## The rules
 
 **One host per org profile, and the host outlives the surface.** A profile's
-browser is a server process of its own, started on its first real need - a
-session call, a hand-off's Open, the strip's show - and never at server
-start. Closing the surface ends nothing: the sessions keep driving the same
+browser is a server process of its own, started on its first real need - the
+first seat spawned under the profile, a session call, a hand-off's Open, the
+strip's show. Closing the surface ends nothing: the sessions keep driving the same
 tabs, and the next Open shows one as it stands. An idle close ends the host
 and its tabs and keeps the profile's cache and logins; the next call starts a
 fresh host. Every page call logs its seat, tool, profile, host pid, port and cache

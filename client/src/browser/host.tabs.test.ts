@@ -48,11 +48,15 @@ describe("the strip's tab rows", () => {
   /// to be cast, so a malformed `rows` drew "no tabs yet" - a claim that a
   /// read found nothing.
   it('refuses a list whose rows this page cannot read', () => {
-    expect(() => tabListOf({ profile: 'p', id: 1, rows: 'not-a-list' })).toThrow(/rows/);
+    expect(() =>
+      tabListOf({ profile: 'p', id: 1, up: true, connected: true, rows: 'not-a-list' }),
+    ).toThrow(/rows/);
     expect(() =>
       tabListOf({
         profile: 'p',
         id: 1,
+        up: true,
+        connected: true,
         rows: [{ number: 1, title: '', url: '', owner: { org: 'O', project: 'p', label: 'l' } }],
       }),
     ).toThrow(/state/);

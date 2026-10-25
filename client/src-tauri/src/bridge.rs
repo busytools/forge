@@ -1919,6 +1919,24 @@ mod tests {
         assert!(take_attach(&mut bridge.lock()).is_none(), "the second finds nothing");
     }
 
+    /// **A download or a file ask belongs to the tab on screen.** The shell
+    /// forwards another tab's to the page so a strip can draw it, but opening
+    /// the save dialog or the picker would take over the person's view of a
+    /// page they are not looking at.
+    #[test]
+    fn a_message_for_another_tab_is_not_the_viewed_pages() {
+        let (bridge, _rx) = bridge();
+        bridge.lock().attach = Some(Attach { seat: seat(), tab: Some(2) });
+        assert!(bridge.for_viewed_tab(&json!({ "tab": 2 })), "the viewed tab's message");
+        assert!(!bridge.for_viewed_tab(&json!({ "tab": 3 })), "another tab's is not the page's");
+        assert!(bridge.for_viewed_tab(&json!({})), "a message that names no tab is not filtered",);
+        bridge.lock().attach = Some(Attach { seat: seat(), tab: None });
+        assert!(
+            bridge.for_viewed_tab(&json!({ "tab": 3 })),
+            "before an attach names its tab, nothing is another tab's",
+        );
+    }
+
     /// **One panel at a time.** A newer ask that arrives while a picker is
     /// open does not stack a second panel; the open panel answers it.
     #[test]

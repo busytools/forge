@@ -309,6 +309,11 @@ export function tabListOf(value: unknown): BrowserTabList {
   if (closing !== null && closing !== undefined && typeof closing !== 'number') {
     throw new Error('the tab list carries no readable close time');
   }
+  // **A host's state is read, not guessed.** Coercing a missing or malformed
+  // value to false drew "down" over a list that never said so.
+  if (typeof held['up'] !== 'boolean' || typeof held['connected'] !== 'boolean') {
+    throw new Error('the tab list does not say whether its host is up');
+  }
   // **A list this page cannot read is a refusal, not an empty strip.** An
   // unreadable `rows` used to become `[]` and the panel drew "no tabs yet",
   // which claims a read that found none.
@@ -319,8 +324,8 @@ export function tabListOf(value: unknown): BrowserTabList {
   return {
     profile: held['profile'],
     id: held['id'],
-    up: held['up'] === true,
-    connected: held['connected'] === true,
+    up: held['up'],
+    connected: held['connected'],
     closing_at_ms: typeof closing === 'number' ? closing : null,
     rows: rows.map((row) => tabRowOf(row)),
   };
