@@ -385,6 +385,7 @@ impl BrowserService {
             ended: AtomicBool::new(false),
             up: AtomicBool::new(false),
             restarted: AtomicBool::new(false),
+            rows: self.rows_sender(key.as_str()),
         });
         profiles.insert(key.as_str().to_owned(), Arc::clone(&profile));
         Ok(profile)
@@ -2592,6 +2593,9 @@ pub struct Profile {
     /// A host this entry lost since the service last looked, so the service
     /// can forget the hand-offs that host held before its numbers come back.
     restarted: AtomicBool,
+    /// **The same rows channel the service publishes on**, so a host's death
+    /// can say so at once instead of waiting for a sweep.
+    rows: watch::Sender<BrowserTabList>,
 }
 
 /// The most a finished download may carry to a viewer.
@@ -3587,7 +3591,20 @@ impl Profile {
         self.controls.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.viewers.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.views.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        // **A stale popup event must not pair against the successor.**
+        self.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.restarted.store(true, Ordering::Release);
+        // **The strip hears the death now**, not at the next sweep: a
+        // subscribed strip with no takeover otherwise keeps dead tabs and a
+        // browser that reads as up.
+        self.rows.send_replace(BrowserTabList {
+            profile: self.key.clone(),
+            id: self.id,
+            up: false,
+            connected: false,
+            closing_at_ms: None,
+            rows: Vec::new(),
+        });
     }
 
     /// End whatever is up: the driver, then the host, then the frames.
@@ -6706,7 +6723,25 @@ mod tests {
         assert_eq!(service.tabs(&worker).await.expect("rows").rows.len(), 1);
 
         let profile = service.find("O/default").await.expect("the profile");
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push(
+            crate::control::HostEvent::TabCreated {
+                tab: 9,
+                opener: Some(1),
+                url: "http://stale/".to_owned(),
+                request: None,
+            },
+        );
         profile.host_gone();
+
+        // **The death is pushed at once**, so a subscribed strip with no
+        // takeover does not keep drawing dead tabs until a sweep.
+        let pushed = profile.rows.borrow().clone();
+        assert!(!pushed.up, "the strip is told the browser is down");
+        assert!(pushed.rows.is_empty(), "and has no tabs to draw");
+        assert!(
+            profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).is_empty(),
+            "a stale popup event cannot pair against the successor",
+        );
 
         let rows = service.tabs(&worker).await.expect("rows").rows;
         assert!(rows.is_empty(), "the dead host's rows are gone");
