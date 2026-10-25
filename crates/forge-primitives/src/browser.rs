@@ -237,6 +237,9 @@ pub struct BrowserNavState {
 pub struct BrowserFileAsk {
     /// The dialog's id; the answer comes back under it.
     pub id: u64,
+    /// The tab the dialog was raised on. **A viewer is asked only for its
+    /// own tab**, and an answer from another tab is refused.
+    pub tab: u16,
     /// Whether the page accepts more than one file.
     pub multiple: bool,
 }
@@ -262,6 +265,9 @@ pub const MAX_UPLOAD_FILES: usize = 16;
 /// One finished download, on its way to the person's save door.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserDownload {
+    /// The tab the download was started from, so only its viewer is offered
+    /// the save.
+    pub tab: u16,
     pub name: String,
     /// The file's bytes, empty when it could not be relayed.
     pub bytes: Vec<u8>,

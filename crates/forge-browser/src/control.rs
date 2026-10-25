@@ -21,10 +21,10 @@ pub enum HostEvent {
     TabClosed { tab: u16 },
     /// A page's file chooser: the client's picker answers with the files'
     /// bytes, and the host is handed server-local paths.
-    FileDialog { id: u64, multiple: bool },
-    /// A download finished on the server: the file's name, its path beside
-    /// the profile, and how many bytes it holds.
-    Download { name: String, path: String, size: u64 },
+    FileDialog { id: u64, tab: u16, multiple: bool },
+    /// A download finished on the server: the tab it started from, the file's
+    /// name, its path beside the profile, and how many bytes it holds.
+    Download { tab: u16, name: String, path: String, size: u64 },
     /// A recording answered: `started` says whether the writer opened, and a
     /// later event with it false carries how the take ended.
     Recording { started: bool, seconds: u64, bytes: u64, capped: bool, error: Option<String> },
@@ -55,7 +55,7 @@ mod tests {
     /// be matched to the dialog that asked.
     #[test]
     fn a_file_dialog_round_trips_its_line() {
-        let event = HostEvent::FileDialog { id: 7, multiple: true };
+        let event = HostEvent::FileDialog { id: 7, tab: 2, multiple: true };
         let line = serde_json::to_string(&event).expect("a line");
         assert_eq!(parse(&line), Some(event));
         assert!(parse("").is_none());

@@ -36,7 +36,11 @@ thread_local! {
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 cef::wrap_dialog_handler! {
-    pub struct FileDialogHandler {}
+    pub struct FileDialogHandler {
+        // The tab whose page raised this dialog, so the ask reaches only
+        // that tab's viewer.
+        tab: u16,
+    }
 
     impl DialogHandler {
         fn on_file_dialog(
@@ -73,7 +77,7 @@ cef::wrap_dialog_handler! {
                 }
                 pending.insert(id, callback.clone());
             });
-            control::emit(&HostEvent::FileDialog { id, multiple });
+            control::emit(&HostEvent::FileDialog { id, tab: self.tab, multiple });
             1
         }
     }
@@ -102,9 +106,9 @@ pub fn answer(id: u64, paths: &[String]) -> bool {
     true
 }
 
-/// The handler the host's client hands CEF.
-pub fn handler() -> DialogHandler {
-    FileDialogHandler::new()
+/// The handler the host's tab hands CEF.
+pub fn handler(tab: u16) -> DialogHandler {
+    FileDialogHandler::new(tab)
 }
 
 #[cfg(test)]

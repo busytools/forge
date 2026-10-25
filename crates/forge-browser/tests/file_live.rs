@@ -89,7 +89,7 @@ async fn a_page_file_chooser_is_answered_with_a_server_path() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 
-    let HostEvent::FileDialog { id: dialog, multiple } =
+    let HostEvent::FileDialog { id: dialog, tab: _, multiple } =
         wait_event(&host, |event| matches!(event, HostEvent::FileDialog { .. }))
     else {
         panic!("the answer is a file dialog event");

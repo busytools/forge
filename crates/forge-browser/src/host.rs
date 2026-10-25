@@ -484,7 +484,9 @@ struct HostRuntime {
     frames: PathBuf,
     fps: u16,
     quality: u8,
-    downloads: DownloadHandler,
+    /// The profile whose `downloads/` a page's files land in; each tab's
+    /// handler is built with its own number.
+    downloads_dir: PathBuf,
 }
 
 impl HostRuntime {
@@ -524,7 +526,7 @@ impl HostRuntime {
             paint,
             render,
             page_audio,
-            self.downloads.clone(),
+            crate::download::handler(&self.downloads_dir, tab),
             Arc::clone(&self.creates),
         );
         let window_info = WindowInfo {
@@ -898,7 +900,7 @@ pub fn run(args: &Args) -> ExitCode {
         frames: args.frames.clone(),
         fps: args.fps,
         quality: args.quality,
-        downloads: crate::download::handler(&args.profile),
+        downloads_dir: args.profile.clone(),
     };
     // **The host opens one blank boot tab.** It is the page the driver
     // attaches to, and a call navigates it once the veto is registered.
@@ -1181,7 +1183,7 @@ cef::wrap_client! {
         }
 
         fn dialog_handler(&self) -> Option<DialogHandler> {
-            Some(crate::dialog::handler())
+            Some(crate::dialog::handler(self.tab))
         }
 
         fn download_handler(&self) -> Option<DownloadHandler> {
@@ -1302,7 +1304,7 @@ mod tests {
             paint,
             crate::osr::handler(Arc::clone(&ring), None),
             crate::audio::handler(1, 1, audio),
-            crate::download::handler(std::path::Path::new("/tmp")),
+            crate::download::handler(std::path::Path::new("/tmp"), 1),
             Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         );
         let view = client.render_handler().expect("a handler for the page");

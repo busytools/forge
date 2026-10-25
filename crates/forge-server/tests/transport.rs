@@ -8444,12 +8444,16 @@ async fn a_watcher_does_not_cancel_the_controllers_file_chooser() {
     let _ = next_server(&mut controller).await; // the take's answer
     let _ = next_server(&mut watcher).await; // the take, told to the watcher
 
-    stub.files
-        .send_replace(Some(forge_primitives::browser::BrowserFileAsk { id: 7, multiple: false }));
+    stub.files.send_replace(Some(forge_primitives::browser::BrowserFileAsk {
+        id: 7,
+        tab: 2,
+        multiple: false,
+    }));
     let asked = next_server(&mut controller).await;
-    let ServerMessage::BrowserFileDialog { id, multiple } = asked else {
+    let ServerMessage::BrowserFileDialog { id, tab, multiple } = asked else {
         panic!("the controller is the one asked for a file, got {asked:?}")
     };
+    assert_eq!(tab, 2, "the ask is for the tab the viewer is on");
     assert_eq!((id, multiple), (7, false));
     assert!(
         next_server_within(&mut watcher, 400).await.is_none(),
@@ -8460,6 +8464,69 @@ async fn a_watcher_does_not_cancel_the_controllers_file_chooser() {
         "and nothing cancelled the controller's dialog: {:?}",
         stub.answers.lock().expect("the stub's answers"),
     );
+}
+
+/// **A chooser and a save belong to their tab.** A viewer attached to tab 1
+/// is neither asked to pick nor offered a file for tab 2, and its own tab's
+/// ask and save arrive.
+#[tokio::test]
+async fn a_chooser_and_a_download_for_another_tab_are_not_delivered() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+    // **Tab 1 explicitly**: the stub's default is tab 2, and this test is
+    // about the tab a message names.
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(1), reply_to: None },
+    )
+    .await;
+    let _ = next_server(&mut socket).await; // its view state
+    let _ = next_server(&mut socket).await; // its nav state
+    send(&mut socket, ClientMessage::BrowserControl { take: true }).await;
+    let _ = next_server(&mut socket).await; // the take's answer
+
+    stub.files.send_replace(Some(forge_primitives::browser::BrowserFileAsk {
+        id: 8,
+        tab: 2,
+        multiple: false,
+    }));
+    assert!(
+        next_server_within(&mut socket, 400).await.is_none(),
+        "another tab's chooser is not sent to this viewer",
+    );
+    stub.files.send_replace(Some(forge_primitives::browser::BrowserFileAsk {
+        id: 9,
+        tab: 1,
+        multiple: false,
+    }));
+    let asked = next_server(&mut socket).await;
+    let ServerMessage::BrowserFileDialog { id, tab, .. } = asked else {
+        panic!("this tab's chooser is sent, got {asked:?}")
+    };
+    assert_eq!((id, tab), (9, 1));
+
+    let download = |tab, name: &str| forge_primitives::browser::BrowserDownload {
+        tab,
+        name: name.to_owned(),
+        bytes: b"x".to_vec(),
+        error: None,
+    };
+    let _ = stub.downloads.send(download(2, "other.bin"));
+    assert!(
+        next_server_within(&mut socket, 400).await.is_none(),
+        "another tab's save is not offered to this viewer",
+    );
+    let _ = stub.downloads.send(download(1, "mine.txt"));
+    let saved = next_server(&mut socket).await;
+    let ServerMessage::BrowserDownload { tab, name, .. } = saved else {
+        panic!("this tab's save is sent, got {saved:?}")
+    };
+    assert_eq!((tab, name.as_str()), (1, "mine.txt"));
 }
 
 /// **Only the controller can answer, and only the outstanding ask.** An
@@ -8486,8 +8553,11 @@ async fn a_file_answer_is_bound_to_the_controller_and_the_ask() {
     send(&mut controller, ClientMessage::BrowserControl { take: true }).await;
     let _ = next_server(&mut controller).await;
     let _ = next_server(&mut watcher).await;
-    stub.files
-        .send_replace(Some(forge_primitives::browser::BrowserFileAsk { id: 7, multiple: false }));
+    stub.files.send_replace(Some(forge_primitives::browser::BrowserFileAsk {
+        id: 7,
+        tab: 2,
+        multiple: false,
+    }));
     let _ = next_server(&mut controller).await; // the dialog
 
     let answer = |id: u64| ClientMessage::BrowserFileAnswer {
@@ -8532,8 +8602,11 @@ async fn a_chooser_with_no_controller_is_cancelled() {
     let _ = next_server(&mut socket).await;
     let _ = next_server(&mut socket).await;
 
-    stub.files
-        .send_replace(Some(forge_primitives::browser::BrowserFileAsk { id: 9, multiple: true }));
+    stub.files.send_replace(Some(forge_primitives::browser::BrowserFileAsk {
+        id: 9,
+        tab: 2,
+        multiple: true,
+    }));
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if !stub.answers.lock().expect("the stub's answers").is_empty() {

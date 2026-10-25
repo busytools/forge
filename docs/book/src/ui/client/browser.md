@@ -182,7 +182,7 @@ clipboard and context menus are not part of this cut.
 the file beside the profile and announces it as a `browser_download`; the
 shell opens the platform's own save door and writes the bytes there, or says
 why it could not. A file past 32 MiB is refused in words rather than handed
-over, and **only the controller is sent one**.
+over, and **only the controller of that tab is sent one**.
 
 **The page's sound plays at the controlling client, for the viewed tab.** The
 host relays what the page plays as PCM packets beside the frames, each

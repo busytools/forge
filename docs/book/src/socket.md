@@ -43,7 +43,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 11,
+  "version": 12,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -578,19 +578,20 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
 - **`browser_surface_failed {id, tab, reason}`** - the viewed tab's browser
   stopped. **Said out loud**, because a frozen last frame reads as a slow
   page and the person has no way to tell the two apart.
-- **`browser_file_dialog {id, multiple}`** - a page asked for a file. The
-  shell opens this machine's picker and answers `browser_file_answer` under
-  the same id; `multiple` is whether the page accepts more than one file.
-  **Only the controller is asked** - a watcher is sent nothing and does not
-  cancel it. With no controller the chooser waits for the agent's own
-  `browser_file_upload`; CEF's own dialog is the fallback when no driver is
-  attached.
-- **`browser_download {name, data, error}`** - a page's download finished on
-  the server. The shell opens this machine's save door and writes `data`
-  (base64), or says `error` and writes nothing; a file past 32 MiB is
-  refused in words rather than handed over. **Only the controller is sent
-  one**, and the server's own copy is removed once it has crossed, whether
-  or not a viewer took it.
+- **`browser_file_dialog {id, tab, multiple}`** - a page asked for a file.
+  The shell opens this machine's picker and answers `browser_file_answer`
+  under the same id; `multiple` is whether the page accepts more than one
+  file and `tab` is the tab that asked. **Only the controller of that tab
+  is asked** - a watcher, or a viewer on another tab, is sent nothing and
+  does not cancel it. With no controller the chooser waits for the agent's
+  own `browser_file_upload`; CEF's own dialog is the fallback when no
+  driver is attached.
+- **`browser_download {tab, name, data, error}`** - a page's download
+  finished on the server. The shell opens this machine's save door and
+  writes `data` (base64), or says `error` and writes nothing; a file past
+  32 MiB is refused in words rather than handed over. **Only the
+  controller of `tab` is sent one**, and the server's own copy is removed
+  once it has crossed, whether or not a viewer took it.
 - **`error {what, why, seat, dispatch_id}`** - `what` failed and `why`, in
   the core's own words. `seat` names the conversation a refusal belongs to
   where it belongs to one - a refused `subscribe` names the seat it refused

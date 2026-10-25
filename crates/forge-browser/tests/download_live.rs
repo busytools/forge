@@ -93,7 +93,7 @@ async fn a_pages_download_lands_and_is_announced() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     click(&mut host, 200, 120);
 
-    let HostEvent::Download { name, path, size } =
+    let HostEvent::Download { tab: _, name, path, size } =
         wait_event(&host, |event| matches!(event, HostEvent::Download { .. }))
     else {
         panic!("the answer is a download event");

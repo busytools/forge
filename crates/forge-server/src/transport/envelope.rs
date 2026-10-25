@@ -493,14 +493,18 @@ pub enum ServerMessage {
         rows: Vec<forge_primitives::browser::BrowserTabRow>,
     },
     /// A page asked for a file: the shell opens its picker and answers
-    /// [`ClientMessage::BrowserFileAnswer`] under the same id.
+    /// [`ClientMessage::BrowserFileAnswer`] under the same id. **`tab` is the
+    /// tab that asked**, so a viewer is asked only for the one it is on.
     BrowserFileDialog {
         id: u64,
+        tab: u16,
         multiple: bool,
     },
     /// A page's download finished on the server: the shell opens its save
-    /// door and writes the bytes, or says `error` and writes nothing.
+    /// door and writes the bytes, or says `error` and writes nothing. `tab`
+    /// is the tab it started from.
     BrowserDownload {
+        tab: u16,
         name: String,
         /// The file's bytes, base64; absent when `error` says why not.
         data: Option<String>,
@@ -670,10 +674,10 @@ mod tests {
     /// the id would hand the server files for a dialog it cannot match.
     #[test]
     fn a_browser_file_dialog_and_its_answer_round_trip() {
-        let ask = ServerMessage::BrowserFileDialog { id: 7, multiple: true };
+        let ask = ServerMessage::BrowserFileDialog { id: 7, tab: 2, multiple: true };
         let json = serde_json::to_string(&ask).expect("encode");
         assert!(json.contains("\"kind\":\"browser_file_dialog\""), "{json}");
-        let ServerMessage::BrowserFileDialog { id, multiple } =
+        let ServerMessage::BrowserFileDialog { id, tab, multiple } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
@@ -692,27 +696,31 @@ mod tests {
             panic!("{json} decoded into another message")
         };
         assert_eq!(id, 7);
+        assert_eq!(tab, 2, "the ask names the tab it belongs to");
         assert_eq!(files[0].name, "cv.pdf");
         assert_eq!(files[0].data, "AAEC", "the bytes cross base64");
 
         // **A download carries either bytes or its refusal, never both.**
         let saved = ServerMessage::BrowserDownload {
+            tab: 2,
             name: "report.pdf".to_owned(),
             data: Some("AAEC".to_owned()),
             error: None,
         };
         let json = serde_json::to_string(&saved).expect("encode");
         assert!(json.contains("\"kind\":\"browser_download\""), "{json}");
-        let ServerMessage::BrowserDownload { name, data, error } =
+        let ServerMessage::BrowserDownload { tab, name, data, error } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
+        assert_eq!(tab, 2, "the save names the tab it started from");
         assert_eq!(name, "report.pdf");
         assert_eq!(data.as_deref(), Some("AAEC"));
         assert!(error.is_none());
 
         let refused = ServerMessage::BrowserDownload {
+            tab: 2,
             name: "huge.bin".to_owned(),
             data: None,
             error: Some("this file is larger than 32 MiB".to_owned()),

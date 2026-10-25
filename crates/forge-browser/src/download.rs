@@ -27,6 +27,9 @@ cef::wrap_download_handler! {
     pub struct SaveDownloadHandler {
         // The profile whose `downloads/` the file lands in.
         profile: PathBuf,
+        // The tab the download was started from, so only its viewer is
+        // offered the save.
+        tab: u16,
     }
 
     impl DownloadHandler {
@@ -80,7 +83,7 @@ cef::wrap_download_handler! {
             }
             let name = CefString::from(&item.suggested_file_name()).to_string();
             let size = u64::try_from(item.received_bytes()).unwrap_or(0);
-            control::emit(&HostEvent::Download { name, path, size });
+            control::emit(&HostEvent::Download { tab: self.tab, name, path, size });
         }
     }
 }
@@ -99,9 +102,9 @@ fn safe_name(name: &str) -> String {
     if cleaned.is_empty() { "download".to_owned() } else { cleaned }
 }
 
-/// The handler the host's client hands CEF.
-pub fn handler(profile: &Path) -> DownloadHandler {
-    SaveDownloadHandler::new(profile.to_path_buf())
+/// The handler one tab's client hands CEF.
+pub fn handler(profile: &Path, tab: u16) -> DownloadHandler {
+    SaveDownloadHandler::new(profile.to_path_buf(), tab)
 }
 
 #[cfg(test)]

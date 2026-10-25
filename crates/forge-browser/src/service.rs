@@ -1936,11 +1936,23 @@ impl BrowserService {
         // before the uploads directory is cleared or a byte is written, so a
         // superseded answer cannot wipe the files a live dialog is handing
         // over.
-        let outstanding = profile.files.borrow().as_ref().map(|ask| ask.id);
-        if outstanding != Some(id) {
-            return Err(format!(
-                "the file chooser for id {id} is not outstanding, so the answer is refused"
-            ));
+        let outstanding = profile.files.borrow().as_ref().cloned();
+        match &outstanding {
+            Some(ask) if ask.id == id && ask.tab == tab => {}
+            // **A chooser belongs to its tab's viewer.** A watcher on another
+            // tab answering the id it saw on the wire would hand files to a
+            // page it is not looking at.
+            Some(ask) if ask.id == id => {
+                return Err(format!(
+                    "the file chooser for id {id} is on tab {}, not tab {tab}",
+                    ask.tab
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "the file chooser for id {id} is not outstanding, so the answer is refused"
+                ));
+            }
         }
         let total: usize = files.iter().map(|file| file.bytes.len()).sum();
         let cap = usize::try_from(MAX_UPLOAD_BYTES).unwrap_or(usize::MAX);
@@ -2546,16 +2558,17 @@ struct RecordingState {
 /// **The bytes come from the host's own directory or not at all**: the path
 /// crossed a pipe from another process, and a path outside the profile's
 /// uploads is not this server's to read.
-fn read_download(dir: &Path, name: &str, path: &str, size: u64) -> BrowserDownload {
+fn read_download(dir: &Path, tab: u16, name: &str, path: &str, size: u64) -> BrowserDownload {
     let downloads = dir.join("downloads");
     let path = Path::new(path);
     if !path.starts_with(&downloads) {
         tracing::warn!(
             "a download named a path outside its profile and is refused (event_name \
-             browser_download_outside, name {name}, path {})",
+             browser_download_outside, tab {tab}, name {name}, path {})",
             path.display()
         );
         return BrowserDownload {
+            tab,
             name: name.to_owned(),
             bytes: Vec::new(),
             error: Some("the downloaded file could not be read on the server".to_owned()),
@@ -2564,6 +2577,7 @@ fn read_download(dir: &Path, name: &str, path: &str, size: u64) -> BrowserDownlo
     if size > MAX_DOWNLOAD_BYTES {
         let _ = std::fs::remove_file(path);
         return BrowserDownload {
+            tab,
             name: name.to_owned(),
             bytes: Vec::new(),
             error: Some("this file is larger than 32 MiB, so the viewer cannot save it".to_owned()),
@@ -2572,13 +2586,14 @@ fn read_download(dir: &Path, name: &str, path: &str, size: u64) -> BrowserDownlo
     let bytes = std::fs::read(path);
     let _ = std::fs::remove_file(path);
     match bytes {
-        Ok(bytes) => BrowserDownload { name: name.to_owned(), bytes, error: None },
+        Ok(bytes) => BrowserDownload { tab, name: name.to_owned(), bytes, error: None },
         Err(why) => {
             tracing::warn!(
                 "a finished download could not be read (event_name browser_download_unreadable, \
-                 name {name}): {why}"
+                 tab {tab}, name {name}): {why}"
             );
             BrowserDownload {
+                tab,
                 name: name.to_owned(),
                 bytes: Vec::new(),
                 error: Some("the downloaded file could not be read on the server".to_owned()),
@@ -3020,10 +3035,13 @@ impl Profile {
         };
         let id = self.next_file_ask.fetch_add(1, Ordering::Relaxed);
         *self.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(id);
-        self.files.send_replace(Some(BrowserFileAsk { id, multiple: chooser.multiple }));
+        // **The chooser belongs to the tab the driver is on**, which is the
+        // tab the call focused before it drove the page.
+        let tab = self.focused.lock().unwrap_or_else(PoisonError::into_inner).unwrap_or(0);
+        self.files.send_replace(Some(BrowserFileAsk { id, tab, multiple: chooser.multiple }));
         tracing::info!(
             "a page's file chooser went to the controller (event_name browser_file_chooser, \
-             profile {}, id {id}, viewer {controller}, url {})",
+             profile {}, tab {tab}, id {id}, viewer {controller}, url {})",
             self.key,
             chooser.url,
         );
@@ -3405,7 +3423,7 @@ impl Profile {
                         }
                         let _ = tab_sender.send(HostEvent::TabClosed { tab });
                     }
-                    HostEvent::FileDialog { id, multiple } => {
+                    HostEvent::FileDialog { id, tab, multiple } => {
                         // **The CEF fallback is a chooser decision too**: it
                         // takes the lock and checks the profile is up, so a
                         // dialog that arrives while the host goes is not
@@ -3419,12 +3437,12 @@ impl Profile {
                         }
                         tracing::info!(
                             "a page asked for a file (event_name browser_file_dialog, \
-                             profile {key}, id {id}, multiple {multiple})"
+                             profile {key}, tab {tab}, id {id}, multiple {multiple})"
                         );
-                        profile.files.send_replace(Some(BrowserFileAsk { id, multiple }));
+                        profile.files.send_replace(Some(BrowserFileAsk { id, tab, multiple }));
                     }
-                    HostEvent::Download { name, path, size } => {
-                        let download = read_download(&dir, &name, &path, size);
+                    HostEvent::Download { tab, name, path, size } => {
+                        let download = read_download(&dir, tab, &name, &path, size);
                         if downloads.send(download).is_err() {
                             tracing::debug!(
                                 "a download had no viewer to take it (event_name \
@@ -4099,7 +4117,8 @@ mod tests {
 
         let small = downloads.join("1-small.txt");
         std::fs::write(&small, b"hello").expect("a small file");
-        let read = read_download(dir.path(), "small.txt", small.to_str().expect("a path"), 5);
+        let read = read_download(dir.path(), 2, "small.txt", small.to_str().expect("a path"), 5);
+        assert_eq!(read.tab, 2, "the tab comes with the file");
         assert_eq!(read.bytes, b"hello", "the bytes are handed on");
         assert!(read.error.is_none());
         assert!(!small.exists(), "the server's copy goes once it is read");
@@ -4107,6 +4126,7 @@ mod tests {
         let big = downloads.join("2-big.bin");
         let read = read_download(
             dir.path(),
+            2,
             "big.bin",
             big.to_str().expect("a path"),
             MAX_DOWNLOAD_BYTES + 1,
@@ -4120,7 +4140,8 @@ mod tests {
 
         let outside = dir.path().join("elsewhere.txt");
         std::fs::write(&outside, b"x").expect("a file outside downloads");
-        let read = read_download(dir.path(), "elsewhere.txt", outside.to_str().expect("a path"), 1);
+        let read =
+            read_download(dir.path(), 2, "elsewhere.txt", outside.to_str().expect("a path"), 1);
         assert!(read.error.is_some(), "a path outside downloads is refused");
         assert!(outside.exists(), "and a file outside is not deleted");
     }
@@ -4138,18 +4159,37 @@ mod tests {
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
         let tab = seed_tab(&profile, &seat);
-        profile.files.send_replace(Some(BrowserFileAsk { id: 4, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 4, tab: 1, multiple: false }));
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
         assert!(profile.files.borrow().is_none(), "the ask is cancelled with the take");
 
-        profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 1, multiple: false }));
         service.release_control("TestOrg/default", tab, 7).await;
         assert!(profile.files.borrow().is_none(), "and with the release");
 
         service.take_control("TestOrg/default", tab, 7).await.expect("the role moves back");
-        profile.files.send_replace(Some(BrowserFileAsk { id: 6, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 6, tab: 1, multiple: false }));
         service.detach(7).await;
         assert!(profile.files.borrow().is_none(), "and when the controller detaches");
+    }
+
+    /// **An answer from another tab is refused.** The ask names its tab; a
+    /// viewer on another tab answering its id would hand files to a page it
+    /// is not looking at.
+    #[tokio::test]
+    async fn a_file_answer_from_another_tab_is_refused() {
+        use forge_primitives::browser::BrowserFileAsk;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
+        profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 2, multiple: false }));
+
+        let refused =
+            service.answer_files("TestOrg/default", tab, 5, Vec::new()).await.expect_err("refused");
+        assert!(refused.contains("is on tab 2, not tab 1"), "{refused}");
     }
 
     /// **A tab a person is driving reads in use in the strip.** The spec's
@@ -4734,7 +4774,7 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
-        profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 1, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
             ChooserLedger { surfaced: 2, pre_answered: 1 };
@@ -4773,7 +4813,7 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
-        profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 1, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
             ChooserLedger { surfaced: 1, pre_answered: 0 };
@@ -4826,7 +4866,7 @@ mod tests {
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 1, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
             ChooserLedger { surfaced: 1, pre_answered: 0 };
@@ -4899,7 +4939,7 @@ mod tests {
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
         profile.up.store(true, Ordering::Release);
-        profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 1, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
@@ -4943,7 +4983,7 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
-        profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 1, multiple: false }));
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
         profile.state.lock().await.chooser_generation = 2;
@@ -5137,7 +5177,7 @@ mod tests {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
-        profile.files.send_replace(Some(BrowserFileAsk { id: 5, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 1, multiple: false }));
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         *profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner) =
             ChooserLedger { surfaced: 1, pre_answered: 0 };
@@ -5247,7 +5287,7 @@ mod tests {
         std::fs::create_dir_all(&uploads).expect("the uploads dir");
         let kept = uploads.join("kept.txt");
         std::fs::write(&kept, b"a live dialog's file").expect("a live file");
-        profile.files.send_replace(Some(BrowserFileAsk { id: 7, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 7, tab: 1, multiple: false }));
 
         let refused = service
             .answer_files(
@@ -5299,7 +5339,7 @@ mod tests {
         let uploads = profile.dir.join("uploads");
         std::fs::create_dir_all(&uploads).expect("the uploads dir");
         std::fs::write(uploads.join("stale.txt"), b"stale").expect("a staged file");
-        profile.files.send_replace(Some(BrowserFileAsk { id: 3, multiple: false }));
+        profile.files.send_replace(Some(BrowserFileAsk { id: 3, tab: 1, multiple: false }));
 
         service.close(&seat).await.expect("the profile closes");
         assert!(profile.files.borrow().is_none(), "the chooser is gone with the profile");
@@ -5398,6 +5438,7 @@ mod tests {
         std::fs::write(uploads.join("staged.txt"), b"a chosen file").expect("a staged file");
         profile.files.send_replace(Some(forge_primitives::browser::BrowserFileAsk {
             id: 5,
+            tab: 1,
             multiple: false,
         }));
         let (pid, _port) = {

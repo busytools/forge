@@ -791,6 +791,11 @@ where
                     // answer it.
                     ViewEvent::File(ask) => {
                         let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        // **A chooser belongs to its tab's viewer.** A viewer
+                        // watching another tab is never asked to pick for it.
+                        if ask.tab != viewing.tab {
+                            continue;
+                        }
                         let controller = viewing.view.borrow().controller;
                         if controller.is_some_and(|holder| holder != me) {
                             continue;
@@ -817,7 +822,11 @@ where
                         }
                         send(
                             socket,
-                            ServerMessage::BrowserFileDialog { id: ask.id, multiple: ask.multiple },
+                            ServerMessage::BrowserFileDialog {
+                                id: ask.id,
+                                tab: ask.tab,
+                                multiple: ask.multiple,
+                            },
                         )
                         .await?;
                     }
@@ -826,6 +835,11 @@ where
                     // it; the save door is the controller's.
                     ViewEvent::Download(download) => {
                         let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        // **A save is the tab's too**: a controller watching
+                        // another tab is not offered this file.
+                        if download.tab != viewing.tab {
+                            continue;
+                        }
                         if viewing.view.borrow().controller != Some(me) {
                             continue;
                         }
@@ -835,6 +849,7 @@ where
                         send(
                             socket,
                             ServerMessage::BrowserDownload {
+                                tab: download.tab,
                                 name: download.name,
                                 data,
                                 error: download.error,

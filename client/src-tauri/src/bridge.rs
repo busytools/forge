@@ -853,6 +853,20 @@ impl Bridge {
         }
     }
 
+    /// Whether a browser message is for the tab this connection views. **A
+    /// chooser or a save belongs to its tab**: a viewer watching another tab
+    /// neither picks nor saves for it. A message with no tab, or a connection
+    /// with no attach, is not this check's to refuse.
+    fn for_viewed_tab(&self, message: &Value) -> bool {
+        let tab =
+            message.get("tab").and_then(Value::as_u64).and_then(|tab| u16::try_from(tab).ok());
+        let viewed = self.lock().attach.as_ref().and_then(|attach| attach.tab);
+        match (tab, viewed) {
+            (Some(tab), Some(viewed)) => tab == viewed,
+            _ => true,
+        }
+    }
+
     fn message(self: &Arc<Self>, message: Value, bytes: usize, parse_ms: f64) {
         let kind = message.get("kind").and_then(Value::as_str).unwrap_or_default();
         match kind {
@@ -928,6 +942,13 @@ impl Bridge {
             // come from the server's temp file; the person chooses where
             // they land here, and a refusal is said rather than saved.
             "browser_download" => {
+                // **A save is the tab's.** The server already filters by the
+                // attachment; this is the shell's own guard on a stale or
+                // retargeted connection.
+                if !self.for_viewed_tab(&message) {
+                    self.forward(&message, None);
+                    return;
+                }
                 let name =
                     message.get("name").and_then(Value::as_str).unwrap_or("download").to_owned();
                 let data = message.get("data").and_then(Value::as_str).map(str::to_owned);
@@ -945,6 +966,12 @@ impl Bridge {
             // the picker opens on this machine and the bytes go back under
             // the dialog's id.
             "browser_file_dialog" => {
+                // **A picker is the tab's.** A dialog raised on a tab this
+                // viewer is not watching is never opened here.
+                if !self.for_viewed_tab(&message) {
+                    self.forward(&message, None);
+                    return;
+                }
                 let id = message.get("id").and_then(Value::as_u64);
                 let multiple = message.get("multiple").and_then(Value::as_bool).unwrap_or(false);
                 if let (Some(app), Some(id)) = (self.app.as_ref(), id) {
