@@ -21,7 +21,7 @@ use forge_primitives::SessionSlot;
 use forge_primitives::browser::{
     BrowserAudio, BrowserDownload, BrowserFileAsk, BrowserFrame, BrowserInputEvent,
     BrowserNavState, BrowserPart, BrowserTabList, BrowserUpload, BrowserViewState,
-    MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, ProfileKey,
+    MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, MouseAction, ProfileKey,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, watch};
@@ -1902,13 +1902,9 @@ impl BrowserService {
                 _ => return Err("this viewer is not the browser's controller".to_owned()),
             }
         }
-        let target = profile
-            .tabs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .target(tab)
-            .map(str::to_owned)
-            .ok_or_else(|| format!("tab {tab} is not open"))?;
+        if profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).is_none() {
+            return Err(format!("tab {tab} is not open"));
+        }
         let (input, port) = {
             let state = profile.state.lock().await;
             let host = state
@@ -1920,10 +1916,32 @@ impl BrowserService {
         match input::route(event, tab) {
             // **A pointer gesture is the host's**, whose own mouse calls are
             // what CEF routes into a windowless popup.
-            input::Route::Host(line) => input
-                .send(line)
-                .map_err(|_| format!("the browser for '{}' is not taking input", profile.key)),
+            input::Route::Host(line) => {
+                input.send(line).map_err(|_| {
+                    format!("the browser for '{}' is not taking input", profile.key)
+                })?;
+                // **A click can navigate, and CEF swaps the page's target.**
+                // The next history read or Back would otherwise drive the
+                // target the page had before the click; refresh it from the
+                // driver now rather than waiting for an agent call.
+                if matches!(
+                    event,
+                    BrowserInputEvent::Mouse {
+                        action: MouseAction::Press | MouseAction::Release,
+                        ..
+                    }
+                ) {
+                    let profile = Arc::clone(&profile);
+                    tokio::spawn(async move {
+                        let _ = live_target(&profile, tab).await;
+                    });
+                }
+                Ok(())
+            }
             input::Route::Page(method, params) => {
+                let target = live_target(&profile, tab)
+                    .await
+                    .ok_or_else(|| format!("tab {tab} is not open"))?;
                 let mut state = profile.state.lock().await;
                 send_page(&mut state, port, &target, method, params).await
             }
@@ -2207,8 +2225,7 @@ impl BrowserService {
     /// Where one tab's history sits, or nothing when it cannot be read.
     pub async fn nav_state(&self, profile: &str, tab: u16) -> Option<BrowserNavState> {
         let profile = self.find(profile).await.ok()?;
-        let target =
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab)?.to_owned();
+        let target = live_target(&profile, tab).await?;
         let mut state = profile.state.lock().await;
         let port = state.host.as_ref().map(|host| host.port)?;
         let reply = call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({}))
@@ -2241,13 +2258,8 @@ impl BrowserService {
         if !holding {
             return Err("this viewer is not the browser's controller".to_owned());
         }
-        let target = profile
-            .tabs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .target(tab)
-            .map(str::to_owned)
-            .ok_or_else(|| format!("tab {tab} is not open"))?;
+        let target =
+            live_target(&profile, tab).await.ok_or_else(|| format!("tab {tab} is not open"))?;
         let mut state = profile.state.lock().await;
         let port = state
             .host
@@ -3630,6 +3642,33 @@ impl Profile {
 /// not stall the watch for ever.
 const NAV_BOUND: Duration = Duration::from_secs(2);
 
+/// The tab's live CDP target, refreshed from the driver when it can answer.
+///
+/// **CEF swaps a page's target id on a navigation**, a person's click
+/// included; the registry's copy is only as fresh as the last call, so a
+/// history read, a Back and the nav watch ask the driver before they use it.
+/// The page guid is the identity that survives the swap.
+async fn live_target(profile: &Arc<Profile>, tab: u16) -> Option<String> {
+    let driver = {
+        let state = profile.state.lock().await;
+        state.driver.as_ref().filter(|driver| driver.is_running()).map(Arc::clone)
+    };
+    if let Some(driver) = driver
+        && let Ok(listing) = driver.tabs_within(NAV_BOUND).await
+    {
+        let page =
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
+        if let Some(page) = page
+            && let Some(row) = crate::tabs::index_of(&listing, &page).and_then(|at| listing.get(at))
+            && !row.target.is_empty()
+        {
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).retarget(tab, &row.target);
+            return Some(row.target.clone());
+        }
+    }
+    profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).map(str::to_owned)
+}
+
 /// How long the watch waits for a page target that is not there yet.
 const NAV_RETRY: Duration = Duration::from_millis(500);
 
@@ -3652,13 +3691,7 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
                 tokio::time::sleep(NAV_RETRY).await;
                 continue;
             };
-            let target = profile
-                .tabs
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .target(tab)
-                .map(str::to_owned);
-            let Some(target) = target else {
+            let Some(target) = live_target(&profile, tab).await else {
                 tokio::time::sleep(NAV_RETRY).await;
                 continue;
             };
@@ -4260,6 +4293,40 @@ mod tests {
         let refused =
             service.answer_files("TestOrg/default", tab, 5, Vec::new()).await.expect_err("refused");
         assert!(refused.contains("is on tab 2, not tab 1"), "{refused}");
+    }
+
+    /// **A navigation swaps the page's target, and the driver is asked
+    /// afresh.** A person's click leaves the registry's target stale until an
+    /// agent call; the history read, Back and the nav watch ask the driver by
+    /// the page guid that survives the swap.
+    #[tokio::test]
+    async fn a_person_navigation_refreshes_the_target_from_the_driver() {
+        use super::live_target;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        let seen = fake.clone();
+        service.install_fake(&seat, fake).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(1),
+            Some("T1"),
+        );
+
+        // The page navigated under a person's click: same guid, new target.
+        {
+            let mut tabs = seen.tabs.lock().expect("the fake's tabs");
+            tabs[0].target = "T2".to_owned();
+        }
+        assert_eq!(live_target(&profile, 1).await.as_deref(), Some("T2"));
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(1),
+            Some("T2"),
+            "the registry follows the driver's listing",
+        );
     }
 
     /// **Each tab's arrows are its own.** A history published for tab 1 is
