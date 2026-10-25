@@ -225,16 +225,16 @@ enum Outbound {
     ForgetAttach {
         id: u64,
     },
-    /// Attach this connection to a profile's browser as a viewer. The
+    /// Attach this connection to a seat's browser tab as a viewer. The
     /// server's answer rides a reply: a raise it refused must fail the
     /// surface rather than leave it dark.
     BrowserView {
         seat: Value,
-        profile: Option<String>,
+        tab: Option<u16>,
         reply: Option<u64>,
-        answered: Option<oneshot::Sender<Result<String, String>>>,
+        answered: Option<oneshot::Sender<Result<Value, String>>>,
     },
-    /// Stop viewing the attached profile: the takeover lowered.
+    /// Stop viewing the attached tab: the takeover lowered.
     BrowserDetach,
     /// One input event from the controlling viewer.
     BrowserInput {
@@ -261,8 +261,8 @@ enum Outbound {
         height: u32,
         scale: f64,
     },
-    /// One of the strip's asks - the profile list, a close, a delete - as the
-    /// wire's own object with `reply_to` added. The answer is the reply body.
+    /// One of the strip's asks - the profile's tab list - as the wire's own
+    /// object with `reply_to` added. The answer is the reply body.
     StripAsk {
         body: Value,
         reply: Option<u64>,
@@ -406,24 +406,16 @@ impl Socket {
         let _ = self.tx.send(Outbound::Binary(bytes));
     }
 
-    /// Attach this connection to a profile's browser as a viewer, and wait
-    /// for the server's answer: the profile it actually attached, or the
-    /// sentence the surface draws. **A raise that named none was resolved to
-    /// the asking seat's own**, and this is the name its Done lowers.
-    pub async fn browser_view(
-        &self,
-        seat: Value,
-        profile: Option<String>,
-    ) -> Result<String, String> {
+    /// Attach this connection to a seat's browser tab as a viewer, and wait
+    /// for the server's answer: the profile and tab it actually attached, or
+    /// the sentence the surface draws. **A raise that named no tab was
+    /// resolved to the asking seat's own current one**, and this is the pair
+    /// its Done lowers.
+    pub async fn browser_view(&self, seat: Value, tab: Option<u16>) -> Result<Value, String> {
         let id = self.next_reply.fetch_add(1, Ordering::Relaxed);
         let (answered, answer) = oneshot::channel();
         self.tx
-            .send(Outbound::BrowserView {
-                seat,
-                profile,
-                reply: Some(id),
-                answered: Some(answered),
-            })
+            .send(Outbound::BrowserView { seat, tab, reply: Some(id), answered: Some(answered) })
             .map_err(|_| "the socket is closed".to_owned())?;
         match tokio::time::timeout(ATTACH_BOUND, answer).await {
             Ok(Ok(result)) => result,
@@ -465,23 +457,10 @@ impl Socket {
         let _ = self.tx.send(Outbound::BrowserResize { width, height, scale });
     }
 
-    /// The profiles this server holds, as the strip's rows.
-    pub async fn browser_profiles(&self, seat: Value) -> Result<Value, String> {
-        self.ask(json!({ "kind": "browser_profiles", "seat": seat })).await
-    }
-
-    /// Close a named profile's browser, keeping its logins.
-    pub async fn browser_profile_close(&self, seat: Value, name: &str) -> Result<(), String> {
-        self.ask(json!({ "kind": "browser_profile_close", "seat": seat, "name": name }))
-            .await
-            .map(|_| ())
-    }
-
-    /// Delete a named profile and its logins.
-    pub async fn browser_profile_delete(&self, seat: Value, name: &str) -> Result<(), String> {
-        self.ask(json!({ "kind": "browser_profile_delete", "seat": seat, "name": name }))
-            .await
-            .map(|_| ())
+    /// The tabs of this seat's profile, as the strip's rows: the reply body
+    /// holds the [`forge_primitives::browser::BrowserTabList`] under `tabs`.
+    pub async fn browser_tabs(&self, seat: Value) -> Result<Value, String> {
+        self.ask(json!({ "kind": "browser_tabs", "seat": seat })).await
     }
 
     /// One strip ask, answered through its reply: `{ok: false, why}` is the
@@ -706,7 +685,7 @@ async fn run(
         let mut pending: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
         // Attaches waiting on their answer, kept apart from a dispatch's:
         // their reply body is a verdict on the attach, not a command's value.
-        let mut attaches: HashMap<u64, oneshot::Sender<Result<String, String>>> = HashMap::new();
+        let mut attaches: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
         let mut closing = false;
         loop {
             tokio::select! {
@@ -852,13 +831,13 @@ async fn run(
                         Outbound::ForgetAttach { id } => {
                             attaches.remove(&id);
                         }
-                        Outbound::BrowserView { seat, profile, reply, answered } => {
+                        Outbound::BrowserView { seat, tab, reply, answered } => {
                             let ok = writer
                                 .send(Message::Text(
                                     json!({
                                         "kind": "browser_view",
                                         "seat": seat,
-                                        "profile": profile,
+                                        "tab": tab,
                                         "reply_to": reply,
                                     })
                                         .to_string()
@@ -1011,7 +990,7 @@ fn receive(
     bytes: usize,
     parse_ms: f64,
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value, String>>>,
-    attaches: &mut HashMap<u64, oneshot::Sender<Result<String, String>>>,
+    attaches: &mut HashMap<u64, oneshot::Sender<Result<Value, String>>>,
     awaiting: &mut Vec<String>,
     events: &mpsc::UnboundedSender<SocketEvent>,
 ) {
@@ -1023,10 +1002,15 @@ fn receive(
             // refusal is the surface's own sentence.
             if let Some(tx) = id.and_then(|id| attaches.remove(&id)) {
                 let verdict = if body.get("ok").and_then(Value::as_bool) == Some(true) {
-                    body.get("profile")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                        .ok_or_else(|| "the server attached without naming the profile".to_owned())
+                    match (
+                        body.get("profile").and_then(Value::as_str),
+                        body.get("tab").and_then(Value::as_u64),
+                    ) {
+                        (Some(profile), Some(tab)) => Ok(json!({ "profile": profile, "tab": tab })),
+                        _ => {
+                            Err("the server attached without naming the profile and tab".to_owned())
+                        }
+                    }
                 } else {
                     Err(body
                         .get("why")
@@ -1384,6 +1368,7 @@ pub(crate) mod tests {
             }
         });
         let sent = stub.heard_until(|v| v["kind"] == "browser_view").await;
+        assert_eq!(sent["tab"], Value::Null, "no tab is the seat's current one");
         let id = sent["reply_to"].as_u64().expect("the asker minted a reply id");
         stub.say
             .send(json!({
@@ -1409,56 +1394,77 @@ pub(crate) mod tests {
         assert_eq!(sent["kind"], "browser_detach", "the lowered viewer says so");
     }
 
-    /// **A strip ask carries its fields and answers through its own reply**:
-    /// the rows on success, the server's sentence on a refusal.
+    /// **An attach's answer names the profile and tab it landed on**, so the
+    /// page can filter frames by both rather than by a guess.
     #[tokio::test]
-    async fn a_strip_ask_answers_through_its_reply() {
+    async fn an_attach_answers_the_tab_it_landed_on() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let waiting = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .browser_view(json!({ "org": "a", "project": "b", "label": "lead" }), Some(2))
+                    .await
+            }
+        });
+        let sent = stub.heard_until(|v| v["kind"] == "browser_view").await;
+        assert_eq!(sent["tab"], json!(2), "the chosen tab crosses with the ask");
+        let id = sent["reply_to"].as_u64().expect("the asker minted a reply id");
+        stub.say
+            .send(json!({
+                "kind": "reply",
+                "reply_to": id,
+                "body": { "ok": true, "profile": "Busytools/work", "tab": 2 },
+            }))
+            .expect("broadcast");
+        let landed = waiting.await.expect("the task joins").expect("the attach landed");
+        assert_eq!(landed["profile"], json!("Busytools/work"));
+        assert_eq!(landed["tab"], json!(2));
+    }
+
+    /// **A strip ask carries its fields and answers through its own reply**:
+    /// the tabs on success, the server's sentence on a refusal.
+    #[tokio::test]
+    async fn a_tab_list_answers_through_its_reply() {
         let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
         let asking = tokio::spawn({
             let socket = socket.clone();
             async move {
-                socket
-                    .browser_profiles(json!({ "org": "a", "project": "b", "label": "lead" }))
-                    .await
+                socket.browser_tabs(json!({ "org": "a", "project": "b", "label": "lead" })).await
             }
         });
-        let sent = stub.heard_until(|v| v["kind"] == "browser_profiles").await;
+        let sent = stub.heard_until(|v| v["kind"] == "browser_tabs").await;
         assert_eq!(sent["seat"]["label"], "lead", "the seat crosses with the ask");
         let id = sent["reply_to"].as_u64().expect("the asker minted a reply id");
         stub.say
             .send(json!({
                 "kind": "reply",
                 "reply_to": id,
-                "body": { "ok": true, "rows": [{ "name": "shared" }] },
+                "body": { "ok": true, "tabs": { "profile": "Busytools/work", "rows": [] } },
             }))
             .expect("broadcast");
-        let body = asking.await.expect("the task joins").expect("the rows");
-        assert_eq!(body["rows"][0]["name"], "shared");
+        let body = asking.await.expect("the task joins").expect("the tabs");
+        assert_eq!(body["tabs"]["profile"], json!("Busytools/work"));
 
-        let deleting = tokio::spawn({
+        let refused = tokio::spawn({
             let socket = socket.clone();
             async move {
-                socket
-                    .browser_profile_delete(
-                        json!({ "org": "a", "project": "b", "label": "lead" }),
-                        "hunt",
-                    )
-                    .await
+                socket.browser_tabs(json!({ "org": "a", "project": "b", "label": "lead" })).await
             }
         });
-        let sent = stub.heard_until(|v| v["kind"] == "browser_profile_delete").await;
-        assert_eq!(sent["name"], "hunt", "the name crosses with the ask");
+        let sent = stub.heard_until(|v| v["kind"] == "browser_tabs").await;
         let id = sent["reply_to"].as_u64().expect("a reply id");
         stub.say
             .send(json!({
                 "kind": "reply",
                 "reply_to": id,
-                "body": { "ok": false, "why": "the profile 'hunt' belongs to another seat" },
+                "body": { "ok": false, "why": "that seat has no browser profile" },
             }))
             .expect("broadcast");
-        let why = deleting.await.expect("the task joins").expect_err("the delete was refused");
-        assert!(why.contains("belongs to"), "{why}");
+        let why = refused.await.expect("the task joins").expect_err("the read was refused");
+        assert!(why.contains("no browser profile"), "{why}");
     }
 
     /// A reply is handed to the caller that asked, by its own id.

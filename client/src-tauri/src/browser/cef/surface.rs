@@ -35,6 +35,8 @@ use crate::browser::Rect;
 pub struct Frame {
     /// The profile whose page this is, so a warning names it.
     pub profile: u16,
+    /// The tab this picture belongs to, so a warning names it too.
+    pub tab: u16,
     pub width: u32,
     pub height: u32,
     /// RGBA or RGB bytes, whichever the bitstream carried.
@@ -48,7 +50,7 @@ pub struct Frame {
 /// **A frame whose pixels do not match the header's size is dropped**, not
 /// stretched: the header is the host's own statement about the frame, and a
 /// mismatch is a corrupt or truncated relay rather than a page to draw.
-pub fn decode(profile: u16, webp: &[u8], width: u32, height: u32) -> Option<Frame> {
+pub fn decode(profile: u16, tab: u16, webp: &[u8], width: u32, height: u32) -> Option<Frame> {
     let image = webp::Decoder::new(webp).decode()?;
     if image.width() != width || image.height() != height {
         return None;
@@ -59,7 +61,7 @@ pub fn decode(profile: u16, webp: &[u8], width: u32, height: u32) -> Option<Fram
         len if len == (width as usize) * (height as usize) * 3 => false,
         _ => return None,
     };
-    Some(Frame { profile, width, height, pixels, alpha })
+    Some(Frame { profile, tab, width, height, pixels, alpha })
 }
 
 /// One open surface's native half.
@@ -432,8 +434,9 @@ impl OverlayView {
         let Some(image) = image else {
             tauri_plugin_log::log::warn!(
                 "a browser frame could not become an image (event_name \
-                 client_browser_frame_unpaintable, profile {}, {}x{})",
+                 client_browser_frame_unpaintable, profile {}, tab {}, {}x{})",
                 frame.profile,
+                frame.tab,
                 frame.width,
                 frame.height
             );

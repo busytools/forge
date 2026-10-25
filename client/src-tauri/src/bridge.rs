@@ -100,7 +100,8 @@ struct Watch {
 #[derive(Clone)]
 struct Attach {
     seat: Value,
-    profile: Option<String>,
+    /// The tab the attach landed on, which is what a reconnect asks for.
+    tab: Option<u16>,
 }
 
 struct State {
@@ -207,23 +208,22 @@ impl Bridge {
         self.lock().socket.clone()
     }
 
-    /// Attach this connection to a profile's browser as a viewer, answering
-    /// the profile the server attached: a refused attach is the surface's
-    /// sentence. **The answer is the name the surface's Done lowers**, since
-    /// a raise that named none resolved to the asking seat's own.
-    pub async fn browser_view(
-        &self,
-        seat: Value,
-        profile: Option<String>,
-    ) -> Result<String, String> {
+    /// Attach this connection to a seat's browser tab as a viewer, answering
+    /// the profile and tab the server attached: a refused attach is the
+    /// surface's sentence. **The answer is the pair the surface's Done
+    /// lowers**, since a raise that named no tab resolved to the asking
+    /// seat's own current one.
+    pub async fn browser_view(&self, seat: Value, tab: Option<u16>) -> Result<Value, String> {
         let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
-        let attached = socket.browser_view(seat.clone(), profile.clone()).await?;
+        let attached = socket.browser_view(seat.clone(), tab).await?;
         // **A landed attach is the takeover's to keep**: the next reconnect
         // asks for it again, so the surface never outlives its viewer. The
-        // resolved name is kept, not the request's own, so a reconnect asks
-        // for the very profile that came up.
+        // resolved tab is kept, not the request's own, so a reconnect asks
+        // for the very tab that came up.
+        let resolved =
+            attached.get("tab").and_then(Value::as_u64).and_then(|tab| u16::try_from(tab).ok());
         let mut state = self.lock();
-        state.attach = Some(Attach { seat, profile: Some(attached.clone()) });
+        state.attach = Some(Attach { seat, tab: resolved });
         state.attach_generation = state.attach_generation.wrapping_add(1);
         Ok(attached)
     }
@@ -427,22 +427,10 @@ impl Bridge {
         }
     }
 
-    /// The profiles this server holds, for the strip's rows.
-    pub async fn browser_profiles(&self, seat: Value) -> Result<Value, String> {
+    /// The tabs of this seat's profile, for the strip's rows.
+    pub async fn browser_tabs(&self, seat: Value) -> Result<Value, String> {
         let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
-        socket.browser_profiles(seat).await
-    }
-
-    /// Close a named profile's browser, keeping its logins.
-    pub async fn browser_profile_close(&self, seat: Value, name: &str) -> Result<(), String> {
-        let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
-        socket.browser_profile_close(seat, name).await
-    }
-
-    /// Delete a named profile and its logins.
-    pub async fn browser_profile_delete(&self, seat: Value, name: &str) -> Result<(), String> {
-        let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
-        socket.browser_profile_delete(seat, name).await
+        socket.browser_tabs(seat).await
     }
 
     /// Dial the server, replacing any connection this bridge had. Whatever
@@ -834,7 +822,7 @@ impl Bridge {
     /// A re-attach the server refuses fails the surface instead.
     async fn reattach(self: Arc<Self>, attach: Attach, generation: u64) {
         let Some(socket) = self.socket() else { return };
-        match socket.browser_view(attach.seat, attach.profile).await {
+        match socket.browser_view(attach.seat, attach.tab).await {
             Ok(_) => {
                 // A lower (or a second attach) landed while this was in
                 // flight: nobody is showing the viewer this ask created, so
@@ -895,18 +883,29 @@ impl Bridge {
             // Consumed here alone, provably unusable by the page: a reply is
             // `dispatch`'s own answer, correlated by id in `socket.rs`.
             "reply" => {}
-            // **The viewed profile's wire id, which the overlay filters
-            // frames by**: the shell takes it directly, and the page still
-            // sees the frame as itself. Its controller and this connection's
-            // own viewer number go to the page's bar as an event.
+            // **The viewed tab's wire ids, which the overlay filters frames
+            // by**: the shell takes them directly, and the page still sees
+            // the frame as itself. Its controller and this connection's own
+            // viewer number go to the page's bar as an event.
             "browser_view" => {
                 if let Some(app) = &self.app {
-                    if let Some(id) = message.get("id").and_then(Value::as_u64)
-                        && let Ok(id) = u16::try_from(id)
+                    if let (Some(id), Some(tab)) = (
+                        message.get("id").and_then(Value::as_u64),
+                        message.get("tab").and_then(Value::as_u64),
+                    ) && let (Ok(id), Ok(tab)) = (u16::try_from(id), u16::try_from(tab))
                     {
-                        crate::browser::attached(app, id);
+                        crate::browser::attached(app, id, tab);
                     }
                     let _ = app.emit("browser_view", message.clone());
+                }
+                self.forward(&message, None);
+            }
+            // **The strip follows the pushed tab list**: the page listens for
+            // this as a shell event, and every change the connection asked
+            // for arrives here rather than by polling.
+            "browser_tabs" => {
+                if let Some(app) = &self.app {
+                    let _ = app.emit("browser_tabs", message.clone());
                 }
                 self.forward(&message, None);
             }
@@ -1703,17 +1702,17 @@ mod tests {
     }
 
     /// Answer one attach the stub heard, as the server's `ok` reply naming
-    /// the profile it attached (`@shared` when the request named none).
+    /// the profile and tab it attached (tab 1 when the request named none).
     async fn answer_attach(server: &mut crate::socket::tests::Stub) {
         let sent = server.heard_until(|v| v["kind"] == "browser_view").await;
         let id = sent["reply_to"].as_u64().expect("the asker minted a reply id");
-        let profile = sent["profile"].as_str().unwrap_or("@shared").to_owned();
+        let tab = sent["tab"].as_u64().unwrap_or(1);
         server
             .say
             .send(json!({
                 "kind": "reply",
                 "reply_to": id,
-                "body": { "ok": true, "profile": profile },
+                "body": { "ok": true, "profile": "Busytools/work", "tab": tab },
             }))
             .expect("broadcast");
     }
@@ -1722,7 +1721,7 @@ mod tests {
     /// server drops a viewer with its connection, so a reconnect that said
     /// nothing left the surface drawing the page's last frame while every
     /// gesture went nowhere - a picture that reads as alive over dead input.
-    /// The reconnect asks again, with the seat and profile the open named.
+    /// The reconnect asks again, with the seat and the tab that landed.
     #[tokio::test]
     async fn a_live_takeover_reattaches_after_a_reconnect() {
         let (bridge, _rx) = bridge();
@@ -1731,7 +1730,7 @@ mod tests {
         connected(&bridge).await;
         let opening = tokio::spawn({
             let bridge = Arc::clone(&bridge);
-            async move { bridge.browser_view(seat(), Some("held".to_owned())).await }
+            async move { bridge.browser_view(seat(), Some(4)).await }
         });
         answer_attach(&mut server).await;
         opening.await.expect("the task joins").expect("the attach landed");
@@ -1740,7 +1739,7 @@ mod tests {
         server.kill.send(()).expect("the stub drops its connections");
         let again = server.heard_until(|v| v["kind"] == "browser_view").await;
         assert_eq!(again["seat"], seat(), "the same seat is asked for");
-        assert_eq!(again["profile"], json!("held"), "and the same profile");
+        assert_eq!(again["tab"], json!(4), "and the same tab");
     }
 
     /// **A re-attach the server refuses fails the surface**, rather than
@@ -1754,7 +1753,7 @@ mod tests {
         connected(&bridge).await;
         let opening = tokio::spawn({
             let bridge = Arc::clone(&bridge);
-            async move { bridge.browser_view(seat(), Some("held".to_owned())).await }
+            async move { bridge.browser_view(seat(), Some(4)).await }
         });
         answer_attach(&mut server).await;
         opening.await.expect("the task joins").expect("the attach landed");
@@ -1792,7 +1791,7 @@ mod tests {
         bridge.subscribe(json!("home"), false);
         let opening = tokio::spawn({
             let bridge = Arc::clone(&bridge);
-            async move { bridge.browser_view(seat(), Some("held".to_owned())).await }
+            async move { bridge.browser_view(seat(), Some(4)).await }
         });
         answer_attach(&mut server).await;
         opening.await.expect("the task joins").expect("the attach landed");
@@ -1828,7 +1827,7 @@ mod tests {
     fn a_detach_sends_only_when_a_takeover_was_attached() {
         let (bridge, _rx) = bridge();
         assert!(take_attach(&mut bridge.lock()).is_none(), "nothing was attached");
-        bridge.lock().attach = Some(Attach { seat: seat(), profile: None });
+        bridge.lock().attach = Some(Attach { seat: seat(), tab: None });
         assert!(take_attach(&mut bridge.lock()).is_some(), "the first lower finds it");
         assert!(take_attach(&mut bridge.lock()).is_none(), "the second finds nothing");
     }

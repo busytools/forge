@@ -1,10 +1,10 @@
 //! The takeover's browser: the server's page, drawn in a native layer.
 //!
 //! **The browser is not this process's.** forge-server owns the host, the
-//! driver and the profile; this half is a viewer - it attaches to a profile
-//! over the socket, paints the frames the server relays, and sends the
-//! person's gestures back. What the page under the overlay draws (the bar,
-//! the hand-off's actions) is the webview's, exactly as before.
+//! driver, the profile and its tabs; this half is a viewer - it attaches to
+//! one tab over the socket, paints the frames the server relays, and sends
+//! the person's gestures back. What the page under the overlay draws (the
+//! bar, the hand-off's actions) is the webview's, exactly as before.
 //!
 //! **The overlay is the desktop's.** The phone draws the same frames in its
 //! page instead (the canvas viewer), so nothing here runs on Android.
@@ -78,7 +78,7 @@ pub mod viewer {
     use super::Rect;
 
     #[tauri::command]
-    pub fn browser_attached(_id: u16) {}
+    pub fn browser_attached(_id: u16, _tab: u16) {}
 
     #[tauri::command]
     pub fn browser_surface_rect(_rect: Rect, _viewport: super::Viewport) {}
@@ -151,6 +151,7 @@ pub fn browser_takeover(app: tauri::AppHandle, on: bool) {
 )]
 pub(crate) struct Relayed<'a> {
     pub profile: u16,
+    pub tab: u16,
     pub seq: u32,
     pub width: u16,
     pub height: u16,
@@ -163,12 +164,16 @@ pub(crate) struct Relayed<'a> {
 /// shorter than its own header.
 ///
 /// **One split for both arms**: the desktop's overlay and the phone's canvas
-/// read the same host wire, so a drift in one cannot disagree with the other.
+/// read the same host wire - the profile, the tab, the sequence, the view
+/// size, the format and the key flag - so a drift in one cannot disagree
+/// with the other.
 pub(crate) fn split_frame(bytes: &[u8]) -> Option<Relayed<'_>> {
     let (profile, rest) = bytes.split_first_chunk::<2>()?;
+    let (tab, rest) = rest.split_first_chunk::<2>()?;
     let header = rest.get(..10)?;
     Some(Relayed {
         profile: u16::from_le_bytes(*profile),
+        tab: u16::from_le_bytes(*tab),
         seq: u32::from_le_bytes([header[0], header[1], header[2], header[3]]),
         width: u16::from_le_bytes([header[4], header[5]]),
         height: u16::from_le_bytes([header[6], header[7]]),
@@ -182,6 +187,7 @@ pub(crate) fn split_frame(bytes: &[u8]) -> Option<Relayed<'_>> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sound {
     pub profile: u16,
+    pub tab: u16,
     pub seq: u32,
     pub sample_rate: u32,
     pub channels: u8,
@@ -189,9 +195,9 @@ pub struct Sound {
     pub samples: Vec<i16>,
 }
 
-/// One packet's header: the profile, sequence, sample rate and channels;
-/// the samples follow.
-pub(crate) const SOUND_HEADER_LEN: usize = 11;
+/// One packet's header: the profile, tab, sequence, sample rate and
+/// channels; the samples follow.
+pub(crate) const SOUND_HEADER_LEN: usize = 13;
 
 /// Split one audio packet's wire shape. `None` is a packet shorter than its
 /// own header or one that does not hold whole samples.
@@ -200,15 +206,16 @@ pub(crate) fn split_sound(bytes: &[u8]) -> Option<Sound> {
         return None;
     }
     let profile = u16::from_le_bytes([bytes[0], bytes[1]]);
-    let seq = u32::from_le_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
-    let sample_rate = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
-    let channels = bytes[10];
+    let tab = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let seq = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let sample_rate = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    let channels = bytes[12];
     let rest = &bytes[SOUND_HEADER_LEN..];
     if !rest.len().is_multiple_of(2) || channels == 0 {
         return None;
     }
     let samples = rest.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
-    Some(Sound { profile, seq, sample_rate, channels, samples })
+    Some(Sound { profile, tab, seq, sample_rate, channels, samples })
 }
 
 /// One packet of the page's sound, as the socket reader hands it over.
@@ -228,6 +235,21 @@ pub fn audio(app: &tauri::AppHandle, bytes: &[u8]) {
     };
     #[cfg(target_os = "macos")]
     {
+        // **Another tab's sound is not this surface's**, the same way its
+        // frame is not. A packet that beat the attach's own frame is taken
+        // as that tab's, so an opening page is not silent until a text frame
+        // lands.
+        if let Some(viewer) = app.try_state::<std::sync::Arc<Viewer>>()
+            && !viewer.holds(sound.profile, sound.tab)
+        {
+            tauri_plugin_log::log::debug!(
+                "sound for another tab was dropped (event_name \
+                 client_browser_audio_other_tab, profile {}, tab {})",
+                sound.profile,
+                sound.tab
+            );
+            return;
+        }
         // **The device is AppKit's**: the engine is built and fed on the
         // main thread, whatever thread the socket reader is on.
         let sound = sound.clone();
@@ -245,6 +267,7 @@ pub fn audio(app: &tauri::AppHandle, bytes: &[u8]) {
             "client://browser-audio",
             serde_json::json!({
                 "profile": sound.profile,
+                "tab": sound.tab,
                 "seq": sound.seq,
                 "rate": sound.sample_rate,
                 "channels": sound.channels,
@@ -286,6 +309,7 @@ pub fn frame(app: &tauri::AppHandle, bytes: &[u8]) {
         };
         let body = serde_json::json!({
             "profile": frame.profile,
+            "tab": frame.tab,
             "seq": frame.seq,
             "width": frame.width,
             "height": frame.height,
@@ -321,33 +345,34 @@ pub fn browser_kept_frame() -> Option<serde_json::Value> {
 #[cfg(not(target_os = "macos"))]
 static KEPT: std::sync::Mutex<Option<serde_json::Value>> = std::sync::Mutex::new(None);
 
-/// Whether the kept phone frame belongs to the profile this attach names.
+/// Whether the kept phone frame belongs to the tab this attach names.
 ///
-/// **A new attach drops another profile's frame**: the canvas mounts before
-/// the new `browser_view` lands, so without this it could paint the previous
-/// profile's picture under this one's name.
+/// **A new attach drops another tab's frame**: the canvas mounts before the
+/// new `browser_view` lands, so without this it could paint the previous
+/// tab's picture under this one's name.
 #[cfg(any(not(target_os = "macos"), test))]
-fn keeps_kept(kept: Option<&serde_json::Value>, id: u16) -> bool {
-    kept.and_then(|frame| frame.get("profile")).and_then(serde_json::Value::as_u64)
-        == Some(u64::from(id))
+fn keeps_kept(kept: Option<&serde_json::Value>, id: u16, tab: u16) -> bool {
+    let field =
+        |name: &str| kept.and_then(|frame| frame.get(name)).and_then(serde_json::Value::as_u64);
+    field("profile") == Some(u64::from(id)) && field("tab") == Some(u64::from(tab))
 }
 
-/// The server named the viewed profile's wire id.
-pub fn attached(app: &tauri::AppHandle, id: u16) {
+/// The server named the viewed profile's wire id and tab.
+pub fn attached(app: &tauri::AppHandle, id: u16, tab: u16) {
     #[cfg(target_os = "macos")]
     {
         if let Some(viewer) = app.try_state::<std::sync::Arc<Viewer>>() {
-            viewer.attached(id);
+            viewer.attached(id, tab);
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
-        // **A new attach drops the previous profile's kept frame.** The
-        // canvas mounts before the new `browser_view` lands, so without this
-        // it could paint the last profile's picture under this one's name.
+        // **A new attach drops the previous tab's kept frame.** The canvas
+        // mounts before the new `browser_view` lands, so without this it
+        // could paint the last tab's picture under this one's name.
         let mut kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !keeps_kept(kept.as_ref(), id) {
+        if !keeps_kept(kept.as_ref(), id, tab) {
             *kept = None;
         }
     }
@@ -374,28 +399,30 @@ pub fn lost(app: &tauri::AppHandle) {
 mod tests {
     use super::{keeps_kept, split_frame};
 
-    /// **The kept phone frame stays only for its own profile.** A canvas
+    /// **The kept phone frame stays only for its own tab.** A canvas
     /// mounting before the new `browser_view` would otherwise paint the
-    /// previous profile's picture under this one's name.
+    /// previous tab's picture under this one's name.
     #[test]
-    fn a_kept_frame_stays_only_for_its_profile() {
-        let frame = serde_json::json!({ "profile": 5 });
-        assert!(keeps_kept(Some(&frame), 5), "the same profile keeps its frame");
-        assert!(!keeps_kept(Some(&frame), 6), "another profile drops it");
-        assert!(!keeps_kept(None, 5), "nothing kept is not kept for anyone");
+    fn a_kept_frame_stays_only_for_its_tab() {
+        let frame = serde_json::json!({ "profile": 5, "tab": 2 });
+        assert!(keeps_kept(Some(&frame), 5, 2), "the same tab keeps its frame");
+        assert!(!keeps_kept(Some(&frame), 5, 3), "another tab drops it");
+        assert!(!keeps_kept(Some(&frame), 6, 2), "another profile drops it");
+        assert!(!keeps_kept(None, 5, 2), "nothing kept is not kept for anyone");
         assert!(
-            !keeps_kept(Some(&serde_json::json!({ "profile": "5" })), 5),
+            !keeps_kept(Some(&serde_json::json!({ "profile": "5", "tab": 2 })), 5, 2),
             "a value this half cannot read is not a match",
         );
     }
 
     /// **A relayed frame splits into the fields both arms draw by.** The
     /// desktop's overlay reads the size and the pixels, the phone's canvas
-    /// the profile and the sequence; a header parsed at the wrong offset
-    /// draws shifted rows or another profile's page.
+    /// the profile, tab and sequence; a header parsed at the wrong offset
+    /// draws shifted rows or another tab's page.
     #[test]
     fn a_relayed_frame_splits_its_header() {
         let mut bytes = vec![7_u8, 0]; // profile 7
+        bytes.extend_from_slice(&3_u16.to_le_bytes()); // tab 3
         bytes.extend_from_slice(&9_u32.to_le_bytes()); // seq 9
         bytes.extend_from_slice(&640_u16.to_le_bytes());
         bytes.extend_from_slice(&480_u16.to_le_bytes());
@@ -407,6 +434,7 @@ mod tests {
         assert_eq!(
             (
                 split.profile,
+                split.tab,
                 split.seq,
                 split.width,
                 split.height,
@@ -414,9 +442,9 @@ mod tests {
                 split.key,
                 split.encoded,
             ),
-            (7, 9, 640, 480, 1, true, &[4_u8, 3, 2, 1][..]),
-            "the profile, sequence, size, format, key flag and payload"
+            (7, 3, 9, 640, 480, 1, true, &[4_u8, 3, 2, 1][..]),
+            "the profile, tab, sequence, size, format, key flag and payload"
         );
-        assert!(split_frame(&bytes[..11]).is_none(), "a frame shorter than its header is refused");
+        assert!(split_frame(&bytes[..13]).is_none(), "a frame shorter than its header is refused");
     }
 }

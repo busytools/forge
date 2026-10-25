@@ -319,16 +319,27 @@ mod commands {
         bridge.read_document(&session, path, reviewable)
     }
 
-    /// Attach this connection to a profile's browser as a viewer, answering
-    /// the profile it attached: a raise that named none is the asking seat's
-    /// own, and the page lowers that name on Done.
+    /// Attach this connection to a seat's browser tab as a viewer, answering
+    /// the profile and tab it attached: a raise that named no tab is the
+    /// asking seat's current one, and the page lowers that pair on Done.
     #[tauri::command]
     pub async fn client_browser_view(
         bridge: tauri::State<'_, Arc<Bridge>>,
         seat: Value,
-        profile: Option<String>,
-    ) -> Result<String, String> {
-        bridge.browser_view(seat, profile).await
+        tab: Option<u16>,
+    ) -> Result<Value, String> {
+        bridge.browser_view(seat, tab).await
+    }
+
+    /// The tabs of this seat's profile, for the strip and the bar. Subscribing
+    /// the connection means every later change is pushed as a `browser_tabs`
+    /// event.
+    #[tauri::command]
+    pub async fn client_browser_tabs(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        seat: Value,
+    ) -> Result<Value, String> {
+        bridge.browser_tabs(seat).await
     }
 
     /// Take the controller role, or give it back.
@@ -352,35 +363,6 @@ mod commands {
         scale: f64,
     ) {
         bridge.browser_resize(width, height, scale);
-    }
-
-    /// The profiles this server holds, for the strip's rows.
-    #[tauri::command]
-    pub async fn client_browser_profiles(
-        bridge: tauri::State<'_, Arc<Bridge>>,
-        seat: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        bridge.browser_profiles(seat).await
-    }
-
-    /// Close a named profile's browser, keeping its logins.
-    #[tauri::command]
-    pub async fn client_browser_profile_close(
-        bridge: tauri::State<'_, Arc<Bridge>>,
-        seat: serde_json::Value,
-        name: String,
-    ) -> Result<(), String> {
-        bridge.browser_profile_close(seat, &name).await
-    }
-
-    /// Delete a named profile and its logins.
-    #[tauri::command]
-    pub async fn client_browser_profile_delete(
-        bridge: tauri::State<'_, Arc<Bridge>>,
-        seat: serde_json::Value,
-        name: String,
-    ) -> Result<(), String> {
-        bridge.browser_profile_delete(seat, &name).await
     }
 
     /// One input event from the controlling viewer.
@@ -445,12 +427,10 @@ pub fn run() {
             browser::browser_takeover,
             browser::browser_kept_frame,
             commands::client_browser_view,
+            commands::client_browser_tabs,
             commands::client_browser_control,
             commands::client_browser_nav,
             commands::client_browser_resize,
-            commands::client_browser_profiles,
-            commands::client_browser_profile_close,
-            commands::client_browser_profile_delete,
             commands::client_browser_input,
             check_update,
             install_update,
@@ -500,12 +480,10 @@ pub fn run() {
             browser::browser_takeover,
             browser::browser_kept_frame,
             commands::client_browser_view,
+            commands::client_browser_tabs,
             commands::client_browser_control,
             commands::client_browser_nav,
             commands::client_browser_resize,
-            commands::client_browser_profiles,
-            commands::client_browser_profile_close,
-            commands::client_browser_profile_delete,
             commands::client_browser_input,
             check_update,
             install_update,

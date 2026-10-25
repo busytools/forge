@@ -132,6 +132,7 @@ mod tests {
     fn an_audio_packet_is_split_or_refused() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&7_u16.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
         bytes.extend_from_slice(&3_u32.to_le_bytes());
         bytes.extend_from_slice(&48_000_u32.to_le_bytes());
         bytes.push(2);
@@ -142,6 +143,7 @@ mod tests {
             sound,
             Sound {
                 profile: 7,
+                tab: 2,
                 seq: 3,
                 sample_rate: 48_000,
                 channels: 2,
@@ -149,7 +151,7 @@ mod tests {
             }
         );
 
-        assert!(split_sound(&bytes[..10]).is_none(), "a short header is refused");
+        assert!(split_sound(&bytes[..12]).is_none(), "a short header is refused");
         let odd = &bytes[..bytes.len() - 1];
         assert!(split_sound(odd).is_none(), "half a sample is refused");
     }
