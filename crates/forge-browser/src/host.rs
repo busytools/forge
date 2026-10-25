@@ -206,7 +206,7 @@ const PARENT_CHECK_EVERY_MS: u64 = 1000;
 /// to someone else, which is alive as far as this host is concerned.
 fn running(pid: u32) -> bool {
     // SAFETY: signal 0 only checks that the process exists.
-    let checked = unsafe { libc::kill(pid as i32, 0) };
+    let checked = unsafe { libc::kill(pid.cast_signed(), 0) };
     checked == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 

@@ -640,17 +640,16 @@ cef::wrap_render_handler! {
             // dividing that by the request's scale would inflate the page and
             // stale every later frame. A tab's own size wins while it is
             // recorded; every other tab reads the ring's request.
-            let (request_w, request_h, scale_milli) = match &self.size {
-                Some(size) => size.get(),
-                None => {
-                    // SAFETY: the header is mapped for this process's whole life.
-                    let header = unsafe { &*self.ring.header() };
-                    (
-                        header.request_width.load(Ordering::Relaxed),
-                        header.request_height.load(Ordering::Relaxed),
-                        header.request_scale_milli.load(Ordering::Relaxed),
-                    )
-                }
+            let (request_w, request_h, scale_milli) = if let Some(size) = &self.size {
+                size.get()
+            } else {
+                // SAFETY: the header is mapped for this process's whole life.
+                let header = unsafe { &*self.ring.header() };
+                (
+                    header.request_width.load(Ordering::Relaxed),
+                    header.request_height.load(Ordering::Relaxed),
+                    header.request_scale_milli.load(Ordering::Relaxed),
+                )
             };
             let (width, height) = view_size(request_w, request_h, scale_milli);
             rect.width = width;
@@ -663,17 +662,16 @@ cef::wrap_render_handler! {
             info: Option<&mut ScreenInfo>,
         ) -> i32 {
             let Some(info) = info else { return 0 };
-            let (request_w, request_h, scale_milli) = match &self.size {
-                Some(size) => size.get(),
-                None => {
-                    // SAFETY: the header is mapped for this process's whole life.
-                    let header = unsafe { &*self.ring.header() };
-                    (
-                        header.request_width.load(Ordering::Relaxed),
-                        header.request_height.load(Ordering::Relaxed),
-                        header.request_scale_milli.load(Ordering::Relaxed),
-                    )
-                }
+            let (request_w, request_h, scale_milli) = if let Some(size) = &self.size {
+                size.get()
+            } else {
+                // SAFETY: the header is mapped for this process's whole life.
+                let header = unsafe { &*self.ring.header() };
+                (
+                    header.request_width.load(Ordering::Relaxed),
+                    header.request_height.load(Ordering::Relaxed),
+                    header.request_scale_milli.load(Ordering::Relaxed),
+                )
             };
             info.device_scale_factor = screen_scale(scale_milli);
             info.depth = 24;

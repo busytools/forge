@@ -922,7 +922,7 @@ impl BrowserService {
             }
             found.unwrap_or_default()
         };
-        let numbers = vec![(number, None)];
+        let numbers = [(number, None)];
         // **A CEF browser the host created after the driver attached is not
         // reported to that driver's context.** A fresh driver enumerates the
         // context's pages, so the tab a create or a popup just added is only
@@ -2001,7 +2001,7 @@ impl BrowserService {
         // before the uploads directory is cleared or a byte is written, so a
         // superseded answer cannot wipe the files a live dialog is handing
         // over.
-        let outstanding = profile.files.borrow().as_ref().cloned();
+        let outstanding = profile.files.borrow().as_ref().copied();
         match &outstanding {
             Some(ask) if ask.id == id && ask.tab == tab => {}
             // **A chooser belongs to its tab's viewer.** A watcher on another
