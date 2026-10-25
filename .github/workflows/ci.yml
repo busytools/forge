@@ -388,6 +388,18 @@ jobs:
       # bundle: the staged one above is at this crate's version, which is
       # exactly what the service checks before launching.
       - run: cargo nextest run -p forge-browser --all-features --run-ignored all
+      # **The fleet end to end**: the server's live browser test drives the
+      # staged host through the vendored driver. It needs the driver stack,
+      # which `just install` also vendors, and the host bundle staged above.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: scripts/vendor_browser_stack.sh
+        env:
+          FORGE_BROWSER_STACK_DIR: ${{ runner.temp }}/forge-browser-stack
+      - run: cargo nextest run -p forge-server --test browser_service --run-ignored ignored-only
+        env:
+          FORGE_BROWSER_TEST_STACK: ${{ runner.temp }}/forge-browser-stack
       - run: just client-tauri-clippy
       - run: just client-tauri-test
 

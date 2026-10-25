@@ -61,7 +61,13 @@ async fn a_profile_drives_a_page_serves_frames_and_has_one_controller() {
     let service = BrowserService::at(scratch.path().to_path_buf(), stack);
     let seat = SessionSlot::lead("TestOrg", "proj");
 
-    // Opening the seat's profile starts its host and driver; the page paints.
+    // **A fresh profile has no session tab until a page call adopts one.**
+    // The call starts the host, the driver and the tab; attach resolves to
+    // the seat's current tab, which this call made.
+    service
+        .call(&seat, "browser_snapshot", json!({}))
+        .await
+        .expect("the first page call opens the session's tab");
     let attachment = service.attach(7, &seat, None).await.expect("the seat's profile opens");
     let key = attachment.key.clone();
     let tab = attachment.tab;
