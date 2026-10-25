@@ -1331,7 +1331,13 @@ impl BrowserService {
         // list from growing pages nothing paints.
         let orphaned: Vec<String> = {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            crate::tabs::orphan_targets(&tabs, &listing)
+            // **A fresh host's current page is its boot tab, not an
+            // orphan.** No session has adopted it yet, so the registry does
+            // not know it; closing it would take the page the first call is
+            // meant to adopt.
+            let boot_pending =
+                profile.boot.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+            closed_as_orphans(&tabs, &listing, boot_pending)
         };
         for target in orphaned {
             spawn::close_target(port, &target).await;
@@ -4085,6 +4091,22 @@ fn left(deadline: tokio::time::Instant) -> Duration {
 }
 
 /// Collect one host tab birth from the event queue.
+/// The pages reconcile closes: every page target the registry does not know,
+/// except a fresh host's boot page while no session has adopted it yet.
+fn closed_as_orphans(
+    tabs: &crate::tabs::TabRegistry,
+    listing: &[crate::tabs::DriverTab],
+    boot_pending: bool,
+) -> Vec<String> {
+    let mut orphaned = crate::tabs::orphan_targets(tabs, listing);
+    if boot_pending
+        && let Some(boot) = listing.iter().find(|row| row.current).or_else(|| listing.first())
+    {
+        orphaned.retain(|target| target != &boot.target);
+    }
+    orphaned
+}
+
 /// Sort one host tab event against a requested birth: **the request's own id
 /// is the tab that was asked for**, and everything else is kept for the
 /// reconcile pass rather than being taken for it or dropped.
@@ -6219,6 +6241,46 @@ mod tests {
         classify_birth(ours, 42, &mut found, &mut other);
         assert_eq!(found, Some(6), "the id says which birth was asked for");
         assert_eq!(other, vec![popup, closed], "the others are kept, not dropped");
+    }
+
+    /// **A fresh host's boot page is not closed as an orphan.** The first
+    /// `browser_tabs` call reconciles before any session has adopted it;
+    /// closing the current page would leave the next call with nothing to
+    /// adopt, and the host would come back with an extra page.
+    #[test]
+    fn a_fresh_hosts_boot_page_is_not_closed_as_an_orphan() {
+        use super::closed_as_orphans;
+        use crate::tabs::DriverTab;
+
+        let listing = [
+            DriverTab {
+                index: 0,
+                id: "p1".to_owned(),
+                target: "boot".to_owned(),
+                title: String::new(),
+                url: "about:blank".to_owned(),
+                current: true,
+            },
+            DriverTab {
+                index: 1,
+                id: "p2".to_owned(),
+                target: "made".to_owned(),
+                title: String::new(),
+                url: "about:blank".to_owned(),
+                current: false,
+            },
+        ];
+        let tabs = crate::tabs::TabRegistry::default();
+        assert_eq!(
+            closed_as_orphans(&tabs, &listing, true),
+            vec!["made".to_owned()],
+            "the boot page waits for its session's first call",
+        );
+        assert_eq!(
+            closed_as_orphans(&tabs, &listing, false),
+            vec!["boot".to_owned(), "made".to_owned()],
+            "once adopted, an unclaimed page is an orphan like any other",
+        );
     }
 
     /// **A host tab the driver has not listed waits for the next pass.** The
