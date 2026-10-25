@@ -27,7 +27,6 @@ import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import { cannotPaint } from '../paint';
 import { inFlightOf } from '../session/apply';
-import { watchSession } from '../session/live';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
@@ -1556,20 +1555,12 @@ export class Chat {
   }
 
   /**
-   * Hold the seat, listen to it, and take the page its snapshot carries.
+   * Listen to the seat and take the page its snapshot carries.
    *
-   * **The hold lives with the conversation, not with the page** (Ved,
-   * 2026-10-09): the server sends a seat's frames to a subscriber of that
-   * seat, so a subscription given back on leave would make "every frame folds
-   * for every seat" untrue for exactly the frames that matter. A kept
-   * conversation keeps receiving; the DRAW is what waits.
-   *
-   * **It is a HOLD on the seat's one subscription, not a subscribe of its
-   * own.** The page opens that subscription and holds it too, and two
-   * subscribes are two whole records encoded and sent to a client that keeps
-   * one copy - 6.5 MB twice on a large seat, measured 2026-10-09. The
-   * subscription goes with the last holder, so a page leaving a seat this
-   * conversation still folds sends nothing at all.
+   * **The subscription is the seat's own and outlives the page** (Ved,
+   * 2026-10-25): a visited seat stays subscribed for the life of the
+   * connection, so a conversation holds nothing and a page leaving it sends
+   * nothing. A kept conversation keeps receiving; the DRAW is what waits.
    *
    * **The snapshot carries the newest page and its cursor, so the switch does
    * not ask for it twice** (#2420). The subscribe's own answer is seeded as
@@ -1579,7 +1570,6 @@ export class Chat {
    */
   start(): () => void {
     if (this.running !== null) return this.running;
-    const release = watchSession(this.connection, this.slot, false).hold();
     // Where the seat already is, for a seat a visit has answered before: a
     // return subscribes nothing, so nothing else would say.
     this.heard(this.heldRunning());
@@ -1670,7 +1660,6 @@ export class Chat {
         window.removeEventListener('pageshow', wake);
         window.removeEventListener('focus', wake);
       }
-      release();
       this.clearRetry();
       this.running = null;
     };

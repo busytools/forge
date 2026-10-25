@@ -14,14 +14,14 @@
  * slot the update carries, so a store's contents are this seat's and nothing
  * else's.
  *
- * **The subscription follows its HOLDERS, and the RECORD stays.** One page
- * opens the seat's subscription - its own answer is the whole record - and
- * every holder after it rides that one: a page drawing the seat, and the
- * conversation folding it. A page leaving gives its own hold back; the
- * subscription goes with the last of them, because a held subscription reads
- * as a showing seat to the server and showing spends the marks a seat earns.
- * The record stays either way, so a return draws what it holds, and while the
- * conversation holds the seat a return asks for nothing at all.
+ * **A visited seat is subscribed for the life of the connection, and its
+ * RECORD is kept with it.** The first page to draw a seat opens the
+ * subscription - its own answer is the whole record - and leaving no longer
+ * gives it back, so every frame keeps folding into a record that is current
+ * the moment the seat is drawn again. Only two things release it: its session
+ * ending (`releaseSeat`), and the connection closing. **Showing a seat is a
+ * separate message**, sent by the route, and that is what spends a seat's
+ * marks; the subscription spends nothing.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -73,18 +73,6 @@ interface Seat {
   held: Store | null;
   /** How many subscriptions this seat opened, to give back as many when it is let go. */
   opened: number;
-  /**
-   * How many holders keep this seat's subscription open.
-   *
-   * **A subscription is opened once and held by whoever needs it** (Ved's
-   * ruling, 2026-10-09: the conversation folds every frame of every seat):
-   * the page drawing the seat, and the conversation keeping its frames. The
-   * page leaving gives its own hold back, and the seat's subscription goes
-   * with the LAST of them - so a page's return sends nothing while the
-   * conversation still holds it, and a seat nobody holds is let go exactly as
-   * it was before.
-   */
-  holders: number;
   /** What the seat is subscribed as: a later reader that can answer raises it. */
   answering: boolean;
   /**
@@ -167,8 +155,8 @@ interface Seat {
    * with it.
    */
   repairHeld: { seq: number; span: number; update: SessionUpdate }[];
-  /** Hold the seat's subscription open, answering the release: see `hold`. */
-  hold: () => () => void;
+  /** Release the seat because its session ended: see `end`. */
+  end: () => void;
   /**
    * Open the seat's subscription: see `open`.
    *
@@ -248,17 +236,15 @@ const OUTRUN_CAP = 3;
 /**
  * Watch one seat.
  *
- * **The seat's record is the client's; its subscription follows its holders.**
- * The first page to show a seat opens its subscription - that answer is what
- * fills its history - and every holder after that, a page or a conversation,
- * rides the one subscription and is handed what the seat holds. The
- * subscription goes with the last holder, and a return while any holder
- * remains asks for nothing: the record it held draws, and the frames never
- * stopped.
+ * **The seat's record is the client's, and so is its subscription.** The first
+ * page to show a seat opens its subscription - that answer is what fills its
+ * history - and no visit gives it back: every later visit is handed what the
+ * seat holds, and the frames never stopped. Only a session ending
+ * ([`releaseSeat`]) and the connection closing release it.
  *
  * **The subscribe happens with the first reader**, not at this call: a caller
  * that takes the store and never subscribes opens nothing of its own, and a
- * seat whose page is the only holder is subscribed by that page's own first
+ * seat whose page is the only reader is subscribed by that page's own first
  * read. The second opener is the role: a page that can answer raises a seat
  * held as an observer, and that raise is a subscribe whether or not any page
  * has subscribed the store yet.
@@ -296,7 +282,7 @@ export function watchSession(
    * cancelled at birth.
    */
   answering: boolean,
-): { subscribe: Readable<SessionRead>['subscribe']; hold: () => () => void } {
+): { subscribe: Readable<SessionRead>['subscribe'] } {
   const subject: Subject = { session: slot };
   const key = subjectKey(subject);
   const visited = seats(connection);
@@ -316,7 +302,7 @@ export function watchSession(
     seat.open();
   }
 
-  return { subscribe: seat.view.subscribe, hold: seat.hold };
+  return { subscribe: seat.view.subscribe };
 }
 
 /** The seats held on one connection, made on first use. */
@@ -326,6 +312,16 @@ function seats(connection: Connection): Map<string, Seat> {
   const fresh = new Map<string, Seat>();
   SEATS.set(connection, fresh);
   return fresh;
+}
+
+/** Release a seat whose session has ended: no subscription outlives it. */
+export function releaseSeat(connection: Connection, slot: SessionSlot): void {
+  const held = SEATS.get(connection);
+  const key = subjectKey({ session: slot });
+  const seat = held?.get(key);
+  if (held === undefined || seat === undefined) return;
+  held.delete(key);
+  seat.end();
 }
 
 /** One seat, opened: subscribed, listened to, and holding the record an update is applied to. */
@@ -351,14 +347,10 @@ function createSeat(
    */
   function showing(): () => void {
     shown = true;
-    seat.holders += 1;
-    // A return: the page is back. **Nothing is asked for a seat whose
-    // subscription is still open** - the conversation holds it for as long as
-    // it folds the seat (Ved, 2026-10-09), and a re-ask would re-encode and
-    // re-send a whole record this client already holds. `opened === 0` is the
-    // one case a subscribe is owed: the last holder let the seat go, and this
-    // is the first reader back. Its answer is the whole record, and the held
-    // record draws until it lands.
+    // **A visited seat is subscribed once and stays subscribed** (Ved,
+    // 2026-10-25): the first visit opens it, and leaving no longer gives it
+    // back, so a return draws the record the frames kept current. Only a
+    // session ending and the connection closing release it.
     if (seat.opened === 0) open();
     if (seat.wire === null) read();
     return leaving;
@@ -385,53 +377,22 @@ function createSeat(
       }
       seat.held = null;
       publish(null, null);
-      give_back();
       return;
     }
-    give_back();
   }
 
   /**
-   * One holder lets the seat go, and the subscription goes with the LAST of
-   * them.
+   * Release the seat because its session has ended: no subscription outlives
+   * it.
    *
-   * **A held subscription reads as a SHOWING seat to the server**, and
-   * showing spends every mark the seat earns - the failure mark and the
-   * diamond both are cleared by it - so a seat nobody holds is given back.
-   * What does not give it back is a page leaving a seat a conversation still
-   * folds: the frames keep arriving for it (Ved, 2026-10-09), and the return
-   * would otherwise pay a second encode of the record the client already
-   * holds. The record and the held store stay either way, so a return draws
-   * what it holds while a re-subscribe's answer - the whole record, as a
-   * reconnect's is - lands.
+   * **This is one of only two doors that give a visited seat back**, the
+   * other being the connection closing. A page leaving does not.
    */
-  function give_back(): void {
-    if (seat.holders > 0) seat.holders -= 1;
-    if (seat.holders > 0) return;
-    if (seat.opened > 0) {
-      for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
-      seat.opened = 0;
-    }
-  }
-
-  /**
-   * Keep the seat's subscription open until the returned release is called.
-   *
-   * The conversation's own hold, and the reason a left seat keeps folding:
-   * the server sends a seat's frames to a subscriber of that seat, so a
-   * subscription given back with the page would drop exactly the frames the
-   * ruling keeps (Ved, 2026-10-09). Balanced with the page's own hold, so a
-   * seat nobody holds is still let go.
-   *
-   * **It keeps a subscription alive; it does not open one.** The conversation
-   * lives inside the page that draws the seat, so the page is what opens it -
-   * as itself or as the role a page that can answer declares - and a hold
-   * taken first opens nothing rather than subscribing a seat as an observer
-   * the page would then have to re-ask under its own role.
-   */
-  function hold(): () => void {
-    seat.holders += 1;
-    return give_back;
+  function end(): void {
+    if (released) return;
+    for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
+    seat.opened = 0;
+    release();
   }
 
   const seat: Seat = {
@@ -440,7 +401,6 @@ function createSeat(
     refused: null,
     held: null,
     opened: 0,
-    holders: 0,
     answering,
     asking: false,
     epoch: null,
@@ -450,7 +410,7 @@ function createSeat(
     outrun: 0,
     repairFrom: null,
     repairHeld: [],
-    hold,
+    end,
     open,
   };
 
@@ -680,12 +640,11 @@ function createSeat(
    * recorded and asked for when the answer lands.
    *
    * **A seat with no subscription asks nothing, because there is nothing to
-   * ask on.** The ask is an unsubscribe-then-subscribe pair, so a seat whose
-   * last holder let it go would have this re-attach it: the server reads it as
-   * shown, spending the marks every reader would get, with no holder here
-   * owning it. A held seat asks whether or not a page is drawing it - the
-   * frames never stopped for it, and the return no longer re-reads, so this is
-   * the only ask a seat away from the reader has.
+   * ask on.** A visited seat keeps its subscription, so this guard is reached
+   * only by a seat never opened - and the first visit's own subscribe is its
+   * ask. A held seat asks whether or not a page is drawing it: the frames
+   * never stopped for it, and the return no longer re-reads, so this is the
+   * only ask a seat away from the reader has.
    */
   function reread(): void {
     if (seat.asking || seat.opened === 0) return;

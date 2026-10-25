@@ -644,8 +644,9 @@
     }
     working = entry.chat;
     // **Every seat folds; only the shown one draws.** The conversation folds
-    // every frame it receives wherever the seat is (and holds the seat's own
-    // subscription - Ved, 2026-10-09), so the state never falls behind;
+    // every frame it receives wherever the seat is (the seat's own
+    // subscription is the client's and outlives the page - Ved, 2026-10-25),
+    // so the state never falls behind;
     // whether the seat is on screen decides only which value this column
     // renders. Written to the seat's own entry rather than straight to
     // `held`: a conversation kept for a seat the reader has left must not

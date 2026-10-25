@@ -15,6 +15,7 @@
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
+  import { releaseSeat } from '../session/live';
   import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
   import { watchUpdate } from '../update/state';
@@ -198,6 +199,10 @@
     const open = connection;
     if (open === null) return;
     const land = (seat: SessionSlot, spawnedBy: SessionSlot | null): void => {
+      // **The seat's session has ended, so its subscription goes with it.**
+      // A visited seat is otherwise kept for the connection's life, and this
+      // frame is one of the two doors that release it.
+      releaseSeat(open, seat);
       // Both reads are untracked, so the effect subscribes once per
       // connection rather than once per roster read and route change.
       const wire = untrack(() => home.wire);
