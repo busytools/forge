@@ -684,6 +684,43 @@ describe('the box', () => {
     expect(document.querySelector('.ac'), 'and the list closed').toBeNull();
   });
 
+  /**
+   * `/resume`'s list is the record's, drawn by the one popover and written by
+   * the one pick: a record the composer never reads is a popover that opens
+   * nothing, and nothing on screen says the field was the missing link.
+   */
+  it("offers the seat's resumable sessions after /resume and picks one by id", () => {
+    open({
+      record: record({
+        resume_sessions: [
+          { session_id: '7f3a92e0-1c2b', summary: 'the resume picker' },
+          { session_id: 'c40d18aa-2b3c', summary: 'the auth timeout fix' },
+        ],
+      }),
+    });
+
+    type('/resume ');
+    const list = document.querySelector('.ac');
+    expect(list, 'the space opens the list').not.toBeNull();
+    expect(list?.textContent, 'the ids are drawn, and what each one was').toContain(
+      '7f3a92e0-1c2b',
+    );
+    expect(list?.textContent).toContain('the auth timeout fix');
+
+    type('/resume 7f');
+    expect(
+      document.querySelector('.ac')?.textContent,
+      'a partial narrows it to the one id it starts',
+    ).not.toContain('c40d18aa-2b3c');
+
+    press('Enter');
+
+    expect(document.querySelector('.ac'), 'the pick closes the list').toBeNull();
+    expect(field().value, 'and leaves the ordinary command, ready to send').toBe(
+      '/resume 7f3a92e0-1c2b ',
+    );
+  });
+
   it("draws the take on the draft's own line, and takes it away when it resolves", () => {
     const harness = open();
 

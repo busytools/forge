@@ -28,6 +28,7 @@ export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
     slash_commands: [],
     subagents: [],
     file_index: { entries: {} },
+    resume_sessions: [],
     ...over,
   };
 }

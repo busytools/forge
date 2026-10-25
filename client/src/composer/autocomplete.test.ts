@@ -45,6 +45,17 @@ const sources = (): Sources => ({
     { name: 'cli-version', description: 'settled 3m' },
     { name: 'cli-audit', description: 'never run' },
   ],
+  // Newest first, which is the order the core sends and the order the list
+  // keeps. `7f3` sits in the NEWEST row's summary, mid-id in a newer row than
+  // the prefix match, and at the front of the oldest id - so one query
+  // separates all three tiers from a merely recent list.
+  sessions: [
+    { id: '9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a', summary: 'the 7f3 fold audit' },
+    { id: 'c40d18aa-2b3c-4d5e-9f01-b2c3d4e5f607', summary: 'fix auth timeout' },
+    { id: '1b2c3d4e-5f60-4718-9a2b-c3d4e5f60718', summary: 'auth retry after timeout' },
+    { id: 'a7f3c2b1-9d4e-4f60-8a2b-5c6d7e8f9012', summary: 'mid-id mention' },
+    { id: '7f3a92e0-1c2b-4d3e-8f90-a1b2c3d4e5f6', summary: 'resume picker' },
+  ],
 });
 
 /**
@@ -152,6 +163,78 @@ describe('the window a mark moves in', () => {
       keptInView({ top: 100, bottom: 133.3 }, 248, 0),
       'a row already in the window is not a reason to move it, so a wheel scroll stands',
     ).toBe(0);
+  });
+});
+
+/**
+ * `/resume`'s argument: the sessions the seat can jump back to.
+ *
+ * The list is the one trigger whose value is a word rather than a glyph or a
+ * path, so its rule is the command's own: `/resume` is a command until the
+ * space, and the argument after it is a closed token - a second word is the
+ * misuse forge answers with its usage line, never a query a pick could fix.
+ */
+describe('the sessions a /resume argument offers', () => {
+  it('opens after the space, whole and with a partial, and only as a whole argument', () => {
+    expect(offer('/resume ', sources)?.kind, 'the space is the argument').toBe('resume');
+    expect(offer('/resume 7f', sources)?.kind, 'and a partial narrows it').toBe('resume');
+    const named = (): Sources => ({
+      ...sources(),
+      forgeCommands: [{ name: '/resume', description: 'Resume a session by ID' }],
+    });
+    expect(offer('/resume', named)?.kind, 'a bare name is still the command list').toBe('command');
+    expect(
+      offer('/resume 7f3 fold', sources),
+      'two words is the misuse forge answers, so a pick must not compose it - and the words ' +
+        'are ones a summary carries, which is what a rule that only matched them would open',
+    ).toBeNull();
+    expect(offer('hello /resume 7f', sources), 'not at the start of the draft').toBeNull();
+    expect(
+      offer('/resumes', sources),
+      'and not a name that merely starts the same: its tail would match as a query',
+    ).toBeNull();
+  });
+
+  it('writes the id alone, so the send is the ordinary /resume <id>', () => {
+    const held = offer('/resume 7f', sources);
+    expect(held?.rows[0]?.insert, 'the row is the value, not the command').toBe(
+      '7f3a92e0-1c2b-4d3e-8f90-a1b2c3d4e5f6',
+    );
+    expect(held?.from, 'the pick replaces the partial it was typed as').toBe('/resume '.length);
+    expect(
+      `${'/resume 7f'.slice(0, held?.from ?? 0)}${held?.rows[0]?.insert} `,
+      'which is what a pick leaves in the box',
+    ).toBe('/resume 7f3a92e0-1c2b-4d3e-8f90-a1b2c3d4e5f6 ');
+  });
+
+  it('shows the id with the transcript summary beside it, newest first', () => {
+    expect(
+      offer('/resume ', sources)?.rows.map((row) => [row.text, row.detail]),
+      'each row is the id with the summary that names it, in the order the core sent',
+    ).toEqual([
+      ['9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a', 'the 7f3 fold audit'],
+      ['c40d18aa-2b3c-4d5e-9f01-b2c3d4e5f607', 'fix auth timeout'],
+      ['1b2c3d4e-5f60-4718-9a2b-c3d4e5f60718', 'auth retry after timeout'],
+      ['a7f3c2b1-9d4e-4f60-8a2b-5c6d7e8f9012', 'mid-id mention'],
+      ['7f3a92e0-1c2b-4d3e-8f90-a1b2c3d4e5f6', 'resume picker'],
+    ]);
+  });
+
+  it('ranks an id prefix, then an id anywhere, then the summary, keeping recency within each', () => {
+    expect(
+      offer('/resume 7f3', sources)?.rows.map((row) => row.detail),
+      'the oldest row leads because its id STARTS with the query; the mid-id match is newer ' +
+        'but still ranks below it; the newest row only says the words - so a list that merely ' +
+        'kept the core order would read back to front',
+    ).toEqual(['resume picker', 'mid-id mention', 'the 7f3 fold audit']);
+    expect(
+      offer('/resume timeout', sources)?.rows.map((row) => row.detail),
+      'and an equal match never reorders: the newer stays above the older',
+    ).toEqual(['fix auth timeout', 'auth retry after timeout']);
+  });
+
+  it('opens nothing for a seat with no sessions to offer', () => {
+    expect(offer('/resume ', (): Sources => ({ ...sources(), sessions: [] }))).toBeNull();
   });
 });
 

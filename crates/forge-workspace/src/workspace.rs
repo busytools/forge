@@ -3744,6 +3744,64 @@ impl Workspace {
             .map(|info| UNIX_EPOCH + Duration::from_millis(info.last_modified))
     }
 
+    /// The sessions the seat at `slot` can jump back to with `/resume`,
+    /// newest first, and never the one it is already on.
+    ///
+    /// **The set is what `claude --resume` can find from the directory the
+    /// seat's own resume runs in** ([`Self::cwd_for_session`], which is what
+    /// `--resume` is handed): a lead's project root, a worker's worktree, or
+    /// the project root for a worker with none. A lead gets its project's own
+    /// sessions and never its
+    /// workers' - `Workers::Hidden`, which is what keeps a lead's turns out of
+    /// a transcript tagged for a worker - while a worker gets only the
+    /// transcripts carrying its own label.
+    ///
+    /// **The directory is read rather than the boot catalog.** The catalog
+    /// carries a row for every session forge has seen CONNECT, including one
+    /// that has not written a turn yet and so has no transcript `--resume` can
+    /// find; offering it lands the seat on "No conversation found". A seat
+    /// whose project forge has not loaded has no directory to resume from, and
+    /// answers empty.
+    pub async fn resumable_sessions(&self, slot: &SessionSlot) -> Vec<SDKSessionInfo> {
+        let Some(cwd) = self.cwd_for_session(slot) else {
+            return Vec::new();
+        };
+        let workers = if slot.is_lead() {
+            forge_agent::userdata::catalog::scan::Workers::Hidden
+        } else {
+            forge_agent::userdata::catalog::scan::Workers::Only(slot.label().to_owned())
+        };
+        let mut entries = self.scan_sessions(&cwd, workers).await;
+        let occupant = self.transcript_session_id_for(slot);
+        entries.retain(|info| Some(&info.session_id) != occupant.as_ref());
+        entries
+    }
+
+    /// One directory scanned for the sessions a seat may resume, through the
+    /// store's tag cache like the boot scan: an unchanged transcript is not
+    /// re-read end to end for a list a reader opens for a moment.
+    async fn scan_sessions(
+        &self,
+        cwd: &str,
+        workers: forge_agent::userdata::catalog::scan::Workers,
+    ) -> Vec<SDKSessionInfo> {
+        let root = catalog_scan_root(&self.config_dir).unwrap_or_else(|| {
+            std::fs::canonicalize(&self.config_dir).unwrap_or_else(|_| self.config_dir.clone())
+        });
+        let tag_cache = std::sync::Arc::new(load_session_tag_cache(self.db.lock().as_ref()));
+        let entries = forge_agent::userdata::catalog::scan::list_sessions(
+            &root,
+            Some(cwd),
+            None,
+            0,
+            workers,
+            Some(&tag_cache),
+        )
+        .await;
+        persist_session_tag_cache(self.db.lock().as_ref(), &tag_cache);
+        entries
+    }
+
     /// A fresh id for a session starting now, recorded against `slot`'s
     /// row.
     pub(crate) fn fresh_session_id_for(&self, slot: &SessionSlot) -> String {
@@ -21023,6 +21081,69 @@ base_url = "https://openrouter.ai/api"
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Degraded);
     }
+
+    /// One transcript under the storage key of `run_dir`, tagged for `label`
+    /// when there is one, with its mtime pinned to `secs` so the newest-first
+    /// order is a fact rather than the clock's granularity.
+    fn write_picker_transcript(
+        cfg: &tempfile::TempDir,
+        run_dir: &std::path::Path,
+        id: &str,
+        label: Option<&str>,
+        secs: u64,
+    ) {
+        let run_dir = run_dir.to_string_lossy().replace('\\', "/");
+        let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&run_dir));
+        let dir = forge_sdk::projects_dir_for(cfg.path()).join(key);
+        std::fs::create_dir_all(&dir).expect("transcript dir");
+        let tag = label
+            .map(|label| format!("{{\"type\":\"tag\",\"tag\":\"forge:worker:{label}\"}}\n"))
+            .unwrap_or_default();
+        let body = format!(
+            "{{\"type\":\"user\",\"cwd\":\"{run_dir}\",\"message\":{{\"content\":\"session {id}\"}}}}\n{tag}"
+        );
+        let path = dir.join(format!("{id}.jsonl"));
+        std::fs::write(&path, body).expect("write transcript");
+        let file = std::fs::File::options().write(true).open(&path).expect("open the transcript");
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .expect("pin the transcript's mtime");
+    }
+
+    /// A worker's list is only what its own label ran, and only in the
+    /// directory its resume runs in: another worker's transcript and an
+    /// untagged one in the same worktree are both out.
+    #[tokio::test]
+    async fn resume_sessions_of_a_worker_are_only_its_own_labels() {
+        let project = tempfile::tempdir().expect("project dir");
+        let cfg = tempfile::tempdir().expect("cfg dir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(cfg.path().to_owned());
+        let root = project.path().to_string_lossy().replace('\\', "/");
+        ws.seed_test_project("demo", &root);
+        let seat = SessionSlot::worker("TestOrg", "demo", "alpha");
+        let project_key = ProjectKey::new(
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&root)),
+        );
+        ws.insert_live_worker(&project_key, worker_entry("alpha", &seat, true));
+        let worktree = project.path().join(".claude/worktrees/alpha");
+        std::fs::create_dir_all(&worktree).expect("worktree dir");
+        write_picker_transcript(&cfg, &worktree, "alpha-new", Some("alpha"), 1_700_000_200);
+        write_picker_transcript(&cfg, &worktree, "alpha-old", Some("alpha"), 1_700_000_100);
+        write_picker_transcript(&cfg, &worktree, "beta", Some("beta"), 1_700_000_300);
+        write_picker_transcript(&cfg, &worktree, "untagged", None, 1_700_000_400);
+        // The same label's run from another tree, which `--resume` from this
+        // seat's directory cannot find at all.
+        let elsewhere = project.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("another tree");
+        write_picker_transcript(&cfg, &elsewhere, "elsewhere", Some("alpha"), 1_700_000_500);
+
+        let found = ws.resumable_sessions(&seat).await;
+
+        assert_eq!(
+            found.iter().map(|info| info.session_id.as_str()).collect::<Vec<_>>(),
+            ["alpha-new", "alpha-old"],
+            "its own label's runs in its own directory, newest first, and nothing else",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -21632,6 +21753,98 @@ provider = "anthropic"
             workspace.list_projects()[0].sessions.is_empty(),
             "no runtime: no scan ran, the catalog stays empty"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // #2565: `/resume`'s list is what `claude --resume` can find from the
+    // directory the seat's own resume runs in.
+    // ---------------------------------------------------------------
+
+    /// Pin a transcript's mtime to a fixed second, so a test that reads the
+    /// newest first does not depend on the clock's granularity.
+    fn pin_transcript(dir: &tempfile::TempDir, project_path: &str, id: &str, secs: u64) {
+        let key =
+            forge_agent::userdata::catalog::scan::project_key_for_directory(Some(project_path));
+        let path = dir.path().join("projects").join(key).join(format!("{id}.jsonl"));
+        let file = fs::File::options().write(true).open(&path).expect("open the transcript");
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .expect("pin the transcript's mtime");
+    }
+
+    /// A lead's list is its project's own transcripts, newest first, and never
+    /// a worker's: a lead's resume runs in the project root, where a non-git
+    /// worker's transcript sits too, and picking it would put the lead's turns
+    /// into a transcript tagged for that worker.
+    #[tokio::test]
+    async fn resume_sessions_of_a_lead_are_its_projects_and_never_its_workers() {
+        let dir = scan_fixture_dir();
+        let project = dir.path().join("proj");
+        let project_path = project.display().to_string();
+        write_session_fixture(dir.path(), &project_path, "older", None);
+        write_session_fixture(dir.path(), &project_path, WORKER_UUID, Some("forge:worker:alpha"));
+        pin_transcript(&dir, &project_path, LEAD_UUID, 1_700_000_200);
+        pin_transcript(&dir, &project_path, "older", 1_700_000_100);
+        pin_transcript(&dir, &project_path, WORKER_UUID, 1_700_000_300);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+
+        let found = workspace.resumable_sessions(&SessionSlot::lead("Default", "proj")).await;
+
+        assert_eq!(
+            found.iter().map(|info| info.session_id.as_str()).collect::<Vec<_>>(),
+            [LEAD_UUID, "older"],
+            "the project's own transcripts, newest first, and never a worker's",
+        );
+        assert_eq!(found[1].summary, "opening prompt", "a row carries the transcript's title");
+    }
+
+    /// The list is the sessions a seat can JUMP BACK TO, so the one it is
+    /// already on is not one of them: a pick would respawn the seat onto
+    /// itself.
+    #[tokio::test]
+    async fn resume_sessions_leave_out_the_session_the_seat_is_already_on() {
+        let dir = scan_fixture_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let seat = SessionSlot::lead("Default", "proj");
+        workspace.record_session_id("Default", "proj", "lead", LEAD_UUID);
+
+        assert!(
+            workspace.resumable_sessions(&seat).await.is_empty(),
+            "the seat's own occupant is not a jump, and it is the only session here",
+        );
+    }
+
+    /// A seat whose project forge has not loaded has nowhere to resume from,
+    /// and the list is empty rather than another project's.
+    #[tokio::test]
+    async fn resume_sessions_of_an_unloaded_project_are_empty() {
+        let (workspace, _updates) = Workspace::testing_stub();
+        assert!(
+            workspace.resumable_sessions(&SessionSlot::lead("TestOrg", "nothing")).await.is_empty(),
+            "no loaded project, no cwd, no list",
+        );
+    }
+
+    /// **A session that has connected but written no turn is not a jump.**
+    /// The catalog mirrors every Connected - the boot spawn's own session
+    /// included - and that row has no transcript `claude --resume` can find;
+    /// offering it lands the seat on "No conversation found". The directory
+    /// is the only answer, so a row the catalog holds and the disk does not is
+    /// left out (measured on the dev stack).
+    #[tokio::test]
+    async fn resume_sessions_leave_out_a_connected_session_with_no_transcript() {
+        let dir = scan_fixture_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let seat = SessionSlot::lead("Default", "proj");
+        let cwd = workspace.cwd_for_session(&seat).expect("the project's directory");
+        workspace.record_connected_session(&cwd, "live-only", Some("new session".to_owned()));
+
+        let found = workspace.resumable_sessions(&seat).await;
+
+        assert!(
+            found.iter().all(|info| info.session_id != "live-only"),
+            "the catalog's row has no transcript behind it: {found:?}",
+        );
+        assert_eq!(found.len(), 1, "and the transcript that IS there is still offered");
     }
 }
 

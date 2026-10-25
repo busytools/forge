@@ -51,7 +51,7 @@
     signInLine,
     type ComposerProps,
   } from './view';
-  import { advisoriesFrom, agentTypesFrom, filesFrom } from './wire';
+  import { advisoriesFrom, agentTypesFrom, filesFrom, resumeSessionsFrom } from './wire';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 
   /** How long a landed take's border holds its green beat, which the book states. */
@@ -526,6 +526,7 @@
       advertised: advisoriesFrom(record.slash_commands),
       files: filesFrom(record.file_index),
       agents: agentTypesFrom(record.subagents),
+      sessions: resumeSessionsFrom(record.resume_sessions),
     };
   }
   const held = $derived(offer(box.draft, sources));

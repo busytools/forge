@@ -71,6 +71,17 @@ impl ViewSurface {
         self.workspace.available_agents_for(slot)
     }
 
+    /// The sessions `slot` can jump back to with `/resume`, newest first,
+    /// which is what the seat's own `claude --resume` can find from the
+    /// directory it runs in. See [`forge_workspace::Workspace::resumable_sessions`]
+    /// for the set a lead and a worker each get.
+    pub async fn resumable_sessions(
+        &self,
+        slot: &SessionSlot,
+    ) -> Vec<forge_primitives::SDKSessionInfo> {
+        self.workspace.resumable_sessions(slot).await
+    }
+
     /// The sub-agent instances the session at `slot` has folded, as the list
     /// it pushes when the list moves.
     ///

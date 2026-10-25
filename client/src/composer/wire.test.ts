@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { askFrom, composerFrom } from './wire';
+import { askFrom, composerFrom, resumeSessionsFrom } from './wire';
 
 /** A question as the wire carries one, with whatever the test overrides in its prompt. */
 function question(prompt: Record<string, unknown> = {}): unknown {
@@ -198,5 +198,30 @@ describe('the composer record', () => {
       generation: 7,
       carried: true,
     });
+  });
+});
+
+/**
+ * The `/resume` list's rows: a row whose id this client read under the wrong
+ * key is a list that opens nothing, and nothing on screen says the field name
+ * was the reason - while an id-less row is a pick that writes nothing.
+ */
+describe('the sessions a seat can resume', () => {
+  it("reads each row's id and summary as the wire names them, in the order it sent", () => {
+    expect(
+      resumeSessionsFrom([
+        { session_id: 'b-newer', summary: 'fix auth timeout' },
+        { session_id: 'a-older', summary: 'resume picker' },
+        { summary: 'no id at all' },
+      ]),
+      'the core orders the list, this keeps it, and a row with no id is not a pick',
+    ).toEqual([
+      { id: 'b-newer', summary: 'fix auth timeout' },
+      { id: 'a-older', summary: 'resume picker' },
+    ]);
+  });
+
+  it('reads nothing as an empty list, never a row', () => {
+    expect(resumeSessionsFrom(undefined)).toEqual([]);
   });
 });

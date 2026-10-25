@@ -401,6 +401,7 @@
   <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="12" height="12" x="6" y="6" rx="2.5" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-cmd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+  <symbol id="i-read" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></symbol>
   <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M12 8V4H8"/><path d="M9 14h.01M15 14h.01"/></symbol>
   <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 6 2 7 2 7H4s2-1 2-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></symbol>
   <symbol id="i-smile" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></symbol>
@@ -522,11 +523,13 @@ distinction.</p>
 </div>
 
 <h2>Autocomplete</h2>
-<p class="note">Four triggers, one popover shape. Each row carries the real icon for its kind
+<p class="note">Five triggers, one popover shape. Each row carries the real icon for its kind
 rather than a character-cell prefix, the matched span is highlighted, and the cap is shown
 in the header so a truncated list never reads as the whole list. The <code>/</code> list is the one
 with two sources: forge's own commands lead, the ones the CLI advertises follow under their own
-heading, and a query drops the headings and leaves the order.</p>
+heading, and a query drops the headings and leaves the order. <code>/resume</code>'s argument is a
+word rather than a path: the space opens the sessions this seat can jump back to, and a second
+word closes the list rather than composing a line the core answers as a misuse.</p>
 <div class="stage">
   <div class="row">
     <div class="col">
@@ -584,6 +587,15 @@ heading, and a query drops the headings and leaves the order.</p>
         <div class="it"><span class="cur"></span><span class="g">&#128515;</span><span class="p">:<em>sm</em>iley:</span></div>
         <div class="it"><span class="cur"></span><span class="g">&#128527;</span><span class="p">:<em>sm</em>irk:</span></div>
         <div class="it"><span class="cur"></span><span class="g">&#128513;</span><span class="p">:sweat_<em>sm</em>ile:</span></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="lab">/resume sessions &middot; newest first, and never the one you are on</div>
+      <div class="ac">
+        <div class="h"><svg class="ic"><use href="#i-read"/></svg> sessions <span class="n">4</span></div>
+        <div class="it sel"><span class="cur">&#9656;</span><span class="p"><em>7f3a</em>92e0-1c2b-4d3e-8f90-a1b2c3d4e5f6</span><span class="d">the resume picker</span></div>
+        <div class="it"><span class="cur"></span><span class="p">c40d18aa-2b3c-4d5e-9f01-b2c3d4e5f607</span><span class="d">fix the auth timeout</span></div>
+        <div class="it"><span class="cur"></span><span class="p">1b2c3d4e-5f60-4718-9a2b-c3d4e5f60718</span><span class="d">the 7f3 fold audit</span></div>
       </div>
     </div>
   </div>

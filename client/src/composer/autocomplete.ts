@@ -18,7 +18,7 @@
 
 import { MIN_QUERY_CHARS, matches as emojiMatches, shortcodeQuery } from './emoji';
 import { isForgeCommand } from './forge-commands';
-import type { Advisory, AgentType, FileEntry } from './wire';
+import type { Advisory, AgentType, FileEntry, ResumeSession } from './wire';
 
 /**
  * How many candidates a list is ranked down to before it is drawn.
@@ -52,6 +52,8 @@ export interface Sources {
   files: FileEntry[];
   /** The subagent types the CLI catalogue names. */
   agents: AgentType[];
+  /** The sessions this seat can resume, newest first. */
+  sessions: ResumeSession[];
 }
 
 /** One row of a list: what it writes, what it reads as, and the icon it carries. */
@@ -79,7 +81,7 @@ export interface Group {
 
 /** Which list a draft opened, and what it holds. */
 export interface Offer {
-  kind: 'command' | 'file' | 'agent' | 'emoji';
+  kind: 'command' | 'file' | 'agent' | 'emoji' | 'resume';
   /** Where the token starts in the draft, which a pick replaces from. */
   from: number;
   query: string;
@@ -97,6 +99,7 @@ export const HEADINGS: Record<Offer['kind'], { icon: string; title: string }> = 
   file: { icon: 'file', title: 'files & folders' },
   agent: { icon: 'bot', title: 'subagents' },
   emoji: { icon: 'smile', title: 'emoji' },
+  resume: { icon: 'read', title: 'sessions' },
 };
 
 /**
@@ -172,6 +175,10 @@ export function offer(draft: string, sources: () => Sources): Offer | null {
   if (last.startsWith('/') && last === draft) {
     return of('command', 0, last.slice(1), commands(sources));
   }
+  const resume = resumeArgument(draft);
+  if (resume !== null) {
+    return of('resume', resume.from, resume.query, resumable(sources));
+  }
   if (last.startsWith('@') && last.length > 1) {
     return of('file', from, last.slice(1), files(sources));
   }
@@ -179,6 +186,60 @@ export function offer(draft: string, sources: () => Sources): Offer | null {
     return of('agent', from, last.slice(1), agents(sources));
   }
   return emojiOffer(draft);
+}
+
+/** `/resume` and the whole argument typed after it, which is the session id's partial. */
+const RESUME = '/resume';
+
+/**
+ * The argument `/resume` was given, and where it starts, or `null` when the
+ * draft is not one.
+ *
+ * **The argument is one whole word**: a second one is the invocation forge
+ * answers with its usage line, so a list there could only compose a pick into
+ * a line the core refuses. A draft that is the command and nothing else is the
+ * command list's, which [`offer`] reads first, and a `/resume` inside a
+ * sentence is prose.
+ */
+function resumeArgument(draft: string): { query: string; from: number } | null {
+  if (!draft.startsWith(RESUME)) return null;
+  const query = draft.slice(RESUME.length).trimStart();
+  for (const char of query) {
+    if (isSpace(char)) return null;
+  }
+  return { query, from: draft.length - query.length };
+}
+
+/**
+ * The sessions `query` matches, best first: the id from its start, then the id
+ * anywhere, then the summary - and the order the core sent within each tier,
+ * which is newest first.
+ */
+function resumable(sources: () => Sources): (query: string) => Row[] {
+  const { sessions: held } = sources();
+  return (query) => {
+    const folded = query.toLowerCase();
+    return held
+      .map((session) => ({ session, tier: sessionTier(session, folded) }))
+      .filter((entry) => entry.tier !== null)
+      .sort((a, b) => (a.tier ?? 0) - (b.tier ?? 0))
+      .map((entry) => ({
+        insert: entry.session.id,
+        text: entry.session.id,
+        detail: entry.session.summary,
+        glyph: null,
+        group: null,
+      }));
+  };
+}
+
+/** How well a session matches, smaller being better, or `null` when it does not. */
+function sessionTier(session: ResumeSession, query: string): number | null {
+  const id = session.id.toLowerCase();
+  if (id.startsWith(query)) return 0;
+  if (id.includes(query)) return 1;
+  if (session.summary.toLowerCase().includes(query)) return 2;
+  return null;
 }
 
 function of(

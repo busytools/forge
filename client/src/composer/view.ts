@@ -91,6 +91,8 @@ export interface ComposerRecord {
   subagents: unknown;
   /** This seat's working tree, walked once and shared with the cache. */
   file_index: unknown;
+  /** The sessions this seat can resume, newest first, which `/resume` offers. */
+  resume_sessions: unknown;
 }
 
 /**
@@ -189,6 +191,7 @@ export function emptyComposer(slot: SessionSlot): ComposerRecord {
     slash_commands: undefined,
     subagents: undefined,
     file_index: undefined,
+    resume_sessions: undefined,
   };
 }
 

@@ -256,6 +256,7 @@
   "file_index": {
     "entries": {}
   },
+  "resume_sessions": [],
   "reviews": {
     "threads": {
       "outcome": "read",
