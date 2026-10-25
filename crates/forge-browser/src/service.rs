@@ -348,7 +348,7 @@ impl BrowserService {
             key: key.as_str().to_owned(),
             id: self.ids.fetch_add(1, Ordering::Relaxed),
             dir,
-            frames: watch::channel(None).0,
+            frames: Mutex::new(HashMap::new()),
             nav: Mutex::new(HashMap::new()),
             failures: watch::channel(None).0,
             files: watch::channel(None).0,
@@ -1657,7 +1657,7 @@ impl BrowserService {
         // **One tab at a time per viewer**: a surface that moved leaves the
         // tab it was on, and a role it held there goes with it.
         self.detach(viewer).await;
-        let frames = profile.frames.subscribe();
+        let frames = profile.frame_receiver(tab);
         let view = profile.view_for(tab).subscribe();
         let nav = profile.nav_receiver(tab);
         let failures = profile.failures.subscribe();
@@ -2460,7 +2460,10 @@ pub struct Profile {
     launch: Arc<AsyncMutex<()>>,
     /// The service's stop flag, shared by every profile.
     stopped: Arc<AtomicBool>,
-    frames: watch::Sender<Option<BrowserFrame>>,
+    /// **Each tab's newest frame is its own watch.** One profile-wide slot
+    /// let a background tab's paint replace the viewed tab's, and an attach
+    /// burst - every tab asked for a key frame - could blank the surface.
+    frames: Mutex<HashMap<u16, watch::Sender<Option<BrowserFrame>>>>,
     /// Where the page's history sits, published when it moves: a link click
     /// moves the bar's arrows without anyone asking.
     /// **Each tab's history is its own**: a watch per tab, so a viewer's
@@ -2864,6 +2867,7 @@ impl Profile {
         self.viewers.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
         self.views.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
         self.nav.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
+        self.frames.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
     }
 
     /// **A chooser outliving the person who could answer it is cancelled.**
@@ -3050,6 +3054,21 @@ impl Profile {
         );
     }
 
+    /// One tab's frame watch, made on demand.
+    fn frame_sender(&self, tab: u16) -> watch::Sender<Option<BrowserFrame>> {
+        self.frames
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(tab)
+            .or_insert_with(|| watch::channel(None).0)
+            .clone()
+    }
+
+    /// The frame watch a viewer on `tab` follows.
+    fn frame_receiver(&self, tab: u16) -> watch::Receiver<Option<BrowserFrame>> {
+        self.frame_sender(tab).subscribe()
+    }
+
     /// One tab's history watch, made on demand.
     fn nav_sender(&self, tab: u16) -> watch::Sender<Option<BrowserNavState>> {
         self.nav
@@ -3209,22 +3228,25 @@ impl Profile {
         // under app-support exceeds a Unix socket's address, and an org
         // profile is two segments deep.
         let socket = channel::frame_socket_path(&self.dir, self.id)?;
-        let frames = self.frames.clone();
+        let profile = Arc::downgrade(self);
         let audio = self.audio.clone();
         let reader = channel::serve(&socket, move |message| match message {
             channel::ChannelMessage::Frame(frame) => {
-                // **The newest frame wins, and it is KEPT even with no
-                // viewer attached.** `send` drops a value nobody is
+                // **The newest frame wins per tab, and it is KEPT even with
+                // no viewer attached.** `send` drops a value nobody is
                 // watching, and the first paint happens before the first
                 // viewer attaches - the page would then sit blank until
-                // something repainted it.
+                // something repainted it. One profile-wide slot let another
+                // tab's paint replace the viewed tab's.
                 let encoded = frame.encode();
-                frames.send_replace(Some(BrowserFrame {
-                    profile: frame.profile,
-                    tab: frame.tab,
-                    seq: frame.seq,
-                    encoded,
-                }));
+                if let Some(profile) = profile.upgrade() {
+                    profile.frame_sender(frame.tab).send_replace(Some(BrowserFrame {
+                        profile: frame.profile,
+                        tab: frame.tab,
+                        seq: frame.seq,
+                        encoded,
+                    }));
+                }
             }
             // **Audio is a stream, not a newest-wins value**: a viewer that
             // falls behind drops a packet and hears a glitch rather than
@@ -3573,7 +3595,7 @@ impl Profile {
         let _decision = self.file_decision.lock().await;
         let mut state = self.state.lock().await;
         self.teardown(&mut state).await;
-        self.frames.send_replace(None);
+        self.frames.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.nav.lock().unwrap_or_else(PoisonError::into_inner).clear();
         // **Nothing of a gone browser's chooser or its staged files stays.**
         self.files.send_replace(None);
@@ -5652,14 +5674,53 @@ mod tests {
             service.profile_dir(&ProfileKey::parse(&second.key).expect("a key")),
             "and each has its own root",
         );
-        first.frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
+        first.frame_sender(1).send_replace(Some(forge_primitives::browser::BrowserFrame {
             profile: first.id(),
             tab: 1,
             seq: 1,
             encoded: vec![1],
         }));
-        assert!(first.frames.borrow().is_some(), "the first profile's stream carries its frame");
-        assert!(second.frames.borrow().is_none(), "and the second's does not");
+        assert!(
+            first.frame_receiver(1).borrow().is_some(),
+            "the first profile's stream carries its frame"
+        );
+        assert!(second.frame_receiver(1).borrow().is_none(), "and the second's does not");
+    }
+
+    /// **A tab's newest frame is not replaced by another tab's paint.** One
+    /// profile-wide slot let a background tab overwrite the viewed tab's
+    /// frame - an attach burst asks every tab for a key frame - and the
+    /// surface could blank.
+    #[tokio::test]
+    async fn a_tabs_frame_is_not_replaced_by_another_tabs_paint() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser");
+        let service = BrowserService::at(root.clone(), root.join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let profile = service.entry(&seat).await.expect("a profile entry");
+        let viewer = profile.frame_receiver(1);
+        let frame = |tab, seq| {
+            Some(forge_primitives::browser::BrowserFrame {
+                profile: profile.id(),
+                tab,
+                seq,
+                encoded: vec![1],
+            })
+        };
+
+        profile.frame_sender(1).send_replace(frame(1, 1));
+        profile.frame_sender(2).send_replace(frame(2, 9));
+        assert_eq!(
+            viewer.borrow().as_ref().map(|frame| (frame.tab, frame.seq)),
+            Some((1, 1)),
+            "tab 2's paint does not replace tab 1's frame",
+        );
+        profile.frame_sender(1).send_replace(frame(1, 2));
+        assert_eq!(
+            viewer.borrow().as_ref().map(|frame| (frame.tab, frame.seq)),
+            Some((1, 2)),
+            "the viewed tab's own newest paint arrives",
+        );
     }
 
     /// **Only the controller moves the page, checked in the service before

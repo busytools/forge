@@ -288,9 +288,9 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
         match ready {
             Ok(0) => {
                 let frame = viewing.frames.borrow_and_update().clone();
-                // **One profile's frame watch carries every tab's newest
-                // paint.** A frame for another tab is skipped rather than
-                // drawn as this viewer's page.
+                // **The watch is this tab's own**, so a frame from another
+                // tab cannot arrive here; the tab check is the wire's own
+                // identity, kept against a frame that names another.
                 if let Some(frame) = frame
                     && frame.tab == viewing.tab
                     && viewing.last_frame != Some(frame.seq)
@@ -319,7 +319,7 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
             // **The tab's own senders go when the tab does**, and the
             // refusal names it so the client lowers that surface and can pick
             // another. The profile's senders going is the browser's end.
-            Err(11 | 13) => {
+            Err(10 | 11 | 13) => {
                 return ViewEvent::Failed(format!("tab {} was closed", viewing.tab));
             }
             Err(_) => return ViewEvent::Failed("the browser was closed".to_owned()),
