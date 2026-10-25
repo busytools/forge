@@ -41,6 +41,7 @@ struct Driven<'a> {
     generation: u64,
     pid: u32,
     port: u16,
+    tab: u16,
     target: &'a str,
 }
 
@@ -759,7 +760,7 @@ impl BrowserService {
         let outcome = self
             .after_failure(
                 &profile,
-                Driven { generation, pid, port, target: &target },
+                Driven { generation, pid, port, tab, target: &target },
                 tool,
                 &retry_args,
                 outcome,
@@ -1452,7 +1453,7 @@ impl BrowserService {
         args: &Value,
         outcome: Result<Vec<BrowserPart>, String>,
     ) -> Result<Vec<BrowserPart>, String> {
-        let Driven { generation, pid, port, target } = driven;
+        let Driven { generation, pid, port, tab, target } = driven;
         let why = match outcome {
             Ok(parts) => {
                 let mut state = profile.state.lock().await;
@@ -1481,7 +1482,7 @@ impl BrowserService {
         }
         if driver::stale_page(&why) {
             return self
-                .rebuild_after_dead_page(profile, generation, target, tool, args, &why)
+                .rebuild_after_dead_page(profile, generation, tab, target, tool, args, &why)
                 .await;
         }
         // **A driver built against a browser that is gone is dropped.** The
@@ -1553,6 +1554,7 @@ impl BrowserService {
         &self,
         profile: &Arc<Profile>,
         generation: u64,
+        tab: u16,
         target: &str,
         tool: &str,
         args: &Value,
@@ -1607,14 +1609,25 @@ impl BrowserService {
             }));
         };
         if repeatable(tool, args) {
-            // **The fresh driver's current page is the host's**, so the
-            // tab's own target is selected again before the call is
-            // repeated; a retry that drove another tab would land twice in
-            // the wrong page.
+            // **The listing is matched by the page guid, not the CDP
+            // target**: CEF swapped the target on the navigation that killed
+            // the context, so a target lookup found nothing and the retry
+            // drove whatever page the fresh driver called current.
+            let page = profile
+                .tabs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .id(tab)
+                .map(str::to_owned);
             let index = match fresh.tabs_within(driver::CALL_TIMEOUT).await {
-                Ok(listing) => crate::tabs::index_of(&listing, target),
+                Ok(listing) => {
+                    page.as_deref().and_then(|page| crate::tabs::index_of(&listing, page))
+                }
                 Err(_) => None,
             };
+            if index.is_none() {
+                log_rebuild(profile, tool, "rebuilt, the tab is not listed", target);
+            }
             if let Some(index) = index
                 && let Err(cannot) = fresh.select(index, driver::CALL_TIMEOUT).await
             {
@@ -5047,7 +5060,7 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
-                Driven { generation: 1, pid: 1, port: 9, target: "T1" },
+                Driven { generation: 1, pid: 1, port: 9, tab: 1, target: "T1" },
                 "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
@@ -5068,7 +5081,7 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
-                Driven { generation: 2, pid: 1, port: 9, target: "T1" },
+                Driven { generation: 2, pid: 1, port: 9, tab: 1, target: "T1" },
                 "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
@@ -5084,7 +5097,7 @@ mod tests {
         let again = service
             .after_failure(
                 &profile,
-                Driven { generation: 2, pid: 1, port: 9, target: "T1" },
+                Driven { generation: 2, pid: 1, port: 9, tab: 1, target: "T1" },
                 "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
@@ -5126,7 +5139,7 @@ mod tests {
         let (outcome, ()) = tokio::join!(
             service.after_failure(
                 &profile,
-                Driven { generation: 1, pid: 1, port: 9, target: "T1" },
+                Driven { generation: 1, pid: 1, port: 9, tab: 1, target: "T1" },
                 "browser_click",
                 &no_args,
                 Err(dead.to_owned()),
