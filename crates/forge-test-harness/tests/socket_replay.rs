@@ -1592,6 +1592,10 @@ fn binary_frame_record() -> Value {
                 "hex": hex_of(&browser),
                 "refusal": frame::Refusal::ServerOnly(frame::Kind::BrowserFrame.tag()).reason(),
             },
+            // **A declared contract, not a capture.** These two are built
+            // here from the documented header layout, so a field renamed or
+            // reordered fails this fixture; the host's own round-trip tests
+            // cover what its encoder really writes.
             // 1 tag byte, then the client's 14-byte header, then the payload.
             "browser_frame_from_server": {
                 "hex": hex_of(&server_frame),

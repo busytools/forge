@@ -88,9 +88,17 @@ jobs:
               - 'rust-toolchain.toml'
             # The macOS-only workspace half is the browser host, and only a
             # macOS runner compiles it; a change here must run that job even
-            # when no client file moved.
+            # when no client file moved. **The live gate is the server's
+            # browser_service test** over the workspace's browser port, so the
+            # files it compiles or drives are this job's paths too.
             browser:
               - 'crates/forge-browser/**'
+              - 'crates/forge-server/**'
+              - 'crates/forge-workspace/**'
+              - 'crates/forge-primitives/**'
+              - 'crates/forge-sdk/**'
+              - 'scripts/**'
+              - '.config/nextest.toml'
             scripts:
               - 'scripts/**'
             gate:
@@ -335,7 +343,7 @@ jobs:
   client-tauri-macos:
     name: client shell and browser host (macOS)
     needs: changes
-    if: needs.changes.outputs.client_tauri == 'true' || needs.changes.outputs.browser == 'true' || needs.changes.outputs.gate == 'true'
+    if: needs.changes.outputs.client_tauri == 'true' || needs.changes.outputs.browser == 'true' || needs.changes.outputs.scripts == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: macos-14
     env:
       # cef-dll-sys unpacks the distribution under CEF_PATH/<version> and
@@ -453,7 +461,7 @@ jobs:
               "docs": ("rust",),
               "client": ("client",),
               "client-tauri": ("client_tauri",),
-              "client-tauri-macos": ("client_tauri",),
+              "client-tauri-macos": ("client_tauri", "browser", "scripts"),
           }
 
           problems = []
