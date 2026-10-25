@@ -6573,6 +6573,26 @@ provider = "anthropic"
         assert_eq!(frames[0].1, frames[1].1, "and both name the seat that went");
     }
 
+    /// **A spawned seat warms the browser it resolves to.** The call is off
+    /// the spawn's own path, so the seat's first page call meets a host
+    /// already up rather than paying the launch itself.
+    #[tokio::test]
+    async fn a_spawned_seat_warms_its_browser() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        workspace.install_browser_host(Arc::new(crate::browser::testing::StubHost { calls }));
+        let seat = forge_primitives::SessionSlot::from_str_for_test("warm-seat");
+
+        warm_browser_seat(&workspace, &seat);
+
+        let (what, args) = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+            .await
+            .expect("the fleet hears the warm")
+            .expect("the stub's channel");
+        assert_eq!(what, "warm", "the spawn asks the fleet to bring the profile up");
+        assert_eq!(args, serde_json::json!(seat));
+    }
+
     /// **A despawn sweeps the browsers to the seats that remain.** The seat
     /// that went is not in the set and the project's lead is, which is the
     /// whole of what the fleet needs to close exactly the down seat's tabs.
