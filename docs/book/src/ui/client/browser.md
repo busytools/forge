@@ -2,17 +2,20 @@
 
 The server's Chromium, as a full-window takeover under a slim client bar.
 A browser hand-off's **Open** and the strip's browser row both open it; the
-sessions drive the same page while it is closed, and opening it shows exactly
-what they left. The drawing it is held against is
+sessions drive the same tabs while it is closed, and opening one shows the
+tab as they left it. The drawing it is held against is
 [web-browser.html](./web-browser.html), beside this page.
 
 **The browser is the server's.** The server ships its own CEF host - a signed
 `Forge Browser.app` beside forge's machine-local state, not in the client's
-bundle - and runs one windowless host process per profile, with a vendored
-Playwright driver speaking MCP to that host's DevTools endpoint. The host
-encodes each painted frame as a WebP still onto a local socket, and the
-server relays the newest one to every viewer over the socket. The client
-carries no engine, no driver and no browser profile: it is a viewer.
+bundle - and runs one windowless host process per org profile, with a
+vendored Playwright driver speaking MCP to that host's DevTools endpoint.
+**A profile comes from `forge.toml`**: the org's `browser_profile` (default
+`default`) with the project's own override, so a session's calls drive
+`<org>/<name>` and no client names or picks one. The host owns the profile's
+tabs and encodes each tab's painted frame as a WebP still onto a local
+socket; the server relays the newest one to every viewer of that tab. The
+client carries no engine, no driver and no browser profile: it is a viewer.
 
 **The phone is a viewer too.** The same frames, the same bar, the same Take
 control: the page paints each frame on a canvas where the desktop's shell
@@ -32,79 +35,92 @@ Neither client has a WebView engine or an in-process node any more.
 
 | Region | Shows | Read from |
 |---|---|---|
-| The hand-off's card | `browser hand-off` (and the profile, when one is named); **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar | the `browser_hand_off` ask, and the page's own surface state |
-| The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, **take control** / **release control**, the title (**the browser** and the profile it drives, or the hand-off's own), **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the server's viewer state |
+| The hand-off's card | `browser hand-off · tab N`; **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar | the `browser_hand_off` ask, and the page's own surface state |
+| The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
 | The feedback line | a text field and **send**: the person's words go to the agent as a prompt and the hand-off is declined | the page's own state; the prompt rides the socket |
-| The surface | the profile's page, filling the window under the bar: no window, no tab strip, no browser chrome | the server's relayed frames - drawn by the desktop's native overlay, or by the phone's canvas |
-| The strip's row | `browser` with its profile count, the work ring while a call runs, a disc when the takeover is up and a flat disc once it has been driven; **show** / **hide** | the server's browser fleet, and the surface state |
-| The engine line | `the server's own Chromium`, on both platforms | the server's browser fleet |
-| A named profile | its own host, its own cache root, its own logins; closed rows keep their files and can be deleted | the server's profile store |
+| The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's canvas |
+| The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide** | the `browser_tabs` ask and its pushed frame |
+| A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
+| The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on both platforms, or `nothing to run a page` | the tab list |
 | The states | `opening the browser…`, the server's sentence when it failed, the host's own death sentence - `the browser host exited (signal 9; pid 1234); the next call brings it back` - when a host dies under the surface (the cause is a signal or an exit code), and the page's own error page when a load fails | the page's surface state, and the server's failure frame |
-| A refusal | the server's own words: the profile another seat owns, no free port, the host not answering, or a page area that could not be placed | the attachment's answer and the surface's failure frame |
-| An unreadable row | the profile whose owner record cannot be read: drawn with the server's mark and carrying no verb, because the row cannot name an owner to act for it | the server's row |
+| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, or a page area that could not be placed | the attach's answer and the surface's failure frame |
 
 ## The rules
 
-**One host per profile, and the host outlives the surface.** A profile's
+**One host per org profile, and the host outlives the surface.** A profile's
 browser is a server process of its own, started on its first real need - a
-session call, a raise, the strip's show - and never at server start. Closing
-the surface ends nothing: the sessions keep driving the same page, and the
-next Open shows it as they left it. A profile's close ends its run and keeps
-its logins; a delete takes them.
+session call, a hand-off's Open, the strip's show - and never at server
+start. Closing the surface ends nothing: the sessions keep driving the same
+tabs, and the next Open shows one as it stands. A close ends the host and its
+tabs and keeps the profile's cache and logins; the next call starts a fresh
+host. Every page call logs its seat, tool, profile, host pid, port and cache
+root, so a call's browser is answerable after the fact.
 
-**A profile is a browser of its own, owned by the seat that opened it.** An
-omitted profile is the asking seat's own, named after its project and label
-and opened on its first call; the browser's own shared profile is reached
-only by naming it `@shared`, a word outside the profile charset so it can
-never collide with a real profile. A named profile is a directory under the
-server's `browser/profiles/<name>/cef`, with an ownership record beside it
-that is written on the first open and read back after a restart. The fold
-is lossy, and a collision is a refusal by the owner's name, never a share.
-A hand-off with no profile raises the asking seat's own - the one its calls
-drive - and another seat's name is refused by name. Every call logs the
-profile, host pid, port and cache root it drove, so a tab's identity is
-readable after the fact. A despawn or a close sweeps the down seat's
-profiles with it.
+**A profile is `forge.toml`'s, not a seat's.** Its key is `<org>/<name>`: the
+org's `browser_profile` (default `default`), or the project's own override.
+A session's calls drive that profile and land on its own tabs. **There is no
+profile verb**: no client names, closes, deletes or creates one, and the
+segment's list is tabs rather than profiles.
 
-**Profiles moved once, and only once.** The first server that finds no
-marker copies the client's own `browser/` tree across - every named profile
-and the shared browser's cache, logins, carried page and owner record
-included - and writes the marker. A later boot does nothing, and a profile
-the server already has is never overwritten by the stale client copy.
+**The host owns the tabs, and a tab belongs to the session that drives it.**
+A tab carries the host's number, and the registry keeps its owner, its title
+and URL, and the session's current tab. A session's first page call creates
+its tab - or adopts the host's own boot tab - and every later call drives
+that tab; another session's calls never land on it. Three things close a tab
+with its session: the sweep of dead seats, a `/new` or `/resume` on the slot,
+and the host ending - except a tab a parked hand-off still holds. Nothing
+outlives the host.
+
+**The old per-seat trees go once.** The first server that finds no marker
+deletes the old `shared/` tree and every per-seat `profiles/<name>/` tree,
+then writes `legacy-profiles-deleted` beside the root; a later boot does
+nothing. Org profiles live one level deeper, at
+`profiles/<org>/<name>/cef`, and a stray file under `profiles/` is not a
+profile.
+
+**A hand-off names a tab.** `browser_hand_off` requires the number of one of
+the session's own tabs, and **Open** raises that tab. The tab is held while
+the ask is parked: the idle clock and the dead-seat sweep both leave it
+alone, the strip marks it **held**, and the hand-off's card names it. Done or
+Not now releases it, and a session that went while the tab was held takes it
+with it when the ask resolves.
 
 **A page context that dies is rebuilt and answered in the client's words**,
 never handed back as the driver's `_page` TypeError, and a driver that cannot
 attach within its 30 s bound has its host named and ended rather than
 reported as a bare timeout.
 
-**Every viewer is a watcher until it takes the role.** A surface attaches to
-a profile and receives every frame; **exactly one attached viewer holds the
-controller role**, and only its gestures and history arrows reach the page.
-The bar's **take control** moves the role to this surface (the previous
-holder becomes a watcher at that moment), and **release control** gives it
-back with nobody holding it. A watcher's arrows are drawn disabled: the move
-is the controller's, and the server refuses one from anyone else. The server
-pushes who holds it to every viewer, so two surfaces draw the same truth, and
-each knows its own viewer id - the bar reads whose role it is rather than
-guessing. **The bar also names the browser it is over** - `shared`, or the
-profile's own name - so two devices driving two different browsers cannot
-read as one browser with a role held twice.
+**Every viewer is a watcher until it takes the role on that tab.** A surface
+attaches to one tab and receives every frame that tab paints; **exactly one
+attached viewer holds the controller role on it**, and only its gestures,
+history arrows and resize reach the page. The bar's **take control** moves the
+role to this surface (the previous holder becomes a watcher at that moment),
+and **release control** gives it back with nobody holding it. A watcher's
+arrows are drawn disabled: the move is the controller's, and the server
+refuses one from anyone else. The server pushes who holds it to every viewer
+of the tab, so two surfaces draw the same truth, and each knows its own viewer
+id - the bar reads whose role it is rather than guessing. **The bar also names
+the browser it is over** - the profile's own key - so two devices driving two
+profiles cannot read as one browser with a role held twice. **The bar's picker
+moves this surface to another tab of the same profile**: a re-attach on that
+tab, which replaces what this connection was watching.
 
 **The picture is the server's own frame.** The host paints windowless and
-encodes a WebP still; the server relays the newest one per profile to each
-viewer, and the client decodes it - into a layer at the page area's rect on
-the desktop, onto a canvas on the phone. **Both keep the picture's shape**: a
-frame laid out for another viewer's surface is fitted with bars rather than
-stretched, and taking control lays the page out at this surface's shape so
-the bars fall away. There is no screen capture
-anywhere, so the Screen Recording grant, the picker and its monthly
-re-approval are not part of this surface.
+encodes a WebP still; the server relays the newest frame for the viewed tab
+to each viewer, and the client decodes it - into a layer at the page area's
+rect on the desktop, onto a canvas on the phone. **Both keep the picture's
+shape**: a frame laid out for another viewer's surface is fitted with bars
+rather than stretched, and taking control lays the page out at this surface's
+shape so the bars fall away. There is no screen capture anywhere, so the
+Screen Recording grant, the picker and its monthly re-approval are not part
+of this surface.
 
-**Show and hide are this client's own.** The rows' marks come from the
-server's fleet - a disc means some client has that browser up - but each
-row's button reads this page's own surface: a phone shows **show** while the
-desktop holds the picture, and lowering here gives only this client's viewer
-back.
+**Show and hide are this client's own.** The marks come from the server's tab
+list - the row's dot means the profile's host is connected (an idle dot means
+the host is up with no driver), and a tab's own mark says in use, idle or held
+- but each row's button reads this page's own surface: a phone shows **show**
+while the desktop holds the picture on that tab, and lowering here gives only
+this client's viewer back.
 
 **A windowless page must stay a visible page.** The host asks CEF for a
 visible, focused page (`WasHidden(0)`, `SetFocus(1)`) and drives its frames
@@ -168,10 +184,12 @@ shell opens the platform's own save door and writes the bytes there, or says
 why it could not. A file past 32 MiB is refused in words rather than handed
 over, and **only the controller is sent one**.
 
-**The page's sound plays at the controlling client.** The host relays what
-the page plays as PCM packets beside the frames, and the shell plays them on
-this machine - the desktop's audio engine, the phone's web audio. A watcher
-is looking at the page rather than driving it, so they hear nothing.
+**The page's sound plays at the controlling client, for the viewed tab.** The
+host relays what the page plays as PCM packets beside the frames, each
+carrying its tab; the shell plays the tab it is showing and drops another
+tab's packet, on this machine - the desktop's audio engine, the phone's web
+audio. A watcher is looking at the page rather than driving it, so they hear
+nothing.
 
 **A recording is the agent's, and the person sees its layout.** While an
 agent records the page, the page is laid out at the file's own 1280x720 and
@@ -181,27 +199,19 @@ than a scaled copy of the surface.
 **There is no external-browser door.** Every page lives in the server's
 engine and nowhere else; no client hands one to another browser.
 
-**A restart reopens the page the person last saw.** The page a hand-off's
-Open or the strip's show puts in front of the person is written beside the
-profile, and every browsing call that changes the page rewrites it, so a
-later launch - after a restart or an idle close - opens where the session
-left off instead of on a blank page. Only a web address is ever reopened.
-
-**A carried page that has not been shown does not lose to a blank one.**
-The host opens on `about:blank` and the server navigates to the carried page
-once the passkey veto is registered, so a probe can meet the blank page
-before the navigation lands. A page written this way is held beside the
-profile until an Open or the next successful browsing call reads a real
-page; a blank read or the engine's own error page keeps both the marker and
-the hold, and the next launch opens the held page. The hold is on disk, so a
-restart does not erase the page the marker exists for.
+**A host that ends takes its tabs.** A restart, an idle close and a stop all
+end the host, and its tabs end with it: the next call starts a fresh host,
+whose boot tab the first page call adopts before navigating. A profile's
+cache and logins stay, so a sign-in survives the host; a filled form does not.
 
 **An idle browser closes on the SERVER's clock.** After `[browser]
-idle_minutes` with no call or attach, a named profile's owner is sent
-one heads-up; the browser closes `grace_minutes` later unless it is used,
-and the shared browser closes quietly at the same total without a message. **A lower does not reset the clock** - the next call or attach
-does. A viewer attached is a use, and a hand-off waiting on the
-person holds the profile. The close ends the host, not the page.
+idle_minutes` (30 unless the config says otherwise) with no call and no viewer
+attached, the profile's host is closed - there is no warning and no second
+grace clock. A viewer attached and a tab a parked hand-off holds keep the
+profile open: the sweep skips both rather than closing a page someone is
+looking at. **A lower does not reset the clock** - the next call or attach
+does. The close ends the host and its tabs, not the profile's cache or
+logins.
 
 **The catalogued engine's limits are named, not hidden.** The prebuilt CEF
 has no H.264 decoder (the job sites the probe exercised do not need it), it
@@ -211,10 +221,9 @@ frames per second at the surface's size; CPU was not profiled).
 
 **A failure is drawn where the person is looking.** The takeover's page area
 carries the server's sentence and the hand-off stays parked; the strip says
-what a refused show or hide said. The hand-off's answer shape is unchanged:
-**Done** and **Not now** are the two answers - the feedback line sends its
-words as a prompt and declines with Not now - and the fourth answer is a
-separate cut.
+what a refused show or hide said. **Done** and **Not now** are the hand-off's
+two answers; the feedback line sends its words as a prompt and declines with
+Not now.
 
 ## The widths
 

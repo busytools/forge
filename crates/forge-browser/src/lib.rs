@@ -1,4 +1,5 @@
-//! The server-owned browser: one CEF host process per profile.
+//! The server-owned browser: one CEF host process per org profile, and the
+//! host owns that profile's tabs.
 //!
 //! The host is a bundle of its own (`Forge Browser.app`), staged by
 //! `scripts/stage-browser-host.sh` beside forge's machine-local state, so

@@ -80,14 +80,16 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   in-process MCP server is unrelated and is named as the `forge` MCP
   server.
 - **`forge-browser`** - the server's browser: one CEF host process per
-  profile, shipped as its own signed `Forge Browser.app` beside the
-  server's state so the server never links CEF; the vendored Playwright
-  driver it speaks MCP to over that host's DevTools endpoint; WebP frames
-  encoded into a local socket; the profile store and its one-time copy
-  from the client's own tree; the idle release; and the service the
-  browser tools and every viewer call. `forge-workspace` carries only the
-  `BrowserHost` port; the frame's wire shape is a `forge-primitives` type,
-  and a viewer's drawing is the client's.
+  org profile (the org's `browser_profile`, else the project's override,
+  resolved from `forge.toml`), shipped as its own signed `Forge Browser.app`
+  beside the server's state so the server never links CEF; the host owns
+  the profile's tabs, and the service keeps each session's current tab; the
+  vendored Playwright driver it speaks MCP to over that host's DevTools
+  endpoint; WebP frames per tab into a local socket; the org profile store
+  under `profiles/<org>/<name>` and its one-time legacy-tree deletion; the
+  idle release; and the service the browser tools and every viewer call.
+  `forge-workspace` carries only the `BrowserHost` port; the frame's wire
+  shape is a `forge-primitives` type, and a viewer's drawing is the client's.
 - **`forge-test-harness`** - wire-conformance harness (`sdk_wire`
   scope): replay-based offline tests + opt-in live capture. Dev tooling,
   not a published crate.
@@ -166,9 +168,9 @@ Work top-down; first match wins.
    -> `forge-agent`: `env::*` for environment, `cloud::*` for Anthropic
    API / OAuth, `userdata::*` for `~/.claude*` files. Async, may shell
    out.
-9. **The browser the sessions drive?** (a host process, the driver, a
-   frame, a profile, the idle clock) -> `forge-browser`, which the server
-   owns as a fleet and the workspace reaches through the `BrowserHost`
+9. **The browser the sessions drive?** (a host process, the driver, a tab, a
+   frame, an org profile, the idle clock) -> `forge-browser`, which the
+   server owns as a fleet and the workspace reaches through the `BrowserHost`
    port. A frame's wire shape is a `forge-primitives` type; a viewer's
    drawing is the client's.
 10. **Orchestration across projects, sessions, accounts, `forge.toml`,

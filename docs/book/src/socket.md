@@ -21,7 +21,7 @@ stands on, not a proxy in front of a public bind.
 **The connection is kept alive by a ping.** The server pings every 15
 seconds and ends a connection whose ping has gone unanswered for 60: a
 peer that vanished without closing would otherwise read nothing for ever,
-and the viewer it attached as would stay counted on its profile. The pair
+and the viewer it attached as would stay counted on its tab. The pair
 is chosen rather than measured. Every WebSocket client answers a ping
 itself, so a client needs no code for this; one that stops answering is
 disconnected,
@@ -43,7 +43,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 10,
+  "version": 11,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -161,26 +161,35 @@ is what the core counts when it decides whether a prompt can be answered,
 and a client that has drawn a dock once is not made an observer again by a
 second message. So say it on the first subscribe and expect it to stand.
 
-**`browser_view {seat, profile, reply_to}`** - attach this connection to a
-profile's browser as a viewer. `profile` names the profile to drive; omit it
-for the shared browser. The answer is a `browser_view` naming the profile's
-wire id, then a `browser_nav_state`, then frames as they paint. **A client
-that waits for the answer sends `reply_to`**: the attach's own reply carries
-`{"ok": true}` when it attached and `{"ok": false, "why": ...}` when the
-server refused it, so a surface that could not open draws the reason instead
-of a dark page. Attaching again replaces what this connection was viewing,
-and a connection that goes is detached with it.
+**`browser_view {seat, tab, reply_to}`** - attach this connection to one of
+a seat's browser tabs as a viewer. `seat` names the seat whose browser to
+view; `tab` is a tab's number from the `browser_tabs` list, and omitting it
+takes the asking seat's current tab, else the profile's first. **The profile
+is not on the wire**: a seat's profile is `forge.toml`'s, resolved from the
+project's `browser_profile`, else its org's, else `default`. The answer is a
+`browser_view` naming the profile's wire id, the profile key and the tab, a
+`browser_nav_state` for that tab, and frames as they paint - the newest kept
+frame first when one exists, so an attach on a still page draws at once. **A
+client that waits for the answer sends `reply_to`**: the attach's own reply
+carries `{"ok": true, "profile": ..., "tab": ...}` with what it actually
+attached - a request that left the tab out is resolved to the seat's current
+one - and `{"ok": false, "why": ...}` when the server refused it, so a
+surface that could not open draws the reason instead of a dark page.
+Attaching again switches what this connection is viewing, and a connection
+that goes is detached with it. **A hand-off's tab is the tool call's own**:
+`browser_hand_off` requires it, the ask crosses as the seat's parked ask, and
+the surface's Open is this message naming that tab.
 
-**`browser_detach`** - stop viewing the attached profile. Lowering the
-takeover sends this: an attached viewer counts as a use, so a lowered
-surface gives its viewer up rather than keeping the profile warm, and a
-connection that switches profiles detaches from the old one first.
+**`browser_detach`** - stop viewing the attached tab. Lowering the takeover
+sends this: an attached viewer counts as a use, so a lowered surface gives
+its viewer up rather than keeping the profile warm, and a connection that
+switches tabs detaches from the old one first.
 
-**`browser_resize {width, height, scale}`** - lay the viewed page out to the
-controller's surface: device pixels and the ratio they draw at. **Only the
-controller's size applies**; a watcher's window never moves the page under
-the person driving it. The host adopts the size on its next pump and the
-next frame is a key frame at it.
+**`browser_resize {width, height, scale}`** - lay the viewed tab's page out
+to the controller's surface: device pixels and the ratio they draw at. **Only
+the controller's size applies**; a watcher's window never moves the page
+under the person driving it. The host adopts the size on its next pump and
+the next frame is a key frame at it.
 
 **`browser_input {seq, event}`** - one input event from the controlling
 viewer. **The wire carries the person's gesture, not CDP**: a press, a
@@ -196,13 +205,13 @@ There is no default controller and no override machinery: a surface starts
 controller-less, any attached client takes the role with an explicit
 control, and exactly one holds it at a time. A take moves the role to the
 caller; the previous holder becomes a watcher and its input is refused from
-that moment. Every viewer of the profile is sent the new state
+that moment. Every viewer of the tab is sent the new state
 (`browser_view`), so the same truth is drawn everywhere.
 
 **`browser_nav {back}`** - move through the page's history, the takeover
 bar's arrows. **Only the controller's move lands**: a watcher's is refused
 with an `error` naming `browser_nav`, the same rule input follows. The answer
-is a `browser_nav_state` for the profile, and the same frame is pushed
+is a `browser_nav_state` for the tab, and the same frame is pushed
 whenever the page navigates on its own.
 
 **`browser_file_answer {id, files}`** - the files a person chose for a
@@ -216,31 +225,29 @@ An empty list is a dismiss; past 16 files or 8 MiB the whole answer is a
 dismiss - 8 because base64 of more than that lands past the 16 MiB inbound
 bound, and a cap that tears the connection is worse than a dismiss.
 
-**`browser_profiles {seat, reply_to}`** - the strip's rows for one seat: the
-shared browser, the seat's own named profiles, and the ownerless ones a
-legacy tree left behind. **The answer rides the reply**, so a client that
-draws the rows sends `reply_to`: `{"ok": true, "rows": [...]}`, where each
-row is `{name, owner, up, windowed, busy, closed, unreadable}`. `owner` is
-`{org, project, label}` or null; `up` is whether its host is running;
-`windowed` is whether ANY client has it as the takeover - the strip's marks
-are the fleet's, while its show/hide is each client's own; `busy` is whether
-a call is running; `closed` is whether it is known only on disk; and
-`unreadable` is a row whose ownership record could not be read - it is drawn
-and carries no verb. A refusal answers `{"ok": false, "why": ...}`; with no
-`reply_to`, a refusal is an `error` frame and a success is silent.
+**`browser_tabs {seat, reply_to}`** - the strip's rows for one seat: the tabs
+of the profile its org and project resolve to. **The answer rides the
+reply**, so a client that draws the rows sends `reply_to`:
+`{"ok": true, "tabs": {...}}`, where the list is
+`{profile, id, up, connected, closing_at_ms, rows}`. `profile` is the key,
+`<org>/<name>`; `id` is the wire id the binary frames carry; `up` is whether
+the profile's host is running; `connected` is whether a driver is attached
+to it; `closing_at_ms` is the idle clock's deadline as Unix epoch
+milliseconds, or `null` when no host is up; and each row is
+`{number, title, url, owner, state}`. `number` is the host's own tab number,
+which frames and input already speak; `owner` is the session whose calls
+drive it, as `{org, project, label}`; and `state` is `in_use` (a call is
+driving it), `idle`, or `held` (a parked hand-off is waiting on the person
+in it). **The ask is the subscription**: the connection follows the same row
+list from then on, and every change is pushed as a `browser_tabs` frame. A
+refusal answers `{"ok": false, "why": ...}`; with no `reply_to`, a refusal is
+an `error` frame and a success is silent.
 
-**`browser_profile_close {seat, name, reply_to}`** - end a named profile's
-browser and keep its logins. **The seat must own the name when the profile
-has an owner**; an ownerless legacy profile has nobody to refuse, so any seat
-may close it, and the shared browser is not a profile to close. The answer is
-the reply: `{"ok": true}` or `{"ok": false, "why": ...}` - a client that omits
-`reply_to` has no other way to learn what happened.
-
-**`browser_profile_delete {seat, name, reply_to}`** - delete the profile and
-its logins, for the seat that owns it (an ownerless legacy profile likewise);
-this is the one act that takes them. The reply is `{"ok": true}` or
-`{"ok": false, "why": ...}`, and `reply_to` is what carries it for the same
-reason.
+**There is no profile verb on the socket.** A profile is `forge.toml`'s -
+its org's `browser_profile`, or the project's override - so no client names,
+closes or deletes one, and a tab is the calls' rather than the strip's: it
+opens with a session's first page call - or the host's own boot tab, which
+that call adopts - and closes with its session or its host.
 
 **`unsubscribe {what}`** - nothing comes back, because the client asked to
 stop hearing. Note that a second plain `subscribe` to one subject adds a
@@ -377,7 +384,8 @@ frames are relayed exactly as the host encoded them:
 | ----- | ----- | ----------------------------------------------------- |
 | 1     | kind  | `1` = browser frame                                   |
 | 2     | profile | the profile's wire id, little-endian u16            |
-| 4     | seq   | monotonic per profile, little-endian u32              |
+| 2     | tab   | the tab's number, little-endian u16                   |
+| 4     | seq   | monotonic per tab, little-endian u32                  |
 | 2     | width | device pixels, little-endian u16                      |
 | 2     | height | device pixels, little-endian u16                     |
 | 1     | format | `1` = WebP                                           |
@@ -387,8 +395,8 @@ frames are relayed exactly as the host encoded them:
 **The server never re-encodes a frame.** The host encodes once and the
 bytes reach every viewer as they left it. A viewer that falls behind is
 served the newest frame rather than a queue, and a stale frame is only ever
-superseded by a newer one for the same profile. A browser frame arriving
-from a client is refused: the host is the only encoder.
+superseded by a newer one for the same tab. A browser frame arriving from a
+client is refused: the host is the only encoder.
 
 **`2` is the page's own sound, and only the server sends one.** A page the
 browser host is playing crosses the wire as interleaved PCM, so a person at a
@@ -398,14 +406,17 @@ client hears it from their own device rather than the server's:
 | ----- | ----- | ----------------------------------------------------- |
 | 1     | kind  | `2` = browser audio                                   |
 | 2     | profile | the profile's wire id, little-endian u16            |
-| 4     | seq   | monotonic per profile, little-endian u32              |
+| 2     | tab   | the tab's number, little-endian u16                   |
+| 4     | seq   | monotonic per tab, little-endian u32                  |
 | 4     | rate  | samples a second, little-endian u32                   |
 | 1     | channels | interleaved channels                               |
 | rest  | samples | i16 little-endian, interleaved                        |
 
-A profile's packets go to its controller alone: a watcher is looking at the
-page, not driving its sound. A packet that arrives after the player has fallen
-behind is dropped rather than queued, so the sound stays beside the picture.
+**One profile's audio carries every tab's sound, and a viewer hears only the
+tab it is showing.** The viewed tab's packets go to its controller alone: a
+watcher is looking at the page, not driving its sound. A packet that arrives
+after the player has fallen behind is dropped rather than queued, so the sound
+stays beside the picture.
 
 **A binary frame from a client is audio or it is not a frame this server
 takes.** The browser frames and the page's sound are the server's alone, so
@@ -445,12 +456,10 @@ writes it at all - because the command is fire-and-forget: its effect
 arrives through the subscription, which is why a client subscribes before
 it acts.
 
-**`reply_to` is required on exactly eight of them**: a worker spawn, a
-despawn, the three review writes, an idle warning (whose verdict rides the
-reply - the prompt it may deliver is separate), and a profile's close or
-delete. Their outcome rides the reply and no update carries it, so a client
-that omitted `reply_to` would not be declining a reply - it would be
-declining to learn whether the work happened.
+**`reply_to` is required on exactly five of them**: a worker spawn, a
+despawn, and the three review writes. Their outcome rides the reply and no
+update carries it, so a client that omitted `reply_to` would not be declining
+a reply - it would be declining to learn whether the work happened.
 
 **Both mismatches are refused, with a sentence naming the field**, and
 refused before the command runs: a required field left off, and a
@@ -458,14 +467,12 @@ refused before the command runs: a required field left off, and a
 for the same reason the first does - a client that set it is waiting on a
 channel nothing will ever come down.
 
-**Each of the eight answers with its own type**: a spawn with a
-worker-spawn reply, a despawn with a despawn result, the review writes
-with a `bool` and a review set, an idle warning with an idle verdict, and a
-profile's close or delete with a `Result<(), String>`.
-One channel cannot carry eight different
+**Each of the five answers with its own type**: a spawn with a
+worker-spawn reply, a despawn with a despawn result, and the review writes
+with a `bool` and a review set. One channel cannot carry five different
 answers, so the reply type follows the command. A refusal arrives in that
 same reply, as the body of the answer rather than as an `error` - which is
-what the eight are for. A command that is _not_ one of the eight refuses as
+what the five are for. A command that is _not_ one of the five refuses as
 an `error` like anything else the core declines, whether or not a reply
 was asked for.
 
@@ -552,19 +559,23 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   "truncated": bool}` for a read, `{"state": "failed", "why": ...}` for one
   that could not run. There is no `error` arm.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
-- **`browser_view {id, profile, controller, viewers, viewer}`** - a
-  profile's viewer state: the wire id the binary frames carry, the
-  profile's key, the controller's viewer id when one holds the role, how
-  many clients are attached, and **this connection's own viewer id** - the
-  number `controller` names when the bar is this client's to draw a
-  release on. Sent on attach and whenever either changes, so every viewer
-  draws the same truth about who is driving.
-- **`browser_nav_state {id, can_back, can_forward}`** - where the viewed
-  page's history sits: what the takeover bar's arrows may do. Sent on attach,
+- **`browser_view {id, profile, tab, controller, viewers, viewer}`** - one
+  tab's viewer state: the wire id the binary frames carry, the profile's
+  key, the tab's number, the controller's viewer id when one holds the role
+  on that tab, how many clients are attached, and **this connection's own
+  viewer id** - the number `controller` names when the bar is this client's
+  to draw a release on. Sent on attach and whenever either changes, so every
+  viewer draws the same truth about who is driving.
+- **`browser_nav_state {id, tab, can_back, can_forward}`** - where the viewed
+  tab's history sits: what the takeover bar's arrows may do. Sent on attach,
   in answer to a move, and whenever the PAGE navigates on its own - a link
   click, a redirect or a same-document move - so the arrows do not wait for
   the next open.
-- **`browser_surface_failed {id, reason}`** - the viewed profile's browser
+- **`browser_tabs {id, profile, up, connected, closing_at_ms, rows}`** - one
+  profile's tabs, pushed to a connection that asked with `browser_tabs` once
+  per change: the same list the ask answered above, in the frame's own shape.
+  The strip draws its rows from this rather than polling.
+- **`browser_surface_failed {id, tab, reason}`** - the viewed tab's browser
   stopped. **Said out loud**, because a frozen last frame reads as a slow
   page and the person has no way to tell the two apart.
 - **`browser_file_dialog {id, multiple}`** - a page asked for a file. The

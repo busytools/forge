@@ -86,13 +86,32 @@
   .btn.p { background: var(--accent); border-color: var(--accent); color: #140b03; }
   .btn.d { color: var(--muted); }
 
-  /* The strip row. */
+  /* The strip row and the panel it opens: the profile's tabs. */
   .strip { display: flex; align-items: center; gap: 9px; padding: 8px 13px;
     border: 1px solid var(--line); border-radius: 12px;
     font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); background: var(--s2); }
-  .strip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  .strip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+  .strip .dot.idle { background: var(--muted); }
   .strip .n { color: var(--text); }
   .strip .engine { margin-left: auto; color: var(--muted); }
+  .bz { margin-top: 8px; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--s2); padding: 8px 11px; font-family: var(--mono);
+    font-size: var(--fs-data); display: flex; flex-direction: column; gap: 7px; }
+  .bz-state { display: flex; justify-content: space-between; gap: 10px; color: var(--muted);
+    font-size: var(--fs-label); border-bottom: 1px solid var(--line); padding-bottom: 7px; }
+  .bz-it { display: flex; align-items: center; gap: 8px; }
+  .bz-it .ring { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--accent); flex: none; }
+  .bz-it .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .bz-it .dot.idle { background: var(--muted); }
+  .bz-it .dot.warn { background: var(--warn); }
+  .bz-it .nm { color: var(--text); }
+  .bz-it .tx { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .bz-it .owner { color: var(--dim); font-size: var(--fs-label); margin-left: auto; white-space: nowrap; }
+  .bz-it .show { border: 1px solid var(--line); border-radius: 7px; padding: 2px 8px;
+    color: var(--text); background: var(--s3); font-size: var(--fs-label); }
+  /* The bar's tab picker: the profile's tabs, one row per tab. */
+  .bpick { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .bpick .car { color: var(--dim); font-size: var(--fs-label); }
   @media (pointer: coarse) { button, input, select, textarea { min-height: 44px; } }
 </style>
 </head>
@@ -101,13 +120,14 @@
 
   <h1>The browser surface</h1>
   <p class="sub">The server's Chromium as a full-window takeover: the page fills the window
-  under a slim client bar, and the bar carries the hand-off's actions. No window, no tab strip and
-  no browser chrome - the page is the surface. A hand-off's <b>Open</b> and the strip's browser row
-  both open it; the sessions drive the same page while it is closed.</p>
+  under a slim client bar, and the bar carries the hand-off's actions and the profile's tab
+  picker. No window, no browser tab strip and no browser chrome - the page is the surface. A
+  hand-off's <b>Open</b> and the strip's browser row both open it; the sessions drive the same
+  tabs while it is closed.</p>
   <div class="legend">
     <span>engine: the server's CEF host</span>
-    <span>one host per profile</span>
-    <span>the server relays the picture</span>
+    <span>one host per org profile</span>
+    <span>the host owns the tabs</span>
     <span>the phone is a viewer too</span>
   </div>
 
@@ -121,7 +141,9 @@
           <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
           <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
         </span>
-        <span class="btitle">browser hand-off</span>
+        <span class="btitle">browser hand-off &middot; tab 2</span>
+        <span class="bt bpick" title="the profile's tabs">2 &middot; Senior Rust engineer
+          <span class="car">&#9662;</span></span>
         <span class="bacts">
           <span class="bt">take control</span>
           <span class="bt">Done</span>
@@ -143,7 +165,9 @@
         <div class="cursor" aria-hidden="true"></div>
       </div>
     </div>
-    <div class="tnote">take control makes this surface the one viewer whose clicks, keys, wheel
+    <div class="tnote">the picker moves this surface to another tab of the same profile; a tab
+    is created by the session whose calls drive it and closes with that session, never from here.
+    take control makes this surface the one viewer whose clicks, keys, wheel
     and history arrows reach the page; a watcher's arrows are drawn disabled, and the server
     refuses a move from anyone but the holder. The server pushes who holds the role, so another
     surface says take control rather than guessing. The gestures land as trusted input, and the person's own cursor is
@@ -163,7 +187,8 @@
             <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
             <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
           </span>
-          <span class="btitle" style="flex:1 1 auto;">shared</span>
+          <span class="btitle" style="flex:1 1 auto;">Busytools/work</span>
+          <span class="bt bpick" title="the profile's tabs">2 <span class="car">&#9662;</span></span>
           <span class="bacts" style="margin-left:0; flex-basis:100%; flex-wrap:wrap; justify-content:flex-end;">
             <span class="bt">take control</span>
             <span class="bt">Done</span>
@@ -201,7 +226,9 @@
           <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
           <span class="bt arrow" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
         </span>
-        <span class="btitle">browser hand-off &middot; job-hunt</span>
+        <span class="btitle">browser hand-off &middot; tab 2</span>
+        <span class="bt bpick" title="the profile's tabs">2 &middot; Senior Rust engineer
+          <span class="car">&#9662;</span></span>
         <span class="bacts">
           <span class="bt">Done</span>
           <span class="bt d">something's wrong&hellip;</span>
@@ -222,7 +249,7 @@
   <div class="tile">
     <div class="tcap"><b>the hand-off's card</b></div>
     <div class="dock">
-      <div class="q"><span class="qm">&#9656;</span> browser hand-off</div>
+      <div class="q"><span class="qm">&#9656;</span> browser hand-off &middot; tab 2</div>
       <div class="op">
         <span class="btn p">Open browser</span>
         <span class="btn">Done</span>
@@ -233,11 +260,39 @@
     <div class="tnote">once the takeover is up the card leaves the actions to the bar.</div>
     <div class="strip" style="margin-top:12px">
       <span class="dot" aria-hidden="true"></span>
-      <span>browser</span><span class="n">2</span>
-      <span class="engine">the server's own Chromium</span>
+      <span>browser</span><span class="n">3 tabs</span>
+      <span class="engine">Busytools/work &middot; connected &middot; closing in 27m</span>
     </div>
-    <div class="tnote">the strip's row opens the same takeover outside a hand-off; hide returns to
-    the chat and the sessions keep driving the page.</div>
+    <div class="bz">
+      <div class="bz-state">
+        <span>Busytools/work &middot; connected</span>
+        <span>closing in 27m</span>
+      </div>
+      <div class="bz-it">
+        <span class="ring" title="a call is driving this tab"></span>
+        <span class="nm">tab 1</span>
+        <span class="tx">Senior Rust engineer</span>
+        <span class="owner">Busytools/job-hunt/lead &middot; in use</span>
+        <span class="show">show</span>
+      </div>
+      <div class="bz-it">
+        <span class="dot idle" title="this tab is idle"></span>
+        <span class="nm">tab 2</span>
+        <span class="tx">portal</span>
+        <span class="owner">Busytools/job-hunt/w1 &middot; idle</span>
+        <span class="show">hide</span>
+      </div>
+      <div class="bz-it">
+        <span class="dot warn" title="a hand-off is waiting here"></span>
+        <span class="nm">tab 3</span>
+        <span class="tx">sign in</span>
+        <span class="owner">Busytools/job-hunt/w2 &middot; held</span>
+        <span class="show">show</span>
+      </div>
+    </div>
+    <div class="tnote">the strip's row opens the same takeover outside a hand-off; its panel lists
+    the profile's tabs with each one's owner and state, and show raises that tab. Hide returns to
+    the chat and the sessions keep driving the tabs.</div>
   </div>
 
   <h2>The states before a frame</h2>
@@ -250,7 +305,7 @@
           <span class="bt arrow off" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
           <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
         </span>
-        <span class="btitle">browser hand-off</span>
+        <span class="btitle">browser hand-off &middot; tab 2</span>
         <span class="bacts">
           <span class="bt">Done</span>
           <span class="bt d">something's wrong&hellip;</span>
@@ -271,7 +326,7 @@
           <span class="bt arrow off" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
           <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
         </span>
-        <span class="btitle">browser hand-off</span>
+        <span class="btitle">browser hand-off &middot; tab 2</span>
         <span class="bacts">
           <span class="bt">try again</span>
           <span class="bt">Done</span>

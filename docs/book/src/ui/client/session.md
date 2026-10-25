@@ -69,14 +69,13 @@ read as one system.
   of its own kind, a cron fire titled by the schedule that fired it. A
   Slack row whose block is late adds its age to the title, so a week-old
   message reads as history before the row is opened.
-- **A nudge** - a chase warning, a browser's idle message, a worker's
-  kick - is the machinery's own words, so it draws as a work row under
-  the board's own mark rather than as the reader's: nobody typed it, and
-  it never wears `.mine`. A long one - a user-wait nudge, a browser
-  sentence - opens on the whole of what it said, the way a thought row
-  does. The row is found by the id the machinery minted for the prompt,
-  which survives into the transcript, so a reloaded row draws what the
-  live one did.
+- **A nudge** - a chase warning, a worker's kick - is the machinery's own
+  words, so it draws as a work row under the board's own mark rather than as
+  the reader's: nobody typed it, and it never wears `.mine`. A long one - a
+  user-wait nudge - opens on the whole of what it said, the way a thought
+  row does. The row is found by the id the machinery minted for the prompt,
+  which survives into the transcript, so a reloaded row draws what the live
+  one did.
 - **A session start** is one row, not one per hook: the firing says what
   fired and how many hooks it carried, and opens onto them. A hook that
   finished without a word draws no row of its own inside it; one that
@@ -218,9 +217,10 @@ condition for it, because these rows are the home of what the inspector
 used to hold.
 
 **The browser segment opens the surface, not a window** (see
-[browser.md](./browser.md)): show raises the server's browser as the
-full-window takeover, hide lowers it, and the sessions keep driving the same
-page underneath while it is closed.
+[browser.md](./browser.md)): its panel lists the tabs of the profile this
+seat's project resolves to, show raises one of them as the full-window
+takeover, hide lowers it, and the sessions keep driving the same tabs
+underneath while it is closed.
 
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every
 seat has a tree - a worker's own worktree, the lead's checkout - so it

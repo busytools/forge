@@ -1871,10 +1871,10 @@ Set `service_key` per environment in the bot's own config.</pre>
             </div></div>
           </details>
 
-          <!-- A nudge - a chase warning, a browser's idle message, a kick -
-               is the machinery's own words, not the reader's: it leads with
-               the board's own mark and never wears .mine, and a long one
-               opens on the whole of what it said. -->
+          <!-- A nudge - a chase warning, a kick - is the machinery's own
+               words, not the reader's: it leads with the board's own mark and
+               never wears .mine, and a long one opens on the whole of what it
+               said. -->
           <details class="leaf nudge">
             <summary><svg class="ic gl"><use href="#i-tasks"/></svg><span class="tn">task board: worker etsy-datadome holds no row - feed it or despawn it.</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body"><div class="prose">
@@ -3027,26 +3027,19 @@ branch main, nothing to commit</div>
                that has not arrived is the thing this row never draws. -->
           <span class="sep" id="lv-cost-sep" style="display:none">&#183;</span>
           <span id="lv-cost" style="display:none">$4.82 cumulative</span>
-          <!-- The browser row, beside the agents row: how many profiles the
-               SERVER holds for this seat, the shared browser's own row
-               first. Opened, its list carries the fleet's state (whether a
-               host is up, whether a client has it as the takeover, and the
-               work ring while a call runs), each row's show/hide for the
-               takeover, its close (which ends the run and keeps the logins)
-               and its delete, worn apart and confirmed in the row itself
-               (delete it / keep) because it is the one act that takes the
-               logins. A closed profile is a row too - known only on disk,
-               its logins still here, no close - and the closed ones carry
-               the bulk door beside their rows: delete all, which lists
-               every closed profile by name first (a live seat's closed
-               profile among them, its logins going too) and then runs the
-               row's own delete once per name, each row reporting its own
-               state.
+          <!-- The browser row, beside the agents row: the tabs of the profile
+               this seat's project resolves to, drawn as a count while closed.
+               Opened, its list carries each tab's number, title, owner and
+               state (in use, idle or held), each row's show/hide for the
+               takeover, and the profile's own line - its key, whether the
+               host is connected, and when the idle clock closes it. A tab is
+               created by the session whose calls drive it and closes with
+               that session; there is nothing to close or delete here.
                Drawn CLOSED here: the open list is runtime state. -->
           <span class="bz-seg">
             <button type="button" class="bz-tog">
               <svg class="ic"><use href="#i-web"/></svg>
-              browser <span class="n">2 profiles</span></button>
+              browser <span class="n">3 tabs</span></button>
           </span>
           <!-- The agents row, at the strip's right: the seat's instances, the
                count it has out and the count it has finished. It is where a
