@@ -5478,10 +5478,7 @@ async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
