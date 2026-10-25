@@ -8,7 +8,7 @@ vi.mock('./host', () => ({
   canHost: () => true,
   drawsSurface: () => true,
   showBrowser: () => Promise.resolve({ profile: 'hunt', tab: 2 }),
-  hideBrowser: () => Promise.resolve({ lowered: true }),
+  hideBrowser: () => Promise.resolve(true),
   listTabs: () =>
     Promise.resolve({
       profile: 'hunt',

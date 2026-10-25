@@ -67,9 +67,3 @@ export function playPacket(base64: string, rate: number, channels: number): void
     // A refused context is a silent page, not a broken one.
   }
 }
-
-/** Forget the schedule, for a test or a page that stops its sound. */
-export function resetSound(): void {
-  nextAt = 0;
-  context = null;
-}

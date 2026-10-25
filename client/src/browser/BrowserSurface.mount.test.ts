@@ -8,7 +8,7 @@ vi.mock('./host', () => ({
   drawsCanvas: vi.fn(() => false),
   keptFrame: vi.fn(() => Promise.resolve(null)),
   showBrowser: vi.fn(() => Promise.resolve({ profile: 'hunt', tab: 1 })),
-  hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
+  hideBrowser: vi.fn(() => Promise.resolve(true)),
   listTabs: vi.fn(() =>
     Promise.resolve({
       profile: 'hunt',
@@ -56,7 +56,6 @@ beforeEach(() => {
   surface.phase = 'closed';
   surface.profile = null;
   surface.reason = null;
-  surface.epoch = 42;
   vi.mocked(reportSurfaceRect).mockClear();
 });
 
@@ -70,30 +69,29 @@ describe('the browser surface', () => {
   it("reports the page area's box to the shell on mount", () => {
     open('live');
     expect(reportSurfaceRect).toHaveBeenCalledTimes(1);
-    const [rect, viewport, scale, epoch] = vi.mocked(reportSurfaceRect).mock.calls[0] ?? [];
+    const [rect, viewport, scale] = vi.mocked(reportSurfaceRect).mock.calls[0] ?? [];
     expect(rect).toMatchObject({ x: 0, y: 0 });
     expect(viewport, "the page's own viewport rides with the area").toMatchObject({
       width: window.innerWidth,
       height: window.innerHeight,
     });
     expect(scale).toBe(window.devicePixelRatio || 1);
-    expect(epoch, 'the report names the open it belongs to').toBe(42);
   });
 
-  /// **A new open re-reports even when the layout has not moved.** The shell
-  /// refuses a report measured for another open, so a retry or reopen at the
-  /// same size still needs one report carrying the new epoch.
+  /// **A new open re-reports even when the layout has not moved.** The store
+  /// mints a generation per open, and a takeover mounts afresh for each, so a
+  /// retry or reopen at the same size still reports its page area.
   it('reports again when a new open takes the surface', () => {
     open('live');
-    const target = document.querySelector('.takeover-page');
-    expect(target, 'the page area mounted').not.toBeNull();
-    surface.epoch = 43;
-    flushSync();
+    const first = document.querySelector('.takeover-page');
+    expect(first, 'the page area mounted').not.toBeNull();
+    if (shown !== null) void unmount(shown);
+    shown = null;
+    document.body.innerHTML = '';
+    open('live');
     expect(reportSurfaceRect, 'the new open is measured by its own report').toHaveBeenCalledTimes(
       2,
     );
-    const [, , , epoch] = vi.mocked(reportSurfaceRect).mock.calls[1] ?? [];
-    expect(epoch).toBe(43);
   });
 
   /// **The shell can ask for the measurement again.** A refused report was

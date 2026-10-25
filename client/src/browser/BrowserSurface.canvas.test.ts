@@ -13,7 +13,7 @@ vi.mock('./host', () => ({
   drawsCanvas: vi.fn(() => true),
   keptFrame: vi.fn(() => Promise.resolve(null)),
   showBrowser: vi.fn(() => Promise.resolve(null)),
-  hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
+  hideBrowser: vi.fn(() => Promise.resolve(true)),
   listTabs: vi.fn(() =>
     Promise.resolve({
       profile: 'hunt',
@@ -277,7 +277,7 @@ describe('the canvas viewer', () => {
     flushSync();
     // After the role settles: taking it re-measures, and jsdom's own page
     // area is zero.
-    setRegion({ x: 0, y: 0, width: 290, height: 146 }, { width: 390, height: 844 }, 1, 1);
+    setRegion({ x: 0, y: 0, width: 290, height: 146 }, { width: 390, height: 844 }, 1);
 
     canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 10, clientY: 5, bubbles: true }));
     expect(events).toHaveLength(1);

@@ -43,14 +43,31 @@
     // in the shell until another arrives, so the kept frame is asked again
     // for the tab that is now viewed.
     void surface.tab;
-    void keptFrame().then((frame) => {
-      if (frame !== null) void paint(frame);
-    });
+    void askKept();
   });
 
-  async function paint(frame: BrowserFrame): Promise<void> {
+  /**
+   * **The kept-frame ask is retried.** It can land before the canvas is
+   * bound, or before the attach's key frame reaches the shell; a single ask
+   * that missed left a still page blank for good. Ten tries at 100 ms cover
+   * the mount and the attach, and stop at the first frame drawn.
+   */
+  async function askKept(tries = 0): Promise<void> {
+    if (surface.phase !== 'live') return;
+    const frame = await keptFrame();
+    if (frame !== null && (await paint(frame))) return;
+    if (tries >= 10) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (surface.phase === 'live') await askKept(tries + 1);
+  }
+
+  /** The frame the canvas last drew: an older one must not paint over it. */
+  let painted = { profile: -1, tab: -1, seq: -1 };
+
+  /** Draw one frame, answering whether it became the picture. */
+  async function paint(frame: BrowserFrame): Promise<boolean> {
     const canvas = canvasEl;
-    if (canvas === null) return;
+    if (canvas === null) return false;
     // **Only the viewed tab paints, and only once both ids are named.** A
     // frame that raced the attach (the previous profile's or tab's, after a
     // re-attach) would otherwise paint under a null id; the kept-frame ask
@@ -68,7 +85,16 @@
         surface.id,
         surface.tab,
       );
-      return;
+      return false;
+    }
+    // **A relayed frame can overtake an older one** on the way through the
+    // page; painting it would put a stale picture over the newest.
+    if (
+      painted.profile === frame.profile &&
+      painted.tab === frame.tab &&
+      frame.seq <= painted.seq
+    ) {
+      return false;
     }
     let bitmap: ImageBitmap;
     try {
@@ -85,12 +111,14 @@
         frame.height,
         why,
       );
-      return;
+      return false;
     }
     canvas.width = frame.width;
     canvas.height = frame.height;
     canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
     bitmap.close();
+    painted = { profile: frame.profile, tab: frame.tab, seq: frame.seq };
+    return true;
   }
 
   /** A gesture's point, in the PAGE's own CSS pixels.
@@ -381,14 +409,14 @@
       { x: box.x, y: box.y, width: box.width, height: box.height },
       { width: window.innerWidth, height: window.innerHeight },
       window.devicePixelRatio || 1,
-      surface.epoch,
     );
   }
 
   /**
-   * **A new open is a new surface identity.** The shell refuses a page-area
-   * report from another open, so each open reports once even when the layout
-   * it measures is unchanged (a retry, or a reopen at the same size).
+   * **A new open is a new surface identity.** The store mints a generation
+   * per Open and drops a superseded answer; the mount of a fresh takeover
+   * reports its page area once, even when the layout it measures is
+   * unchanged (a retry, or a reopen at the same size).
    */
   $effect(() => {
     // **The bar's height moves the page area**: a row that grows over the

@@ -101,16 +101,6 @@ interface Surface {
    * the page's rect down or the bar is drawn underneath the picture.
    */
   barHeight: number;
-  /**
-   * Which open this surface is: a fresh number per Open, carried with every
-   * page-area report so the shell can refuse one measured for another open.
-   *
-   * **A webview reload resets this page's counter** while the shell keeps the
-   * open it was told about; the page mounts no takeover after a reload until
-   * the next Open, which re-mints both sides, and the shell's geometry check
-   * bounds the mismatch in between.
-   */
-  epoch: number;
 }
 
 export const surface: Surface = $state({
@@ -127,7 +117,6 @@ export const surface: Surface = $state({
   viewer: null,
   controller: null,
   barHeight: 38,
-  epoch: 0,
 });
 
 /**
@@ -200,7 +189,6 @@ export async function openSurface(
   // failure belongs to the strip's row, not to a full-screen error.
   if (!canHost()) return 'this page is not the client';
   const mine = ++generation;
-  surface.epoch = mine;
   const here = drawsSurface();
   if (here) {
     surface.phase = 'opening';
@@ -221,7 +209,7 @@ export async function openSurface(
     // first open already has the listeners a refusal asks through.
     void installSurfaceEvents();
   }
-  const answer = await showBrowser(profile, seat, tab, mine);
+  const answer = await showBrowser(profile, seat, tab);
   const why = typeof answer === 'string' ? answer : null;
   // **The phone's takeover is the native one**: its shell raised it, and the
   // page's components are the desktop's.
@@ -259,7 +247,7 @@ export async function openSurface(
 export async function selectTab(tab: number): Promise<string | null> {
   if (!canHost()) return 'this page is not the client';
   if (surface.phase !== 'live' || surface.seat === null) return 'no browser is open';
-  const answer = await showBrowser(surface.profile, surface.seat, tab, surface.epoch);
+  const answer = await showBrowser(surface.profile, surface.seat, tab);
   if (typeof answer === 'string') {
     surface.phase = 'failed';
     surface.reason = answer;
@@ -302,24 +290,19 @@ export async function closeSurface(
     surface.reason = answer;
     return answer;
   }
-  // **The shell's answer decides the store.** A lower that took another
-  // profile's page down is not this one's: the takeover stays live, with its
-  // bar, over the page still on screen.
-  if (answer.lowered || !drawsSurface()) {
-    surface.phase = 'closed';
-    surface.profile = null;
-    surface.reason = null;
-    surface.nav = { can_back: false, can_forward: false };
-    surface.id = null;
-    surface.tab = null;
-    surface.seat = null;
-    surface.tabs = null;
-    surface.attachedProfile = null;
-    surface.viewer = null;
-    surface.controller = null;
-  } else {
-    surface.phase = 'live';
-  }
+  // **A lower has two answers**: the shell's sentence or a taken-down page.
+  // A string was returned above, so this is the closed state.
+  surface.phase = 'closed';
+  surface.profile = null;
+  surface.reason = null;
+  surface.nav = { can_back: false, can_forward: false };
+  surface.id = null;
+  surface.tab = null;
+  surface.seat = null;
+  surface.tabs = null;
+  surface.attachedProfile = null;
+  surface.viewer = null;
+  surface.controller = null;
   return null;
 }
 
@@ -471,15 +454,14 @@ function resizeToRegion(): Promise<void> {
 
 /** The takeover's page area, as the shell places the native layer: CSS pixels
  *  from the viewport's top-left, the page's own viewport, the device pixel
- *  ratio drawn at, and the epoch of the mount that measured it. */
+ *  ratio drawn at. */
 export function setRegion(
   rect: { x: number; y: number; width: number; height: number },
   viewport: { width: number; height: number },
   scale: number,
-  epoch: number,
 ): void {
   region = { width: rect.width, height: rect.height, scale };
-  void reportSurfaceRect(rect, viewport, scale, epoch);
+  void reportSurfaceRect(rect, viewport, scale);
   if (holdsControl()) void resizeToRegion();
 }
 

@@ -23,8 +23,8 @@ vi.mock('../browser/host', async (importOriginal) => {
     // No window in tests: the shell's raise answers the reason it could not
     // land, or null when it did. The default takes it as landing; a case
     // that wants the failure resolves the reason instead.
-    showBrowser: vi.fn(() => Promise.resolve({ profile: 'job-hunt' })),
-    hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
+    showBrowser: vi.fn(() => Promise.resolve({ profile: 'job-hunt', tab: 2 })),
+    hideBrowser: vi.fn(() => Promise.resolve(true)),
   };
 });
 
@@ -5567,7 +5567,6 @@ describe('the dock', () => {
         null,
         SLOT,
         null,
-        expect.any(Number),
       ),
     );
     flushSync();
@@ -5802,12 +5801,7 @@ describe('the dock', () => {
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(
-        null,
-        SLOT,
-        2,
-        expect.any(Number),
-      ),
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(null, SLOT, 2),
     );
   });
 

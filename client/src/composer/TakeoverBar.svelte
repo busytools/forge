@@ -12,6 +12,7 @@
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
+  import { tabRows } from '../browser/host';
   import { holdsControl, selectTab, surface, takeControl } from '../browser/surface.svelte';
   import type { NavState } from '../browser/surface.svelte';
   import type { Take } from './wire';
@@ -100,8 +101,19 @@
    */
   const holding = $derived(holdsControl());
 
-  /** The viewed profile's tabs, as the server last pushed them. */
-  const tabs = $derived(surface.tabs?.rows ?? []);
+  /** The viewed profile's tabs, as the server last pushed them: the same
+   *  rows the strip draws, so the owner is the session's name and not the
+   *  wire object. */
+  const tabs = $derived.by(() => {
+    if (surface.tabs === null) return [];
+    try {
+      return tabRows(surface.tabs);
+    } catch {
+      // The strip reports the unreadable list; the picker has nothing to
+      // offer from it.
+      return [];
+    }
+  });
 
   /**
    * One tab picked from the bar: a re-attach on that tab, which replaces what
@@ -157,7 +169,7 @@
               ? row.title
               : row.url !== ''
                 ? row.url
-                : `tab ${row.number}`}
+                : `tab ${row.number}`} · {row.owner}
           </option>
         {/each}
       </select>
