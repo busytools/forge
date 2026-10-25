@@ -3867,7 +3867,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
 

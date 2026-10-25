@@ -5481,8 +5481,6 @@ async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
         ClientMessage::Subscribe {
             what: Subject::Session(lead_seat()),
             answering: true,
-            browser: false,
-            declare: false,
         },
     )
     .await;
