@@ -169,7 +169,7 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
         .expect("the list answers");
     let text = listed.iter().find_map(|part| match part {
         forge_primitives::browser::BrowserPart::Text { text } => Some(text.clone()),
-        _ => None,
+        forge_primitives::browser::BrowserPart::Image { .. } => None,
     });
     assert!(text.as_deref().unwrap_or_default().contains("Pairing Probe"), "{listed:?}");
 
