@@ -514,6 +514,13 @@ impl BrowserService {
     /// Close the tabs of every session that is no longer live, except the
     /// ones a parked hand-off is waiting on. **The profile stays**: only the
     /// idle clock ends a host.
+    /// **A seat that has touched the browser is live.** The sweep replaces
+    /// this set wholesale; a seat that never called but holds a tab reached
+    /// the browser through a call, so the two agree from the first call on.
+    fn note_live(&self, seat: &SessionSlot) {
+        self.live.lock().unwrap_or_else(PoisonError::into_inner).insert(seat.clone());
+    }
+
     pub async fn sweep_sessions(&self, seats: &[SessionSlot]) {
         *self.live.lock().unwrap_or_else(PoisonError::into_inner) = seats.iter().cloned().collect();
         let held = self.holds.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -617,6 +624,7 @@ impl BrowserService {
     /// Create the seat's profile entry and start its host, with no tab. The
     /// first call is what opens a tab.
     pub async fn warm(&self, seat: &SessionSlot) {
+        self.note_live(seat);
         if let Err(why) = self.open(seat).await {
             tracing::warn!(
                 "a browser profile could not be warmed (event_name browser_warm_failed, seat {}): \
@@ -634,6 +642,7 @@ impl BrowserService {
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
         let (_, args) = take_profile(args)?;
+        self.note_live(seat);
         // The fleet's own doors: these never reach a driver.
         match tool {
             "browser_record_start" => return self.record_start(seat).await,
@@ -829,12 +838,12 @@ impl BrowserService {
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
             (host.port, host.input.clone())
         };
-        let before: HashSet<String> = self
-            .tabs_recovering(profile, driver, "create", left(deadline))
-            .await?
-            .into_iter()
-            .map(|tab| tab.id)
-            .collect();
+        // **The host's own target list names the tab it is about to make.**
+        // The driver's pages and a host tab are both `about:blank` at birth,
+        // so the only exact pairing is the one page target that appears
+        // between the snapshot and the creation.
+        let before_targets: HashSet<String> =
+            spawn::page_targets(port).await.into_iter().map(|(id, _)| id).collect();
         input
             .send(input::host_line(&input::HostInput::TabNew { url: None }))
             .map_err(|_| format!("the browser for '{}' is not taking a tab", profile.key))?;
@@ -875,22 +884,33 @@ impl BrowserService {
         // reported to that driver's context.** A fresh driver enumerates the
         // context's pages, so the tab a create or a popup just added is only
         // visible to one.
-        *driver = self.recover_driver(profile).await?;
         let target_deadline = tokio::time::Instant::now() + TAB_TARGET_BOUND;
-        let opened: Vec<crate::tabs::DriverTab> = loop {
-            let listing = driver.tabs_within(left(deadline)).await?;
-            let fresh: Vec<crate::tabs::DriverTab> =
-                listing.into_iter().filter(|tab| !before.contains(&tab.id)).collect();
+        let created_targets: Vec<String> = loop {
+            let fresh: Vec<String> = spawn::page_targets(port)
+                .await
+                .into_iter()
+                .map(|(id, _)| id)
+                .filter(|id| !before_targets.contains(id))
+                .collect();
             if fresh.len() >= numbers.len() || tokio::time::Instant::now() >= target_deadline {
                 break fresh;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
+        // **A CEF browser the host created after the driver attached is not
+        // reported to that driver's context.** A fresh driver enumerates the
+        // context's pages, and the target the host just reported is the row
+        // this tab owns.
+        *driver = self.recover_driver(profile).await?;
+        let listing = driver.tabs_within(left(deadline)).await?;
         let mut requested = None;
         {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             for (index, (number, opener)) in numbers.iter().enumerate() {
-                let Some(row) = opened.get(index) else { break };
+                let Some(created) = created_targets.get(index) else { break };
+                let Some(row) = listing.iter().find(|row| &row.target == created) else {
+                    continue;
+                };
                 if tabs.target(*number).is_some() {
                     continue;
                 }
@@ -1587,6 +1607,7 @@ impl BrowserService {
         seat: &SessionSlot,
         tab: Option<u16>,
     ) -> Result<Attachment, String> {
+        self.note_live(seat);
         let profile = self.open(seat).await?;
         let tab = if let Some(tab) = tab {
             tab
@@ -3904,9 +3925,16 @@ fn pair_tab_events(
                     .into_iter()
                     .filter_map(|number| tabs.target(number).map(str::to_owned))
                     .collect();
+                // **The popup's address is the best name it has.** An
+                // `about:blank` popup falls back to the first unclaimed page,
+                // the order the host reported it in.
+                let unclaimed = |row: &&crate::tabs::DriverTab| {
+                    !row.target.is_empty() && !known.contains(&row.target)
+                };
                 let Some(row) = listing
                     .iter()
-                    .find(|row| !row.target.is_empty() && !known.contains(&row.target))
+                    .find(|row| unclaimed(row) && (url.is_empty() || row.url == url))
+                    .or_else(|| listing.iter().find(unclaimed))
                 else {
                     unmatched.push(HostEvent::TabCreated { tab, opener, url });
                     continue;

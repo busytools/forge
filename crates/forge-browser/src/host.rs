@@ -119,6 +119,10 @@ impl ShowTarget for BrowserHost {
     fn show_page(&self) {
         self.was_hidden(0);
         self.set_focus(1);
+        // **A still page does not paint on its own.** The encoder was paused
+        // with no viewer, so a viewer that attaches to a page that has not
+        // changed since would sit on a blank surface without this.
+        self.invalidate(PaintElementType::VIEW);
     }
 }
 
