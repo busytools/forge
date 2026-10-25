@@ -1328,9 +1328,16 @@ impl BrowserService {
     /// One tab's row list, in the words the tool returns.
     fn render_tabs(&self, profile: &Profile, seat: &SessionSlot) -> String {
         let held = self.held_tabs(&profile.key);
+        let controlled: HashSet<u16> = profile
+            .controls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect();
         let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
         let current = tabs.current(seat);
-        let rows = tabs.rows(&held);
+        let rows = tabs.rows(&held, &controlled);
         if rows.is_empty() {
             return "no tabs are open".to_owned();
         }
@@ -1786,6 +1793,8 @@ impl BrowserService {
         profile.controls.lock().unwrap_or_else(PoisonError::into_inner).insert(tab, (viewer, 0));
         profile.cancel_files().await;
         profile.publish_view(tab);
+        // **A person driving a tab is using it**, so the strip says so.
+        self.publish_rows(&profile.key).await;
         self.focus(&profile, tab).await;
         Ok(())
     }
@@ -1805,6 +1814,8 @@ impl BrowserService {
             if released {
                 profile.cancel_files().await;
                 profile.publish_view(tab);
+                // The tab is nobody's to drive now, so it is idle again.
+                self.publish_rows(&profile.key).await;
             }
         }
     }
@@ -2306,7 +2317,18 @@ impl BrowserService {
                 };
                 let up = profile.up.load(Ordering::Acquire);
                 let touch = *profile.touch.lock().unwrap_or_else(PoisonError::into_inner);
-                let rows = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).rows(&held);
+                let controlled: HashSet<u16> = profile
+                    .controls
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .keys()
+                    .copied()
+                    .collect();
+                let rows = profile
+                    .tabs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .rows(&held, &controlled);
                 let closing_at_ms = idle.filter(|_| up).map(|idle| {
                     let remaining = (touch.at + idle).saturating_duration_since(Instant::now());
                     let now = std::time::SystemTime::now()
@@ -4128,6 +4150,30 @@ mod tests {
         profile.files.send_replace(Some(BrowserFileAsk { id: 6, multiple: false }));
         service.detach(7).await;
         assert!(profile.files.borrow().is_none(), "and when the controller detaches");
+    }
+
+    /// **A tab a person is driving reads in use in the strip.** The spec's
+    /// in-use is a call or the person's control; the release makes it idle
+    /// again.
+    #[tokio::test]
+    async fn a_controlled_tab_reads_in_use() {
+        use forge_primitives::browser::BrowserTabState;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let profile = service.entry(&seat).await.expect("a profile entry");
+        let tab = seed_tab(&profile, &seat);
+        let rows = service.tabs(&seat).await.expect("rows").rows;
+        assert_eq!(rows[0].state, BrowserTabState::Idle, "idle before a person takes it");
+
+        service.take_control("TestOrg/default", tab, 7).await.expect("the role moves");
+        let rows = service.tabs(&seat).await.expect("rows").rows;
+        assert_eq!(rows[0].state, BrowserTabState::InUse, "the person's control is a use");
+
+        service.release_control("TestOrg/default", tab, 7).await;
+        let rows = service.tabs(&seat).await.expect("rows").rows;
+        assert_eq!(rows[0].state, BrowserTabState::Idle, "the release leaves it idle");
     }
 
     /// **The driver's chooser goes to the controller, and waits for the

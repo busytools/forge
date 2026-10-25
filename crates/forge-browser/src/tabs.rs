@@ -225,8 +225,10 @@ impl TabRegistry {
     }
 
     /// The rows the strip draws. **A held tab outranks a busy one**: the
-    /// person is being asked about it, which is the fact worth seeing.
-    pub fn rows(&self, held: &HashSet<u16>) -> Vec<BrowserTabRow> {
+    /// person is being asked about it, which is the fact worth seeing. **A
+    /// tab a person is driving is in use**, like one a call is driving: the
+    /// spec's in-use is either.
+    pub fn rows(&self, held: &HashSet<u16>, controlled: &HashSet<u16>) -> Vec<BrowserTabRow> {
         self.tabs
             .iter()
             .map(|(number, tab)| BrowserTabRow {
@@ -236,7 +238,7 @@ impl TabRegistry {
                 owner: tab.owner.clone(),
                 state: if held.contains(number) {
                     BrowserTabState::Held
-                } else if tab.busy {
+                } else if tab.busy || controlled.contains(number) {
                     BrowserTabState::InUse
                 } else {
                     BrowserTabState::Idle
@@ -309,15 +311,24 @@ mod tests {
             .adopt(2, worker.clone(), "p2", "t2", "two", "http://b/")
             .expect("the busy tab");
         registry.mark_busy(busy, true);
-        let rows = registry.rows(&HashSet::from([held]));
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::new());
         assert_eq!(rows[0].state, BrowserTabState::Held);
         assert_eq!(rows[1].state, BrowserTabState::InUse);
         assert_eq!(rows[0].owner, lead);
         assert_eq!(rows[1].owner, worker);
 
+        // **A person's control is a use too.** A tab nobody's call is driving
+        // reads in use while a viewer holds its role.
+        let driven = registry
+            .adopt(3, worker.clone(), "p3", "t3", "three", "http://c/")
+            .expect("the driven tab");
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::from([driven]));
+        assert_eq!(rows[2].state, BrowserTabState::InUse, "the controlled tab is in use");
+
         // A neighbour's close moves no number and leaves the held tab held.
         registry.close(busy);
-        let rows = registry.rows(&HashSet::from([held]));
+        registry.close(driven);
+        let rows = registry.rows(&HashSet::from([held]), &HashSet::new());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].number, held, "the held tab keeps the number the person was shown");
         assert_eq!(rows[0].state, BrowserTabState::Held);
