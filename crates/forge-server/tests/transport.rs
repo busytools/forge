@@ -8298,6 +8298,73 @@ async fn a_frame_for_another_tab_is_not_drawn() {
     assert_eq!(&bytes[1..], &[4, 5, 6], "the viewer's own tab is the one it draws");
 }
 
+/// **A viewer that stops reading does not stall another's paint.** Each
+/// viewer has its own connection task; the slow one's socket fills and its
+/// write waits, while the viewer that keeps reading draws every newer frame.
+#[tokio::test]
+async fn a_slow_viewer_does_not_stop_a_second_viewers_frames() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut slow = connect(&url).await;
+    let mut fast = connect(&url).await;
+    for socket in [&mut slow, &mut fast] {
+        send(
+            socket,
+            ClientMessage::BrowserView { seat: lead_seat(), tab: Some(2), reply_to: None },
+        )
+        .await;
+    }
+    let _ = next_server(&mut slow).await; // its view state; nothing more is read
+    let _ = next_server(&mut fast).await;
+    let _ = next_server(&mut fast).await;
+
+    let sender = {
+        let frames = stub.frames.clone();
+        tokio::spawn(async move {
+            for seq in 1..=40_u32 {
+                // The host's encoded bytes begin with the client's 14-byte
+                // header; the stub carries that shape so the reader below can
+                // name the sequence it drew.
+                let mut encoded = Vec::with_capacity(14 + 200 * 1024);
+                encoded.extend_from_slice(&5_u16.to_le_bytes());
+                encoded.extend_from_slice(&2_u16.to_le_bytes());
+                encoded.extend_from_slice(&seq.to_le_bytes());
+                encoded.extend_from_slice(&1280_u16.to_le_bytes());
+                encoded.extend_from_slice(&720_u16.to_le_bytes());
+                encoded.push(1);
+                encoded.push(1);
+                encoded.extend(std::iter::repeat_n(7_u8, 200 * 1024));
+                frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
+                    profile: 5,
+                    tab: 2,
+                    seq,
+                    encoded,
+                }));
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+    };
+
+    let mut newest = 0_u32;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while newest < 40 && tokio::time::Instant::now() < deadline {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Ok(Some(Ok(msg))) = tokio::time::timeout(left, fast.next()).await else { break };
+        if let Message::Binary(bytes) = msg
+            && bytes.len() >= 9
+        {
+            newest = u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]);
+        }
+    }
+    sender.abort();
+    assert_eq!(newest, 40, "the reading viewer drew the newest frame past the stuck one");
+    drop(slow);
+}
+
 /// **The strip's read answers through its reply, and then follows the same
 /// rows.** The reply carries the profile's health and its tabs as they stand;
 /// a tab that opens afterwards is pushed as the whole list rather than
