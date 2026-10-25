@@ -2,8 +2,10 @@
 //!
 //! **The key is two directory levels** - `profiles/<org>/<name>` - so two
 //! orgs can both have `work` without sharing a byte of cache. The legacy
-//! `shared/` and per-seat `profiles/<name>/` trees are deleted once on the
-//! first boot that finds no marker; a marker beside the root keeps a later
+//! trees are deleted once on the first boot that finds no marker: the
+//! server's own pre-org `shared/` and per-seat `profiles/<name>/cef/`, and
+//! the client's old caches under its bundle identifier (`browser/cef-profile`
+//! and `browser/profiles/<name>/cef`). A marker beside the root keeps a later
 //! boot from touching anything.
 
 use std::path::{Path, PathBuf};
@@ -13,6 +15,10 @@ use forge_primitives::browser::ProfileKey;
 /// The marker file, inside the server's browser root, that says the legacy
 /// deletion ran.
 const MARKER: &str = "legacy-profiles-deleted";
+
+/// The client's bundle identifier: its old in-process CEF kept its cache
+/// trees under this app-support directory.
+const CLIENT_BUNDLE: &str = "dev.vedhavyas.forge";
 
 /// The server's profile tree, under forge's app-support `browser/` root.
 pub struct Store {
@@ -41,11 +47,27 @@ impl Store {
         self.profiles().join(key.org()).join(key.name())
     }
 
-    /// Delete the old `shared/` tree and every direct child of `profiles/`
-    /// that holds its own `cef/`. **A stray file is not a profile**; the new
-    /// org directories hold their `cef/` one level deeper and are never
-    /// touched. Runs once, guarded by the marker.
+    /// The client's own browser tree on this machine, when there is one: the
+    /// app-support directory its bundle identifier owned. **The one path the
+    /// server derives outside its own app-support**, and only to delete the
+    /// client's dead caches.
+    pub fn client_root() -> Option<PathBuf> {
+        let support = forge_sdk::app_support_dir().ok()?.parent()?.to_owned();
+        Some(support.join(CLIENT_BUNDLE).join("browser"))
+    }
+
+    /// Delete the legacy trees once: the server's own pre-org store
+    /// (`shared/` and `profiles/<name>/cef/`) and the client's old CEF
+    /// caches (`browser/cef-profile` and `browser/profiles/<name>/cef`).
+    /// **A stray file is not a profile**; the new org directories hold their
+    /// `cef/` one level deeper and are never touched. Guarded by the marker.
     pub fn delete_legacy(&self) -> Result<Legacy, String> {
+        self.delete_legacy_at(Self::client_root().as_deref())
+    }
+
+    /// The deletion with the client tree given, so a test never touches the
+    /// machine's real client data.
+    pub fn delete_legacy_at(&self, client: Option<&Path>) -> Result<Legacy, String> {
         let marker = self.root.join(MARKER);
         if marker.exists() {
             return Ok(Legacy { removed: 0, ran: false });
@@ -56,20 +78,17 @@ impl Store {
             remove_tree(&shared)?;
             removed += 1;
         }
-        match std::fs::read_dir(self.profiles()) {
-            Ok(entries) => {
-                for entry in entries {
-                    let entry =
-                        entry.map_err(|why| format!("the profiles cannot be read: {why}"))?;
-                    let path = entry.path();
-                    if path.join("cef").is_dir() && path.is_dir() {
-                        remove_tree(&path)?;
-                        removed += 1;
-                    }
-                }
+        removed += remove_named_profiles(&self.profiles())?;
+        if let Some(client) = client.filter(|client| client.is_dir()) {
+            // **The client's shared cache is `cef-profile`**, not a
+            // directory named `shared`: the old in-process host kept it
+            // beside `profiles/`, not inside it.
+            let shared = client.join("cef-profile");
+            if shared.is_dir() {
+                remove_tree(&shared)?;
+                removed += 1;
             }
-            Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
-            Err(why) => return Err(format!("the profiles cannot be read: {why}")),
+            removed += remove_named_profiles(&client.join("profiles"))?;
         }
         std::fs::create_dir_all(&self.root)
             .map_err(|why| format!("the browser root cannot be made: {why}"))?;
@@ -77,6 +96,28 @@ impl Store {
             .map_err(|why| format!("the marker cannot be written: {why}"))?;
         Ok(Legacy { removed, ran: true })
     }
+}
+
+/// Delete every direct child that holds a `cef/` cache, answering how many
+/// went. A missing directory is nothing to delete; an entry that cannot be
+/// read fails before the marker is written.
+fn remove_named_profiles(profiles: &Path) -> Result<usize, String> {
+    let mut removed = 0;
+    match std::fs::read_dir(profiles) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|why| format!("the profiles cannot be read: {why}"))?;
+                let path = entry.path();
+                if path.join("cef").is_dir() && path.is_dir() {
+                    remove_tree(&path)?;
+                    removed += 1;
+                }
+            }
+        }
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => {}
+        Err(why) => return Err(format!("the profiles cannot be read: {why}")),
+    }
+    Ok(removed)
 }
 
 fn remove_tree(path: &Path) -> Result<(), String> {
@@ -98,26 +139,35 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_shared_and_named_profiles_go_once() {
+    fn the_legacy_server_and_client_trees_go_once() {
         let dir = tempfile::tempdir().expect("a temp dir");
+        let client = dir.path().join("client/browser");
         std::fs::create_dir_all(dir.path().join("shared/cef")).expect("the shared tree");
         std::fs::create_dir_all(dir.path().join("profiles/lead/cef")).expect("a named tree");
         std::fs::write(dir.path().join("profiles/owner.json"), b"{}").expect("a stray file");
         std::fs::create_dir_all(dir.path().join("profiles/Busytools/work/cef"))
             .expect("an org tree");
+        // **The real client layout**: its shared cache is `cef-profile`,
+        // beside `profiles/`, not a directory named `shared`.
+        std::fs::create_dir_all(client.join("cef-profile")).expect("the client's shared cache");
+        std::fs::create_dir_all(client.join("profiles/lead/cef")).expect("a client profile");
+        std::fs::create_dir_all(client.join("profiles/notes")).expect("a client dir, no cache");
 
         let store = Store::at(dir.path());
-        let first = store.delete_legacy().expect("the first boot deletes");
-        assert_eq!(first.removed, 2, "the shared tree and the per-seat profile go");
+        let first = store.delete_legacy_at(Some(&client)).expect("the first boot deletes");
+        assert_eq!(first.removed, 4, "the server's two legacy trees and the client's two go");
         assert!(!dir.path().join("shared").exists());
         assert!(!dir.path().join("profiles/lead").exists());
         assert!(dir.path().join("profiles/Busytools/work/cef").exists(), "an org tree stays");
         assert!(dir.path().join("profiles/owner.json").exists(), "a stray file is not a profile");
+        assert!(!client.join("cef-profile").exists(), "the client's shared cache goes");
+        assert!(!client.join("profiles/lead").exists(), "its per-profile cache goes");
+        assert!(client.join("profiles/notes").exists(), "a directory with no cef cache stays");
 
-        std::fs::create_dir_all(dir.path().join("shared/cef")).expect("a shared tree returns");
-        let second = store.delete_legacy().expect("the second boot is a no-op");
+        std::fs::create_dir_all(client.join("cef-profile")).expect("a client cache returns");
+        let second = store.delete_legacy_at(Some(&client)).expect("the second boot is a no-op");
         assert_eq!(second.removed, 0, "the deletion never runs twice");
-        assert!(dir.path().join("shared").exists());
+        assert!(client.join("cef-profile").exists());
     }
 
     /// A deletion that cannot finish must not leave the marker behind, so
@@ -145,7 +195,7 @@ mod tests {
 
         let store = Store::at(dir.path());
         assert!(
-            store.delete_legacy().is_err(),
+            store.delete_legacy_at(None).is_err(),
             "a legacy tree that cannot be removed fails the boot"
         );
         assert!(
