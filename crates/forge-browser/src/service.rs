@@ -6845,6 +6845,34 @@ mod tests {
         );
     }
 
+    /// **An idle pass forgets a restarted profile's parks.** A dead host's
+    /// hold is not a person waiting; without the pass's forget it kept the
+    /// fresh host from ever closing on its idle clock.
+    #[tokio::test]
+    async fn an_idle_pass_forgets_a_restarted_profiles_parks() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser");
+        let service = BrowserService::at(root.clone(), root.join("stack"));
+        service.configure_idle(30);
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts tab 1");
+        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+        let profile = service.find("O/default").await.expect("the profile");
+        profile.host_gone();
+        assert!(!service.held_tabs("O/default").is_empty(), "the park outlived its host");
+
+        service.idle_pass().await;
+
+        assert!(service.held_tabs("O/default").is_empty(), "the pass forgets the dead host's park");
+    }
+
     /// **A host that dies takes its parks with it.** A hold that outlived its
     /// host would keep the successor from ever closing on its idle clock,
     /// with nothing left to answer it.

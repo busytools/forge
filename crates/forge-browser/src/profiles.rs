@@ -206,4 +206,42 @@ mod tests {
         std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o700))
             .expect("profiles writable again");
     }
+
+    /// **A tree that cannot even be LISTED fails the boot before the
+    /// marker.** The deletion reads every entry to decide what is legacy; a
+    /// read that fails must not leave a marker claiming the work is done.
+    #[cfg(unix)]
+    #[test]
+    fn a_legacy_tree_that_cannot_be_listed_fails_before_the_marker() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let profiles = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles).expect("the profiles dir");
+        std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o000))
+            .expect("profiles closed");
+
+        // A root user ignores the mode bits, so there is no refusal to see.
+        let probe = profiles.join("permission-probe");
+        if std::fs::write(&probe, b"").is_ok() {
+            std::fs::remove_file(&probe).expect("the probe goes");
+            std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o700))
+                .expect("profiles readable again");
+            println!("skipping: the mode bits are not enforced (running as root?)");
+            return;
+        }
+
+        let store = Store::at(dir.path());
+        assert!(
+            store.delete_legacy_at(None).is_err(),
+            "a tree that cannot be listed fails the boot"
+        );
+        assert!(
+            !dir.path().join("legacy-profiles-deleted").exists(),
+            "the marker is not written when the listing failed"
+        );
+
+        std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o700))
+            .expect("profiles readable again");
+    }
 }
