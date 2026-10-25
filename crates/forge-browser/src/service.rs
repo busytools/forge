@@ -48,10 +48,7 @@ struct Driven<'a> {
 struct Drive<'a> {
     tool: &'a str,
     args: Value,
-    retry_args: Value,
     bound: Duration,
-    generation: u64,
-    pid: u32,
     port: u16,
 }
 
@@ -743,24 +740,28 @@ impl BrowserService {
             _ => self.ensure_tab(&profile, seat, &mut driver, bound).await?,
         };
         let retry_args = args.clone();
-        let (tab, outcome) = self
-            .drive(
-                &profile,
-                seat,
-                &driver,
-                tab,
-                Drive { tool, args, retry_args, bound, generation, pid, port },
-            )
-            .await;
+        let (tab, outcome, target) =
+            self.drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port }).await;
         // **The agent answered a chooser the driver had not reported yet.**
         // One event is owed to this answer, so it is consumed rather than
         // asking a person for a chooser that no longer exists.
         if let Some(upload) = upload.as_ref() {
             note_upload_finished(&profile, upload, outcome.is_ok());
         }
-        // The who-answers decision is over; the failure is the driver's and
-        // host's, and must not hold a role change out.
+        // **The who-answers decision ends with the driver call.** The failure
+        // handling below takes `file_decision` itself to clear a dead driver's
+        // chooser, so holding the upload's guard across it would deadlock the
+        // profile: this lock is not reentrant.
         drop(decision);
+        let outcome = self
+            .after_failure(
+                &profile,
+                Driven { generation, pid, port, target: &target },
+                tool,
+                &retry_args,
+                outcome,
+            )
+            .await;
         match outcome {
             Ok(mut parts) => {
                 if created {
@@ -1098,8 +1099,8 @@ impl BrowserService {
         driver: &Arc<dyn TabDriver>,
         tab: u16,
         call: Drive<'_>,
-    ) -> (u16, Result<Vec<BrowserPart>, String>) {
-        let Drive { tool, args, retry_args, bound, generation, pid, port } = call;
+    ) -> (u16, Result<Vec<BrowserPart>, String>, String) {
+        let Drive { tool, args, bound, port, .. } = call;
         let deadline = tokio::time::Instant::now() + bound;
         let mut tab = tab;
         let mut driver = Arc::clone(driver);
@@ -1116,7 +1117,7 @@ impl BrowserService {
         let mut index = match self.tabs_recovering(profile, &mut driver, tool, left(deadline)).await
         {
             Ok(listing) => Self::tab_index(profile, tab, &page, &listing),
-            Err(why) => return (tab, Err(why)),
+            Err(why) => return (tab, Err(why), target),
         };
         if index.is_none() {
             // **The page vanished under the session** (it was closed outside
@@ -1125,7 +1126,7 @@ impl BrowserService {
             self.orphan_tab(profile, tab).await;
             let fresh = match self.create_tab(profile, seat, &mut driver, left(deadline)).await {
                 Ok(fresh) => fresh,
-                Err(why) => return (tab, Err(why)),
+                Err(why) => return (tab, Err(why), target),
             };
             tab = fresh;
             (page, target) = {
@@ -1137,14 +1138,18 @@ impl BrowserService {
             };
             index = match self.tabs_recovering(profile, &mut driver, tool, left(deadline)).await {
                 Ok(listing) => Self::tab_index(profile, tab, &page, &listing),
-                Err(why) => return (tab, Err(why)),
+                Err(why) => return (tab, Err(why), target),
             };
         }
         let Some(index) = index else {
-            return (tab, Err(format!("tab {tab}'s page is not in the driver's list any more")));
+            return (
+                tab,
+                Err(format!("tab {tab}'s page is not in the driver's list any more")),
+                target,
+            );
         };
         if let Err(why) = driver.select(index, left(deadline)).await {
-            return (tab, Err(why));
+            return (tab, Err(why), target);
         }
         self.focus(profile, tab).await;
         profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, true);
@@ -1156,7 +1161,7 @@ impl BrowserService {
         if profile.state.lock().await.host.is_none() {
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
             self.publish_rows(&profile.key).await;
-            return (tab, outcome);
+            return (tab, outcome, target);
         }
         // **The driver's row is the target of record after the call.** A
         // navigation swaps CEF's page target id while the driver's Tab
@@ -1173,16 +1178,11 @@ impl BrowserService {
         self.reconcile(profile, &driver, port).await;
         profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
         self.publish_rows(&profile.key).await;
-        let outcome = self
-            .after_failure(
-                profile,
-                Driven { generation, pid, port, target: &target },
-                tool,
-                &retry_args,
-                outcome,
-            )
-            .await;
-        (tab, outcome)
+        // **Failure handling is the caller's, after the chooser decision is
+        // over.** Its paths take `file_decision` to clear a dead driver's
+        // chooser; an upload holds that lock across this call, and a second
+        // acquisition here would deadlock the profile.
+        (tab, outcome, target)
     }
 
     /// The driver's tabs, recovering a driver whose held page outlived its
@@ -1464,6 +1464,13 @@ impl BrowserService {
         // is not answering is torn down so the next call starts a fresh one.
         let host_up = spawn::probe(port).await;
         let _decision = profile.file_decision.lock().await;
+        // **A test profile has no host to probe**, so the fake driver is not
+        // a dead one to clear. The decision lock is still taken above, which
+        // is what keeps a caller that holds it (an upload) under test.
+        #[cfg(test)]
+        if profile.state.lock().await.host.is_none() {
+            return Err(why);
+        }
         let mut state = profile.state.lock().await;
         let alive = state.driver.as_ref().is_some_and(|driver| driver.is_running());
         if clear_if_dead(&mut state, generation, alive && host_up, profile) && !host_up {
@@ -5829,6 +5836,9 @@ mod tests {
         /// One listing that fails like a driver whose page outlived its
         /// renderer, so the recovery path has a real caller.
         stale_once: Arc<std::sync::atomic::AtomicBool>,
+        /// An upload the driver refuses, so the failure path has a real
+        /// caller that also holds the chooser decision.
+        fail_upload: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeDriver {
@@ -5865,6 +5875,11 @@ mod tests {
         /// The fake's next listing answers the stale-page error once.
         fn stale_once(&self) {
             self.stale_once.store(true, Ordering::Release);
+        }
+
+        /// Every upload answers the driver's plain failure.
+        fn fail_uploads(&self) {
+            self.fail_upload.store(true, Ordering::Release);
         }
     }
 
@@ -5935,10 +5950,13 @@ mod tests {
 
         async fn call_within(
             &self,
-            _tool: &str,
+            tool: &str,
             _args: serde_json::Value,
             _bound: Duration,
         ) -> Result<Vec<forge_primitives::browser::BrowserPart>, String> {
+            if tool == "browser_file_upload" && self.fail_upload.load(Ordering::Acquire) {
+                return Err("the driver refused the upload".to_owned());
+            }
             Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "ok".to_owned() }])
         }
 
@@ -6002,6 +6020,42 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].owner, lead);
         assert_eq!(rows[1].owner, worker);
+    }
+
+    /// **A failed upload does not wedge the profile.** An upload holds the
+    /// chooser decision across its driver call, and the failure path takes
+    /// the same non-reentrant lock; re-acquiring it there left every later
+    /// call and the shutdown waiting forever.
+    #[tokio::test]
+    async fn a_failed_upload_leaves_the_profile_usable_and_stoppable() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::with_blank("T1");
+        driver.fail_uploads();
+        service.install_fake(&seat, driver).await;
+        let file = dir.path().join("upload.txt");
+        std::fs::write(&file, b"the page's file").expect("the upload file");
+
+        let upload = tokio::time::timeout(
+            Duration::from_secs(5),
+            service.call(&seat, "browser_file_upload", json!({ "paths": [file] })),
+        )
+        .await
+        .expect("the failed upload answers rather than deadlocking");
+        assert!(upload.is_err(), "the driver's failure is the call's");
+
+        let control = tokio::time::timeout(
+            Duration::from_secs(5),
+            service.call(&seat, "browser_snapshot", json!({})),
+        )
+        .await
+        .expect("the profile still answers a call");
+        control.expect("the control call runs");
+
+        tokio::time::timeout(Duration::from_secs(5), service.stop_all())
+            .await
+            .expect("the stop completes");
     }
 
     /// **Warming a profile opens its host without a tab.** A seat's first call
