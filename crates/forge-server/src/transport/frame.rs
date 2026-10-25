@@ -112,20 +112,29 @@ where
     }
 
     async fn deliver_audio(&mut self, audio: &BrowserAudio) -> anyhow::Result<()> {
-        let mut bytes = Vec::with_capacity(12 + audio.samples.len() * 2);
-        bytes.push(Kind::BrowserAudio.tag());
-        bytes.extend_from_slice(&audio.profile.to_le_bytes());
-        bytes.extend_from_slice(&audio.seq.to_le_bytes());
-        bytes.extend_from_slice(&audio.sample_rate.to_le_bytes());
-        bytes.push(audio.channels);
-        for sample in &audio.samples {
-            bytes.extend_from_slice(&sample.to_le_bytes());
-        }
+        let bytes = audio_bytes(audio);
         write_within(WRITE_BOUND, async {
             self.socket.send(Message::Binary(bytes.into())).await.map_err(anyhow::Error::from)
         })
         .await
     }
+}
+
+/// One audio packet's bytes: the kind tag, the profile, tab, sequence, sample
+/// rate and channels, then the interleaved little-endian i16 samples.
+fn audio_bytes(audio: &BrowserAudio) -> Vec<u8> {
+    // One tag byte plus the viewer's 13-byte header.
+    let mut bytes = Vec::with_capacity(14 + audio.samples.len() * 2);
+    bytes.push(Kind::BrowserAudio.tag());
+    bytes.extend_from_slice(&audio.profile.to_le_bytes());
+    bytes.extend_from_slice(&audio.tab.to_le_bytes());
+    bytes.extend_from_slice(&audio.seq.to_le_bytes());
+    bytes.extend_from_slice(&audio.sample_rate.to_le_bytes());
+    bytes.push(audio.channels);
+    for sample in &audio.samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    bytes
 }
 
 /// Why a binary message was not a frame this server takes.
@@ -219,6 +228,39 @@ mod tests {
             frame,
             Frame::Audio(vec![0.0, 32767.0 / 32768.0, -1.0, 0.5]),
             "little-endian i16 over 2^15, in order"
+        );
+    }
+
+    /// **The audio wire carries the tab.** The viewer keys every packet to
+    /// its tab, so a header without it shifts every field after the profile
+    /// and every viewer misreads the packet.
+    #[test]
+    fn an_audio_packet_carries_the_profile_tab_and_samples() {
+        let audio = BrowserAudio {
+            profile: 3,
+            tab: 7,
+            seq: 9,
+            sample_rate: 48_000,
+            channels: 2,
+            samples: vec![1, -2],
+        };
+        let mut expected = vec![Kind::BrowserAudio.tag()];
+        expected.extend_from_slice(&3_u16.to_le_bytes());
+        expected.extend_from_slice(&7_u16.to_le_bytes());
+        expected.extend_from_slice(&9_u32.to_le_bytes());
+        expected.extend_from_slice(&48_000_u32.to_le_bytes());
+        expected.push(2);
+        expected.extend_from_slice(&1_i16.to_le_bytes());
+        expected.extend_from_slice(&(-2_i16).to_le_bytes());
+        let bytes = audio_bytes(&audio);
+        assert_eq!(
+            bytes, expected,
+            "the tag, profile, tab, sequence, sample rate, channels, then samples"
+        );
+        assert_eq!(
+            bytes.len() - audio.samples.len() * 2,
+            1 + 13,
+            "one tag byte plus the viewer's 13-byte SOUND_HEADER_LEN"
         );
     }
 
