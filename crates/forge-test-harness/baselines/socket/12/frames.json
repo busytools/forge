@@ -1218,6 +1218,35 @@
       "browser_frame": {
         "hex": "01010203",
         "refusal": "kind tag 1 is a frame the server sends, not one a client does"
+      },
+      "browser_frame_from_server": {
+        "hex": "0105000200070000000005d0020101090807",
+        "header_bytes": 15,
+        "fields": {
+          "profile": 5,
+          "tab": 2,
+          "seq": 7,
+          "width": 1280,
+          "height": 720,
+          "format": 1,
+          "key": true
+        }
+      },
+      "browser_audio": {
+        "hex": "02050002000900000080bb0000020100ffff0000",
+        "header_bytes": 14,
+        "fields": {
+          "profile": 5,
+          "tab": 2,
+          "seq": 9,
+          "sample_rate": 48000,
+          "channels": 2,
+          "samples": [
+            1,
+            -1,
+            0
+          ]
+        }
       }
     }
   }

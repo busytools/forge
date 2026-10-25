@@ -1558,6 +1558,30 @@ fn binary_frame_record() -> Value {
         "a browser frame from a client is refused, not decoded"
     );
 
+    // **The two server-sent shapes a client parses by hand.** Its Rust half
+    // splits a 14-byte browser-frame header and a 13-byte audio header; this
+    // record pins the exact bytes, so a header that grows moves the contract
+    // instead of silently shifting every scanline a client reads.
+    let mut server_frame = vec![frame::Kind::BrowserFrame.tag()];
+    server_frame.extend_from_slice(&5u16.to_le_bytes()); // profile
+    server_frame.extend_from_slice(&2u16.to_le_bytes()); // tab
+    server_frame.extend_from_slice(&7u32.to_le_bytes()); // seq
+    server_frame.extend_from_slice(&1280u16.to_le_bytes()); // width
+    server_frame.extend_from_slice(&720u16.to_le_bytes()); // height
+    server_frame.push(1); // format: WebP
+    server_frame.push(1); // key
+    server_frame.extend_from_slice(&[9, 8, 7]); // the encoded payload
+
+    let mut server_audio = vec![frame::Kind::BrowserAudio.tag()];
+    server_audio.extend_from_slice(&5u16.to_le_bytes()); // profile
+    server_audio.extend_from_slice(&2u16.to_le_bytes()); // tab
+    server_audio.extend_from_slice(&9u32.to_le_bytes()); // seq
+    server_audio.extend_from_slice(&48_000u32.to_le_bytes()); // sample rate
+    server_audio.push(2); // channels
+    for sample in [1_i16, -1, 0] {
+        server_audio.extend_from_slice(&sample.to_le_bytes());
+    }
+
     json!({
         "header_bytes": HEADER_BYTES,
         "max_payload_bytes": MAX_PAYLOAD_BYTES,
@@ -1567,6 +1591,24 @@ fn binary_frame_record() -> Value {
             "browser_frame": {
                 "hex": hex_of(&browser),
                 "refusal": frame::Refusal::ServerOnly(frame::Kind::BrowserFrame.tag()).reason(),
+            },
+            // 1 tag byte, then the client's 14-byte header, then the payload.
+            "browser_frame_from_server": {
+                "hex": hex_of(&server_frame),
+                "header_bytes": 15,
+                "fields": {
+                    "profile": 5, "tab": 2, "seq": 7, "width": 1280, "height": 720,
+                    "format": 1, "key": true,
+                },
+            },
+            // 1 tag byte, then the client's 13-byte header, then samples.
+            "browser_audio": {
+                "hex": hex_of(&server_audio),
+                "header_bytes": 14,
+                "fields": {
+                    "profile": 5, "tab": 2, "seq": 9, "sample_rate": 48_000,
+                    "channels": 2, "samples": [1, -1, 0],
+                },
             },
         },
     })
