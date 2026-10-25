@@ -77,6 +77,14 @@ const TAB_EVENT_BOUND: Duration = Duration::from_secs(10);
 /// cannot be mistaken for it.
 static TAB_REQUESTS: AtomicU64 = AtomicU64::new(1);
 
+/// How long a call waits for the profile's turn before it is refused in
+/// words. **The driver's own call budget**, shortened for a test so the
+/// refusal is exercised without a 150-second wait.
+#[cfg(not(test))]
+const CALL_QUEUE_BOUND: Duration = driver::CALL_TIMEOUT;
+#[cfg(test)]
+const CALL_QUEUE_BOUND: Duration = Duration::from_millis(100);
+
 /// How long a creation waits for the page target its tab pairs with.
 const TAB_TARGET_BOUND: Duration = Duration::from_secs(5);
 
@@ -677,12 +685,12 @@ impl BrowserService {
         // the profile's turn is bounded by the driver's own call timeout, and
         // a session that spent it in the queue is refused in words instead of
         // silently running long.
-        let _serial = tokio::time::timeout(driver::CALL_TIMEOUT, profile.call_lock.lock())
+        let _serial = tokio::time::timeout(CALL_QUEUE_BOUND, profile.call_lock.lock())
             .await
             .map_err(|_| {
                 format!(
                     "the browser is busy: this call waited {}s for its turn on profile '{}'",
-                    driver::CALL_TIMEOUT.as_secs(),
+                    CALL_QUEUE_BOUND.as_secs(),
                     profile.key,
                 )
             })?;
@@ -6457,6 +6465,99 @@ mod tests {
         assert_eq!(rows[1].owner, worker);
     }
 
+    /// A driver that answers slowly, recording how many calls overlapped.
+    use crate::driver::TabDriver;
+    use forge_primitives::browser::BrowserPart;
+    use serde_json::Value;
+
+    struct SlowDriver {
+        tabs: Arc<Mutex<Vec<crate::tabs::DriverTab>>>,
+        in_flight: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl TabDriver for SlowDriver {
+        async fn tabs_within(
+            &self,
+            _bound: Duration,
+        ) -> Result<Vec<crate::tabs::DriverTab>, String> {
+            Ok(self.tabs.lock().expect("the fake's tabs").clone())
+        }
+
+        async fn select(&self, _index: usize, _bound: Duration) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn call_within(
+            &self,
+            _tool: &str,
+            _args: Value,
+            _bound: Duration,
+        ) -> Result<Vec<BrowserPart>, String> {
+            let now = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+            self.peak.fetch_max(now, Ordering::AcqRel);
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            self.in_flight.fetch_sub(1, Ordering::AcqRel);
+            Ok(vec![BrowserPart::Text { text: "ok".to_owned() }])
+        }
+
+        fn is_running(&self) -> bool {
+            true
+        }
+    }
+
+    /// **Two calls on one profile take turns.** The driver's current page is
+    /// a single slot, so overlapping calls would swap it under each other.
+    #[tokio::test]
+    async fn two_calls_on_one_profile_take_turns() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let driver = SlowDriver {
+            tabs: Arc::new(Mutex::new(vec![crate::tabs::DriverTab {
+                index: 0,
+                id: "T1".to_owned(),
+                target: "T1".to_owned(),
+                title: String::new(),
+                url: "about:blank".to_owned(),
+                current: true,
+            }])),
+            in_flight: Arc::clone(&in_flight),
+            peak: Arc::clone(&peak),
+        };
+        service.install_fake(&seat, driver).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+
+        let (first, second) = tokio::join!(
+            service.call(&seat, "browser_snapshot", json!({})),
+            service.call(&seat, "browser_snapshot", json!({})),
+        );
+        first.expect("the first call runs");
+        second.expect("the second call runs");
+        assert_eq!(peak.load(Ordering::Acquire), 1, "the calls never overlapped");
+    }
+
+    /// **A call that cannot get its turn is refused in words.** The wait is
+    /// bounded, and the refusal names the wait rather than hanging the turn.
+    #[tokio::test]
+    async fn a_call_that_waits_too_long_is_refused_as_busy() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        let profile = service.entry(&seat).await.expect("the profile entry");
+        let held = profile.call_lock.lock().await;
+
+        let refused =
+            service.call(&seat, "browser_snapshot", json!({})).await.expect_err("the call is busy");
+        assert!(refused.contains("the browser is busy"), "{refused}");
+        drop(held);
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the turn comes back");
+    }
+
     /// **A failed upload does not wedge the profile.** An upload holds the
     /// chooser decision across its driver call, and the failure path takes
     /// the same non-reentrant lock; re-acquiring it there left every later
@@ -6688,6 +6789,59 @@ mod tests {
             service.hand_off_started(&worker, 1).await,
             Err("tab 1 is not open".to_owned()),
             "a closed tab is refused",
+        );
+    }
+
+    /// **Done on a live seat's tab leaves it open.** The seat that touched
+    /// the browser is live even when no sweep has run; a swept-only live set
+    /// treated it as gone and closed its tab the moment the person answered.
+    #[tokio::test]
+    async fn a_hand_off_done_on_a_live_seats_tab_leaves_it_open() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts tab 1, which makes it live");
+        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+
+        service.hand_off_finished(&worker, 1).await;
+
+        let rows = service.tabs(&worker).await.expect("rows").rows;
+        assert_eq!(rows.len(), 1, "the seat's own tab survives its hand-off");
+        assert_eq!(rows[0].owner, worker);
+    }
+
+    /// **The tool's own rows name the caller's tab and its owner.** A list
+    /// that cannot say which row is the current one, or whose it is, leaves
+    /// the session driving by a number it has to guess at.
+    #[tokio::test]
+    async fn render_tabs_names_the_current_row_and_its_owner() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        let profile = service.entry(&lead).await.expect("a profile entry");
+        seed_tab(&profile, &worker);
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(2, lead.clone(), "T2", "T2", "second", "http://b/")
+            .expect("the lead's tab");
+
+        let text = service.render_tabs(&profile, &worker);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with("- 1: (current) "), "the caller's tab is marked: {text}");
+        assert!(lines[0].ends_with(" - you"), "and reads as the caller's: {text}");
+        assert!(
+            lines.iter().any(|line| line.contains("O/p/lead")),
+            "the other row names its owner"
         );
     }
 
