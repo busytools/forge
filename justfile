@@ -387,6 +387,23 @@ client-tauri-bundle:
 
     npm --prefix client run tauri -- build --ci -- --locked
 
+    # **The client carries the viewer, not the engine.** The server ships CEF
+    # and the driver; an app bundle that picked either up would double the
+    # download and start a second, unmanaged browser. Fail the bundle rather
+    # than let a dependency slip one in.
+    app="client/src-tauri/target/release/bundle/macos/forge.app"
+    if [ ! -d "$app" ]; then
+        echo "[ERROR] the build produced no app bundle at $app" >&2
+        exit 1
+    fi
+    carried=$(find "$app" \( -iname '*libnode*' -o -iname '*playwright*' \
+        -o -iname '*Chromium Embedded Framework*' -o -iname '*cef*' \) -print -quit)
+    if [ -n "$carried" ]; then
+        echo "[ERROR] the client bundle carries the browser stack: $carried" >&2
+        exit 1
+    fi
+    echo "[OK] client bundle: the viewer only, no browser stack"
+
 
 # The android target's own warnings check: the shell crate compiled for
 # aarch64-linux-android with warnings denied. **It is the only thing that
