@@ -230,6 +230,13 @@ pub enum ClientMessage {
     Unsubscribe {
         what: Subject,
     },
+    /// Which seat this connection has on screen, `None` when it shows none.
+    ///
+    /// **A state assertion, not an event**: the last one wins and repeating it
+    /// is a no-op. It is what spends a seat's diamond and failure mark, so a
+    /// client that subscribes every visited seat spends nothing until the
+    /// reader opens one.
+    Showing { seat: Option<SessionSlot> },
     /// `reply_to` is set only when the client wants an answer - which is the
     /// five commands whose reply rides a oneshot, and nothing else.
     ///

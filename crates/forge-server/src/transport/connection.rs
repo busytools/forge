@@ -41,6 +41,18 @@ struct Holds<'a> {
     seats: Vec<SessionSlot>,
 }
 
+/// What this connection is watching, and which of it is on screen.
+///
+/// The two travel together because only a subject this connection watches can
+/// reach it, and only a seat can be shown. **They mean different things**: the
+/// subscription carries a seat's frames, and the showing is what spends its
+/// marks.
+#[derive(Default)]
+struct Watching {
+    subjects: Vec<Subject>,
+    showing: Option<SessionSlot>,
+}
+
 impl<'a> Holds<'a> {
     fn new(surface: &'a Arc<ViewSurface>) -> Self {
         Self { surface, seats: Vec::new() }
@@ -364,7 +376,7 @@ where
     // This connection is a client that can draw the viewer for as long as it
     // lives; the guard hands the count back on the way out.
     let _attached = AttachedClient::new(&state.surface);
-    let mut watched: Vec<Subject> = Vec::new();
+    let mut watching = Watching::default();
     // The seats THIS connection is holding, which is not the same list as the
     // seats it watches: every session subscribe holds - a sessionless seat's
     // watch waits for its session (#1706) - and a release is counted per seat,
@@ -397,7 +409,7 @@ where
     let outcome = run_connection(
         socket,
         state,
-        &mut watched,
+        &mut watching,
         &mut holds,
         &mut updates,
         &mut dictate,
@@ -465,15 +477,13 @@ where
         );
     }
 
-    // Every way out of the loop runs this, a failed read included: a client
-    // that goes away without unsubscribing is still a client that has gone,
-    // and the seats it was showing are let go with it. Leaving them attached
-    // would keep them counted as watched forever, so the mark that says a
-    // completion went unwatched would never arm for them again.
-    for what in &watched {
-        if let Subject::Session(slot) = what {
-            Live::lock(&state.live).detach(slot);
-        }
+    // Every way out of the loop runs this, a failed read included.
+    // **A connection that goes away shows nothing, and the seats it was
+    // merely subscribed to were never attached**: only the shown one is let
+    // go here, or a subscriber's close would take a seat another connection
+    // is still showing out of the set it watches.
+    if let Some(slot) = watching.showing.as_ref() {
+        Live::lock(&state.live).detach(slot);
     }
     // Every hold this connection took goes back here, one release apiece -
     // the same count the refusal and unsubscribe paths keep, so a seat two
@@ -549,7 +559,7 @@ impl Streaming {
 async fn run_connection<S>(
     socket: &mut S,
     state: &Arc<TransportState>,
-    watched: &mut Vec<Subject>,
+    watching: &mut Watching,
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
@@ -596,7 +606,7 @@ where
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
                 handle_client(
-                    socket, state, watched, holds, updates, dictate, hosting, reply_tx, caller, msg,
+                    socket, state, watching, holds, updates, dictate, hosting, reply_tx, caller, msg,
                 )
                 .await?;
             }
@@ -648,7 +658,7 @@ where
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
-                if forwards(&update, watched, caller.id) {
+                if forwards(&update, &watching.subjects, caller.id) {
                     // **A fatal goes out now, not on the batch's clock.** The
                     // exit it announces is already on its way - `workspace.
                     // shutdown` follows the run loop's return - and a frame
@@ -890,7 +900,7 @@ async fn next_hosting_event(hosting: &mut Option<Hosting>) -> HostingEvent {
 async fn handle_client<S>(
     socket: &mut S,
     state: &Arc<TransportState>,
-    watched: &mut Vec<Subject>,
+    watching: &mut Watching,
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
@@ -1007,7 +1017,12 @@ where
             // taken, and the client reads them in the order it receives them.
             let queued_at = Instant::now();
             let queued =
-                forward_queued(state, open_stream(state, updates, answering), watched, caller.id);
+                forward_queued(
+                    state,
+                    open_stream(state, updates, answering),
+                    &watching.subjects,
+                    caller.id,
+                );
             // **A seat is held BEFORE its snapshot is encoded.** The hold
             // starts the seat's watch, whose first pass reads the tree, the
             // processes and the file index and announces each; the encode
@@ -1054,38 +1069,17 @@ where
                     // refusal clears when the seat starts, which the re-ask
                     // finds without a subscription to hear it on.
                     //
-                    // A seat subscription is also this connection SHOWING the
-                    // seat, which is what keeps a turn finishing on it from
-                    // arming a mark nobody needs: the reader is looking at it.
+                    // **A subscription is not a showing.** This connection
+                    // hears the seat's frames from here, and the marks are
+                    // spent when it says the seat is on screen (`Showing`),
+                    // not when it starts listening. A declare is not a page
+                    // opening the subject either, so it does not watch.
                     let seat = match &what {
                         Subject::Session(slot) => Some(slot.clone()),
                         _ => None,
                     };
-                    // **The attach answers whether a mark was actually
-                    // spent.** Showing a seat spends the diamond and the
-                    // failure mark the home carries for it, so a connection
-                    // that already holds the home is owed a fresh one exactly
-                    // then - a re-encode with nothing to carry is 448 KB and
-                    // 113-263 ms of server time for a home the client already
-                    // holds (measured 2026-10-09).
-                    //
-                    // A declare is not a page opening the subject, so it
-                    // neither attaches nor watches: both are owed back one
-                    // per unsubscribe, and the client never counts the
-                    // declare to send one.
-                    let spent = match &seat {
-                        Some(slot) if !declare => {
-                            let failed = state.surface.failed_turn(slot);
-                            // The seat's own snapshot was encoded above, so
-                            // the failure a death left on its row is drawn
-                            // by the read that spends it.
-                            let death = state.surface.seat_shown(slot);
-                            Live::lock(&state.live).attach(slot, failed) || death
-                        }
-                        _ => false,
-                    };
                     if !declare {
-                        watched.push(what.clone());
+                        watching.subjects.push(what.clone());
                     }
                     let write = send_frame_timed(
                         socket,
@@ -1166,32 +1160,6 @@ where
                              slices and those two do not sum to is the subscribe path's own \
                              glue",
                         );
-                    }
-                    // Rather than keeping a spent mark until the next unrelated
-                    // redraw, which can be half a minute away.
-                    if let Some(slot) = &seat
-                        && spent
-                        && watched.iter().any(|held| matches!(held, Subject::Home))
-                    {
-                        // A refresh that could not be encoded is not worth
-                        // dropping the connection for: the next redraw carries
-                        // the same news. Debug, because the marks reading spent
-                        // until then is forge working as it should.
-                        match encode_subject(state, &Subject::Home).await {
-                            Ok(home) => {
-                                send(
-                                    socket,
-                                    ServerMessage::Snapshot { subject: Subject::Home, data: home },
-                                )
-                                .await?;
-                            }
-                            Err(error) => tracing::debug!(
-                                event_name = "home_refresh_failed",
-                                slot = %slot.display(),
-                                %error,
-                                "the home refresh after a seat attach could not be encoded",
-                            ),
-                        }
                     }
                     if let Some(hosting) = role_answer {
                         send(socket, ServerMessage::BrowserRole { hosting }).await?;
@@ -1730,15 +1698,15 @@ where
             //
             // ONE entry, because `subscribe` added one. `retain` would drop
             // every copy, so a client that subscribed twice and unsubscribed
-            // once would leave its attachment counted with nothing watching -
-            // a seat counted as watched forever, whose completions never earn
-            // a mark again. And detaching for a subject this connection never
-            // held decrements a count another connection owns, so a seat a
-            // client IS displaying would earn a mark instead.
-            if let Some(at) = watched.iter().position(|held| held == &what) {
-                watched.remove(at);
+            // once would leave a watch entry the client no longer counts,
+            // and the seat's frames would keep arriving for nothing.
+            //
+            // **The showing is not the subscription's to end**: a client that
+            // drops a seat still showing it sends `Showing { seat: null }` or
+            // closes, and that is what detaches it.
+            if let Some(at) = watching.subjects.iter().position(|held| held == &what) {
+                watching.subjects.remove(at);
                 if let Subject::Session(slot) = &what {
-                    Live::lock(&state.live).detach(slot);
                     // Only a hold THIS connection took is given back here,
                     // for the same reason the clean-up gives back only those:
                     // a count decremented twice is another viewer's seat.
@@ -1747,7 +1715,55 @@ where
             }
             Ok(())
         }
+        ClientMessage::Showing { seat } => set_showing(socket, state, watching, seat).await,
     }
+}
+
+/// Move this connection's shown seat, spending exactly what that showing earns.
+///
+/// **Attach is what clears the diamond and the failure mark, so it follows the
+/// screen rather than the subscription**: a client keeps every visited seat
+/// subscribed, and spending on that would clear marks nobody looked at. The
+/// answer is whether anything was spent, which is what the home it holds is
+/// owed a re-encode for.
+async fn set_showing<S>(
+    socket: &mut S,
+    state: &Arc<TransportState>,
+    watching: &mut Watching,
+    seat: Option<SessionSlot>,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    if watching.showing == seat {
+        return Ok(());
+    }
+    if let Some(previous) = watching.showing.take() {
+        Live::lock(&state.live).detach(&previous);
+    }
+    let Some(next) = seat else { return Ok(()) };
+    let failed = state.surface.failed_turn(&next);
+    let death = state.surface.seat_shown(&next);
+    let spent = Live::lock(&state.live).attach(&next, failed) || death;
+    watching.showing = Some(next.clone());
+    if spent && watching.subjects.iter().any(|held| matches!(held, Subject::Home)) {
+        match encode_subject(state, &Subject::Home).await {
+            Ok(home) => {
+                send(
+                    socket,
+                    ServerMessage::Snapshot { subject: Subject::Home, data: home },
+                )
+                .await?;
+            }
+            Err(error) => tracing::debug!(
+                event_name = "home_refresh_failed",
+                slot = %next.display(),
+                %error,
+                "the home refresh after a seat was shown could not be encoded",
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// The next number for a connection, unique for the process's life.
@@ -4474,5 +4490,295 @@ mod tests {
         for turn in &expected {
             assert!(served.contains(turn), "the walk serves turn {turn}");
         }
+    }
+
+    /// A connection's far end over two channels: what the test sends, and
+    /// what the server writes back.
+    struct Peer {
+        inbound: mpsc::UnboundedReceiver<Message>,
+        outbound: mpsc::UnboundedSender<Message>,
+    }
+
+    impl futures_util::Stream for Peer {
+        type Item = Result<Message, axum::Error>;
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.inbound.poll_recv(cx).map(|item| item.map(Ok))
+        }
+    }
+
+    impl futures_util::Sink<Message> for Peer {
+        type Error = axum::Error;
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(
+            self: std::pin::Pin<&mut Self>,
+            item: Message,
+        ) -> Result<(), Self::Error> {
+            let _ = self.outbound.send(item);
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// One connection driven over channels: what the test sends, the frames
+    /// the server wrote, and the driver's own handle.
+    struct Driven {
+        to_server: mpsc::UnboundedSender<Message>,
+        written: Arc<Mutex<Vec<ServerMessage>>>,
+        driven: tokio::task::JoinHandle<anyhow::Result<()>>,
+    }
+
+    fn connection(state: &Arc<TransportState>) -> Driven {
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (outbound, mut from_server) = mpsc::unbounded_channel();
+        let mut peer = Peer { inbound, outbound };
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&written);
+        // The frames are recorded rather than dropped, so a test can wait on
+        // the answer a message actually produces.
+        tokio::spawn(async move {
+            while let Some(Message::Text(text)) = from_server.recv().await {
+                if let Ok(message) = serde_json::from_str::<ServerMessage>(&text) {
+                    seen.lock().expect("the frame log").push(message);
+                }
+            }
+        });
+        let state = Arc::clone(state);
+        let driven = tokio::spawn(async move { drive(&mut peer, &state, attached_from()).await });
+        Driven { to_server, written, driven }
+    }
+
+    /// Wait until `condition` holds, or fail the test with `why`.
+    async fn until(condition: impl Fn() -> bool, why: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !condition() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {why}"));
+    }
+
+    fn home_snapshots(written: &Arc<Mutex<Vec<ServerMessage>>>) -> usize {
+        written
+            .lock()
+            .expect("the frame log")
+            .iter()
+            .filter(|frame| {
+                matches!(frame, ServerMessage::Snapshot { subject: Subject::Home, .. })
+            })
+            .count()
+    }
+
+    fn showing(to_server: &mpsc::UnboundedSender<Message>, seat: Option<SessionSlot>) {
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Showing { seat })
+                    .expect("the showing encodes")
+                    .into(),
+            ))
+            .expect("the message goes");
+    }
+
+    fn subscribed(to_server: &mpsc::UnboundedSender<Message>, slot: &SessionSlot) {
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Session(slot.clone()),
+                    answering: false,
+                    browser: false,
+                    declare: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+    }
+
+    fn lead() -> SessionSlot {
+        SessionSlot::lead("TestOrg", "proj")
+    }
+
+    /// **The subscription is not the showing.** A seat a client merely listens
+    /// to spends nothing; the reader opening it is what spends.
+    #[tokio::test]
+    async fn subscribing_a_seat_does_not_attach_it_and_showing_it_does() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+        let slot = lead();
+        let Driven { to_server, written, driven } = connection(&state);
+
+        subscribed(&to_server, &slot);
+        until(
+            || {
+                written
+                    .lock()
+                    .expect("the frame log")
+                    .iter()
+                    .any(|frame| matches!(frame, ServerMessage::Snapshot { .. }))
+            },
+            "the subscribe's snapshot",
+        )
+        .await;
+        assert!(
+            !Live::lock(&state.live).is_attached(&slot),
+            "a subscribe attached the seat, so it spends marks nobody looked at",
+        );
+
+        showing(&to_server, Some(slot.clone()));
+        until(
+            || Live::lock(&state.live).is_attached(&slot),
+            "showing the seat to attach it",
+        )
+        .await;
+
+        showing(&to_server, None);
+        until(
+            || !Live::lock(&state.live).is_attached(&slot),
+            "showing nothing to detach it",
+        )
+        .await;
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A connection closing lets go of what it SHOWED, and only that.** Two
+    /// connections on one seat: one shows it, the other merely subscribes.
+    /// The subscriber's close must not detach the seat the first is watching.
+    #[tokio::test]
+    async fn a_close_detaches_only_the_seat_that_connection_showed() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+        let slot = lead();
+
+        let Driven { to_server: first, driven: first_driven, .. } = connection(&state);
+        showing(&first, Some(slot.clone()));
+        until(
+            || Live::lock(&state.live).is_attached(&slot),
+            "the first connection to show the seat",
+        )
+        .await;
+
+        let Driven { to_server: second, written: second_written, driven: second_driven } =
+            connection(&state);
+        subscribed(&second, &slot);
+        until(
+            || {
+                second_written
+                    .lock()
+                    .expect("the frame log")
+                    .iter()
+                    .any(|frame| matches!(frame, ServerMessage::Snapshot { .. }))
+            },
+            "the second connection's snapshot",
+        )
+        .await;
+
+        drop(second);
+        let _ = second_driven.await;
+        assert!(
+            Live::lock(&state.live).is_attached(&slot),
+            "a subscriber's close detached a seat another connection is showing",
+        );
+
+        drop(first);
+        let _ = first_driven.await;
+        assert!(
+            !Live::lock(&state.live).is_attached(&slot),
+            "the showing connection's close did not let the seat go",
+        );
+    }
+
+    /// The home a connection holds is re-encoded when a showing spends a mark
+    /// - and a subscribe spends nothing, so it re-encodes nothing.
+    #[tokio::test]
+    async fn showing_a_spent_seat_refreshes_the_home_and_subscribing_does_not() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+        let slot = lead();
+        let Driven { to_server, written, driven } = connection(&state);
+
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Home,
+                    answering: false,
+                    browser: false,
+                    declare: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        until(|| home_snapshots(&written) == 1, "the home's first read").await;
+
+        // A turn finished on a seat nothing is attached to: the diamond.
+        let result = serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "s",
+        }))
+        .expect("a result message");
+        Live::lock(&state.live).apply(&SessionUpdate::ChatAppended {
+            key: slot.clone(),
+            msg: result,
+            origin: None,
+            source: None,
+        });
+
+        subscribed(&to_server, &slot);
+        until(
+            || {
+                written
+                    .lock()
+                    .expect("the frame log")
+                    .iter()
+                    .any(|frame| matches!(frame, ServerMessage::Snapshot { .. }))
+            },
+            "the seat's snapshot",
+        )
+        .await;
+        assert_eq!(home_snapshots(&written), 1, "a subscribe refreshed the home");
+
+        showing(&to_server, Some(slot.clone()));
+        until(|| home_snapshots(&written) == 2, "the home refresh a spent mark owes").await;
+
+        drop(to_server);
+        let _ = driven.await;
     }
 }

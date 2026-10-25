@@ -103,7 +103,7 @@ pub mod wire;
 /// `connectors` under its projects - it draws an empty board and a zero total
 /// until the greeting's version turns it into the notice.
 /// `baselines/socket/8/` is the record a v8 server emitted.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

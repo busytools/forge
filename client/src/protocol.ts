@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -285,6 +285,15 @@ export type ClientMessage =
       declare: boolean;
     }
   | { kind: 'unsubscribe'; what: Subject }
+  /**
+   * Which seat this connection has on screen, `null` when it shows none.
+   *
+   * A state assertion, not an event: the last one wins and repeating it is a
+   * no-op. It is what spends a seat's diamond and failure mark, so a client
+   * that subscribes every visited seat spends nothing until the reader opens
+   * one.
+   */
+  | { kind: 'showing'; seat: SessionSlot | null }
   | { kind: 'command'; command: Command; reply_to: number | null }
   | { kind: 'more'; conversation: SessionSlot; before: string | null; turns: number }
   /**

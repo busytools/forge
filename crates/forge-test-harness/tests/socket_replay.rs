@@ -331,7 +331,8 @@ census!(Command,
 // command does nothing when it is pressed.
 census!(ClientMessage,
     [
-        Subscribe struct, Unsubscribe struct, Command struct, More struct, SeatRange struct,
+        Subscribe struct, Unsubscribe struct, Showing struct, Command struct, More struct,
+        SeatRange struct,
         CommitDiff struct,
         BrowserAnswer struct,
         BrowserTakeRole struct,
@@ -835,6 +836,8 @@ fn frames_record() -> Value {
             declare: false,
         },
         ClientMessage::Unsubscribe { what: Subject::Home },
+        ClientMessage::Showing { seat: None },
+        ClientMessage::Showing { seat: Some(seat.clone()) },
         ClientMessage::Command {
             command: Box::new(Command::Cancel { key: seat.clone() }),
             reply_to: None,
