@@ -2303,9 +2303,9 @@ async fn session(
     // list, so the two cannot disagree.
     let asks = surface.pending_asks(slot);
 
-    // `/resume`'s list, on the record with the composer's other sources. A
-    // lead's answer is the boot catalog's in-memory group; a worker's is one
-    // directory scan, which is why it is timed like the other filesystem reads.
+    // `/resume`'s list, on the record with the composer's other sources: one
+    // scan of the directory the seat's own resume runs in, which is why it is
+    // timed like the other filesystem reads and kept out of the tail slice.
     let resume_at = std::time::Instant::now();
     let resume_sessions = surface
         .resumable_sessions(slot)
@@ -2395,7 +2395,11 @@ async fn session(
         closes: held.diff.closes,
         diff,
     };
-    timings.tail_ms = slice_ms(at);
+    // The tail clock opened before the process read and the resume read falls
+    // inside its window, so its slice is the elapsed less that read: the
+    // numbers a reader subtracts are disjoint, and the glue that remains is
+    // the record's own assembly.
+    timings.tail_ms = slice_ms(at) - timings.resume_ms;
     Ok(wire)
 }
 

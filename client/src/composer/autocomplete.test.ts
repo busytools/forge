@@ -55,11 +55,14 @@ const sources = (): Sources => ({
     { id: '1b2c3d4e-5f60-4718-9a2b-c3d4e5f60718', summary: 'auth retry after timeout' },
     { id: 'a7f3c2b1-9d4e-4f60-8a2b-5c6d7e8f9012', summary: 'mid-id mention' },
     { id: '7f3a92e0-1c2b-4d3e-8f90-a1b2c3d4e5f6', summary: 'resume picker' },
+    // Capitalised, so a query typed in lower case proves the fold rather than
+    // the fixture happening to match.
+    { id: '5d6e7f80-9a1b-4c2d-8e3f-4a5b6c7d8e9f', summary: 'Weekly Review Sweep' },
   ],
 });
 
 /**
- * Four triggers, one popover shape.
+ * Five triggers, one popover shape.
  *
  * The trigger rules are ported from the view this client replaced: a slash
  * command is the WHOLE draft while it is being typed, which is what keeps a
@@ -217,6 +220,7 @@ describe('the sessions a /resume argument offers', () => {
       ['1b2c3d4e-5f60-4718-9a2b-c3d4e5f60718', 'auth retry after timeout'],
       ['a7f3c2b1-9d4e-4f60-8a2b-5c6d7e8f9012', 'mid-id mention'],
       ['7f3a92e0-1c2b-4d3e-8f90-a1b2c3d4e5f6', 'resume picker'],
+      ['5d6e7f80-9a1b-4c2d-8e3f-4a5b6c7d8e9f', 'Weekly Review Sweep'],
     ]);
   });
 
@@ -231,6 +235,21 @@ describe('the sessions a /resume argument offers', () => {
       offer('/resume timeout', sources)?.rows.map((row) => row.detail),
       'and an equal match never reorders: the newer stays above the older',
     ).toEqual(['fix auth timeout', 'auth retry after timeout']);
+  });
+
+  it('folds case both ways: a lower-case query finds a capitalised title, and the reverse', () => {
+    expect(
+      offer('/resume weekly', sources)?.rows.map((row) => row.detail),
+      'a typed lower-case word matches the summary that is capitalised',
+    ).toEqual(['Weekly Review Sweep']);
+    expect(
+      offer('/resume WEEEKLY', sources),
+      'an upper-case query that matches nothing opens nothing',
+    ).toBeNull();
+    expect(
+      offer('/resume 7F3', sources)?.rows[0]?.detail,
+      'and an upper-case query matches the lower-case id it starts',
+    ).toBe('resume picker');
   });
 
   it('opens nothing for a seat with no sessions to offer', () => {

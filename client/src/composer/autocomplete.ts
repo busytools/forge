@@ -2,10 +2,11 @@
  * The autocomplete: which list a draft opens, what it holds, and the order it
  * offers it in.
  *
- * Four triggers, one popover shape. Two of the four lists are the core's own
- * reads for this seat - the commands the CLI advertised and the subagent types
- * it names - and two are static: forge's command table and the emoji set, both
- * of which ship in the bundle rather than crossing the wire.
+ * Five triggers, one popover shape. Three of the five lists read the core for
+ * this seat - the commands the CLI advertised, the subagent types it names,
+ * and the sessions it can resume - and two are static: forge's command table
+ * and the emoji set, both of which ship in the bundle rather than crossing the
+ * wire.
  *
  * **The ordering is this file's, not the server's.** Which match a typeahead
  * offers first is ordering-for-display, so it lives with the view that draws it:
@@ -167,7 +168,7 @@ function token(draft: string): { text: string; from: number } {
  * `sources` is a pull because the record it comes from is replaced on every
  * frame the server sends, so a draft that opens nothing must not rebuild a
  * list it will not draw - the file index among them is the whole working tree.
- * All four are built together on the pull, so what a list reads stays what the
+ * All five are built together on the pull, so what a list reads stays what the
  * derived offer depends on.
  */
 export function offer(draft: string, sources: () => Sources): Offer | null {

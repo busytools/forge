@@ -6538,7 +6538,7 @@ describe('the dock', () => {
 });
 
 /**
- * The list that opens over the box: four triggers, one popover shape.
+ * The list that opens over the box: five triggers, one popover shape.
  */
 describe('the autocomplete', () => {
   it('opens over the box on the trigger the draft ends in, with the count it matched', () => {

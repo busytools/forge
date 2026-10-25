@@ -1385,10 +1385,11 @@ impl Workspace {
     /// False from construction until the scan lands; always true when
     /// constructed without a tokio runtime (nothing would run it).
     ///
-    /// Test-only: the boot spawn hold that read this is gone, and a
-    /// frontend learns the same fact from `SessionUpdate::CatalogLoaded`.
-    /// Tests await it to sequence a fixture against the scan.
-    #[cfg(any(test, feature = "testing"))]
+    /// [`Self::resumable_sessions`] reads it: a lead's list is the catalog's
+    /// group once the scan has landed, and the directory's own read until
+    /// then, so the two sources are told apart rather than an unscanned
+    /// catalog being read as a project with no sessions. Tests also await it
+    /// to sequence a fixture against the scan.
     pub fn catalog_ready(&self) -> bool {
         self.catalog_loaded.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -3751,17 +3752,18 @@ impl Workspace {
     /// seat's own resume runs in** ([`Self::cwd_for_session`], which is what
     /// `--resume` is handed): a lead's project root, a worker's worktree, or
     /// the project root for a worker with none. A lead gets its project's own
-    /// sessions and never its
-    /// workers' - `Workers::Hidden`, which is what keeps a lead's turns out of
-    /// a transcript tagged for a worker - while a worker gets only the
-    /// transcripts carrying its own label.
+    /// sessions and never its workers' - `Workers::Hidden`, which is what
+    /// keeps a lead's turns out of a transcript tagged for a worker - while a
+    /// worker gets only the transcripts carrying its own label.
     ///
-    /// **The directory is read rather than the boot catalog.** The catalog
-    /// carries a row for every session forge has seen CONNECT, including one
-    /// that has not written a turn yet and so has no transcript `--resume` can
-    /// find; offering it lands the seat on "No conversation found". A seat
-    /// whose project forge has not loaded has no directory to resume from, and
-    /// answers empty.
+    /// **A lead is answered from the boot catalog's group for its project**,
+    /// which the boot scan already read from disk and holds in memory, with
+    /// each row kept only if its transcript is still there: the catalog also
+    /// mirrors every Connected, including a session that never wrote a turn,
+    /// and `--resume` cannot find that one. A worker's runs are not in the
+    /// catalog, so its own directory is scanned - its worktree for a git
+    /// worker, the project root otherwise. A seat whose project forge has not
+    /// loaded has no directory to resume from, and answers empty.
     pub async fn resumable_sessions(&self, slot: &SessionSlot) -> Vec<SDKSessionInfo> {
         let Some(cwd) = self.cwd_for_session(slot) else {
             return Vec::new();
@@ -3771,35 +3773,100 @@ impl Workspace {
         } else {
             forge_agent::userdata::catalog::scan::Workers::Only(slot.label().to_owned())
         };
-        let mut entries = self.scan_sessions(&cwd, workers).await;
+        // A worker's runs are not in the catalog at all - the boot scan hides
+        // them and nothing mirrors them - so only a lead takes this source.
+        let from_catalog = if slot.is_lead() { self.catalog_sessions_for(&cwd) } else { None };
+        let mut entries = match from_catalog {
+            Some(mut held) => {
+                let dir = self.transcript_dir_for(&cwd);
+                held.retain(|info| dir.join(format!("{}.jsonl", info.session_id)).is_file());
+                held
+            }
+            None => self.scan_sessions(&cwd, workers).await,
+        };
         let occupant = self.transcript_session_id_for(slot);
         entries.retain(|info| Some(&info.session_id) != occupant.as_ref());
+        // A row the catalog mirrored at Connected states a placeholder title
+        // until the next scan reads the transcript. The transcript is there
+        // now and the row is a real jump, so read the one file: the occupant
+        // has already gone, so this is a session the seat left, not the one it
+        // is writing.
+        let dir = self.transcript_dir_for(&cwd);
+        for info in &mut entries {
+            if info.file_size.is_none() {
+                let path = dir.join(format!("{}.jsonl", info.session_id));
+                if let Some(read) =
+                    forge_agent::userdata::catalog::scan::read_session_info_at(&path)
+                {
+                    *info = read;
+                }
+            }
+        }
+        entries.sort_by_key(|info| std::cmp::Reverse(info.last_modified));
+        entries.truncate(Self::RESUME_CANDIDATES);
         entries
     }
 
-    /// One directory scanned for the sessions a seat may resume, through the
+    /// The newest sessions a `/resume` picker offers: a reader picks from the
+    /// top, and the record is re-encoded on every seat open and reread, so the
+    /// answer cannot grow with the project's history.
+    const RESUME_CANDIDATES: usize = 50;
+
+    /// The boot catalog's group for the project at `cwd`, or `None` while the
+    /// boot scan has not landed: a group missing because nothing has scanned
+    /// is not a project with no sessions.
+    fn catalog_sessions_for(&self, cwd: &str) -> Option<Vec<SDKSessionInfo>> {
+        if !self.catalog_ready() {
+            return None;
+        }
+        let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+            Some(cwd),
+        ));
+        let catalog = self.catalog.lock();
+        Some(catalog.get(&key).cloned().unwrap_or_default())
+    }
+
+    /// The directory claude writes `cwd`'s transcripts in, under this
+    /// workspace's config dir.
+    fn transcript_dir_for(&self, cwd: &str) -> std::path::PathBuf {
+        forge_sdk::projects_dir_for(&self.session_scan_root())
+            .join(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(cwd)))
+    }
+
+    /// Where this workspace's `projects/` tree resolves, with the boot scan's
+    /// own fallbacks.
+    fn session_scan_root(&self) -> std::path::PathBuf {
+        catalog_scan_root(&self.config_dir).unwrap_or_else(|| {
+            std::fs::canonicalize(&self.config_dir).unwrap_or_else(|_| self.config_dir.clone())
+        })
+    }
+
+    /// One directory scanned for the sessions a seat may resume - a worker's
+    /// own runs, and a lead's before the boot catalog has landed - through the
     /// store's tag cache like the boot scan: an unchanged transcript is not
     /// re-read end to end for a list a reader opens for a moment.
+    ///
+    /// The cap bounds the ANSWER, not the reads: `list_sessions` reads every
+    /// transcript before it filters and cuts. That is why a lead takes the
+    /// catalog above; a worker's own directory is its worktree, which holds
+    /// its runs and little else.
     async fn scan_sessions(
         &self,
         cwd: &str,
         workers: forge_agent::userdata::catalog::scan::Workers,
     ) -> Vec<SDKSessionInfo> {
-        let root = catalog_scan_root(&self.config_dir).unwrap_or_else(|| {
-            std::fs::canonicalize(&self.config_dir).unwrap_or_else(|_| self.config_dir.clone())
-        });
+        // Loaded but NOT persisted: the boot scan owns this table, and a redb
+        // commit on the open path is a cost nothing here needs.
         let tag_cache = std::sync::Arc::new(load_session_tag_cache(self.db.lock().as_ref()));
-        let entries = forge_agent::userdata::catalog::scan::list_sessions(
-            &root,
+        forge_agent::userdata::catalog::scan::list_sessions(
+            &self.session_scan_root(),
             Some(cwd),
-            None,
+            Some(Self::RESUME_CANDIDATES),
             0,
             workers,
             Some(&tag_cache),
         )
-        .await;
-        persist_session_tag_cache(self.db.lock().as_ref(), &tag_cache);
-        entries
+        .await
     }
 
     /// A fresh id for a session starting now, recorded against `slot`'s
@@ -21756,9 +21823,26 @@ provider = "anthropic"
     }
 
     // ---------------------------------------------------------------
-    // #2565: `/resume`'s list is what `claude --resume` can find from the
+    // `/resume`'s list is what `claude --resume` can find from the
     // directory the seat's own resume runs in.
     // ---------------------------------------------------------------
+
+    /// Run the boot catalog scan and wait for it, so the seat's read takes the
+    /// catalog branch rather than the directory's own.
+    async fn ready_catalog(workspace: &Arc<Workspace>) {
+        let mut updates = workspace.subscribe();
+        workspace.start_catalog_scan();
+        loop {
+            let update = tokio::time::timeout(std::time::Duration::from_secs(5), updates.recv())
+                .await
+                .expect("the scan finishes")
+                .expect("the stream is open");
+            if matches!(update.update, SessionUpdate::CatalogLoaded) {
+                break;
+            }
+        }
+        assert!(workspace.catalog_ready(), "the scan landed before the read");
+    }
 
     /// Pin a transcript's mtime to a fixed second, so a test that reads the
     /// newest first does not depend on the clock's granularity.
@@ -21775,6 +21859,9 @@ provider = "anthropic"
     /// a worker's: a lead's resume runs in the project root, where a non-git
     /// worker's transcript sits too, and picking it would put the lead's turns
     /// into a transcript tagged for that worker.
+    ///
+    /// **The newest transcript is the SECOND file written**, so a list that
+    /// came back in directory order passes only if it also sorts.
     #[tokio::test]
     async fn resume_sessions_of_a_lead_are_its_projects_and_never_its_workers() {
         let dir = scan_fixture_dir();
@@ -21782,8 +21869,8 @@ provider = "anthropic"
         let project_path = project.display().to_string();
         write_session_fixture(dir.path(), &project_path, "older", None);
         write_session_fixture(dir.path(), &project_path, WORKER_UUID, Some("forge:worker:alpha"));
-        pin_transcript(&dir, &project_path, LEAD_UUID, 1_700_000_200);
-        pin_transcript(&dir, &project_path, "older", 1_700_000_100);
+        pin_transcript(&dir, &project_path, "older", 1_700_000_200);
+        pin_transcript(&dir, &project_path, LEAD_UUID, 1_700_000_100);
         pin_transcript(&dir, &project_path, WORKER_UUID, 1_700_000_300);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
 
@@ -21791,7 +21878,7 @@ provider = "anthropic"
 
         assert_eq!(
             found.iter().map(|info| info.session_id.as_str()).collect::<Vec<_>>(),
-            [LEAD_UUID, "older"],
+            ["older", LEAD_UUID],
             "the project's own transcripts, newest first, and never a worker's",
         );
         assert_eq!(found[1].summary, "opening prompt", "a row carries the transcript's title");
@@ -21800,16 +21887,57 @@ provider = "anthropic"
     /// The list is the sessions a seat can JUMP BACK TO, so the one it is
     /// already on is not one of them: a pick would respawn the seat onto
     /// itself.
+    ///
+    /// **A newer row is not the occupant**, so an exclusion that drops the
+    /// list's head instead of the occupant loses a real jump and fails.
     #[tokio::test]
     async fn resume_sessions_leave_out_the_session_the_seat_is_already_on() {
         let dir = scan_fixture_dir();
+        let project = dir.path().join("proj");
+        let project_path = project.display().to_string();
+        write_session_fixture(dir.path(), &project_path, "newer", None);
+        pin_transcript(&dir, &project_path, "newer", 1_700_000_200);
+        pin_transcript(&dir, &project_path, LEAD_UUID, 1_700_000_100);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let seat = SessionSlot::lead("Default", "proj");
         workspace.record_session_id("Default", "proj", "lead", LEAD_UUID);
 
+        let found = workspace.resumable_sessions(&seat).await;
+
+        assert_eq!(
+            found.iter().map(|info| info.session_id.as_str()).collect::<Vec<_>>(),
+            ["newer"],
+            "the occupant goes and the newer session survives",
+        );
+    }
+
+    /// The answer is bounded to the newest 50, which is the list a reader
+    /// picks from: the record is re-encoded on every seat open and reread, so
+    /// the payload cannot grow with the project's history. The catalog branch
+    /// is the one that answers a lead in steady state, so that is the branch
+    /// the cap is pinned on.
+    #[tokio::test]
+    async fn resume_sessions_are_bounded_to_the_newest_fifty() {
+        let dir = scan_fixture_dir();
+        let project = dir.path().join("proj");
+        let project_path = project.display().to_string();
+        for n in 0..60_u64 {
+            let id = format!("t{n:02}");
+            write_session_fixture(dir.path(), &project_path, &id, None);
+            pin_transcript(&dir, &project_path, &id, 1_700_000_000 + n);
+        }
+        pin_transcript(&dir, &project_path, LEAD_UUID, 1_699_999_999);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        ready_catalog(&workspace).await;
+
+        let found = workspace.resumable_sessions(&SessionSlot::lead("Default", "proj")).await;
+
+        assert_eq!(found.len(), 50, "the cap is the newest fifty rows");
+        assert_eq!(found[0].session_id, "t59", "the newest leads");
+        assert_eq!(found[49].session_id, "t10", "and the oldest ten are the ones cut");
         assert!(
-            workspace.resumable_sessions(&seat).await.is_empty(),
-            "the seat's own occupant is not a jump, and it is the only session here",
+            found.iter().all(|info| info.session_id != "t09" && info.session_id != LEAD_UUID),
+            "nothing below the fiftieth-newest is carried",
         );
     }
 
@@ -21827,14 +21955,15 @@ provider = "anthropic"
     /// **A session that has connected but written no turn is not a jump.**
     /// The catalog mirrors every Connected - the boot spawn's own session
     /// included - and that row has no transcript `claude --resume` can find;
-    /// offering it lands the seat on "No conversation found". The directory
-    /// is the only answer, so a row the catalog holds and the disk does not is
-    /// left out (measured on the dev stack).
+    /// offering it lands the seat on "No conversation found" (measured on the
+    /// dev stack). The read keeps a catalog row only when its transcript is on
+    /// disk, which is the branch a lead takes once the boot scan has landed.
     #[tokio::test]
     async fn resume_sessions_leave_out_a_connected_session_with_no_transcript() {
         let dir = scan_fixture_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let seat = SessionSlot::lead("Default", "proj");
+        ready_catalog(&workspace).await;
         let cwd = workspace.cwd_for_session(&seat).expect("the project's directory");
         workspace.record_connected_session(&cwd, "live-only", Some("new session".to_owned()));
 
@@ -21845,6 +21974,36 @@ provider = "anthropic"
             "the catalog's row has no transcript behind it: {found:?}",
         );
         assert_eq!(found.len(), 1, "and the transcript that IS there is still offered");
+    }
+
+    /// **A row the catalog mirrored at Connected states a placeholder title.**
+    /// The session it names left a transcript behind, so the row is a real
+    /// jump - and the picker reads the title off that transcript rather than
+    /// offering `new session` for the one session a reader is most likely to
+    /// want back.
+    #[tokio::test]
+    async fn resume_sessions_read_a_live_mirrors_title_from_its_transcript() {
+        let dir = scan_fixture_dir();
+        let project = dir.path().join("proj");
+        let project_path = project.display().to_string();
+        write_session_fixture(dir.path(), &project_path, "left-behind", None);
+        pin_transcript(&dir, &project_path, "left-behind", 1_700_000_100);
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let seat = SessionSlot::lead("Default", "proj");
+        ready_catalog(&workspace).await;
+        let cwd = workspace.cwd_for_session(&seat).expect("the project's directory");
+        workspace.record_connected_session(&cwd, "left-behind", None);
+
+        let found = workspace.resumable_sessions(&seat).await;
+
+        let row = found
+            .iter()
+            .find(|info| info.session_id == "left-behind")
+            .expect("a session that wrote a transcript is a jump");
+        assert_eq!(
+            row.summary, "opening prompt",
+            "the title is the transcript's, not the mirror's placeholder",
+        );
     }
 }
 
