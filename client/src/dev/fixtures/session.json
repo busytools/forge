@@ -38,6 +38,7 @@
   "background_tasks": [
     {
       "task_id": "t-fixture",
+      "is_backgrounded": true,
       "task_type": "local_bash",
       "description": "gh run watch",
       "command": "gh run watch 123 --exit-status",

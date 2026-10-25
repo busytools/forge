@@ -128,9 +128,9 @@
 
   /**
    * The processes join follows the record the same way: the walk and the
-   * CLI's registry move on different frames, and the strip's row reads both
-   * from the one store. The outcomes come from the conversation's own task
-   * frames, joined by the call id the row already carries.
+   * seat's live task set move on different frames, and the strip's row reads
+   * both from the one store. The outcomes come from the conversation's own
+   * task frames, joined by the call id the row already carries.
    */
   const outcomes = $derived(outcomesFrom(record?.conversation.turns ?? []));
   $effect(() => {

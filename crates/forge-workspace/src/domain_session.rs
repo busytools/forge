@@ -308,6 +308,19 @@ pub struct DomainSession {
     /// whole on each `background_tasks_changed`, and a view that attached
     /// afterwards would otherwise see the flag and not one row.
     pub background_tasks: Vec<crate::BackgroundTask>,
+    /// The CLI's long-running calls it announced outside the registry, by
+    /// task id: a foreground call that outlives a beat reaches `task_started`
+    /// and its own `task_notification`, and never `background_tasks_changed`.
+    ///
+    /// Held apart from the registry because that snapshot replaces itself
+    /// whole and would wipe them; merged where a view reads
+    /// ([`Self::task_rows`]), so the row says what the seat is running
+    /// whether the model backgrounded the call or not. Each keeps the CLI's
+    /// own `is_backgrounded`, so a consumer can tell a foreground hold from a
+    /// registry row; the turn's end settles the foreground ones even when no
+    /// ending frame came, and a backgrounded hold lasts only until the next
+    /// snapshot - that set is the background world, complete on every change.
+    pub(crate) live_tasks: Vec<crate::BackgroundTask>,
     /// Prompts in the CLI's queue for this occupant: what a view draws as
     /// waiting, and what the pile read answers with.
     ///
@@ -337,8 +350,6 @@ pub struct DomainSession {
     /// What keeps the map above bounded: a command is kept while a live task
     /// links to it, or for one registry change after its card arrived - which
     /// is exactly the window in which the `task_started` naming it can land.
-    /// A foreground call's command is never read by anything and dies at the
-    /// next change.
     staged_commands: HashSet<String>,
     /// The tool call that began a task, by task id, from `task_started`.
     task_tool_use: HashMap<String, String>,
@@ -460,19 +471,150 @@ impl DomainSession {
     /// Replace the registry with the CLI's last snapshot, which carries the
     /// whole set, and fill in whatever commands are already resolvable.
     ///
-    /// Also the one place the held commands are pruned: a task that has left
-    /// the registry takes its link with it, and a command whose card arrived
-    /// since the last change keeps one more change to be linked.
+    /// **A backgrounded hold is redundant by definition**, because this
+    /// snapshot is the whole background set; keeping one past a later snapshot
+    /// that drops its task is exactly how a `TaskStop`'s row - which sends no
+    /// ending and no registry change - resurfaces. So every backgrounded hold
+    /// is dropped here. A foreground hold is dropped only when the snapshot
+    /// names its task or call: then the registry owns the call.
+    ///
+    /// Also the place the held commands are pruned after a snapshot: a task
+    /// that has left both sets takes its link with it, and the staging window
+    /// for a card whose `task_started` has not landed closes.
     pub(crate) fn replace_background_tasks(&mut self, tasks: Vec<crate::BackgroundTask>) {
         self.background_tasks = tasks;
         self.link_background_calls();
-        let live: HashSet<&str> =
+        let registered_ids: HashSet<&str> =
             self.background_tasks.iter().map(|task| task.task_id.as_str()).collect();
-        self.task_tool_use.retain(|task_id, _| live.contains(task_id.as_str()));
+        let registered_calls: HashSet<&str> =
+            self.background_tasks.iter().filter_map(|task| task.tool_use_id.as_deref()).collect();
+        self.live_tasks.retain(|task| {
+            !task.is_backgrounded
+                && !registered_ids.contains(task.task_id.as_str())
+                && task.tool_use_id.as_deref().is_none_or(|call| !registered_calls.contains(call))
+        });
+        // Prune with the staging intact, then close the window: a card that
+        // arrived since the last change keeps its command for this one, which
+        // is exactly where its `task_started` can land.
+        self.prune_task_maps();
+        self.staged_commands.clear();
+    }
+
+    /// Record a task the CLI announced on `task_started`, which is the only
+    /// signal a long foreground call leaves: the registry names backgrounded
+    /// calls alone, and a foreground one is announced here and ended by its
+    /// own `task_notification` or the turn it ran in.
+    ///
+    /// Idempotent by task id AND by call: the CLI can announce one call under
+    /// two task ids, and a second row for it would double the seat's count. A
+    /// backgrounded task its registry already names is not held at all: the
+    /// snapshot is the whole background set, and the mirror would be the row
+    /// that survives the snapshot dropping it.
+    pub(crate) fn note_live_task(&mut self, task: crate::BackgroundTask) {
+        let names_it = |held: &crate::BackgroundTask| {
+            held.task_id == task.task_id
+                || (task.tool_use_id.is_some() && held.tool_use_id == task.tool_use_id)
+        };
+        let known = self.live_tasks.iter().any(names_it)
+            || (task.is_backgrounded && self.background_tasks.iter().any(names_it));
+        if known {
+            return;
+        }
+        self.live_tasks.push(task);
+        self.link_background_calls();
+    }
+
+    /// Withdraw a task its own ending frame settled.
+    ///
+    /// Matched by the task id **or the call** the frame names: one call can be
+    /// announced under two task ids, and the ending may name either.
+    pub(crate) fn settle_live_task(&mut self, task_id: &str, tool_use_id: Option<&str>) {
+        let settled = |task: &crate::BackgroundTask| {
+            task.task_id == task_id
+                || tool_use_id.is_some_and(|call| task.tool_use_id.as_deref() == Some(call))
+        };
+        let calls: Vec<String> = self
+            .live_tasks
+            .iter()
+            .filter(|task| settled(task))
+            .filter_map(|task| task.tool_use_id.clone())
+            .collect();
+        self.live_tasks.retain(|task| !settled(task));
+        // The settled call's command is read by nothing now. Other cards stay
+        // staged: their `task_started` may still be on its way.
+        for call in calls {
+            self.staged_commands.remove(&call);
+        }
+        self.prune_task_maps();
+    }
+
+    /// Withdraw what the end of a turn settles: its foreground holds.
+    ///
+    /// **A foreground call cannot outlive the turn that ran it.** Its own
+    /// `task_notification` normally ends it, but the `TaskStop` tool path
+    /// sends no ending frame, and a cancelled turn can bury the one it would
+    /// have sent, so the turn's terminal frame settles the rest. A background
+    /// hold stays: a backgrounded call outlives its turn, and the CLI's
+    /// registry is its own source.
+    ///
+    /// The turn boundary also closes the staging window: every card the turn
+    /// drew has been linked by its `task_started` or never named a task.
+    pub(crate) fn settle_foreground_holds(&mut self) {
+        self.live_tasks.retain(|task| task.is_backgrounded);
+        self.staged_commands.clear();
+        self.prune_task_maps();
+    }
+
+    /// The seat's live tasks as a view reads them: the CLI's background
+    /// registry first, then the announced foreground calls still running.
+    ///
+    /// Deduped by task id and by call, so a hold the registry names never
+    /// draws beside it before the next snapshot prunes it.
+    pub fn task_rows(&self) -> Vec<crate::BackgroundTask> {
+        let registered_ids: HashSet<&str> =
+            self.background_tasks.iter().map(|task| task.task_id.as_str()).collect();
+        let registered_calls: HashSet<&str> =
+            self.background_tasks.iter().filter_map(|task| task.tool_use_id.as_deref()).collect();
+        let mut rows = self.background_tasks.clone();
+        rows.extend(
+            self.live_tasks
+                .iter()
+                .filter(|task| {
+                    !registered_ids.contains(task.task_id.as_str())
+                        && task
+                            .tool_use_id
+                            .as_deref()
+                            .is_none_or(|call| !registered_calls.contains(call))
+                })
+                .cloned(),
+        );
+        rows
+    }
+
+    /// Drop the link of every task that is no longer live, and the command of
+    /// every call no live task names.
+    ///
+    /// A card whose command arrived since the last prune stays while it is
+    /// staged, because its `task_started` may still be on its way.
+    fn prune_task_maps(&mut self) {
+        let running: HashSet<&str> = self
+            .background_tasks
+            .iter()
+            .chain(self.live_tasks.iter())
+            .map(|task| task.task_id.as_str())
+            .collect();
+        self.task_tool_use.retain(|task_id, _| running.contains(task_id.as_str()));
         let linked: HashSet<&str> = self.task_tool_use.values().map(String::as_str).collect();
         self.background_commands
             .retain(|id, _| linked.contains(id.as_str()) || self.staged_commands.contains(id));
-        self.staged_commands.clear();
+    }
+
+    /// Seed the announced holds a fixture cannot drive through a session
+    /// actor: the view surface's read test has no wire to produce them.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_live_tasks(&mut self, tasks: Vec<crate::BackgroundTask>) {
+        self.live_tasks = tasks;
+        self.link_background_calls();
     }
 
     /// Record the command a tool call's card carried.
@@ -495,6 +637,7 @@ impl DomainSession {
     pub(crate) fn drop_background_tasks(&mut self) {
         self.background_work = false;
         self.background_tasks.clear();
+        self.live_tasks.clear();
         self.background_commands.clear();
         self.staged_commands.clear();
         self.task_tool_use.clear();
@@ -548,7 +691,7 @@ impl DomainSession {
     /// carried, wherever both halves are known. Called after either half
     /// lands, so the order the CLI sends them in does not matter.
     fn link_background_calls(&mut self) {
-        for task in &mut self.background_tasks {
+        for task in self.background_tasks.iter_mut().chain(self.live_tasks.iter_mut()) {
             if task.tool_use_id.is_none() {
                 task.tool_use_id = self.task_tool_use.get(&task.task_id).cloned();
             }
@@ -589,6 +732,7 @@ impl DomainSession {
             auto_continue_spent: false,
             background_work: false,
             background_tasks: Vec::new(),
+            live_tasks: Vec::new(),
             background_commands: HashMap::new(),
             staged_commands: HashSet::new(),
             task_tool_use: HashMap::new(),

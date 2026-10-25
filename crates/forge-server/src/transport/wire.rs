@@ -352,14 +352,16 @@ pub struct SessionWire {
     pub header: SessionHeaderWire,
     pub mcp: Option<McpServers>,
     pub processes: Option<ProcessSnapshot>,
-    /// The CLI's background-task registry, which the processes feed leads its
-    /// rows with.
+    /// The seat's live tasks, which the processes feed leads its rows with:
+    /// the CLI's background registry plus the long foreground calls it is
+    /// tracking while they run, each saying which it is (`is_backgrounded`).
     ///
     /// The tasks the OS walk cannot see for itself are the ones this exists
     /// for: a backgrounded bash is `setsid`-detached, so it sits outside
     /// claude's tree, and a view draws it from the registry - with the
     /// command telling it whether the walk has already adopted the process
-    /// behind one.
+    /// behind one. A foreground call is in the tree already; the row is what
+    /// names it while it runs.
     pub background_tasks: Vec<forge_workspace::BackgroundTask>,
     pub monitors: Vec<MonitorRecord>,
     /// The prompt a one-ask dock draws: the front of `pending_asks`.
@@ -3428,6 +3430,7 @@ mod tests {
             ViewFacts {
                 background_tasks: vec![forge_workspace::BackgroundTask {
                     task_id: "t-fixture".to_owned(),
+                    is_backgrounded: true,
                     task_type: "local_bash".to_owned(),
                     description: "gh run watch".to_owned(),
                     command: Some("gh run watch 123 --exit-status".to_owned()),
@@ -3761,6 +3764,7 @@ mod tests {
             ViewFacts {
                 background_tasks: vec![forge_workspace::BackgroundTask {
                     task_id: "t1".to_owned(),
+                    is_backgrounded: true,
                     task_type: "local_bash".to_owned(),
                     description: "gh run watch".to_owned(),
                     command: Some("gh run watch 123 --exit-status".to_owned()),
