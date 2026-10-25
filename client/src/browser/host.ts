@@ -14,6 +14,7 @@
 
 import type { InvokeArgs } from '@tauri-apps/api/core';
 
+import type { BrowserTabList } from '../protocol';
 import type { BrowserFrame } from '../socket';
 import type { SessionSlot } from '../wire/types';
 
@@ -71,40 +72,45 @@ async function invokeShell<T>(command: string, args?: InvokeArgs): Promise<T> {
 }
 
 /**
- * Attach to a profile's browser and put the takeover up: what a hand-off's
- * Open asks for. **`profile` names which one**: a name is that profile's own,
- * `null` is the asking seat's own when a seat rides along (or the shared
- * browser for the person's own door), and `@shared` is the shared browser by
- * name - the CAPTCHA in the right session, not a lookalike in the wrong one.
+ * Attach to a seat's browser tab and put the takeover up: what a hand-off's
+ * Open and the strip's Show ask for.
  *
- * **Answers the profile it raised, or the shell's reason it could not.** The
- * raised name is what the page lowers on Done; the server's own sentence is
- * carried through, so a dock that claimed the browser was up over an open
- * that never happened cannot have the person press Done and tell the session
- * they acted.
+ * `tab` is the tab to view, and `null` is the seat's current tab (else the
+ * profile's first), which is what the profile's own row opens. **Answers the
+ * profile and tab the server actually attached**, or the shell's reason it
+ * could not: the resolved pair is what the page lowers and filters frames by,
+ * and the server's own sentence is carried through, so a dock that claimed
+ * the browser was up over an open that never happened cannot have the person
+ * press Done and tell the session they acted.
  */
-export type OpenAnswer = { profile: string | null } | string;
+export type OpenAnswer = { profile: string; tab: number } | string;
+
+/** The attach the shell answered, or `null` for a shape this page cannot read. */
+function attachedFrom(value: unknown): { profile: string; tab: number } | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const held = value as Record<string, unknown>;
+  if (typeof held['profile'] !== 'string' || held['profile'] === '') return null;
+  if (typeof held['tab'] !== 'number' || !Number.isInteger(held['tab'])) return null;
+  return { profile: held['profile'], tab: held['tab'] };
+}
 
 export async function showBrowser(
   profile: string | null,
   seat: SessionSlot | null,
+  tab: number | null,
   epoch: number,
 ): Promise<OpenAnswer> {
   if (!canHost()) return 'this page is not the client';
   try {
-    // **The profile the server actually attached**: a raise with no profile
-    // is resolved to the asking seat's own, and Done must lower that very
-    // browser rather than a name this page guessed.
-    //
-    // **An answer that names nothing keeps the name the person opened.** A
-    // shell from before the attach answered with its profile returns null
-    // here, and taking that null would leave the bar unable to say which
-    // browser it is over.
-    const attached: unknown = await invokeShell('client_browser_view', { seat, profile });
+    const answer: unknown = await invokeShell('client_browser_view', { seat, tab });
     await invokeShell('browser_takeover', { on: true });
     void epoch;
-    const named = typeof attached === 'string' && attached !== '' ? attached : profile;
-    return { profile: named };
+    void profile;
+    const attached = attachedFrom(answer);
+    if (attached === null) {
+      return 'the shell attached without naming the profile and tab';
+    }
+    return attached;
   } catch (why) {
     return whyText(why);
   }
@@ -207,9 +213,10 @@ export async function keptFrame(): Promise<BrowserFrame | null> {
   try {
     const raw = await invokeShell<Record<string, unknown> | null>('browser_kept_frame');
     if (raw === null || typeof raw !== 'object') return null;
-    const { profile, seq, width, height, bytes } = raw;
+    const { profile, tab, seq, width, height, bytes } = raw;
     if (
       typeof profile !== 'number' ||
+      typeof tab !== 'number' ||
       typeof width !== 'number' ||
       typeof height !== 'number' ||
       typeof bytes !== 'string'
@@ -218,6 +225,7 @@ export async function keptFrame(): Promise<BrowserFrame | null> {
     }
     return {
       profile,
+      tab,
       seq: typeof seq === 'number' ? seq : 0,
       width,
       height,
@@ -230,72 +238,105 @@ export async function keptFrame(): Promise<BrowserFrame | null> {
 }
 
 /**
- * The profiles the server holds, for the client's own strip.
+ * One tab as the strip draws it.
  *
- * **The server owns the profiles**, so the rows are its answer, narrowed
- * here once: a row this page cannot read is drawn as itself (`unreadable`),
- * never dropped.
+ * `state` is the server's own word, and `stateText` is how a row spells it -
+ * a state this page has never seen is drawn as itself rather than as a
+ * neighbour it does not mean.
  */
-export async function listProfiles(seat: SessionSlot | null = null): Promise<ProfileRow[]> {
-  if (!canHost()) return [];
-  const body = await invokeShell<Record<string, unknown>>('client_browser_profiles', { seat });
-  const rows = Array.isArray(body.rows) ? body.rows : [];
-  // **A row this page cannot read is drawn as itself, never dropped**
-  // (rule 25): filtering it also made the count and the empty line report a
-  // state the server never sent.
-  return rows.map((value, at) => profileRow(value, at));
-}
-
-/** One profile, as the client's own browser strip draws it. */
-export interface ProfileRow {
-  name: string;
-  /** The slot of the session that opened it, as `org/project/label`. */
+export interface TabRow {
+  number: number;
+  title: string;
+  url: string;
+  /** The owning session as `org/project/label`. */
   owner: string;
-  /** Whether its browser host is up. */
-  up: boolean;
-  /** Whether a client has it open as the takeover right now. */
-  windowed: boolean;
-  /** Whether a browser call is running on it now. */
-  busy: boolean;
-  /** Whether it is known only on disk: no browser is open for it. */
-  closed: boolean;
-  /** The server sent a row this page cannot read; it is drawn, not acted on. */
-  unreadable?: boolean;
+  /** The server's own word, kept whole for a state this page has not seen. */
+  state: string;
+  stateText: string;
 }
 
-/** One row from the wire, drawn as itself when it cannot be read. */
-function profileRow(value: unknown, at: number): ProfileRow {
+/** How one tab state reads in a row. */
+const STATE_TEXT: Record<string, string> = {
+  in_use: 'in use',
+  idle: 'idle',
+  held: 'held',
+};
+
+/**
+ * The strip's rows, from one tab list.
+ *
+ * **A row that names no owner is refused, not drawn**: every tab belongs to a
+ * session, and a row with none cannot say whose calls drive it - so the
+ * strip's read fails with the reason rather than inventing an owner.
+ */
+export function tabRows(list: BrowserTabList): TabRow[] {
+  return list.rows.map((row) => {
+    const owner = slotLabel(row.owner);
+    if (owner === '') {
+      throw new Error(`tab ${row.number} names no owner`);
+    }
+    const state = row.state;
+    return {
+      number: row.number,
+      // **A tab with no title reads as its address**: `about:blank` is the
+      // honest name for a blank page, where an empty cell says nothing.
+      title: row.title !== '' ? row.title : row.url !== '' ? row.url : `tab ${row.number}`,
+      url: row.url,
+      owner,
+      state,
+      stateText: STATE_TEXT[state] ?? String(state),
+    };
+  });
+}
+
+/** The tabs of this seat's profile, as the strip and the bar draw them. */
+export async function listTabs(seat: SessionSlot | null = null): Promise<BrowserTabList> {
+  if (!canHost()) throw new Error('this page is not the client');
+  const body = await invokeShell<Record<string, unknown>>('client_browser_tabs', { seat });
+  return tabListOf(body['tabs']);
+}
+
+/** One tab list from the wire, narrowed once here; a bad envelope throws. */
+export function tabListOf(value: unknown): BrowserTabList {
   if (typeof value !== 'object' || value === null) {
-    return unreadable(at);
+    throw new Error('the server sent no tab list');
   }
-  const row = value as Record<string, unknown>;
-  if (typeof row.name !== 'string' || row.name === '') {
-    return unreadable(at);
+  const held = value as Record<string, unknown>;
+  if (typeof held['profile'] !== 'string' || typeof held['id'] !== 'number') {
+    throw new Error('the tab list names no profile');
+  }
+  const closing = held['closing_at_ms'];
+  if (closing !== null && closing !== undefined && typeof closing !== 'number') {
+    throw new Error('the tab list carries no readable close time');
   }
   return {
-    name: row.name,
-    owner: slotLabel(row.owner),
-    up: row.up === true,
-    windowed: row.windowed === true,
-    busy: row.busy === true,
-    closed: row.closed === true,
-    // **The server's own mark for a row it could not fully read** (a corrupt
-    // owner record): the row is drawn, and carries no verbs.
-    unreadable: row.unreadable === true,
+    profile: held['profile'],
+    id: held['id'],
+    up: held['up'] === true,
+    connected: held['connected'] === true,
+    closing_at_ms: typeof closing === 'number' ? closing : null,
+    // The rows are validated where they are drawn (`tabRows`), so a row this
+    // page cannot read is refused by name rather than dropped here.
+    rows: Array.isArray(held['rows']) ? (held['rows'] as BrowserTabList['rows']) : [],
   };
 }
 
-/** The row a value that is not a profile takes: named by its place, and inert. */
-function unreadable(at: number): ProfileRow {
-  return {
-    name: `(unreadable ${at + 1})`,
-    owner: '',
-    up: false,
-    windowed: false,
-    busy: false,
-    closed: false,
-    unreadable: true,
-  };
+/**
+ * Follow the tab list the shell pushes, as the strip and the bar do.
+ *
+ * The ask (`listTabs`) subscribes the connection; this is the same stream
+ * after it. Answers a function that stops listening.
+ */
+export async function onTabs(fn: (list: BrowserTabList) => void): Promise<() => void> {
+  if (!canHost()) return () => {};
+  const { listen } = await import('@tauri-apps/api/event');
+  return await listen<unknown>('browser_tabs', (event) => {
+    try {
+      fn(tabListOf(event.payload));
+    } catch (why) {
+      console.warn('a pushed tab list could not be read', why);
+    }
+  });
 }
 
 /** A slot as the strip's own line reads it, or `''` when none came. */
@@ -304,16 +345,4 @@ function slotLabel(owner: unknown): string {
   const slot = owner as Record<string, unknown>;
   const parts = [slot.org, slot.project, slot.label];
   return parts.every((part) => typeof part === 'string') ? parts.join('/') : '';
-}
-
-/** Close a named profile: the strip's row, acting for the person. */
-export async function closeProfile(name: string, seat: SessionSlot | null = null): Promise<void> {
-  if (!canHost()) return;
-  await invokeShell('client_browser_profile_close', { seat, name });
-}
-
-/** Delete a named profile: the one act that takes its logins. */
-export async function deleteProfile(name: string, seat: SessionSlot | null = null): Promise<void> {
-  if (!canHost()) return;
-  await invokeShell('client_browser_profile_delete', { seat, name });
 }

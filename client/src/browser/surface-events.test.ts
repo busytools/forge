@@ -7,8 +7,18 @@ vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('./host', () => ({
   canHost: () => true,
   drawsSurface: () => true,
-  showBrowser: () => Promise.resolve({ profile: '@shared' }),
+  showBrowser: () => Promise.resolve({ profile: 'hunt', tab: 2 }),
   hideBrowser: () => Promise.resolve({ lowered: true }),
+  listTabs: () =>
+    Promise.resolve({
+      profile: 'hunt',
+      id: 7,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [],
+    }),
+  tabListOf: (value: unknown) => value,
   reportSurfaceRect: () => Promise.resolve(),
   resizeBrowser: () => Promise.resolve(),
 }));
@@ -65,6 +75,7 @@ describe('the shell listeners', () => {
         'browser_surface_failed',
         'browser_nav_state',
         'browser_view',
+        'browser_tabs',
       ]);
 
       const pushed = navHandler();
@@ -74,15 +85,17 @@ describe('the shell listeners', () => {
         can_forward: false,
       });
 
-      // **The viewer state names the profile a phone's canvas filters on**,
-      // and whose role each surface holds; a drift here draws another
-      // profile's frame or offers a control the person does not have.
+      // **The viewer state names the profile and tab a phone's canvas
+      // filters on**, and whose role each surface holds; a drift here draws
+      // another tab's frame or offers a control the person does not have.
       const viewed = viewHandler();
-      viewed({ payload: { id: 7, profile: 'browser-stack-lead', viewer: 3, controller: 4 } });
+      viewed({
+        payload: { id: 7, profile: 'browser-stack-lead', tab: 3, viewer: 3, controller: 4 },
+      });
       expect(
-        [surface.id, surface.viewer, surface.controller],
-        'the profile id, this viewer and the role holder',
-      ).toEqual([7, 3, 4]);
+        [surface.id, surface.tab, surface.viewer, surface.controller],
+        'the profile id, the tab, this viewer and the role holder',
+      ).toEqual([7, 3, 3, 4]);
       expect(surface.attachedProfile, "the server's resolved name is what the bar spells").toBe(
         'browser-stack-lead',
       );

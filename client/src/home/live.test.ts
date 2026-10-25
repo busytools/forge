@@ -126,7 +126,9 @@ function fakeConnection() {
       refreshed.push(what);
       return true;
     },
-    browserView: () => false,
+    openBrowser: () => false,
+    selectTab: () => false,
+    requestTabs: () => false,
     browserControl: () => false,
     browserNav: () => false,
     browserInput: () => false,

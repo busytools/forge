@@ -17,15 +17,19 @@
  * store on the LATEST request, not the slowest one.
  */
 
+import type { BrowserTabList } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 import {
   canHost,
   drawsSurface,
   hideBrowser,
+  listTabs,
   reportSurfaceRect,
   resizeBrowser,
   showBrowser,
+  tabListOf,
   takeControl as sendControl,
+  whyText,
 } from './host';
 
 export type SurfacePhase = 'closed' | 'opening' | 'live' | 'failed';
@@ -33,7 +37,8 @@ export type SurfacePhase = 'closed' | 'opening' | 'live' | 'failed';
 /** The parked hand-off the takeover is standing for. */
 export interface HandOff {
   id: string;
-  profile: string | null;
+  /** The tab the session asked the person to see. */
+  tab: number | null;
 }
 
 /** What the open page's own history allows, as the shell reads it. */
@@ -55,10 +60,26 @@ interface Surface {
    */
   id: number | null;
   /**
+   * The viewed tab, the other half of the frame filter: a frame for another
+   * tab never paints, whichever profile it names.
+   */
+  tab: number | null;
+  /**
+   * The seat whose browser this is, kept for a tab switch: a re-attach names
+   * the same seat and the new tab.
+   */
+  seat: SessionSlot | null;
+  /**
+   * The viewed profile's tabs, for the bar's picker. The strip reads its own
+   * copy; this one follows the surface, so the picker cannot list a profile
+   * the page is no longer showing.
+   */
+  tabs: BrowserTabList | null;
+  /**
    * The profile the server actually attached, from `browser_view` - the
-   * requested name resolved (`@shared`, or the seat's own when none was
-   * named). **The bar spells it**, so two devices looking at two different
-   * browsers cannot read as one browser with a shared role.
+   * requested name resolved (the seat's own when none was named). **The bar
+   * spells it**, so two devices looking at two different browsers cannot read
+   * as one browser with a shared role.
    */
   attachedProfile: string | null;
   /** The hand-off this takeover answers, while one is parked. */
@@ -97,6 +118,9 @@ export const surface: Surface = $state({
   profile: null,
   reason: null,
   id: null,
+  tab: null,
+  seat: null,
+  tabs: null,
   attachedProfile: null,
   hand_off: null,
   nav: { can_back: false, can_forward: false },
@@ -161,14 +185,16 @@ export function clearHandOff(id: string): void {
 let generation = 0;
 
 /**
- * Open the takeover for `profile` (`null` is the asking seat's own when a
- * seat rides along, and the shared browser for the person's own door; the
- * shared one is named `@shared`). Answers why it could not open, or `null`
- * when it did.
+ * Open the takeover for one of a seat's browser tabs.
+ *
+ * `profile` is the name the row already knows, drawn while the attach is in
+ * flight; `tab` is the tab to show, and `null` the seat's current one (else
+ * the profile's first). Answers why it could not open, or `null` when it did.
  */
 export async function openSurface(
   profile: string | null,
   seat: SessionSlot | null = null,
+  tab: number | null = null,
 ): Promise<string | null> {
   // **The web page draws no takeover of its own.** Outside the shell the
   // failure belongs to the strip's row, not to a full-screen error.
@@ -183,6 +209,9 @@ export async function openSurface(
     // **A fresh page has nowhere to go until the shell says otherwise.**
     surface.nav = { can_back: false, can_forward: false };
     surface.id = null;
+    surface.tab = tab;
+    surface.seat = seat;
+    surface.tabs = null;
     surface.attachedProfile = null;
     surface.viewer = null;
     surface.controller = null;
@@ -192,7 +221,7 @@ export async function openSurface(
     // first open already has the listeners a refusal asks through.
     void installSurfaceEvents();
   }
-  const answer = await showBrowser(profile, seat, mine);
+  const answer = await showBrowser(profile, seat, tab, mine);
   const why = typeof answer === 'string' ? answer : null;
   // **The phone's takeover is the native one**: its shell raised it, and the
   // page's components are the desktop's.
@@ -210,11 +239,48 @@ export async function openSurface(
     surface.reason = answer;
     return answer;
   }
-  // **The shell's answer is the profile it raised**, which a hand-off with no
-  // profile resolves to the asking seat's own; Done lowers that one.
+  // **The shell's answer is the profile and tab it attached**, which a
+  // hand-off with no tab resolves to the asking seat's current one.
   surface.profile = answer.profile;
+  surface.tab = answer.tab;
   surface.phase = 'live';
+  // **The picker is an aid, not the open**: a slow read must not delay the
+  // caller that is waiting to hear the raise landed.
+  void readSurfaceTabs(seat);
   return null;
+}
+
+/**
+ * Move the viewed surface to another tab: a re-attach on the same seat.
+ *
+ * The frame stream switches with the attach, and `browser_view` pushes the
+ * tab it landed on - so this only starts the move and reads its answer.
+ */
+export async function selectTab(tab: number): Promise<string | null> {
+  if (!canHost()) return 'this page is not the client';
+  if (surface.phase !== 'live' || surface.seat === null) return 'no browser is open';
+  const answer = await showBrowser(surface.profile, surface.seat, tab, surface.epoch);
+  if (typeof answer === 'string') {
+    surface.phase = 'failed';
+    surface.reason = answer;
+    return answer;
+  }
+  surface.profile = answer.profile;
+  surface.tab = answer.tab;
+  void readSurfaceTabs(surface.seat);
+  return null;
+}
+
+/** The profile's tabs, read for the bar's picker; a failed read leaves the last. */
+async function readSurfaceTabs(seat: SessionSlot | null): Promise<void> {
+  try {
+    const list = await listTabs(seat);
+    if (surface.phase !== 'closed') surface.tabs = list;
+  } catch (why) {
+    // The picker is an aid, not the surface: a read that could not run is
+    // said in the console and the last list stays drawn.
+    console.warn(`the browser's tabs could not be read: ${whyText(why)}`);
+  }
 }
 
 /**
@@ -245,6 +311,9 @@ export async function closeSurface(
     surface.reason = null;
     surface.nav = { can_back: false, can_forward: false };
     surface.id = null;
+    surface.tab = null;
+    surface.seat = null;
+    surface.tabs = null;
     surface.attachedProfile = null;
     surface.viewer = null;
     surface.controller = null;
@@ -254,7 +323,7 @@ export async function closeSurface(
   return null;
 }
 
-/** How many of the shell's listeners are registered; five is all of them. */
+/** How many of the shell's listeners are registered; six is all of them. */
 let installed = 0;
 /** The attempt in flight, so callers arriving mid-install wait for it. */
 let inFlight: Promise<void> | null = null;
@@ -270,10 +339,10 @@ let inFlight: Promise<void> | null = null;
  * it up, rather than being dismissed by it.
  */
 export async function installSurfaceEvents(): Promise<void> {
-  if (installed === 5 || !canHost()) return;
+  if (installed === 6 || !canHost()) return;
   while (inFlight !== null) {
     await inFlight;
-    if (installed === 5) return;
+    if (installed === 6) return;
   }
   inFlight = installOnce();
   try {
@@ -343,13 +412,34 @@ async function installOnce(): Promise<void> {
       await listen<Record<string, unknown>>('browser_view', (event) => {
         const state = event.payload;
         surface.id = typeof state.id === 'number' ? state.id : null;
+        // **The tab is the other half of the frame filter**, and a re-attach
+        // pushes the tab it landed on rather than the one this page asked
+        // for.
+        surface.tab = typeof state.tab === 'number' ? state.tab : surface.tab;
         surface.viewer = typeof state.viewer === 'number' ? state.viewer : null;
         surface.controller = typeof state.controller === 'number' ? state.controller : null;
         // **The server resolves the name**, so a null request reads as the
-        // seat's own profile rather than as the shared browser.
+        // seat's own profile.
         if (typeof state.profile === 'string') surface.attachedProfile = state.profile;
       });
       installed = 5;
+    }
+    if (installed < 6) {
+      // **The bar's picker follows the pushed list**, so a tab opening or
+      // closing under the person moves the picker with it. A list for another
+      // profile is not this surface's.
+      await listen<unknown>('browser_tabs', (event) => {
+        let list: BrowserTabList;
+        try {
+          list = tabListOf(event.payload);
+        } catch (why) {
+          console.warn(`a pushed tab list could not be read: ${whyText(why)}`);
+          return;
+        }
+        if (surface.attachedProfile !== null && list.profile !== surface.attachedProfile) return;
+        surface.tabs = list;
+      });
+      installed = 6;
     }
   } catch {
     // No event API (a plain page, a test harness), or one listener refused:

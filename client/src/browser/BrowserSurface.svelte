@@ -39,6 +39,10 @@
   // shell keeps the newest one, so the ask waits for the canvas.
   $effect(() => {
     if (!painting || surface.phase !== 'live') return;
+    // **A tab switch is a new picture**: the previous tab's last frame stays
+    // in the shell until another arrives, so the kept frame is asked again
+    // for the tab that is now viewed.
+    void surface.tab;
     void keptFrame().then((frame) => {
       if (frame !== null) void paint(frame);
     });
@@ -47,12 +51,23 @@
   async function paint(frame: BrowserFrame): Promise<void> {
     const canvas = canvasEl;
     if (canvas === null) return;
-    // **Only the viewed profile paints, and only once its id is named.** A
-    // frame that raced the attach (the previous profile's, after a re-attach)
-    // would otherwise paint under a null id; the kept-frame ask waits for
-    // `live`, which is the same `browser_view` that sets the id.
-    if (surface.id === null || frame.profile !== surface.id) {
-      console.debug('a frame for another profile was dropped', frame.profile, surface.id);
+    // **Only the viewed tab paints, and only once both ids are named.** A
+    // frame that raced the attach (the previous profile's or tab's, after a
+    // re-attach) would otherwise paint under a null id; the kept-frame ask
+    // waits for `live`, which is the same `browser_view` that sets them.
+    if (
+      surface.id === null ||
+      surface.tab === null ||
+      frame.profile !== surface.id ||
+      frame.tab !== surface.tab
+    ) {
+      console.debug(
+        'a frame for another tab was dropped',
+        frame.profile,
+        frame.tab,
+        surface.id,
+        surface.tab,
+      );
       return;
     }
     let bitmap: ImageBitmap;

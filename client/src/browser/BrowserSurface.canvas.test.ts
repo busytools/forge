@@ -14,6 +14,17 @@ vi.mock('./host', () => ({
   keptFrame: vi.fn(() => Promise.resolve(null)),
   showBrowser: vi.fn(() => Promise.resolve(null)),
   hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
+  listTabs: vi.fn(() =>
+    Promise.resolve({
+      profile: 'hunt',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [],
+    }),
+  ),
+  tabListOf: (value: unknown) => value,
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
   resizeBrowser: vi.fn(() => Promise.resolve()),
   takeControl: vi.fn(() => Promise.resolve()),
@@ -47,6 +58,7 @@ function open(connection: Connection): HTMLElement {
   surface.phase = 'live';
   surface.reason = null;
   surface.profile = null;
+  surface.tab = 2;
   const target = document.createElement('div');
   document.body.appendChild(target);
   shown = mount(BrowserSurface, { target, props: { connection } });
@@ -56,12 +68,21 @@ function open(connection: Connection): HTMLElement {
 
 /** One decoded frame, as the shell's event carries it. */
 function frame(seq: number): BrowserFrame {
-  return { profile: 1, seq, width: 100, height: 50, key: seq === 0, bytes: new Uint8Array([1]) };
+  return {
+    profile: 1,
+    tab: 2,
+    seq,
+    width: 100,
+    height: 50,
+    key: seq === 0,
+    bytes: new Uint8Array([1]),
+  };
 }
 
 beforeEach(() => {
   surface.phase = 'closed';
   surface.id = null;
+  surface.tab = null;
   surface.viewer = null;
   surface.controller = null;
   vi.mocked(keptFrame).mockReset();
@@ -107,12 +128,21 @@ describe('the canvas viewer', () => {
     expect(keptFrame, 'no ask while the canvas does not exist').not.toHaveBeenCalled();
 
     surface.phase = 'live';
-    // The same `browser_view` that flips the surface live names its id.
+    // The same `browser_view` that flips the surface live names its id and tab.
     surface.id = 1;
+    surface.tab = 2;
     flushSync();
     await vi.waitFor(() => expect(keptFrame).toHaveBeenCalledTimes(1));
     const canvas = target.querySelector('canvas');
-    release({ profile: 1, seq: 4, width: 320, height: 200, key: true, bytes: new Uint8Array([1]) });
+    release({
+      profile: 1,
+      tab: 2,
+      seq: 4,
+      width: 320,
+      height: 200,
+      key: true,
+      bytes: new Uint8Array([1]),
+    });
     await vi.waitFor(() => expect(canvas?.width).toBe(320));
     expect(canvas?.height).toBe(200);
   });
@@ -163,6 +193,33 @@ describe('the canvas viewer', () => {
 
     surface.id = 1;
     flushSync();
+    for (const listener of listeners) listener(frame(1));
+    await vi.waitFor(() => expect(canvas.width).toBe(100));
+    expect(decoded).toHaveLength(1);
+  });
+
+  /// **Only the viewed tab's frames paint.** The profile can have several
+  /// tabs; a frame for one the person is not looking at is another page's
+  /// picture, and drawing it would be the wrong page under this one's name.
+  it('drops a frame for another tab', async () => {
+    const decoded: Blob[] = [];
+    vi.stubGlobal('createImageBitmap', (blob: Blob) => {
+      decoded.push(blob);
+      return Promise.resolve({ width: 100, height: 50, close: () => {} });
+    });
+    const { connection, listeners } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.id = 1;
+    surface.tab = 2;
+    flushSync();
+
+    for (const listener of listeners) listener({ ...frame(0), tab: 3 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(decoded, "another tab's frame is not decoded").toHaveLength(0);
+    expect(canvas.width, 'and the canvas keeps its own size').toBe(300);
+
     for (const listener of listeners) listener(frame(1));
     await vi.waitFor(() => expect(canvas.width).toBe(100));
     expect(decoded).toHaveLength(1);

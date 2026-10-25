@@ -420,7 +420,6 @@
     const held = ask;
     if (held !== null && held.kind === 'browser_hand_off') {
       box.shownHandOff = held.request.id;
-      box.shownHandOffProfile = held.request.profile;
       box.ended = null;
     }
   });
@@ -500,7 +499,7 @@
       // touches this shell. Through the store, so the page's phase follows
       // the shell's answer instead of staying live over a closed surface.
       if (surface.hand_off?.id === id) clearHandOff(id);
-      void closeSurface(held.shownHandOffProfile, at);
+      void closeSurface(null, at);
     });
   });
 
@@ -1083,23 +1082,17 @@
    * carries only back-to-chat.
    */
   /**
-   * The browser this surface really drives, spelled the way the strip does.
-   * **The server's resolved name wins when it arrives; the requested one is
-   * the fallback**, so a shell that predates the field still names the row
-   * the person opened.
+   * The profile this surface really drives, spelled the way the strip does.
+   * **The server's resolved name wins over the row's own.**
    */
-  const attachedName = $derived(
-    (surface.attachedProfile ?? surface.profile) === '@shared'
-      ? 'shared'
-      : (surface.attachedProfile ?? surface.profile),
-  );
+  const attachedName = $derived(surface.attachedProfile ?? surface.profile);
   const takeoverTitle = $derived(
     takeoverAsk === null
       ? attachedName === null
         ? 'the browser'
         : `the browser · ${attachedName}`
-      : takeoverAsk.request.profile != null
-        ? `browser hand-off · ${takeoverAsk.request.profile}`
+      : takeoverAsk.request.tab !== null
+        ? `browser hand-off · tab ${takeoverAsk.request.tab}`
         : 'browser hand-off',
   );
 
@@ -1107,14 +1100,13 @@
   function takeoverAnswer(done: boolean): void {
     if (takeoverAsk === null) return;
     const id = takeoverAsk.request.id;
-    const profile = takeoverAsk.request.profile;
     remember(id);
     try {
       void connection.dispatch({ respond_browser_hand_off: { key: slot, id, done } }, slot);
     } catch (error) {
       report('the answer was not sent', error);
     }
-    void closeSurface(profile, slot);
+    void closeSurface(null, slot);
     clearHandOff(id);
   }
 
@@ -1156,8 +1148,8 @@
    * sentence.
    */
   function takeoverRetry(): void {
-    const profile = takeoverAsk?.request.profile ?? surface.profile;
-    void openSurface(profile, slot);
+    const tab = takeoverAsk?.request.tab ?? surface.tab;
+    void openSurface(surface.profile, slot, tab);
   }
 
   /**

@@ -12,7 +12,7 @@
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
-  import { holdsControl, surface, takeControl } from '../browser/surface.svelte';
+  import { holdsControl, selectTab, surface, takeControl } from '../browser/surface.svelte';
   import type { NavState } from '../browser/surface.svelte';
   import type { Take } from './wire';
 
@@ -92,6 +92,20 @@
    * hold it draws the page and sends nothing until the person takes it.
    */
   const holding = $derived(holdsControl());
+
+  /** The viewed profile's tabs, as the server last pushed them. */
+  const tabs = $derived(surface.tabs?.rows ?? []);
+
+  /**
+   * One tab picked from the bar: a re-attach on that tab, which replaces what
+   * this connection was watching. **A tab is never created or closed here** -
+   * it belongs to the calls that drive it.
+   */
+  function pick(event: Event): void {
+    const chosen = Number((event.currentTarget as HTMLSelectElement).value);
+    if (!Number.isInteger(chosen) || chosen < 1) return;
+    void selectTab(chosen);
+  }
 </script>
 
 <div class="takeover-bar" role="region" aria-label="the browser takeover" bind:this={barEl}>
@@ -120,6 +134,26 @@
       </button>
     </span>
     <span class="tb-title">{title}</span>
+    {#if tabs.length > 0}
+      <select
+        class="tb-pick"
+        aria-label="the tab to view"
+        title="the profile's tabs"
+        disabled={surface.phase !== 'live'}
+        value={surface.tab === null ? '' : String(surface.tab)}
+        onchange={pick}
+      >
+        {#each tabs as row (row.number)}
+          <option value={row.number}>
+            {row.number} · {row.title !== ''
+              ? row.title
+              : row.url !== ''
+                ? row.url
+                : `tab ${row.number}`}
+          </option>
+        {/each}
+      </select>
+    {/if}
     <span class="tb-acts">
       {#if surface.phase === 'live'}
         <button

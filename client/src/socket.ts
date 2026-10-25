@@ -166,13 +166,17 @@ export interface Connection {
    */
   frame(bytes: Uint8Array): boolean;
   /**
-   * Attach this connection to a profile's browser as a viewer: `null` is the
-   * asking seat's own profile, `@shared` the browser's own, a name that
-   * profile. The answer is a `browser_view` message naming the profile's wire
-   * id, then `browser_nav_state`, then frames; its reply names the profile the
-   * attach took.
+   * Attach this connection to one of a seat's browser tabs as a viewer.
+   *
+   * `tab` is the tab to drive, and `null` its current tab (else the
+   * profile's first). The answer is a `browser_view` message naming the
+   * profile's wire id and the tab, then `browser_nav_state`, then frames.
    */
-  browserView(seat: SessionSlot, profile: string | null): boolean;
+  openBrowser(seat: SessionSlot, tab: number | null): boolean;
+  /** Move this connection to another of the profile's tabs: a re-attach. */
+  selectTab(seat: SessionSlot, tab: number): boolean;
+  /** Ask for the seat's tabs and follow their changes. */
+  requestTabs(seat: SessionSlot): boolean;
   /**
    * Take the controller role for the viewed surface, or give it back.
    *
@@ -311,7 +315,9 @@ const BROWSER_FRAME_TAG = 1;
 export interface BrowserFrame {
   /** The profile's wire id, from the `browser_view` that named it. */
   profile: number;
-  /** Monotonic per profile; a newer frame supersedes an older one. */
+  /** The profile's tab this frame paints: the other half of the filter. */
+  tab: number;
+  /** Monotonic per tab; a newer frame supersedes an older one. */
   seq: number;
   width: number;
   height: number;
@@ -323,16 +329,17 @@ export interface BrowserFrame {
 
 /** One binary message, decoded as a browser frame, when it is one. */
 function browserFrame(bytes: Uint8Array): BrowserFrame | null {
-  // The kind tag, then the host's own 12-byte header, then the pixels.
-  if (bytes.length < 14 || bytes[0] !== BROWSER_FRAME_TAG) return null;
+  // The kind tag, then the host's own 14-byte header, then the pixels.
+  if (bytes.length < 15 || bytes[0] !== BROWSER_FRAME_TAG) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return {
     profile: view.getUint16(1, true),
-    seq: view.getUint32(3, true),
-    width: view.getUint16(7, true),
-    height: view.getUint16(9, true),
-    key: bytes[12] === 1,
-    bytes: bytes.subarray(13),
+    tab: view.getUint16(3, true),
+    seq: view.getUint32(5, true),
+    width: view.getUint16(9, true),
+    height: view.getUint16(11, true),
+    key: bytes[14] === 1,
+    bytes: bytes.subarray(15),
   };
 }
 
@@ -567,6 +574,13 @@ export function connect(
       case 'commit_diff':
       case 'file_content':
       case 'document_read':
+        return;
+      // The browser's own frames are the shell's or a phone canvas': this
+      // connection knows them and draws none of them itself.
+      case 'browser_view':
+      case 'browser_nav_state':
+      case 'browser_surface_failed':
+      case 'browser_tabs':
         return;
       // `seat_frames` is the conversation's too, and the same way: a repaired
       // stretch folds through the chat's own listener, so this switch knows
@@ -888,9 +902,19 @@ export function connect(
       }
       return true;
     },
-    browserView(seat, profile) {
+    openBrowser(seat, tab) {
       if (!isOpen()) return false;
-      sendNow({ kind: 'browser_view', seat, profile });
+      sendNow({ kind: 'browser_view', seat, tab });
+      return true;
+    },
+    selectTab(seat, tab) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'browser_view', seat, tab });
+      return true;
+    },
+    requestTabs(seat) {
+      if (!isOpen()) return false;
+      sendNow({ kind: 'browser_tabs', seat });
       return true;
     },
     browserControl(take) {

@@ -74,25 +74,27 @@ async function stubServer() {
     send(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
     },
-    /** One relayed browser frame, as the server sends it: kind tag, header,
-     *  then the encoded pixels. */
+    /** One relayed browser frame, as the server sends it: kind tag, the
+     *  host's 14-byte header, then the encoded pixels. */
     sendFrame(frame: {
       profile: number;
+      tab: number;
       seq: number;
       width: number;
       height: number;
       key: boolean;
       bytes: Uint8Array;
     }) {
-      const bytes = Buffer.alloc(13 + frame.bytes.length);
+      const bytes = Buffer.alloc(15 + frame.bytes.length);
       bytes[0] = 1;
       bytes.writeUInt16LE(frame.profile, 1);
-      bytes.writeUInt32LE(frame.seq, 3);
-      bytes.writeUInt16LE(frame.width, 7);
-      bytes.writeUInt16LE(frame.height, 9);
-      bytes[11] = 1;
-      bytes[12] = frame.key ? 1 : 0;
-      Buffer.from(frame.bytes).copy(bytes, 13);
+      bytes.writeUInt16LE(frame.tab, 3);
+      bytes.writeUInt32LE(frame.seq, 5);
+      bytes.writeUInt16LE(frame.width, 9);
+      bytes.writeUInt16LE(frame.height, 11);
+      bytes[13] = 1;
+      bytes[14] = frame.key ? 1 : 0;
+      Buffer.from(frame.bytes).copy(bytes, 15);
       for (const socket of sockets) socket.send(bytes);
     },
     /** One frame exactly as given, for a frame that is not JSON at all. */
@@ -1329,23 +1331,35 @@ describe('the connection', () => {
 
 describe('the browser viewer', () => {
   /**
-   * **An attach is one frame naming the profile.** `null` is the shared
-   * browser; the server answers with the profile's wire id, its history and
-   * then frames.
+   * **An attach names the seat and the tab.** A null tab is the asking seat's
+   * current one; a tab number is that tab, which is how the strip's show and
+   * the bar's picker reach a page.
    */
-  it('attaches to a profile and asks for control on the wire', async () => {
+  it('opens a seat on a tab and switches the viewed tab', async () => {
     const { server, conn } = await connected();
-    conn.browserView(LEAD, null);
+    conn.openBrowser(LEAD, 2);
     await until(() => server.received.length === 1, 'the attach to arrive');
-    expect(server.received[0]).toEqual({ kind: 'browser_view', seat: LEAD, profile: null });
+    expect(server.received[0]).toEqual({ kind: 'browser_view', seat: LEAD, tab: 2 });
+
+    conn.selectTab(LEAD, 3);
+    await until(() => server.received.length === 2, 'the switch to arrive');
+    expect(server.received[1]).toEqual({ kind: 'browser_view', seat: LEAD, tab: 3 });
+
+    conn.requestTabs(LEAD);
+    await until(() => server.received.length === 3, 'the tab ask to arrive');
+    expect(server.received[2]).toEqual({ kind: 'browser_tabs', seat: LEAD });
+  });
+
+  it('asks for control and history on the wire', async () => {
+    const { server, conn } = await connected();
 
     conn.browserControl(true);
-    await until(() => server.received.length === 2, 'the take to arrive');
-    expect(server.received[1]).toEqual({ kind: 'browser_control', take: true });
+    await until(() => server.received.length === 1, 'the take to arrive');
+    expect(server.received[0]).toEqual({ kind: 'browser_control', take: true });
 
     conn.browserNav(true);
-    await until(() => server.received.length === 3, 'the move to arrive');
-    expect(server.received[2]).toEqual({ kind: 'browser_nav', back: true });
+    await until(() => server.received.length === 2, 'the move to arrive');
+    expect(server.received[1]).toEqual({ kind: 'browser_nav', back: true });
   });
 
   /**
@@ -1386,6 +1400,7 @@ describe('the browser viewer', () => {
 
     server.sendFrame({
       profile: 5,
+      tab: 2,
       seq: 7,
       width: 800,
       height: 600,
@@ -1395,6 +1410,7 @@ describe('the browser viewer', () => {
     await until(() => heard.length === 1, 'the frame to arrive');
     const frame = heard[0];
     expect(frame?.profile).toBe(5);
+    expect(frame?.tab).toBe(2);
     expect(frame?.seq).toBe(7);
     expect([frame?.width, frame?.height]).toEqual([800, 600]);
     expect(frame?.key).toBe(true);
@@ -1422,7 +1438,9 @@ describe('the browser viewer', () => {
   it('refuses a viewer call while the socket is down', async () => {
     const { server, conn } = await connected();
     conn.close();
-    expect(conn.browserView(LEAD, null)).toBe(false);
+    expect(conn.openBrowser(LEAD, null)).toBe(false);
+    expect(conn.selectTab(LEAD, 1)).toBe(false);
+    expect(conn.requestTabs(LEAD)).toBe(false);
     expect(conn.browserControl(true)).toBe(false);
     expect(conn.browserNav(false)).toBe(false);
     expect(conn.browserInput({ kind: 'text', text: 'x' })).toBe(false);

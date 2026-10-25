@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -248,6 +248,34 @@ function isSlot(value: unknown): value is SessionSlot {
  */
 export type DocumentKind = 'markdown' | 'pdf' | 'text' | { other: string };
 
+/** What one tab is doing, as the strip's mark says it. */
+export type BrowserTabState = 'in_use' | 'idle' | 'held';
+
+/** One tab as a client's browser strip draws it. */
+export interface BrowserTabRow {
+  /** The host's tab number, which frames and input speak. */
+  number: number;
+  title: string;
+  url: string;
+  /** The session whose calls drive it. */
+  owner: SessionSlot;
+  state: BrowserTabState;
+}
+
+/** One profile's tabs and how the profile itself is doing. */
+export interface BrowserTabList {
+  profile: string;
+  /** The id the binary frames carry for the profile. */
+  id: number;
+  /** Whether its browser host is up. */
+  up: boolean;
+  /** Whether a driver is attached and running. */
+  connected: boolean;
+  /** When the idle clock closes it, as Unix epoch milliseconds. */
+  closing_at_ms: number | null;
+  rows: BrowserTabRow[];
+}
+
 /** What a client sends. */
 export type ClientMessage =
   | {
@@ -308,20 +336,28 @@ export type ClientMessage =
    */
   | { kind: 'document_read'; session: SessionSlot; path: string; reviewable: boolean }
   /**
-   * Attach this connection to a profile's browser as a viewer.
+   * Attach this connection to one of a seat's browser tabs, as a viewer.
    *
-   * `profile` names the profile to drive; `null` is the asking seat's own,
-   * and the shared browser is named `@shared`. The answer is a
-   * `browser_view` naming the profile's wire id, then a `browser_nav_state`,
-   * then frames; its reply names the profile the attach took.
+   * `tab` is the tab to drive; `null` is the asking seat's current tab, else
+   * its profile's first. Attaching again replaces what this connection was
+   * viewing. The answer is a `browser_view` naming the profile's wire id and
+   * the tab, then a `browser_nav_state`, then frames.
    */
   | {
       kind: 'browser_view';
       seat: SessionSlot;
-      profile: string | null;
+      tab: number | null;
       /** Answers the attach when the sender waits; the shell's does. */
       reply_to?: number | null;
     }
+  /**
+   * The tabs of this seat's profile, for a client's strip.
+   *
+   * Answered through `reply_to` with `{ok: true, tabs}`, where `tabs` is a
+   * [`BrowserTabList`]; the connection then follows every change as a pushed
+   * `browser_tabs`.
+   */
+  | { kind: 'browser_tabs'; seat: SessionSlot; reply_to?: number | null }
   /** Stop viewing the attached profile: the takeover lowered. */
   | { kind: 'browser_detach' }
   /**
@@ -490,14 +526,27 @@ export type ServerMessage =
       kind: 'browser_view';
       id: number;
       profile: string;
+      /** The tab this state is for; a frame for another tab is not this one's. */
+      tab: number;
       controller: number | null;
       viewers: number;
       viewer: number;
     }
-  /** Where the viewed page's history sits: what the bar's arrows may do. */
-  | { kind: 'browser_nav_state'; id: number; can_back: boolean; can_forward: boolean }
-  /** The viewed profile's browser stopped, and why. */
-  | { kind: 'browser_surface_failed'; id: number; reason: string };
+  /** Where the viewed tab's history sits: what the bar's arrows may do. */
+  | {
+      kind: 'browser_nav_state';
+      id: number;
+      tab: number;
+      can_back: boolean;
+      can_forward: boolean;
+    }
+  /** The viewed tab's browser stopped, and why. */
+  | { kind: 'browser_surface_failed'; id: number; tab: number; reason: string }
+  /**
+   * The viewed profile's tabs, pushed once the connection asked with
+   * `browser_tabs` and then once per change.
+   */
+  | ({ kind: 'browser_tabs' } & BrowserTabList);
 
 /** The modifier keys a person held for one input gesture. */
 export interface InputModifiers {

@@ -5494,7 +5494,7 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     expect(drawn()).toContain('needs you');
-    expect(drawn()).toContain('browser hand-off · job-hunt');
+    expect(drawn()).toContain('browser hand-off · tab 2');
     expect(drawn(), "the reason is the session's own words, in full").toContain(
       'The sign-in page is showing a CAPTCHA.',
     );
@@ -5547,12 +5547,9 @@ describe('the dock', () => {
     // answer is what takes it down. This line was the live bug's fix and
     // nothing pinned it.
     expect(hideBrowser, 'the window comes down with the answer').toHaveBeenCalledTimes(1);
-    // **The hand-off's own profile, not the shared one**: lowering the wrong
-    // window would leave the person's browser up while the answer said done.
-    expect(hideBrowser, "and it is that hand-off's profile that comes down").toHaveBeenCalledWith(
-      'job-hunt',
-      SLOT,
-    );
+    // **The attach this page holds is the one that comes down**: Done lowers
+    // the tab Open raised, never another surface's.
+    expect(hideBrowser, 'and it is that raise that comes down').toHaveBeenCalledWith(null, SLOT);
   });
 
   /** **A hand-off that named no profile still lowers the browser its Open
@@ -5560,15 +5557,16 @@ describe('the dock', () => {
    *  passes that seat, so the shell resolves the lower the same way. Without
    *  the seat the page asked for the shared browser, the seat's surface
    *  stayed up, and Done left the takeover covering the chat. */
-  it('lowers the seat-own browser of a hand-off that named no profile', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead' });
-    open({ record: record({ pending_asks: [browserHandOffAsk({ profile: null })] }) });
+  it('lowers the seat-own browser of a hand-off with no readable tab', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead', tab: 1 });
+    open({ record: record({ pending_asks: [browserHandOffAsk({ tab: null })] }) });
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise names no profile and carries the seat').toHaveBeenCalledWith(
+      expect(showBrowser, 'the raise names no tab and carries the seat').toHaveBeenCalledWith(
         null,
         SLOT,
+        null,
         expect.any(Number),
       ),
     );
@@ -5645,7 +5643,7 @@ describe('the dock', () => {
       },
     });
 
-    expect(hideBrowser, 'the hand-off profile comes down').toHaveBeenCalledWith('job-hunt', SLOT);
+    expect(hideBrowser, 'the attach this page holds comes down').toHaveBeenCalledWith(null, SLOT);
   });
 
   it('declines the hand-off with Not now, which is the same release', () => {
@@ -5680,7 +5678,7 @@ describe('the dock', () => {
     expect(surface.reason).toContain('did not start in time');
     expect(drawn(), 'and the bar offers the door back').toContain('try again');
 
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt' });
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt', tab: 2 });
     barAction('try again').click();
     await Promise.resolve();
     await Promise.resolve();
@@ -5799,14 +5797,15 @@ describe('the dock', () => {
    * carries the ASKING SEAT, which the shell checks against the profile's
    * record before it raises anything. */
   it('opens the browser window', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt' });
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt', tab: 2 });
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
     await vi.waitFor(() =>
       expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(
-        'job-hunt',
+        null,
         SLOT,
+        2,
         expect.any(Number),
       ),
     );

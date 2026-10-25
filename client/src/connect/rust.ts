@@ -96,6 +96,7 @@ interface DesktopState {
 /** One `client://browser-frame` payload: a host frame, base64 pixels. */
 interface ShellFrame {
   profile: number;
+  tab: number;
   seq: number;
   width: number;
   height: number;
@@ -107,6 +108,7 @@ interface ShellFrame {
 /** One `client://browser-audio` payload: interleaved i16 samples, base64. */
 interface ShellAudio {
   profile: number;
+  tab: number;
   seq: number;
   rate: number;
   channels: number;
@@ -117,6 +119,7 @@ interface ShellAudio {
 function frameOf(payload: ShellFrame): BrowserFrame | null {
   if (
     typeof payload.profile !== 'number' ||
+    typeof payload.tab !== 'number' ||
     typeof payload.bytes !== 'string' ||
     typeof payload.width !== 'number' ||
     typeof payload.height !== 'number'
@@ -128,6 +131,7 @@ function frameOf(payload: ShellFrame): BrowserFrame | null {
   for (let at = 0; at < binary.length; at += 1) bytes[at] = binary.charCodeAt(at);
   return {
     profile: payload.profile,
+    tab: payload.tab,
     seq: typeof payload.seq === 'number' ? payload.seq : 0,
     width: payload.width,
     height: payload.height,
@@ -488,9 +492,26 @@ class RustConnection implements Connection {
     return true;
   }
 
-  browserView(seat: SessionSlot, profile: string | null): boolean {
+  openBrowser(seat: SessionSlot, tab: number | null): boolean {
+    return this.attach(seat, tab);
+  }
+
+  selectTab(seat: SessionSlot, tab: number): boolean {
+    return this.attach(seat, tab);
+  }
+
+  requestTabs(seat: SessionSlot): boolean {
     if (this.state !== 'open') return false;
-    void invoke('client_browser_view', { seat, profile }).catch((why: unknown) => {
+    void invoke('client_browser_tabs', { seat }).catch((why: unknown) => {
+      report('the browser tabs could not reach the shell', why);
+    });
+    return true;
+  }
+
+  /** An attach and a switch are the same verb: the tab says which page. */
+  private attach(seat: SessionSlot, tab: number | null): boolean {
+    if (this.state !== 'open') return false;
+    void invoke('client_browser_view', { seat, tab }).catch((why: unknown) => {
       report('the browser view could not reach the shell', why);
     });
     return true;

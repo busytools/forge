@@ -6,16 +6,26 @@ vi.mock('./host', () => ({
   drawsSurface: vi.fn(() => true),
   showBrowser: vi.fn(),
   hideBrowser: vi.fn(),
+  listTabs: vi.fn(),
+  tabListOf: (value: unknown) => value,
   reportSurfaceRect: vi.fn(),
   resizeBrowser: vi.fn(() => Promise.resolve()),
   takeControl: vi.fn(() => Promise.resolve()),
 }));
 
-import { canHost, drawsSurface, hideBrowser, resizeBrowser, showBrowser } from './host';
-import { closeSurface, openSurface, setRegion, surface, takeControl } from './surface.svelte';
+import { canHost, drawsSurface, hideBrowser, listTabs, resizeBrowser, showBrowser } from './host';
+import {
+  closeSurface,
+  openSurface,
+  selectTab,
+  setRegion,
+  surface,
+  takeControl,
+} from './surface.svelte';
 
 const show = vi.mocked(showBrowser);
 const hide = vi.mocked(hideBrowser);
+const tabs = vi.mocked(listTabs);
 const here = vi.mocked(drawsSurface);
 const hostable = vi.mocked(canHost);
 const resize = vi.mocked(resizeBrowser);
@@ -23,6 +33,15 @@ const resize = vi.mocked(resizeBrowser);
 beforeEach(() => {
   show.mockReset();
   hide.mockReset();
+  tabs.mockReset();
+  tabs.mockResolvedValue({
+    profile: 'hunt',
+    id: 1,
+    up: true,
+    connected: true,
+    closing_at_ms: null,
+    rows: [],
+  });
   here.mockReset();
   here.mockReturnValue(true);
   hostable.mockReset();
@@ -33,6 +52,9 @@ beforeEach(() => {
   surface.phase = 'closed';
   surface.profile = null;
   surface.reason = null;
+  surface.tab = null;
+  surface.seat = null;
+  surface.tabs = null;
 });
 
 describe('the browser surface', () => {
@@ -60,26 +82,39 @@ describe('the browser surface', () => {
     expect(resize).toHaveBeenCalledWith(640, 480, 1);
   });
 
-  it('opens onto the live phase and names the profile it opened', async () => {
-    show.mockResolvedValue({ profile: 'hunt' });
-    expect(await openSurface('hunt')).toBeNull();
+  it('opens onto the live phase and names the profile and tab it opened', async () => {
+    show.mockResolvedValue({ profile: 'hunt', tab: 2 });
+    expect(await openSurface('hunt', null, 2)).toBeNull();
     expect(surface.phase).toBe('live');
     expect(surface.profile).toBe('hunt');
-    expect(show).toHaveBeenCalledWith('hunt', null, surface.epoch);
+    expect(surface.tab).toBe(2);
+    expect(show).toHaveBeenCalledWith('hunt', null, 2, surface.epoch);
+  });
+
+  /// **A picker's switch is a re-attach on the same seat**, and the tab the
+  /// shell answers with is the one the surface filters frames by.
+  it('moves the surface to another tab through the same seat', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', seat, 1);
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 3 });
+    expect(await selectTab(3)).toBeNull();
+    expect(show).toHaveBeenLastCalledWith('hunt', seat, 3, surface.epoch);
+    expect(surface.tab).toBe(3);
   });
 
   /// **Every open is its own surface identity.** The rect a page reports is
   /// only allowed to place the open it was measured for, so each open mints a
   /// fresh epoch and the shell is told which one it is opening.
   it('mints an epoch per open and carries it to the shell', async () => {
-    show.mockResolvedValue({ profile: 'hunt' });
+    show.mockResolvedValue({ profile: 'hunt', tab: 1 });
     await openSurface('hunt');
     const first = surface.epoch;
     hide.mockResolvedValue({ lowered: true });
     await closeSurface();
     await openSurface('hunt');
     expect(surface.epoch, 'a second open is not the first').not.toBe(first);
-    expect(show).toHaveBeenLastCalledWith('hunt', null, surface.epoch);
+    expect(show).toHaveBeenLastCalledWith('hunt', null, null, surface.epoch);
   });
 
   it("carries the shell's own sentence when it could not open", async () => {
@@ -90,7 +125,7 @@ describe('the browser surface', () => {
   });
 
   it('closes without closing the browser: the shell is asked to hide only', async () => {
-    show.mockResolvedValue({ profile: 'hunt' });
+    show.mockResolvedValue({ profile: 'hunt', tab: 1 });
     await openSurface('hunt');
     hide.mockResolvedValue({ lowered: true });
     expect(await closeSurface()).toBeNull();
@@ -100,7 +135,7 @@ describe('the browser surface', () => {
   });
 
   it('keeps the takeover live over another profile the shell is still drawing', async () => {
-    show.mockResolvedValue({ profile: 'hunt' });
+    show.mockResolvedValue({ profile: 'hunt', tab: 1 });
     await openSurface('hunt');
     hide.mockResolvedValue({ lowered: false });
     expect(await closeSurface()).toBeNull();
@@ -109,16 +144,16 @@ describe('the browser surface', () => {
   });
 
   it('a slow open that lands after a close is taken down again', async () => {
-    let resolveFirst: (answer: { profile: string }) => void = () => undefined;
+    let resolveFirst: (answer: { profile: string; tab: number }) => void = () => undefined;
     show.mockReturnValueOnce(
-      new Promise<{ profile: string }>((resolve) => {
+      new Promise<{ profile: string; tab: number }>((resolve) => {
         resolveFirst = resolve;
       }),
     );
     const first = openSurface('hunt');
     hide.mockResolvedValue({ lowered: true });
     expect(await closeSurface()).toBeNull();
-    resolveFirst({ profile: 'hunt' });
+    resolveFirst({ profile: 'hunt', tab: 1 });
     await first;
     expect(hide, 'the stale open is hidden, not left under a closed store').toHaveBeenCalledWith(
       'hunt',
@@ -128,10 +163,10 @@ describe('the browser surface', () => {
 
   it('a phone draws its own takeover: the shell is asked without a page surface', async () => {
     here.mockReturnValue(false);
-    show.mockResolvedValue({ profile: 'hunt' });
+    show.mockResolvedValue({ profile: 'hunt', tab: 1 });
     expect(await openSurface('hunt')).toBeNull();
     expect(surface.phase, 'the page draws nothing on the phone').toBe('closed');
-    expect(show).toHaveBeenCalledWith('hunt', null, surface.epoch);
+    expect(show).toHaveBeenCalledWith('hunt', null, null, surface.epoch);
   });
 
   it('outside the shell the failure belongs to the row, not a takeover', async () => {
@@ -142,16 +177,16 @@ describe('the browser surface', () => {
   });
 
   it('a slow open that was superseded never lands', async () => {
-    let resolveFirst: (answer: { profile: string }) => void = () => undefined;
+    let resolveFirst: (answer: { profile: string; tab: number }) => void = () => undefined;
     show.mockReturnValueOnce(
-      new Promise<{ profile: string }>((resolve) => {
+      new Promise<{ profile: string; tab: number }>((resolve) => {
         resolveFirst = resolve;
       }),
     );
     const first = openSurface('hunt');
-    show.mockResolvedValueOnce({ profile: 'scout' });
+    show.mockResolvedValueOnce({ profile: 'scout', tab: 1 });
     await openSurface('scout');
-    resolveFirst({ profile: 'hunt' });
+    resolveFirst({ profile: 'hunt', tab: 1 });
     await first;
     expect(surface.phase).toBe('live');
     expect(surface.profile).toBe('scout');
@@ -163,12 +198,12 @@ describe('the browser surface', () => {
   /// no dock mounted to fold it, and used to answer Back with nothing.
   it('a lowered word closes the surface at the page level', async () => {
     surface.phase = 'live';
-    surface.profile = 'shared';
+    surface.profile = 'hunt';
     surface.reason = 'why';
     hide.mockResolvedValue({ lowered: true });
     window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'lowered' }));
     await vi.waitFor(() => expect(surface.phase).toBe('closed'));
-    expect(hide).toHaveBeenCalledWith('shared', null);
+    expect(hide).toHaveBeenCalledWith('hunt', null);
     expect(surface.profile).toBe(null);
     expect(surface.reason).toBe(null);
   });
@@ -177,14 +212,14 @@ describe('the browser surface', () => {
   /// lower closes the surface.
   it('a raised word leaves a live surface up', () => {
     surface.phase = 'live';
-    surface.profile = 'shared';
+    surface.profile = 'hunt';
     window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'raised' }));
     expect(surface.phase).toBe('live');
-    expect(surface.profile).toBe('shared');
+    expect(surface.profile).toBe('hunt');
   });
 
   it('a hand-off with no profile lowers the profile the shell actually raised', async () => {
-    show.mockResolvedValue({ profile: 'busyblocks-lead' });
+    show.mockResolvedValue({ profile: 'busyblocks-lead', tab: 1 });
     const seat = { org: 'Busytools', project: 'busyblocks', label: 'lead' };
     expect(await openSurface(null, seat)).toBeNull();
     expect(surface.profile, "the shell's answer is the raised profile").toBe('busyblocks-lead');
@@ -197,7 +232,7 @@ describe('the browser surface', () => {
   });
 
   it("a refused hide leaves the surface's failure drawn rather than claiming it closed", async () => {
-    show.mockResolvedValue({ profile: '@shared' });
+    show.mockResolvedValue({ profile: 'hunt', tab: 1 });
     await openSurface(null);
     hide.mockResolvedValue('the browser host is gone');
     expect(await closeSurface()).toBe('the browser host is gone');
