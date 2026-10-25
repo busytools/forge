@@ -4773,7 +4773,7 @@ impl Workspace {
     /// Tell the fleet a `/new` or `/resume` kept the slot and swapped the
     /// occupant, so the previous occupant's tabs close. **Best-effort**, like
     /// the spawn's own warm: a workspace with no fleet has no tabs to replace.
-    fn replace_browser_seat(&self, seat: &SessionSlot) {
+    pub(crate) fn replace_browser_seat(&self, seat: &SessionSlot) {
         let (Some(host), Ok(runtime)) =
             (self.browser_host(), tokio::runtime::Handle::try_current())
         else {
@@ -6486,6 +6486,10 @@ impl Workspace {
         // workers this cascade takes with it (#1930). A viewer's mark is a
         // set, so a second announcement would be spent.
         self.announce_release(session_key);
+        // **A closed seat takes its tabs with it.** The browser's tabs belong
+        // to the session that opened them, so a close is a replacement with
+        // nobody in the seat; a parked hand-off's tab is the fleet's to keep.
+        self.replace_browser_seat(session_key);
         // The cascade is the lead's, and a lead's slot is the one whose
         // label says so: a worker's slot carries its own label, so a
         // closed worker cannot be misidentified as its lead however far
@@ -6506,6 +6510,8 @@ impl Workspace {
                     status: entry.to_status(),
                     worktree,
                 });
+                // The cascade takes a worker's browser tabs with it too.
+                self.replace_browser_seat(&entry.slot);
                 self.release_session(&entry.slot);
             }
         }
@@ -15707,6 +15713,9 @@ provider = "anthropic"
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe();
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        workspace
+            .install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
 
         let project = workspace.list_projects().into_iter().next().expect("forge project");
         let project_key = project.key.clone();
@@ -15723,6 +15732,22 @@ provider = "anthropic"
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
             "workers must be cascade-closed"
+        );
+        // **Every closed seat takes its tabs with it**, the cascaded workers'
+        // included: the fleet hears a replacement for the lead and each worker.
+        let mut replaced = Vec::new();
+        for _ in 0..3 {
+            let (what, args) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), heard.recv())
+                    .await
+                    .expect("the fleet hears every close")
+                    .expect("a replacement");
+            assert_eq!(what, "replace_seat");
+            replaced.push(args);
+        }
+        assert!(
+            replaced.contains(&serde_json::json!(lead_key)),
+            "the lead's seat is replaced: {replaced:?}",
         );
 
         // Drain the channel and confirm we saw a Removed
