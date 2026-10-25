@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 
-const { listen } = vi.hoisted(() => ({ listen: vi.fn() }));
+const { listen, listTabs } = vi.hoisted(() => ({
+  listen: vi.fn(),
+  listTabs: vi.fn(),
+}));
 
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('./host', () => ({
@@ -9,15 +12,7 @@ vi.mock('./host', () => ({
   drawsSurface: () => true,
   showBrowser: () => Promise.resolve({ profile: 'hunt', tab: 2 }),
   hideBrowser: () => Promise.resolve(true),
-  listTabs: () =>
-    Promise.resolve({
-      profile: 'hunt',
-      id: 7,
-      up: true,
-      connected: true,
-      closing_at_ms: null,
-      rows: [],
-    }),
+  listTabs,
   tabListOf: (value: unknown) => value,
   reportSurfaceRect: () => Promise.resolve(),
   resizeBrowser: () => Promise.resolve(),
@@ -55,6 +50,15 @@ describe('the shell listeners', () => {
     async () => {
       vi.resetModules();
       listen.mockReset();
+      listTabs.mockReset();
+      listTabs.mockResolvedValue({
+        profile: 'hunt',
+        id: 7,
+        up: true,
+        connected: true,
+        closing_at_ms: null,
+        rows: [],
+      });
       listen.mockResolvedValueOnce(undefined);
       listen.mockRejectedValueOnce(new Error('the event plugin was not ready'));
 
@@ -76,6 +80,7 @@ describe('the shell listeners', () => {
         'browser_nav_state',
         'browser_view',
         'browser_tabs',
+        'client://connection',
       ]);
 
       const pushed = navHandler();
@@ -127,6 +132,16 @@ describe('the shell listeners', () => {
       });
 
       pushed({ payload: { can_back: true, can_forward: true } });
+
+      // **A reconnect re-asks the tabs**, so the picker does not freeze on
+      // the list the dead socket pushed.
+      const connection = listen.mock.calls.find(
+        (entry) => entry[0] === 'client://connection',
+      )?.[1] as (() => void) | undefined;
+      listTabs.mockClear();
+      connection?.();
+      await vi.waitFor(() => expect(listTabs).toHaveBeenCalledTimes(1));
+
       await closeSurface();
       expect(surface.nav, 'a closed surface has nowhere to go').toEqual({
         can_back: false,

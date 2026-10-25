@@ -306,7 +306,7 @@ export async function closeSurface(
   return null;
 }
 
-/** How many of the shell's listeners are registered; six is all of them. */
+/** How many of the shell's listeners are registered; seven is all of them. */
 let installed = 0;
 /** The attempt in flight, so callers arriving mid-install wait for it. */
 let inFlight: Promise<void> | null = null;
@@ -423,6 +423,15 @@ async function installOnce(): Promise<void> {
         surface.tabs = list;
       });
       installed = 6;
+    }
+    if (installed < 7) {
+      // **A subscribe lives with its socket.** A reconnect starts a new one,
+      // so the picker re-reads the tabs it was following rather than freezing
+      // on the last list the dead socket pushed.
+      await listen('client://connection', () => {
+        if (surface.phase === 'live') void readSurfaceTabs(surface.seat);
+      });
+      installed = 7;
     }
   } catch {
     // No event API (a plain page, a test harness), or one listener refused:
