@@ -225,6 +225,31 @@ describe('the canvas viewer', () => {
     expect(decoded).toHaveLength(1);
   });
 
+  /// **A relayed frame that overtakes an older one does not paint over it.**
+  /// The tab's own last sequence is what its canvas compares against, so a
+  /// frame that lost the race cannot put a stale picture on screen.
+  it('never paints an older frame over a newer one on the same tab', async () => {
+    const decoded: Blob[] = [];
+    vi.stubGlobal('createImageBitmap', (blob: Blob) => {
+      decoded.push(blob);
+      return Promise.resolve({ width: 100, height: 50, close: () => {} });
+    });
+    const { connection, listeners } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.id = 1;
+    surface.tab = 2;
+    flushSync();
+
+    for (const listener of listeners) listener({ ...frame(5), width: 500, height: 250 });
+    await vi.waitFor(() => expect(canvas.width).toBe(500));
+    for (const listener of listeners) listener({ ...frame(4), width: 400, height: 200 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(canvas.width, 'the older frame does not paint').toBe(500);
+    expect(decoded, 'and is not even decoded').toHaveLength(1);
+  });
+
   /// **A frame that lands before the attach names its profile does not
   /// paint.** After a re-attach the previous profile's frame can arrive
   /// before the new `browser_view`; with a null id it painted under the new
