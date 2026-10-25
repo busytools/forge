@@ -2,7 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { canHost, listTabs, onTabs } from '../browser/host';
+import { canHost, listTabs, onConnection, onTabs } from '../browser/host';
 import type { BrowserTabList } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 import BrowserSegment from './BrowserSegment.svelte';
@@ -48,7 +48,7 @@ function row(over: Record<string, unknown> = {}): BrowserTabList['rows'][number]
     owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
     state: 'idle',
     ...over,
-  } as unknown as BrowserTabList['rows'][number];
+  };
 }
 
 afterEach(() => {
@@ -83,6 +83,7 @@ vi.mock('../browser/host', async (importOriginal) => {
       }),
     ),
     onTabs: vi.fn(() => Promise.resolve(() => {})),
+    onConnection: vi.fn(() => Promise.resolve(() => {})),
     drawsSurface: vi.fn(() => true),
   };
 });
@@ -387,6 +388,29 @@ describe('the browser segment', () => {
     );
 
     push(tabs({ rows: [row({ number: 2 })] }));
+    flushSync();
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
+    shown.stop();
+  });
+
+  /// **A reconnect re-reads the tabs.** The push subscription lived on the
+  /// socket that dropped; without the read the strip froze on its last list.
+  it('re-reads the tabs when the connection is new again', async () => {
+    const seen: { notice: (() => void) | null } = { notice: null };
+    vi.mocked(onConnection).mockImplementation((fn) => {
+      seen.notice = fn;
+      return Promise.resolve(() => {});
+    });
+    vi.mocked(listTabs).mockResolvedValue(tabs());
+    const shown = show(SLOT);
+    await vi.waitFor(() => expect(listTabs).toHaveBeenCalledTimes(1));
+
+    vi.mocked(listTabs).mockClear();
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ number: 3 })] }));
+    seen.notice?.();
+    await vi.waitFor(() => expect(listTabs).toHaveBeenCalledTimes(1));
     flushSync();
     await vi.waitFor(() =>
       expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),

@@ -259,7 +259,9 @@ export interface BrowserTabRow {
   url: string;
   /** The session whose calls drive it. */
   owner: SessionSlot;
-  state: BrowserTabState;
+  /** The server's own word, kept whole: a state this page has not seen is
+   *  drawn as itself rather than as a neighbour it does not mean. */
+  state: string;
 }
 
 /** One profile's tabs and how the profile itself is doing. */

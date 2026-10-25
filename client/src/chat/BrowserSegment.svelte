@@ -1,6 +1,14 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
-  import { canHost, listTabs, onTabs, tabRows, whyText, type TabRow } from '../browser/host';
+  import {
+    canHost,
+    listTabs,
+    onConnection,
+    onTabs,
+    tabRows,
+    whyText,
+    type TabRow,
+  } from '../browser/host';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import type { BrowserTabList } from '../protocol';
   import { panelStyle, portal } from './strip-panel';
@@ -146,6 +154,26 @@
     let live = true;
     void onTabs((list) => {
       if (live) absorb(list);
+    }).then((off) => {
+      if (live) stop = off;
+      else off();
+    });
+    return () => {
+      live = false;
+      stop?.();
+    };
+  });
+
+  /**
+   * **A reconnect re-reads the tabs.** The push subscription lived on the
+   * socket that dropped; without a read the strip froze on its last list
+   * while a fresh connection pushed nothing.
+   */
+  $effect(() => {
+    let stop: (() => void) | null = null;
+    let live = true;
+    void onConnection(() => {
+      if (live) void readTabs();
     }).then((off) => {
       if (live) stop = off;
       else off();

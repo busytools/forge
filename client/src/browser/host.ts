@@ -98,13 +98,11 @@ export async function showBrowser(
   profile: string | null,
   seat: SessionSlot | null,
   tab: number | null,
-  epoch: number,
 ): Promise<OpenAnswer> {
   if (!canHost()) return 'this page is not the client';
   try {
     const answer: unknown = await invokeShell('client_browser_view', { seat, tab });
     await invokeShell('browser_takeover', { on: true });
-    void epoch;
     void profile;
     const attached = attachedFrom(answer);
     if (attached === null) {
@@ -131,16 +129,17 @@ export async function hideBrowser(
     await invokeShell('browser_takeover', { on: false });
     void profile;
     void seat;
-    return { lowered: true };
+    return true;
   } catch (why) {
     return whyText(why);
   }
 }
 
 /**
- * What a lower answered: whether it took the page the person sees down.
+ * What a lower answered: `true` when the page the person sees is down, or
+ * the shell's own sentence for why it is not.
  */
-export type HideAnswer = { lowered: boolean } | string;
+export type HideAnswer = true | string;
 
 /**
  * Where the takeover's page area is, for the shell to place the native layer:
@@ -156,10 +155,9 @@ export async function reportSurfaceRect(
   rect: { x: number; y: number; width: number; height: number },
   viewport: { width: number; height: number },
   scale: number,
-  epoch: number,
 ): Promise<void> {
   if (!canHost()) return;
-  await invokeShell('browser_surface_rect', { rect: { ...rect, scale }, viewport, epoch });
+  await invokeShell('browser_surface_rect', { rect: { ...rect, scale }, viewport });
 }
 
 /**
@@ -255,7 +253,9 @@ export interface TabRow {
   stateText: string;
 }
 
-/** How one tab state reads in a row. */
+/** How one tab state reads in a row. **A plain object with an own-property
+ *  check**: a wire word like `constructor` must read as itself, not as
+ *  something inherited from `Object.prototype`. */
 const STATE_TEXT: Record<string, string> = {
   in_use: 'in use',
   idle: 'idle',
@@ -284,7 +284,7 @@ export function tabRows(list: BrowserTabList): TabRow[] {
       url: row.url,
       owner,
       state,
-      stateText: STATE_TEXT[state] ?? String(state),
+      stateText: (Object.hasOwn(STATE_TEXT, state) ? STATE_TEXT[state] : undefined) ?? state,
     };
   });
 }
@@ -309,15 +309,60 @@ export function tabListOf(value: unknown): BrowserTabList {
   if (closing !== null && closing !== undefined && typeof closing !== 'number') {
     throw new Error('the tab list carries no readable close time');
   }
+  // **A list this page cannot read is a refusal, not an empty strip.** An
+  // unreadable `rows` used to become `[]` and the panel drew "no tabs yet",
+  // which claims a read that found none.
+  const rows = held['rows'];
+  if (!Array.isArray(rows)) {
+    throw new Error('the tab list carries no rows');
+  }
   return {
     profile: held['profile'],
     id: held['id'],
     up: held['up'] === true,
     connected: held['connected'] === true,
     closing_at_ms: typeof closing === 'number' ? closing : null,
-    // The rows are validated where they are drawn (`tabRows`), so a row this
-    // page cannot read is refused by name rather than dropped here.
-    rows: Array.isArray(held['rows']) ? (held['rows'] as BrowserTabList['rows']) : [],
+    rows: rows.map((row) => tabRowOf(row)),
+  };
+}
+
+/** One row narrowed at the wire, or a refusal naming what is unreadable. */
+function tabRowOf(value: unknown): BrowserTabList['rows'][number] {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('a tab row is not an object');
+  }
+  const row = value as Record<string, unknown>;
+  const number = row['number'];
+  const title = row['title'];
+  const url = row['url'];
+  const state = row['state'];
+  const owner = row['owner'];
+  if (typeof number !== 'number' || !Number.isInteger(number)) {
+    throw new Error('a tab row names no number');
+  }
+  if (typeof title !== 'string' || typeof url !== 'string') {
+    throw new Error(`tab ${number} carries no readable title or address`);
+  }
+  if (typeof state !== 'string') {
+    throw new Error(`tab ${number} names no state`);
+  }
+  if (typeof owner !== 'object' || owner === null) {
+    throw new Error(`tab ${number} names no owner`);
+  }
+  const slot = owner as Record<string, unknown>;
+  if (
+    typeof slot['org'] !== 'string' ||
+    typeof slot['project'] !== 'string' ||
+    typeof slot['label'] !== 'string'
+  ) {
+    throw new Error(`tab ${number} names no owner`);
+  }
+  return {
+    number,
+    title,
+    url,
+    owner: { org: slot['org'], project: slot['project'], label: slot['label'] },
+    state,
   };
 }
 
@@ -337,6 +382,17 @@ export async function onTabs(fn: (list: BrowserTabList) => void): Promise<() => 
       console.warn('a pushed tab list could not be read', why);
     }
   });
+}
+
+/**
+ * The shell's connection notice. **A subscribe lives with its socket**: a
+ * reconnect starts a new one, so the strip re-reads the tabs it was
+ * following rather than freezing on the last list the old socket pushed.
+ */
+export async function onConnection(fn: () => void): Promise<() => void> {
+  if (!canHost()) return () => {};
+  const { listen } = await import('@tauri-apps/api/event');
+  return await listen('client://connection', () => fn());
 }
 
 /** A slot as the strip's own line reads it, or `''` when none came. */

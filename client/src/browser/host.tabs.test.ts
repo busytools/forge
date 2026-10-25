@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { tabRows } from './host';
+import { tabListOf, tabRows } from './host';
 
 describe("the strip's tab rows", () => {
   it("names the owner and the state in the server's words", () => {
@@ -42,5 +42,42 @@ describe("the strip's tab rows", () => {
         rows: [{ number: 1, title: '', url: '', owner: null, state: 'idle' }],
       } as never),
     ).toThrow(/owner/);
+  });
+
+  /// **An unreadable list is a refusal, not an empty strip.** The rows used
+  /// to be cast, so a malformed `rows` drew "no tabs yet" - a claim that a
+  /// read found nothing.
+  it('refuses a list whose rows this page cannot read', () => {
+    expect(() => tabListOf({ profile: 'p', id: 1, rows: 'not-a-list' })).toThrow(/rows/);
+    expect(() =>
+      tabListOf({
+        profile: 'p',
+        id: 1,
+        rows: [{ number: 1, title: '', url: '', owner: { org: 'O', project: 'p', label: 'l' } }],
+      }),
+    ).toThrow(/state/);
+  });
+
+  /// **A state this page has not seen reads as itself**, including a word
+  /// that collides with an object property: the lookup is the map's own, not
+  /// whatever `Object.prototype` carries.
+  it('draws an unknown state as its own word', () => {
+    const rows = tabRows({
+      profile: 'p',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 1,
+          title: '',
+          url: '',
+          owner: { org: 'O', project: 'p', label: 'l' },
+          state: 'constructor',
+        },
+      ],
+    });
+    expect(rows[0]?.stateText).toBe('constructor');
   });
 });
