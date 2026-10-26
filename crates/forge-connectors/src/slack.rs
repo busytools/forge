@@ -2504,10 +2504,15 @@ impl SlackClient {
                 None => return Ok(out),
             }
         }
-        Err(SlackError::Transport {
-            method: "users.list".to_owned(),
-            detail: format!("pagination did not terminate within {MAX_USER_PAGES} pages"),
-        })
+        // A cursor that never ends returns what was read, the way the
+        // history and reply walks do, rather than failing the whole lookup.
+        tracing::warn!(
+            target: "forge_connectors::slack",
+            pages = MAX_USER_PAGES,
+            users = out.len(),
+            "users.list kept handing back a cursor; stopping the walk",
+        );
+        Ok(out)
     }
 
     /// `pins.list` for one conversation.
