@@ -486,7 +486,9 @@ describe('the canvas viewer', () => {
     flushSync();
     const input = target.querySelector<HTMLInputElement>('.surface-ime');
     if (input === null) throw new Error('no keyboard field');
-    await vi.waitFor(() => expect(document.activeElement, 'the field takes the keyboard').toBe(input));
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'the field takes the keyboard').toBe(input),
+    );
   });
 
   /** A pointer event of the kind a finger sends. */
