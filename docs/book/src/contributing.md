@@ -85,10 +85,15 @@ tail's status, not the recipe's.
 
 ## The book's own gate
 
-`docs/book/ui-word-count.sh` holds every `docs/book/src/ui/` page under
-600 words of prose outside mockups and collapsed blocks (`--strict`
-also counts the landing page's card text). Run it after editing a
-surface page.
+`docs/book/ui-word-count.sh` measures every
+`docs/book/src/ui/client/*.md` page against its recorded prose count in
+`docs/book/ui-word-count.baseline`, ignoring mockups and collapsed
+blocks. A page may shrink freely; a page over its baseline, missing from
+the baseline, or a baseline entry whose page is gone fails the gate.
+Growing, adding or removing a page is a deliberate baseline edit in the
+same pull request, and `--record` rewrites the baseline from the current
+pages. `just ui-word-count` runs the gate, and `just check` runs that
+step.
 
 ## The rules that bite first
 

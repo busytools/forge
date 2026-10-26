@@ -11,7 +11,7 @@ import { homeWire } from '../dev/fixture.data';
 import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
-import type { Connection } from '../socket';
+import { MAX_RETRY_MS, RETRY_MS, type Connection } from '../socket';
 import { fontStack } from '../theme';
 import { watchUpdate } from '../update/state';
 import type { AgentRow, HomeWire } from '../wire/home';
@@ -247,35 +247,47 @@ function submit(address: string): void {
 }
 
 /**
- * Let a greeting cross a real socket and everything it sets off finish.
- *
- * `settle` is one task turn, which is what a launch with no socket under it
- * needs. A greeting comes back through a socket and is followed by a close
- * that has to cross one too, so this gives the event loop turns to deliver
- * both rather than asserting on a frame still in flight.
+ * The span an absence is claimed over: the span the bare settle before these
+ * cases held, and twice the ten task turns the fixed-count loop gave.
  */
-async function crossed(): Promise<void> {
-  for (let turn = 0; turn < 10; turn += 1) {
-    flushSync();
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+const QUIET_MS = 100;
+
+/**
+ * Hold a window open, for a claim that the page did NOT move.
+ *
+ * **An absence has nothing to wait on**: the frame has crossed a real socket
+ * and been applied, and what the window buys is the span in which a route
+ * that wrongly moved would have moved. Anything positive is waited for with
+ * `until`; only a "nothing happened" claim takes this.
+ */
+async function quiet(ms = QUIET_MS): Promise<void> {
+  flushSync();
+  await new Promise((resolve) => setTimeout(resolve, ms));
   flushSync();
 }
 
 /**
+ * How long a wait here is given: a frame crossing a real socket can land after
+ * any fixed count of turns (measured twice in one day, both times green on the
+ * standalone re-run), so waits run on the client's own reconnect ceiling
+ * rather than on a number chosen for a quiet machine.
+ */
+const WAIT_MS = MAX_RETRY_MS + 1_000;
+
+// The longest case here carries three waits in sequence, so the file's own
+// deadline is that sum rather than vitest's five-second default, which leaves
+// a chained case to red on a bare timeout.
+vi.setConfig({ testTimeout: WAIT_MS * 3 + 5_000 });
+
+/**
  * Wait for a condition, rather than for a fixed count of turns.
  *
- * **`crossed` is a race under load**: ten 5ms turns is about 50ms of wall
- * clock whatever else the machine is doing - so with the machine busy a
- * frame crossing a real socket can land after it and the assertion fails on
- * a page that was merely slow (measured twice in one day, both times green
- * on the standalone re-run). Waiting on the condition removes the race and
- * keeps the assertion's own message for the case where the page genuinely
- * never arrives; the deadline only stops a broken page from hanging the
- * suite.
+ * Waiting on the condition removes the race and keeps the assertion's own
+ * message for the case where the page genuinely never arrives; the deadline
+ * only stops a broken page from hanging the suite.
  */
 async function until(what: () => boolean, why = 'the page to settle'): Promise<void> {
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + WAIT_MS;
   for (;;) {
     // Flush BEFORE the check, so a condition reading rendered state sees the
     // frame it is waiting on rather than the one before it.
@@ -373,12 +385,12 @@ describe('the shell at launch', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt('/session/TestOrg/proj/lead', forge.address);
-    await crossed();
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
 
     forge.handOff({ org: 'TestOrg', project: 'proj', label: 'lead' }, '/proj/docs/a.md', false);
-    // Bounded settle: the frame is applied within a tick or two, and the
-    // assertion is that the route did NOT move.
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The claim is that the route did NOT move, so this is a window rather
+    // than a wait on anything.
+    await quiet();
 
     expect(location.pathname, 'the raise does not move the reader by itself').toBe(
       '/session/TestOrg/proj/lead',
@@ -539,12 +551,12 @@ describe('the shell at launch', () => {
     await guessed.attached;
 
     submit(asked.address);
-    await crossed();
+    await until(() => asked.live() === 1, 'the submit to take');
     expect(asked.live(), 'the submit never took, so there is no socket to guard').toBe(1);
 
     // The launch lands now, into a shell that already holds the person's.
     guessed.greet();
-    await crossed();
+    await until(() => guessed.live() === 0, 'the launch to give its socket back');
 
     expect(asked.live(), 'the launch closed the socket the person opened').toBe(1);
     expect(guessed.live(), 'a launch that yielded left its own socket open').toBe(0);
@@ -594,8 +606,10 @@ describe('a shell that is torn down', () => {
       } finally {
         vi.useRealTimers();
       }
-      // The retry socket's failure is real I/O, which lands on the event loop.
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      // The retry socket's failure is real I/O, which lands on the event loop;
+      // the claim is that nothing was reported, so this is a window, and it is
+      // two of the connection's retry beats wide.
+      await quiet(RETRY_MS * 2);
     } finally {
       spy.mockRestore();
     }
@@ -643,7 +657,10 @@ describe('a forge that is not the protocol this client speaks', () => {
     );
     forges.push(forge);
     await openAt('/', forge.address);
-    await crossed();
+    await until(
+      () => drawn().includes(`socket v${PROTOCOL_VERSION}`),
+      'the home to draw behind the notice',
+    );
 
     expect(location.pathname, 'a forge a version behind did not land on the home').toBe('/');
     const said = drawn();
@@ -670,7 +687,7 @@ describe('a forge that is not the protocol this client speaks', () => {
     );
     forges.push(forge);
     await openAt('/session/TestOrg/proj/w1', forge.address);
-    await crossed();
+    await until(() => drawn().includes('just install'), 'the skew to be drawn');
 
     const said = drawn();
     expect(said, 'the skew named no way out').toContain('just install');
@@ -698,7 +715,7 @@ describe('a forge that is not the protocol this client speaks', () => {
     );
     forges.push(forge);
     await openAt('/connect', forge.address);
-    await crossed();
+    await until(() => drawn().includes('just install'), 'the skew to be drawn');
 
     expect(location.pathname, 'the launch moved the page it was addressed at').toBe('/connect');
     const said = drawn();
@@ -724,17 +741,20 @@ describe('a forge that is not the protocol this client speaks', () => {
     );
     forges.push(forge);
     await openAt('/', forge.address);
-    await crossed();
+    await until(() => drawn().includes('just install'), 'the first skew to be drawn');
     expect(location.pathname, 'the skewed forge did not land on the home').toBe('/');
 
     // A later greeting with a different protocol, as a forge swapped
     // underneath a running client sends.
     forge.greet(PROTOCOL_VERSION + 1);
-    await crossed();
+    await until(() => drawn().includes('just client-release'), 'the later skew to be drawn');
 
     history.replaceState(null, '', '/connect');
     dispatchEvent(new PopStateEvent('popstate'));
-    await crossed();
+    await until(
+      () => drawn().includes(`protocol ${PROTOCOL_VERSION + 1}`),
+      'the door to draw the notice',
+    );
 
     const said = drawn();
     expect(said, 'the notice was not named on the door').toContain(
@@ -751,7 +771,7 @@ describe('a forge that is not the protocol this client speaks', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null }, 'now', 3);
     forges.push(forge);
     await openAt('/', forge.address);
-    await crossed();
+    await until(() => drawn().includes('protocol 3'), 'the notice to name the far version');
 
     const said = drawn();
     expect(said).toContain('protocol 3');
@@ -771,7 +791,7 @@ describe('a seat removed under the reader', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt('/', forge.address);
-    await crossed();
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
 
     const template = homeWire.agents[0];
     if (template === undefined) throw new Error('the fixture holds no agent');
@@ -790,7 +810,7 @@ describe('a seat removed under the reader', () => {
     expect(closingSeat(W1), 'the close left no mark to clear').toBe(true);
 
     forge.home({ ...wire, agents: [row('lead', 'Running'), row('w1', 'Sleeping')] });
-    await crossed();
+    await until(() => !closingSeat(W1), 'the landed mark to clear');
     expect(closingSeat(W1), 'a home read left the landed mark standing').toBe(false);
   });
 
@@ -805,7 +825,7 @@ describe('a seat removed under the reader', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt('/session/TestOrg/proj/w1', forge.address);
-    await crossed();
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
     expect(location.pathname, 'the fixture did not land on the worker').toBe(
       '/session/TestOrg/proj/w1',
     );
@@ -851,7 +871,8 @@ describe('a seat removed under the reader', () => {
 
     forge.remove(W1, LEAD);
     await until(() => asks('unsubscribe') === 1, "the removed seat's release");
-    await crossed();
+    // A second release has nothing to wait on, so this is a window.
+    await quiet();
     expect(asks('unsubscribe'), 'the removed seat was released twice').toBe(1);
     expect(asks('subscribe'), 'the removed seat was re-subscribed').toBe(1);
   });
@@ -867,14 +888,14 @@ describe('a seat removed under the reader', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt('/session/TestOrg/proj/w1', forge.address);
-    await crossed();
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
     expect(location.pathname, 'the fixture did not land on the worker').toBe(
       '/session/TestOrg/proj/w1',
     );
 
     const W1: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
     forge.release(W1);
-    await crossed();
+    await landed('/session/TestOrg/proj/lead');
 
     // The mark the frame leaves is the rail's own business, pinned where the
     // sets are driven directly (close.test.ts, rail.test.ts); what the SHELL
@@ -897,13 +918,13 @@ describe('a seat removed under the reader', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt('/session/TestOrg/proj/lead', forge.address);
-    await crossed();
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
     expect(location.pathname, 'the fixture did not land on the lead').toBe(
       '/session/TestOrg/proj/lead',
     );
 
     forge.release({ org: 'TestOrg', project: 'proj', label: 'lead' });
-    await crossed();
+    await landed('/');
 
     // The walk may not offer the released seat and the fixture leaves no
     // other live row, so the reader lands on the home - any route other than
@@ -926,14 +947,15 @@ describe('a seat removed under the reader', () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt('/', forge.address);
-    await crossed();
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
     expect(location.pathname, 'the fixture did not land on the home').toBe('/');
 
     forge.remove(
       { org: 'TestOrg', project: 'proj', label: 'w1' },
       { org: 'TestOrg', project: 'proj', label: 'lead' },
     );
-    await crossed();
+    // The claim is that the reader did NOT move, so this is a window.
+    await quiet();
 
     expect(location.pathname, 'a removal elsewhere moved the reader').toBe('/');
   });

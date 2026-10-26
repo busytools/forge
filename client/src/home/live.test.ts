@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServerMessage, Subject } from '../protocol';
 import { PROTOCOL_VERSION } from '../protocol';
@@ -7,7 +7,7 @@ import { Stores } from '../stores';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { railFooter } from '../session/view';
-import { watchHome, type HomeRead } from './live';
+import { COALESCE_MS, watchHome, type HomeRead } from './live';
 import { homeView } from './view';
 
 const HOME: Subject = 'home';
@@ -178,10 +178,24 @@ function fakeConnection() {
   };
 }
 
-/** Give a timer a chance to fire, for everything it would have set off to show. */
+/**
+ * Drive the coalescing beat, which is the only clock these cases wait on.
+ *
+ * The beat is the store's own (`COALESCE_MS`), so it fires exactly when the
+ * store would fire it, and no wall clock is left for a loaded runner to
+ * outrun.
+ */
 async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await vi.advanceTimersByTimeAsync(COALESCE_MS);
 }
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('the home over a connection', () => {
   /**

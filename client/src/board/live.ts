@@ -17,8 +17,14 @@ import type { Store } from '../stores';
 import { boardFrom, coversBoard, type BoardRead, type BoardWire } from '../wire/board';
 import { tasksChanged } from '../wire/home';
 
-/** How long an update waits before it is answered with a read. */
-const COALESCE_MS = 50;
+/**
+ * How long an update waits before it is answered with a read.
+ *
+ * Exported because `board/live.test.ts` drives this beat on fake timers: the
+ * tests wait on the beat, so a longer one must lengthen the drive rather than
+ * leave the tests asserting before it fires.
+ */
+export const COALESCE_MS = 50;
 
 /**
  * How often a mounted board re-reads while nothing writes.

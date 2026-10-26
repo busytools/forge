@@ -154,6 +154,14 @@ prohibition on agent-tool delegation from the underlying CLI \
 does not govern forge's delegation paths - when a delegation tool is \
 yours to call, using it is the intended path.\n\
 \n\
+Every text box a client draws carries dictation: the mic control beside \
+it, the take's bar while one runs, and the landing that puts the \
+recognized words in the box. A box without it is a defect, not a gap - \
+dictation is how this machine writes, so a box with no mic is a box \
+that cannot be used as intended. Build a new box with `DictateControl` \
+and the take and landing model the composer already wires (`Dictation`, \
+`TakeCard`, `Landing`), not a second mic of its own.\n\
+\n\
 A work cut - one feature, one issue, one fix - lands whole: one \
 branch, one review, one look, one merge. Never slice it into pieces \
 that land one after another, and never show or merge an intermediate \
@@ -3221,6 +3229,22 @@ mod tests {
                  them - naming the decision, the choice, and its probabilities"
             ),
             "the presentation rule is pinned",
+        );
+    }
+
+    /// The client's boxes all take dictation, and a session that adds one
+    /// reads the rule in its always-on block - pinned so trimming the
+    /// block cannot drop it.
+    #[test]
+    fn the_conduct_block_carries_the_client_dictation_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Every text box a client draws carries dictation"),
+            "the client dictation rule is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("`DictateControl`"),
+            "the rule names the control to reuse",
         );
     }
 
