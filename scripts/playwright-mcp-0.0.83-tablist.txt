@@ -1,0 +1,5 @@
+        switch (params2.action) {
+          case "list": {
+            await context.ensureTab();
+            break;
+          }

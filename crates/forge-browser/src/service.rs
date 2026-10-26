@@ -1188,6 +1188,8 @@ impl BrowserService {
     /// host-end path comes through here or through `teardown`**, so a number
     /// that dies with its host never keeps a row.
     async fn orphan_tab(&self, profile: &Arc<Profile>, tab: u16) {
+        // The host this number belongs to: a replacement restarts at one.
+        let generation = profile.host_generation.load(Ordering::Acquire);
         let input = {
             let state = profile.state.lock().await;
             state.host.as_ref().map(|host| host.input.clone())
@@ -1197,6 +1199,10 @@ impl BrowserService {
         }
         profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close(tab);
         profile.forget_tab(tab);
+        // **A closed tab is not the one the history watch follows**: left
+        // focused, it would spend a driver round trip every 500 ms on a page
+        // that no longer exists.
+        profile.unfocus(generation, tab);
         let leaving: Vec<u64> = self
             .where_viewing
             .lock()
@@ -2142,7 +2148,7 @@ impl BrowserService {
                     Ok(()) => Ok(()),
                     Err(first) => {
                         drop(state);
-                        let Some(fresh) = live_target(&profile, tab).await else {
+                        let LiveTarget::Found(fresh) = live_target(&profile, tab).await else {
                             return Err(first);
                         };
                         if fresh == target {
@@ -2457,7 +2463,9 @@ impl BrowserService {
             reply
         } else {
             drop(state);
-            let target = live_target(&profile, tab).await?;
+            let LiveTarget::Found(target) = live_target(&profile, tab).await else {
+                return None;
+            };
             let mut state = profile.state.lock().await;
             call_page(&mut state, port, &target, "Page.getNavigationHistory", json!({}))
                 .await
@@ -2490,8 +2498,9 @@ impl BrowserService {
         if !holding {
             return Err("this viewer is not the browser's controller".to_owned());
         }
-        let target =
-            live_target(&profile, tab).await.ok_or_else(|| format!("tab {tab} is not open"))?;
+        let LiveTarget::Found(target) = live_target(&profile, tab).await else {
+            return Err(format!("tab {tab} is not open"));
+        };
         let mut state = profile.state.lock().await;
         let port = state
             .host
@@ -3407,6 +3416,20 @@ impl Profile {
         });
     }
 
+    /// Let the focus go when it names `tab`: the history watch follows only a
+    /// page that is there. **The generation is part of the name**: a host
+    /// that was replaced restarts tab numbers at one, so a late close from
+    /// the old host must not unfocus its successor's tab one.
+    fn unfocus(&self, generation: u64, tab: u16) {
+        if self.host_generation.load(Ordering::Acquire) != generation {
+            return;
+        }
+        let mut focused = self.focused.lock().unwrap_or_else(PoisonError::into_inner);
+        if *focused == Some(tab) {
+            *focused = None;
+        }
+    }
+
     /// Republish one tab's viewer state: its controller and how many are
     /// attached to it.
     fn publish_view(&self, tab: u16) {
@@ -3540,7 +3563,7 @@ impl Profile {
 
     /// Start the page's navigation watch for this host, once.
     fn watch_nav(self: &Arc<Self>, state: &mut State) {
-        if state.nav_watch.is_some() {
+        if state.nav_watch.as_ref().is_some_and(|watch| !watch.is_finished()) {
             return;
         }
         if let Some(port) = state.host.as_ref().map(|host| host.port) {
@@ -3978,13 +4001,24 @@ impl Profile {
 /// not stall the watch for ever.
 const NAV_BOUND: Duration = Duration::from_secs(2);
 
+/// What the driver says about one tab's page.
+enum LiveTarget {
+    /// A target to drive: the driver's fresh one, else the registry's last.
+    Found(String),
+    /// The driver listed its tabs and the page was not among them: the tab
+    /// was closed or its page is gone.
+    Gone,
+    /// Nothing to drive yet.
+    Unknown,
+}
+
 /// The tab's live CDP target, refreshed from the driver when it can answer.
 ///
 /// **CEF swaps a page's target id on a navigation**, a person's click
 /// included; the registry's copy is only as fresh as the last call, so a
 /// history read, a Back and the nav watch ask the driver before they use it.
 /// The page guid is the identity that survives the swap.
-async fn live_target(profile: &Arc<Profile>, tab: u16) -> Option<String> {
+async fn live_target(profile: &Arc<Profile>, tab: u16) -> LiveTarget {
     let driver = {
         let state = profile.state.lock().await;
         state.driver.as_ref().filter(|driver| driver.is_running()).map(Arc::clone)
@@ -3994,15 +4028,32 @@ async fn live_target(profile: &Arc<Profile>, tab: u16) -> Option<String> {
     {
         let page =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
-        if let Some(page) = page
-            && let Some(row) = crate::tabs::index_of(&listing, &page).and_then(|at| listing.get(at))
-            && !row.target.is_empty()
-        {
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).retarget(tab, &row.target);
-            return Some(row.target.clone());
+        let row = page
+            .as_deref()
+            .and_then(|page| crate::tabs::index_of(&listing, page))
+            .and_then(|at| listing.get(at));
+        match row {
+            Some(row) if !row.target.is_empty() => {
+                profile
+                    .tabs
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .retarget(tab, &row.target);
+                return LiveTarget::Found(row.target.clone());
+            }
+            // **Only a listing with no row for the page is a gone tab.** A
+            // listed page whose target is empty is live: the export writes ""
+            // when its own CDP read throws, so the registry's last target is
+            // the one to try.
+            None if page.is_some() => return LiveTarget::Gone,
+            _ => {}
         }
     }
-    profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).map(str::to_owned)
+    match profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).map(str::to_owned)
+    {
+        Some(target) => LiveTarget::Found(target),
+        None => LiveTarget::Unknown,
+    }
 }
 
 /// How long the watch waits for a page target that is not there yet.
@@ -4018,6 +4069,8 @@ const NAV_RETRY: Duration = Duration::from_millis(500);
 /// pair standing.
 fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // The host this watch belongs to: a replacement restarts at tab one.
+        let generation = profile.host_generation.load(Ordering::Acquire);
         'watch: loop {
             if profile.ended.load(Ordering::Acquire) {
                 return;
@@ -4027,9 +4080,26 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
                 tokio::time::sleep(NAV_RETRY).await;
                 continue;
             };
-            let Some(target) = live_target(&profile, tab).await else {
-                tokio::time::sleep(NAV_RETRY).await;
-                continue;
+            let target = match live_target(&profile, tab).await {
+                LiveTarget::Found(target) => target,
+                // **A page the driver no longer lists is not retried**: each
+                // retry is a driver round trip every 500 ms against a dead
+                // tab, and on an unpatched stack that listing also creates a
+                // page per tick (#2581).
+                LiveTarget::Gone => {
+                    tracing::debug!(
+                        event_name = "browser_nav_watch_stopped",
+                        profile = %profile.key,
+                        tab,
+                        "the history watch's page is gone; it stops rather than retrying"
+                    );
+                    profile.unfocus(generation, tab);
+                    return;
+                }
+                LiveTarget::Unknown => {
+                    tokio::time::sleep(NAV_RETRY).await;
+                    continue;
+                }
             };
             let Some(url) = spawn::page_websocket_of(port, &target).await else {
                 tokio::time::sleep(NAV_RETRY).await;
@@ -4579,7 +4649,7 @@ mod tests {
             Box::pin(async { Ok(Vec::new()) })
         }
     }
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
 
     /// **A download is read once, from its own directory, or refused with a
@@ -4676,7 +4746,7 @@ mod tests {
     /// the page guid that survives the swap.
     #[tokio::test]
     async fn a_person_navigation_refreshes_the_target_from_the_driver() {
-        use super::live_target;
+        use super::{LiveTarget, live_target};
 
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
@@ -4696,11 +4766,202 @@ mod tests {
             let mut tabs = seen.tabs.lock().expect("the fake's tabs");
             tabs[0].target = "T2".to_owned();
         }
-        assert_eq!(live_target(&profile, 1).await.as_deref(), Some("T2"));
+        assert!(
+            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T2"),
+            "the driver's fresh target is the one to drive",
+        );
         assert_eq!(
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(1),
             Some("T2"),
             "the registry follows the driver's listing",
+        );
+    }
+
+    /// Wait until the fake has answered `want` listings, on the test's own
+    /// clock rather than a wall-clock sleep.
+    async fn wait_for_listings(fake: &FakeDriver, want: usize) {
+        while fake.listings() < want {
+            fake.changed.notified().await;
+        }
+    }
+
+    /// **A watch whose focused page is gone stops asking.** The driver's tab
+    /// listing creates a page when it has none (upstream's `ensureTab`), so a
+    /// retry loop against a closed tab manufactures a page and a renderer on
+    /// every tick (#2581).
+    #[tokio::test(start_paused = true)]
+    async fn a_nav_watch_whose_focused_page_is_gone_stops_listing() {
+        use super::start_nav_watch;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        let seen = fake.clone();
+        service.install_fake(&seat, fake).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+        assert_eq!(
+            *profile.focused.lock().unwrap_or_else(PoisonError::into_inner),
+            Some(1),
+            "the call focused its tab",
+        );
+        // The call listed too; the watch's own listing is the next one.
+        let base = seen.listings();
+
+        // Nothing answers on this port, so the watch lists with the page
+        // still there, finds it, and comes back around on its retry clock.
+        let watch = start_nav_watch(Arc::clone(&profile), 9);
+        wait_for_listings(&seen, base + 1).await;
+
+        // The page closed: the driver lists and it is not there.
+        seen.close_all();
+        wait_for_listings(&seen, base + 2).await;
+        let settled = seen.listings();
+        tokio::time::sleep(super::NAV_RETRY * 8).await;
+        assert_eq!(
+            seen.listings(),
+            settled,
+            "a watch whose focused page is gone stops listing; every further listing is a page \
+             the driver would create",
+        );
+        assert_eq!(
+            *profile.focused.lock().unwrap_or_else(PoisonError::into_inner),
+            None,
+            "and it lets the focus go, so the next call refocuses",
+        );
+        watch.abort();
+    }
+
+    /// **A listing that cannot name a target is not a gone tab.** An empty
+    /// target is a live page whose own CDP read failed, and a stale-page error
+    /// is another driver context's dead page; both fall back to the registry.
+    #[tokio::test]
+    async fn a_listing_without_a_target_falls_back_to_the_registry() {
+        use super::{LiveTarget, live_target};
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        let seen = fake.clone();
+        service.install_fake(&seat, fake).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+
+        seen.clear_target();
+        assert!(
+            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T1"),
+            "a listed page with no target falls back to the registry target",
+        );
+
+        seen.stale_once();
+        assert!(
+            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T1"),
+            "a stale-page listing error falls back to the registry target",
+        );
+    }
+
+    /// **A late close from the old host leaves its successor's tab one
+    /// alone.** A host death clears the focus and restarts tab numbers, so a
+    /// close aimed at the old host must not unfocus the new one's tab.
+    #[tokio::test]
+    async fn a_close_from_the_old_host_leaves_the_successors_focus() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+        let old_host = profile.host_generation.load(Ordering::Acquire);
+        profile.host_generation.fetch_add(1, Ordering::AcqRel);
+
+        profile.unfocus(old_host, 1);
+
+        assert_eq!(
+            *profile.focused.lock().unwrap_or_else(PoisonError::into_inner),
+            Some(1),
+            "a close from the old host does not unfocus the successor's tab one",
+        );
+    }
+
+    /// **A finished watch is replaced by the next start.** The Gone path ends
+    /// its task and leaves the handle behind; a later driver start must not
+    /// read that handle as a watch still running.
+    #[tokio::test(start_paused = true)]
+    async fn a_finished_watch_is_replaced_by_the_next_start() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        let seen = fake.clone();
+        service.install_fake(&seat, fake).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+
+        // A host for watch_nav's port, and the finished handle the Gone path
+        // leaves in the slot.
+        let ring_name = format!("/forge-watch-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        let finished = tokio::spawn(async {});
+        while !finished.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let mut state = profile.state.lock().await;
+        state.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: dir.path().join("profile"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        state.nav_watch = Some(finished);
+
+        let before = seen.listings();
+        profile.watch_nav(&mut state);
+        assert!(
+            state.nav_watch.as_ref().is_some_and(|watch| !watch.is_finished()),
+            "a finished watch is replaced by a fresh one",
+        );
+        drop(state);
+
+        let mut listed = false;
+        for _ in 0..20 {
+            if seen.listings() > before {
+                listed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(listed, "the fresh watch lists where the finished one stopped");
+        crate::osr::Ring::unlink(&ring_name);
+    }
+
+    /// **Closing the focused tab lets the focus go.** A focus left on it
+    /// would keep the history watch driving a page that no longer exists.
+    #[tokio::test]
+    async fn closing_the_focused_tab_clears_the_focus() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+        assert_eq!(
+            *profile.focused.lock().unwrap_or_else(PoisonError::into_inner),
+            Some(1),
+            "the call focused its tab",
+        );
+
+        service.call(&seat, "browser_close", json!({})).await.expect("the tab closes");
+
+        assert_eq!(
+            *profile.focused.lock().unwrap_or_else(PoisonError::into_inner),
+            None,
+            "a closed tab is not the one the history watch follows",
         );
     }
 
@@ -6525,6 +6786,11 @@ mod tests {
         /// An upload the driver refuses, so the failure path has a real
         /// caller that also holds the chooser decision.
         fail_upload: Arc<std::sync::atomic::AtomicBool>,
+        /// How many tab listings this fake has answered, so a test can see a
+        /// watch stop asking.
+        listings: Arc<AtomicUsize>,
+        /// Poked on every listing, for a test that waits on the count.
+        changed: Arc<Notify>,
     }
 
     impl FakeDriver {
@@ -6556,6 +6822,25 @@ mod tests {
 
         fn selected(&self) -> Vec<usize> {
             self.selected.lock().expect("the selections").clone()
+        }
+
+        /// How many listings this fake has answered so far.
+        fn listings(&self) -> usize {
+            self.listings.load(Ordering::Acquire)
+        }
+
+        /// The page is gone: the next listing names none.
+        fn close_all(&self) {
+            self.tabs.lock().expect("the tabs").clear();
+        }
+
+        /// The page is listed but its target is empty, as the export writes it
+        /// when its own CDP read throws.
+        fn clear_target(&self) {
+            let mut tabs = self.tabs.lock().expect("the tabs");
+            if let Some(tab) = tabs.first_mut() {
+                tab.target.clear();
+            }
         }
 
         /// The fake's next listing answers the stale-page error once.
@@ -6741,6 +7026,8 @@ mod tests {
             &self,
             _bound: Duration,
         ) -> Result<Vec<crate::tabs::DriverTab>, String> {
+            self.listings.fetch_add(1, Ordering::AcqRel);
+            self.changed.notify_one();
             if self.stale_once.swap(false, Ordering::AcqRel) {
                 return Err("browserBackend.callTool: Cannot read properties of undefined \
                             (reading '_page')"

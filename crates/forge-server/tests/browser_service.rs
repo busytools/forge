@@ -29,6 +29,19 @@ fn stack() -> PathBuf {
     }
 }
 
+/// End a host this test started itself, however the test ends.
+struct HostGuard {
+    pid: u32,
+    ring: String,
+}
+
+impl Drop for HostGuard {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill").args(["-TERM", &self.pid.to_string()]).status();
+        forge_browser::osr::Ring::unlink(&self.ring);
+    }
+}
+
 fn move_event() -> BrowserInputEvent {
     BrowserInputEvent::Mouse {
         action: MouseAction::Move,
@@ -239,4 +252,152 @@ async fn a_killed_host_publishes_no_tabs_and_its_successor_starts_empty() {
     );
 
     service.close(&seat).await.expect("the profile closes");
+}
+
+/// **An end-to-end smoke check that a closed tab leaves no page behind.** On
+/// the patched stack it cannot fail on a one-half revert, so the real
+/// discriminators are `a_nav_watch_whose_focused_page_is_gone_stops_listing`
+/// (the watch stops) and `a_tab_listing_never_creates_a_page` with the python
+/// patch cases (a listing is a read). This one proves the two together on a
+/// live host: on 2026-10-26 the released build made one page and CEF renderer
+/// a second here until the host was killed with 821 targets (#2581).
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_closed_tab_leaves_no_page_behind() {
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let seat = SessionSlot::lead("TestOrg", "proj");
+
+    // One navigate, one evaluate: the leak needs no polling page and no
+    // second call.
+    service
+        .call(
+            &seat,
+            "browser_navigate",
+            json!({ "url": "data:text/html,<title>probe</title><h1>probe</h1>" }),
+        )
+        .await
+        .expect("the page opens");
+    service
+        .call(&seat, "browser_evaluate", json!({ "function": "() => 1 + 1" }))
+        .await
+        .expect("the page is driven");
+
+    let key = service.profile_for(&seat).expect("the profile key");
+    let dir = service.profile_dir(&key);
+    let record = forge_browser::spawn::read_record(&dir).expect("the host's record");
+    // **The guard goes on before the close**: a failed assertion must not
+    // leave the host running.
+    let _guard = HostGuard { pid: record.pid, ring: record.ring.clone() };
+
+    // **The baseline proves the endpoint answers.** `page_targets` returns an
+    // empty vec on every failure path, so a zero after the close means
+    // nothing unless the same read saw the page before it.
+    let before = forge_browser::spawn::page_targets(record.port).await;
+    assert_eq!(before.len(), 1, "the tab's page is there before the close: {before:?}");
+    service.call(&seat, "browser_close", json!({})).await.expect("the tab closes");
+
+    // The history watch retries every 500 ms, so five seconds is many ticks.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let targets = forge_browser::spawn::page_targets(record.port).await;
+    assert!(
+        targets.is_empty(),
+        "a closed tab leaves no page behind, and every page here is a renderer: {targets:?}",
+    );
+
+    service.close(&seat).await.expect("the profile closes");
+}
+
+/// **A tab listing never creates a page.** Upstream's `browser_tabs` list arm
+/// called `ensureTab`, which makes a page whenever the driver has none; the
+/// vendored patch keeps the listing a read (see
+/// `scripts/patch_browser_stack.mjs`). Without it every listing of an empty
+/// browser adds a page target and a renderer (#2581).
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tab_listing_never_creates_a_page() {
+    use forge_browser::driver::{Driver, cli_path, node_path};
+
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let profile = scratch.path().join("listing").join("cef");
+    let exe = forge_browser::host_bundle::checked_executable().expect("the host bundle");
+    let port = forge_browser::spawn::free_port().expect("a free port");
+    let ring = format!("/forge-listing-{}", std::process::id());
+    let frames = scratch.path().join("frames.sock");
+    let (pid, _input, _events) = forge_browser::spawn::spawn_with(
+        &exe,
+        &profile,
+        port,
+        &ring,
+        800,
+        600,
+        1,
+        (15, 75),
+        &frames,
+    )
+    .expect("the host spawns");
+    let _guard = HostGuard { pid, ring: ring.clone() };
+    forge_browser::spawn::wait_ready_for(pid, port, &ring, &profile)
+        .await
+        .expect("the host is ready");
+    let chooser =
+        std::path::PathBuf::from(format!("/tmp/forge-listing-{}.sock", std::process::id()));
+    let driver = Driver::start(
+        &node_path(&stack),
+        &cli_path(&stack),
+        &format!("http://127.0.0.1:{port}"),
+        &scratch.path().join("output"),
+        &chooser,
+    )
+    .await
+    .expect("the driver starts");
+
+    // No tab is open, so every listing is a listing of nothing. The driver
+    // sees the close when its own page event lands, so a listing in that
+    // window may report the close; what it must never do is make a page.
+    for (target, url) in forge_browser::spawn::page_targets(port).await {
+        assert!(
+            forge_browser::spawn::close_target(port, &target).await,
+            "the boot page {url} closes",
+        );
+    }
+    let settle = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match driver.tabs_within(Duration::from_secs(20)).await {
+            Ok(rows) => {
+                assert!(rows.is_empty(), "a closed page is not listed: {rows:?}");
+                break;
+            }
+            Err(why) => assert!(
+                tokio::time::Instant::now() < settle,
+                "the listing never answered an empty browser: {why}",
+            ),
+        }
+        let targets = forge_browser::spawn::page_targets(port).await;
+        assert!(targets.is_empty(), "a listing of an empty browser creates no page: {targets:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for round in 0..3 {
+        let listed = driver.tabs_within(Duration::from_secs(20)).await;
+        assert!(listed.is_ok(), "round {round}: the listing answers: {listed:?}");
+        assert!(listed.unwrap_or_default().is_empty(), "round {round}: there is nothing to list");
+        let targets = forge_browser::spawn::page_targets(port).await;
+        assert!(targets.is_empty(), "round {round}: a listing creates no page: {targets:?}");
+    }
 }

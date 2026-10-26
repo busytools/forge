@@ -119,17 +119,23 @@ else
     fi
 fi
 
-# --- the file chooser patch: applied on every run -------------------------
+# --- the driver patches: applied on every run -----------------------------
 #
-# **Playwright intercepts the page's file chooser**, so CEF's own dialog never
-# fires while the driver is attached. The patch makes the driver surface each
-# chooser on the socket forge binds, and the host answers it through the same
-# MCP tool that owns the captured chooser. It is reapplied here so a stack
-# vendored before the patch is brought up to it, and it fails loudly when a
-# version bump changes the pinned listener it patches.
+# Three patches, each pinned to the @playwright/mcp bundle's own excerpt: the
+# file chooser surface (Playwright intercepts it, so the host asks the person
+# or answers the agent through the MCP's own upload tool), the stable tab ids
+# the service keys on, and a tab listing that reads instead of creating. They
+# are reapplied here so a stack vendored before a patch is brought up to it,
+# and the patch fails loudly when a version bump changes a pinned needle.
 node "$SCRIPT_DIR/patch_browser_stack.mjs" "$STACK"
 
-printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nforge-file-chooser-patch 2\n' \
+# **The patched listing is checked by running it, not by reading it**: a
+# re-vendor or an @playwright/mcp bump that restores upstream's page-creating
+# `ensureTab` arm fails here, before any driver can leak a renderer per tick
+# (#2581).
+node "$SCRIPT_DIR/check_browser_stack_list.mjs" "$STACK"
+
+printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nforge-driver-patches 3\n' \
     "$NODE_VERSION" "$NODE_SHA256" "$PLAYWRIGHT_MCP_VERSION" \
     > "$STACK/manifest.txt"
 
