@@ -2,15 +2,24 @@
 # Serialise the gate machine-wide: two `just check` runs on one machine boot
 # CEF hosts into each other, because nextest only serialises the live suite
 # within its own run (`.config/nextest.toml`). macOS has no flock(1), so the
-# lock is an atomically created directory holding the holder's pid. It lives
-# beside forge's other machine-local state, never the repo or a synced dir.
+# lock is a file whose content is the holder's pid. It lives beside forge's
+# other machine-local state, never the repo or a synced dir.
+#
+# The pid is written to a candidate first and the lock is published with a
+# hard link, so a visible lock always names its owner. `mkdir` then a separate
+# pid write leaves an ownerless window, and `mv cand lock` onto an existing
+# directory moves INSIDE it rather than failing, so neither is used.
 #
 # Usage:
-#   check_lock.sh run -- <command> [args...]   acquire, run, release
+#   check_lock.sh run [--label NAME] -- <command> [args...]
 #
 # Env:
 #   FORGE_CHECK_LOCK_DIR      directory holding check.lock (tests)
 #   FORGE_CHECK_LOCK_TIMEOUT  seconds to wait for a holder (default 3600)
+#   FORGE_CHECK_LOCK_TEST_RACE  tests only: a command run after a dead holder
+#                               is read and before the reclaim moves the lock
+#   FORGE_CHECK_LOCK_TEST_AFTER_FORK  tests only: a command run after the gate
+#                               is forked and before its pid is recorded
 
 set -u
 
@@ -28,49 +37,79 @@ else
 fi
 lock="$lockroot/check.lock"
 
+label="check"
+ownerless_grace=4
+held_lock=0
+candidate=""
+child=""
+pending=""
+
 usage() {
-    echo "[ERROR] check: usage: check_lock.sh run -- <command> [args...]" >&2
+    echo "[ERROR] $label: usage: check_lock.sh run [--label NAME] -- <command> [args...]" >&2
     exit 2
 }
 
-# Remove the lock only while its pid still names us: a reclaim renames a
-# dead holder's directory aside, and a runner that lost its lock that way
-# must not delete whoever holds the path now.
+# Every failure ends on a verdict line on stdout, like the rest of the gate.
+fail() {
+    printf '%s\n' "$2" >&2
+    printf '%s\n' "$3"
+    exit "$1"
+}
+
+# Remove the lock only while its content still names us: a reclaim can move
+# a dead holder's lock aside, and a runner that lost its lock that way must
+# not delete whoever holds the path now. The content check is also what makes
+# a signal that lands between the publish and its bookkeeping safe: the lock
+# is already ours, so it is released.
 release() {
-    held=$(cat "$lock/pid" 2>/dev/null || true)
-    if [ "$held" = "$1" ]; then
-        rm -rf "$lock"
+    holder="$1"
+    if [ -n "$candidate" ]; then
+        rm -f "$candidate"
+    fi
+    held=$(cat "$lock" 2>/dev/null || true)
+    if [ "$held" = "$holder" ]; then
+        rm -f "$lock"
+    elif [ "$held_lock" -eq 1 ]; then
+        printf '[WARN] %s: the gate lock no longer names pid %s (now %s); part of this run was unprotected\n' \
+            "$label" "$holder" "${held:-empty}" >&2
     fi
 }
 
 reclaim_attempt=0
 
 # Reclaim a lock whose holder is gone. The rename is what keeps two waiters
-# from both taking it: only one gets the directory. The pid is re-read from
-# the renamed copy, because a racing holder can take the lock between the
-# liveness check and the rename; that lock is put back, never deleted.
+# from both taking it: only one gets the file. The content is re-read from
+# the renamed copy, because a holder can take the path between the liveness
+# check and the move; that lock is put back, never deleted.
 reclaim() {
+    dead="$1"
     reclaim_attempt=$((reclaim_attempt + 1))
     reaped="$lock.reaped.$$.$reclaim_attempt"
     rm -rf "$reaped"
     if ! mv "$lock" "$reaped" 2>/dev/null; then
         return 1
     fi
-    seen=$(cat "$reaped/pid" 2>/dev/null || true)
-    if [ "$seen" != "$1" ]; then
-        # mkdir claims the path first: a bare move would land INSIDE a
-        # directory another acquirer had just made.
-        if mkdir "$lock" 2>/dev/null; then
-            if mv "$reaped/pid" "$lock/pid" 2>/dev/null; then
-                rm -rf "$reaped"
-                return 1
-            fi
-            rm -rf "$lock"
+    seen=$(cat "$reaped" 2>/dev/null || true)
+    if [ "$seen" != "$dead" ]; then
+        # Publish the same content only if the path is still free; `ln` fails
+        # on an existing file, and the content check catches a directory.
+        if [ -n "$seen" ] && ln "$reaped" "$lock" 2>/dev/null &&
+            [ "$(cat "$lock" 2>/dev/null || true)" = "$seen" ]; then
+            rm -rf "$reaped"
+            return 1
         fi
-        echo "[ERROR] check: a reclaim raced a live holder (pid ${seen:-unknown} took the lock while pid $1 was checked); $lock is occupied and the live lock is at $reaped - nothing was deleted" >&2
+        rm -f "$lock/${reaped##*/}" 2>/dev/null || true
+        printf '[ERROR] %s: a reclaim raced another holder (pid %s took the lock while pid %s was checked); the moved lock is at %s and %s is occupied\n' \
+            "$label" "${seen:-unknown}" "${dead:-unknown}" "$reaped" "$lock" >&2
+        printf '[ERROR] %s: the gate lock was not acquired (a reclaim raced pid %s)\n' \
+            "$label" "${seen:-unknown}"
         exit 1
     fi
-    echo "[..] check: reclaimed a stale lock (pid $1 is gone)"
+    if [ -n "$dead" ]; then
+        printf '[..] %s: reclaimed a stale lock (pid %s is gone)\n' "$label" "$dead"
+    else
+        printf '[..] %s: reclaimed an ownerless lock\n' "$label"
+    fi
     rm -rf "$reaped"
     return 0
 }
@@ -83,68 +122,130 @@ acquire() {
     timeout="${FORGE_CHECK_LOCK_TIMEOUT:-3600}"
     case "$timeout" in
         ''|*[!0-9]*)
-            echo "[ERROR] check: FORGE_CHECK_LOCK_TIMEOUT must be a whole number of seconds" >&2
-            exit 2
+            fail 2 \
+                "[ERROR] $label: FORGE_CHECK_LOCK_TIMEOUT must be a whole number of seconds" \
+                "[ERROR] $label: the gate lock was not acquired"
             ;;
     esac
 
-    mkdir -p "$lockroot" 2>/dev/null || {
-        echo "[ERROR] check: cannot create $lockroot" >&2
-        exit 2
-    }
+    if ! mkdir -p "$lockroot" 2>/dev/null; then
+        fail 2 \
+            "[ERROR] $label: cannot create $lockroot" \
+            "[ERROR] $label: the gate lock was not acquired"
+    fi
+
+    candidate="$lock.candidate.$owner"
+    if ! printf '%s\n' "$owner" > "$candidate" 2>/dev/null; then
+        fail 2 \
+            "[ERROR] $label: cannot write $candidate" \
+            "[ERROR] $label: the gate lock was not acquired"
+    fi
 
     waited=0
     announced=0
+    ownerless_since=-1
     while :; do
-        if mkdir "$lock" 2>/dev/null; then
-            if ! printf '%s\n' "$owner" > "$lock/pid" 2>/dev/null; then
-                rm -rf "$lock"
-                echo "[ERROR] check: cannot write $lock/pid" >&2
-                exit 2
-            fi
+        if [ -n "$pending" ]; then
+            exit "$pending"
+        fi
+        if ln "$candidate" "$lock" 2>/dev/null &&
+            [ "$(cat "$lock" 2>/dev/null || true)" = "$owner" ]; then
+            rm -f "$candidate"
+            candidate=""
+            held_lock=1
             return 0
         fi
+        # `ln` treats an existing directory as a container; remove only the
+        # link it made under that name, never the path itself.
+        rm -f "$lock/${candidate##*/}" 2>/dev/null || true
 
-        holder=$(cat "$lock/pid" 2>/dev/null || true)
-        if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-            if reclaim "$holder"; then
-                continue
+        holder=$(cat "$lock" 2>/dev/null || true)
+        if [ -z "$holder" ]; then
+            # A visible lock always names its owner, so an ownerless one is a
+            # leftover. Reclaim it after a grace, so a torn read cannot take
+            # a live one.
+            if [ "$ownerless_since" -lt 0 ]; then
+                ownerless_since="$waited"
+            fi
+            if [ $((waited - ownerless_since)) -ge "$ownerless_grace" ]; then
+                if reclaim ""; then
+                    ownerless_since=-1
+                    continue
+                fi
+            fi
+        else
+            ownerless_since=-1
+            if ! kill -0 "$holder" 2>/dev/null; then
+                if [ -n "${FORGE_CHECK_LOCK_TEST_RACE:-}" ]; then
+                    sh -c "$FORGE_CHECK_LOCK_TEST_RACE" 2>/dev/null || true
+                fi
+                if reclaim "$holder"; then
+                    continue
+                fi
             fi
         fi
 
         if [ "$waited" -ge "$timeout" ]; then
-            echo "[ERROR] check: gave up after ${timeout}s waiting for the gate lock held by pid ${holder:-unknown}" >&2
-            echo "        if that pid is not a gate run, remove $lock" >&2
+            holder=$(cat "$lock" 2>/dev/null || true)
+            printf '[ERROR] %s: gave up after %ss waiting for the gate lock held by pid %s; remove %s if that pid is not a gate run\n' \
+                "$label" "$timeout" "${holder:-unknown}" "$lock" >&2
+            printf '[ERROR] %s: the gate lock was not acquired (held by pid %s)\n' \
+                "$label" "${holder:-unknown}"
             exit 1
         fi
         if [ "$announced" -eq 0 ]; then
-            echo "[..] check: waiting for another gate run (held by pid ${holder:-unknown})"
+            printf '[..] %s: waiting for another gate run (held by pid %s)\n' \
+                "$label" "${holder:-unknown}"
             announced=1
         fi
-        sleep 2
-        waited=$((waited + 2))
+        sleep 1
+        waited=$((waited + 1))
     done
 }
 
-child=""
-
+# TERM the gate's whole process group, then wait for the child before the
+# EXIT trap frees the lock: killing only the direct child leaves the group
+# shells and their cargo/nextest/CEF children running beside the next gate.
+# The group is read here rather than cached, because a signal can land after
+# the fork and before any line after it: the child then exists with no
+# recorded state, and is still the one that must be stopped.
 stop_child() {
-    if [ -n "$child" ]; then
+    if [ -z "$child" ]; then
+        # The signal beat the fork. Remember it: the child about to start is
+        # stopped after it does, rather than left holding the pipes.
+        pending="$1"
+        return 0
+    fi
+    pgid=$(ps -o pgid= -p "$child" 2>/dev/null | tr -d ' ')
+    if [ "$pgid" = "$child" ]; then
+        kill -TERM -"$child" 2>/dev/null || kill -TERM "$child" 2>/dev/null || true
+    else
         kill -TERM "$child" 2>/dev/null || true
     fi
+    wait "$child" 2>/dev/null || true
     exit "$1"
 }
 
 run() {
+    held_lock=0
+    candidate=""
     child=""
+    pending=""
     trap 'release "$$"' EXIT
     trap 'stop_child 130' INT
     trap 'stop_child 143' TERM
+    set -m
     acquire "$$"
-    status=0
     "$@" &
+    if [ -n "${FORGE_CHECK_LOCK_TEST_AFTER_FORK:-}" ]; then
+        sh -c "$FORGE_CHECK_LOCK_TEST_AFTER_FORK" 2>/dev/null || true
+    fi
     child=$!
-    wait "$child" || status=$?
+    if [ -n "$pending" ]; then
+        stop_child "$pending"
+    fi
+    status=0
+    wait "$child" 2>/dev/null || status=$?
     exit "$status"
 }
 
@@ -154,6 +255,13 @@ if [ "$#" -gt 0 ]; then
 fi
 case "$command" in
     run)
+        if [ "${1:-}" = "--label" ]; then
+            if [ "$#" -lt 2 ]; then
+                usage
+            fi
+            label="$2"
+            shift 2
+        fi
         if [ "${1:-}" = "--" ]; then
             shift
         fi
