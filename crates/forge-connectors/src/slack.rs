@@ -2091,6 +2091,49 @@ fn decode_users_page(body: &str) -> Result<UsersPage, SlackError> {
     Ok(UsersPage { members: raw.members, next_cursor: cursor })
 }
 
+/// One page of `users.list`. The walk is split from the HTTP client so its
+/// page cap is reachable from a double that never stops handing back a
+/// cursor.
+#[async_trait::async_trait]
+trait UsersPages: Send + Sync {
+    async fn users_page(&self, cursor: Option<&str>) -> Result<UsersPage, SlackError>;
+}
+
+#[async_trait::async_trait]
+impl UsersPages for SlackClient {
+    async fn users_page(&self, cursor: Option<&str>) -> Result<UsersPage, SlackError> {
+        let mut params = vec![("limit", USER_PAGE_LIMIT.to_string())];
+        if let Some(cursor) = cursor {
+            params.push(("cursor", cursor.to_owned()));
+        }
+        let body = self.call_text("users.list", &params).await?;
+        decode_users_page(&body)
+    }
+}
+
+/// Every member in the workspace, following the cursor. A cursor that never
+/// ends returns what was read, the way the history and reply walks do,
+/// rather than failing the whole lookup.
+async fn walk_users(pages: &dyn UsersPages) -> Result<Vec<SlackUser>, SlackError> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_USER_PAGES {
+        let page = pages.users_page(cursor.as_deref()).await?;
+        out.extend(page.members);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => return Ok(out),
+        }
+    }
+    tracing::warn!(
+        target: "forge_connectors::slack",
+        pages = MAX_USER_PAGES,
+        users = out.len(),
+        "users.list kept handing back a cursor; stopping the walk",
+    );
+    Ok(out)
+}
+
 /// The API's ceiling for one search page.
 const SEARCH_COUNT_CAP: u32 = 100;
 
@@ -2489,30 +2532,7 @@ impl SlackClient {
     /// server-side name search, so a resolver reads the directory and
     /// matches locally.
     pub async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError> {
-        let mut out = Vec::new();
-        let mut cursor: Option<String> = None;
-        for _ in 0..MAX_USER_PAGES {
-            let mut params = vec![("limit", USER_PAGE_LIMIT.to_string())];
-            if let Some(cursor) = cursor.as_deref() {
-                params.push(("cursor", cursor.to_owned()));
-            }
-            let body = self.call_text("users.list", &params).await?;
-            let page = decode_users_page(&body)?;
-            out.extend(page.members);
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => return Ok(out),
-            }
-        }
-        // A cursor that never ends returns what was read, the way the
-        // history and reply walks do, rather than failing the whole lookup.
-        tracing::warn!(
-            target: "forge_connectors::slack",
-            pages = MAX_USER_PAGES,
-            users = out.len(),
-            "users.list kept handing back a cursor; stopping the walk",
-        );
-        Ok(out)
+        walk_users(self).await
     }
 
     /// `pins.list` for one conversation.
@@ -3702,6 +3722,47 @@ mod tests {
         assert!(!page.members[0].deleted);
         assert!(page.members[1].deleted, "a deactivated member is flagged, not dropped");
         assert_eq!(page.next_cursor.as_deref(), Some("next"), "the walk can continue");
+    }
+
+    /// A `users.list` source that never stops handing back a cursor, so the
+    /// walk's page cap is reachable without HTTP.
+    #[derive(Default)]
+    struct EndlessUsers {
+        pages: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl UsersPages for EndlessUsers {
+        async fn users_page(&self, _cursor: Option<&str>) -> Result<UsersPage, SlackError> {
+            self.pages.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(UsersPage {
+                members: vec![SlackUser {
+                    id: "U1".to_owned(),
+                    name: "ved".to_owned(),
+                    real_name: None,
+                    tz: None,
+                    deleted: false,
+                    profile: None,
+                }],
+                next_cursor: Some("more".to_owned()),
+            })
+        }
+    }
+
+    /// The cap is what stops a cursor that never ends; the rows already read
+    /// are the answer rather than an error.
+    #[tokio::test]
+    async fn a_user_walk_stops_at_its_page_cap_and_keeps_what_it_read() {
+        let source = EndlessUsers::default();
+
+        let users = walk_users(&source).await.expect("the cap ends the walk without failing");
+
+        assert_eq!(users.len(), MAX_USER_PAGES, "every page read is kept");
+        assert_eq!(
+            source.pages.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_USER_PAGES,
+            "the walk stopped at the cap instead of following the cursor forever",
+        );
     }
 
     #[test]
