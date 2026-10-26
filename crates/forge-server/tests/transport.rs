@@ -1941,6 +1941,14 @@ fn a_reading_past_the_gate() -> ContextUsage {
 /// and handed back beside it.
 async fn a_page_on(url: &str, what: Subject) -> (Client, serde_json::Value) {
     let mut socket = connect(url).await;
+    // **A page on a seat SHOWS it** (Ved, 2026-10-25). The subscribe carries
+    // the seat's frames; the showing is what spends its marks and what makes
+    // a turn finishing on it a turn the reader watched. Sent BEFORE the
+    // subscribe so the snapshot answering the subscribe proves both crossed -
+    // a showing has no answer of its own.
+    if let Subject::Session(slot) = &what {
+        send(&mut socket, ClientMessage::Showing { seat: Some(slot.clone()) }).await;
+    }
     send(
         &mut socket,
         ClientMessage::Subscribe { what, answering: true, browser: false, declare: false },
