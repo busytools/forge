@@ -2,17 +2,18 @@
 //! `@playwright/mcp` 0.0.83's own `tools/list` - the capture preserved with
 //! the V1 spec.
 //!
-//! **Names, descriptions and argument schemas are upstream's, exactly.**
-//! A prompt written against a Playwright MCP server names `browser_navigate`
+//! **Names and argument schemas are upstream's, exactly**, and so are the
+//! descriptions except the two named below. A prompt written against a
+//! Playwright MCP server names `browser_navigate`
 //! and passes a snapshot's `target` ref, so a renamed tool or a moved
 //! argument is a prompt that resolves to something else. The additions this
 //! family carries beyond upstream are marked as such, and each names an
 //! argument upstream does not have - `force`, `expression`, the hand-off's
 //! `tab` - or stands as a tool of its own built from the same driver. Two
-//! descriptions differ too: `browser_snapshot` gains a sentence stating a
-//! ref's lifetime, which upstream's never says, and `browser_close`'s is this
-//! family's own, naming the session's current tab because that is what a
-//! close means here.
+//! descriptions differ too: `browser_snapshot` gains the sentences on a ref's
+//! lifetime and the route that fits a page still changing, neither of which
+//! upstream states, and `browser_close`'s is this family's own, naming the
+//! session's current tab because that is what a close means here.
 //!
 //! Kept apart from the tools themselves so the surface a model reads is one
 //! table rather than a struct apiece: a shape is edited here and nowhere
@@ -485,16 +486,20 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_snapshot",
-            // Beyond upstream: the one sentence after its own. A ref's
-            // lifetime is what a caller writing a prompt against this tool
-            // needs and upstream's description never says (measured on
-            // @playwright/mcp 0.0.83, 2026-10-27).
+            // Beyond upstream: the sentences after its own. A ref's lifetime
+            // and the route that fits a page still changing are what a caller
+            // writing a prompt against this tool needs, and upstream's
+            // description never says either (measured on @playwright/mcp
+            // 0.0.83, 2026-10-27).
             description: "Capture accessibility snapshot of the current page, this is better than \
-                          screenshot. A ref names the element as it stands: a re-render that \
-                          replaces or removes it, or a navigation, retires the ref and a fresh \
-                          snapshot is needed. A role/name selector such as \
-                          role=button[name=\"Save\"] needs no snapshot and is resolved when a call \
-                          runs.",
+                          screenshot. A ref belongs to the snapshot that minted it, and only to \
+                          an element that was visible and pointer-interactive at that moment. A \
+                          page that keeps replacing its elements retires refs before the next \
+                          call, so drive it with a unique role/name selector such as \
+                          role=button[name=\"Save\"], scoped when names repeat, which resolves at \
+                          call time; once the page has settled, take a full-page snapshot with no \
+                          target and its refs hold. A target-scoped snapshot replaces the snapshot \
+                          with that subtree.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -907,10 +912,12 @@ mod tests {
             snapshot.description,
         );
         for phrase in [
-            "a re-render that replaces or removes it",
-            "a fresh snapshot is needed",
-            "role=button[name=\"Save\"]",
-            "resolved when a call runs",
+            "A ref belongs to the snapshot that minted it",
+            "only to an element that was visible and pointer-interactive",
+            "drive it with a unique role/name selector",
+            "scoped when names repeat",
+            "take a full-page snapshot with no target and its refs hold",
+            "A target-scoped snapshot replaces the snapshot with that subtree",
         ] {
             assert!(
                 snapshot.description.contains(phrase),
@@ -918,6 +925,19 @@ mod tests {
                 snapshot.description,
             );
         }
+        let selector = snapshot
+            .description
+            .find("drive it with a unique role/name selector")
+            .expect("the selector route is stated");
+        let settled = snapshot
+            .description
+            .find("take a full-page snapshot with no target and its refs hold")
+            .expect("the settled route");
+        assert!(
+            selector < settled,
+            "the route for a still-changing page comes first: {}",
+            snapshot.description,
+        );
     }
 
     /// The two arguments this family adds sit beside upstream's rather than

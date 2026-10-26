@@ -1,15 +1,16 @@
 //! The browser family: the core `@playwright/mcp` tools, forwarded to the
 //! server's browser fleet.
 //!
-//! **Names and shapes are upstream's, exactly.** A prompt written against a
-//! Playwright MCP server names `browser_navigate` and passes a snapshot's
-//! `target` ref, so the tools register unprefixed, with upstream's
-//! descriptions and argument schemas - transcribed from `@playwright/mcp`
-//! 0.0.83's `tools/list`, the capture preserved with the V1 spec. Anything
-//! this family added on top (a hand-off `tab`, a forced click) would be a
-//! shape upstream does not have and a prompt that means something else
-//! here; the close's description is the one upstream sentence this family
-//! replaces, because a close here closes the session's current tab.
+//! **Names and argument shapes are upstream's, exactly.** A prompt written
+//! against a Playwright MCP server names `browser_navigate` and passes a
+//! snapshot's `target` ref, so the tools register unprefixed, with upstream's
+//! argument schemas - transcribed from `@playwright/mcp` 0.0.83's
+//! `tools/list`, the capture preserved with the V1 spec. Anything this family
+//! added on top (a hand-off `tab`, a forced click) would be a shape upstream
+//! does not have and a prompt that means something else here. Two
+//! descriptions differ: the close's is this family's own, because a close
+//! here closes the session's current tab, and the snapshot's gains the
+//! sentences on a ref's lifetime and on driving a page that keeps changing.
 //!
 //! **The family is any-caller, and it is not a toggleable one.** The browser
 //! is one machine-global one, not a scope like reviews or crons: every
