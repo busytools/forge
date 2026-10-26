@@ -61,7 +61,10 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     }
 
     start_subsystems(&workspace);
+    #[cfg(target_os = "macos")]
     let fleet = install_browser(&workspace)?;
+    #[cfg(not(target_os = "macos"))]
+    let fleet = install_browser(&workspace);
     start_config_watch(Arc::clone(&workspace), fleet);
 
     Ok(workspace)
@@ -111,7 +114,10 @@ fn start_config_watch(workspace: Arc<Workspace>, fleet: InstalledFleet) {
                         restart_only = ?reload.restart_only,
                         "forge.toml applied to the running forge",
                     );
+                    #[cfg(target_os = "macos")]
                     refresh_browser(&workspace, &fleet);
+                    #[cfg(not(target_os = "macos"))]
+                    refresh_browser(&workspace);
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -139,7 +145,7 @@ fn refresh_browser(workspace: &Workspace, fleet: &InstalledFleet) {
 
 /// A platform with no fleet has nothing to refresh.
 #[cfg(not(target_os = "macos"))]
-fn refresh_browser(_workspace: &Workspace, _fleet: &InstalledFleet) {}
+fn refresh_browser(_workspace: &Workspace) {}
 
 /// Install the server's browser fleet: constructed here, one host and one
 /// driver per profile spawned on first use.
@@ -186,8 +192,8 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<InstalledFleet>
 /// A platform with no CEF host: the browser tools answer the no-host refusal
 /// rather than a server that pretends to have a fleet.
 #[cfg(not(target_os = "macos"))]
-fn install_browser(_workspace: &Arc<Workspace>) -> anyhow::Result<InstalledFleet> {
-    Ok(None)
+fn install_browser(_workspace: &Arc<Workspace>) -> InstalledFleet {
+    None
 }
 
 /// The fleet behind the workspace's port.
