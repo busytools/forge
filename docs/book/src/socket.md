@@ -28,7 +28,7 @@ seconds from the last answer, because the next ping can be up to 15
 seconds later and the reap lands at the first beat at or past 60. The
 ask's own bound is longer. Every WebSocket client answers a ping itself, so a
 client needs no code for this; one that stops answering is disconnected,
-and its reconnect declares its subscriptions again like any other.
+and its reconnect re-asks the subscriptions it still holds.
 
 **One frame write is bounded too.** The server ends a connection when a
 single write takes longer than 60 seconds: a peer that stopped reading
