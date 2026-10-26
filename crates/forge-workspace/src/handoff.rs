@@ -554,7 +554,7 @@ fn forge_action(name: &str) -> Option<&str> {
     let family = action.split("__").next().unwrap_or(action);
     let named = matches!(
         family,
-        "agents" | "tasks" | "cron" | "slack" | "documents" | "review" | "systemone"
+        "agents" | "tasks" | "cron" | "slack" | "gotify" | "documents" | "review" | "systemone"
     );
     (named || family.starts_with("browser")).then_some(action)
 }
@@ -2014,6 +2014,7 @@ mod tests {
                 "mcp__forge__tasks__create",
                 serde_json::json!({ "subject": "draw the provisional row" }),
             ),
+            call("a3", "mcp__forge__gotify__apps", serde_json::json!({})),
             call("f1", "Read", serde_json::json!({ "file_path": "src/lib.rs" })),
             call("f2", "Bash", serde_json::json!({ "command": "just check" })),
         ];
@@ -2036,6 +2037,11 @@ mod tests {
                 .any(|line| line.contains("tasks__create")
                     && line.contains("draw the provisional row")),
             "and the row it filed: {:?}",
+            actions.lines,
+        );
+        assert!(
+            actions.lines.iter().any(|line| line == "gotify__apps"),
+            "every forge family is named, the connector's included: {:?}",
             actions.lines,
         );
         assert!(
