@@ -193,11 +193,12 @@ switches tabs detaches from the old one first.
 to one viewer's surface: device pixels and the ratio they draw at. **A held
 role owns the layout**: while a controller holds the tab only its size
 applies, so a watcher's window never moves the page under the person driving
-it. With nobody holding the role a viewer may size the page for its own
-surface - which is what lets a client with no shell lay out its view without
-taking control. A size the page already has asks nothing, so a re-attach or
-a re-measure does not move it. The host adopts the size on its next pump and
-the next frame is a key frame at it.
+it. With nobody holding the role the layout belongs to the tab's
+longest-watching viewer, never to whoever asks - which is what lets a client
+with no shell lay out its view without taking control, while a second
+watcher cannot move the page under the first. A size the page already has
+asks nothing, so a re-attach or a re-measure does not move it. The host
+adopts the size on its next pump and the next frame is a key frame at it.
 
 **`browser_input {seq, event}`** - one input event from the controlling
 viewer. **The wire carries the person's gesture, not CDP**: a press, a
