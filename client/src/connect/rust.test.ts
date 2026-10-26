@@ -56,6 +56,8 @@ const subject = { session: slot };
 /** A client_state answer, overridden per test. */
 type State = { status: string; generation?: number; greeting: unknown };
 const OPEN: State = { status: 'open', generation: 1, greeting: null };
+/** The id the mocked shell hands back for a `client_connect`. */
+const SOCKET = 7;
 
 /** One of the shim's events, fired where the shim listens. */
 function fire(name: string, payload: unknown): void {
@@ -68,6 +70,8 @@ function fire(name: string, payload: unknown): void {
 async function opened(state: State = OPEN): Promise<Connection> {
   invoke.mockImplementation((command: string) => {
     if (command === 'client_state') return Promise.resolve(state);
+    // The shell's own id for the connection it opened, which `close` names.
+    if (command === 'client_connect') return Promise.resolve(SOCKET);
     return Promise.resolve(undefined);
   });
   const connection = connectRust('ws://127.0.0.1:7777/socket');
@@ -236,11 +240,39 @@ describe('what the shell is told', () => {
     expect(seen, 'the first connect ran a reconnect').toEqual([]);
   });
 
+  /**
+   * **A connection given up before its dial answered is still closed.** The
+   * id only exists once `client_connect` answers, so a close that ran first
+   * has nothing to name; the dial's own continuation hands the socket back
+   * the moment it lands rather than leaving it retrying behind the page.
+   */
+  it('closes a socket that answers after the page gave the connection up', async () => {
+    // A property rather than a local: TypeScript narrows a local assigned
+    // only inside a callback to `never` at the call below.
+    const dial: { answer: ((id: number) => void) | null } = { answer: null };
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_connect') {
+        return new Promise<number>((resolve) => {
+          dial.answer = resolve;
+        });
+      }
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      return Promise.resolve(undefined);
+    });
+    const connection = connectRust('ws://127.0.0.1:7777/socket');
+    await vi.waitFor(() => expect(dial.answer).not.toBeNull());
+
+    connection.close();
+    if (dial.answer === null) throw new Error('the dial was never asked');
+    dial.answer(SOCKET);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('client_close', { id: SOCKET }));
+  });
+
   /** A one-sided rename of a command name is exactly what this file catches. */
   it('the closed check gates what crosses', async () => {
     const connection = await opened();
     connection.close();
-    expect(invoke, 'the close crossed').toHaveBeenCalledWith('client_close');
+    expect(invoke, 'the close crossed').toHaveBeenCalledWith('client_close', { id: SOCKET });
     connection.refresh(subject);
     connection.more(slot);
     expect(
