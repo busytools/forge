@@ -462,3 +462,124 @@ async fn a_driver_rebuild_keeps_a_sessions_page() {
 
     service.close(&one).await.expect("the profile closes");
 }
+
+/// The page's own report of its surface: the viewport it lays out at, the
+/// outer size, and the ratio it paints at.
+const LAYOUT: &str = "() => ({ innerWidth: window.innerWidth, innerHeight: window.innerHeight, \
+                      outerWidth: window.outerWidth, outerHeight: window.outerHeight, \
+                      dpr: window.devicePixelRatio })";
+
+/// One `browser_evaluate` of [`LAYOUT`], as the object the page returned.
+///
+/// **The driver frames an answer as `### Result` followed by `### Ran
+/// Playwright code`**, so the object is cut out of the framing before it is
+/// parsed.
+async fn page_layout(service: &BrowserService, seat: &SessionSlot) -> serde_json::Value {
+    let answer = service
+        .call(seat, "browser_evaluate", json!({ "function": LAYOUT }))
+        .await
+        .expect("the page evaluates");
+    let text = answer
+        .iter()
+        .filter_map(|part| match part {
+            forge_primitives::browser::BrowserPart::Text { text } => Some(text.as_str()),
+            forge_primitives::browser::BrowserPart::Image { .. } => None,
+        })
+        .collect::<String>();
+    let result = text.split_once("### Result").map_or(text.as_str(), |(_, result)| result);
+    let result = result.split_once("\n### ").map_or(result, |(object, _)| object);
+    let (Some(start), Some(end)) = (result.find('{'), result.rfind('}')) else {
+        panic!("the page's answer carries an object: {text}");
+    };
+    serde_json::from_str(&result[start..=end])
+        .unwrap_or_else(|why| panic!("the page's answer is JSON ({why}): {text}"))
+}
+
+/// The layout the page settles on. **A ring request reaches the page on the
+/// host's own pump**, so a read taken right after a resize can still see the
+/// size before it.
+async fn wait_for_layout(
+    service: &BrowserService,
+    seat: &SessionSlot,
+    what: &str,
+    want: serde_json::Value,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let layout = page_layout(service, seat).await;
+        if layout == want {
+            return layout;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: the page never reported {want}, it reported {layout}",
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// **An agent's `browser_resize` moves the painted surface, and the page
+/// follows it.** The tool used to go to the driver's `page.setViewportSize`:
+/// the page was told one size while the host painted another, and the device
+/// pixel ratio was left at 1 for the rest of the host's life. It now moves
+/// the profile's ring, the same path a viewer's own resize takes, so the
+/// viewport, the outer size and the ratio all move together.
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_resize_moves_the_painted_surface_and_keeps_the_ratio() {
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let seat = SessionSlot::lead("TestOrg", "proj");
+    service
+        .call(
+            &seat,
+            "browser_navigate",
+            json!({ "url": "data:text/html,<h1 id=probe>resize probe</h1>" }),
+        )
+        .await
+        .expect("the page opens");
+    let attachment = service.attach(7, &seat, None).await.expect("the seat's profile attaches");
+    let (key, tab) = (attachment.key.clone(), attachment.tab);
+
+    // **A viewer's surface first**, so the page is painted at a ratio of 2
+    // the way a Retina surface paints it.
+    service.take_control(&key, tab, 7).await.expect("the viewer takes control");
+    service.resize(&key, tab, 7, 2880, 2128, 2.0).await;
+    wait_for_layout(
+        &service,
+        &seat,
+        "a viewer's resize paints the page at its own size and ratio",
+        json!({
+            "innerWidth": 1440, "innerHeight": 1064,
+            "outerWidth": 1440, "outerHeight": 1064, "dpr": 2,
+        }),
+    )
+    .await;
+
+    // **The agent's resize is the same window.** The page's viewport, its
+    // outer size and its ratio move together, and the ratio stays 2.
+    service
+        .call(&seat, "browser_resize", json!({ "width": 1120, "height": 760 }))
+        .await
+        .expect("the agent resizes the window");
+    wait_for_layout(
+        &service,
+        &seat,
+        "an agent's resize moves the painted surface and keeps the ratio",
+        json!({
+            "innerWidth": 1120, "innerHeight": 760,
+            "outerWidth": 1120, "outerHeight": 760, "dpr": 2,
+        }),
+    )
+    .await;
+
+    service.close(&seat).await.expect("the profile closes");
+}

@@ -770,6 +770,7 @@ impl BrowserService {
         match tool {
             "browser_record_start" => return self.record_start(seat).await,
             "browser_record_stop" => return self.record_stop(seat).await,
+            "browser_resize" => return self.resize_window(seat, &args).await,
             _ => {}
         }
         // **An agent's upload is bounded before a browser is opened for it.**
@@ -2435,6 +2436,43 @@ impl BrowserService {
         if let Some(host) = state.host.as_ref() {
             host.ring.request(width, height, scale);
         }
+    }
+
+    /// Resize the browser's painted surface from a session's own tool call.
+    ///
+    /// **The tool means the window, not a viewport override.** Upstream's
+    /// `browser_resize` is Playwright's `page.setViewportSize`, which tells
+    /// the page one size while the host paints another and leaves the device
+    /// ratio at 1 for the rest of the host's life. Here the window is the
+    /// profile's ring, so the viewport, the ratio and the painted size all
+    /// follow it - the path a viewer's own `BrowserResize` already takes.
+    async fn resize_window(
+        &self,
+        seat: &SessionSlot,
+        args: &Value,
+    ) -> Result<Vec<BrowserPart>, String> {
+        let profile = self.open(seat).await?;
+        if profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
+            return Err(format!(
+                "a recording is running for '{}', so the page stays at {}x{} until \
+                 browser_record_stop",
+                profile.key,
+                crate::record::WIDTH,
+                crate::record::HEIGHT,
+            ));
+        }
+        let scale = profile.surface.lock().unwrap_or_else(PoisonError::into_inner).2;
+        let width = window_dimension(args, "width", scale, crate::osr::MAX_WIDTH)?;
+        let height = window_dimension(args, "height", scale, crate::osr::MAX_HEIGHT)?;
+        {
+            let state = profile.state.lock().await;
+            let host = state
+                .host
+                .as_ref()
+                .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
+            host.ring.request(device_pixels(width, scale), device_pixels(height, scale), scale);
+        }
+        Ok(vec![BrowserPart::Text { text: format!("The browser window is now {width}x{height}.") }])
     }
 
     /// Inject one input event into one tab, and only for the viewer that holds
@@ -5131,15 +5169,48 @@ fn controller_size(
     Some((width.max(1), height.max(1), scale))
 }
 
+/// One window dimension in CSS pixels, bounded to what the ring can hold at
+/// `scale`. **Bounded here rather than left to the ring's silent clamp**, so
+/// the answer names the size the page will report.
+fn window_dimension(args: &Value, name: &str, scale: f64, device_max: u32) -> Result<u32, String> {
+    let asked = args
+        .get(name)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("browser_resize needs `{name}` as a number"))?;
+    if !asked.is_finite() || asked < 1.0 {
+        return Err(format!("browser_resize needs `{name}` as a positive number"));
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked finite and at least 1, then bounded by the ring's own device size"
+    )]
+    let css = asked.round().min(f64::from(device_max) / scale) as u32;
+    Ok(css.max(1))
+}
+
+/// The device pixels a CSS dimension paints at, rounded to the nearest. The
+/// caller has already bounded it by the ring's device size.
+fn device_pixels(css: u32, scale: f64) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounded by the ring's own device bound before the cast"
+    )]
+    let pixels = (f64::from(css) * scale).round() as u32;
+    pixels.max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome, DeadHost,
         DeadPageOutcome, Driven, Profile, State, UploadRequest, agent_upload_paths,
         agent_upload_refused, begin_upload, captured_generation, clear_if_dead, controller_size,
-        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, file_name,
-        installed_generation, note_agent_answered, note_surfaced_opened, note_upload_finished,
-        pair_tab_events, stage_agent_uploads, upload_request, write_uploads,
+        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
+        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        note_upload_finished, pair_tab_events, stage_agent_uploads, upload_request,
+        window_dimension, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::ProfileKey;
@@ -7620,6 +7691,31 @@ mod tests {
             "a nonsense ratio draws at 1"
         );
         assert_eq!(controller_size(Some(7), 7, 0, 0, 99.0), Some((1, 1, 8.0)), "bounded both ways");
+    }
+
+    /// **A window size is the page's own CSS pixels, and the answer names the
+    /// size the ring will paint.** A request past the ring's device bound is
+    /// cut here rather than left to the ring's silent clamp, and a size that
+    /// is not a positive number is refused rather than clamped to 1.
+    #[test]
+    fn a_window_size_is_css_pixels_bounded_by_the_ring() {
+        let width = |value: serde_json::Value| {
+            window_dimension(&json!({ "width": value }), "width", 2.0, crate::osr::MAX_WIDTH)
+        };
+        assert_eq!(width(json!(1120)), Ok(1120), "a CSS size passes through");
+        assert_eq!(width(json!(1120.4)), Ok(1120), "and rounds to the nearest pixel");
+        assert_eq!(
+            width(json!(3000)),
+            Ok(1920),
+            "3000 CSS pixels would paint past 3840 device pixels at 2x"
+        );
+        assert_eq!(
+            width(json!(0)),
+            Err("browser_resize needs `width` as a positive number".into())
+        );
+        assert_eq!(width(json!("wide")), Err("browser_resize needs `width` as a number".into()));
+        assert_eq!(device_pixels(1120, 2.0), 2240, "CSS pixels times the ratio it paints at");
+        assert_eq!(device_pixels(1920, 2.0), crate::osr::MAX_WIDTH, "the bound is reachable");
     }
 
     /// **Two orgs share nothing**: their wire ids differ (what a frame is
