@@ -6541,10 +6541,9 @@ impl Workspace {
         // `live_workers` still holds.
         if let Some(view) = cascade_project.as_ref() {
             for row in self.worker_rows_for_project(&view.key) {
-                if row.label == crate::store::sessions::LEAD_LABEL {
-                    continue;
-                }
-                self.clear_spawn_failure(&SessionSlot::worker(&row.org, &row.project, &row.label));
+                let slot = SessionSlot::worker(&row.org, &row.project, &row.label);
+                self.clear_spawn_failure(&slot);
+                self.spend_death(&slot);
             }
         }
         // Announced before anything is torn down, so the seat's row starts
@@ -6556,6 +6555,7 @@ impl Workspace {
             for entry in self.drain_live_workers(&view.key) {
                 // An entry whose label has no persisted row is only here.
                 self.clear_spawn_failure(&entry.slot);
+                self.spend_death(&entry.slot);
                 let worktree =
                     crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
@@ -8598,6 +8598,9 @@ impl Workspace {
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
             self.remove_worker_by_session_key(&entry.slot);
+            // The failure record goes with the row this arm deletes, or the
+            // slot reads Failed with nothing left to clear it.
+            self.clear_spawn_failure(session_key);
             // Same release the tag-rollback arm runs: without it the
             // pool entry + command sender + domain handle + SessionTask
             // leak per failed fresh spawn, unbounded across retries.
@@ -19872,9 +19875,13 @@ mod async_worker_spawn_failure_tests {
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         let lead_key = install_lead_in_pool(&workspace, lead_id);
+        // The ConnectionFailed arm records the failure before this handler
+        // runs, and the rollback deletes the row it would have drawn.
+        let worker_slot = SessionSlot::from_str_for_test(worker_key);
+        workspace.record_spawn_failure_for_test(&worker_slot, "the subprocess exited");
 
         let handled = workspace.handle_async_worker_spawn_failure(
-            &SessionSlot::from_str_for_test(worker_key),
+            &worker_slot,
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
             SpawnFailureKind::Unclassified,
         );
@@ -19910,6 +19917,11 @@ mod async_worker_spawn_failure_tests {
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
             "WorkerEntry removed on async failure",
+        );
+        assert_eq!(
+            workspace.spawn_failure(&worker_slot),
+            None,
+            "the failure record goes with the row the rollback deletes",
         );
     }
 

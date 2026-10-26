@@ -927,6 +927,60 @@ mod tests {
         );
     }
 
+    /// **A lead's close takes a crashed worker's death too.** The failure
+    /// record alone is not the whole trace: a worker that ran and died draws
+    /// from `death_stands`, so the next lead would bring back a red row that
+    /// no close could dismiss. Closing the lead and starting it again is the
+    /// state a reader meets after the close.
+    #[test]
+    fn closing_a_lead_spends_its_crashed_workers_death() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        let worker = SessionSlot::worker("TestOrg", "forge", "reviewer");
+        workspace.register_domain_session(lead.clone(), None);
+        workspace.seed_test_worker_row(&project, "reviewer");
+        workspace.record_spawn_failure_for_test(&worker, "the subprocess exited");
+        workspace.record_death_for_test(
+            &worker,
+            "dead-occupant",
+            "the claude subprocess closed its output stream",
+        );
+
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .iter()
+            .find(|row| row.slot == worker)
+            .expect("the crashed worker has a row");
+        assert!(row.died, "the death is on the row before the close");
+
+        workspace
+            .dispatch(forge_workspace::Command::CloseSession { session_key: lead.clone() })
+            .expect("a close on the lead is dispatched");
+
+        // The next lead is the state a reader meets after the close: the
+        // project's rows draw again, and the worker's must not bring its
+        // tombstone back.
+        workspace.register_domain_session(lead, None);
+
+        assert!(!workspace.death_stands(&worker), "the lead's close spent the worker's death");
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .iter()
+            .find(|row| row.slot == worker)
+            .expect("the persisted worker row draws again under the restarted lead");
+        assert!(!row.died, "the row no longer draws a death");
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Sleeping,
+            "and it reads asleep rather than failed",
+        );
+    }
+
     fn worker_row(label: &str, status: WorkerLiveness) -> forge_workspace::WorkerEntry {
         forge_workspace::WorkerEntry {
             label: label.to_owned(),
