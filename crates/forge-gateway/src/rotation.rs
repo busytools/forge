@@ -104,10 +104,11 @@ impl RotationState {
         self.cooldowns.lock().get(key).is_some_and(|until| *until > now)
     }
 
-    /// The soonest a cooling account recovers, for the failure
-    /// message. `None` when nothing is cooling.
-    pub fn soonest_reset(&self, now: SystemTime) -> Option<SystemTime> {
-        self.cooldowns.lock().values().filter(|until| **until > now).copied().min()
+    /// The soonest a cooling account among `keys` recovers, for the
+    /// failure message. `None` when none of them is cooling.
+    pub fn soonest_reset_among(&self, keys: &[AccountKey], now: SystemTime) -> Option<SystemTime> {
+        let cooldowns = self.cooldowns.lock();
+        keys.iter().filter_map(|key| cooldowns.get(key).copied()).filter(|until| *until > now).min()
     }
 
     /// Record a 429 from `account` at `now`; rotates when the streak
@@ -176,18 +177,24 @@ mod tests {
     }
 
     #[test]
-    fn the_soonest_reset_is_the_earliest_live_cooldown() {
+    fn the_soonest_reset_among_is_the_earliest_live_cooldown_asked_about() {
         let state = RotationState::new();
         let now = SystemTime::now();
         state.cool_down(&AccountKey("A".to_owned()), now + Duration::from_secs(90));
         state.cool_down(&AccountKey("B".to_owned()), now + Duration::from_secs(30));
         state.cool_down(&AccountKey("C".to_owned()), now - Duration::from_secs(1));
+        let asked = [AccountKey("A".to_owned()), AccountKey("C".to_owned())];
         assert_eq!(
-            state.soonest_reset(now),
-            Some(now + Duration::from_secs(30)),
-            "an expired cooldown is not a live reset"
+            state.soonest_reset_among(&asked, now),
+            Some(now + Duration::from_secs(90)),
+            "an account outside the ask and an expired cooldown are both ignored"
         );
-        assert_eq!(state.soonest_reset(now + Duration::from_secs(120)), None);
+        assert_eq!(state.soonest_reset_among(&[], now), None);
+        assert_eq!(
+            state
+                .soonest_reset_among(&[AccountKey("B".to_owned())], now + Duration::from_secs(120)),
+            None
+        );
     }
 
     #[test]

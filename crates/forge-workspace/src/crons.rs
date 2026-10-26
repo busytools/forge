@@ -423,7 +423,9 @@ impl Workspace {
                              episode already names it",
                         );
                     }
-                    let warned_at = if warn_now { now } else { warned_before.unwrap_or(now) };
+                    // A repeat carries the earlier warning's time forward,
+                    // so the floor counts from that warning, not this tick.
+                    let warned_at = warned_before.filter(|_| !warn_now).unwrap_or(now);
                     still_cooling.insert(id.clone(), warned_at);
                 }
                 // Command channel closed (shutting down): leave the cron
@@ -486,11 +488,24 @@ impl Workspace {
 }
 
 /// The reset a deferred cron names: the wall clock in IST plus the wait
-/// ahead, so a reader needs no arithmetic on a duration.
+/// ahead, so a reader needs no arithmetic on a duration. A reset no
+/// clock can spell falls back to the wait alone rather than panicking
+/// the scheduler.
 fn cooling_reset_text(reset_in: Duration, now: std::time::SystemTime) -> String {
-    let ist = chrono::DateTime::<chrono::Utc>::from(now + reset_in)
-        + chrono::TimeDelta::minutes(IST_OFFSET_MINUTES);
-    format!("{} IST (in {})", ist.format("%H:%M"), wait_text(reset_in))
+    let ist = now
+        .checked_add(reset_in)
+        .and_then(|at| at.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+        .and_then(|since_epoch| {
+            chrono::DateTime::from_timestamp(
+                i64::try_from(since_epoch.as_secs()).ok()?,
+                since_epoch.subsec_nanos(),
+            )
+        })
+        .map(|at| at + chrono::TimeDelta::minutes(IST_OFFSET_MINUTES));
+    match ist {
+        Some(at) => format!("{} IST (in {})", at.format("%H:%M"), wait_text(reset_in)),
+        None => format!("in {}", wait_text(reset_in)),
+    }
 }
 
 /// A wait as the two largest units that describe it ("1h 5m", "3m 20s").
@@ -1310,19 +1325,21 @@ mod tests {
         }
     }
 
-    /// The warnings a pass emitted about a cron deferred by cooling.
-    fn cooling_warnings(caught: &Caught) -> usize {
+    /// The records a pass emitted for the cooling event at `level`, as
+    /// their captured fields.
+    fn cooling_records(caught: &Caught, level: tracing::Level) -> Vec<String> {
         caught
             .0
             .lock()
             .expect("capture")
             .iter()
-            .filter(|(level, target, fields)| {
-                *level == tracing::Level::WARN
+            .filter(|(recorded, target, fields)| {
+                *recorded == level
                     && target == "forge_workspace::crons"
                     && fields.contains("cron_deferred_cooling")
             })
-            .count()
+            .map(|(_, _, fields)| fields.clone())
+            .collect()
     }
 
     /// Every `ServiceStatus` a pass sent, which is what a client draws.
@@ -1364,8 +1381,8 @@ mod tests {
     /// 30-minute floor re-warns.
     ///
     /// Mutants: warn on every tick (the second fire emits another record
-    /// and notice); drop the cooling detail from the notice (it names no
-    /// model, org or reset).
+    /// and notice); drop the cooling detail from either line (it names no
+    /// model, org or reset); silence the repeat instead of recording it.
     #[tokio::test]
     async fn a_cooling_walk_defers_the_cron_and_warns_once_per_episode() {
         use tracing_subscriber::layer::SubscriberExt as _;
@@ -1382,7 +1399,15 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         ws.fire_due_crons(now);
-        assert_eq!(cooling_warnings(&caught), 1, "the first cooling tick warns once");
+        let warned = cooling_records(&caught, tracing::Level::WARN);
+        assert_eq!(warned.len(), 1, "the first cooling tick warns once");
+        let fields = &warned[0];
+        assert!(fields.contains("org=TestOrg"), "the warning names the org: {fields}");
+        assert!(fields.contains("model=claude-sonnet-5"), "the warning names the model: {fields}");
+        assert!(
+            fields.contains("resets_at=") && fields.contains("IST"),
+            "the warning names when the reset lands: {fields}",
+        );
         let notices = service_notices(&mut rx);
         assert_eq!(notices.len(), 1, "and sends the client one notice: {notices:?}");
         let notice = &notices[0];
@@ -1391,11 +1416,24 @@ mod tests {
         assert!(notice.contains("IST"), "the notice names when the reset lands: {notice}");
 
         ws.fire_due_crons(now + std::time::Duration::from_secs(61));
-        assert_eq!(cooling_warnings(&caught), 1, "the repeat tick is debug, not another warning");
+        assert_eq!(
+            cooling_records(&caught, tracing::Level::WARN).len(),
+            1,
+            "the repeat tick is debug, not another warning",
+        );
+        assert_eq!(
+            cooling_records(&caught, tracing::Level::DEBUG).len(),
+            1,
+            "and says so at debug rather than staying silent",
+        );
         assert!(service_notices(&mut rx).is_empty(), "and sends the client nothing");
 
         ws.fire_due_crons(now + std::time::Duration::from_secs(30 * 60 + 61));
-        assert_eq!(cooling_warnings(&caught), 2, "the 30-minute floor re-warns while it lasts");
+        assert_eq!(
+            cooling_records(&caught, tracing::Level::WARN).len(),
+            2,
+            "the 30-minute floor re-warns while it lasts",
+        );
 
         let entry = ws
             .crons_for_project("proj")
@@ -1451,6 +1489,15 @@ mod tests {
         });
         ws.fire_due_crons(now + std::time::Duration::from_secs(120));
         assert_eq!(service_notices(&mut rx).len(), 1, "a new episode warns again");
+    }
+
+    /// A reset no clock can spell still names the wait, rather than
+    /// panicking the scheduler that prints it.
+    #[test]
+    fn an_unformattable_reset_falls_back_to_the_wait() {
+        let text = cooling_reset_text(Duration::MAX, std::time::SystemTime::now());
+        assert!(text.starts_with("in "), "the wait survives without a clock: {text}");
+        assert!(!text.contains("IST"), "and no wall clock is claimed: {text}");
     }
 
     #[test]
