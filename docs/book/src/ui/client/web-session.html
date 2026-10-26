@@ -1227,11 +1227,12 @@
   .mopt .tx { flex: 1; min-width: 0; }
   .mopt .why { display: block; color: var(--dim); font-size: var(--fs-label); }
   /* An option's own preview, and a held Slack draft: one panel, the marked
-     option's prose or the post itself, markdown on the wire. Bounded like the
-     client's own rule, so a long preview scrolls in place. */
+     option's prose or the post itself, markdown on the wire. */
   .mpreview { border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px;
-    font-size: var(--fs-data); color: var(--muted);
-    max-height: min(34vh, 320px); overflow-y: auto; }
+    font-size: var(--fs-data); color: var(--muted); }
+  /* The question's preview alone is bounded, as the client's own rule bounds it;
+     a held post keeps the shared panel's height. */
+  .mpreview.scrolls { max-height: min(34vh, 320px); overflow-y: auto; }
   .mpreview p { margin: 0; }
   .mdhead .qm { color: var(--accent); font-weight: 700; display: flex; align-items: center; }
   .mopt .ic { color: var(--dim); }
@@ -3287,7 +3288,7 @@ branch main, nothing to commit</div>
               <div class="mopt"><span class="n">3</span><span class="box2"></span>
                 <span class="tx"><span class="lbl">Development</span></span></div>
             </div>
-            <div class="mpreview"><p><strong>staging</strong> &#183; deploys run the full migration set against the replica first.</p></div>
+            <div class="mpreview scrolls"><p><strong>staging</strong> &#183; deploys run the full migration set against the replica first.</p></div>
             <!-- The row past the last option IS the input: arriving on it - the
                  arrow, its number, a click, or a typed character - puts the
                  caret here, and what is written is the answer. -->

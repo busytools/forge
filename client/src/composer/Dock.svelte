@@ -730,6 +730,9 @@
     }
     // The preview owns the keys that scroll it and nothing else: a character
     // typed there still starts the reader's own answer, and Enter still submits.
+    // The tab stop is unconditional, so these keys leave the dock even over a
+    // preview too short to scroll; a conditional one would need a live overflow
+    // read, and jsdom cannot measure one to test it.
     if (inPreview(event) && SCROLL_KEYS.has(event.key)) return;
     if (event.key === 'Escape' && take !== null) {
       // A live take owns the first Escape: it is abandoned and the dock stands,

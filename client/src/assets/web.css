@@ -40,8 +40,9 @@
 
 /* ---------- one scrollbar skin for every scroller on the page ----------
    The root viewport (the home page scrolls the document), the rail, the chat,
-   the autocomplete, the segment list, the dictation popover and both text
-   fields - the composer's and the dock's. An unstyled bar is a white or grey
+   the autocomplete, the segment list, the dictation popover, both text
+   fields - the composer's and the dock's - and the dock's own two scrollers,
+   its option list and its marked option's preview. An unstyled bar is a white or grey
    strip against the dark panels. The parts do not take the element's own
    cursor, so the pointer is set per part; the thumb brightens on hover and
    again while dragged. `scrollbar-gutter: stable` stays each scroller's own
@@ -54,6 +55,8 @@ html::-webkit-scrollbar,
 .pop::-webkit-scrollbar,
 .box textarea::-webkit-scrollbar,
 .dock .notes::-webkit-scrollbar,
+.dock .opts::-webkit-scrollbar,
+.dock .preview.opt-preview::-webkit-scrollbar,
 .dr-body::-webkit-scrollbar {
   width: 8px;
   cursor: pointer;
@@ -66,6 +69,8 @@ html::-webkit-scrollbar-track,
 .pop::-webkit-scrollbar-track,
 .box textarea::-webkit-scrollbar-track,
 .dock .notes::-webkit-scrollbar-track,
+.dock .opts::-webkit-scrollbar-track,
+.dock .preview.opt-preview::-webkit-scrollbar-track,
 .dr-body::-webkit-scrollbar-track {
   background: transparent;
   cursor: pointer;
@@ -78,6 +83,8 @@ html::-webkit-scrollbar-corner,
 .pop::-webkit-scrollbar-corner,
 .box textarea::-webkit-scrollbar-corner,
 .dock .notes::-webkit-scrollbar-corner,
+.dock .opts::-webkit-scrollbar-corner,
+.dock .preview.opt-preview::-webkit-scrollbar-corner,
 .dr-body::-webkit-scrollbar-corner {
   background: transparent;
   cursor: pointer;
@@ -90,6 +97,8 @@ html::-webkit-scrollbar-thumb,
 .pop::-webkit-scrollbar-thumb,
 .box textarea::-webkit-scrollbar-thumb,
 .dock .notes::-webkit-scrollbar-thumb,
+.dock .opts::-webkit-scrollbar-thumb,
+.dock .preview.opt-preview::-webkit-scrollbar-thumb,
 .dr-body::-webkit-scrollbar-thumb {
   background: var(--s3);
   border-radius: 99px;
@@ -103,6 +112,8 @@ html::-webkit-scrollbar-thumb:hover,
 .pop::-webkit-scrollbar-thumb:hover,
 .box textarea::-webkit-scrollbar-thumb:hover,
 .dock .notes::-webkit-scrollbar-thumb:hover,
+.dock .opts::-webkit-scrollbar-thumb:hover,
+.dock .preview.opt-preview::-webkit-scrollbar-thumb:hover,
 .dr-body::-webkit-scrollbar-thumb:hover {
   background: var(--line);
 }
@@ -114,6 +125,8 @@ html::-webkit-scrollbar-thumb:active,
 .pop::-webkit-scrollbar-thumb:active,
 .box textarea::-webkit-scrollbar-thumb:active,
 .dock .notes::-webkit-scrollbar-thumb:active,
+.dock .opts::-webkit-scrollbar-thumb:active,
+.dock .preview.opt-preview::-webkit-scrollbar-thumb:active,
 .dr-body::-webkit-scrollbar-thumb:active {
   background: var(--muted);
 }
