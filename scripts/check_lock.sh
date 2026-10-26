@@ -203,12 +203,35 @@ acquire() {
     done
 }
 
-# TERM the gate's whole process group, then wait for the child before the
-# EXIT trap frees the lock: killing only the direct child leaves the group
-# shells and their cargo/nextest/CEF children running beside the next gate.
-# The group is read here rather than cached, because a signal can land after
-# the fork and before any line after it: the child then exists with no
-# recorded state, and is still the one that must be stopped.
+# TERM the gate and every process it started, then wait for the child before
+# the EXIT trap frees the lock: a direct-child TERM leaves the group shells
+# and their cargo/nextest/CEF children running beside the next gate. The tree
+# is walked rather than a process group signalled because `set -m` is not
+# portable: dash ignores it in a script, and background jobs there stay in
+# the parent's group.
+kill_tree() {
+    ps -axo pid=,ppid= | awk -v root="$1" '
+        { kids[$2] = kids[$2] " " $1 }
+        END {
+            frontier = root
+            while (frontier != "") {
+                n = split(frontier, f, " ")
+                nxt = ""
+                for (i = 1; i <= n; i++) {
+                    m = split(kids[f[i]], c, " ")
+                    for (j = 1; j <= m; j++) {
+                        print c[j]
+                        nxt = nxt " " c[j]
+                    }
+                }
+                frontier = nxt
+            }
+        }' | while IFS= read -r pid; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    kill -TERM "$1" 2>/dev/null || true
+}
+
 stop_child() {
     if [ -z "$child" ]; then
         # The signal beat the fork. Remember it: the child about to start is
@@ -216,12 +239,7 @@ stop_child() {
         pending="$1"
         return 0
     fi
-    pgid=$(ps -o pgid= -p "$child" 2>/dev/null | tr -d ' ')
-    if [ "$pgid" = "$child" ]; then
-        kill -TERM -"$child" 2>/dev/null || kill -TERM "$child" 2>/dev/null || true
-    else
-        kill -TERM "$child" 2>/dev/null || true
-    fi
+    kill_tree "$child"
     wait "$child" 2>/dev/null || true
     exit "$1"
 }
@@ -234,7 +252,6 @@ run() {
     trap 'release "$$"' EXIT
     trap 'stop_child 130' INT
     trap 'stop_child 143' TERM
-    set -m
     acquire "$$"
     "$@" &
     if [ -n "${FORGE_CHECK_LOCK_TEST_AFTER_FORK:-}" ]; then
