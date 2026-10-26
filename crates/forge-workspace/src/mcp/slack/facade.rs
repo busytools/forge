@@ -268,6 +268,17 @@ fn slack_ts_now() -> String {
     format!("{}.{:06}", now.as_secs(), now.subsec_micros())
 }
 
+/// Whether `user` answers to `needle`, which is already lowercase: a
+/// case-insensitive substring over the handle, the real name and the display
+/// name, which is the one people actually type.
+fn user_matches(user: &SlackUser, needle: &str) -> bool {
+    let display_name = user.profile.as_ref().and_then(|profile| profile.display_name.as_deref());
+    [Some(user.name.as_str()), user.real_name.as_deref(), display_name]
+        .into_iter()
+        .flatten()
+        .any(|field| !field.is_empty() && field.to_lowercase().contains(needle))
+}
+
 /// The workspace to act on and the client for it: the caller's choice when
 /// it names a configured one, else the only configured one. A refusal says
 /// which case it is, so an omitted `workspace` never reads as a missing
@@ -397,6 +408,16 @@ pub(crate) trait SlackFacade: Send + Sync {
 
     /// `users.info` for one user id.
     async fn user(&self, workspace: Option<&str>, user: &str) -> Result<SlackUser, SlackReadError>;
+
+    /// Every member whose handle, real name or display name contains
+    /// `query`, case-insensitively. Every match is returned: silently
+    /// picking one of several is how a mention reaches the wrong person.
+    /// Deactivated members are excluded.
+    async fn users(
+        &self,
+        workspace: Option<&str>,
+        query: &str,
+    ) -> Result<Vec<SlackUser>, SlackReadError>;
 
     /// `auth.test`: the resolved `[[slack]]` label and the identity the
     /// workspace's token acts as. The label is returned alongside because it
@@ -796,6 +817,24 @@ impl SlackFacade for ProdSlackFacade {
         api.user_info(user).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
 
+    async fn users(
+        &self,
+        workspace: Option<&str>,
+        query: &str,
+    ) -> Result<Vec<SlackUser>, SlackReadError> {
+        let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
+        let needle = query.trim().to_lowercase();
+        let mut found: Vec<SlackUser> = api
+            .list_users()
+            .await
+            .map_err(|err| SlackReadError::Fetch(err.to_string()))?
+            .into_iter()
+            .filter(|user| !user.deleted && user_matches(user, &needle))
+            .collect();
+        found.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(found)
+    }
+
     async fn me(
         &self,
         workspace: Option<&str>,
@@ -1070,6 +1109,8 @@ pub(crate) struct MockSlackFacade {
         parking_lot::Mutex<Option<Result<Vec<SlackHistoryMessage>, SlackReadError>>>,
     pub user_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
     pub user_result: parking_lot::Mutex<Option<Result<SlackUser, SlackReadError>>>,
+    pub users_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
+    pub users_result: parking_lot::Mutex<Option<Result<Vec<SlackUser>, SlackReadError>>>,
     pub me_calls: parking_lot::Mutex<Vec<Option<String>>>,
     pub me_result: parking_lot::Mutex<Option<Result<(String, AuthTest), SlackReadError>>>,
     pub pins_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
@@ -1171,8 +1212,19 @@ impl SlackFacade for MockSlackFacade {
                 name: "tester".to_owned(),
                 real_name: None,
                 tz: None,
+                deleted: false,
+                profile: None,
             })
         })
+    }
+
+    async fn users(
+        &self,
+        workspace: Option<&str>,
+        query: &str,
+    ) -> Result<Vec<SlackUser>, SlackReadError> {
+        self.users_calls.lock().push((workspace.map(str::to_owned), query.to_owned()));
+        self.users_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
 
     async fn me(
@@ -1300,7 +1352,7 @@ mod tests {
     use crate::mcp::test_support::text_of;
     use forge_connectors::slack::{AuthTest, MessagePage, SearchPage, SlackApi, SlackError};
     use forge_primitives::slack::{
-        SlackBookmark, SlackConfig, SlackFile, SlackPin, SlackPinMessage,
+        SlackBookmark, SlackConfig, SlackFile, SlackPin, SlackPinMessage, SlackUserProfile,
     };
     use forge_sdk::mcp::tool::{Tool as _, ToolInput};
     use std::collections::{BTreeMap, HashMap};
@@ -1341,6 +1393,8 @@ mod tests {
         /// test can prove the conversation name was narrowed into `in:`.
         search_rows: parking_lot::Mutex<Vec<SlackSearchMatch>>,
         search_reads: parking_lot::Mutex<Vec<String>>,
+        /// The directory a user resolver reads.
+        users_rows: parking_lot::Mutex<Vec<SlackUser>>,
         /// The ts `chat.postMessage` answers with.
         post_ts: parking_lot::Mutex<Option<String>>,
         /// Seeded conversations, for the display name a held draft carries.
@@ -1368,6 +1422,9 @@ mod tests {
         }
         fn seed_search(&self, rows: Vec<SlackSearchMatch>) {
             self.search_rows.lock().extend(rows);
+        }
+        fn seed_users(&self, rows: Vec<SlackUser>) {
+            self.users_rows.lock().extend(rows);
         }
         fn history_reads(&self) -> Vec<HistoryRead> {
             self.history_reads.lock().clone()
@@ -1599,7 +1656,13 @@ mod tests {
                 name: "tester".to_owned(),
                 real_name: None,
                 tz: None,
+                deleted: false,
+                profile: None,
             })
+        }
+
+        async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError> {
+            Ok(self.users_rows.lock().clone())
         }
 
         async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError> {
@@ -2698,6 +2761,72 @@ mod tests {
             second,
             Some("100.0".to_owned()),
             "the second subscriber never resets the shared mention cursor",
+        );
+    }
+
+    fn directory_user(
+        id: &str,
+        name: &str,
+        real_name: Option<&str>,
+        display_name: Option<&str>,
+        deleted: bool,
+    ) -> SlackUser {
+        SlackUser {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            real_name: real_name.map(str::to_owned),
+            tz: None,
+            deleted,
+            profile: display_name.map(|display_name| SlackUserProfile {
+                display_name: Some(display_name.to_owned()),
+            }),
+        }
+    }
+
+    /// The three names a person is known by are all the same query: a
+    /// handle, a legal name and what Slack shows as the display name.
+    #[tokio::test]
+    async fn a_user_resolver_matches_the_handle_the_real_name_and_the_display_name() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_users(vec![
+            directory_user("U1", "ved", Some("Vedhavyas S"), Some("ved"), false),
+            directory_user("U2", "gina", Some("Gina Abrams"), None, false),
+            directory_user("U3", "csmith", None, Some("Chris"), false),
+        ]);
+
+        let by_handle = facade.users(Some("acme"), "VED").await.expect("handle, case-insensitive");
+        assert_eq!(by_handle.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(), ["U1"]);
+
+        let by_real_name = facade.users(Some("acme"), "abrams").await.expect("real name");
+        assert_eq!(by_real_name.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(), ["U2"]);
+
+        let by_display_name = facade.users(Some("acme"), "chris").await.expect("display name");
+        assert_eq!(
+            by_display_name.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(),
+            ["U3"],
+            "the display name matches even when neither the handle nor the real name does",
+        );
+    }
+
+    /// The failure this resolver exists for is a wrong id silently
+    /// notifying the wrong person, so several matches come back together
+    /// and a deactivated member is never one of them.
+    #[tokio::test]
+    async fn a_user_resolver_returns_every_live_match_and_no_deleted_ones() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_users(vec![
+            directory_user("U2", "samuel", None, None, false),
+            directory_user("U1", "sam", None, None, false),
+            directory_user("U3", "sam", None, None, true),
+            directory_user("U4", "other", None, None, false),
+        ]);
+
+        let found = facade.users(Some("acme"), "sam").await.expect("the directory is read");
+
+        assert_eq!(
+            found.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(),
+            ["U1", "U2"],
+            "every live match, sorted by handle, never one picked silently",
         );
     }
 

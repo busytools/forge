@@ -50,6 +50,7 @@ pub(crate) fn add_tools(
     let history = History { facade: facade.clone() };
     let replies = Replies { facade: facade.clone() };
     let user = User { facade: facade.clone() };
+    let users = Users { facade: facade.clone() };
     let me = Me { facade: facade.clone() };
     let pins = Pins { facade: facade.clone() };
     let bookmarks = Bookmarks { facade };
@@ -65,6 +66,7 @@ pub(crate) fn add_tools(
         .tool(history)
         .tool(replies)
         .tool(user)
+        .tool(users)
         .tool(me)
         .tool(pins)
         .tool(bookmarks)
@@ -1406,6 +1408,89 @@ impl Tool for Me {
     }
 }
 
+struct Users {
+    facade: Arc<dyn SlackFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct UsersArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+    query: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Users {
+    fn name(&self) -> &'static str {
+        "slack__users"
+    }
+
+    fn description(&self) -> &'static str {
+        "Find Slack users by handle, real name or display name, so a mention can name the right \
+         id. Matching is a case-insensitive substring over all three, and EVERY match is \
+         returned - silently choosing one of several is how a mention reaches the wrong person, \
+         so read the rows and pick the `id` yourself. Write a mention as `<@ID>`. Deactivated \
+         members are excluded. Returns a JSON array of {id, name, real_name, display_name}. \
+         Read-only and not held for approval. Any session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label. Omit it when only one \
+                                    workspace is configured.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "A handle, real name or display name, or part of one.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: UsersArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        if args.query.trim().is_empty() {
+            return tool_error(
+                "pass a handle, real name or display name to search for; an empty query would \
+                 return the whole workspace"
+                    .to_owned(),
+            );
+        }
+        match self.facade.users(args.workspace.as_deref(), &args.query).await {
+            Ok(found) => {
+                let rows: Vec<serde_json::Value> = found
+                    .iter()
+                    .map(|user| {
+                        serde_json::json!({
+                            "id": user.id,
+                            "name": user.name,
+                            "real_name": user.real_name,
+                            "display_name": user
+                                .profile
+                                .as_ref()
+                                .and_then(|profile| profile.display_name.as_deref()),
+                        })
+                    })
+                    .collect();
+                match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("user-list serialization failed: {err}")),
+                }
+            }
+            Err(err) => tool_error(format_read_error(&err)),
+        }
+    }
+}
+
 struct Pins {
     facade: Arc<dyn SlackFacade>,
 }
@@ -1555,6 +1640,7 @@ mod tests {
     use forge_connectors::slack::AuthTest;
     use forge_primitives::slack::{
         SlackBookmark, SlackConversation, SlackConversationText, SlackPin, SlackPinMessage,
+        SlackUser, SlackUserProfile,
     };
     use std::sync::Arc;
 
@@ -2248,6 +2334,8 @@ mod tests {
             name: "ved".to_owned(),
             real_name: Some("Vedhavyas S".to_owned()),
             tz: Some("Asia/Kolkata".to_owned()),
+            deleted: false,
+            profile: None,
         }));
         let tool = User { facade: mock.clone() };
 
@@ -2255,6 +2343,54 @@ mod tests {
         assert!(!out.is_error, "a lookup succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("Vedhavyas S"), "got: {}", text_of(&out));
         assert_eq!(mock.user_calls.lock().as_slice(), [(None, "U1".to_owned())]);
+    }
+
+    fn resolved_user(id: &str, name: &str, display_name: Option<&str>) -> SlackUser {
+        SlackUser {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            real_name: None,
+            tz: None,
+            deleted: false,
+            profile: display_name.map(|display_name| SlackUserProfile {
+                display_name: Some(display_name.to_owned()),
+            }),
+        }
+    }
+
+    /// The resolver hands back every match so the caller picks the id, and
+    /// the display name rides the row: it is often what the caller typed.
+    #[tokio::test]
+    async fn slack_users_returns_every_match_with_its_id() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.users_result.lock() =
+            Some(Ok(vec![resolved_user("U1", "sam", Some("Sam")), resolved_user("U2", "samuel", None)]));
+        let tool = Users { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({ "query": "sam" }))).await;
+
+        assert!(!out.is_error, "a lookup succeeds: {}", text_of(&out));
+        let rows: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is a row array");
+        assert_eq!(rows[0]["id"], "U1");
+        assert_eq!(rows[1]["id"], "U2", "both matches are returned, none silently chosen");
+        assert_eq!(rows[0]["display_name"], "Sam");
+        assert_eq!(
+            mock.users_calls.lock().as_slice(),
+            [(None, "sam".to_owned())],
+            "the query reaches the facade",
+        );
+    }
+
+    #[tokio::test]
+    async fn slack_users_refuses_an_empty_query() {
+        let mock = Arc::new(MockSlackFacade::new());
+        let tool = Users { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({ "query": "   " }))).await;
+
+        assert!(out.is_error, "an empty query would return the whole workspace");
+        assert!(mock.users_calls.lock().is_empty(), "nothing reaches the facade");
     }
 
     /// The `[[slack]]` label and the team's own name are different things

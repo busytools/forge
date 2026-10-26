@@ -207,6 +207,9 @@ pub trait SlackApi: Send + Sync {
     ) -> Result<SearchPage, SlackError>;
     /// `users.info` for one user id.
     async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError>;
+    /// Every member in the workspace. Deactivated members are included so
+    /// the caller decides what a row means.
+    async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError>;
     /// `pins.list` for one conversation.
     async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError>;
     /// `bookmarks.list` for one conversation.
@@ -312,6 +315,10 @@ impl SlackApi for SlackClient {
 
     async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
         SlackClient::user_info(self, user).await
+    }
+
+    async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError> {
+        SlackClient::list_users(self).await
     }
 
     async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError> {
@@ -2017,6 +2024,37 @@ fn history_params(
     params
 }
 
+/// Slack's page ceiling for `users.list`.
+const USER_PAGE_LIMIT: u32 = 200;
+
+/// A cursor Slack hands back unchanged must not spin the user walk forever:
+/// at 200 per page this is far past any real workspace, and the failure mode
+/// is an endless request loop against a rate-limited API.
+const MAX_USER_PAGES: usize = 100;
+
+/// One page of `users.list`, with Slack's empty last-page cursor normalised
+/// the way the conversations page is.
+#[derive(Debug)]
+struct UsersPage {
+    members: Vec<SlackUser>,
+    next_cursor: Option<String>,
+}
+
+/// Split out of the async path so the decode is testable without HTTP.
+fn decode_users_page(body: &str) -> Result<UsersPage, SlackError> {
+    #[derive(Deserialize)]
+    struct RawUsersPage {
+        #[serde(default)]
+        members: Vec<SlackUser>,
+        #[serde(default)]
+        response_metadata: Metadata,
+    }
+    let raw: RawUsersPage = decode_envelope("users.list", body)?;
+    let cursor = (!raw.response_metadata.next_cursor.is_empty())
+        .then_some(raw.response_metadata.next_cursor);
+    Ok(UsersPage { members: raw.members, next_cursor: cursor })
+}
+
 /// The API's ceiling for one search page.
 const SEARCH_COUNT_CAP: u32 = 100;
 
@@ -2409,6 +2447,31 @@ impl SlackClient {
         let params = vec![("user", user.to_owned())];
         let body = self.call_text("users.info", &params).await?;
         decode_user(&body)
+    }
+
+    /// Every member in the workspace, following the cursor. Slack has no
+    /// server-side name search, so a resolver reads the directory and
+    /// matches locally.
+    pub async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_USER_PAGES {
+            let mut params = vec![("limit", USER_PAGE_LIMIT.to_string())];
+            if let Some(cursor) = cursor.as_deref() {
+                params.push(("cursor", cursor.to_owned()));
+            }
+            let body = self.call_text("users.list", &params).await?;
+            let page = decode_users_page(&body)?;
+            out.extend(page.members);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return Ok(out),
+            }
+        }
+        Err(SlackError::Transport {
+            method: "users.list".to_owned(),
+            detail: format!("pagination did not terminate within {MAX_USER_PAGES} pages"),
+        })
     }
 
     /// `pins.list` for one conversation.
@@ -3502,7 +3565,18 @@ mod tests {
                     needed: None,
                 });
             };
-            Ok(SlackUser { id: user.to_owned(), name, real_name: None, tz: None })
+            Ok(SlackUser {
+                id: user.to_owned(),
+                name,
+                real_name: None,
+                tz: None,
+                deleted: false,
+                profile: None,
+            })
+        }
+
+        async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError> {
+            Ok(Vec::new())
         }
 
         async fn pins(&self, _channel: &str) -> Result<Vec<SlackPin>, SlackError> {
@@ -3560,6 +3634,33 @@ mod tests {
         let user = decode_user(body).expect("decodes");
         assert_eq!(user.name, "ved");
         assert_eq!(user.tz.as_deref(), Some("Asia/Kolkata"));
+    }
+
+    /// The resolver matches on the display name as well as the handle and
+    /// real name, and a deactivated member's row is kept (and flagged) so
+    /// the caller can exclude it rather than not knowing it exists.
+    #[test]
+    fn a_users_page_decodes_a_members_display_name_and_deleted_flag() {
+        let body = r#"{
+          "ok": true,
+          "members": [
+            {"id":"U1","name":"ved","real_name":"Vedhavyas S",
+             "profile":{"display_name":"ved"}},
+            {"id":"U2","name":"gina","deleted":true,
+             "profile":{"display_name":"Gina Abrams"}}
+          ],
+          "response_metadata": {"next_cursor": "next"}
+        }"#;
+        let page = decode_users_page(body).expect("decodes");
+        assert_eq!(page.members.len(), 2, "both rows survive the decode");
+        assert_eq!(
+            page.members[0].profile.as_ref().and_then(|p| p.display_name.as_deref()),
+            Some("ved"),
+            "the display name is what people type and the handle is not",
+        );
+        assert!(!page.members[0].deleted);
+        assert!(page.members[1].deleted, "a deactivated member is flagged, not dropped");
+        assert_eq!(page.next_cursor.as_deref(), Some("next"), "the walk can continue");
     }
 
     #[test]
