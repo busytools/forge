@@ -102,7 +102,7 @@ as well as a colour, so the row reads without colour:
 | Spawning | `spawning` | the subprocess is coming up |
 | Idle | `idle` | alive, nothing in flight |
 | Finished | `unseen` | a turn completed on a seat no client was showing |
-| Needs you | `needs` | a question or a permission prompt is waiting |
+| Needs you | `needs` | a question, a permission prompt or a hand-off is waiting |
 | Sign-in needed | `auth` | the bridge is waiting on `/login` |
 | Failed | `failed` | the session is not running: its spawn never came up, or it died and nothing brought it back |
 | Session ended | `failed` | a session on the seat ended, and the seat has not been opened since |
