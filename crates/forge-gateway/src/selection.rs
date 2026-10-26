@@ -99,6 +99,7 @@ mod tests {
             utilization: 100.0,
             resets_at,
             reset_description: None,
+            status: None,
         }
     }
 

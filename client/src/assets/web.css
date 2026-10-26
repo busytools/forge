@@ -1588,8 +1588,24 @@ details.sfold div.wk:hover { background: none; }
 /* A window the snapshot did not carry: the placeholder is not a reading, so
    it takes the dim the figures' own placeholders wear. */
 .bar .pc.none { color: var(--dim); }
-.bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px;
-  text-align: right; }
+/* One window on the footer: the bar line, and its reset under it. The reset
+   needs its own line at this width - label, bar, percent, mark and
+   `resets Tue 09:00` do not fit on one and leave a bar worth reading. Scoped
+   to the footer: `.win` is also the decision panel's winning row. */
+.rfoot .win { padding: 3px 0; }
+.rfoot .win .bar { padding: 0; }
+/* The spent window says so in words: colour alone is not a carrier of state,
+   so the amber word sits beside a percent a reader can see in greyscale. The
+   slot is always drawn so the percents line up row to row; 60px is the floor
+   at the default mono, and it shrinks to an ellipsis under a wider face. */
+.bar .lim { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
+  flex: 0 1 60px; width: 60px; min-width: 0; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; }
+.rfoot .win .eta { display: block; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); text-align: right; white-space: nowrap; }
+/* The chip's own state word, beside the account name: the dot's colour alone
+   cannot say a rate-limited account is rate-limited. */
+.rfoot .who .st { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
 
 /* ---------- narrow: a phone is a client too ---------- */
 

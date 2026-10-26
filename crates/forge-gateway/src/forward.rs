@@ -125,6 +125,40 @@ impl Gateway {
     /// This is the one selection decision - the forward binds what it
     /// returns, and a spawn or the launchpad reads it as the answer.
     pub fn select_for(&self, org: &str, model: &str) -> Result<AccountKey, SelectFailure> {
+        self.walk(org, model)
+    }
+
+    /// The account a spawn lands on first once the walk thaws: among the
+    /// cooling accounts declaring `model`, the one whose cooldown ends
+    /// soonest. That is the walk's answer at the first moment any of them
+    /// is free, which pin order alone does not give - a later-pinned
+    /// account can thaw first.
+    ///
+    /// A prediction made while the walk refuses, not a selection: an
+    /// account still `Loading` when the cooldown lifts is skipped by the
+    /// walk, so the read can name one that has not settled. A caller uses
+    /// it only where `select_for` fails; the walk's own answer replaces it
+    /// as soon as the walk succeeds. Selection never calls it.
+    pub fn cooling_account_serving(&self, org: &str, model: &str) -> Option<AccountKey> {
+        let pin = self.org_pins.lock().get(org).cloned()?;
+        let now = SystemTime::now();
+        let rotation = self.rotation.lock();
+        pin.accounts
+            .iter()
+            .chain(pin.fallback_accounts.iter())
+            .filter_map(|name| {
+                let key = AccountKey(name.clone());
+                if !rotation.is_cooling_down(&key, now) || !self.pool.declares(&key, model) {
+                    return None;
+                }
+                Some((key.clone(), rotation.cooldown_end(&key)?))
+            })
+            // Ties keep pin order: `min_by_key` returns the first minimum.
+            .min_by_key(|(_, until)| *until)
+            .map(|(key, _)| key)
+    }
+
+    fn walk(&self, org: &str, model: &str) -> Result<AccountKey, SelectFailure> {
         let Some(pin) = self.org_pins.lock().get(org).cloned() else {
             return Err(SelectFailure::UnknownOrg { org: org.to_owned() });
         };
@@ -1369,6 +1403,7 @@ mod tests {
                 utilization: 100.0,
                 resets_at: Some(SystemTime::now() + reset_in),
                 reset_description: None,
+                status: None,
             }),
             seven_day: None,
             seven_day_opus: None,
@@ -1697,6 +1732,110 @@ mod tests {
             gateway.bindings.binding_for("Default", "project", "session"),
             None,
             "selection writes no binding; the caller owns that",
+        );
+    }
+
+    /// **The read surface's walk answers while the account is cooling.** A
+    /// chip must name the account a spawn would land on once the window
+    /// lifts, and the selecting walk keeps refusing exactly as it did.
+    fn cooling_account(name: &str) -> forge_primitives::account::LoadedAccount {
+        forge_primitives::account::LoadedAccount {
+            display_name: name.to_owned(),
+            provider: forge_primitives::account::Provider::Anthropic,
+            base_url: None,
+            models: vec!["claude-sonnet-5".to_owned()],
+            model_aliases: std::collections::HashMap::new(),
+            model_slugs: std::collections::HashMap::new(),
+            env: std::collections::HashMap::new(),
+        }
+    }
+
+    /// **The read names the account a spawn lands on first, not the
+    /// first-pinned one.** With two cooling accounts the walk thaws the one
+    /// whose reset is soonest, so pin order alone names the wrong account.
+    #[test]
+    fn cooling_account_serving_names_the_account_that_thaws_first() {
+        let pool = Arc::new(crate::AccountPool::new(&[
+            cooling_account("First"),
+            cooling_account("Second"),
+        ]));
+        for name in ["First", "Second"] {
+            pool.set_loading(&AccountKey(name.to_owned()), crate::LoadingState::Ready);
+        }
+        let gateway = Gateway::new(Arc::clone(&pool), reqwest::Client::new());
+        gateway.set_org_pins([(
+            "Default".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["First".to_owned(), "Second".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        let now = SystemTime::now();
+        let first_until = now + Duration::from_secs(2 * 3600);
+        let second_until = now + Duration::from_secs(10 * 60);
+        gateway.rotation.lock().cool_down(&AccountKey("First".to_owned()), first_until);
+        gateway.rotation.lock().cool_down(&AccountKey("Second".to_owned()), second_until);
+
+        assert!(
+            matches!(
+                gateway.select_for("Default", "claude-sonnet-5"),
+                Err(SelectFailure::BudgetExhausted { .. }),
+            ),
+            "selection keeps refusing a cooling walk",
+        );
+        assert_eq!(
+            gateway.cooling_account_serving("Default", "claude-sonnet-5"),
+            Some(AccountKey("Second".to_owned())),
+            "the read names the account whose cooldown ends first",
+        );
+        assert_eq!(
+            gateway.bindings.binding_for("Default", "project", "session"),
+            None,
+            "the read writes no binding",
+        );
+
+        // The claim itself: thaw the second account and the walk takes it.
+        gateway
+            .rotation
+            .lock()
+            .cool_down(&AccountKey("Second".to_owned()), now - Duration::from_secs(1));
+        assert_eq!(
+            gateway
+                .select_for("Default", "claude-sonnet-5")
+                .expect("the thawed account is selectable"),
+            AccountKey("Second".to_owned()),
+            "the first spawn after the read lands on the account it named",
+        );
+    }
+
+    /// One cooling account declaring the model is the read's answer, and a
+    /// cooling account the model does not name is not.
+    #[test]
+    fn cooling_account_serving_respects_the_declared_model() {
+        let mut elsewhere = cooling_account("Elsewhere");
+        elsewhere.models = vec!["claude-opus-5".to_owned()];
+        let pool = Arc::new(crate::AccountPool::new(&[cooling_account("Serving"), elsewhere]));
+        for name in ["Serving", "Elsewhere"] {
+            pool.set_loading(&AccountKey(name.to_owned()), crate::LoadingState::Ready);
+        }
+        let gateway = Gateway::new(Arc::clone(&pool), reqwest::Client::new());
+        gateway.set_org_pins([(
+            "Default".to_owned(),
+            crate::selection::OrgPin {
+                accounts: vec!["Elsewhere".to_owned(), "Serving".to_owned()],
+                fallback_accounts: Vec::new(),
+            },
+        )]);
+        let now = SystemTime::now();
+        gateway
+            .rotation
+            .lock()
+            .cool_down(&AccountKey("Serving".to_owned()), now + Duration::from_secs(3600));
+
+        assert_eq!(
+            gateway.cooling_account_serving("Default", "claude-sonnet-5"),
+            Some(AccountKey("Serving".to_owned())),
+            "only the account declaring the model answers the read",
         );
     }
 

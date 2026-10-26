@@ -117,9 +117,13 @@ pub struct AccountState {
     pub env: std::collections::HashMap<String, String>,
     /// Latest usage snapshot fetched by the workspace's background
     /// poller. `None` until the first successful fetch. Drives the
-    /// selection walk's order; also read by a view's usage bars via
-    /// `Workspace::usage_for`.
+    /// selection walk's order and the cooldown's reset; a view reads
+    /// [`Self::limit_reading`] with it, in that order.
     pub usage: Option<UsageSnapshot>,
+    /// The windows a rate-limited probe carried, kept for the view beside
+    /// `usage` rather than in it: they never heal the account, and
+    /// selection and cooldowns must keep reading the successful probe.
+    pub limit_reading: Option<UsageSnapshot>,
     /// Latest poll-attempt outcome when the fetch failed. Cleared
     /// (set to `None`) on the next successful fetch. `unusable_reason`
     /// reads this to classify a probe-blocked account, and the write
@@ -170,6 +174,7 @@ impl std::fmt::Debug for AccountState {
             .field("model_slugs", &self.model_slugs)
             .field("env", &env)
             .field("usage", &self.usage)
+            .field("limit_reading", &self.limit_reading)
             .field("last_error", &self.last_error)
             .field("next_probe_at", &self.next_probe_at)
             .field("consecutive_failures", &self.consecutive_failures)
@@ -232,6 +237,7 @@ impl AccountStateMap {
                     model_slugs: account.model_slugs.clone(),
                     env: account.env.clone(),
                     usage: None,
+                    limit_reading: None,
                     last_error: None,
                     next_probe_at: None,
                     consecutive_failures: 0,
@@ -310,6 +316,7 @@ impl AccountStateMap {
     pub fn set_usage(&mut self, key: &AccountKey, snapshot: UsageSnapshot) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.usage = Some(snapshot);
+            state.limit_reading = None;
             state.last_error = None;
             state.next_probe_at = None;
             state.consecutive_failures = 0;
@@ -333,8 +340,26 @@ impl AccountStateMap {
             state.loading = loading;
             if loading == LoadingState::Bailed {
                 state.usage = None;
+                state.limit_reading = None;
             }
         }
+    }
+
+    /// Keep the windows a failed probe still carried. It never touches
+    /// `loading` or `last_error`: a rate-limited probe does not heal the
+    /// account, and nothing selection or a cooldown reads may move.
+    pub fn set_limit_reading(&mut self, key: &AccountKey, snapshot: UsageSnapshot) {
+        if let Some(state) = self.by_key.get_mut(key) {
+            state.limit_reading = Some(snapshot);
+        }
+    }
+
+    /// The newest reading the account gave, for a view's bars: a
+    /// rate-limited response's windows when one landed after the last
+    /// successful probe, else that probe's snapshot. Absent while both are.
+    pub fn latest_reading(&self, key: &AccountKey) -> Option<&UsageSnapshot> {
+        let state = self.by_key.get(key)?;
+        state.limit_reading.as_ref().or(state.usage.as_ref())
     }
 
     /// Disarm the scheduler hook for `key` after firing an override
@@ -388,6 +413,7 @@ impl AccountStateMap {
                 let prev = state.loading;
                 state.loading = LoadingState::Bailed;
                 state.usage = None;
+                state.limit_reading = None;
                 // Surface the transition so an operator triaging
                 // "account suddenly stopped working" can see WHEN the
                 // bail happened + which probe-class triggered it.
@@ -693,11 +719,13 @@ mod tests {
                 utilization: util,
                 resets_at: Some(future),
                 reset_description: None,
+                status: None,
             }),
             seven_day: seven_day.map(|util| UsageWindow {
                 utilization: util,
                 resets_at: Some(future),
                 reset_description: None,
+                status: None,
             }),
             seven_day_opus: None,
             seven_day_sonnet: None,
@@ -931,8 +959,12 @@ mod tests {
     fn seven_day_util_takes_max_across_windows() {
         // seven_day = 30, seven_day_opus = 80 → binding = max = 80
         let mut s = snapshot(Some(20.0), Some(30.0));
-        s.seven_day_opus =
-            Some(UsageWindow { utilization: 80.0, resets_at: None, reset_description: None });
+        s.seven_day_opus = Some(UsageWindow {
+            utilization: 80.0,
+            resets_at: None,
+            reset_description: None,
+            status: None,
+        });
         assert_eq!(s.seven_day_util(), Some(80.0), "the most-used 7d window is the binding one");
     }
 
@@ -971,11 +1003,13 @@ mod tests {
                 utilization: util,
                 resets_at,
                 reset_description: None,
+                status: None,
             }),
             seven_day: seven_day.map(|(util, resets_at)| UsageWindow {
                 utilization: util,
                 resets_at,
                 reset_description: None,
+                status: None,
             }),
             seven_day_opus: None,
             seven_day_sonnet: None,
@@ -1019,16 +1053,19 @@ mod tests {
                 utilization: 30.0,
                 resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
                 reset_description: None,
+                status: None,
             }),
             seven_day: Some(UsageWindow {
                 utilization: 30.0,
                 resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
                 reset_description: None,
+                status: None,
             }),
             seven_day_opus: Some(UsageWindow {
                 utilization: util,
                 resets_at,
                 reset_description: None,
+                status: None,
             }),
             seven_day_sonnet: None,
             extra_usage: None,
@@ -1048,17 +1085,20 @@ mod tests {
                 utilization: 30.0,
                 resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
                 reset_description: None,
+                status: None,
             }),
             seven_day: Some(UsageWindow {
                 utilization: 30.0,
                 resets_at: Some(SystemTime::now() + std::time::Duration::from_secs(3600)),
                 reset_description: None,
+                status: None,
             }),
             seven_day_opus: None,
             seven_day_sonnet: Some(UsageWindow {
                 utilization: util,
                 resets_at,
                 reset_description: None,
+                status: None,
             }),
             extra_usage: None,
             spend: None,
@@ -1356,6 +1396,51 @@ mod tests {
 
         assert_eq!(map.loading_state(&k), LoadingState::Bailed);
         assert!(map.usage(&k).is_none());
+    }
+
+    /// **A rate-limited response's windows are a reading, not an absence:**
+    /// a view states them while the account has no successful probe behind
+    /// it. The reading is kept beside the successful snapshot, so the
+    /// walk's saturation input and the cooldown's reset stay on the last
+    /// probe verdict.
+    #[test]
+    fn a_limit_reading_is_kept_beside_the_successful_snapshot() {
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = key("Gateway");
+        map.set_usage(&k, snapshot(Some(30.0), Some(40.0)));
+        map.set_last_error(&k, UsageFetchStatus::RateLimited, None);
+
+        map.set_limit_reading(&k, snapshot(Some(100.0), Some(42.0)));
+
+        let reading = map.latest_reading(&k).expect("the 429's own windows");
+        assert_eq!(reading.five_hour.as_ref().map(|w| w.utilization), Some(100.0));
+        assert_eq!(
+            map.usage(&k).and_then(|s| s.five_hour.as_ref().map(|w| w.utilization)),
+            Some(30.0),
+            "the walk's saturation input stays on the last successful probe",
+        );
+        assert!(!map.is_saturated(&k), "a 429 reading must not demote the account in the walk");
+    }
+
+    /// A successful probe supersedes the reading, and an auth bail drops
+    /// it with the cache: a view states the newest thing the account said,
+    /// and a dead credential has said nothing since.
+    #[test]
+    fn a_success_or_an_auth_bail_clears_the_limit_reading() {
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let k = key("Gateway");
+        map.set_limit_reading(&k, snapshot(Some(100.0), None));
+
+        map.set_usage(&k, snapshot(Some(20.0), Some(10.0)));
+        assert_eq!(
+            map.latest_reading(&k).and_then(|s| s.five_hour.as_ref().map(|w| w.utilization)),
+            Some(20.0),
+            "a successful probe is newer than the reading it replaces",
+        );
+
+        map.set_limit_reading(&k, snapshot(Some(100.0), None));
+        map.set_last_error(&k, UsageFetchStatus::Unauthorized, None);
+        assert!(map.latest_reading(&k).is_none(), "auth bail drops the reading with the cache");
     }
 
     #[test]

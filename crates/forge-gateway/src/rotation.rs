@@ -104,6 +104,11 @@ impl RotationState {
         self.cooldowns.lock().get(key).is_some_and(|until| *until > now)
     }
 
+    /// When `key`'s cooldown ends, `None` when it never cooled.
+    pub fn cooldown_end(&self, key: &AccountKey) -> Option<SystemTime> {
+        self.cooldowns.lock().get(key).copied()
+    }
+
     /// The soonest a cooling account recovers, for the failure
     /// message. `None` when nothing is cooling.
     pub fn soonest_reset(&self, now: SystemTime) -> Option<SystemTime> {
