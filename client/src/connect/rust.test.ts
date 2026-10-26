@@ -54,8 +54,8 @@ const slot: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 const subject = { session: slot };
 
 /** A client_state answer, overridden per test. */
-type State = { status: string; greeting: unknown; role: boolean };
-const OPEN: State = { status: 'open', greeting: null, role: false };
+type State = { status: string; generation?: number; greeting: unknown };
+const OPEN: State = { status: 'open', generation: 1, greeting: null };
 
 /** One of the shim's events, fired where the shim listens. */
 function fire(name: string, payload: unknown): void {
@@ -131,39 +131,81 @@ describe('what the shell is told', () => {
   });
 
   /**
-   * **A greeting is one new socket.** A page suspended across a drop wakes to
-   * a connection the shell says is already `open`, so it never sees the
-   * `connecting` that a drop sends; without this it would never release what
-   * the dead socket held nor re-attach the seat on screen, and the frozen
-   * record would draw forever.
+   * **A rising socket generation while this page believes the connection
+   * open is a reconnect it slept through.** A suspended webview wakes to a
+   * socket already `open` again: every queued notice re-reads the CURRENT
+   * state, `move('open')` no-ops, and without the shell's generation the
+   * page would keep a frozen record for ever. A greeting cannot stand in
+   * for it - the first socket's greeting arrives twice, and a reconnect to
+   * one server repeats the same value.
    */
-  it('treats a second greeting as a reconnect and re-sends the shown seat', async () => {
-    const connection = await opened();
+  it('fires the drop-and-open pair once for a reconnect it never saw', async () => {
+    const shell: State = { status: 'open', generation: 1, greeting: null };
+    const connection = await opened(shell);
+    // The first connect's own read settles before the test moves the shell.
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+    connection.showing(slot);
+    invoke.mockClear();
+    // The page's own re-attach on an open, as `session/live.ts` does it: the
+    // spec's order is re-subscribe, then `Showing`.
+    connection.onStatus((status) => {
+      if (status === 'open') connection.relist(subject, { answering: true });
+    });
+
+    // The shell reconnected while the page was away: the generation rose,
+    // the status is `open` again, and the socket's greeting crosses as a
+    // frame. Two queued connection notices both read the same state.
+    shell.generation = 2;
+    fire('client://inbound', {
+      kind: 'greeting',
+      version: 12,
+      settings: DEFAULT_SETTINGS,
+    });
+    fire('client://connection', undefined);
+    fire('client://connection', undefined);
+
+    await vi.waitFor(() => expect(seen).toEqual(['connecting', 'open']));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('client_showing', { seat: slot }));
+    expect(seen, 'the missed reconnect fired more than one pair').toEqual(['connecting', 'open']);
+    const commands = invoke.mock.calls.map(([command]) => command);
+    const relist = commands.indexOf('client_relist');
+    const showing = commands.indexOf('client_showing');
+    expect(relist, 'the page did not re-attach its seat on the open').toBeGreaterThanOrEqual(0);
+    expect(showing, 'Showing crossed before the seat was re-subscribed').toBeGreaterThan(relist);
+  });
+
+  /** A drop the page watched fires its own pair; the generation must not add one. */
+  it('does not fire a pair on a reconnect it watched', async () => {
+    const shell: State = { status: 'open', generation: 1, greeting: null };
+    const connection = await opened(shell);
     await vi.waitFor(() => expect(connection.status()).toBe('open'));
     const seen: string[] = [];
     connection.onStatus((status) => seen.push(status));
 
-    const greeting = {
-      kind: 'greeting',
-      version: 10,
-      forge_version: '1.1.28',
-      forge_version_short: '1.1.28',
-      settings: DEFAULT_SETTINGS,
-    } as unknown as ServerMessage;
-    // The socket the page is already on: its greeting arrives after the open
-    // this page watched, and is not a reconnect.
-    fire('client://inbound', greeting);
-    expect(seen, 'the first greeting ran a reconnect').toEqual([]);
+    shell.status = 'connecting';
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('connecting'));
+    shell.status = 'open';
+    shell.generation = 2;
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
 
-    connection.showing(slot);
-    invoke.mockClear();
-    // A second socket, whose open the page never saw.
-    fire('client://inbound', greeting);
+    expect(seen, 'a watched reconnect ran the pair a second time').toEqual(['connecting', 'open']);
+  });
 
-    expect(seen, 'a new socket did not run the drop-and-open path').toEqual(['connecting', 'open']);
-    expect(invoke, 'the reconnect forgot the shown seat').toHaveBeenCalledWith('client_showing', {
-      seat: slot,
-    });
+  /** The first connect is not a reconnect, however often its greeting arrives. */
+  it('does not fire a pair on the first connect', async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+    const greeting = { kind: 'greeting', version: 1, settings: DEFAULT_SETTINGS } as const;
+    fire('client://inbound', greeting);
+    fire('client://inbound', greeting);
+    await vi.waitFor(() => expect(connection.settings()).not.toBeNull());
+    expect(seen, 'the first connect ran a reconnect').toEqual([]);
   });
 
   /** A one-sided rename of a command name is exactly what this file catches. */
@@ -359,7 +401,7 @@ describe('frames from the bridge', () => {
    */
   it('re-arms the bound when the connection opens after a read expired while connecting', async () => {
     vi.useFakeTimers();
-    const connection = await opened({ status: 'connecting', greeting: null, role: false });
+    const connection = await opened({ status: 'connecting', greeting: null });
     const store = connection.subscribe(subject);
     expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
       what: subject,
@@ -375,7 +417,7 @@ describe('frames from the bridge', () => {
     // The connection opens: the bound must be re-armed for the still-loading subject.
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') {
-        return Promise.resolve({ status: 'open', greeting: null, role: false });
+        return Promise.resolve({ status: 'open', generation: 1, greeting: null });
       }
       return Promise.resolve(undefined);
     });
@@ -401,7 +443,7 @@ describe('frames from the bridge', () => {
     const store = connection.subscribe(subject);
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') {
-        return Promise.resolve({ status: 'closed', greeting: null, role: false });
+        return Promise.resolve({ status: 'closed', generation: 1, greeting: null });
       }
       return Promise.resolve(undefined);
     });
@@ -427,7 +469,7 @@ describe("the connection's own facts", () => {
     };
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') {
-        return Promise.resolve({ status: 'open', greeting, role: false });
+        return Promise.resolve({ status: 'open', generation: 1, greeting });
       }
       return Promise.resolve(undefined);
     });

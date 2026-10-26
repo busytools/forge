@@ -197,6 +197,12 @@ enum Outbound {
     Showing {
         seat: Option<Value>,
     },
+    /// Give a subject back entirely: every subscription this connection
+    /// holds for it, from the wire's own count rather than the page's
+    /// readers - a relist raises that count without raising them.
+    Release {
+        what: Value,
+    },
     /// Ask again for a subject this half already holds, **without adding a
     /// reader**: the page's half of a resume, where the record and the page's
     /// store both survived the drop and only the server's subscription went
@@ -359,6 +365,13 @@ impl Socket {
     /// Give one subscription back.
     pub fn unsubscribe(&self, what: Value) {
         let _ = self.tx.send(Outbound::Unsubscribe { what });
+    }
+
+    /// Give a subject back entirely: its held entry, and every subscription
+    /// this connection holds for it. **The count is the wire's**, which a
+    /// relist can raise above the page's reader count.
+    pub fn release(&self, what: Value) {
+        let _ = self.tx.send(Outbound::Release { what });
     }
 
     /// Say which seat the page has on screen; `None` for none.
@@ -598,6 +611,15 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         }
         Outbound::Unsubscribe { what } => {
             unhold(held, awaiting, &what);
+            false
+        }
+        // **A release while down is a local drop**: the reconnect asks for
+        // nothing the page has given back, and there is no wire to give it
+        // to here.
+        Outbound::Release { what } => {
+            let key = subject_key(&what);
+            held.retain(|h| h.key != key);
+            awaiting.retain(|k| k != &key);
             false
         }
         Outbound::Dispatch { sent, .. } => {
@@ -873,6 +895,20 @@ async fn run(
                                         .await;
                                 }
                                 None => {}
+                            }
+                        }
+                        Outbound::Release { what } => {
+                            // **Every entry this connection holds, from the
+                            // wire's count**: a relist raises it above the
+                            // page's readers, and looping those would leave a
+                            // subscription and its work-watch hold standing.
+                            let key = subject_key(&what);
+                            held.retain(|h| h.key != key);
+                            awaiting.retain(|k| k != &key);
+                            for _ in 0..live.remove(&key).unwrap_or(0) {
+                                let _ = writer
+                                    .send(Message::Text(json!({ "kind": "unsubscribe", "what": what.clone() }).to_string().into()))
+                                    .await;
                             }
                         }
                         Outbound::More { conversation, before, turns } => {

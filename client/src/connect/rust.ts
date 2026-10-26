@@ -89,6 +89,8 @@ function variantOf(command: Command): string {
 /** What the Rust half's `client_state` answers. */
 interface DesktopState {
   status: ConnectionStatus;
+  /** How many sockets have opened in the shell; absent on an older shell. */
+  generation?: number;
   greeting: ServerMessage | null;
 }
 
@@ -196,21 +198,20 @@ class RustConnection implements Connection {
    */
   private shown: SessionSlot | null = null;
   /**
-   * How many greetings this page has delivered, and the count as of the
-   * last real `open` transition.
+   * The shell's socket generation this page last saw at an `open`, and
+   * whether a status transition has been watched since.
    *
-   * **A greeting is one new socket.** The Rust half keeps one logical
-   * connection across its own reconnects, so a page suspended across a
-   * drop and its reconnect wakes to a socket the shell says is already
-   * open: it never sees `connecting`, and nothing would release what the
-   * dead socket held or re-attach the seat on screen. The greeting is the
-   * one frame every socket sends and none repeats, so a greeting whose
-   * socket this page never opened is that reconnect - the pair below is
-   * what tells the two apart without keying on the greeting's value, which
-   * a reconnect to the same server repeats exactly.
+   * **A generation, not a greeting.** The shell delivers the first socket's
+   * greeting twice (once on `client_state`, once as a frame) and two
+   * reconnects to one server carry the same greeting value, so a greeting
+   * count cannot tell a socket this page saw from one it slept through.
+   * The shell counts the sockets themselves; a RISING number while this
+   * page still believes the connection open is a reconnect it missed, and
+   * `transition` records a drop the page really watched, so a visible
+   * reconnect does not fire the pair a second time.
    */
-  private greetings = 0;
-  private openedAtGreeting = 0;
+  private generation: number | null = null;
+  private transition = false;
   /**
    * The bound on a subscription's first read: a subject still loading when
    * it runs out is asked again through `client_refresh`, so a snapshot lost
@@ -287,12 +288,40 @@ class RustConnection implements Connection {
       this.greeted = greeting;
       this.heard(state.greeting);
     }
+    const generation = typeof state.generation === 'number' ? state.generation : null;
+    if (state.status === 'open' && generation !== null) {
+      const known = this.generation;
+      if (known === null) {
+        // The first connect: nothing to compare against.
+        this.generation = generation;
+        this.transition = false;
+      } else if (generation > known) {
+        // **A socket this page never saw open.** A drop the page watched
+        // fires `connecting` through its own notice, which is what
+        // `transition` records; if none arrived, the webview slept across
+        // the whole drop and must run the pair itself, exactly once -
+        // recording the generation first makes a second queued notice of
+        // the same socket a no-op.
+        const missed = !this.transition;
+        this.generation = generation;
+        this.transition = false;
+        if (missed) {
+          this.move('connecting');
+          this.move('open');
+        }
+      }
+    }
     this.move(state.status);
   }
 
   private move(next: ConnectionStatus): void {
     if (this.state === next) return;
     this.state = next;
+    // **A transition this page really watched.** A drop is the only status
+    // move into a non-open state, and it is what tells a socket change the
+    // page saw from one it slept through; `stateMoved` clears it once the
+    // generation it belongs to is recorded.
+    if (next !== 'open') this.transition = true;
     // A closed connection's holds die with it: the reconnect's answer is the
     // whole record, and the numbers start wherever it says.
     if (next === 'closed') {
@@ -302,12 +331,7 @@ class RustConnection implements Connection {
     // A connection that opens after a bound fired owes its loading subjects a
     // fresh deadline: the subscribe went out when the socket opened, and a
     // lost first answer would otherwise leave them loading forever.
-    if (next === 'open') {
-      this.bounds.rearmLoading();
-      // The socket whose open this page has now seen: its greeting has
-      // already been accounted for (or is the next one to arrive).
-      this.openedAtGreeting = this.greetings;
-    }
+    if (next === 'open') this.bounds.rearmLoading();
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
     // then `Showing`, and the web's `onopen` keeps the same one.
@@ -364,20 +388,6 @@ class RustConnection implements Connection {
   });
 
   private heard(message: ServerMessage): void {
-    if (message.kind === 'greeting') {
-      // **A greeting whose socket this page never opened is a missed
-      // reconnect**: the queued `client://connection` reads the CURRENT state,
-      // sees `open`, and `move('open')` no-ops, so this is the only place the
-      // drop can be noticed. Fire the pair a visible drop fires, so the page
-      // releases what the dead socket held and re-attaches the seat on screen
-      // exactly once.
-      const opened = this.openedAtGreeting === this.greetings;
-      this.greetings += 1;
-      if (this.state === 'open' && this.greetings > 1 && !opened) {
-        this.move('connecting');
-        this.move('open');
-      }
-    }
     for (const ordered of this.gate.inbound(message)) this.deliver(ordered);
   }
 

@@ -114,6 +114,21 @@ struct State {
     order: Vec<String>,
     socket: Option<Socket>,
     status: &'static str,
+    /// How many sockets have OPENED on this bridge.
+    ///
+    /// **The page's proof that the connection it believes open is the one
+    /// still there.** A webview suspended across a drop and its reconnect
+    /// wakes to a socket that is already `open` again: every queued
+    /// connection notice re-reads the CURRENT state, so the page never sees
+    /// the `connecting` and would keep a frozen record for ever. A greeting
+    /// is not that proof - the first socket's greeting is delivered twice
+    /// and two reconnects to one server carry the same value - so the shell
+    /// counts the sockets themselves and the page compares.
+    ///
+    /// Bumped on every `Status::Open`, not in [`Bridge::connect`]: the
+    /// socket reconnects itself, and its own retries never pass through
+    /// `connect`.
+    generation: u64,
     greeting: Option<Value>,
     /// When the page last heartbeated, and how many frames went unforwarded
     /// while it was presumed parked. **Every suppressed frame except a
@@ -178,6 +193,7 @@ impl Bridge {
                 order: Vec::new(),
                 socket: None,
                 status: "connecting",
+                generation: 0,
                 greeting: None,
                 last_beat: None,
                 suppressed: 0,
@@ -587,8 +603,7 @@ impl Bridge {
     pub fn relist(&self, what: Value, answering: bool) {
         let state = self.lock();
         let key = records::subject_key(&what);
-        let held_answering =
-            state.held.get(&key).map(|watch| watch.answering).unwrap_or(false);
+        let held_answering = state.held.get(&key).map(|watch| watch.answering).unwrap_or(false);
         if let Some(socket) = &state.socket {
             socket.relist(what, held_answering || answering);
         }
@@ -605,13 +620,14 @@ impl Bridge {
     pub fn release(&self, what: &Value) {
         let key = records::subject_key(what);
         let mut state = self.lock();
-        let readers = state.held.remove(&key).map(|watch| watch.readers).unwrap_or(0);
+        state.held.remove(&key);
         state.order.retain(|held| *held != key);
         state.records.release(&key);
+        // **The socket gives back the wire's count.** A relist raises it
+        // above this side's readers, so looping the readers would leave a
+        // subscription and its work-watch hold standing.
         if let Some(socket) = &state.socket {
-            for _ in 0..readers {
-                socket.unsubscribe(what.clone());
-            }
+            socket.release(what.clone());
         }
     }
 
@@ -633,6 +649,7 @@ impl Bridge {
         let state = self.lock();
         json!({
             "status": state.status,
+            "generation": state.generation,
             "greeting": state.greeting,
         })
     }
@@ -859,6 +876,10 @@ impl Bridge {
                 Status::Closed => "closed",
             };
             if status == Status::Open {
+                // **A socket opened**, which is the generation the page
+                // compares: see the field's own comment for why a greeting
+                // cannot stand in for it.
+                state.generation = state.generation.saturating_add(1);
                 // A fresh connection's frames are forwarded at once: the page
                 // is there (it just asked to connect), and the first
                 // heartbeat carries the proof rather than the promise. The
@@ -1804,13 +1825,39 @@ mod tests {
         bridge.relist(seat(), false);
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], seat(), "the relist asked for the same subject");
-        assert_eq!(again["answering"], true, "with the declaration it was held under");
+        assert_eq!(again["answering"], true, "the held declaration was not raised into the relist",);
 
         let key = records::subject_key(&seat());
         assert_eq!(
             bridge.lock().held.get(&key).map(|watch| watch.readers),
             Some(1),
             "the relist counted a second reader",
+        );
+    }
+
+    /// **A release gives back what the WIRE holds, not what the page holds.**
+    /// A relist raises the socket's count without raising this side's
+    /// readers, so a release that looped the readers would leave one server
+    /// subscription - and its work-watch hold - standing until the
+    /// connection closed.
+    #[tokio::test]
+    async fn a_release_gives_back_the_wire_count_after_a_relist() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        // A relist asks once more on the wire while the reader count stays 1.
+        bridge.relist(seat(), false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        bridge.release(&seat());
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the release gave back fewer entries than the wire held",
         );
     }
 

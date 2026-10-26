@@ -135,11 +135,7 @@ mod commands {
     /// Ask again for a subject the page still holds, adding no reader: the
     /// page's half of a resume after a drop.
     #[tauri::command]
-    pub fn client_relist(
-        bridge: tauri::State<'_, Arc<Bridge>>,
-        what: Value,
-        answering: bool,
-    ) {
+    pub fn client_relist(bridge: tauri::State<'_, Arc<Bridge>>, what: Value, answering: bool) {
         bridge.relist(what, answering);
     }
 
