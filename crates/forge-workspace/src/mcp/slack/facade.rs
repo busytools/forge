@@ -422,10 +422,7 @@ pub(crate) trait SlackFacade: Send + Sync {
     /// `auth.test`: the resolved `[[slack]]` label and the identity the
     /// workspace's token acts as. The label is returned alongside because it
     /// can differ from the team's name (`Subspace` is team `Autonomys`).
-    async fn me(
-        &self,
-        workspace: Option<&str>,
-    ) -> Result<(String, AuthTest), SlackReadError>;
+    async fn me(&self, workspace: Option<&str>) -> Result<(String, AuthTest), SlackReadError>;
 
     /// `pins.list` for one conversation.
     async fn pins(
@@ -770,9 +767,8 @@ impl SlackFacade for ProdSlackFacade {
                 .search_messages(&narrowed, count, cursor.as_deref())
                 .await
                 .map_err(|err| SlackReadError::Fetch(err.to_string()))?;
-            matches.extend(
-                page.matches.into_iter().filter(|hit| hit.conversation_id == conversation),
-            );
+            matches
+                .extend(page.matches.into_iter().filter(|hit| hit.conversation_id == conversation));
             if matches.len() >= count as usize {
                 break;
             }
@@ -835,13 +831,9 @@ impl SlackFacade for ProdSlackFacade {
         Ok(found)
     }
 
-    async fn me(
-        &self,
-        workspace: Option<&str>,
-    ) -> Result<(String, AuthTest), SlackReadError> {
+    async fn me(&self, workspace: Option<&str>) -> Result<(String, AuthTest), SlackReadError> {
         let (label, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
-        let auth =
-            api.auth_test().await.map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+        let auth = api.auth_test().await.map_err(|err| SlackReadError::Fetch(err.to_string()))?;
         Ok((label, auth))
     }
 
@@ -867,7 +859,8 @@ impl SlackFacade for ProdSlackFacade {
         &self,
         request: SlackFetchRequest,
     ) -> Result<std::path::PathBuf, SlackAttachmentError> {
-        let (_, api) = self.resolve(request.workspace.as_deref()).map_err(SlackAttachmentError::Workspace)?;
+        let (_, api) =
+            self.resolve(request.workspace.as_deref()).map_err(SlackAttachmentError::Workspace)?;
 
         // The directory is checked and created before Slack is contacted,
         // so a bad `dir` costs no round trips.
@@ -977,8 +970,8 @@ impl SlackFacade for ProdSlackFacade {
         request: SlackSubscribeRequest,
     ) -> Result<Vec<SlackSubscription>, SlackSubscribeError> {
         let ws = self.workspace.upgrade().ok_or(SlackSubscribeError::UnknownCallerProject)?;
-        let (label, _) = resolve_workspace(&ws.slack, workspace)
-            .map_err(SlackSubscribeError::Workspace)?;
+        let (label, _) =
+            resolve_workspace(&ws.slack, workspace).map_err(SlackSubscribeError::Workspace)?;
         let (project, team_role, durable) =
             resolve_identity(&ws, caller).ok_or(SlackSubscribeError::UnknownCallerProject)?;
         let targets = match request {
@@ -1086,8 +1079,7 @@ pub(crate) type SearchCall = (Option<String>, String, u32, Option<String>);
 
 /// One recorded history read: workspace, conversation, limit, oldest, newest.
 #[cfg(test)]
-pub(crate) type HistoryCall =
-    (Option<String>, String, u32, Option<String>, Option<String>);
+pub(crate) type HistoryCall = (Option<String>, String, u32, Option<String>, Option<String>);
 
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool parses args, resolves the caller, and surfaces results/errors.
@@ -1227,10 +1219,7 @@ impl SlackFacade for MockSlackFacade {
         self.users_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    async fn me(
-        &self,
-        workspace: Option<&str>,
-    ) -> Result<(String, AuthTest), SlackReadError> {
+    async fn me(&self, workspace: Option<&str>) -> Result<(String, AuthTest), SlackReadError> {
         self.me_calls.lock().push(workspace.map(str::to_owned));
         self.me_result.lock().clone().unwrap_or_else(|| {
             Ok((
@@ -2946,10 +2935,8 @@ mod tests {
         api.seed_conversation("C1", "ops");
         api.seed_search(vec![search_hit("C1", "100.1"), search_hit("C2", "100.2")]);
 
-        let found = facade
-            .search(Some("acme"), "deploy", 20, Some("C1"))
-            .await
-            .expect("the search runs");
+        let found =
+            facade.search(Some("acme"), "deploy", 20, Some("C1")).await.expect("the search runs");
 
         assert_eq!(found.len(), 1, "only the filtered conversation's hit survives: {found:?}");
         assert_eq!(found[0].conversation_id, "C1");

@@ -1056,12 +1056,7 @@ impl Tool for Search {
         let count = args.count.unwrap_or(DEFAULT_SEARCH_COUNT);
         match self
             .facade
-            .search(
-                args.workspace.as_deref(),
-                &args.query,
-                count,
-                args.conversation.as_deref(),
-            )
+            .search(args.workspace.as_deref(), &args.query, count, args.conversation.as_deref())
             .await
         {
             Ok(found) => {
@@ -1268,11 +1263,7 @@ impl Tool for Replies {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self
-            .facade
-            .replies(args.workspace.as_deref(), &args.conversation, &args.ts)
-            .await
-        {
+        match self.facade.replies(args.workspace.as_deref(), &args.conversation, &args.ts).await {
             Ok(messages) => match serde_json::to_string_pretty(&read_rows(&messages)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("replies serialization failed: {err}")),
@@ -2292,11 +2283,7 @@ mod tests {
         let out =
             tool.call(input(serde_json::json!({ "conversation": "C1", "limit": 1000 }))).await;
         assert!(out.is_error, "a page past Slack's ceiling cannot be served");
-        assert!(
-            text_of(&out).contains("999"),
-            "the error names the ceiling: {}",
-            text_of(&out),
-        );
+        assert!(text_of(&out).contains("999"), "the error names the ceiling: {}", text_of(&out),);
         assert!(mock.history_calls.lock().is_empty(), "nothing reaches the facade");
     }
 
@@ -2305,10 +2292,8 @@ mod tests {
     #[tokio::test]
     async fn slack_replies_passes_the_parent_and_reports_the_thread() {
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.replies_result.lock() = Some(Ok(vec![
-            history_message("100.0", "parent"),
-            history_message("100.5", "reply"),
-        ]));
+        *mock.replies_result.lock() =
+            Some(Ok(vec![history_message("100.0", "parent"), history_message("100.5", "reply")]));
         let tool = Replies { facade: mock.clone() };
 
         let out =
@@ -2363,8 +2348,10 @@ mod tests {
     #[tokio::test]
     async fn slack_users_returns_every_match_with_its_id() {
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.users_result.lock() =
-            Some(Ok(vec![resolved_user("U1", "sam", Some("Sam")), resolved_user("U2", "samuel", None)]));
+        *mock.users_result.lock() = Some(Ok(vec![
+            resolved_user("U1", "sam", Some("Sam")),
+            resolved_user("U2", "samuel", None),
+        ]));
         let tool = Users { facade: mock.clone() };
 
         let out = tool.call(input(serde_json::json!({ "query": "sam" }))).await;
