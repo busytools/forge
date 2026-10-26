@@ -4075,6 +4075,29 @@ describe('the dock', () => {
     );
   });
 
+  /**
+   * **The rest of the keys are still the dock's.** The region takes the keys
+   * that scroll it and gives every other one back: a character typed while the
+   * keyboard is in the preview is the first character of the reader's own
+   * answer, and swallowing it there would break the type-to-start path the
+   * dock has everywhere else.
+   */
+  it('still takes a character typed from the preview as the answer', () => {
+    open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const preview = document.querySelector('.dock .preview.opt-preview');
+    if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    preview.focus();
+    flushSync();
+
+    press('k');
+
+    const field = document.querySelector('.dock textarea.notes');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the dock drew no words row');
+    expect(field.value, 'the dock received the character').toBe('k');
+    expect(document.activeElement, 'and the caret went where the character landed').toBe(field);
+  });
+
   it("offers the reader's own words as the agent's, which is the wording rule", () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 

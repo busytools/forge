@@ -1227,9 +1227,11 @@
   .mopt .tx { flex: 1; min-width: 0; }
   .mopt .why { display: block; color: var(--dim); font-size: var(--fs-label); }
   /* An option's own preview, and a held Slack draft: one panel, the marked
-     option's prose or the post itself, markdown on the wire. */
+     option's prose or the post itself, markdown on the wire. Bounded like the
+     client's own rule, so a long preview scrolls in place. */
   .mpreview { border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px;
-    font-size: var(--fs-data); color: var(--muted); }
+    font-size: var(--fs-data); color: var(--muted);
+    max-height: min(34vh, 320px); overflow-y: auto; }
   .mpreview p { margin: 0; }
   .mdhead .qm { color: var(--accent); font-weight: 700; display: flex; align-items: center; }
   .mopt .ic { color: var(--dim); }

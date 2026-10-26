@@ -715,6 +715,9 @@
   const inPreview = (event: KeyboardEvent): boolean =>
     event.target instanceof HTMLElement && event.target.closest('[data-preview]') !== null;
 
+  /** The keys a scroller answers itself, which are the only ones the dock yields. */
+  const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+
   /** The keys a dock answers to, which are the ones that can do what they say. */
   function onkey(event: KeyboardEvent): void {
     // **A button answers its own keys.** The row model's Enter and Space are
@@ -725,9 +728,9 @@
     if (event.target instanceof HTMLButtonElement && (event.key === 'Enter' || event.key === ' ')) {
       return;
     }
-    // The preview owns the keys that scroll it while it has the keyboard: a
-    // reader there is reading rather than answering. Escape is still the dock's.
-    if (inPreview(event) && event.key !== 'Escape') return;
+    // The preview owns the keys that scroll it and nothing else: a character
+    // typed there still starts the reader's own answer, and Enter still submits.
+    if (inPreview(event) && SCROLL_KEYS.has(event.key)) return;
     if (event.key === 'Escape' && take !== null) {
       // A live take owns the first Escape: it is abandoned and the dock stands,
       // which is the same rule the view this client replaced applied to the
