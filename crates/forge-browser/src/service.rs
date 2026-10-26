@@ -425,6 +425,7 @@ impl BrowserService {
             recorded: watch::channel(None).0,
             recording: Mutex::new(None),
             surface: Mutex::new((VIEW_WIDTH, VIEW_HEIGHT, 1.0)),
+            resize: AsyncMutex::new(()),
             encoding: self.encoding(),
             launch: Arc::clone(&self.launch),
             stopped: Arc::clone(&self.stopped),
@@ -2426,6 +2427,10 @@ impl BrowserService {
         else {
             return;
         };
+        // **The surface and the request are one step**: two resizes
+        // interleaving would leave the ring painting one size while the
+        // stored surface named the other, which is what a take restores.
+        let _serial = profile.resize.lock().await;
         // **A take owns the layout**: the controller's resize is remembered
         // and applied again when the recording ends.
         *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) = (width, height, scale);
@@ -2452,7 +2457,15 @@ impl BrowserService {
         args: &Value,
     ) -> Result<Vec<BrowserPart>, String> {
         let profile = self.open(seat).await?;
-        if profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
+        // **One critical section for the read, the request and the write**, so
+        // a viewer's resize cannot land between them and leave the stored
+        // surface naming a size the ring never painted.
+        let _serial = profile.resize.lock().await;
+        // **The take's size is the take's to promise**: a recording start
+        // takes this same lock before it lays its tab out, so no take can
+        // begin between this check and the request below.
+        let running = profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+        if running {
             return Err(format!(
                 "a recording is running for '{}', so the page stays at {}x{} until \
                  browser_record_stop",
@@ -2754,6 +2767,17 @@ impl BrowserService {
         prune_recordings(&dir, KEEP);
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
         let path = dir.join(format!("{}-{stamp}.mp4", profile.key));
+        // **A take's layout is a resize's business**: the lock a resize holds
+        // across its request spans this start, so a window request cannot land
+        // after the take laid its tab out.
+        let serial = profile.resize.lock().await;
+        let running = profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+        if running {
+            return Err(format!(
+                "a recording is already running for '{}'; stop it first",
+                profile.key
+            ));
+        }
         profile.recorded.send_replace(None);
         let mut recorded = profile.recorded.subscribe();
         *profile.recording.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -2779,6 +2803,9 @@ impl BrowserService {
                 profile.key
             ));
         }
+        // **The lock spans the start, not the take**: a resize during it reads
+        // `recording` and refuses.
+        drop(serial);
         match recording_answer(&mut recorded, None, Duration::from_secs(10)).await {
             Some(state) if state.started => Ok(vec![BrowserPart::Text {
                 text: format!(
@@ -3200,6 +3227,11 @@ pub struct Profile {
     recording: Mutex<Option<(u16, PathBuf)>>,
     /// The controller's last requested view, restored when a take ends.
     surface: Mutex<(u32, u32, f64)>,
+    /// **A resize's request and the surface it stores are one step.** Two
+    /// resizes and a take's own layout all move the same page; this lock
+    /// spans each one's read, request and write, so the stored surface always
+    /// belongs to the request the ring holds last.
+    resize: AsyncMutex<()>,
     /// The tab this profile's tabs are, keyed by the host's own numbers.
     tabs: Mutex<TabRegistry>,
     /// The host's boot tab, until a session's first page call adopts it.
@@ -7725,29 +7757,32 @@ mod tests {
         assert_eq!(device_pixels(1920, 2.0), crate::osr::MAX_WIDTH, "the bound is reachable");
     }
 
-    /// **The tool's window is the surface's own.** A take lays its tab out at
-    /// its own size and restores the profile's surface when it ends, so a
-    /// resize that moved the ring and left the stored surface alone would be
-    /// undone by the next take.
+    /// **A resize is one step: the ring is asked for the size and that size is
+    /// stored.** A take lays its tab out at its own size and restores the
+    /// profile's surface when it ends, so a resize that moved the ring and
+    /// left the stored surface alone would be undone by the next take. **Both
+    /// arms are the same step**: the tool's window and the viewer's own.
     #[tokio::test]
-    async fn an_agent_resize_stores_the_surface_a_take_restores() {
+    async fn a_resize_stores_the_surface_it_asks_the_ring_for() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
         service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         let profile = service.find("O/default").await.expect("the profile");
         let ring_name = format!("/forge-resize-surface-{}", std::process::id());
-        let ring = crate::osr::Ring::create(
-            &ring_name,
-            crate::service::VIEW_WIDTH,
-            crate::service::VIEW_HEIGHT,
-        )
-        .expect("a ring");
+        let ring = Arc::new(
+            crate::osr::Ring::create(
+                &ring_name,
+                crate::service::VIEW_WIDTH,
+                crate::service::VIEW_HEIGHT,
+            )
+            .expect("a ring"),
+        );
         let (input, _input_rx) = std::sync::mpsc::channel();
         profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
             pid: std::process::id(),
             port: 9,
-            ring: Arc::new(ring),
+            ring: Arc::clone(&ring),
             profile: dir.path().join("host"),
             input,
             reader: None,
@@ -7761,9 +7796,30 @@ mod tests {
             .expect("the window resizes");
 
         assert_eq!(
+            ring.requested(),
+            (2240, 1520, 2_000, 1),
+            "the ring is asked once, for the device size the page paints at",
+        );
+        assert_eq!(
             *profile.surface.lock().unwrap_or_else(PoisonError::into_inner),
             (2240, 1520, 2.0),
             "the tool's window replaces the surface, at the ratio the surface paints at",
+        );
+
+        // **The viewer's arm is the same step**: its own surface report asks
+        // the ring and stores the surface together, so a take restores the
+        // window the viewer last asked for.
+        profile.controls.lock().unwrap_or_else(PoisonError::into_inner).insert(1, (7, 0));
+        service.resize("O/default", 1, 7, 2880, 2128, 2.0).await;
+        assert_eq!(
+            ring.requested(),
+            (2880, 2128, 2_000, 2),
+            "the viewer's window is the request the ring holds last",
+        );
+        assert_eq!(
+            *profile.surface.lock().unwrap_or_else(PoisonError::into_inner),
+            (2880, 2128, 2.0),
+            "and the surface a take restores is that same request",
         );
         crate::osr::Ring::unlink(&ring_name);
     }

@@ -938,6 +938,23 @@ fn painted_size(request_width: u32, request_height: u32, scale_milli: u32) -> (u
     )
 }
 
+/// The request a ring holds, as the host's pump reads it: device size, scale
+/// in thousandths, and the sequence that says it was written. **A test's view
+/// of what the service asked for**, so a missing request fails without a host.
+#[cfg(test)]
+impl Ring {
+    pub(crate) fn requested(&self) -> (u32, u32, u32, u64) {
+        // SAFETY: the header is mapped for this process's whole life.
+        let header = unsafe { &*self.header() };
+        (
+            header.request_width.load(Ordering::Relaxed),
+            header.request_height.load(Ordering::Relaxed),
+            header.request_scale_milli.load(Ordering::Relaxed),
+            header.request_seq.load(Ordering::Acquire),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
