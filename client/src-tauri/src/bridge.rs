@@ -748,12 +748,13 @@ impl Bridge {
         }
     }
 
-    /// One ask's own frame: read the roster again, whether or not the page is
-    /// awake to ask for it.
+    /// One ask's own frame: read the roster again when the page cannot.
     ///
     /// **Only a read moves the roster's pending field**, and a parked page
     /// never asks - so the frame is what keeps the trigger alive there. A
-    /// view that is not holding the home (a connect screen) asks nothing.
+    /// page that is running reads the roster itself when this update lands
+    /// (`home/live.ts`), so asking here too would be two encodes per ask.
+    /// A view that is not holding the home (a connect screen) asks nothing.
     fn ask_arrived(&self, update: &Value) {
         let ask = [
             "permission_request",
@@ -766,7 +767,14 @@ impl Bridge {
         if !ask {
             return;
         }
-        if self.lock().held.contains_key("home") {
+        let read = {
+            let state = self.lock();
+            // The same presumption `forward` makes, from the same pulse.
+            let fresh =
+                state.last_beat.is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
+            !fresh && state.held.contains_key("home")
+        };
+        if read {
             self.refresh(&json!("home"));
         }
     }
@@ -1896,18 +1904,19 @@ mod tests {
         assert_eq!(again["answering"], false, "with the declaration it was held under");
     }
 
-    /// **An ask's frame asks for the roster again.** The roster's pending
-    /// field only moves on a read, and a parked page runs no read of its own
-    /// - so the frame is what keeps the notification trigger alive there. An
-    /// ordinary turn frame asks nothing, so the read is the ask's.
+    /// **An ask's frame asks for the roster again, but only for a parked
+    /// page.** A page that is running re-reads the home itself when the
+    /// update lands, so a read here as well would be two encodes per ask.
+    /// An ordinary turn frame asks nothing on either side of the pulse.
     #[tokio::test]
-    async fn an_asks_frame_reads_the_home_again() {
+    async fn an_asks_frame_reads_the_home_only_for_a_parked_page() {
         let mut server = stub().await;
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
         bridge.subscribe(json!("home"), true);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        bridge.heartbeat();
 
         // The control: a turn frame is not an ask, so nothing is re-read.
         sent(
@@ -1922,22 +1931,29 @@ mod tests {
             "an ordinary frame asks for no read",
         );
 
-        sent(
-            &bridge,
-            json!({
-                "kind": "update",
-                "update": {
-                    "permission_request": {
-                        "key": seat()["session"],
-                        "tool_id": "tu-1",
-                        "request": {},
-                    }
-                },
-            }),
+        let ask = json!({
+            "kind": "update",
+            "update": {
+                "permission_request": {
+                    "key": seat()["session"],
+                    "tool_id": "tu-1",
+                    "request": {},
+                }
+            },
+        });
+        // An awake page reads the roster itself, so the bridge stays quiet.
+        sent(&bridge, ask.clone());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the running page's own read is the read",
         );
+
+        // A parked page runs no timer, so the ask's frame is the door.
+        park(&bridge);
+        sent(&bridge, ask);
         let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(again["what"], json!("home"), "the ask reads the roster");
+        assert_eq!(again["what"], json!("home"), "the parked page's roster is read");
         assert_eq!(again["answering"], true, "with the declaration the home is held under");
     }
 
