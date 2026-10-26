@@ -76,7 +76,7 @@ just check
 That runs four independent groups concurrently: the fast checks
 (`cargo fmt --check`, the Unicode punctuation gate, and the scripts' own
 tests, `script-tests`: the release manifest's, the client-dependency
-bootstrap's and the browser-stack patch's), the Rust workspace
+bootstrap's, the browser-stack patch's and the gate lock's), the Rust workspace
 (`cargo clippy --all-targets --workspace -- -D warnings`
 once per feature set, with and without `--all-features`,
 `cargo nextest run --workspace --all-features`,
@@ -98,7 +98,10 @@ defaults to 4, so a machine with fewer cores sets it lower
 (`FORGE_CHECK_JOBS=2 just check`). Every group runs to its own first
 failure, each failing group's log tail is printed, and the verdict names
 the first failing step in the gate's order, so a concurrent group cannot
-hide one. Each run's per-step logs stay in their own
+hide one. The one verdict with no step behind it is the gate lock's:
+`[ERROR] check: the gate lock was not acquired (held by pid N)`, printed
+when another gate on the machine held the lock past the wait bound,
+before any step runs. Each run's per-step logs stay in their own
 `target/check-logs/run.XXXXXX/` directory, printed as `logs: ...` before
 the verdict.
 `just check-serial` is the same gate one step at a time, for debugging a

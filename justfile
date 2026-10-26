@@ -937,6 +937,10 @@ client-preview:
 # `--all-features` covers neither: it turns every feature on regardless,
 # so it never exercises which configuration enables what - the install
 # build leaving `test-helpers` off, or `testing` having to forward it.
+#
+# Neither this recipe nor `check-release` takes the gate lock: both only
+# compile, and boot no CEF host, so they cannot collide with a gate's live
+# suite.
 check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-server --bin forge
     # The host executable `install.sh` builds on its own, in the configuration
@@ -988,11 +992,12 @@ check_groups := "fast|fmt-check unicode-punct-check script-tests;rust|clippy tes
 # `just`, which a caller who invoked it by absolute path does not have on
 # PATH.
 #
-# The recipe holds a machine-wide lock for its whole duration, through
-# `scripts/check_lock.sh`: two gates on one machine queue rather than booting
+# The recipe holds a machine-wide `flock` for its whole duration, through
+# `scripts/check_lock.py`: two gates on one machine queue rather than booting
 # CEF hosts into each other, which is the collision `.config/nextest.toml`
 # documents (one run serialises only its own hosts). The wait prints one line
-# naming the holder and is bounded; a lock whose holder is gone is reclaimed.
+# naming the holder and is bounded; the kernel releases the lock when the
+# holder dies, so there is no stale lock to reclaim.
 #
 # The full gate, four groups at once; `FORGE_CHECK_JOBS` caps how many.
 [no-exit-message]
@@ -1002,7 +1007,7 @@ check:
 
     root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
     export CHECK_LOG_ROOT="$root/target/check-logs"
-    exec "$root/scripts/check_lock.sh" run -- "$root/scripts/check_groups.sh" \
+    exec "$root/scripts/check_lock.py" run -- "$root/scripts/check_groups.sh" \
         "{{just_executable()}}" "{{justfile()}}" \
         "{{check_steps}}" "{{check_groups}}"
 
@@ -1011,9 +1016,8 @@ check:
 # running on a machine that should not carry them together.
 #
 # It holds the same machine-wide lock `check` does, through the same
-# `check_lock.sh run`, so the two queue against each other rather than
-# collide and one release trap covers both. The step loop is
-# `scripts/check_serial.sh`.
+# `check_lock.py run`, so the two queue against each other rather than
+# collide. The step loop is `scripts/check_serial.sh`.
 #
 # Fail-fast and exit-code preserving: the failing step's own status is what
 # this recipe exits with, and the verdict names the failing step and the
@@ -1026,7 +1030,7 @@ check-serial:
     set -uo pipefail
 
     root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
-    exec "$root/scripts/check_lock.sh" run -- "$root/scripts/check_serial.sh" \
+    exec "$root/scripts/check_lock.py" run --label check-serial -- "$root/scripts/check_serial.sh" \
         "{{just_executable()}}" "{{justfile()}}" "{{check_steps}}"
 
 # A fast slice of the gate for one review round, on the packages a change
@@ -1060,7 +1064,7 @@ check-delta *packages:
     set -uo pipefail
 
     root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
-    exec "$root/scripts/check_lock.sh" run --label check-delta -- "$root/scripts/check_delta.sh" \
+    exec "$root/scripts/check_lock.py" run --label check-delta -- "$root/scripts/check_delta.sh" \
         "{{just_executable()}}" "{{justfile()}}" "{{packages}}"
 
 # Deliberately not a bare `gh run watch`. Piping it masks the exit code
