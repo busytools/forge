@@ -235,7 +235,7 @@
         <button
           class="sendb"
           type="button"
-          aria-label="send the feedback to the agent"
+          aria-label="send the feedback and end the hand-off"
           onclick={send}
         >
           <Icon name="send" />

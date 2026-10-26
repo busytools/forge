@@ -82,9 +82,9 @@ file under `profiles/` is not a profile.
 **A hand-off names a tab.** `browser_hand_off` requires the number of one of
 the session's own tabs, and **Open** raises that tab. The tab is held while
 the ask is parked: the idle clock and the dead-seat sweep both leave it
-alone, the strip marks it **held**, and the hand-off's card names it. Done or
-Not now releases it, and a session that went while the tab was held takes it
-with it when the ask resolves.
+alone, the strip marks it **held**, and the hand-off's card names it. Any
+answer releases it - Done, Not now or feedback - and a session that went
+while the tab was held takes it with it when the ask resolves.
 
 **A page context that dies is rebuilt and answered in the client's words**,
 never handed back as the driver's `_page` TypeError, and a driver that cannot
@@ -222,9 +222,10 @@ frames per second at the surface's size; CPU was not profiled).
 
 **A failure is drawn where the person is looking.** The takeover's page area
 carries the server's sentence and the hand-off stays parked; the strip says
-what a refused show or hide said. **Done** and **Not now** are the hand-off's
-two answers; the feedback line sends its words as a prompt and ends the park
-as **feedback**, saying the person spoke rather than that they declined.
+what a refused show or hide said. **Done**, **Not now** and **feedback** are
+the hand-off's answers; the feedback line sends its words as a prompt and ends
+the park as **feedback**, saying the person spoke rather than that they
+declined.
 
 ## The widths
 

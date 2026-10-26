@@ -463,6 +463,35 @@ mod tests {
         );
     }
 
+    /// **Every door a client can send crosses as the exact word the client
+    /// writes.** The page builds these by hand: `dock` and `dock_escape` in
+    /// `Dock.svelte`, `takeover` and `feedback` in `Composer.svelte`. Nothing
+    /// else ties the two sides together - the socket record walks keys and
+    /// never values, and each client test asserts only the literal it sends -
+    /// so a rename here would compile, keep every suite green, and make the
+    /// answer undecodable.
+    #[test]
+    fn every_client_door_crosses_as_the_word_the_client_writes() {
+        for (source, word) in [
+            (HandOffSource::Dock, "dock"),
+            (HandOffSource::DockEscape, "dock_escape"),
+            (HandOffSource::Takeover, "takeover"),
+            (HandOffSource::Feedback, "feedback"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(source).expect("a source encodes"),
+                serde_json::json!(word),
+                "the client writes {word} for {source:?}",
+            );
+            assert_eq!(
+                serde_json::from_value::<HandOffSource>(serde_json::json!(word))
+                    .expect("the word decodes"),
+                source,
+                "{word} is the door it names",
+            );
+        }
+    }
+
     /// The bytes are the part's, not its JSON form: a carrier that base64'd
     /// them into JSON would pay a third again for a screenshot.
     #[test]

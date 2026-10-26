@@ -1096,7 +1096,7 @@
         : 'browser hand-off',
   );
 
-  /** Done or Not now: the hand-off's answer, and the takeover comes down. */
+  /** Done, Not now or feedback: the hand-off's answer, and the takeover comes down. */
   function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): void {
     if (takeoverAsk === null) return;
     const id = takeoverAsk.request.id;

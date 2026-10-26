@@ -149,8 +149,8 @@ impl BrowserTool {
             // a prompt beside this result, so the answer names that rather
             // than reading as a decline.
             HandOffEnding::Feedback => Ok(vec![BrowserPart::Text {
-                text: "The person sent you a message about the page instead of answering the \
-                       hand-off; read it and carry on - the browser is as it was."
+                text: "The person sent you a message about the page instead of Done or Not \
+                       now; read it and carry on - the browser is as it was."
                     .to_owned(),
             }]),
             // The waiter cannot outlive a drop that sends this, so seeing it
