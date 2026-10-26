@@ -8,6 +8,9 @@
     <!-- The app hands a downloaded APK to the system installer (UpdatePlugin);
          without this the install intent is refused. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- An ask raised on a seat the person is not looking at is a notification;
+         API 33+ needs this declared as well as granted at runtime. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

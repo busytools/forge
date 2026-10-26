@@ -29,6 +29,7 @@ fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, Stri
 // every target, the phone included.
 use tauri::Manager as _;
 
+mod asks;
 pub mod bridge;
 pub mod browser;
 #[cfg(test)]
@@ -38,6 +39,7 @@ mod look;
 pub mod mic;
 #[cfg(target_os = "android")]
 pub mod micstate;
+pub mod notify;
 pub mod perf;
 pub mod records;
 pub mod socket;
@@ -127,7 +129,12 @@ mod commands {
     }
 
     /// Which seat the page has on screen; null for none.
-    #[tauri::command]
+    ///
+    /// **`async`, though the body is sync**: a showing now re-evaluates the
+    /// notification rule, and the mobile permission request it can reach
+    /// waits for the platform - a sync command runs on the main thread, the
+    /// one that wait is waiting on.
+    #[tauri::command(async)]
     pub fn client_showing(bridge: tauri::State<'_, Arc<Bridge>>, seat: Option<Value>) {
         bridge.showing(seat);
     }
@@ -429,6 +436,7 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // **A native resize settles the webview's frame after the page has
         // measured it**, and full screen's exit is the case that leaves the
@@ -496,6 +504,7 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(android::init())
         .plugin(micstate::init())
         .invoke_handler(tauri::generate_handler![
@@ -544,6 +553,12 @@ pub fn run() {
             // The bridge, the viewer and the pump: the socket lives here, and
             // its events are the only way the server reaches the page.
             commands::init(app.handle());
+            // The asks a person cannot see: the channel and the click that
+            // opens the seat a notification was posted for. **The plugin's
+            // calls run on their own thread** - a mobile one blocks until
+            // the main thread pumps, and this closure is that thread.
+            #[cfg(any(desktop, target_os = "android"))]
+            notify::init(app.handle());
             // **A built bundle can be driven for a look from this machine's
             // agent**, which has neither Accessibility nor Screen Recording:
             // the driver is the app's own door to those (feature-gated; the
@@ -564,16 +579,44 @@ pub fn run() {
         }
     };
 
-    app.run(|handle, event| {
+    app.run(|handle, event| match event {
         // The held microphone goes with the client too, so the indicator is
         // out the moment the window is; a crash and a SIGKILL release it the
         // way the OS releases any process's device.
-        if let tauri::RunEvent::Exit = event
-            && let Some(mic) = handle.try_state::<std::sync::Arc<crate::mic::Mic>>()
-        {
-            mic.release();
+        tauri::RunEvent::Exit => {
+            if let Some(mic) = handle.try_state::<std::sync::Arc<crate::mic::Mic>>() {
+                mic.release();
+            }
         }
+        // **Looking away is when an ask on the shown seat becomes news**, and
+        // no frame carries that moment.
+        tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Focused(false), .. } => {
+            review_asks(handle);
+        }
+        // **The phone's foreground state stands in for its window's focus**
+        // (tao's Android window never reports focus), and a suspend is the
+        // moment the person stopped looking. Both are mobile-only variants;
+        // the desktop's focus is the `Focused` arm above.
+        #[cfg(mobile)]
+        tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Suspended, .. } => {
+            crate::asks::set_foreground(false);
+            review_asks(handle);
+        }
+        #[cfg(mobile)]
+        tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Resumed, .. } => {
+            crate::asks::set_foreground(true);
+            review_asks(handle);
+        }
+        _ => {}
     });
+}
+
+/// Re-read the asked state for the notification rule, where a focus or a
+/// life-cycle change says the person's gaze moved.
+fn review_asks(handle: &tauri::AppHandle) {
+    if let Some(bridge) = handle.try_state::<std::sync::Arc<crate::bridge::Bridge>>() {
+        bridge.review_asks();
+    }
 }
 
 /// What this platform is doing to the microphone right now, or `None` where

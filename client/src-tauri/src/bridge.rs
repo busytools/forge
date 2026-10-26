@@ -36,6 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+use forge_primitives::SessionSlot;
 use serde_json::{Value, json};
 use tauri::Emitter as _;
 use tauri::Manager as _;
@@ -155,6 +156,10 @@ struct State {
     /// Which attach (or lower) is current. A re-attach that lands after a
     /// later lower or a second attach is stale, and takes itself back.
     attach_generation: u64,
+    /// The seat the page has on screen, as the last `showing` said.
+    shown: Option<SessionSlot>,
+    /// The asks this half has announced, over the home reads it sees.
+    asks: crate::asks::Asks,
 }
 
 /// The app half, as the Tauri layer drives it.
@@ -216,6 +221,8 @@ impl Bridge {
                 refreshing: HashSet::new(),
                 attach: None,
                 attach_generation: 0,
+                shown: None,
+                asks: crate::asks::Asks::default(),
             }),
             app,
             events,
@@ -624,10 +631,17 @@ impl Bridge {
     /// reconnect, and the server spends a seat's marks on it and never on a
     /// subscription.
     pub fn showing(&self, seat: Option<Value>) {
-        let state = self.lock();
+        let mut state = self.lock();
+        state.shown = seat.as_ref().and_then(|held| serde_json::from_value(held.clone()).ok());
         if let Some(socket) = &state.socket {
             socket.showing(seat);
         }
+        drop(state);
+        // **Looking away is what lets a glanced-at ask be announced**, and a
+        // seat switch is exactly that - so the held roster is read again
+        // rather than waiting for the page's next read, which a parked page
+        // never makes.
+        self.asks_moved();
     }
 
     /// Ask again for a subject the page still holds, **without counting a
@@ -674,6 +688,86 @@ impl Bridge {
         let answering = state.held.get(&key).map(|watch| watch.answering).unwrap_or(false);
         if let Some(socket) = &state.socket {
             records::refresh(socket, what, answering);
+        }
+    }
+
+    /// The home roster moved: announce the asks it holds for a seat the
+    /// person is not looking at.
+    ///
+    /// **The rule is the page's** (`crate::asks`): a seat is on screen when
+    /// it is the shown seat and the window has focus. Runs over the held
+    /// home read, so a parked page's asking costs nothing.
+    fn asks_moved(&self) {
+        let focused = self.looking();
+        let notices = {
+            let mut state = self.lock();
+            let State { records, asks, shown, .. } = &mut *state;
+            records
+                .read("home")
+                .and_then(|held| held.ok())
+                .map(|data| asks.rising(data, shown.as_ref(), focused))
+                .unwrap_or_default()
+        };
+        let Some(app) = self.app.as_ref() else { return };
+        for (seat, kind) in notices {
+            crate::notify::raise(app, &seat, kind);
+        }
+    }
+
+    /// **Whether the person is looking at the app**, which the rule's
+    /// exemption turns on.
+    ///
+    /// **Android's window cannot answer this**: tao returns false there
+    /// always, so the app's own resume and suspend state is the truth.
+    /// Everywhere else the window's focus is.
+    fn looking(&self) -> bool {
+        #[cfg(target_os = "android")]
+        {
+            crate::asks::foreground()
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            self.app
+                .as_ref()
+                .and_then(|app| app.get_webview_window("main"))
+                .and_then(|window| window.is_focused().ok())
+                .unwrap_or(false)
+        }
+    }
+
+    /// Re-evaluate the held roster, for a focus or life-cycle change, and ask
+    /// a held permission prompt now that the person may be back.
+    ///
+    /// **An ask on the shown seat is silent while it is looked at**, so the
+    /// moment the person looks away is a moment that must be read - and no
+    /// frame arrives for it.
+    pub fn review_asks(&self) {
+        self.asks_moved();
+        if let Some(app) = self.app.as_ref() {
+            crate::notify::review(app);
+        }
+    }
+
+    /// One ask's own frame: read the roster again, whether or not the page is
+    /// awake to ask for it.
+    ///
+    /// **Only a read moves the roster's pending field**, and a parked page
+    /// never asks - so the frame is what keeps the trigger alive there. A
+    /// view that is not holding the home (a connect screen) asks nothing.
+    fn ask_arrived(&self, update: &Value) {
+        let ask = [
+            "permission_request",
+            "question_request",
+            "browser_hand_off_pending",
+            "document_hand_off_pending",
+        ]
+        .iter()
+        .any(|key| update.get(*key).is_some());
+        if !ask {
+            return;
+        }
+        if self.lock().held.contains_key("home") {
+            self.refresh(&json!("home"));
         }
     }
 
@@ -1021,12 +1115,23 @@ impl Bridge {
                 // page cannot see the raw length - this half parsed it - so
                 // the size and the parse travel beside the frame.
                 self.forward(&message, Some((bytes, parse_ms)));
+                // **The home roster is where an ask is announced.** A page
+                // parked with the display off runs no timer of its own, and
+                // this half has the frame either way.
+                if key == "home" {
+                    self.asks_moved();
+                }
             }
             "update" => {
                 let Some(update) = message.get("update") else { return };
                 let refresh = self.lock().records.apply(update);
                 self.forward(&message, None);
                 self.acted(refresh);
+                // **An ask's own frame is the door to a read**, whether or
+                // not the page is awake to ask for one: the roster's pending
+                // field only moves when the home is read, and a parked page
+                // never reads.
+                self.ask_arrived(update);
             }
             // Consumed here alone, provably unusable by the page: a reply is
             // `dispatch`'s own answer, correlated by id in `socket.rs`.
@@ -1789,6 +1894,51 @@ mod tests {
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], seat(), "the same subject comes back");
         assert_eq!(again["answering"], false, "with the declaration it was held under");
+    }
+
+    /// **An ask's frame asks for the roster again.** The roster's pending
+    /// field only moves on a read, and a parked page runs no read of its own
+    /// - so the frame is what keeps the notification trigger alive there. An
+    /// ordinary turn frame asks nothing, so the read is the ask's.
+    #[tokio::test]
+    async fn an_asks_frame_reads_the_home_again() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        // The control: a turn frame is not an ask, so nothing is re-read.
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": { "turn_complete": { "key": seat()["session"], "terminal_reason": null } },
+            }),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "an ordinary frame asks for no read",
+        );
+
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": {
+                    "permission_request": {
+                        "key": seat()["session"],
+                        "tool_id": "tu-1",
+                        "request": {},
+                    }
+                },
+            }),
+        );
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], json!("home"), "the ask reads the roster");
+        assert_eq!(again["answering"], true, "with the declaration the home is held under");
     }
 
     /// A subject two page readers hold is re-asked once per OPEN one on a
