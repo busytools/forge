@@ -1058,6 +1058,14 @@ function createSeat(
         return;
       }
       if (next !== 'open') {
+        // **This branch is safe only because a non-open status is a REAL
+        // socket change.** The web's own socket close sends `connecting`, and
+        // the desktop's shell sends the pair when its socket generation
+        // rises; nothing else can reach here on a live wire. Zeroing
+        // `opened` and clearing the take on a socket that never went would
+        // strand every visited seat unattached and drop a recording still
+        // running.
+        //
         // The ask in flight went with the drop, and the record this seat holds
         // is from before it: the answer the reconnect brings is the whole
         // record, so one is wanted.

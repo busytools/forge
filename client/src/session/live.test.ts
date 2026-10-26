@@ -42,7 +42,7 @@ import { connect, MAX_RETRY_MS, type Connection, type ConnectionStatus } from '.
 import type { Store, StoreState, StoreValue } from '../stores';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
-import { watchSession, type SessionRead } from './live';
+import { releaseSeat, watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
 import Routes from './testing/Routes.svelte';
 
@@ -2133,6 +2133,27 @@ describe('the record a page holds over an update stream', () => {
     expect(back.read().wire, 'the held record draws').not.toBeNull();
     back.stop();
     expect(connection.unsubscribes(), 'the second leave gave it back too').toBe(0);
+  });
+
+  /**
+   * **A released seat stops listening.** Its session ended, so its listeners
+   * go with it: a seat left bound would pin its record and keep folding a
+   * same-slot successor's frames into a record nothing draws.
+   */
+  it('unbinds a released seat, so a same-slot successor is not folded', () => {
+    const connection = drivable();
+    const first = watch(connection);
+    first.land(snapshotOf(LEAD));
+    const published = first.publishes();
+
+    releaseSeat(connection, LEAD);
+    connection.land(
+      updateOf({ chat_appended: { key: LEAD, msg: spoke("a successor's row"), origin: null } }),
+    );
+    paint();
+
+    expect(first.publishes(), 'a released seat kept folding frames').toBe(published);
+    expect(spoken(first), 'the released seat folded a successor frame').toEqual([]);
   });
 
   /**

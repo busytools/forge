@@ -859,6 +859,10 @@ export function connect(
    */
   function release(what: Subject): void {
     const key = subjectKey(what);
+    // **The asks die with the subscription.** A refusal arriving after the
+    // release would otherwise splice onto the oldest key still outstanding,
+    // which is a different subject's ask.
+    forget(what);
     while (stores.get(what) !== undefined) stores.close(what);
     const open = subscribed.get(key) ?? 0;
     subscribed.delete(key);
@@ -906,7 +910,18 @@ export function connect(
     if (!isOpen()) return false;
     forget(what);
     sendNow({ kind: 'unsubscribe', what });
-    const declaration = held.get(subjectKey(what));
+    // **Net zero on the wire's count**: the unsubscribe above gives one
+    // entry back and the ask below takes one again, so a refresh must
+    // decrement here or every refresh would leave this side counting one
+    // more subscription than the server holds - and `release` would then
+    // send frames for entries that do not exist.
+    const key = subjectKey(what);
+    const open = subscribed.get(key) ?? 0;
+    if (open > 0) {
+      if (open === 1) subscribed.delete(key);
+      else subscribed.set(key, open - 1);
+    }
+    const declaration = held.get(key);
     askFor(what, declaration?.answering ?? false);
     return true;
   }
