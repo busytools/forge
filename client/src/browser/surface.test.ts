@@ -13,6 +13,7 @@ vi.mock('./host', () => ({
   takeControl: vi.fn(() => Promise.resolve()),
 }));
 
+import type { BrowserTabList } from '../protocol';
 import { canHost, drawsSurface, hideBrowser, listTabs, resizeBrowser, showBrowser } from './host';
 import {
   closeSurface,
@@ -117,6 +118,112 @@ describe('the browser surface', () => {
     expect(surface.phase).toBe('live');
     expect(surface.reason).toBeNull();
     expect(surface.tab).toBe(4);
+  });
+
+  /// **A pick superseded by a newer open is not the surface's to change.**
+  /// Neither its refusal nor its success may revive or move what the open
+  /// put up.
+  it('drops a pick that a newer open superseded', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', seat, 1);
+
+    let release: (answer: string | { profile: string; tab: number }) => void = () => {};
+    show.mockReturnValueOnce(
+      new Promise<string | { profile: string; tab: number }>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const picking = selectTab(3);
+
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 5 });
+    await openSurface('hunt', seat, 5);
+
+    release('the browser host exited');
+    expect(await picking).toBe('the browser host exited');
+    expect(surface.phase, 'a stale refusal does not fail the newer surface').toBe('live');
+    expect(surface.reason).toBeNull();
+    expect(surface.tab).toBe(5);
+  });
+
+  it('drops a superseded pick answer that would move the newer surface', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', seat, 1);
+
+    let release: (answer: { profile: string; tab: number }) => void = () => {};
+    show.mockReturnValueOnce(
+      new Promise<{ profile: string; tab: number }>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const picking = selectTab(3);
+
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 5 });
+    await openSurface('hunt', seat, 5);
+
+    release({ profile: 'hunt', tab: 4 });
+    expect(await picking).toBeNull();
+    expect(surface.tab, 'a stale success does not move the newer surface').toBe(5);
+    expect(surface.phase).toBe('live');
+  });
+
+  /// **A slow tab read does not overwrite a newer one's rows.**
+  it('keeps the newest tab list when an older read lands last', async () => {
+    let releaseOld: (list: BrowserTabList) => void = () => {};
+    tabs.mockReturnValueOnce(
+      new Promise<BrowserTabList>((resolve) => {
+        releaseOld = resolve;
+      }),
+    );
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', null, 1);
+
+    const fresh: BrowserTabList = {
+      profile: 'hunt',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [],
+    };
+    tabs.mockResolvedValueOnce(fresh);
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
+    await openSurface('hunt', null, 2);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(surface.tabs).toEqual(fresh);
+
+    releaseOld({ ...fresh, id: 99 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(surface.tabs, 'the older read is refused').toEqual(fresh);
+  });
+
+  /// **A list for another profile never becomes the picker's rows**: a pick
+  /// from it would ask for another browser's tab number.
+  it('refuses a tab list for another profile', async () => {
+    const mine: BrowserTabList = {
+      profile: 'hunt',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [],
+    };
+    tabs.mockResolvedValue(mine);
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', null, 1);
+    surface.attachedProfile = 'hunt';
+    await Promise.resolve();
+    await Promise.resolve();
+
+    tabs.mockResolvedValueOnce({ ...mine, profile: 'other' });
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 2 });
+    await selectTab(2);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(surface.tabs, 'the other profile list is refused').toEqual(mine);
   });
 
   it("carries the shell's own sentence when it could not open", async () => {

@@ -173,10 +173,20 @@ export function clearHandOff(id: string): void {
 /** The request that is current; a result from an older one is dropped. */
 let generation = 0;
 
-/** The open/close generation this page is on, so a component's teardown can
- *  tell whether the surface it mounted is still the current one. */
-export function surfaceGeneration(): number {
-  return generation;
+/** The newest mount token. **A mount claims one**, so only a newer mount
+ *  makes an older instance's teardown stale; a retry or a tab pick is not a
+ *  new mount and must not. */
+let mounts = 0;
+
+/** Claim a mount token for one takeover component. */
+export function claimSurfaceMount(): number {
+  mounts += 1;
+  return mounts;
+}
+
+/** Whether `token` is the newest mount's. */
+export function surfaceMountIsCurrent(token: number): boolean {
+  return token === mounts;
 }
 
 /**
@@ -316,8 +326,10 @@ export async function closeSurface(
   profile: string | null = surface.profile,
   seat: SessionSlot | null = null,
 ): Promise<string | null> {
-  ++generation;
+  const mine = ++generation;
   const answer = await hideBrowser(profile, seat);
+  // **A lower superseded by a newer open is not this surface's to close.**
+  if (mine !== generation) return null;
   if (typeof answer === 'string') {
     surface.phase = 'failed';
     surface.reason = answer;
@@ -393,6 +405,9 @@ async function installOnce(): Promise<void> {
     }
     if (installed < 3) {
       await listen<unknown>('browser_surface_failed', (event) => {
+        // **A failure after the surface closed is nobody's.** It must not
+        // re-mount the store as failed.
+        if (surface.phase === 'closed') return;
         const payload = event.payload;
         let why = 'the browser stopped answering';
         if (typeof payload === 'string' && payload !== '') {
@@ -401,10 +416,19 @@ async function installOnce(): Promise<void> {
           const fields = payload as Record<string, unknown>;
           const id = typeof fields['id'] === 'number' ? fields['id'] : null;
           const tab = typeof fields['tab'] === 'number' ? fields['tab'] : null;
-          // **A failure that names another surface is not this one's**: a
-          // late frame for a superseded attach must not fail the tab now up.
-          if (id !== null && surface.id !== null && id !== surface.id) return;
-          if (tab !== null && surface.tab !== null && tab !== surface.tab) return;
+          if (id !== null && tab !== null) {
+            if (surface.id !== null && surface.tab !== null) {
+              // **A failure that names another surface is not this one's**:
+              // a late frame for a superseded attach must not fail the tab
+              // now up.
+              if (id !== surface.id || tab !== surface.tab) return;
+            } else if (surface.phase !== 'live') {
+              // **An unknown pair is unfilterable only on a live surface.**
+              // While opening, the pair is still the previous attach's, and
+              // this frame may be that one's to fail.
+              return;
+            }
+          }
           if (typeof fields['reason'] === 'string' && fields['reason'] !== '') {
             why = fields['reason'];
           }

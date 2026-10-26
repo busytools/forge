@@ -13,12 +13,13 @@
   import { drawsCanvas, keptFrame } from './host';
   import { pagePoint } from './point';
   import {
+    claimSurfaceMount,
     closeSurface,
     holdsControl,
     pageArea,
     setRegion,
     surface,
-    surfaceGeneration,
+    surfaceMountIsCurrent,
   } from './surface.svelte';
 
   let { connection }: { connection: Connection } = $props();
@@ -475,11 +476,12 @@
     // **The shell's takeover is the store's**: the open and the lower both go
     // through it, so full screen and the viewer follow one door each. Leaving
     // the page is the only case the store does not see, and this closes it -
-    // **unless a newer open has taken the surface since**, which this
-    // component's teardown must not close under it.
-    const mine = surfaceGeneration();
+    // **unless a newer MOUNT has taken the surface since**, which this
+    // component's teardown must not close under it. A retry or a pick is not
+    // a new mount and leaves this token current.
+    const mine = claimSurfaceMount();
     return () => {
-      if (surfaceGeneration() === mine && surface.phase !== 'closed') void closeSurface();
+      if (surfaceMountIsCurrent(mine) && surface.phase !== 'closed') void closeSurface();
     };
   });
 </script>

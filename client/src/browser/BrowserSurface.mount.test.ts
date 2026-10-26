@@ -25,7 +25,7 @@ vi.mock('./host', () => ({
   takeControl: vi.fn(() => Promise.resolve()),
 }));
 
-import { reportSurfaceRect } from './host';
+import { hideBrowser, reportSurfaceRect } from './host';
 import BrowserSurface from './BrowserSurface.svelte';
 import { surface } from './surface.svelte';
 import type { Connection } from '../socket';
@@ -94,6 +94,30 @@ describe('the browser surface', () => {
     open('live');
     expect(reportSurfaceRect, 'the new open is measured by its own report').toHaveBeenCalledTimes(
       2,
+    );
+  });
+
+  /// **A teardown closes only the mount it belongs to.** A retry or a pick
+  /// keeps the same mount; a newer takeover is a new mount, and an older
+  /// instance's teardown must not lower it.
+  it('a stale mount teardown does not close a newer takeover', async () => {
+    surface.phase = 'live';
+    surface.profile = null;
+    const firstTarget = document.createElement('div');
+    document.body.appendChild(firstTarget);
+    const first = mount(BrowserSurface, { target: firstTarget, props: { connection } });
+    flushSync();
+    const secondTarget = document.createElement('div');
+    document.body.appendChild(secondTarget);
+    const second = mount(BrowserSurface, { target: secondTarget, props: { connection } });
+    flushSync();
+
+    vi.mocked(hideBrowser).mockClear();
+    await unmount(first);
+    expect(hideBrowser, 'the older mount does not close the newer surface').not.toHaveBeenCalled();
+    await unmount(second);
+    await vi.waitFor(() =>
+      expect(hideBrowser, 'the current mount closes its surface').toHaveBeenCalled(),
     );
   });
 

@@ -122,6 +122,21 @@ describe('the shell listeners', () => {
       expect(surface.attachedProfile, "the server's resolved name is what the bar spells").toBe(
         'browser-stack-lead',
       );
+
+      // **A failure after the surface closed is nobody's**, and one that
+      // lands while a new open is still unnamed belongs to the previous
+      // attach rather than the opening surface.
+      surface.phase = 'closed';
+      failed({ payload: { id: 7, tab: 3, reason: 'late' } });
+      expect(surface.phase, 'a closed surface stays closed').toBe('closed');
+      surface.phase = 'opening';
+      surface.id = null;
+      surface.tab = null;
+      failed({ payload: { id: 7, tab: 3, reason: 'stale' } });
+      expect(surface.phase, "an unnamed opening surface is not this failure's to fail").toBe(
+        'opening',
+      );
+
       viewed({ payload: { id: 'seven', viewer: 3 } });
       expect(surface.id, 'a value this page cannot read is no id at all').toBeNull();
       expect(surface.controller, 'and a missing role holder is nobody').toBeNull();

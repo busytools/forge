@@ -149,6 +149,9 @@ pub struct BrowserService {
     /// already held a profile could otherwise start a host after the stop;
     /// every launch path refuses once this is up.
     stopped: Arc<AtomicBool>,
+    /// **One sweep at a time.** Two sweeps racing can apply an older seat
+    /// snapshot over a newer one and re-admit an ended seat to `live`.
+    sweep_lock: AsyncMutex<()>,
 }
 
 /// The idle release's settings, as the boot configures them.
@@ -184,6 +187,7 @@ impl BrowserService {
             encoding: Mutex::new((15, 75)),
             launch: Arc::new(AsyncMutex::new(())),
             stopped: Arc::new(AtomicBool::new(false)),
+            sweep_lock: AsyncMutex::new(()),
         }
     }
 
@@ -570,6 +574,9 @@ impl BrowserService {
     }
 
     pub async fn sweep_sessions(&self, seats: &[SessionSlot]) {
+        // **Sweeps serialise**: an older snapshot landing after a newer one
+        // would re-admit an ended seat to `live` and keep its held tab.
+        let _sweep = self.sweep_lock.lock().await;
         let ended = {
             let mut ended = self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner);
             // **A seat the sweep did not see is gone for good** (a worker's
@@ -1431,21 +1438,31 @@ impl BrowserService {
         }
         // **An event read from a receiver that has since been replaced goes
         // back for the next pass rather than away** (rule 25); that pass
-        // refuses it by generation. Only a death with no successor leaves the
-        // list as this pass found it.
-        if profile.host_generation.load(Ordering::Acquire) == generation {
-            *profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner) = unmatched;
-        } else {
+        // pairs it with its own generation. Only a death with no successor
+        // leaves the list as this pass found it.
+        let moved = profile.host_generation.load(Ordering::Acquire) != generation;
+        if moved {
             profile
                 .deferred_tab_events
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .extend(unmatched);
+        } else {
+            *profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner) = unmatched;
         }
-        // **A page the driver made for itself is not a host tab.** It is
-        // closed by its target, which is also what keeps the driver's tab
-        // list from growing pages nothing paints.
-        let orphaned: Vec<String> = {
+        // **A host replaced during this pass is not this pass's to prune.**
+        // Its successor's pages are what the fresh listing above holds, and
+        // the births they belong to were just re-deferred; closing those as
+        // orphans would take the page the next pass is about to adopt.
+        let orphaned: Vec<String> = if moved {
+            tracing::debug!(
+                event_name = "browser_reconcile_generation_moved",
+                profile = %profile.key,
+                generation,
+                "the host was replaced during reconcile, so no page is closed as an orphan"
+            );
+            Vec::new()
+        } else {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             // **A fresh host's current page is its boot tab, not an
             // orphan**, and only while nothing else is open. Once any tab is
@@ -1456,6 +1473,12 @@ impl BrowserService {
             closed_as_orphans(&tabs, &listing, boot_pending)
         };
         for target in orphaned {
+            // **The host can move again while the closes run**, and a
+            // successor normally reuses the freed port: a close after that
+            // would take its page, so the generation is re-read per target.
+            if profile.host_generation.load(Ordering::Acquire) != generation {
+                break;
+            }
             spawn::close_target(port, &target).await;
         }
         tracing::debug!(
@@ -1659,20 +1682,27 @@ impl BrowserService {
                 watch.abort();
             }
             profile.clear_chooser_state();
-            // **The sentence goes out before the tab senders close**, so a
-            // viewer reads why the browser went rather than "tab N was
-            // closed".
-            profile.failures.send_replace(Some(format!(
-                "the browser host (pid {pid}, port {port}) stopped answering and was ended; the \
-                 next call brings it back"
-            )));
-            // **A wedged host takes its numbers with it**: its tab registry,
-            // boot marker and deferred births must not survive into a
-            // successor that restarts tab numbering from one.
-            profile.host_gone();
-            state.host.take()
+            let host = state.host.take();
+            // **Only the call that took a host says it ended one.** A second
+            // call finds none and must not claim the ending, nor wipe a
+            // successor's rows.
+            if host.is_some() {
+                profile.up.store(false, Ordering::Release);
+                // **The sentence goes out before the tab senders close**, so
+                // a viewer reads why the browser went rather than "tab N was
+                // closed".
+                profile.failures.send_replace(Some(format!(
+                    "the browser host (pid {pid}, port {port}) stopped answering and was ended; \
+                     the next call brings it back"
+                )));
+                // **A wedged host takes its numbers with it**: its tab
+                // registry, boot marker and deferred births must not survive
+                // into a successor that restarts tab numbering from one.
+                profile.host_gone();
+                *profile.host_tab_events.lock().await = None;
+            }
+            host
         };
-        profile.up.store(false, Ordering::Release);
         let Some(host) = host else { return true };
         if let Some(monitor) = host.monitor {
             monitor.abort();
@@ -4394,9 +4424,8 @@ fn collect_event(
 
 /// Keep this attempt's events for the next reconcile. **Rule 25**: an event
 /// the call read is re-injected rather than dropped when the call cannot use
-/// it. An event from a receiver that was replaced is kept too; the pairing
-/// pass refuses it by generation, which is why a death cannot be re-created
-/// here.
+/// it. An event from a receiver that was replaced is kept too; a later pass
+/// drops it by its older generation, or pairs it when it is the successor's.
 fn defer_events(profile: &Profile, events: &mut Vec<(u64, HostEvent)>, skip: Option<usize>) {
     let kept: Vec<(u64, HostEvent)> = std::mem::take(events)
         .into_iter()
