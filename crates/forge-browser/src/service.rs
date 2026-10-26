@@ -1703,19 +1703,7 @@ impl BrowserService {
         } else {
             *profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner) = unmatched;
         }
-        // **A host replaced during this pass is not this pass's to prune.**
-        // Its successor's pages are what the fresh listing above holds, and
-        // the births they belong to were just re-deferred; closing those as
-        // orphans would take the page the next pass is about to adopt.
-        let orphaned: Vec<String> = if moved {
-            tracing::debug!(
-                event_name = "browser_reconcile_generation_moved",
-                profile = %profile.key,
-                generation,
-                "the host was replaced during reconcile, so no page is closed as an orphan"
-            );
-            Vec::new()
-        } else {
+        let orphaned: Vec<String> = {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             // **A fresh host's current page is its boot tab, not an
             // orphan**, and only while nothing else is open. Once any tab is
@@ -1735,10 +1723,18 @@ impl BrowserService {
             closed_as_orphans(&tabs, &listing, boot_pending)
         };
         for target in orphaned {
-            // **The host can move again while the closes run**, and a
-            // successor normally reuses the freed port: a close after that
-            // would take its page, so the generation is re-read per target.
+            // **A host replaced during this pass is not this pass's to
+            // prune**: its successor's pages are what the fresh listing above
+            // holds, and the births they belong to were just re-deferred. A
+            // successor normally reuses the freed port, so the generation is
+            // re-read before every close rather than once for the pass.
             if profile.host_generation.load(Ordering::Acquire) != generation {
+                tracing::debug!(
+                    event_name = "browser_reconcile_generation_moved",
+                    profile = %profile.key,
+                    generation,
+                    "the host was replaced during reconcile, so no page is closed as an orphan"
+                );
                 break;
             }
             spawn::close_target(port, &target).await;
@@ -8940,5 +8936,374 @@ mod tests {
 
         let rows = service.tabs(&worker).await.expect("rows").rows;
         assert!(rows.is_empty(), "the dead host's rows are gone");
+    }
+}
+
+/// The server's browser guards, each one line from a defect that was live the
+/// round before: the reconcile's per-target generation re-read (and the
+/// deferred-events branch of its moved-host check), the sweep's lock, the `up`
+/// flag, and a second ending call's hands off a successor's rows. The
+/// reconcile's separate moved-host orphan skip was dropped: the per-target
+/// re-read spares the same pages, so the branch was redundant.
+#[cfg(test)]
+mod server_guards {
+    use super::{BrowserService, Profile};
+    use crate::control::HostEvent;
+    use crate::driver::TabDriver;
+    use crate::tabs::DriverTab;
+    use forge_primitives::SessionSlot;
+    use forge_primitives::browser::BrowserPart;
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
+    use std::time::Duration;
+
+    /// One row of a driver's listing.
+    fn row(index: u16, target: &str) -> DriverTab {
+        DriverTab {
+            index: usize::from(index - 1),
+            id: target.to_owned(),
+            target: target.to_owned(),
+            title: String::new(),
+            url: "about:blank".to_owned(),
+            current: index == 1,
+        }
+    }
+
+    /// A host endpoint that records every `GET /json/close/<target>` it is sent
+    /// and answers with an empty body, so the caller returns instead of timing
+    /// out. `on_close` is told the 1-based number of each close as it lands.
+    fn close_endpoint(on_close: impl Fn(usize) + Send + 'static) -> (u16, Arc<Mutex<Vec<String>>>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a test port");
+        let port = listener.local_addr().expect("an address").port();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            // Bounded, so the thread ends with the test's closes rather than
+            // holding the listener open for the life of the process.
+            for _ in 0..8 {
+                let Ok((mut stream, _)) = listener.accept() else { return };
+                let mut buf = [0_u8; 1024];
+                let read = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or_default()
+                    .to_owned();
+                let count = {
+                    let mut log = log.lock().unwrap_or_else(PoisonError::into_inner);
+                    log.push(path);
+                    log.len()
+                };
+                on_close(count);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                );
+            }
+        });
+        (port, seen)
+    }
+
+    /// A driver whose listing is fixed, with an optional one-shot generation
+    /// bump: what a host death during the pass looks like to `reconcile`.
+    struct ListingDriver {
+        listing: Vec<DriverTab>,
+        bump: Option<(Arc<Profile>, u64)>,
+        bumped: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl TabDriver for ListingDriver {
+        async fn tabs_within(&self, _bound: Duration) -> Result<Vec<DriverTab>, String> {
+            if let Some((profile, by)) = &self.bump
+                && !self.bumped.swap(true, Ordering::AcqRel)
+            {
+                profile.host_generation.fetch_add(*by, Ordering::AcqRel);
+            }
+            Ok(self.listing.clone())
+        }
+
+        async fn select(&self, _index: usize, _bound: Duration) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn call_within(
+            &self,
+            _tool: &str,
+            _args: Value,
+            _bound: Duration,
+        ) -> Result<Vec<BrowserPart>, String> {
+            Ok(Vec::new())
+        }
+
+        fn is_running(&self) -> bool {
+            true
+        }
+    }
+
+    fn driver(listing: Vec<DriverTab>, bump: Option<(Arc<Profile>, u64)>) -> Arc<dyn TabDriver> {
+        Arc::new(ListingDriver { listing, bump, bumped: AtomicBool::new(false) })
+    }
+
+    /// A service and the profile its guards run against: a seat installed with
+    /// an empty listing, so the registry starts with no rows of its own.
+    async fn profile_for_test(service: &BrowserService) -> Arc<Profile> {
+        let seat = SessionSlot::lead("O", "p");
+        service
+            .install_fake(
+                &seat,
+                ListingDriver { listing: Vec::new(), bump: None, bumped: AtomicBool::new(false) },
+            )
+            .await;
+        service.find("O/default").await.expect("the profile")
+    }
+
+    /// **An event deferred while the host is dying goes back for the next
+    /// pass.** The pass takes the deferred list from the listing and then
+    /// drains the queue; holding the queue parks it between the two. If the
+    /// generation moved under it, what it did not pair is added back rather
+    /// than replacing the list, so the event another path deferred meanwhile
+    /// is not wiped.
+    #[tokio::test]
+    async fn a_reconcile_that_lost_its_host_keeps_an_event_deferred_under_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service =
+            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let profile = profile_for_test(&service).await;
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        let queue = profile.host_tab_events.lock().await;
+        let listing = driver(Vec::new(), Some((Arc::clone(&profile), 1)));
+        let pass = {
+            let service = Arc::clone(&service);
+            let profile = Arc::clone(&profile);
+            tokio::spawn(async move { service.reconcile(&profile, &listing, 9).await })
+        };
+        tokio::task::yield_now().await;
+        profile
+            .deferred_tab_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((generation, HostEvent::TabClosed { tab: 99 }));
+        drop(queue);
+        pass.await.expect("the pass completes");
+
+        assert_eq!(
+            profile.host_generation.load(Ordering::Acquire),
+            generation + 1,
+            "the pass never saw a moved host, so the test pins nothing"
+        );
+        let deferred =
+            profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert!(
+            deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
+            "an event deferred while the host was replaced was wiped: {deferred:?}"
+        );
+    }
+
+    /// The control: on a host that stands, the pass replaces the deferred list
+    /// with its own pairing, so the same concurrent defer is dropped.
+    #[tokio::test]
+    async fn a_reconcile_on_one_host_replaces_the_events_deferred_under_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service =
+            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let profile = profile_for_test(&service).await;
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        let queue = profile.host_tab_events.lock().await;
+        let listing = driver(Vec::new(), None);
+        let pass = {
+            let service = Arc::clone(&service);
+            let profile = Arc::clone(&profile);
+            tokio::spawn(async move { service.reconcile(&profile, &listing, 9).await })
+        };
+        tokio::task::yield_now().await;
+        profile
+            .deferred_tab_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((generation, HostEvent::TabClosed { tab: 99 }));
+        drop(queue);
+        pass.await.expect("the pass completes");
+
+        let deferred =
+            profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert!(
+            !deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
+            "a stable pass kept an event it did not pair: {deferred:?}"
+        );
+    }
+
+    /// **The host can move again between closes**, and a successor normally
+    /// reuses the freed port: the generation is re-read before each one, so the
+    /// page after the move is left to the successor.
+    #[tokio::test]
+    async fn a_reconcile_stops_closing_when_the_host_moves_between_pages() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let moving = Arc::clone(&profile);
+        let (port, seen) = close_endpoint(move |count| {
+            if count == 1 {
+                moving.host_generation.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+        let listing = driver(vec![row(1, "A"), row(2, "B")], None);
+
+        service.reconcile(&profile, &listing, port).await;
+
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(
+            seen,
+            ["/json/close/A"],
+            "a close after the host moved took the successor's page"
+        );
+    }
+
+    /// The control for the re-read: on one host both pages are closed.
+    #[tokio::test]
+    async fn a_reconcile_on_one_host_closes_every_orphan() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let (port, seen) = close_endpoint(|_| {});
+        let listing = driver(vec![row(1, "A"), row(2, "B")], None);
+
+        service.reconcile(&profile, &listing, port).await;
+
+        let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert_eq!(seen, ["/json/close/A", "/json/close/B"], "an orphan was left open");
+    }
+
+    /// A host standing on the profile, as a call that drove it would have left
+    /// it: an identity to end, plus the ring name the test unlinks.
+    async fn install_host(
+        profile: &Arc<Profile>,
+        dir: &std::path::Path,
+        port: u16,
+    ) -> (super::HostIdentity, String) {
+        let ring_name = format!("/forge-guard-{}-{port}", std::process::id());
+        let generation = {
+            let mut state = profile.state.lock().await;
+            let generation = state.driver_generation;
+            let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+            let (input, _input_rx) = std::sync::mpsc::channel();
+            state.host = Some(crate::spawn::ActiveHost {
+                pid: std::process::id(),
+                port,
+                ring: Arc::new(ring),
+                profile: dir.join(format!("host-{port}")),
+                input,
+                reader: None,
+                monitor: None,
+            });
+            generation
+        };
+        (super::HostIdentity { pid: std::process::id(), port, generation }, ring_name)
+    }
+
+    /// **One sweep at a time**: a sweep waits for the one in front of it rather
+    /// than racing its writes.
+    #[tokio::test]
+    async fn a_sweep_waits_for_the_one_in_front_of_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service =
+            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let _profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+
+        let held = service.sweep_lock.lock().await;
+        let pass = {
+            let service = Arc::clone(&service);
+            let seat = seat.clone();
+            tokio::spawn(async move { service.sweep_sessions(&[seat], 5).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(
+            service.live.lock().unwrap_or_else(PoisonError::into_inner).is_empty(),
+            "a sweep applied while another held the sweep lock"
+        );
+        drop(held);
+        pass.await.expect("the sweep completes");
+        assert!(
+            service.live.lock().unwrap_or_else(PoisonError::into_inner).contains(&seat),
+            "the sweep never applied once the lock was free"
+        );
+    }
+
+    /// **An ended host leaves the profile reading down.** This pins the final
+    /// state, not the ordering against `host_gone()`'s rows: the flag is
+    /// cleared on the ending path, and a read after the end sees false.
+    #[tokio::test]
+    async fn ending_a_host_clears_the_profiles_up_flag() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let (identity, ring) = install_host(&profile, dir.path(), 9).await;
+        profile.up.store(true, Ordering::Release);
+
+        let _ = service.end_dead_host(&profile, identity, "the test ends it").await;
+
+        assert!(
+            !profile.up.load(Ordering::Acquire),
+            "the profile still reads as up after its host was ended"
+        );
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A second ending call leaves a successor's rows alone.** The identity
+    /// match refuses a host this call did not drive - the successor on the
+    /// same pid and port has a newer driver generation - so it neither
+    /// publishes a second sentence nor wipes the successor's rows. (The
+    /// take-before-sentence ordering within one call has no observable of its
+    /// own: the whole block holds the state lock, so the identity match is the
+    /// discriminator.)
+    #[tokio::test]
+    async fn a_second_ending_call_leaves_a_successors_rows_alone() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
+        let (first, first_ring) = install_host(&profile, dir.path(), 9).await;
+        profile.up.store(true, Ordering::Release);
+
+        let _ = service.end_dead_host(&profile, first, "the first call ends it").await;
+        let sentence = profile.failures.borrow().clone();
+
+        // A successor starts on the SAME port - the freed one it reuses - with
+        // its own driver generation and a row of its own.
+        let (_, second_ring) = install_host(&profile, dir.path(), 9).await;
+        profile.state.lock().await.driver_generation += 1;
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, seat, "T2", "T2", "", "")
+            .expect("the successor's row");
+
+        let again = service.end_dead_host(&profile, first, "a second call ends it").await;
+
+        assert!(
+            matches!(again, super::DeadHost::NotOurs),
+            "a second call took a host that is not the one it drove"
+        );
+        assert_eq!(
+            profile.failures.borrow().clone(),
+            sentence,
+            "a second call published its own ending"
+        );
+        assert!(
+            profile.state.lock().await.host.is_some(),
+            "a second call took the successor's host"
+        );
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).numbers(),
+            vec![1],
+            "a second call wiped the successor's rows"
+        );
+        crate::osr::Ring::unlink(&first_ring);
+        crate::osr::Ring::unlink(&second_ring);
     }
 }
