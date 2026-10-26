@@ -845,7 +845,12 @@ impl BrowserService {
                 let outcome = self.tabs_tool(&profile, seat, &mut driver, args).await;
                 drop(decision);
                 return match outcome {
-                    Ok(parts) => Ok(parts),
+                    Ok(parts) => {
+                        // **A host that answered is not suspect any more**,
+                        // the same clear the page path makes.
+                        *profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                        Ok(parts)
+                    }
                     Err(why) => Err(self.settle_suspect(&profile, why).await),
                 };
             }
@@ -898,16 +903,22 @@ impl BrowserService {
         }
     }
 
+    /// The host a driver generation serves right now, as the identity an end
+    /// is aimed at. **A rebuild can start a new host**, so this is read after
+    /// the install rather than from the call's own lookup.
+    async fn live_host(profile: &Arc<Profile>, generation: u64) -> Option<HostIdentity> {
+        profile.state.lock().await.host.as_ref().map(|host| HostIdentity {
+            pid: host.pid,
+            port: host.port,
+            generation,
+        })
+    }
+
     /// **A host a fresh driver cannot list is marked for the call's own
     /// failure path to end.** It is named by pid and port, so a successor
     /// started in between is not taken for it (#2573).
     async fn mark_host_suspect(profile: &Arc<Profile>, generation: u64) {
-        let host = profile.state.lock().await.host.as_ref().map(|host| HostIdentity {
-            pid: host.pid,
-            port: host.port,
-            generation,
-        });
-        if let Some(host) = host {
+        if let Some(host) = Self::live_host(profile, generation).await {
             *profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner) = Some(host);
         }
     }
@@ -1954,8 +1965,7 @@ impl BrowserService {
                 };
                 profile.failures.send_replace(Some(format!(
                     "the browser host (pid {}, port {}, profile {}) stopped answering: {why}. \
-                     {words}. The next call starts a fresh browser with the profile's data \
-                     intact.",
+                     {words}. The next call starts a fresh browser.",
                     host.pid,
                     host.port,
                     profile.dir.display(),
@@ -1979,6 +1989,21 @@ impl BrowserService {
         } else {
             DeadHost::NotEnded { pid: host.pid, port: host.port }
         }
+    }
+
+    /// End the host standing after a rebuild whose fresh driver cannot list.
+    /// **A rebuild starts a new host when the old one died**, so the identity
+    /// is read now rather than taken from the call's own lookup.
+    async fn end_rebuilt_host(
+        &self,
+        profile: &Arc<Profile>,
+        drove: HostIdentity,
+        fresh_generation: u64,
+        why: String,
+    ) -> String {
+        let rebuilt = Self::live_host(profile, fresh_generation).await.unwrap_or(drove);
+        let host = self.end_dead_host(profile, rebuilt, &why).await;
+        dead_host_answer(profile, host, &why)
     }
 
     /// Rebuild a driver whose page context died, and repeat the call only
@@ -2060,16 +2085,9 @@ impl BrowserService {
                     page.as_deref().and_then(|page| Self::tab_index(profile, tab, page, &listing))
                 }
                 Err(cannot) if driver::died(&cannot) => {
-                    // **A fresh driver that still cannot list means the
-                    // host's pages are wedged**: end the host this call
-                    // drove, if the driver it installed is still serving it.
-                    let rebuilt = HostIdentity {
-                        pid: drove.pid,
-                        port: drove.port,
-                        generation: fresh_generation,
-                    };
-                    let host = self.end_dead_host(profile, rebuilt, &cannot).await;
-                    return Err(dead_host_answer(profile, host, &cannot));
+                    return Err(self
+                        .end_rebuilt_host(profile, drove, fresh_generation, cannot)
+                        .await);
                 }
                 // **A listing that failed for any other reason was never
                 // read**: nothing is known about the page, so it is not
@@ -2153,8 +2171,6 @@ impl BrowserService {
         if !repeatable_after_timeout(tool, args) {
             return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated { tool, why }));
         }
-        let replacement =
-            HostIdentity { pid: drove.pid, port: drove.port, generation: fresh_generation };
         let page =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
         let index = match fresh.tabs_within(bound).await {
@@ -2162,11 +2178,7 @@ impl BrowserService {
                 page.as_deref().and_then(|page| Self::tab_index(profile, tab, page, &listing))
             }
             Err(cannot) if driver::died(&cannot) => {
-                // **A fresh driver that still cannot list means the host's
-                // pages are wedged**: end the host this call drove, if the
-                // driver it installed is still the one serving it.
-                let host = self.end_dead_host(profile, replacement, &cannot).await;
-                return Err(dead_host_answer(profile, host, &cannot));
+                return Err(self.end_rebuilt_host(profile, drove, fresh_generation, cannot).await);
             }
             // **A listing that failed for any other reason was never read**:
             // nothing is known about the page, so it is not gone.
@@ -5447,6 +5459,66 @@ mod tests {
             successor.listings() > 0,
             "the replacement driver listed before the host was ended"
         );
+        crate::osr::Ring::unlink(&ring_name);
+    }
+
+    /// **A rebuild that replaces the host ends the host standing after it.**
+    /// A rebuild starts a new host when the old one died, so the fresh
+    /// driver serves a host the call never looked up; a listing that dies
+    /// there must end that host rather than answer for the one that is gone
+    /// (#2573's shape).
+    #[tokio::test]
+    async fn a_rebuild_that_replaces_the_host_ends_the_standing_one() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let installed = FakeDriver::with_blank("T1");
+        let successor = FakeDriver::with_blank("T1");
+        let fresh = successor.clone();
+        successor.timeout_every_listing();
+        service
+            .install_fake_with_successor(&seat, installed, move || {
+                Arc::new(successor.clone()) as Arc<dyn crate::driver::TabDriver>
+            })
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let ring_name = format!("/forge-replaced-host-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        let generation = {
+            let mut state = profile.state.lock().await;
+            state.host = Some(crate::spawn::ActiveHost {
+                pid: std::process::id(),
+                port: 9,
+                ring: Arc::new(ring),
+                profile: dir.path().join("replacement"),
+                input,
+                reader: None,
+                monitor: None,
+            });
+            state.driver_generation
+        };
+        // The host the call looked up is not the one standing after the
+        // rebuild, the shape a start behind a dead host leaves.
+        let drove = super::HostIdentity { pid: std::process::id(), port: 9411, generation };
+
+        let refused = service
+            .replace_dead_driver(
+                &profile,
+                generation,
+                drove,
+                1,
+                "browser_snapshot",
+                &json!({}),
+                Duration::from_secs(1),
+                "the driver did not answer browser_tabs within 9 s",
+            )
+            .await
+            .expect_err("a fresh driver that cannot list ends the host");
+
+        assert!(refused.contains("was ended"), "the standing host is named as ended: {refused}");
+        assert!(profile.state.lock().await.host.is_none(), "the standing host was ended");
+        assert!(fresh.listings() > 0, "the replacement listed before the host was ended");
         crate::osr::Ring::unlink(&ring_name);
     }
 
