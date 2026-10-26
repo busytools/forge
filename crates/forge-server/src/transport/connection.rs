@@ -51,6 +51,14 @@ struct Holds<'a> {
 struct Watching {
     subjects: Vec<Subject>,
     showing: Option<SessionSlot>,
+    /// Whether the connection holds the showing's attach on [`Live`].
+    ///
+    /// **The two halves arrive in either order**: the web sends its subscribe
+    /// before `showing`, and the desktop's resume sends `showing` before the
+    /// subscribe. A mark is spent only when the pair is complete, so the
+    /// showing that lands first is remembered and the subscribe that
+    /// completes it spends - never both, or the count would be two.
+    showing_attached: bool,
 }
 
 impl<'a> Holds<'a> {
@@ -482,7 +490,9 @@ where
     // merely subscribed to were never attached**: only the shown one is let
     // go here, or a subscriber's close would take a seat another connection
     // is still showing out of the set it watches.
-    if let Some(slot) = watching.showing.as_ref() {
+    if watching.showing_attached
+        && let Some(slot) = watching.showing.as_ref()
+    {
         Live::lock(&state.live).detach(slot);
     }
     // Every hold this connection took goes back here, one release apiece -
@@ -1086,6 +1096,18 @@ where
                         &SystemClock,
                     )
                     .await?;
+                    // **The subscribe that completes a showing pair spends
+                    // its marks here**, after the seat's own record is on its
+                    // way: the snapshot was encoded before the death trace is
+                    // spent, so its row still carries the death, and the home
+                    // re-send that follows carries it cleared.
+                    if !declare
+                        && let Some(slot) = &seat
+                        && watching.showing.as_ref() == Some(slot)
+                        && !watching.showing_attached
+                    {
+                        spend_showing(socket, state, watching, slot).await?;
+                    }
                     // **A declare is not an open.** It re-states the browser
                     // capability against a subject the client already watches
                     // and takes no hold and no watch, so no page came on
@@ -1737,14 +1759,51 @@ where
     if watching.showing == seat {
         return Ok(());
     }
-    if let Some(previous) = watching.showing.take() {
-        Live::lock(&state.live).detach(&previous);
+    if watching.showing_attached {
+        if let Some(previous) = watching.showing.as_ref() {
+            Live::lock(&state.live).detach(previous);
+        }
+        watching.showing_attached = false;
     }
-    let Some(next) = seat else { return Ok(()) };
-    let failed = state.surface.failed_turn(&next);
-    let death = state.surface.seat_shown(&next);
-    let spent = Live::lock(&state.live).attach(&next, failed) || death;
+    let Some(next) = seat else {
+        watching.showing = None;
+        return Ok(());
+    };
+    // **A showing spends nothing until the seat is actually watched.** A
+    // frame naming a slot this connection never subscribed would otherwise
+    // clear a diamond, a failure mark and a durable death trace with no read
+    // of that seat served - and the pairing half may arrive first, so the
+    // showing is remembered and the subscribe that completes it spends.
+    let watched = watching
+        .subjects
+        .iter()
+        .any(|held| matches!(held, Subject::Session(slot) if slot == &next));
     watching.showing = Some(next.clone());
+    if watched {
+        spend_showing(socket, state, watching, &next).await?;
+    }
+    Ok(())
+}
+
+/// Spend what showing `slot` earns: its diamond, its failure mark and its
+/// death trace, and the home refresh a spent mark owes.
+///
+/// **Called once per showing, from whichever half completes the pair.**
+async fn spend_showing<S>(
+    socket: &mut S,
+    state: &Arc<TransportState>,
+    watching: &mut Watching,
+    slot: &SessionSlot,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    let failed = state.surface.failed_turn(slot);
+    // The seat's own snapshot was encoded before this, so the failure a death
+    // left on its row is drawn by the read that spends it.
+    let death = state.surface.seat_shown(slot);
+    let spent = Live::lock(&state.live).attach(slot, failed) || death;
+    watching.showing_attached = true;
     if spent && watching.subjects.iter().any(|held| matches!(held, Subject::Home)) {
         match encode_subject(state, &Subject::Home).await {
             Ok(home) => {
@@ -1753,7 +1812,7 @@ where
             }
             Err(error) => tracing::debug!(
                 event_name = "home_refresh_failed",
-                slot = %next.display(),
+                slot = %slot.display(),
                 %error,
                 "the home refresh after a seat was shown could not be encoded",
             ),
@@ -4579,6 +4638,53 @@ mod tests {
             .count()
     }
 
+    /// Subscribe the home and wait for its first read.
+    async fn subscribed_home(
+        to_server: &mpsc::UnboundedSender<Message>,
+        written: &Arc<Mutex<Vec<ServerMessage>>>,
+    ) {
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Home,
+                    answering: false,
+                    browser: false,
+                    declare: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        until(|| home_snapshots(written) == 1, "the home's first read").await;
+    }
+
+    /// Whether a seat's snapshot has been written.
+    fn seat_read(written: &Arc<Mutex<Vec<ServerMessage>>>) -> bool {
+        written.lock().expect("the frame log").iter().any(|frame| {
+            matches!(frame, ServerMessage::Snapshot { subject: Subject::Session(_), .. })
+        })
+    }
+
+    /// A turn finished on a seat nothing is attached to: the diamond.
+    fn arm_diamond(state: &Arc<TransportState>, slot: &SessionSlot) {
+        let result = serde_json::from_value(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "s",
+        }))
+        .expect("a result message");
+        Live::lock(&state.live).apply(&SessionUpdate::ChatAppended {
+            key: slot.clone(),
+            msg: result,
+            origin: None,
+            source: None,
+        });
+    }
+
     fn showing(to_server: &mpsc::UnboundedSender<Message>, seat: Option<SessionSlot>) {
         to_server
             .send(Message::Text(
@@ -4648,6 +4754,82 @@ mod tests {
         let _ = driven.await;
     }
 
+    /// **The same showing twice is a no-op.** It is a state assertion, not an
+    /// event: the second frame must not spend a second mark nor re-encode
+    /// the home a connection already holds.
+    #[tokio::test]
+    async fn showing_the_same_seat_twice_is_a_no_op() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+        let slot = lead();
+        let Driven { to_server, written, driven } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+        subscribed(&to_server, &slot);
+        until(|| seat_read(&written), "the seat's snapshot").await;
+        arm_diamond(&state, &slot);
+
+        showing(&to_server, Some(slot.clone()));
+        until(|| home_snapshots(&written) == 2, "the home refresh a spent mark owes").await;
+
+        showing(&to_server, Some(slot.clone()));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            home_snapshots(&written),
+            2,
+            "a repeat showing spent a mark and re-encoded the home again",
+        );
+        assert!(Live::lock(&state.live).is_attached(&slot), "the seat was detached");
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A showing with no subscribe to pair it with spends nothing.** The
+    /// desktop's resume sends `showing` before the seat's subscribe, so the
+    /// showing is remembered; the subscribe that completes the pair is what
+    /// attaches, once.
+    #[tokio::test]
+    async fn a_showing_before_its_subscribe_spends_when_the_subscribe_lands() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+        let slot = lead();
+        let Driven { to_server, written, driven } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+        arm_diamond(&state, &slot);
+
+        showing(&to_server, Some(slot.clone()));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            !Live::lock(&state.live).is_attached(&slot),
+            "a showing for an unwatched seat attached it",
+        );
+        assert_eq!(
+            home_snapshots(&written),
+            1,
+            "a showing with no read served spent the mark anyway",
+        );
+
+        subscribed(&to_server, &slot);
+        until(|| seat_read(&written), "the seat's snapshot").await;
+        until(
+            || Live::lock(&state.live).is_attached(&slot),
+            "the subscribe completing the pair to attach it",
+        )
+        .await;
+        until(|| home_snapshots(&written) == 2, "the home refresh a spent mark owes").await;
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
     /// **A connection closing lets go of what it SHOWED, and only that.** Two
     /// connections on one seat: one shows it, the other merely subscribes.
     /// The subscriber's close must not detach the seat the first is watching.
@@ -4661,7 +4843,22 @@ mod tests {
         ));
         let slot = lead();
 
-        let Driven { to_server: first, driven: first_driven, .. } = connection(&state);
+        let Driven { to_server: first, written: first_written, driven: first_driven } =
+            connection(&state);
+        // A page subscribes the seat it draws and says it is showing it: the
+        // pair is what spends, and only the connection holding both attaches.
+        subscribed(&first, &slot);
+        until(
+            || {
+                first_written
+                    .lock()
+                    .expect("the frame log")
+                    .iter()
+                    .any(|frame| matches!(frame, ServerMessage::Snapshot { .. }))
+            },
+            "the first connection's snapshot",
+        )
+        .await;
         showing(&first, Some(slot.clone()));
         until(
             || Live::lock(&state.live).is_attached(&slot),
@@ -4707,15 +4904,38 @@ mod tests {
     async fn a_connection_that_switched_seats_does_not_detach_the_old_one_twice() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let first = lead();
+        let second = SessionSlot::worker("TestOrg", "proj", "w1");
+        // Both seats have to be answerable, because a showing only spends
+        // once its seat is actually watched - and a refused subscribe never
+        // watches one. A worker needs its fleet row as well as an agent: the
+        // roster resolves its cwd from the live worker entry.
+        fleet.install_agent("TestOrg", "proj", "lead");
+        fleet.add_worker("TestOrg", "proj", "w1").expect("the worker row");
+        fleet.install_agent("TestOrg", "proj", "w1");
         let state = Arc::new(TransportState::for_workspace(
             &fleet.workspace(),
             forge_primitives::ClientConfig::default(),
         ));
-        let first = lead();
-        let second = SessionSlot::lead("TestOrg", "other");
 
-        let Driven { to_server, driven, .. } = connection(&state);
-        let Driven { to_server: other, driven: other_driven, .. } = connection(&state);
+        let Driven { to_server, written, driven } = connection(&state);
+        let Driven { to_server: other, written: other_written, driven: other_driven } =
+            connection(&state);
+        // Each page watches the seat it draws; the showing is the other half.
+        subscribed(&to_server, &first);
+        subscribed(&other, &first);
+        until(
+            || {
+                [&written, &other_written].iter().all(|log| {
+                    log.lock()
+                        .expect("the frame log")
+                        .iter()
+                        .any(|frame| matches!(frame, ServerMessage::Snapshot { .. }))
+                })
+            },
+            "both connections' snapshots",
+        )
+        .await;
         showing(&to_server, Some(first.clone()));
         showing(&other, Some(first.clone()));
         until(
@@ -4724,6 +4944,7 @@ mod tests {
         )
         .await;
 
+        subscribed(&to_server, &second);
         showing(&to_server, Some(second.clone()));
         until(
             || Live::lock(&state.live).is_attached(&second),

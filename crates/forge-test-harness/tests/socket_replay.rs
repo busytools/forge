@@ -826,7 +826,7 @@ fn frames_record() -> Value {
         "a command's wire name moved"
     );
 
-    // All five, because they are cheap and the client writes these tags by
+    // Every kind, because they are cheap and the client writes these tags by
     // hand: nothing else in the tree would notice one moving.
     let client_messages = [
         ClientMessage::Subscribe {
