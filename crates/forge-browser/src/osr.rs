@@ -872,9 +872,9 @@ pub(crate) fn scale_milli(scale: f64) -> u32 {
 ///
 /// **The budget caps the pixels painted, never the CSS size the page lays out
 /// at**: cutting a 2x surface's request halved the page's layout and every
-/// click landed right of the pixel under the pointer (measured on the dev
-/// stack). The raster gives instead; only a layout past the budget at 1x is
-/// itself cut, since no frame can hold it.
+/// click landed right of the pixel under the pointer (measured on a live host
+/// at 2048x1112). The raster gives instead; only a layout past the budget at
+/// 1x is itself cut, since no frame can hold it.
 fn budgeted_request(
     request_width: u32,
     request_height: u32,
