@@ -79,12 +79,6 @@ fn grid_page() -> String {
     format!("data:text/html;charset=utf-8,{encoded}")
 }
 
-/// Whether two environment reports agree on the fields the rig watches.
-fn same_env(left: &Value, right: &Value) -> bool {
-    let field = |value: &Value, name: &str| value.get(name).cloned().unwrap_or(Value::Null);
-    ["innerWidth", "innerHeight", "dpr"].iter().all(|name| field(left, name) == field(right, name))
-}
-
 /// Whether one reported number is `want`, to the pixel the fractional
 /// raster's own arithmetic can move it.
 fn near(value: &Value, name: &str, want: u32) -> bool {
@@ -183,6 +177,30 @@ impl Fixture {
         )
     }
 
+    /// How many paints the host has delivered.
+    fn paints(&mut self) -> u64 {
+        let ring = self.ring();
+        // SAFETY: the header is mapped for this process's whole life.
+        unsafe { (*ring.header()).paints.load(std::sync::atomic::Ordering::Relaxed) }
+    }
+
+    /// One tab's own resize, written the way a take's restore writes it.
+    fn resize_tab(&mut self, width: u32, height: u32, scale_milli: u32) {
+        self.host.input(&host_line(&HostInput::TabResize { tab: 1, width, height, scale_milli }));
+    }
+
+    /// Wait until the host has delivered a paint past `count`.
+    async fn wait_for_paints(&mut self, count: u64) {
+        let deadline = Instant::now() + BOUND;
+        loop {
+            if self.paints() > count {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the host delivered no paint past {count}");
+            tokio::time::sleep(POLL_EVERY).await;
+        }
+    }
+
     async fn evaluate(&mut self, expression: &str) -> Value {
         let reply = self
             .cdp
@@ -203,27 +221,33 @@ impl Fixture {
             .expect("the page navigates");
     }
 
-    /// Wait until the page's environment answers `ok`, failing with what it
-    /// said last. **Every distinct viewport it reports is printed**, so a
-    /// resize that landed in two steps is read as the steps it took.
-    async fn wait_for_env(&mut self, ok: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + BOUND;
-        let mut said = Value::Null;
-        loop {
-            let env = self.evaluate("window.__env ? window.__env() : null").await;
-            if !same_env(&env, &said) {
-                println!("the page reports {env}");
-                said = env.clone();
+    /// Ask for one surface size until the page lays out at it.
+    ///
+    /// **The rig asks again when CEF does not take a request.** On a loaded
+    /// machine the host occasionally applies a request's scale without
+    /// re-laying out the page: the page keeps its old CSS size at the new DPR
+    /// for the whole bound, and the same request sent again is taken at once.
+    /// The re-ask is printed, so a miss cannot read as a pass.
+    async fn adopt(&mut self, width: u32, height: u32, scale: f64, want: (u32, u32)) -> Value {
+        for asked in 1..=3 {
+            self.request(width, height, scale);
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                let env = self.evaluate("window.__env ? window.__env() : null").await;
+                if near(&env, "innerWidth", want.0) && near(&env, "innerHeight", want.1) {
+                    println!("the page reports {env}");
+                    return env;
+                }
+                if Instant::now() >= deadline {
+                    println!(
+                        "the page did not take {width}x{height}@{scale}, asking again ({asked})"
+                    );
+                    break;
+                }
+                tokio::time::sleep(POLL_EVERY).await;
             }
-            if ok(&env) {
-                return env;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the page never reported the expected viewport; it says {env}"
-            );
-            tokio::time::sleep(POLL_EVERY).await;
         }
+        panic!("the page never laid out at {want:?} after three asks (log: {})", self.host.log());
     }
 
     /// One full click at the point the SERVER names, written the way the
@@ -271,8 +295,9 @@ impl Fixture {
 /// past the ring's 3840x2160 budget. Clamping THAT halves the page's layout
 /// to 1920x1080, and the surface then draws a narrower page scaled up and
 /// centred, so a click sent at the overlay's x lands right of the pixel under
-/// the pointer by 55 px at x 700 and 78 px at x 1500 (measured before the
-/// fix). The layout is the surface's to name; only the raster may give.
+/// the pointer by 55 px at x 700 and 78 px at x 1500 (measured before the fix).
+/// The phone's portrait surface, 390x780 at 3x, failed the same way in y. The
+/// layout is the surface's to name; only the raster may give.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
     let mut at = fixture("budget").await;
@@ -280,9 +305,7 @@ async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
     // The control: a surface inside the budget lays out exactly as asked,
     // and the pointer reaches the pixel it names. This proves the rig itself
     // can report a correct mapping, so the case below is the budget's doing.
-    at.request(1920, 1080, 2.0);
-    let env =
-        at.wait_for_env(|env| near(env, "innerWidth", 960) && near(env, "innerHeight", 540)).await;
+    let env = at.adopt(1920, 1080, 2.0, (960, 540)).await;
     println!("the in-budget page reports {env}");
     for (count, (x, y)) in [(1_usize, (100_i32, 100_i32)), (2, (900, 500))] {
         let seen = at.click_and_read(x, y, count).await;
@@ -290,10 +313,7 @@ async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
     }
 
     // The takeover's own shape: 2048x1112 CSS at 2x.
-    at.request(4096, 2224, 2.0);
-    let env = at
-        .wait_for_env(|env| near(env, "innerWidth", 2048) && near(env, "innerHeight", 1112))
-        .await;
+    let env = at.adopt(4096, 2224, 2.0, (2048, 1112)).await;
     println!("the takeover's page reports {env}");
     let (width, height) = at.painted();
     println!("the host paints {width}x{height}");
@@ -315,26 +335,41 @@ async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
         let seen = at.click_and_read(x, y, count).await;
         assert_click(&seen, x, y);
     }
-}
 
-/// **A portrait phone's surface keeps its layout too.** A 390x780 phone at 3x
-/// asks for 1170x2340 device pixels, past the 2160-high budget; the same
-/// clamp laid the page out 390x720 under a 390x780 canvas, so the bottom 60
-/// CSS pixels of every gesture mapped off the page. The canvas maps through
-/// the page area it measured, which is only right when the page is that size.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_phones_surface_past_the_frame_budget_keeps_its_layout_size() {
-    let mut at = fixture("phone").await;
-    at.request(1170, 2340, 3.0);
-    let env =
-        at.wait_for_env(|env| near(env, "innerWidth", 390) && near(env, "innerHeight", 780)).await;
+    // **A take's restore names the tab's size too, on the same raw request.**
+    // The surface must stay paintable: an over-budget frame is dropped, and
+    // the surface would freeze on the last picture after a recording.
+    let paints = at.paints();
+    at.resize_tab(4096, 2224, 2_000);
+    // The grid is the page's whole picture, so a change to it is a paint.
+    at.evaluate("document.getElementById('g').style.background='#111'; 0").await;
+    at.wait_for_paints(paints).await;
+    let (width, height) = at.painted();
+    println!("after the take's restore the host paints {width}x{height}");
+    assert!(
+        u64::from(width) * u64::from(height) <= u64::from(MAX_WIDTH) * u64::from(MAX_HEIGHT),
+        "a restored surface stays inside the ring's budget, {width}x{height}"
+    );
+    let env = at.evaluate("window.__env()").await;
+    assert!(
+        near(&env, "innerWidth", 2048) && near(&env, "innerHeight", 1112),
+        "and keeps the page at the surface's size, {env}"
+    );
+
+    // **The portrait phone's surface, on the same host.** 390x780 CSS at 3x
+    // asks for 1170x2340, past the old 2160-high clamp, which laid the page
+    // out 390x720 under a 390x780 canvas: a tap at y 700 mapped 8.3 percent
+    // low and the bottom 60 CSS pixels were unreachable. The canvas maps
+    // through the page area it measured, so it needs the page to be that
+    // size.
+    let env = at.adopt(1170, 2340, 3.0, (390, 780)).await;
     println!("the phone's page reports {env}");
     let (width, height) = at.painted();
     println!("the host paints {width}x{height}");
     assert!(
         u64::from(width) * u64::from(height) <= u64::from(MAX_WIDTH) * u64::from(MAX_HEIGHT),
-        "the frame stays inside the ring's budget, {width}x{height}"
+        "the phone's frame stays inside the ring's budget, {width}x{height}"
     );
-    let seen = at.click_and_read(195, 700, 1).await;
+    let seen = at.click_and_read(195, 700, 5).await;
     assert_click(&seen, 195, 700);
 }

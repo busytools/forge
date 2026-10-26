@@ -607,13 +607,14 @@ impl ViewSize {
         })
     }
 
-    /// **Neither axis is clamped here**: the ring has already spent the frame
-    /// budget and may have cut the raster to keep the surface's layout, and a
-    /// tall phone frame fits the area budget while passing `MAX_HEIGHT`.
+    /// **Every path that names a tab's size lands here** - the profile's
+    /// resize and a take's own - so the frame budget is spent here once, and
+    /// a raw surface request cannot outgrow the ring on either of them.
     pub fn set(&self, width: u32, height: u32, scale: f64) {
-        self.width.store(width.max(1), Ordering::Relaxed);
-        self.height.store(height.max(1), Ordering::Relaxed);
-        self.scale_milli.store(scale_milli(scale), Ordering::Relaxed);
+        let (width, height, scale_milli) = budgeted_request(width, height, scale_milli(scale));
+        self.width.store(width, Ordering::Relaxed);
+        self.height.store(height, Ordering::Relaxed);
+        self.scale_milli.store(scale_milli, Ordering::Relaxed);
     }
 
     fn get(&self) -> (u32, u32, u32) {
@@ -1049,6 +1050,20 @@ mod tests {
         assert!(
             (f64::from(view.0) / f64::from(view.1) - 5120.0 / 2880.0).abs() < 0.01,
             "and keeps the surface's shape, {view:?}"
+        );
+
+        // **A take's own resize names a tab's size too**, on the same raw
+        // surface request: restoring the controller's view must not outgrow
+        // the ring either.
+        let size = ViewSize::of_ring(&ring);
+        size.set(4096, 2224, 2.0);
+        let (width, height, scale) = size.get();
+        assert_eq!(view_size(width, height, scale), (2048, 1112), "the take's restore keeps it");
+        let painted = painted_size(width, height, scale);
+        assert!(
+            f64::from(painted.0) * f64::from(painted.1)
+                <= f64::from(MAX_WIDTH) * f64::from(MAX_HEIGHT),
+            "and stays paintable, {painted:?}"
         );
         Ring::unlink(name);
     }
