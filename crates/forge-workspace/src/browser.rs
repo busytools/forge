@@ -218,6 +218,7 @@ impl Workspace {
             let (_ignored_sender, dead_receiver) = oneshot::channel();
             return Ok((id, dead_receiver));
         }
+        self.note_ask(caller);
         Ok((id, receiver))
     }
 

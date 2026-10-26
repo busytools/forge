@@ -23,6 +23,11 @@ pub struct AgentRow {
     /// How many prompts the session is holding. Zero when it holds none,
     /// and more than one when a prompt waits behind another.
     pub pending_depth: usize,
+    /// How many asks have ever arrived for the seat. **The ask's identity**:
+    /// a client announces a new one by its number, so an ask replacing
+    /// another at the same depth is news and an answer that shrinks the
+    /// batch is not.
+    pub pending_seq: u64,
     pub last_activity: Option<SystemTime>,
     /// Why this session failed, from the core's own record: a worker's
     /// spawn diagnostic, or the failure the slot's last connection left
@@ -150,6 +155,7 @@ fn row_for(
         died: workspace.death_stands(&slot),
         pending: workspace.pending_interaction(&slot),
         pending_depth: workspace.pending_interaction_depth(&slot),
+        pending_seq: workspace.pending_request_seq(&slot),
         // A worker's own spawn diagnostic is the more specific record, so
         // it wins; a lead has only the slot's, which is why the fallback
         // is here rather than at the call sites. **A standing death is the

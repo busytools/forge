@@ -844,6 +844,9 @@ impl SessionTask {
                         },
                     );
                 }
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.note_ask(&self.key);
+                }
                 let answerable = self.update_tx.send_answering(SessionUpdate::PermissionRequest {
                     key: self.key.clone(),
                     tool_id: tool_call_id.clone(),
@@ -900,6 +903,9 @@ impl SessionTask {
                             request: Box::new(wire_request.clone()),
                         },
                     );
+                }
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.note_ask(&self.key);
                 }
                 let answerable = self.update_tx.send_answering(SessionUpdate::QuestionRequest {
                     key: self.key.clone(),

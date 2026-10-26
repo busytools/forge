@@ -875,6 +875,7 @@
       "/data": [
         "accounts",
         "agents",
+        "boot_id",
         "cli_version",
         "connectors",
         "dictate",
@@ -919,6 +920,7 @@
         "lifecycle",
         "pending",
         "pending_depth",
+        "pending_seq",
         "reason",
         "slot",
         "tree",
