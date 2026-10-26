@@ -4857,7 +4857,10 @@ mod tests {
             }
         });
         let state = Arc::clone(state);
-        let driven = tokio::spawn(async move { drive(&mut peer, &state, attached_from()).await });
+        let driven = tokio::spawn(async move {
+            drive(&mut peer, &state, attached_from(), Some(state.surface.client_settings_watch()))
+                .await
+        });
         Driven { to_server, written, driven }
     }
 
@@ -4992,10 +4995,7 @@ mod tests {
     async fn subscribing_a_seat_does_not_attach_it_and_showing_it_does() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
 
@@ -5033,10 +5033,7 @@ mod tests {
     async fn showing_the_same_seat_twice_is_a_no_op() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
         subscribed_home(&to_server, &written).await;
@@ -5087,10 +5084,7 @@ mod tests {
     async fn a_showing_before_its_subscribe_spends_when_the_subscribe_lands() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         // **A mark is drawn on a row**, so the seat needs an agent: the home
         // lists a project's agents, and a seat nothing has started is not
@@ -5137,10 +5131,7 @@ mod tests {
     async fn a_close_detaches_only_the_seat_that_connection_showed() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
 
         let Driven { to_server: first, written: first_written, driven: first_driven } =
@@ -5213,10 +5204,7 @@ mod tests {
         fleet.install_agent("TestOrg", "proj", "lead");
         fleet.add_worker("TestOrg", "proj", "w1").expect("the worker row");
         fleet.install_agent("TestOrg", "proj", "w1");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
 
         let Driven { to_server, written, driven } = connection(&state);
         let Driven { to_server: other, written: other_written, driven: other_driven } =
@@ -5277,10 +5265,7 @@ mod tests {
     async fn showing_a_spent_seat_refreshes_the_home_and_subscribing_does_not() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
 
