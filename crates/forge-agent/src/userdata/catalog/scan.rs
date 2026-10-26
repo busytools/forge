@@ -189,9 +189,12 @@ pub fn has_a_transcript_row(message: &forge_primitives::Message) -> bool {
         | Message::CompactBoundary { .. }
         | Message::PermissionDenied { .. }
         | Message::Notification { .. }
-        // Typed, and a subtype whose row is the conversation's: the read
-        // keeps it under the same rule as the generic system rows below.
-        | Message::TurnDuration { .. } => true,
+        // Typed system subtypes whose rows the read keeps: the conversation
+        // draws them (a turn duration) or another surface reads them (the
+        // thinking counter, a dispatch's progress), so the scan keeps the row
+        // and the numbering must count it.
+        | Message::TurnDuration { .. }
+        | Message::TaskProgress { .. } => true,
         // A generic `system` row has a row unless its subtype is one whose
         // row is drawn elsewhere: the read keeps the set the client draws.
         Message::System { subtype, .. } => {
@@ -210,7 +213,7 @@ pub fn has_a_transcript_row(message: &forge_primitives::Message) -> bool {
 /// draws from its attachment row. **The client filters the same list** (its
 /// own `SYSTEM_DRAWN_ELSEWHERE`), because the read and the live path are one
 /// obligation - a subtype added here belongs there, and the other way round.
-const SYSTEM_ROWS_DRAWN_ELSEWHERE: [&str; 10] = [
+const SYSTEM_ROWS_DRAWN_ELSEWHERE: [&str; 11] = [
     "task_started",
     "task_updated",
     "task_notification",
@@ -218,6 +221,7 @@ const SYSTEM_ROWS_DRAWN_ELSEWHERE: [&str; 10] = [
     "commands_changed",
     "init",
     "status",
+    "thinking_tokens",
     "hook_started",
     "hook_progress",
     "hook_response",
@@ -231,7 +235,7 @@ const SYSTEM_ROWS_DRAWN_ELSEWHERE: [&str; 10] = [
 /// are the types the read has always dropped, so keeping one would change
 /// what a reopened conversation holds rather than restore what a live one
 /// drew.
-const UNSERVED_ROWS: [&str; 19] = [
+const UNSERVED_ROWS: [&str; 18] = [
     // Bookkeeping the CLI writes and never streams.
     "last-prompt",
     "atis-latch",
@@ -253,7 +257,6 @@ const UNSERVED_ROWS: [&str; 19] = [
     "command_lifecycle",
     "stream_event",
     "tool_progress",
-    "task_progress",
 ];
 
 /// One transcript row as the session's message, or `None` for a row that is
@@ -2436,6 +2439,9 @@ mod tests {
             r#"{"type":"system","subtype":"api_error","error":{"message":"down"},"uuid":"e","session_id":"s"}"#,
             r#"{"type":"system","subtype":"informational","content":"c","uuid":"i","session_id":"s"}"#,
             r#"{"type":"system","subtype":"notification","text":"t","uuid":"n","session_id":"s"}"#,
+            // A typed system subtype the read keeps while another surface
+            // draws it: the numbering has to count its row as the scan does.
+            r#"{"type":"system","subtype":"task_progress","task_id":"t","description":"mapping","usage":{"total_tokens":1,"tool_uses":1,"duration_ms":1},"uuid":"tp","session_id":"s"}"#,
         ] {
             assert!(
                 has_a_transcript_row(&frame(served)),
@@ -2449,10 +2455,56 @@ mod tests {
             "a system subtype the read drops still counts as no row",
         );
         assert!(
+            !has_a_transcript_row(&frame(
+                r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":100,"estimated_tokens_delta":10,"uuid":"k","session_id":"s"}"#,
+            )),
+            "the thinking counter is a report figure, not a row",
+        );
+        assert!(
             has_a_transcript_row(&frame(
                 r#"{"type":"system","subtype":"turn_duration","durationMs":1,"uuid":"t","session_id":"s"}"#,
             )),
             "and a subtype the client draws provisionally has its row",
+        );
+    }
+
+    /// **One list, two consumers.** The scan and the client filter the same
+    /// `system` subtypes: a subtype in one and not the other either loses a
+    /// row at the transcript or draws one live that a reopened conversation
+    /// cannot serve. The two live in different languages, so this test reads
+    /// the client's literal and compares it with this crate's const.
+    #[test]
+    fn the_system_skip_list_matches_the_clients() {
+        const CLIENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../client/src/chat/units.ts");
+        const MARKER: &str = "const SYSTEM_DRAWN_ELSEWHERE: ReadonlySet<string> = new Set([";
+        let source = std::fs::read_to_string(CLIENT)
+            .unwrap_or_else(|err| panic!("the client's fold is readable at {CLIENT}: {err}"));
+        let start =
+            source.find(MARKER).unwrap_or_else(|| panic!("the client still declares {MARKER:?}"));
+        let block = &source[start + MARKER.len()..];
+        let end = block
+            .find("]);")
+            .unwrap_or_else(|| panic!("the client's skip list closes after its entries"));
+        let mut theirs: Vec<String> = block[..end]
+            .split(',')
+            .filter_map(|entry| {
+                let entry = entry.trim();
+                let quoted = entry.strip_prefix('\'')?.strip_suffix('\'')?;
+                (!quoted.is_empty()).then(|| quoted.to_owned())
+            })
+            .collect();
+        assert!(
+            !theirs.is_empty(),
+            "the client's skip list parsed to nothing, so this test compared nothing",
+        );
+        theirs.sort();
+        let mut ours: Vec<String> =
+            SYSTEM_ROWS_DRAWN_ELSEWHERE.iter().map(|name| (*name).to_owned()).collect();
+        ours.sort();
+        assert_eq!(
+            ours, theirs,
+            "the scan's SYSTEM_ROWS_DRAWN_ELSEWHERE and the client's SYSTEM_DRAWN_ELSEWHERE \
+             have diverged; a subtype belongs in both or neither",
         );
     }
 
