@@ -131,10 +131,7 @@ describe('what the shell is told', () => {
     expect(invoke, 'the release crossed').toHaveBeenCalledWith('client_release', {
       what: subject,
     });
-    expect(
-      connection.store(subject),
-      'the release left a store open on the page',
-    ).toBeUndefined();
+    expect(connection.store(subject), 'the release left a store open on the page').toBeUndefined();
   });
 
   /**
@@ -167,10 +164,7 @@ describe('what the shell is told', () => {
     // A second socket, whose open the page never saw.
     fire('client://inbound', greeting);
 
-    expect(seen, 'a new socket did not run the drop-and-open path').toEqual([
-      'connecting',
-      'open',
-    ]);
+    expect(seen, 'a new socket did not run the drop-and-open path').toEqual(['connecting', 'open']);
     expect(invoke, 'the reconnect forgot the shown seat').toHaveBeenCalledWith('client_showing', {
       seat: slot,
     });
