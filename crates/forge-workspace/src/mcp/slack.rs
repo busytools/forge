@@ -50,6 +50,7 @@ pub(crate) fn add_tools(
     let history = History { facade: facade.clone() };
     let replies = Replies { facade: facade.clone() };
     let user = User { facade: facade.clone() };
+    let me = Me { facade: facade.clone() };
     let pins = Pins { facade: facade.clone() };
     let bookmarks = Bookmarks { facade };
     builder
@@ -64,6 +65,7 @@ pub(crate) fn add_tools(
         .tool(history)
         .tool(replies)
         .tool(user)
+        .tool(me)
         .tool(pins)
         .tool(bookmarks)
 }
@@ -1340,6 +1342,70 @@ impl Tool for User {
     }
 }
 
+struct Me {
+    facade: Arc<dyn SlackFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct MeArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Me {
+    fn name(&self) -> &'static str {
+        "slack__me"
+    }
+
+    fn description(&self) -> &'static str {
+        "Report which Slack identity a workspace's token acts as, over `auth.test`: the team \
+         and the user behind it. `user_id` is what a message's `user` field carries and what a \
+         mention is written with, so this is how a caller knows which id is its own. Returns \
+         {workspace, team, team_id, user, user_id, url}; `workspace` is the `[[slack]]` label, \
+         which can differ from the team's name. Read-only and not held for approval. Any \
+         session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label. Omit it when only one \
+                                    workspace is configured.",
+                },
+            },
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: MeArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        match self.facade.me(args.workspace.as_deref()).await {
+            Ok((workspace, auth)) => {
+                let body = serde_json::json!({
+                    "workspace": workspace,
+                    "team": auth.team,
+                    "team_id": auth.team_id,
+                    "user": auth.user,
+                    "user_id": auth.user_id,
+                    "url": auth.url,
+                });
+                match serde_json::to_string_pretty(&body) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("identity serialization failed: {err}")),
+                }
+            }
+            Err(err) => tool_error(format_read_error(&err)),
+        }
+    }
+}
+
 struct Pins {
     facade: Arc<dyn SlackFacade>,
 }
@@ -1486,6 +1552,7 @@ mod tests {
     use super::*;
     use crate::mcp::slack::facade::{MockSlackFacade, SlackPostOutcome, SlackWorkspaceError};
     use crate::mcp::test_support::text_of;
+    use forge_connectors::slack::AuthTest;
     use forge_primitives::slack::{
         SlackBookmark, SlackConversation, SlackConversationText, SlackPin, SlackPinMessage,
     };
@@ -2188,6 +2255,40 @@ mod tests {
         assert!(!out.is_error, "a lookup succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("Vedhavyas S"), "got: {}", text_of(&out));
         assert_eq!(mock.user_calls.lock().as_slice(), [(None, "U1".to_owned())]);
+    }
+
+    /// The `[[slack]]` label and the team's own name are different things
+    /// (`Subspace` is team `Autonomys`), so both have to reach the caller.
+    #[tokio::test]
+    async fn slack_me_reports_the_label_and_the_token_identity() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.me_result.lock() = Some(Ok((
+            "Subspace".to_owned(),
+            AuthTest {
+                team: "Autonomys".to_owned(),
+                user: "ved".to_owned(),
+                team_id: "T2".to_owned(),
+                user_id: "U2".to_owned(),
+                url: "https://autonomys.slack.com/".to_owned(),
+            },
+        )));
+        let tool = Me { facade: mock.clone() };
+
+        let out = tool.call(input(serde_json::json!({ "workspace": "Subspace" }))).await;
+
+        assert!(!out.is_error, "an identity lookup succeeds: {}", text_of(&out));
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the identity record");
+        assert_eq!(json["workspace"], "Subspace", "the label the caller chose");
+        assert_eq!(json["team"], "Autonomys", "the team the token belongs to");
+        assert_eq!(json["user"], "ved");
+        assert_eq!(json["user_id"], "U2", "the id a mention and a message's user carry");
+        assert_eq!(json["url"], "https://autonomys.slack.com/");
+        assert_eq!(
+            mock.me_calls.lock().as_slice(),
+            [Some("Subspace".to_owned())],
+            "the named workspace is the one proved",
+        );
     }
 
     fn pinned_row(ts: &str, text: &str) -> SlackPin {

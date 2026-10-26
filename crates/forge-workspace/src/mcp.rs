@@ -626,7 +626,7 @@ mod tests {
     /// manage their own project's reviews, crons, tasks, subscriptions and
     /// decisions. The browser's own names are read off its table instead -
     /// one list per family, so a tool added there cannot leave this behind.
-    const ANY_CALLER_TOOLS: [&str; 32] = [
+    const ANY_CALLER_TOOLS: [&str; 33] = [
         "review__list",
         "review__get",
         "review__reply",
@@ -654,6 +654,7 @@ mod tests {
         "slack__history",
         "slack__replies",
         "slack__user",
+        "slack__me",
         "slack__pins",
         "slack__bookmarks",
         "systemone__ask_noul",

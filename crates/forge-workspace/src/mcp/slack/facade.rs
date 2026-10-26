@@ -8,7 +8,7 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
 use forge_connectors::slack::{
-    MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, read_thread,
+    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, read_thread,
 };
 use forge_primitives::slack::{
     SlackBookmark, SlackConversation, SlackDraft, SlackDraftEnding, SlackPin, SlackSearchMatch,
@@ -397,6 +397,14 @@ pub(crate) trait SlackFacade: Send + Sync {
 
     /// `users.info` for one user id.
     async fn user(&self, workspace: Option<&str>, user: &str) -> Result<SlackUser, SlackReadError>;
+
+    /// `auth.test`: the resolved `[[slack]]` label and the identity the
+    /// workspace's token acts as. The label is returned alongside because it
+    /// can differ from the team's name (`Subspace` is team `Autonomys`).
+    async fn me(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<(String, AuthTest), SlackReadError>;
 
     /// `pins.list` for one conversation.
     async fn pins(
@@ -788,6 +796,16 @@ impl SlackFacade for ProdSlackFacade {
         api.user_info(user).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
 
+    async fn me(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<(String, AuthTest), SlackReadError> {
+        let (label, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
+        let auth =
+            api.auth_test().await.map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+        Ok((label, auth))
+    }
+
     async fn pins(
         &self,
         workspace: Option<&str>,
@@ -1052,6 +1070,8 @@ pub(crate) struct MockSlackFacade {
         parking_lot::Mutex<Option<Result<Vec<SlackHistoryMessage>, SlackReadError>>>,
     pub user_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
     pub user_result: parking_lot::Mutex<Option<Result<SlackUser, SlackReadError>>>,
+    pub me_calls: parking_lot::Mutex<Vec<Option<String>>>,
+    pub me_result: parking_lot::Mutex<Option<Result<(String, AuthTest), SlackReadError>>>,
     pub pins_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
     pub pins_result: parking_lot::Mutex<Option<Result<Vec<SlackPin>, SlackReadError>>>,
     pub bookmarks_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
@@ -1152,6 +1172,25 @@ impl SlackFacade for MockSlackFacade {
                 real_name: None,
                 tz: None,
             })
+        })
+    }
+
+    async fn me(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<(String, AuthTest), SlackReadError> {
+        self.me_calls.lock().push(workspace.map(str::to_owned));
+        self.me_result.lock().clone().unwrap_or_else(|| {
+            Ok((
+                workspace.unwrap_or_default().to_owned(),
+                AuthTest {
+                    team: "Test".to_owned(),
+                    user: "tester".to_owned(),
+                    team_id: "T1".to_owned(),
+                    user_id: "U1".to_owned(),
+                    url: "https://test.slack.com/".to_owned(),
+                },
+            ))
         })
     }
 
@@ -2660,6 +2699,19 @@ mod tests {
             Some("100.0".to_owned()),
             "the second subscriber never resets the shared mention cursor",
         );
+    }
+
+    /// The label is part of the answer: `auth.test` reports the team, and a
+    /// `[[slack]]` label may well be a different string.
+    #[tokio::test]
+    async fn an_identity_lookup_names_the_resolved_label_and_the_token_user() {
+        let (facade, _ws, _api, _rx) = facade_with_recording_slack();
+
+        let (label, auth) = facade.me(Some("acme")).await.expect("the token is proved");
+
+        assert_eq!(label, "acme", "the label the caller can name again");
+        assert_eq!(auth.team, "Test", "the team comes from auth.test");
+        assert_eq!(auth.user_id, "U1", "and so does the token's own user id");
     }
 
     #[tokio::test]
