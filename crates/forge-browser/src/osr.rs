@@ -22,9 +22,10 @@ use cef::{
     WrapRenderHandler,
 };
 
-/// The largest surface a host allocates room for: a 4K display's worth of
-/// device pixels. A frame past it is dropped rather than copied past the
-/// mapping - a takeover that needs more than this cannot be drawn.
+/// The frame budget's sides: 3840x2160 device pixels of room, and a frame
+/// past their AREA is dropped rather than copied past the mapping. **A
+/// surface's CSS layout is not bounded by them** - the ring cuts the raster
+/// to keep it, and only a layout past the budget at 1x stops at the budget.
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 
