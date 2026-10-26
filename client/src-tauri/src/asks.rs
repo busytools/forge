@@ -55,8 +55,8 @@ impl AskKind {
     pub fn body(self) -> &'static str {
         match self {
             Self::Question => "a question is waiting",
-            Self::Permission => "a permission is waiting",
-            Self::HandOff => "a handoff is waiting",
+            Self::Permission => "a permission prompt is waiting",
+            Self::HandOff => "a hand-off is waiting",
         }
     }
 }
@@ -196,6 +196,22 @@ mod tests {
         json!({ "boot_id": run, "agents": agents })
     }
 
+    /// A roster whose rows carry their own depth, for the batch cases.
+    fn roster_depth(rows: &[(&str, Option<&str>, u64, usize)]) -> serde_json::Value {
+        let agents: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(label, pending, seq, depth)| {
+                json!({
+                    "slot": seat(label),
+                    "pending": pending,
+                    "pending_depth": depth,
+                    "pending_seq": seq,
+                })
+            })
+            .collect();
+        json!({ "boot_id": "run-1", "agents": agents })
+    }
+
     fn lead() -> SessionSlot {
         SessionSlot::lead("Busytools", "forge")
     }
@@ -249,11 +265,15 @@ mod tests {
     #[test]
     fn an_answer_that_shrinks_the_batch_is_not_news() {
         let mut asks = Asks::default();
-        asks.rising(&roster(&[]), None, true);
-        assert_eq!(asks.rising(&roster(&[("w1", Some("permission"), 4)]), None, true).len(), 1);
+        asks.rising(&roster_depth(&[]), None, true);
+        assert_eq!(
+            asks.rising(&roster_depth(&[("w1", Some("permission"), 5, 3)]), None, true).len(),
+            1,
+            "three waiting is news",
+        );
         assert!(
-            asks.rising(&roster(&[("w1", Some("permission"), 4)]), None, true).is_empty(),
-            "the same ask again",
+            asks.rising(&roster_depth(&[("w1", Some("permission"), 5, 2)]), None, true).is_empty(),
+            "one answered and none arrived, so the batch that shrank is not news",
         );
     }
 
