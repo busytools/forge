@@ -96,7 +96,12 @@ forge-test-harness ─→ primitives + sdk + workspace + server
 
 **The client** lives in `client/` - a Svelte page (`client/src/`) inside
 a Rust shell (`client/src-tauri/`) - and is its own workspace root, drawn
-entirely off the socket.
+entirely off the socket. **The client reaches the socket over two
+transports**: the page dials it itself (`client/src/socket.ts`) in a
+browser, and on the desktop the shell holds the connection in Rust
+(`client/src-tauri/src/socket.rs`); the page calls the shell through the
+`#[tauri::command]`s in `lib.rs` and receives inbound frames as Tauri
+events.
 
 **Single-instance per config dir.** One `forge` owns a config dir
 (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) and manages many sessions in
