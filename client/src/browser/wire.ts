@@ -13,7 +13,6 @@
 
 import type { BrowserTabList } from '../protocol';
 import type { BrowserFrame, BrowserWire, Connection } from '../socket';
-import type { SessionSlot } from '../wire/types';
 import { tabListOf, whyText, type HideAnswer, type OpenAnswer } from './host';
 import type { BrowserLink } from './link';
 
@@ -75,7 +74,10 @@ function wireLink(connection: Connection & BrowserWire): BrowserLink {
     },
 
     async listTabs(seat): Promise<BrowserTabList> {
-      return tabListOf(await connection.browserTabs(seat as SessionSlot));
+      // **A tab list names a seat**: the ask carries it, and a page with none
+      // has no profile to list - refused here rather than as a malformed frame.
+      if (seat === null) throw new Error('this page has no seat to list the browser for');
+      return tabListOf(await connection.browserTabs(seat));
     },
 
     onTabs(fn): Promise<() => void> {

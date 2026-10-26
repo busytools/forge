@@ -153,6 +153,13 @@ describe('the wire link', () => {
     expect(fake.wire.browserControl).toHaveBeenCalledWith(true);
   });
 
+  /// **A tab list names a seat**, and a page with none has no profile to list.
+  it('refuses a tab list with no seat to name', async () => {
+    const fake = install();
+    await expect(listTabs(null)).rejects.toThrow(/no seat/);
+    expect(fake.wire.browserTabs, 'nothing malformed goes on the wire').not.toHaveBeenCalled();
+  });
+
   /// **The tabs a page reads are narrowed on the way in**, so a malformed
   /// list fails the read rather than drawing an empty strip.
   it('reads the tabs and refuses a list it cannot read', async () => {
