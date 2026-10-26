@@ -44,8 +44,9 @@ history is the record.
 
 1. **Plan the feature and pick its label** (the label names the worker, its
    task row and the stack directory). **A client cut's plan names both
-   transports** - the page's socket (`client/src/socket.ts`) and the shell's
-   Rust bridge (`client/src-tauri/src/socket.rs`, `bridge.rs` and the
+   transports** - the browser's socket (`client/src/socket.ts`) and the
+   desktop's, which the page reaches through `client/src/connect/rust.ts`
+   and the shell holds in Rust (`client/src-tauri/src/socket.rs`, behind the
    commands in `lib.rs`) - **and every transition the cut touches** (seat
    switch, Home, unmount, resume), with a test listed for each.
 2. **Spawn the worker with worktree isolation** (the recipe builds and boots
@@ -64,7 +65,10 @@ history is the record.
    behavior at a time, against the stack (deep) or the dev client (shallow).
    **A seat cut's look drives a real page**: leave to Home and return, and
    one suspend/resume, with a frame recorder running and the click-to-row
-   numbers reported. A checklist of clicks is not a look.
+   numbers reported. The recorder is the app shell's - the client's perf log
+   (`client/src/perf.ts` into `client/src-tauri/src/perf.rs`) writes only
+   inside Tauri - so a seat cut's look runs in the app shell, not a browser
+   tab. A checklist of clicks is not a look.
 5. **PR + the lead's review loop.** Fixes land on the branch; the stack
    rebuilds and restarts from it.
 6. **For feature-scale work, the post-review re-look** (Ved's ruling): after
