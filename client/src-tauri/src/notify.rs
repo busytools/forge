@@ -32,8 +32,6 @@ const TAP: &str = "tap";
 
 /// One piece of work for the notification thread.
 enum Job {
-    /// Register the channel and the click listener.
-    Init,
     /// One ask the bridge decided is news.
     Raise(SessionSlot, AskKind),
     /// The person may have come back to the app: ask a held prompt, or show
@@ -108,10 +106,54 @@ fn looking() -> bool {
     }
 }
 
+/// The platform's notification surface, as the worker uses it.
+///
+/// **A seam for the test, not a second implementation**: `Shell` is what
+/// ships, and the fake in this module's tests is the only other type.
+trait Platform {
+    /// Whether a permission prompt can reach the person right now.
+    fn looking(&self) -> bool;
+    fn permission(&self) -> PermissionState;
+    fn request(&self) -> Result<PermissionState, String>;
+    fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String>;
+}
+
+/// The shell's own notification surface.
+struct Shell {
+    app: AppHandle,
+}
+
+impl Platform for Shell {
+    fn looking(&self) -> bool {
+        looking()
+    }
+
+    fn permission(&self) -> PermissionState {
+        self.app.notification().permission_state().unwrap_or(PermissionState::Granted)
+    }
+
+    fn request(&self) -> Result<PermissionState, String> {
+        self.app.notification().request_permission().map_err(|why| why.to_string())
+    }
+
+    fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String> {
+        let held = serde_json::to_value(seat).map_err(|why| why.to_string())?;
+        self.app
+            .notification()
+            .builder()
+            .title(title(seat))
+            .body(kind.body())
+            .channel_id(CHANNEL)
+            .extra(SEAT_EXTRA, held)
+            .show()
+            .map_err(|why| why.to_string())
+    }
+}
+
 /// The thread's own state: what was refused, and the asks waiting on a
 /// permission that has not been answered.
-struct Worker {
-    app: AppHandle,
+struct Worker<P: Platform> {
+    platform: P,
     /// Set only by an explicit denial to a request this thread made.
     refused: bool,
     /// Asks that would have been shown but for the permission.
@@ -120,54 +162,11 @@ struct Worker {
     showed: bool,
 }
 
-impl Worker {
+impl<P: Platform> Worker<P> {
     fn run(&mut self, job: Job) {
         match job {
-            Job::Init => self.init(),
             Job::Raise(seat, kind) => self.raise(seat, kind),
             Job::Review => self.review(),
-        }
-    }
-
-    /// Register the channel and the click that opens the seat it was posted
-    /// for.
-    ///
-    /// **A registration that fails does not stop the client**: a channel or
-    /// a listener this platform refuses costs notifications, which is not
-    /// worth a client that will not boot.
-    fn init(&mut self) {
-        let notifications = self.app.notification();
-        #[cfg(target_os = "android")]
-        {
-            let channel = tauri_plugin_notification::Channel::builder(CHANNEL, "Asks")
-                .description("an agent waiting on you")
-                .build();
-            if let Err(why) = notifications.create_channel(channel) {
-                tauri_plugin_log::log::warn!(
-                    "the asks notification channel was not created: {why}"
-                );
-            }
-        }
-        let handle = self.app.clone();
-        let registered = notifications.on_action(move |action| {
-            if action.action_id() != TAP {
-                return;
-            }
-            let Some(seat) = seat_of(action) else {
-                return;
-            };
-            if let Some(window) = handle.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-            // The page owns the route, so the seat crosses as the event's own
-            // payload rather than being opened here.
-            let _ = handle.emit("client://notification", seat);
-        });
-        if let Err(why) = registered {
-            tauri_plugin_log::log::warn!(
-                "the notification click listener was not registered: {why}"
-            );
         }
     }
 
@@ -175,9 +174,8 @@ impl Worker {
         if self.refused {
             return;
         }
-        let notifications = self.app.notification();
-        let state = notifications.permission_state().unwrap_or(PermissionState::Granted);
-        match step(state, self.refused, looking()) {
+        let state = self.platform.permission();
+        match step(state, self.refused, self.platform.looking()) {
             Step::Show => self.show(&seat, kind),
             Step::Ask => {
                 self.hold(seat, kind);
@@ -194,11 +192,10 @@ impl Worker {
         if self.pending.is_empty() || self.refused {
             return;
         }
-        let notifications = self.app.notification();
-        let state = notifications.permission_state().unwrap_or(PermissionState::Granted);
+        let state = self.platform.permission();
         if state == PermissionState::Granted {
             self.drain();
-        } else if looking() {
+        } else if self.platform.looking() {
             self.ask();
         }
     }
@@ -214,8 +211,7 @@ impl Worker {
 
     /// Ask for the permission, and act only on the answer.
     fn ask(&mut self) {
-        let notifications = self.app.notification();
-        match notifications.request_permission() {
+        match self.platform.request() {
             Ok(PermissionState::Granted) => self.drain(),
             // **The person answered no**: nothing more is asked this run.
             Ok(PermissionState::Denied) => {
@@ -239,7 +235,7 @@ impl Worker {
     }
 
     fn show(&mut self, seat: &SessionSlot, kind: AskKind) {
-        if let Err(why) = self.show_now(seat, kind) {
+        if let Err(why) = self.platform.show(seat, kind) {
             // **A notification is not worth a silent failure**: the log names
             // the seat so a missing banner is answerable after the fact.
             tauri_plugin_log::log::warn!(
@@ -259,29 +255,61 @@ impl Worker {
             );
         }
     }
+}
 
-    fn show_now(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String> {
-        let held = serde_json::to_value(seat).map_err(|why| why.to_string())?;
-        self.app
-            .notification()
-            .builder()
-            .title(title(seat))
-            .body(kind.body())
-            .channel_id(CHANNEL)
-            .extra(SEAT_EXTRA, held)
-            .show()
-            .map_err(|why| why.to_string())
+/// Register the channel and the click that opens the seat it was posted for.
+///
+/// **A registration that fails does not stop the client**: a channel or a
+/// listener this platform refuses costs notifications, which is not worth a
+/// client that will not boot.
+fn register(app: &AppHandle) {
+    let notifications = app.notification();
+    #[cfg(target_os = "android")]
+    {
+        let channel = tauri_plugin_notification::Channel::builder(CHANNEL, "Asks")
+            .description("an agent waiting on you")
+            .build();
+        if let Err(why) = notifications.create_channel(channel) {
+            tauri_plugin_log::log::warn!("the asks notification channel was not created: {why}");
+        }
+    }
+    let handle = app.clone();
+    let registered = notifications.on_action(move |action| {
+        if action.action_id() != TAP {
+            return;
+        }
+        let Some(seat) = seat_of(action) else {
+            return;
+        };
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        // The page owns the route, so the seat crosses as the event's own
+        // payload rather than being opened here.
+        let _ = handle.emit("client://notification", seat);
+    });
+    if let Err(why) = registered {
+        tauri_plugin_log::log::warn!("the notification click listener was not registered: {why}");
     }
 }
 
-/// The notification thread's sender, started on the first job.
+/// The notification thread's sender, started on the first call.
 fn jobs(app: &AppHandle) -> &'static mpsc::Sender<Job> {
     JOBS.get_or_init(|| {
         let (tx, rx) = mpsc::channel();
         let app = app.clone();
         let spawned =
             std::thread::Builder::new().name("forge-notify".to_owned()).spawn(move || {
-                let mut worker = Worker { app, refused: false, pending: Vec::new(), showed: false };
+                // **The registration comes first**: a raise cannot outrun the
+                // channel it needs, because both are this one thread's queue.
+                register(&app);
+                let mut worker = Worker {
+                    platform: Shell { app },
+                    refused: false,
+                    pending: Vec::new(),
+                    showed: false,
+                };
                 for job in rx {
                     worker.run(job);
                 }
@@ -294,9 +322,10 @@ fn jobs(app: &AppHandle) -> &'static mpsc::Sender<Job> {
     })
 }
 
-/// Register the channel and the click, off the main thread.
+/// Start the notification thread, which registers the channel and the click
+/// before its first raise.
 pub fn init(app: &AppHandle) {
-    let _ = jobs(app).send(Job::Init);
+    let _ = jobs(app);
 }
 
 /// Raise one ask's notification on the seat it belongs to.
@@ -311,6 +340,10 @@ pub fn review(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
     use super::*;
 
     /// **An unasked permission reads `Denied` on Android**, and the request
@@ -340,6 +373,127 @@ mod tests {
     fn a_granted_permission_shows_the_ask() {
         assert_eq!(step(PermissionState::Granted, false, false), Step::Show);
         assert_eq!(step(PermissionState::Granted, true, true), Step::Nothing);
+    }
+
+    /// The plugin, scripted: what the permission reads, what each request
+    /// answers, and what was shown.
+    struct Fake {
+        state: Cell<PermissionState>,
+        answers: RefCell<VecDeque<Result<PermissionState, String>>>,
+        requests: Cell<usize>,
+        looking: Cell<bool>,
+        shown: RefCell<Vec<(SessionSlot, AskKind)>>,
+    }
+
+    impl Fake {
+        fn new(
+            state: PermissionState,
+            answers: Vec<Result<PermissionState, String>>,
+            looking: bool,
+        ) -> Self {
+            Self {
+                state: Cell::new(state),
+                answers: RefCell::new(answers.into()),
+                requests: Cell::new(0),
+                looking: Cell::new(looking),
+                shown: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Platform for Rc<Fake> {
+        fn looking(&self) -> bool {
+            self.looking.get()
+        }
+
+        fn permission(&self) -> PermissionState {
+            self.state.get()
+        }
+
+        fn request(&self) -> Result<PermissionState, String> {
+            self.requests.set(self.requests.get() + 1);
+            let answer = self.answers.borrow_mut().pop_front().expect("a scripted answer");
+            if let Ok(state) = &answer {
+                self.state.set(*state);
+            }
+            answer
+        }
+
+        fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String> {
+            self.shown.borrow_mut().push((seat.clone(), kind));
+            Ok(())
+        }
+    }
+
+    /// A worker over one scripted platform.
+    fn worker(fake: &Rc<Fake>) -> Worker<Rc<Fake>> {
+        Worker { platform: Rc::clone(fake), refused: false, pending: Vec::new(), showed: false }
+    }
+
+    fn lead() -> SessionSlot {
+        SessionSlot::lead("Busytools", "forge")
+    }
+
+    /// **An unanswered request latches nothing**: a platform that settled on
+    /// no answer is not a refusal, so the next ask is put to the person
+    /// again.
+    #[test]
+    fn an_unanswered_request_is_asked_again() {
+        let fake = Rc::new(Fake::new(
+            PermissionState::Denied,
+            vec![Ok(PermissionState::Prompt), Ok(PermissionState::Prompt)],
+            true,
+        ));
+        let mut worker = worker(&fake);
+        worker.run(Job::Raise(lead(), AskKind::Question));
+        worker.run(Job::Raise(lead(), AskKind::Permission));
+        assert_eq!(fake.requests.get(), 2, "no answer is not a refusal");
+        assert!(fake.shown.borrow().is_empty(), "and nothing was shown without an answer");
+    }
+
+    /// **A denial is an answer**: it latches silently, is never asked again
+    /// this run, and shows nothing.
+    #[test]
+    fn a_denial_latches_silently() {
+        let fake =
+            Rc::new(Fake::new(PermissionState::Denied, vec![Ok(PermissionState::Denied)], true));
+        let mut worker = worker(&fake);
+        worker.run(Job::Raise(lead(), AskKind::Question));
+        worker.run(Job::Raise(lead(), AskKind::Permission));
+        assert_eq!(fake.requests.get(), 1, "a refusal is not asked again");
+        assert!(fake.shown.borrow().is_empty(), "and a refusal shows nothing");
+    }
+
+    /// **A background ask is held, and shown when the person is back**: no
+    /// prompt can reach them behind another app, so the ask waits rather than
+    /// being dropped or prompted into nobody's hands.
+    #[test]
+    fn a_background_ask_is_held_until_the_person_is_back() {
+        let fake =
+            Rc::new(Fake::new(PermissionState::Denied, vec![Ok(PermissionState::Granted)], false));
+        let mut worker = worker(&fake);
+        worker.run(Job::Raise(lead(), AskKind::HandOff));
+        assert_eq!(fake.requests.get(), 0, "no prompt behind another app");
+        assert!(fake.shown.borrow().is_empty(), "and nothing shown yet");
+
+        fake.looking.set(true);
+        worker.run(Job::Review);
+        assert_eq!(fake.requests.get(), 1, "the person is back, so the ask is put to them");
+        let shown = fake.shown.borrow();
+        assert_eq!(shown.len(), 1, "the held ask is shown once");
+        assert_eq!(shown[0], (lead(), AskKind::HandOff));
+    }
+
+    /// A granted permission shows the ask at once, with no request.
+    #[test]
+    fn a_granted_permission_shows_without_asking() {
+        let fake = Rc::new(Fake::new(PermissionState::Granted, Vec::new(), true));
+        let mut worker = worker(&fake);
+        worker.run(Job::Raise(lead(), AskKind::Question));
+        assert_eq!(fake.requests.get(), 0, "nothing to ask for");
+        let shown = fake.shown.borrow();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0], (lead(), AskKind::Question));
     }
 
     /// **A click reaches the seat the notification was posted for.** The

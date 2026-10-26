@@ -579,36 +579,44 @@ pub fn run() {
         }
     };
 
-    app.run(|handle, event| match event {
+    app.run(|handle, event| {
         // The held microphone goes with the client too, so the indicator is
         // out the moment the window is; a crash and a SIGKILL release it the
         // way the OS releases any process's device.
-        tauri::RunEvent::Exit => {
+        if matches!(&event, tauri::RunEvent::Exit) {
             if let Some(mic) = handle.try_state::<std::sync::Arc<crate::mic::Mic>>() {
                 mic.release();
             }
+            return;
         }
         // **Looking away is when an ask on the shown seat becomes news**, and
         // no frame carries that moment.
-        tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Focused(false), .. } => {
+        if let tauri::RunEvent::WindowEvent { event, .. } = &event
+            && let Some(foreground) = attention(event)
+        {
+            #[cfg(mobile)]
+            crate::asks::set_foreground(foreground);
+            #[cfg(not(mobile))]
+            let _ = foreground;
             review_asks(handle);
         }
-        // **The phone's foreground state stands in for its window's focus**
-        // (tao's Android window never reports focus), and a suspend is the
-        // moment the person stopped looking. Both are mobile-only variants;
-        // the desktop's focus is the `Focused` arm above.
-        #[cfg(mobile)]
-        tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Suspended, .. } => {
-            crate::asks::set_foreground(false);
-            review_asks(handle);
-        }
-        #[cfg(mobile)]
-        tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Resumed, .. } => {
-            crate::asks::set_foreground(true);
-            review_asks(handle);
-        }
-        _ => {}
     });
+}
+
+/// The foreground state a window event states, or `None` when it says
+/// nothing about the person's attention.
+///
+/// **A suspended mobile window stands in for a lost focus** (tao's Android
+/// window never reports one), and a resume is the person coming back.
+fn attention(event: &tauri::WindowEvent) -> Option<bool> {
+    match event {
+        tauri::WindowEvent::Focused(focused) => Some(*focused),
+        #[cfg(mobile)]
+        tauri::WindowEvent::Suspended => Some(false),
+        #[cfg(mobile)]
+        tauri::WindowEvent::Resumed => Some(true),
+        _ => None,
+    }
 }
 
 /// Re-read the asked state for the notification rule, where a focus or a
@@ -826,5 +834,20 @@ fn record(log_file: Option<&std::path::Path>, line: &str) {
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(file, "{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attention;
+
+    /// **A blur is the moment the rule must look again**, and no frame
+    /// carries it. A gain of focus asks the same review; an event that says
+    /// nothing about attention leaves the rule alone.
+    #[test]
+    fn a_focus_change_moves_the_attention_rule() {
+        assert_eq!(attention(&tauri::WindowEvent::Focused(false)), Some(false));
+        assert_eq!(attention(&tauri::WindowEvent::Focused(true)), Some(true));
+        assert_eq!(attention(&tauri::WindowEvent::Destroyed), None);
     }
 }
