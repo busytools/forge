@@ -1,13 +1,16 @@
 //! The pointer's coordinate, live: the page a viewer's surface asks for is
 //! the page it gets, and a click the server sends reaches the pixel it names.
 //!
-//! **The measurement rig for the takeover's offset click**, and the property
-//! that keeps it from coming back: a surface's size is measured in device
-//! pixels - a 2048x1112 desktop takeover at 2x asks for 4096x2224 - and the
-//! frame budget that holds those pixels must never move the CSS size the page
-//! lays out at. When the budget moved the layout instead, the page came back
-//! 1920x1080 under a 2048x1112 surface, the desktop drew it letterboxed, and
-//! every click the surface sent landed right of the pixel under the pointer.
+//! **The regression guard is the layout assertion**: with no viewport
+//! override applied, a surface's size is measured in device pixels - a
+//! 2048x1112 desktop takeover at 2x asks for 4096x2224 - and the frame budget
+//! that holds those pixels must never move the CSS size the page lays out at.
+//! When the budget moved the layout instead, the page came back 1920x1080
+//! under a 2048x1112 surface, the desktop drew it letterboxed, and every
+//! click the surface sent landed right of the pixel under the pointer. **The
+//! click checks pin the other half**: the host forwards a gesture's DIP one to
+//! one, which holds on unmodified main, so they catch a scale or an offset
+//! introduced between the host and the page rather than the budget itself.
 //!
 //! **These need the real bundle**: they stage the workspace's own host the
 //! way the server ships it, then drive it as the server does.
@@ -272,14 +275,15 @@ impl Fixture {
     }
 }
 
-/// **The frame budget never moves the page's layout.** A desktop takeover
-/// measures 2048x1112 CSS pixels at 2x, asking for 4096x2224 device pixels -
-/// past the ring's 3840x2160 budget. Clamping THAT halves the page's layout
-/// to 1920x1080, and the surface then draws a narrower page scaled up and
-/// centred, so a click sent at the overlay's x lands right of the pixel under
-/// the pointer by 55 px at x 700 and 78 px at x 1500 (measured before the fix).
-/// The phone's portrait surface, 390x780 at 3x, failed the same way in y. The
-/// layout is the surface's to name; only the raster may give.
+/// **With no viewport override, the frame budget never moves the page's
+/// layout.** A desktop takeover measures 2048x1112 CSS pixels at 2x, asking
+/// for 4096x2224 device pixels - past the ring's 3840x2160 budget. Clamping
+/// THAT halves the page's layout to 1920x1080, and the surface then draws a
+/// narrower page scaled up and centred, so a click sent at the overlay's x
+/// lands right of the pixel under the pointer by 55 px at x 700 and 78 px at
+/// x 1500 (measured before the fix). The phone's portrait surface, 390x780 at
+/// 3x, failed the same way in y. The layout is the surface's to name; only the
+/// raster may give.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
     let mut at = fixture("budget").await;
@@ -303,14 +307,16 @@ async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
         u64::from(width) * u64::from(height) <= u64::from(MAX_WIDTH) * u64::from(MAX_HEIGHT),
         "the frame stays inside the ring's budget, {width}x{height}"
     );
-    // The frame is the layout at the raster the budget allowed, and the
-    // client scales that back to the surface; a frame whose ratio disagrees
-    // with the surface is the letterbox that moved every click.
+    // With no viewport override the frame is the layout at the raster the
+    // budget allowed, and the client scales that back to the surface; a frame
+    // whose ratio disagrees with the surface is the letterbox that moved every
+    // click.
     let dpr = env.get("dpr").and_then(Value::as_f64).expect("a dpr");
     assert!(
         (f64::from(width) - 2048.0 * dpr).abs() <= 2.0
             && (f64::from(height) - 1112.0 * dpr).abs() <= 2.0,
-        "the frame is the layout at the painted raster: {width}x{height} against 2048x1112 at {dpr}"
+        "with no viewport override the frame is the layout at the painted raster: {width}x{height} \
+         against 2048x1112 at {dpr}"
     );
 
     for (count, (x, y)) in [(3_usize, (700_i32, 400_i32)), (4, (1500, 900))] {
@@ -318,7 +324,6 @@ async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
         assert_click(&seen, x, y);
     }
 
-    // **A take's restore names the tab's size too, on the same raw request.**
     // **A take's restore names the tab's size too, on the same raw request.**
     // The view it leaves must stay inside the budget, or every later paint is
     // dropped and the surface freezes on its last picture after a recording.

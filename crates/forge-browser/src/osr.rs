@@ -870,11 +870,13 @@ pub(crate) fn scale_milli(scale: f64) -> u32 {
 /// The request a surface's device pixels become, with the ring's frame budget
 /// held.
 ///
-/// **The budget caps the pixels painted, never the CSS size the page lays out
-/// at**: cutting a 2x surface's request halved the page's layout and every
-/// click landed right of the pixel under the pointer (measured on a live host
-/// at 2048x1112). The raster gives instead; only a layout past the budget at
-/// 1x is itself cut, since no frame can hold it.
+/// **When no viewport override is applied, the budget caps the pixels painted
+/// and never the CSS size the page lays out at**: cutting a 2x surface's
+/// request halved the page's layout and every click landed right of the pixel
+/// under the pointer (measured on a live host at 2048x1112). The raster gives
+/// instead; only a layout past the budget at 1x is itself cut, since no frame
+/// can hold it. **An override moves the page's CSS size without moving the
+/// frame**, so that mode is the driver's to clear, not this budget's.
 fn budgeted_request(
     request_width: u32,
     request_height: u32,
@@ -941,10 +943,11 @@ fn view_size(request_width: u32, request_height: u32, scale_milli: u32) -> (i32,
 
 /// A rounded device-pixel count from a computed size.
 ///
-/// **The cast is the only arithmetic route from a float to a count**, and
-/// every caller derives its value from the ring's own clamped request sizes,
-/// so the result is bounded by `MAX_WIDTH * 8`; a non-finite or negative
-/// value takes `fallback` rather than wrapping.
+/// **The cast is the only arithmetic route from a float to a count**; a
+/// non-finite or negative value takes `fallback`, and a finite one saturates
+/// at the type's bounds rather than wrapping. Callers may hold a surface past
+/// the frame budget (the request path no longer clamps to `MAX_WIDTH`), so the
+/// value is not pre-bounded by them.
 fn rounded_u32(value: f64, fallback: u32) -> u32 {
     if !value.is_finite() || value < 0.0 {
         return fallback;
@@ -952,21 +955,21 @@ fn rounded_u32(value: f64, fallback: u32) -> u32 {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "bounded by the ring's request caps and checked non-negative"
+        reason = "rounded from a finite, non-negative value, and the cast saturates at u32::MAX"
     )]
     let count = value.round() as u32;
     count
 }
 
 /// A rounded DIP size from a computed view, with the same bound as
-/// [`rounded_u32`].
+/// [`rounded_u32`] but answering the wider signed type.
 fn rounded_i32(value: f64, fallback: i32) -> i32 {
     if !value.is_finite() || value > f64::from(i32::MAX) {
         return fallback;
     }
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "bounded by the ring's request caps and checked in range"
+        reason = "rounded from a finite value at most i32::MAX, and the cast saturates below it"
     )]
     let points = value.round() as i32;
     points
@@ -996,8 +999,9 @@ fn painted_size(request_width: u32, request_height: u32, scale_milli: u32) -> (u
 mod tests {
     use super::*;
 
-    /// **The frame budget never moves the page's layout.** A surface's device
-    /// pixels stop at the budget; the CSS size the page lays out at does not.
+    /// **With no viewport override, the frame budget never moves the page's
+    /// layout.** A surface's device pixels stop at the budget; the CSS size
+    /// the page lays out at does not.
     /// A desktop takeover of 2048x1112 at 2x asks for 4096x2224, past the
     /// ring's 3840x2160, and every gesture the surface sent landed right of
     /// the pixel under the pointer while the layout was clamped to 1920x1080.
