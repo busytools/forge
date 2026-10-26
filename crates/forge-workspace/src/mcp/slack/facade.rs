@@ -756,6 +756,10 @@ impl SlackFacade for ProdSlackFacade {
             .map_err(|err| SlackReadError::Fetch(err.to_string()))?
             .into_iter()
             .find(|known| known.id == conversation)
+            // `in:` takes a channel name. A DM has none, and a group DM's
+            // generated name is not one Slack's search understands, so those
+            // stay local-only rather than narrowing to nothing.
+            .filter(|known| !known.is_im && !known.is_mpim)
             .and_then(|known| known.name)
             .filter(|name| !name.is_empty());
         let narrowed = name.map_or_else(|| query.to_owned(), |name| format!("in:{name} {query}"));
@@ -1457,6 +1461,20 @@ mod tests {
                 is_mpim: false,
                 is_archived: false,
                 user: Some(user.to_owned()),
+                purpose: None,
+                topic: None,
+            });
+        }
+        fn seed_mpim(&self, id: &str, name: &str) {
+            self.conversations.lock().push(SlackConversation {
+                id: id.to_owned(),
+                name: Some(name.to_owned()),
+                is_channel: false,
+                is_private: false,
+                is_im: false,
+                is_mpim: true,
+                is_archived: false,
+                user: None,
                 purpose: None,
                 topic: None,
             });
@@ -2947,20 +2965,34 @@ mod tests {
         );
     }
 
-    /// A DM has no name, so there is nothing to narrow on and the id alone
-    /// does the filtering.
+    /// A DM has no name, and a group DM's generated name is not one search
+    /// understands, so neither narrows the query: the id alone filters.
     #[tokio::test]
-    async fn a_search_filtered_by_an_unnamed_conversation_keeps_the_query_whole() {
+    async fn a_search_filtered_by_a_dm_or_group_dm_keeps_the_query_whole() {
         let (facade, _ws, api, _rx) = facade_with_recording_slack();
         api.seed_dm("D1", "U9");
-        api.seed_search(vec![search_hit("D1", "100.1"), search_hit("C2", "100.2")]);
+        api.seed_mpim("G1", "mpdm-ved--gina-1");
+        api.seed_search(vec![
+            search_hit("D1", "100.1"),
+            search_hit("G1", "100.2"),
+            search_hit("C2", "100.3"),
+        ]);
 
-        let found =
+        let direct =
             facade.search(Some("acme"), "deploy", 20, Some("D1")).await.expect("the search runs");
+        assert_eq!(direct.len(), 1, "only the DM's hit survives: {direct:?}");
+        assert_eq!(direct[0].conversation_id, "D1");
 
-        assert_eq!(found.len(), 1, "only the DM's hit survives: {found:?}");
-        assert_eq!(found[0].conversation_id, "D1");
-        assert_eq!(api.search_reads(), ["deploy"], "an unnamed conversation adds no `in:`");
+        let group =
+            facade.search(Some("acme"), "deploy", 20, Some("G1")).await.expect("the search runs");
+        assert_eq!(group.len(), 1, "only the group DM's hit survives: {group:?}");
+        assert_eq!(group[0].conversation_id, "G1");
+
+        assert_eq!(
+            api.search_reads(),
+            ["deploy", "deploy"],
+            "neither a DM nor a group DM adds an `in:`",
+        );
     }
 
     #[tokio::test]

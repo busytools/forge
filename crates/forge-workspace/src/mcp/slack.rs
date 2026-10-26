@@ -1293,7 +1293,8 @@ impl Tool for User {
     fn description(&self) -> &'static str {
         "Look up one Slack user by id: their handle, real name and timezone. Returns \
          {id, name, real_name, tz}, each of the last three null when the workspace does not \
-         report it. Any session in the project may call this."
+         report it. Use slack__users to find an id from a name. Any session in the project may \
+         call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
