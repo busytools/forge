@@ -86,7 +86,8 @@ mod tests {
     fn the_log_rolls_at_its_cap() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(PERF_LOG_NAME);
-        let mut writer = RollingFileWriter::new(&path, true, 6, PERF_ROTATION_FILES).expect("writer");
+        let mut writer =
+            RollingFileWriter::new(&path, true, 6, PERF_ROTATION_FILES).expect("writer");
         writer.write_all(b"aaaaa\n").expect("first write");
         writer.write_all(b"bbbbb\n").expect("second write");
         writer.flush().expect("flush");
