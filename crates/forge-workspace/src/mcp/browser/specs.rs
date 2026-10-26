@@ -8,9 +8,11 @@
 //! argument is a prompt that resolves to something else. The additions this
 //! family carries beyond upstream are marked as such, and each names an
 //! argument upstream does not have - `force`, `expression`, the hand-off's
-//! `tab` - or stands as a tool of its own built from the same driver.
-//! `browser_close`'s description is this family's own: it names the session's
-//! current tab, which is what a close means here.
+//! `tab` - or stands as a tool of its own built from the same driver. Two
+//! descriptions differ too: `browser_snapshot` gains a sentence stating a
+//! ref's lifetime, which upstream's never says, and `browser_close`'s is this
+//! family's own, naming the session's current tab because that is what a
+//! close means here.
 //!
 //! Kept apart from the tools themselves so the surface a model reads is one
 //! table rather than a struct apiece: a shape is edited here and nowhere
@@ -483,7 +485,16 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_snapshot",
-            description: "Capture accessibility snapshot of the current page, this is better than screenshot",
+            // Beyond upstream: the one sentence after its own. A ref's
+            // lifetime is what a caller writing a prompt against this tool
+            // needs and upstream's description never says (measured on
+            // @playwright/mcp 0.0.83, 2026-10-27).
+            description: "Capture accessibility snapshot of the current page, this is better than \
+                          screenshot. A ref names the element as it stands: a re-render that \
+                          replaces or removes it, or a navigation, retires the ref and a fresh \
+                          snapshot is needed. A role/name selector such as \
+                          role=button[name=\"Save\"] needs no snapshot and is resolved when a call \
+                          runs.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -875,6 +886,36 @@ mod tests {
                 !spec.description.is_empty(),
                 "{} has no description for the model to read",
                 spec.name,
+            );
+        }
+    }
+
+    /// **The snapshot's description states a ref's lifetime**, which is the
+    /// one description sentence beyond upstream's: a caller writing a prompt
+    /// against this tool reads it there, and the measured behaviour is that a
+    /// ref survives an ordinary re-render and dies when its element is
+    /// replaced or removed, or the page navigates.
+    #[test]
+    fn the_snapshot_description_states_a_refs_lifetime() {
+        let snapshot = specs()
+            .into_iter()
+            .find(|spec| spec.name == "browser_snapshot")
+            .expect("browser_snapshot");
+        assert!(
+            snapshot.description.starts_with("Capture accessibility snapshot"),
+            "upstream's first sentence is kept: {}",
+            snapshot.description,
+        );
+        for phrase in [
+            "a re-render that replaces or removes it",
+            "a fresh snapshot is needed",
+            "role=button[name=\"Save\"]",
+            "resolved when a call runs",
+        ] {
+            assert!(
+                snapshot.description.contains(phrase),
+                "the description says {phrase:?}: {}",
+                snapshot.description,
             );
         }
     }

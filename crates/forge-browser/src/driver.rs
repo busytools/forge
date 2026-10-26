@@ -346,18 +346,59 @@ impl Driver {
         if result.is_error == Some(true) {
             // Upstream reports a failed call as an error result whose content
             // is the reason; the answer's failure arm carries the words.
-            let reason = parts
-                .iter()
-                .map(|part| match part {
-                    BrowserPart::Text { text } => text.clone(),
-                    BrowserPart::Image { .. } => "[an image]".to_owned(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Err(if reason.is_empty() { format!("{tool} failed") } else { reason });
+            return Err(failure_reason(&parts).unwrap_or_else(|| format!("{tool} failed")));
         }
         Ok(parts)
     }
+}
+
+/// A failed call's own words, with upstream's terse stale-ref sentence
+/// replaced by one that says what happened and what to do about it.
+fn failure_reason(parts: &[BrowserPart]) -> Option<String> {
+    let reason = parts
+        .iter()
+        .map(|part| match part {
+            BrowserPart::Text { text } => text.clone(),
+            BrowserPart::Image { .. } => "[an image]".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if reason.is_empty() {
+        return None;
+    }
+    Some(stale_ref_recovery(&reason).unwrap_or(reason))
+}
+
+/// Upstream's stale-ref failure, rewritten to name the cause and both ways
+/// out.
+///
+/// **Measured against `@playwright/mcp` 0.0.83 on a React form, 2026-10-27.**
+/// A ref names the element object its snapshot captured, so it survives an
+/// ordinary re-render that keeps that node (eight over 2 s, click still
+/// landed) and stops resolving once a re-render replaces the node (a form
+/// remounting every 250 ms failed on the next tick) or the page navigates.
+/// A fresh snapshot keeps the refs of elements that stayed and mints new ones
+/// for replaced elements; a role/name selector is resolved when the call
+/// runs, so it needs no snapshot at all.
+fn stale_ref_recovery(why: &str) -> Option<String> {
+    const OPEN: &str = "Ref ";
+    const CLOSE: &str = " not found in the current page snapshot. Try capturing new snapshot.";
+    let open = why.find(OPEN)?;
+    let target_start = open + OPEN.len();
+    let target_end = target_start + why[target_start..].find(CLOSE)?;
+    let target = &why[target_start..target_end];
+    if target.is_empty() || !target.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(why.replace(
+        &why[open..target_end + CLOSE.len()],
+        &format!(
+            "Ref {target} does not name an element in the page any more: a re-render replaced or \
+             removed it, or the page navigated. Take a fresh browser_snapshot and use its refs, or \
+             pass a role/name selector such as role=button[name=\"Save\"], which is resolved when \
+             the call runs."
+        ),
+    ))
 }
 
 /// The sentence a call that ran past its bound reports: one builder, so a
@@ -673,6 +714,40 @@ mod tests {
             parts_of(&failed),
             Ok(vec![BrowserPart::Text { text: "no such element".to_owned() }]),
         );
+    }
+
+    /// **A stale-ref failure answers with the cause and both ways out**, and
+    /// the driver's own envelope around it is left alone.
+    #[test]
+    fn a_stale_ref_failure_names_the_cause_and_both_ways_out() {
+        let measured = "### Error\nError: Ref e26 not found in the current page snapshot. \
+                        Try capturing new snapshot.";
+        let rewritten =
+            failure_reason(&[BrowserPart::Text { text: measured.to_owned() }]).expect("a reason");
+        assert!(
+            rewritten.starts_with("### Error\nError: Ref e26 does not name an element in the page"),
+            "the envelope and the ref survive: {rewritten}",
+        );
+        assert!(rewritten.contains("Take a fresh browser_snapshot"), "{rewritten}");
+        assert!(rewritten.contains("role=button[name=\"Save\"]"), "{rewritten}");
+        assert!(!rewritten.contains("Try capturing new snapshot"), "{rewritten}");
+    }
+
+    /// A failure that is not the measured stale-ref sentence is handed back
+    /// verbatim, including one that names a ref in other words.
+    #[test]
+    fn another_failure_is_handed_back_verbatim() {
+        for measured in [
+            "### Error\nTimeoutError: page.click: Timeout 30000ms exceeded.",
+            "### Error\nError: Ref e26 points at a detached element.",
+            "### Error\nError: No such element",
+        ] {
+            assert_eq!(stale_ref_recovery(measured), None, "{measured}");
+            assert_eq!(
+                failure_reason(&[BrowserPart::Text { text: measured.to_owned() }]).as_deref(),
+                Some(measured),
+            );
+        }
     }
 
     /// An image crosses with its mime and its decoded bytes - the shape the
