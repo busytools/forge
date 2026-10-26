@@ -446,6 +446,37 @@ describe('the canvas viewer', () => {
     expect(events[0]).toMatchObject({ kind: 'mouse', action: 'press', button: 0 });
   });
 
+  /// **A mouse's press keeps the keyboard on the page.** The click moves
+  /// focus to the body and the canvas is not focusable, so without this a
+  /// page with no shell behind it loses every key after the first click.
+  it('puts the keyboard on the page for a press that holds the role', async () => {
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector('input.surface-ime');
+    if (canvas === null || ime === null) throw new Error('no canvas or keyboard field');
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'a click that holds the role owns the keyboard').toBe(ime),
+    );
+  });
+
+  /// **A watcher's press takes no keyboard.** Its keys are refused by the
+  /// server, and a field it does not own must not take the person's typing.
+  it('leaves the keyboard alone for a press that does not hold the role', () => {
+    surface.viewer = 7;
+    surface.controller = null;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector('input.surface-ime');
+    if (canvas === null || ime === null) throw new Error('no canvas or keyboard field');
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
+    expect(document.activeElement, "a watcher's press takes no keyboard").not.toBe(ime);
+  });
+
   /// **A hover is the page's too**, and a double click is the count the DOM
   /// already decided: a menu that opens on hover and a field that selects on
   /// a double click both need what a drag-only, single-click stream loses.

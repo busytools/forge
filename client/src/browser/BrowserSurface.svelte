@@ -203,6 +203,24 @@
    */
   let composedText: string | null = null;
 
+  /**
+   * **The keyboard belongs to the page while this surface holds the role.**
+   * The canvas is not focusable, so a click on it moves focus to the body and
+   * every key is lost until the role changes - measured on the web.
+   */
+  function takeKeyboard(): void {
+    imeEl?.focus({ preventScroll: true });
+    // **The browser clears the focus its own gesture handling did not set**;
+    // the next frame puts it back (measured on the dev stack).
+    const refocus = (): void => {
+      if (holdsControl() && document.activeElement !== imeEl) {
+        imeEl?.focus({ preventScroll: true });
+      }
+    };
+    if (typeof requestAnimationFrame === 'undefined') refocus();
+    else requestAnimationFrame(refocus);
+  }
+
   function press(event: PointerEvent): void {
     if (event.pointerType === 'touch') {
       if (!holdsControl()) return;
@@ -220,6 +238,10 @@
       return;
     }
     canvasEl?.setPointerCapture?.(event.pointerId);
+    // **A mouse's press keeps the keyboard on the page**: the click moves
+    // focus to the body, and a page with no shell has no native view holding
+    // the keyboard for it.
+    if (holdsControl()) takeKeyboard();
     send('press', event);
   }
 
@@ -270,18 +292,7 @@
         // its keyboard on a real control's focus, and the canvas is not one.
         // A swipe does not focus it - the keyboard's resize would cancel the
         // swipe it interrupted.
-        imeEl?.focus({ preventScroll: true });
-        // **The WebView clears the focus its own tap handling did not set.**
-        // A canvas is not focusable, so Chromium takes the keyboard back to
-        // the body right after the gesture; the next frame puts it on the
-        // field that types into the page (measured on the dev stack).
-        const refocus = (): void => {
-          if (holdsControl() && document.activeElement !== imeEl) {
-            imeEl?.focus({ preventScroll: true });
-          }
-        };
-        if (typeof requestAnimationFrame === 'undefined') refocus();
-        else requestAnimationFrame(refocus);
+        takeKeyboard();
         // A tap is the page's click: one press and its release at the point.
         const { x, y } = point(event);
         const gesture: BrowserInputEvent = {
