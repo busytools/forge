@@ -5892,6 +5892,8 @@ mod tests {
             monitor: None,
         });
 
+        // **Its boot marker is the successor's too**, not this call's to take.
+        *profile.boot.lock().unwrap_or_else(PoisonError::into_inner) = Some((1, "T1".to_owned()));
         let stale =
             super::HostIdentity { pid: successor.pid + 1, port: successor.port + 1, generation: 0 };
         let host = service.end_dead_host(&profile, stale, "a delayed timeout").await;
@@ -5902,6 +5904,11 @@ mod tests {
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).numbers(),
             vec![1],
             "and its tab registry was not wiped",
+        );
+        assert_eq!(
+            *profile.boot.lock().unwrap_or_else(PoisonError::into_inner),
+            Some((1, "T1".to_owned())),
+            "and its boot marker still waits for its first call",
         );
 
         // **A successor usually reuses the freed port and differs only by
