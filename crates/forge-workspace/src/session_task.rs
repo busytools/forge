@@ -849,18 +849,21 @@ impl SessionTask {
                     tool_id: tool_call_id.clone(),
                     request: wire_request,
                 });
-                if answerable {
-                    spawn_permission_response_forwarder(
-                        Arc::clone(&self.handle),
-                        response_rx,
-                        session_id,
-                        tool_call_id,
-                    );
-                } else {
+                // Spawned for both outcomes: the forwarder is the only
+                // consumer of `response_rx`, so a `Cancelled` sent below
+                // would reach a dropped receiver and leave the bridge
+                // waiting for ever.
+                spawn_permission_response_forwarder(
+                    Arc::clone(&self.handle),
+                    response_rx,
+                    session_id,
+                    tool_call_id.clone(),
+                );
+                if !answerable {
                     // No subscriber can answer a permission prompt -
                     // either none is attached or none renders one.
-                    // Resolve the orphaned oneshot with Cancelled so the
-                    // SDK callback unblocks rather than hanging the
+                    // Send Cancelled through the forwarder's oneshot so
+                    // the SDK callback unblocks rather than hanging the
                     // `claude` subprocess turn forever.
                     if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
@@ -904,17 +907,20 @@ impl SessionTask {
                     tool_id: tool_call_id.clone(),
                     request: wire_request,
                 });
-                if answerable {
-                    spawn_question_response_forwarder(
-                        Arc::clone(&self.handle),
-                        response_rx,
-                        session_id,
-                        tool_call_id,
-                    );
-                } else {
+                // Spawned for both outcomes: the forwarder is the only
+                // consumer of `response_rx`, so a `Cancelled` sent below
+                // would reach a dropped receiver and leave the bridge
+                // waiting for ever.
+                spawn_question_response_forwarder(
+                    Arc::clone(&self.handle),
+                    response_rx,
+                    session_id,
+                    tool_call_id.clone(),
+                );
+                if !answerable {
                     // No subscriber can answer a question - either none
-                    // is attached or none renders one. Resolve the
-                    // orphan with Cancelled so the SDK callback
+                    // is attached or none renders one. Send Cancelled
+                    // through the forwarder's oneshot so the SDK callback
                     // unblocks rather than hanging the turn.
                     if let Some(pending) =
                         self.domain.lock().pending_interactions.remove(&tool_call_id)
@@ -7155,7 +7161,7 @@ mod tests {
     #[tokio::test]
     async fn a_permission_request_with_only_an_observer_fails_closed() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
-        let (handle, _agent_rx) = Agent::testing_stub();
+        let (handle, mut agent_rx) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let key = SessionSlot::from_str_for_test("perm-observer");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
@@ -7194,6 +7200,25 @@ mod tests {
             ),
             "the observer is still delivered the request it cannot answer",
         );
+        let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), agent_rx.recv())
+            .await
+            .expect("the cancelled outcome reaches the agent")
+            .expect("command channel open");
+        assert!(
+            matches!(
+                &cmd,
+                forge_primitives::AgentCommand::PermissionResponse {
+                    tool_call_id,
+                    outcome: forge_primitives::PermissionOutcome::Cancelled,
+                    ..
+                } if tool_call_id == "tu-obs"
+            ),
+            "the orphaned permission answers the bridge Cancelled, got {cmd:?}",
+        );
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "the orphaned permission forwards exactly one response",
+        );
     }
 
     /// The question guard keys on an answering subscriber the same way
@@ -7204,7 +7229,7 @@ mod tests {
     #[tokio::test]
     async fn a_question_request_with_only_an_observer_fails_closed() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
-        let (handle, _agent_rx) = Agent::testing_stub();
+        let (handle, mut agent_rx) = Agent::testing_stub();
         let handle = Arc::new(handle);
         let key = SessionSlot::from_str_for_test("question-observer");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
@@ -7242,6 +7267,25 @@ mod tests {
                     if tool_id == "tu-q-obs"
             ),
             "the observer is still delivered the question it cannot answer",
+        );
+        let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), agent_rx.recv())
+            .await
+            .expect("the cancelled outcome reaches the agent")
+            .expect("command channel open");
+        assert!(
+            matches!(
+                &cmd,
+                forge_primitives::AgentCommand::QuestionResponse {
+                    tool_call_id,
+                    outcome: forge_primitives::QuestionOutcome::Cancelled,
+                    ..
+                } if tool_call_id == "tu-q-obs"
+            ),
+            "the orphaned question answers the bridge Cancelled, got {cmd:?}",
+        );
+        assert!(
+            agent_rx.try_recv().is_err(),
+            "the orphaned question forwards exactly one response",
         );
     }
 
