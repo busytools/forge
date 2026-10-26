@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServerMessage, Subject } from '../protocol';
 import { PROTOCOL_VERSION } from '../protocol';
@@ -7,7 +7,7 @@ import { Stores } from '../stores';
 import type { BoardRead } from '../wire/board';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import { watchBoard } from './live';
+import { COALESCE_MS, watchBoard } from './live';
 
 const BOARD: Subject = 'board';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -107,10 +107,26 @@ function fakeConnection() {
   };
 }
 
-/** Give a timer a chance to fire, for everything it would have set off to show. */
+/**
+ * Drive the coalescing beat, which is the only clock these cases wait on.
+ *
+ * The beat is the store's own (`COALESCE_MS`), so it fires exactly when the
+ * store would fire it, and no wall clock is left for a loaded runner to
+ * outrun.
+ */
 async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await vi.advanceTimersByTimeAsync(COALESCE_MS);
 }
+
+// Every case runs on fake timers, and the slow-beat cases below advance the
+// same clock rather than installing one of their own.
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('the board over a connection', () => {
   it('subscribes once, shared by every reader of the board store', () => {
@@ -155,23 +171,18 @@ describe('the board over a connection', () => {
   });
 
   it('re-reads on the slow beat while the board is mounted', () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    try {
-      const forge = fakeConnection();
-      const stop = watchBoard(forge.connection).subscribe(() => {});
-      expect(forge.refreshed).toEqual([]);
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    expect(forge.refreshed).toEqual([]);
 
-      vi.advanceTimersByTime(29_000);
-      expect(forge.refreshed, 'the beat fired early').toEqual([]);
-      vi.advanceTimersByTime(1_000);
-      expect(forge.refreshed, "the beat did not advance the rows' clocks").toEqual([BOARD]);
+    vi.advanceTimersByTime(29_000);
+    expect(forge.refreshed, 'the beat fired early').toEqual([]);
+    vi.advanceTimersByTime(1_000);
+    expect(forge.refreshed, "the beat did not advance the rows' clocks").toEqual([BOARD]);
 
-      stop();
-      vi.advanceTimersByTime(60_000);
-      expect(forge.refreshed, 'the beat outlived the last reader').toEqual([BOARD]);
-    } finally {
-      vi.useRealTimers();
-    }
+    stop();
+    vi.advanceTimersByTime(60_000);
+    expect(forge.refreshed, 'the beat outlived the last reader').toEqual([BOARD]);
   });
 
   it('coalesces a burst into one read', async () => {
@@ -322,25 +333,20 @@ describe('the board over a connection', () => {
   });
 
   it('does not ask again on the beat once the board is refused', () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    try {
-      const forge = fakeConnection();
-      const stop = watchBoard(forge.connection).subscribe(() => {});
-      forge.stores.get(BOARD)?.refuse('this forge holds no board');
-      forge.arrive({
-        kind: 'error',
-        what: 'subscribe',
-        why: 'this forge holds no board',
-        seat: null,
-        subject: BOARD,
-      });
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    forge.stores.get(BOARD)?.refuse('this forge holds no board');
+    forge.arrive({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'this forge holds no board',
+      seat: null,
+      subject: BOARD,
+    });
 
-      vi.advanceTimersByTime(30_000);
-      expect(forge.refreshed, 'a refused board was asked again on the beat').toEqual([]);
-      stop();
-    } finally {
-      vi.useRealTimers();
-    }
+    vi.advanceTimersByTime(30_000);
+    expect(forge.refreshed, 'a refused board was asked again on the beat').toEqual([]);
+    stop();
   });
 
   it('does not ask again for an update once the board is refused', async () => {
@@ -363,21 +369,16 @@ describe('the board over a connection', () => {
   });
 
   it('does not double-ask when the beat lands inside the coalesce window', () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
-    try {
-      const forge = fakeConnection();
-      const stop = watchBoard(forge.connection).subscribe(() => {});
-      // Just before the beat, an update schedules its read 50 ms out; the
-      // beat fires first and the timer behind it must not ask again.
-      vi.advanceTimersByTime(29_990);
-      forge.arrive(UPDATE);
-      vi.advanceTimersByTime(10);
-      vi.advanceTimersByTime(40);
-      expect(forge.refreshed, 'the beat and the coalesce timer both asked').toEqual([BOARD]);
-      stop();
-    } finally {
-      vi.useRealTimers();
-    }
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    // Just before the beat, an update schedules its read 50 ms out; the
+    // beat fires first and the timer behind it must not ask again.
+    vi.advanceTimersByTime(29_990);
+    forge.arrive(UPDATE);
+    vi.advanceTimersByTime(10);
+    vi.advanceTimersByTime(40);
+    expect(forge.refreshed, 'the beat and the coalesce timer both asked').toEqual([BOARD]);
+    stop();
   });
 
   it('reads a refusal as the board refusal rather than an empty board', () => {

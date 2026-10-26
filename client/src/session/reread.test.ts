@@ -19,7 +19,7 @@ const { WebSocketServer, WebSocket: ClientSocket } = createRequire(import.meta.u
 import sessionFixture from '../dev/fixtures/session.json';
 import type { ServerMessage, SessionUpdate, Subject } from '../protocol';
 import { PROTOCOL_VERSION, subjectKey } from '../protocol';
-import { connect } from '../socket';
+import { connect, MAX_RETRY_MS } from '../socket';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { watchSession, type SessionRead } from './live';
 
@@ -222,7 +222,13 @@ function carried(read: SessionRead): string[] {
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function until(what: () => boolean, why: string, deadlineMs = 5_000): Promise<void> {
+/**
+ * How long a wait here is given: a read crosses a real socket and can ride the
+ * client's own reconnect ceiling.
+ */
+const WAIT_MS = MAX_RETRY_MS + 3_000;
+
+async function until(what: () => boolean, why: string, deadlineMs = WAIT_MS): Promise<void> {
   const deadline = Date.now() + deadlineMs;
   while (!what()) {
     if (Date.now() > deadline) throw new Error(`the wait ran out: ${why}`);

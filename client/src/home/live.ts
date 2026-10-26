@@ -40,8 +40,12 @@ import {
  * A burst becomes one read rather than one each: a turn settling emits
  * several at once, and a read answers with the fleet as it stands rather
  * than as it was at the first of them.
+ *
+ * Exported because `home/live.test.ts` drives this beat on fake timers: the
+ * tests wait on the beat, so a longer one must lengthen the drive rather than
+ * leave the tests asserting before it fires.
  */
-const COALESCE_MS = 50;
+export const COALESCE_MS = 50;
 
 /** What the home has to draw from, and why it has nothing when it does not. */
 export interface HomeRead {
