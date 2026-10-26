@@ -1390,9 +1390,9 @@ mod tests {
         reply_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
         history_reads: parking_lot::Mutex<Vec<HistoryRead>>,
         reply_reads: parking_lot::Mutex<Vec<(String, String)>>,
-        /// Every search answers with these; the queries are recorded so a
-        /// test can prove the conversation name was narrowed into `in:`.
-        search_rows: parking_lot::Mutex<Vec<SlackSearchMatch>>,
+        /// Search answers page by page; the queries are recorded so a test
+        /// can prove the conversation name was narrowed into `in:`.
+        search_pages: parking_lot::Mutex<Vec<Vec<SlackSearchMatch>>>,
         search_reads: parking_lot::Mutex<Vec<String>>,
         /// The directory a user resolver reads.
         users_rows: parking_lot::Mutex<Vec<SlackUser>>,
@@ -1422,7 +1422,10 @@ mod tests {
             self.reply_rows.lock().insert(format!("{channel}/{ts}"), rows);
         }
         fn seed_search(&self, rows: Vec<SlackSearchMatch>) {
-            self.search_rows.lock().extend(rows);
+            self.search_pages.lock().push(rows);
+        }
+        fn seed_search_pages(&self, pages: Vec<Vec<SlackSearchMatch>>) {
+            self.search_pages.lock().extend(pages);
         }
         fn seed_users(&self, rows: Vec<SlackUser>) {
             self.users_rows.lock().extend(rows);
@@ -1659,10 +1662,16 @@ mod tests {
             &self,
             query: &str,
             _count: u32,
-            _cursor: Option<&str>,
+            cursor: Option<&str>,
         ) -> Result<SearchPage, SlackError> {
             self.search_reads.lock().push(query.to_owned());
-            Ok(SearchPage { matches: self.search_rows.lock().clone(), next_cursor: None })
+            let pages = self.search_pages.lock();
+            let index = cursor.and_then(|cursor| cursor.parse::<usize>().ok()).unwrap_or(0);
+            let matches = pages.get(index).cloned().unwrap_or_default();
+            Ok(SearchPage {
+                matches,
+                next_cursor: (index + 1 < pages.len()).then(|| (index + 1).to_string()),
+            })
         }
 
         async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
@@ -2842,6 +2851,29 @@ mod tests {
             found.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(),
             ["U1", "U2"],
             "every live match, sorted by handle, never one picked silently",
+        );
+    }
+
+    /// A filtered search follows the cursor: the first page may hold no hit
+    /// from the conversation, and stopping there would report none.
+    #[tokio::test]
+    async fn a_filtered_search_pages_until_it_finds_the_conversations_hits() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_search_pages(vec![
+            vec![search_hit("C2", "100.1")],
+            vec![search_hit("C1", "100.2")],
+        ]);
+
+        let found =
+            facade.search(Some("acme"), "deploy", 20, Some("C1")).await.expect("the search runs");
+
+        assert_eq!(found.len(), 1, "the match was on the second page: {found:?}");
+        assert_eq!(found[0].conversation_id, "C1");
+        assert_eq!(
+            api.search_reads(),
+            ["in:ops deploy", "in:ops deploy"],
+            "the filter followed the cursor instead of stopping at the first page",
         );
     }
 
