@@ -66,9 +66,10 @@ pub enum Held {
 /// **The fold is for the reconcile, and nothing else rides on it.** The page
 /// is told about every frame as it arrives (the bridge forwards the stream),
 /// so a record here is not a notice - it is what a parked page is handed
-/// when it comes back. That is why nothing on this side re-reads the home or
-/// replays a pile: the page's own stores and folds do that off the frames,
-/// and the one caller of this fold is the catch-up.
+/// when it comes back. The fold re-reads nothing and replays no pile: the
+/// page's stores and folds do that off the frames, the one re-read this side
+/// asks for is a parked page's roster (`ask_arrived`), and the one caller of
+/// this fold is the catch-up.
 pub struct Records {
     subjects: HashMap<String, Held>,
 }
