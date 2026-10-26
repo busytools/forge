@@ -144,6 +144,7 @@ pub trait SlackApi: Send + Sync {
         &self,
         channel: &str,
         oldest: Option<&str>,
+        newest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError>;
@@ -226,10 +227,11 @@ impl SlackApi for SlackClient {
         &self,
         channel: &str,
         oldest: Option<&str>,
+        newest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError> {
-        SlackClient::history(self, channel, oldest, limit, cursor).await
+        SlackClient::history(self, channel, oldest, newest, limit, cursor).await
     }
 
     async fn replies(
@@ -785,7 +787,7 @@ async fn fetch_history(
     let mut cursor: Option<String> = None;
     let mut pages = 0;
     loop {
-        let page = api.history(channel, oldest, SWEEP_LIMIT, cursor.as_deref()).await?;
+        let page = api.history(channel, oldest, None, SWEEP_LIMIT, cursor.as_deref()).await?;
         out.extend(page.messages);
         pages += 1;
         match page.next_cursor {
@@ -815,7 +817,7 @@ async fn fetch_recent(
     api: &dyn SlackApi,
     channel: &str,
 ) -> Result<Vec<SlackHistoryMessage>, SlackError> {
-    Ok(api.history(channel, None, SWEEP_LIMIT, None).await?.messages)
+    Ok(api.history(channel, None, None, SWEEP_LIMIT, None).await?.messages)
 }
 
 /// Every reply in a thread, following the cursor. Dedupe is the caller's:
@@ -849,6 +851,16 @@ async fn fetch_replies(
             None => return Ok(out),
         }
     }
+}
+
+/// Every reply in a thread, the parent first, for a caller reading the thread
+/// rather than advancing a cursor.
+pub async fn read_thread(
+    api: &dyn SlackApi,
+    channel: &str,
+    ts: &str,
+) -> Result<Vec<SlackHistoryMessage>, SlackError> {
+    fetch_replies(api, channel, ts, None).await
 }
 
 /// Which conversations one pass reads. The DM class covers every DM rather
@@ -1983,6 +1995,28 @@ fn decode_message_page(method: &str, body: &str) -> Result<MessagePage, SlackErr
     Ok(MessagePage { messages, next_cursor: cursor })
 }
 
+/// The params `conversations.history` is called with. Slack calls the newest
+/// bound `latest`, and both bounds are exclusive.
+fn history_params(
+    channel: &str,
+    oldest: Option<&str>,
+    newest: Option<&str>,
+    limit: u32,
+    cursor: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut params = vec![("channel", channel.to_owned()), ("limit", limit.to_string())];
+    if let Some(oldest) = oldest {
+        params.push(("oldest", oldest.to_owned()));
+    }
+    if let Some(newest) = newest {
+        params.push(("latest", newest.to_owned()));
+    }
+    if let Some(cursor) = cursor {
+        params.push(("cursor", cursor.to_owned()));
+    }
+    params
+}
+
 /// The API's ceiling for one search page.
 const SEARCH_COUNT_CAP: u32 = 100;
 
@@ -2165,23 +2199,18 @@ impl SlackClient {
         self.call("auth.test", &[]).await
     }
 
-    /// One page of a conversation's history. `oldest` is omitted entirely
-    /// on a first sweep: Slack treats an empty `oldest` differently from
-    /// an absent one.
+    /// One page of a conversation's history. Each bound is omitted entirely
+    /// when absent: Slack treats an empty `oldest` differently from an
+    /// absent one.
     pub async fn history(
         &self,
         channel: &str,
         oldest: Option<&str>,
+        newest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError> {
-        let mut params = vec![("channel", channel.to_owned()), ("limit", limit.to_string())];
-        if let Some(oldest) = oldest {
-            params.push(("oldest", oldest.to_owned()));
-        }
-        if let Some(cursor) = cursor {
-            params.push(("cursor", cursor.to_owned()));
-        }
+        let params = history_params(channel, oldest, newest, limit, cursor);
         let body = self.call_text("conversations.history", &params).await?;
         decode_message_page("conversations.history", &body)
     }
@@ -2754,6 +2783,30 @@ mod tests {
         assert_eq!(page.messages[1].edited, None, "an untouched message carries no edit");
     }
 
+    /// Slack calls the newest bound `latest`, and a bound that was not asked
+    /// for must be absent rather than empty.
+    #[test]
+    fn history_params_carry_each_bound_only_when_it_is_asked_for() {
+        let bounded = history_params("C1", Some("100.0"), Some("200.0"), 50, Some("cur"));
+        assert_eq!(
+            bounded,
+            vec![
+                ("channel", "C1".to_owned()),
+                ("limit", "50".to_owned()),
+                ("oldest", "100.0".to_owned()),
+                ("latest", "200.0".to_owned()),
+                ("cursor", "cur".to_owned()),
+            ],
+            "the newest bound travels as `latest`",
+        );
+
+        let bare = history_params("C1", None, None, 50, None);
+        assert!(
+            !bare.iter().any(|(key, _)| *key == "oldest" || *key == "latest"),
+            "an absent bound is omitted entirely: {bare:?}",
+        );
+    }
+
     /// The decoder keeps the repeat: Slack returns the parent on every page
     /// of `conversations.replies`, and deduping is the sweep's job.
     #[test]
@@ -3283,6 +3336,7 @@ mod tests {
             &self,
             channel: &str,
             oldest: Option<&str>,
+            _newest: Option<&str>,
             _limit: u32,
             cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {

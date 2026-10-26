@@ -14,6 +14,7 @@ pub(crate) mod facade;
 
 use std::sync::Arc;
 
+use forge_connectors::slack::SlackHistoryMessage;
 use forge_primitives::slack::{
     SlackConversation, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
 };
@@ -46,6 +47,8 @@ pub(crate) fn add_tools(
     let react = React { facade: facade.clone(), slot: slot.clone() };
     let attachment = Attachment { facade: facade.clone(), slot };
     let search = Search { facade: facade.clone() };
+    let history = History { facade: facade.clone() };
+    let replies = Replies { facade: facade.clone() };
     let user = User { facade: facade.clone() };
     let pins = Pins { facade: facade.clone() };
     let bookmarks = Bookmarks { facade };
@@ -58,6 +61,8 @@ pub(crate) fn add_tools(
         .tool(react)
         .tool(attachment)
         .tool(search)
+        .tool(history)
+        .tool(replies)
         .tool(user)
         .tool(pins)
         .tool(bookmarks)
@@ -990,6 +995,8 @@ struct SearchArgs {
     query: String,
     #[serde(default)]
     count: Option<u32>,
+    #[serde(default)]
+    conversation: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -1001,7 +1008,8 @@ impl Tool for Search {
     fn description(&self) -> &'static str {
         "Search a Slack workspace's messages by text, newest first. This is a LOOKUP, not a \
          mention detector: it matches the words you pass and cannot find every message that \
-         mentions a user - subscribe to the mention target for that. Returns a JSON array of \
+         mentions a user - subscribe to the mention target for that. Pass `conversation` with \
+         an id from slack__list to keep only that conversation's hits. Returns a JSON array of \
          {ts, text, conversation, conversation_name, username}; `conversation_name` is null for \
          a DM, which has none. Any session in the project may call this."
     }
@@ -1025,6 +1033,11 @@ impl Tool for Search {
                     "minimum": 1,
                     "description": "Maximum results (default 20).",
                 },
+                "conversation": {
+                    "type": "string",
+                    "description": "Only hits from this conversation id, as slack__list \
+                                    reports it.",
+                },
             },
             "required": ["query"],
             "additionalProperties": false,
@@ -1037,7 +1050,16 @@ impl Tool for Search {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         let count = args.count.unwrap_or(DEFAULT_SEARCH_COUNT);
-        match self.facade.search(args.workspace.as_deref(), &args.query, count).await {
+        match self
+            .facade
+            .search(
+                args.workspace.as_deref(),
+                &args.query,
+                count,
+                args.conversation.as_deref(),
+            )
+            .await
+        {
             Ok(found) => {
                 let rows: Vec<serde_json::Value> = found
                     .iter()
@@ -1060,6 +1082,197 @@ impl Tool for Search {
                     Err(err) => tool_error(format!("search serialization failed: {err}")),
                 }
             }
+            Err(err) => tool_error(format_read_error(&err)),
+        }
+    }
+}
+
+/// Messages per read when the caller does not cap them.
+const DEFAULT_HISTORY_LIMIT: u32 = 50;
+
+/// Slack's own ceiling for one `conversations.history` page.
+const MAX_HISTORY_LIMIT: u32 = 999;
+
+/// One message as both read tools report it. `files` keeps the ids an
+/// attachment fetch takes; the file's bearer URL never leaves the connector.
+fn message_row(message: &SlackHistoryMessage) -> serde_json::Value {
+    serde_json::json!({
+        "ts": message.ts,
+        "user": message.user,
+        "bot_name": message.bot_name,
+        "text": message.text,
+        "thread_ts": message.thread_ts,
+        "reply_count": message.reply_count,
+        "edited": message.edited,
+        "files": message.files.iter().map(|file| serde_json::json!({
+            "id": file.id,
+            "name": file.name,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn read_rows(messages: &[SlackHistoryMessage]) -> serde_json::Value {
+    serde_json::Value::Array(messages.iter().map(message_row).collect())
+}
+
+struct History {
+    facade: Arc<dyn SlackFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct HistoryArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+    conversation: String,
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    oldest: Option<String>,
+    #[serde(default)]
+    newest: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for History {
+    fn name(&self) -> &'static str {
+        "slack__history"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read one Slack conversation's messages, newest first. `oldest` and `newest` are Slack \
+         ts bounds and both are exclusive; to read further back, pass the earliest `ts` of the \
+         page you just read as `newest`. Returns a JSON array of {ts, user, bot_name, text, \
+         thread_ts, reply_count, edited, files}; `user` is the author's id, which slack__user \
+         resolves to a name, and `reply_count` above zero means slack__replies has more. \
+         Read-only and not held for approval. Any session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label. Omit it when only one \
+                                    workspace is configured.",
+                },
+                "conversation": {
+                    "type": "string",
+                    "description": "The conversation id from slack__list.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_HISTORY_LIMIT,
+                    "description": "Maximum messages to read (default 50).",
+                },
+                "oldest": {
+                    "type": "string",
+                    "description": "Only messages newer than this Slack ts.",
+                },
+                "newest": {
+                    "type": "string",
+                    "description": "Only messages older than this Slack ts.",
+                },
+            },
+            "required": ["conversation"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: HistoryArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let limit = args.limit.unwrap_or(DEFAULT_HISTORY_LIMIT);
+        if limit == 0 || limit > MAX_HISTORY_LIMIT {
+            return tool_error(format!(
+                "`limit` must be between 1 and {MAX_HISTORY_LIMIT}, Slack's page ceiling"
+            ));
+        }
+        match self
+            .facade
+            .history(
+                args.workspace.as_deref(),
+                &args.conversation,
+                limit,
+                args.oldest.as_deref(),
+                args.newest.as_deref(),
+            )
+            .await
+        {
+            Ok(messages) => match serde_json::to_string_pretty(&read_rows(&messages)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("history serialization failed: {err}")),
+            },
+            Err(err) => tool_error(format_read_error(&err)),
+        }
+    }
+}
+
+struct Replies {
+    facade: Arc<dyn SlackFacade>,
+}
+
+#[derive(serde::Deserialize)]
+struct RepliesArgs {
+    #[serde(default)]
+    workspace: Option<String>,
+    conversation: String,
+    ts: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Replies {
+    fn name(&self) -> &'static str {
+        "slack__replies"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read one Slack thread: the parent message first, then every reply oldest first. \
+         `conversation` is the id from slack__list and `ts` the parent message's ts, which is \
+         the `ts` slack__history reports for it. Returns the same row shape as slack__history. \
+         Read-only and not held for approval. Any session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "The `[[slack]]` workspace label. Omit it when only one \
+                                    workspace is configured.",
+                },
+                "conversation": {
+                    "type": "string",
+                    "description": "The conversation id from slack__list.",
+                },
+                "ts": {
+                    "type": "string",
+                    "description": "The parent message's ts.",
+                },
+            },
+            "required": ["conversation", "ts"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: RepliesArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        match self
+            .facade
+            .replies(args.workspace.as_deref(), &args.conversation, &args.ts)
+            .await
+        {
+            Ok(messages) => match serde_json::to_string_pretty(&read_rows(&messages)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("replies serialization failed: {err}")),
+            },
             Err(err) => tool_error(format_read_error(&err)),
         }
     }
@@ -1856,13 +2069,107 @@ mod tests {
         }]));
         let tool = Search { facade: mock.clone() };
 
-        let out = tool.call(input(serde_json::json!({ "query": "hello", "count": 5 }))).await;
+        let out = tool
+            .call(input(serde_json::json!({
+                "query": "hello",
+                "count": 5,
+                "conversation": "C1",
+            })))
+            .await;
         assert!(!out.is_error, "a search succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("general"), "got: {}", text_of(&out));
         assert_eq!(
             mock.search_calls.lock().as_slice(),
-            [(None, "hello".to_owned(), 5)],
-            "the query and the cap reach the facade",
+            [(None, "hello".to_owned(), 5, Some("C1".to_owned()))],
+            "the query, the cap and the conversation filter reach the facade",
+        );
+    }
+
+    fn history_message(ts: &str, text: &str) -> SlackHistoryMessage {
+        SlackHistoryMessage {
+            ts: ts.to_owned(),
+            user: Some("U1".to_owned()),
+            text: text.to_owned(),
+            thread_ts: None,
+            reply_count: 0,
+            bot_name: None,
+            parent_user_id: None,
+            latest_reply: None,
+            edited: None,
+            files: Vec::new(),
+        }
+    }
+
+    /// The bounds are what make the read a window rather than the channel's
+    /// newest page forever: both must reach Slack, and the author's id must
+    /// reach the caller so a name can be resolved.
+    #[tokio::test]
+    async fn slack_history_passes_the_bounds_and_reports_the_rows() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.history_result.lock() = Some(Ok(vec![history_message("100.5", "hello")]));
+        let tool = History { facade: mock.clone() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "limit": 5,
+                "oldest": "100.0",
+                "newest": "200.0",
+            })))
+            .await;
+
+        assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
+        let rows: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is a row array");
+        assert_eq!(rows[0]["ts"], "100.5", "the ts the caller pages with");
+        assert_eq!(rows[0]["user"], "U1", "the author id a name resolves from");
+        assert_eq!(rows[0]["text"], "hello");
+        assert_eq!(
+            mock.history_calls.lock().as_slice(),
+            [(None, "C1".to_owned(), 5, Some("100.0".to_owned()), Some("200.0".to_owned()))],
+            "both bounds, the limit and the conversation reach the facade",
+        );
+    }
+
+    #[tokio::test]
+    async fn slack_history_refuses_a_limit_past_slacks_ceiling() {
+        let mock = Arc::new(MockSlackFacade::new());
+        let tool = History { facade: mock.clone() };
+
+        let out =
+            tool.call(input(serde_json::json!({ "conversation": "C1", "limit": 1000 }))).await;
+        assert!(out.is_error, "a page past Slack's ceiling cannot be served");
+        assert!(
+            text_of(&out).contains("999"),
+            "the error names the ceiling: {}",
+            text_of(&out),
+        );
+        assert!(mock.history_calls.lock().is_empty(), "nothing reaches the facade");
+    }
+
+    /// A thread read is the whole thread: the parent first and then the
+    /// replies, which is what the read path was missing.
+    #[tokio::test]
+    async fn slack_replies_passes_the_parent_and_reports_the_thread() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.replies_result.lock() = Some(Ok(vec![
+            history_message("100.0", "parent"),
+            history_message("100.5", "reply"),
+        ]));
+        let tool = Replies { facade: mock.clone() };
+
+        let out =
+            tool.call(input(serde_json::json!({ "conversation": "C1", "ts": "100.0" }))).await;
+
+        assert!(!out.is_error, "a thread read succeeds: {}", text_of(&out));
+        let rows: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is a row array");
+        assert_eq!(rows[0]["text"], "parent", "the parent comes first");
+        assert_eq!(rows[1]["text"], "reply");
+        assert_eq!(
+            mock.replies_calls.lock().as_slice(),
+            [(None, "C1".to_owned(), "100.0".to_owned())],
+            "the conversation and parent ts reach the facade",
         );
     }
 

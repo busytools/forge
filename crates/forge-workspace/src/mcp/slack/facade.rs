@@ -7,7 +7,9 @@
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime};
 
-use forge_connectors::slack::{MENTION_CURSOR, SlackApi, SlackError};
+use forge_connectors::slack::{
+    MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, read_thread,
+};
 use forge_primitives::slack::{
     SlackBookmark, SlackConversation, SlackDraft, SlackDraftEnding, SlackPin, SlackSearchMatch,
     SlackSubscription, SlackSubscriptionTarget, SlackUser, SlackWatchMode,
@@ -236,6 +238,12 @@ fn safe_file_name(name: &str, fallback: &str) -> String {
 /// its own outcome, distinct from a rejection.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// How many search pages a conversation filter scans. A named conversation
+/// is narrowed server-side and usually answers on the first page; an unnamed
+/// DM is filtered locally, and five pages is where a sparse hit stops being
+/// worth another call against the token's allowance.
+const MAX_SEARCH_FILTER_PAGES: usize = 5;
+
 /// What a caller asked to watch, before it becomes records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SlackSubscribeRequest {
@@ -271,23 +279,20 @@ fn resolve_workspace(
     if workspaces.is_empty() {
         return Err(SlackWorkspaceError::NotConfigured);
     }
-    match requested {
-        Some(label) => workspaces
-            .client(label)
-            .map(|api| (label.to_owned(), api))
-            .ok_or_else(|| SlackWorkspaceError::UnknownWorkspace {
+    if let Some(label) = requested {
+        return workspaces.client(label).map(|api| (label.to_owned(), api)).ok_or_else(|| {
+            SlackWorkspaceError::UnknownWorkspace {
                 requested: label.to_owned(),
                 known: workspaces.labels(),
-            }),
-        None => {
-            let labels = workspaces.labels();
-            let [only] = labels.as_slice() else {
-                return Err(SlackWorkspaceError::WorkspaceRequired { known: labels });
-            };
-            let api = workspaces.client(only).ok_or(SlackWorkspaceError::NotConfigured)?;
-            Ok((only.clone(), api))
-        }
+            }
+        });
     }
+    let labels = workspaces.labels();
+    let [only] = labels.as_slice() else {
+        return Err(SlackWorkspaceError::WorkspaceRequired { known: labels });
+    };
+    let api = workspaces.client(only).ok_or(SlackWorkspaceError::NotConfigured)?;
+    Ok((only.clone(), api))
 }
 
 /// The Slack tools' view of the workspace.
@@ -361,12 +366,34 @@ pub(crate) trait SlackFacade: Send + Sync {
 
     /// `search.messages` in a workspace, always timestamp-ordered. It
     /// matches text; it cannot find every message that mentions a user.
+    /// `conversation` keeps only hits from that conversation id.
     async fn search(
         &self,
         workspace: Option<&str>,
         query: &str,
         count: u32,
+        conversation: Option<&str>,
     ) -> Result<Vec<SlackSearchMatch>, SlackReadError>;
+
+    /// One page of a conversation's messages. `oldest` and `newest` are
+    /// exclusive bounds, so a caller pages backwards by feeding the earliest
+    /// `ts` it saw back as `newest`.
+    async fn history(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+        limit: u32,
+        oldest: Option<&str>,
+        newest: Option<&str>,
+    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError>;
+
+    /// Every reply in one thread, the parent first.
+    async fn replies(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+        ts: &str,
+    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError>;
 
     /// `users.info` for one user id.
     async fn user(&self, workspace: Option<&str>, user: &str) -> Result<SlackUser, SlackReadError>;
@@ -681,11 +708,78 @@ impl SlackFacade for ProdSlackFacade {
         workspace: Option<&str>,
         query: &str,
         count: u32,
+        conversation: Option<&str>,
     ) -> Result<Vec<SlackSearchMatch>, SlackReadError> {
         let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
-        api.search_messages(query, count, None)
+        let Some(conversation) = conversation else {
+            return api
+                .search_messages(query, count, None)
+                .await
+                .map(|page| page.matches)
+                .map_err(|err| SlackReadError::Fetch(err.to_string()));
+        };
+
+        // Slack's search language narrows by channel NAME; an id in `in:`
+        // finds nothing. A DM has no name to narrow on, so its hits are
+        // filtered locally instead. Either way the id is the filter, so a
+        // name that resolves to another conversation cannot leak a foreign
+        // hit.
+        let name = api
+            .list_conversations()
             .await
-            .map(|page| page.matches)
+            .map_err(|err| SlackReadError::Fetch(err.to_string()))?
+            .into_iter()
+            .find(|known| known.id == conversation)
+            .and_then(|known| known.name)
+            .filter(|name| !name.is_empty());
+        let narrowed = name.map_or_else(|| query.to_owned(), |name| format!("in:{name} {query}"));
+
+        let mut matches = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_SEARCH_FILTER_PAGES {
+            let page = api
+                .search_messages(&narrowed, count, cursor.as_deref())
+                .await
+                .map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+            matches.extend(
+                page.matches.into_iter().filter(|hit| hit.conversation_id == conversation),
+            );
+            if matches.len() >= count as usize {
+                break;
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        matches.truncate(count as usize);
+        Ok(matches)
+    }
+
+    async fn history(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+        limit: u32,
+        oldest: Option<&str>,
+        newest: Option<&str>,
+    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
+        let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
+        api.history(conversation, oldest, newest, limit, None)
+            .await
+            .map(|page| page.messages)
+            .map_err(|err| SlackReadError::Fetch(err.to_string()))
+    }
+
+    async fn replies(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+        ts: &str,
+    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
+        let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
+        read_thread(api.as_ref(), conversation, ts)
+            .await
             .map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
 
@@ -929,6 +1023,15 @@ impl SlackFacade for ProdSlackFacade {
     }
 }
 
+/// One recorded search: workspace, query, cap, conversation filter.
+#[cfg(test)]
+pub(crate) type SearchCall = (Option<String>, String, u32, Option<String>);
+
+/// One recorded history read: workspace, conversation, limit, oldest, newest.
+#[cfg(test)]
+pub(crate) type HistoryCall =
+    (Option<String>, String, u32, Option<String>, Option<String>);
+
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool parses args, resolves the caller, and surfaces results/errors.
 #[cfg(test)]
@@ -939,8 +1042,14 @@ pub(crate) struct MockSlackFacade {
         parking_lot::Mutex<Option<Result<Vec<SlackConversation>, SlackReadError>>>,
     pub subscribed_targets_calls: parking_lot::Mutex<Vec<Option<String>>>,
     pub subscribed_targets: parking_lot::Mutex<Vec<SlackSubscription>>,
-    pub search_calls: parking_lot::Mutex<Vec<(Option<String>, String, u32)>>,
+    pub search_calls: parking_lot::Mutex<Vec<SearchCall>>,
     pub search_result: parking_lot::Mutex<Option<Result<Vec<SlackSearchMatch>, SlackReadError>>>,
+    pub history_calls: parking_lot::Mutex<Vec<HistoryCall>>,
+    pub history_result:
+        parking_lot::Mutex<Option<Result<Vec<SlackHistoryMessage>, SlackReadError>>>,
+    pub replies_calls: parking_lot::Mutex<Vec<(Option<String>, String, String)>>,
+    pub replies_result:
+        parking_lot::Mutex<Option<Result<Vec<SlackHistoryMessage>, SlackReadError>>>,
     pub user_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
     pub user_result: parking_lot::Mutex<Option<Result<SlackUser, SlackReadError>>>,
     pub pins_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
@@ -991,9 +1100,47 @@ impl SlackFacade for MockSlackFacade {
         workspace: Option<&str>,
         query: &str,
         count: u32,
+        conversation: Option<&str>,
     ) -> Result<Vec<SlackSearchMatch>, SlackReadError> {
-        self.search_calls.lock().push((workspace.map(str::to_owned), query.to_owned(), count));
+        self.search_calls.lock().push((
+            workspace.map(str::to_owned),
+            query.to_owned(),
+            count,
+            conversation.map(str::to_owned),
+        ));
         self.search_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    async fn history(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+        limit: u32,
+        oldest: Option<&str>,
+        newest: Option<&str>,
+    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
+        self.history_calls.lock().push((
+            workspace.map(str::to_owned),
+            conversation.to_owned(),
+            limit,
+            oldest.map(str::to_owned),
+            newest.map(str::to_owned),
+        ));
+        self.history_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    async fn replies(
+        &self,
+        workspace: Option<&str>,
+        conversation: &str,
+        ts: &str,
+    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
+        self.replies_calls.lock().push((
+            workspace.map(str::to_owned),
+            conversation.to_owned(),
+            ts.to_owned(),
+        ));
+        self.replies_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
 
     async fn user(&self, workspace: Option<&str>, user: &str) -> Result<SlackUser, SlackReadError> {
@@ -1124,6 +1271,9 @@ mod tests {
         SessionSlot::lead("TestOrg", "forge")
     }
 
+    /// One recorded history read: conversation, oldest, newest, limit.
+    type HistoryRead = (String, Option<String>, Option<String>, u32);
+
     /// Records every outbound call, so a test can assert what did and did
     /// not reach Slack.
     #[derive(Default)]
@@ -1143,6 +1293,15 @@ mod tests {
         bookmark_rows: parking_lot::Mutex<HashMap<String, Vec<SlackBookmark>>>,
         pin_reads: parking_lot::Mutex<Vec<String>>,
         bookmark_reads: parking_lot::Mutex<Vec<String>>,
+        /// Seeded conversation and thread reads.
+        history_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        reply_rows: parking_lot::Mutex<HashMap<String, Vec<SlackHistoryMessage>>>,
+        history_reads: parking_lot::Mutex<Vec<HistoryRead>>,
+        reply_reads: parking_lot::Mutex<Vec<(String, String)>>,
+        /// Every search answers with these; the queries are recorded so a
+        /// test can prove the conversation name was narrowed into `in:`.
+        search_rows: parking_lot::Mutex<Vec<SlackSearchMatch>>,
+        search_reads: parking_lot::Mutex<Vec<String>>,
         /// The ts `chat.postMessage` answers with.
         post_ts: parking_lot::Mutex<Option<String>>,
         /// Seeded conversations, for the display name a held draft carries.
@@ -1161,6 +1320,24 @@ mod tests {
         }
         fn seed_bookmarks(&self, channel: &str, rows: Vec<SlackBookmark>) {
             self.bookmark_rows.lock().insert(channel.to_owned(), rows);
+        }
+        fn seed_history(&self, channel: &str, rows: Vec<SlackHistoryMessage>) {
+            self.history_rows.lock().insert(channel.to_owned(), rows);
+        }
+        fn seed_replies(&self, channel: &str, ts: &str, rows: Vec<SlackHistoryMessage>) {
+            self.reply_rows.lock().insert(format!("{channel}/{ts}"), rows);
+        }
+        fn seed_search(&self, rows: Vec<SlackSearchMatch>) {
+            self.search_rows.lock().extend(rows);
+        }
+        fn history_reads(&self) -> Vec<HistoryRead> {
+            self.history_reads.lock().clone()
+        }
+        fn reply_reads(&self) -> Vec<(String, String)> {
+            self.reply_reads.lock().clone()
+        }
+        fn search_reads(&self) -> Vec<String> {
+            self.search_reads.lock().clone()
         }
         fn posts(&self) -> Vec<(String, String, Option<String>)> {
             self.posts.lock().clone()
@@ -1181,6 +1358,20 @@ mod tests {
                 is_mpim: false,
                 is_archived: false,
                 user: None,
+                purpose: None,
+                topic: None,
+            });
+        }
+        fn seed_dm(&self, id: &str, user: &str) {
+            self.conversations.lock().push(SlackConversation {
+                id: id.to_owned(),
+                name: None,
+                is_channel: false,
+                is_private: false,
+                is_im: true,
+                is_mpim: false,
+                is_archived: false,
+                user: Some(user.to_owned()),
                 purpose: None,
                 topic: None,
             });
@@ -1208,23 +1399,42 @@ mod tests {
 
         async fn history(
             &self,
-            _channel: &str,
-            _oldest: Option<&str>,
-            _limit: u32,
+            channel: &str,
+            oldest: Option<&str>,
+            newest: Option<&str>,
+            limit: u32,
             _cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
-            Ok(MessagePage { messages: Vec::new(), next_cursor: None })
+            self.history_reads.lock().push((
+                channel.to_owned(),
+                oldest.map(str::to_owned),
+                newest.map(str::to_owned),
+                limit,
+            ));
+            Ok(MessagePage {
+                messages: self.history_rows.lock().get(channel).cloned().unwrap_or_default(),
+                next_cursor: None,
+            })
         }
 
         async fn replies(
             &self,
-            _channel: &str,
-            _ts: &str,
+            channel: &str,
+            ts: &str,
             _oldest: Option<&str>,
             _limit: u32,
             _cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
-            Ok(MessagePage { messages: Vec::new(), next_cursor: None })
+            self.reply_reads.lock().push((channel.to_owned(), ts.to_owned()));
+            Ok(MessagePage {
+                messages: self
+                    .reply_rows
+                    .lock()
+                    .get(&format!("{channel}/{ts}"))
+                    .cloned()
+                    .unwrap_or_default(),
+                next_cursor: None,
+            })
         }
 
         async fn post_message(
@@ -1336,11 +1546,12 @@ mod tests {
 
         async fn search_messages(
             &self,
-            _query: &str,
+            query: &str,
             _count: u32,
             _cursor: Option<&str>,
         ) -> Result<SearchPage, SlackError> {
-            Ok(SearchPage { matches: Vec::new(), next_cursor: None })
+            self.search_reads.lock().push(query.to_owned());
+            Ok(SearchPage { matches: self.search_rows.lock().clone(), next_cursor: None })
         }
 
         async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
@@ -2305,7 +2516,7 @@ mod tests {
         let facade = ProdSlackFacade::from_arc(&ws);
 
         assert_eq!(
-            facade.search(None, "deploy", 5).await.expect_err("no label was named"),
+            facade.search(None, "deploy", 5, None).await.expect_err("no label was named"),
             SlackReadError::Workspace(SlackWorkspaceError::WorkspaceRequired {
                 known: vec!["acme".to_owned(), "beta".to_owned()],
             }),
@@ -2474,6 +2685,114 @@ mod tests {
             "the pinned text",
         );
         assert_eq!(api.pin_reads.lock().as_slice(), ["C1"], "the conversation is what was read");
+    }
+
+    fn history_message(ts: &str, text: &str) -> SlackHistoryMessage {
+        SlackHistoryMessage {
+            ts: ts.to_owned(),
+            user: Some("U1".to_owned()),
+            text: text.to_owned(),
+            thread_ts: None,
+            reply_count: 0,
+            bot_name: None,
+            parent_user_id: None,
+            latest_reply: None,
+            edited: None,
+            files: Vec::new(),
+        }
+    }
+
+    fn search_hit(conversation: &str, ts: &str) -> SlackSearchMatch {
+        SlackSearchMatch {
+            ts: ts.to_owned(),
+            text: "a hit".to_owned(),
+            conversation_id: conversation.to_owned(),
+            conversation_name: None,
+            username: None,
+            user: None,
+            thread_ts: None,
+            files: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_history_read_passes_its_bounds_and_its_page() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_history("C1", vec![history_message("100.1", "hello")]);
+
+        let messages = facade
+            .history(Some("acme"), "C1", 25, Some("100.0"), Some("200.0"))
+            .await
+            .expect("read");
+
+        assert_eq!(messages.len(), 1, "the seeded page comes back");
+        assert_eq!(messages[0].text, "hello");
+        assert_eq!(
+            api.history_reads().as_slice(),
+            [("C1".to_owned(), Some("100.0".to_owned()), Some("200.0".to_owned()), 25)],
+            "the conversation and both exclusive bounds reach the wire",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thread_read_returns_the_parent_and_its_replies() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_replies(
+            "C1",
+            "100.0",
+            vec![history_message("100.0", "parent"), history_message("100.5", "reply")],
+        );
+
+        let messages =
+            facade.replies(Some("acme"), "C1", "100.0").await.expect("the thread is read");
+
+        assert_eq!(messages.len(), 2, "the whole thread comes back");
+        assert_eq!(messages[0].text, "parent", "the parent is first");
+        assert_eq!(messages[1].text, "reply");
+        assert_eq!(
+            api.reply_reads().as_slice(),
+            [("C1".to_owned(), "100.0".to_owned())],
+            "the conversation and parent ts are what was read",
+        );
+    }
+
+    /// Slack's search language narrows by channel NAME, and an id in `in:`
+    /// finds nothing. The name is added server-side, the id still filters
+    /// what comes back, and a hit from another conversation never leaks.
+    #[tokio::test]
+    async fn a_search_filtered_by_a_named_conversation_narrows_and_drops_foreign_hits() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_conversation("C1", "ops");
+        api.seed_search(vec![search_hit("C1", "100.1"), search_hit("C2", "100.2")]);
+
+        let found = facade
+            .search(Some("acme"), "deploy", 20, Some("C1"))
+            .await
+            .expect("the search runs");
+
+        assert_eq!(found.len(), 1, "only the filtered conversation's hit survives: {found:?}");
+        assert_eq!(found[0].conversation_id, "C1");
+        assert_eq!(
+            api.search_reads(),
+            ["in:ops deploy"],
+            "the name narrows the search server-side",
+        );
+    }
+
+    /// A DM has no name, so there is nothing to narrow on and the id alone
+    /// does the filtering.
+    #[tokio::test]
+    async fn a_search_filtered_by_an_unnamed_conversation_keeps_the_query_whole() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_dm("D1", "U9");
+        api.seed_search(vec![search_hit("D1", "100.1"), search_hit("C2", "100.2")]);
+
+        let found =
+            facade.search(Some("acme"), "deploy", 20, Some("D1")).await.expect("the search runs");
+
+        assert_eq!(found.len(), 1, "only the DM's hit survives: {found:?}");
+        assert_eq!(found[0].conversation_id, "D1");
+        assert_eq!(api.search_reads(), ["deploy"], "an unnamed conversation adds no `in:`");
     }
 
     #[tokio::test]
