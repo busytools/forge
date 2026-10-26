@@ -1073,11 +1073,32 @@ where
         _ => return Ok(()),
     };
     let Ok(client) = serde_json::from_str::<ClientMessage>(&text) else {
+        // **A command this server cannot read is an answer somebody gave.**
+        // A client older than the server sends its commands in the shape it
+        // knows; the decode fails here, and a `client_message` refusal is one
+        // a client reports only to its console - its dock has already stood
+        // down, so the person believes the answer left while the park, and
+        // the tool behind it, wait for ever. Tagging a command frame as a
+        // dispatch refusal is what draws the reason where the answer came
+        // from instead.
+        let command = serde_json::from_str::<serde_json::Value>(&text).ok().is_some_and(|frame| {
+            frame.get("kind").and_then(serde_json::Value::as_str) == Some("command")
+        });
+        let (what, why) = if command {
+            (
+                "dispatch",
+                "this server could not read that command; if this client's build is older than \
+                 the server's, restart the client so both speak the same protocol - the prompt \
+                 it answered is still waiting",
+            )
+        } else {
+            ("client_message", "that is not a message this server knows")
+        };
         return send(
             socket,
             ServerMessage::Error {
-                what: "client_message".to_owned(),
-                why: "that is not a message this server knows".to_owned(),
+                what: what.to_owned(),
+                why: why.to_owned(),
                 seat: None,
                 dispatch_id: None,
             },

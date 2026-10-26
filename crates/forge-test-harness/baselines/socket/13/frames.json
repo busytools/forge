@@ -203,6 +203,35 @@
         "project"
       ]
     },
+    "BrowserHandOffResolved": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "browser_hand_off_resolved"
+      ],
+      "/update/browser_hand_off_resolved": [
+        "answer",
+        "id",
+        "key"
+      ],
+      "/update/browser_hand_off_resolved/answer": [
+        "client",
+        "ending",
+        "source"
+      ],
+      "/update/browser_hand_off_resolved/answer/ending": [
+        "type"
+      ],
+      "/update/browser_hand_off_resolved/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "BrowserNavState": {
       "": [
         "can_back",
