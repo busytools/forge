@@ -47,6 +47,7 @@ function recording(sent: Record<string, unknown>[], board: BoardWire): { connect
     refresh: () => true,
     showing: () => {},
     relist: () => {},
+    release: () => {},
     dispatch: (command: Record<string, unknown>) => {
       sent.push(command);
       return null;

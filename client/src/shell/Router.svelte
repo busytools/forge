@@ -216,13 +216,12 @@
          shows; absent it, the seat is subscribed as an observer. -->
     <!-- **Not keyed on the seat, deliberately.** A palette switch moves the
          route in place and the page keeps its instance - which is the
-         contract, not an oversight: the CONVERSATION outlives the page (Ved,
-         2026-10-09), so returning to a seat the conversation holds sends
-         nothing; a remount would tear that subscription down and make the
-         return re-ask (measured - the keyed version failed exactly that
-         test). The page's per-seat facts are `$derived` from (wire, slot)
-         and move with the prop; `railMode` and `leftChosen` are the
-         reader's own preferences and persist by design. -->
+         contract, not an oversight: a visited seat keeps its subscription
+         (Ved, 2026-10-25), so returning to one sends nothing; a remount
+         would tear the page's readers down and make the return re-ask. The
+         page's per-seat facts are `$derived` from (wire, slot) and move with
+         the prop; `railMode` and `leftChosen` are the reader's own
+         preferences and persist by design. -->
     <Session
       slot={route.slot}
       {connection}

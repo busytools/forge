@@ -15,7 +15,6 @@ vi.mock('../session/live', () => ({
         seat.listeners.delete(fn);
       };
     },
-    hold: () => () => {},
   }),
 }));
 

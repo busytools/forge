@@ -95,6 +95,16 @@ export interface Connection {
    */
   relist(what: Subject, options?: { answering?: boolean; browser?: boolean }): void;
   /**
+   * Give a subject back entirely: every store reader this side holds for it,
+   * and every subscription the server holds for it.
+   *
+   * **The count is the SERVER's, not the page's.** A resume asks once for
+   * the seat it re-attaches, so this side may hold two readers where the
+   * wire holds one; walking the readers would send an unsubscribe the server
+   * does not hold and leave one it does.
+   */
+  release(what: Subject): void;
+  /**
    * Send a core command.
    *
    * Answers with a promise for the five commands whose outcome rides a reply
@@ -523,15 +533,17 @@ export function connect(
   }
 
   /**
-   * Subscribe frames sent on the connection that is open, by key.
+   * How many subscriptions the server holds for each subject on this
+   * connection.
    *
-   * **A reconnect asks each subscription exactly once**, and two things ask
-   * on an open: the connection's own loop for the subjects it holds, and the
-   * page's `relist` for the seat it has on screen - which puts that seat back
-   * in the held list as it asks. This count is how the loop knows what has
-   * already asked, so that seat is not asked twice.
+   * **It is the wire's count, not the stores'**: a reconnect asks each
+   * subscription exactly once, and two things ask on an open - the
+   * connection's loop for the subjects it holds, and the page's `relist` for
+   * the seat it has on screen, which puts that seat back in the held list as
+   * it asks. This is how the loop knows what has already asked, and how
+   * `release` knows what is left to give back.
    */
-  const sent = new Map<string, number>();
+  const subscribed = new Map<string, number>();
 
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
   function askFor(what: Subject, answering: boolean, browser: boolean, declare = false): void {
@@ -540,7 +552,7 @@ export function connect(
     awaiting.push(key);
     // A declare holds nothing on the server, so it is not a subscription this
     // side counts either.
-    if (!declare) sent.set(key, (sent.get(key) ?? 0) + 1);
+    if (!declare) subscribed.set(key, (subscribed.get(key) ?? 0) + 1);
     // The read this ask owes is bounded from here: nothing else would ask
     // again for a snapshot that simply never came.
     bounds.arm(what);
@@ -748,7 +760,7 @@ export function connect(
 
     next.onopen = () => {
       if (next !== socket) return;
-      sent.clear();
+      subscribed.clear();
       move('open');
       retryDelay = RETRY_MS;
       for (const { subject, answering, browser } of [...held.values()]) {
@@ -766,7 +778,7 @@ export function connect(
         // away from a caller still drawing it. What this connection has
         // already asked - the shown seat, re-attached above - is not asked
         // again.
-        const already = sent.get(subjectKey(subject)) ?? 0;
+        const already = subscribed.get(subjectKey(subject)) ?? 0;
         for (let remaining = stores.count(subject) - already; remaining > 0; remaining -= 1) {
           askFor(subject, answering, browser);
         }
@@ -926,18 +938,44 @@ export function connect(
     if (stores.get(what) === undefined) return;
     const last = stores.close(what);
     const key = subjectKey(what);
-    const listed = held.has(key);
     if (last) held.delete(key);
-    // **Only a subject the server was actually asked for is given back.** A
-    // drop already took every server-side entry with it, so a seat released
-    // after a reconnect - before its click re-attached it - has nothing to
-    // stop and would decrement an entry another connection holds.
-    if (isOpen() && listed) sendNow({ kind: 'unsubscribe', what });
+    // **One entry per call, and only while this connection holds one.** A
+    // dropped socket took the server's entries with it, so a seat released
+    // after a resume - before its click re-attached it - has nothing to give
+    // back; sending anyway would be silent on the wire and would leave this
+    // side's count claiming a subscription the server never had, which the
+    // next release and the next resume would both act on.
+    const open = subscribed.get(key) ?? 0;
+    if (open > 0) {
+      if (open === 1) subscribed.delete(key);
+      else subscribed.set(key, open - 1);
+      if (isOpen()) sendNow({ kind: 'unsubscribe', what });
+    }
     if (last) {
       // And the gate stops sequencing it: a left seat's news passes through
       // rather than opening a hole over a history nobody is reading.
       if (typeof what !== 'string') gate?.releaseSeat(what.session);
     }
+  }
+
+  /**
+   * Give a subject back entirely: every store reader, and every server
+   * subscription this connection holds for it.
+   *
+   * **The count is the wire's.** See [`Connection.release`].
+   */
+  function release(what: Subject): void {
+    const key = subjectKey(what);
+    while (stores.get(what) !== undefined) stores.close(what);
+    const open = subscribed.get(key) ?? 0;
+    subscribed.delete(key);
+    held.delete(key);
+    if (isOpen()) {
+      for (let left = open; left > 0; left -= 1) sendNow({ kind: 'unsubscribe', what });
+    }
+    // The gate stops sequencing it: a released seat's news passes through
+    // rather than opening a hole over a history nobody is reading.
+    if (typeof what !== 'string') gate?.releaseSeat(what.session);
   }
 
   /**
@@ -1040,6 +1078,7 @@ export function connect(
     refresh,
     showing,
     relist,
+    release,
     dispatch,
     more(conversation, before = null, turns = MORE_TURNS) {
       if (!isOpen()) return false;

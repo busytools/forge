@@ -289,9 +289,9 @@ export type ClientMessage =
    * Which seat this connection has on screen, `null` when it shows none.
    *
    * A state assertion, not an event: the last one wins and repeating it is a
-   * no-op. It is what spends a seat's diamond and failure mark, so a client
-   * that subscribes every visited seat spends nothing until the reader opens
-   * one.
+   * no-op. A showing spends a seat's diamond, its failure mark and its death
+   * trace once the seat is also subscribed, so a client that keeps every
+   * visited seat subscribed spends nothing until the reader opens one.
    */
   | { kind: 'showing'; seat: SessionSlot | null }
   | { kind: 'command'; command: Command; reply_to: number | null }

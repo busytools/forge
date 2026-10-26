@@ -293,11 +293,10 @@ export function watchSession(
     visited.set(key, seat);
   } else if (answering && !seat.answering) {
     // **The role only ever rises, and a page that can answer has to say so.**
-    // A seat held before any page reached it has no subscription yet - the
-    // conversation's hold keeps one alive, it does not open one - so this IS
-    // its open, under the stronger role. A seat already subscribed as an
-    // observer is re-asked under that role, which is one subscribe: what a
-    // page mounting with a dock would have sent for itself.
+    // A seat nothing has subscribed yet has no open to ride, so this IS its
+    // open, under the stronger role. A seat already subscribed as an observer
+    // is re-asked under that role, which is one subscribe: what a page
+    // mounting with a dock would have sent for itself.
     seat.answering = true;
     seat.open();
   }
@@ -356,7 +355,7 @@ function createSeat(
     return leaving;
   }
 
-  /** This page has gone: its own hold on the seat goes with it. */
+  /** This page has gone; the seat and its subscription stay. */
   function leaving(): void {
     shown = false;
     // No frame paints for a page that has gone, so a record still waiting for
@@ -365,16 +364,13 @@ function createSeat(
     // **A refused seat gives its subscription back, and stays.** A refusal is
     // an answer rather than a subscription ("a refused subscribe leaves
     // nothing to hear"), so nothing is left to draw and the next visit opens
-    // the seat afresh - but the seat itself is kept, because a conversation
-    // holding it must go on holding whatever the next visit finds. Forgetting
-    // it here would leave that conversation's hold on a seat nothing owns, and
-    // the next visit's page would give the subscription back with the
-    // conversation still folding it.
+    // the seat afresh - while the seat itself is kept for that visit to find.
+    // `release` gives back every reader and every server entry at once, so a
+    // drop that zeroed `opened` cannot leave a store or a wire subscription
+    // behind.
     if (seat.held?.state().kind === 'refused') {
-      if (seat.opened > 0) {
-        for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
-        seat.opened = 0;
-      }
+      connection.release(subject);
+      seat.opened = 0;
       seat.held = null;
       publish(null, null);
       return;
@@ -386,11 +382,15 @@ function createSeat(
    * it.
    *
    * **This is one of only two doors that give a visited seat back**, the
-   * other being the connection closing. A page leaving does not.
+   * other being the connection closing. A page leaving does not. `release`
+   * gives back what the CONNECTION holds for the seat, not what `opened`
+   * remembers: after a resume the server holds one where the page may hold
+   * two readers, and a release that walked the readers would leave one
+   * subscription, one work-watch hold and one store standing.
    */
   function end(): void {
     if (released) return;
-    for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
+    connection.release(subject);
     seat.opened = 0;
     release();
   }
@@ -585,6 +585,10 @@ function createSeat(
     if (released) return;
     released = true;
     clearRetry();
+    stopMessages?.();
+    stopStatus?.();
+    stopMessages = null;
+    stopStatus = null;
     pageReturns?.release();
     visited.delete(key);
   }
@@ -722,12 +726,12 @@ function createSeat(
    * Listen to the seat: its frames, its refusals, and the socket's own life.
    *
    * Setup at the seat's creation rather than at its subscription: the seat
-   * outlives any one subscription (a page's hold goes, a conversation's
-   * stays), and a listener that came and went with it would drop the frames
-   * that crossed in the gap.
+   * outlives any one subscription, and a listener that came and went with it
+   * would drop the frames that crossed in the gap.
    *
-   * Nothing unregisters them: a seat lives on its connection, so its
-   * listeners go with the connection when the client lets it go.
+   * **`release` unregisters them.** A released seat that kept listening would
+   * pin its record and keep folding a same-slot successor's frames into a
+   * seat nothing draws.
    */
   /**
    * Ask the seat for the frames between two numbers.
@@ -904,8 +908,12 @@ function createSeat(
     };
   }
 
+  /** The two listeners this seat installed, unbound when it is released. */
+  let stopMessages: (() => void) | null = null;
+  let stopStatus: (() => void) | null = null;
+
   function watch(): void {
-    connection.onMessage((message) => {
+    stopMessages = connection.onMessage((message) => {
       if (message.kind === 'error') {
         // **A refused subscribe is this seat's own answer only when the socket
         // says so.** The socket hangs a refusal on the ask it answers and
@@ -1044,7 +1052,7 @@ function createSeat(
     // answer that died. The seat keeps this listener, so a drop while nobody is
     // showing the seat still leaves the reconnect's snapshot answered as the
     // whole record it is.
-    connection.onStatus((next: ConnectionStatus) => {
+    stopStatus = connection.onStatus((next: ConnectionStatus) => {
       if (next === 'closed') {
         // **The seat's lifetime ends where its connection's does.** A drop
         // leaves the same connection reconnecting and this seat drawing what
@@ -1072,10 +1080,10 @@ function createSeat(
         }
         return;
       }
-      // **The reconnect re-subscribes every subject this connection holds**,
-      // so a beat armed across the drop would be a second ask behind the
-      // connection's own. The ask it sends is the one that answers - and a
-      // refusal it meets arms the beat again.
+      // **The socket re-asks the non-seat subjects it holds, and this seat's
+      // own re-attach is below**, so a beat armed across the drop would be a
+      // second ask behind them. The attach below is the one that answers -
+      // and a refusal it meets arms the beat again.
       clearRetry();
       // **Only the seat on screen comes back live.** The rest stay stale and
       // re-attach on their next click, which is the resume rule; the shown

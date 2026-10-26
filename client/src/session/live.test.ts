@@ -700,8 +700,8 @@ describe('the session page over a socket', () => {
    * was a whole record sent twice: the page's record and the conversation
    * both read the seat's frames, and each opened a subscription of its own -
    * 6.5 MB encoded and sent twice on the dotfiles/lead seat (measured
-   * 2026-10-09). The conversation's subscription is the one that outlives
-   * the page (Ved, 2026-10-09), so the page rides it.
+   * 2026-10-09). The conversation only listens now (Ved, 2026-10-25), so the
+   * page's own read is the one subscription.
    */
   it('subscribes the seat once when the conversation mounts with the page', async () => {
     server = await stubServer(sessionFixture);
@@ -894,6 +894,12 @@ describe('the session page over a socket', () => {
     const worker = seatSubscribesOf(W1);
     server.drop();
     await until(() => seatSubscribesOf(LEAD) > lead, 'the reconnect to re-attach the shown seat');
+    // **The resume left the stale seat alone**, and the count is frozen here
+    // so the click below cannot be credited with an attach the reconnect
+    // made: a wait on `> worker` alone passes either way.
+    await quiet();
+    const stale = seatSubscribesOf(W1);
+    expect(stale, 'the resume re-attached a seat away from the reader').toBe(worker);
 
     route.set({ name: 'session', slot: W1 });
     flushSync();
@@ -901,8 +907,8 @@ describe('the session page over a socket', () => {
       drawn(),
       'the click waited on the server instead of drawing the record it holds',
     ).toContain('the worker said this');
-    await until(() => seatSubscribesOf(W1) > worker, 'the click to attach w1');
-    expect(seatSubscribesOf(W1), 'the click attached w1 more than once').toBe(worker + 1);
+    await until(() => seatSubscribesOf(W1) > stale, 'the click to attach w1');
+    expect(seatSubscribesOf(W1), 'the click attached w1 more than once').toBe(stale + 1);
   });
 
   /**
@@ -1494,6 +1500,11 @@ function drivable(refusedAtFirst = false): Driveable {
     },
     showing: () => undefined,
     relist: () => undefined,
+    release: () => {
+      // One entry, which is what these cases hold: the seat's release gives
+      // back what the connection holds for it.
+      unsubscribed += 1;
+    },
     dispatch: () => {
       throw new Error('this page dispatched a command the case did not expect');
     },
@@ -2126,6 +2137,31 @@ describe('the record a page holds over an update stream', () => {
     expect(back.read().wire, 'the held record draws').not.toBeNull();
     back.stop();
     expect(connection.unsubscribes(), 'the second leave gave it back too').toBe(0);
+  });
+
+  /**
+   * **A frame keeps folding into a seat nobody is drawing, and the return
+   * draws it** (rule 25). The subscription outlives the page, so the row that
+   * landed while the reader was elsewhere is in the record the click draws -
+   * not re-read, and not lost to a page that stopped listening.
+   */
+  it('folds a frame that lands on an away seat, and draws it on the return', () => {
+    const connection = drivable();
+    const away = watch(connection);
+    away.land(snapshotOf(LEAD));
+    away.stop();
+
+    connection.land(
+      updateOf({ chat_appended: { key: LEAD, msg: spoke('landed while away'), origin: null } }),
+    );
+
+    const back = watch(connection);
+    paint();
+    expect(spoken(back), 'the row that landed on the away seat was dropped').toEqual([
+      'landed while away',
+    ]);
+    expect(connection.subscribes(), 'the return asked for the seat again').toBe(1);
+    back.stop();
   });
 
   /**

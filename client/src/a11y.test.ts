@@ -67,6 +67,7 @@ function untouched(): Connection {
     refresh: refuse,
     showing: refuse,
     relist: refuse,
+    release: refuse,
     dispatch: refuse,
     more: refuse,
     commitDiff: refuse,

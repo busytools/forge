@@ -93,6 +93,7 @@ function connection(): Connection {
     refresh: () => {},
     showing: () => {},
     relist: () => {},
+    release: () => {},
     // The session page asks for its tail when it opens; a false says no page
     // is coming, so nothing waits on one.
     dispatch: () => null,

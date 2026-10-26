@@ -70,6 +70,7 @@ function live(): { connection: Connection; say: (message: ServerMessage) => void
     refresh: () => true,
     showing: () => {},
     relist: () => {},
+    release: () => {},
     dispatch: () => null,
     more: () => false,
     seatRange: () => false,

@@ -274,13 +274,18 @@ async function crossed(): Promise<void> {
  * never arrives; the deadline only stops a broken page from hanging the
  * suite.
  */
-async function until(what: () => boolean): Promise<void> {
+async function until(what: () => boolean, why = 'the page to settle'): Promise<void> {
   const deadline = Date.now() + 2_000;
   for (;;) {
     // Flush BEFORE the check, so a condition reading rendered state sees the
     // frame it is waiting on rather than the one before it.
     flushSync();
-    if (what() || Date.now() > deadline) break;
+    if (what()) break;
+    // **A wait that runs out THROWS.** Returning at the deadline let the next
+    // assertion fail with its own opposite-sounding message ("released
+    // twice" for a release that never came), which reads as the wrong
+    // defect.
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${why}`);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   flushSync();
@@ -841,11 +846,11 @@ describe('a seat removed under the reader', () => {
             frame.what !== null &&
             subjectKey(frame.what as Subject) === key,
         ).length;
-    await until(() => asks('subscribe') === 1);
+    await until(() => asks('subscribe') === 1, "the seat's first subscribe");
     expect(asks('subscribe'), 'the page never subscribed the seat').toBe(1);
 
     forge.remove(W1, LEAD);
-    await until(() => asks('unsubscribe') === 1);
+    await until(() => asks('unsubscribe') === 1, "the removed seat's release");
     await crossed();
     expect(asks('unsubscribe'), 'the removed seat was released twice').toBe(1);
     expect(asks('subscribe'), 'the removed seat was re-subscribed').toBe(1);

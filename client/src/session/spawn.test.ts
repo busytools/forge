@@ -51,6 +51,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     refresh: () => true,
     showing: () => undefined,
     relist: () => undefined,
+    release: () => undefined,
     dispatch: (command) => {
       sent.push({ command });
       return null;
