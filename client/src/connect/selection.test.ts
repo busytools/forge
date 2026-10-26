@@ -4,10 +4,10 @@
  *
  * **The whole move turns on this one decision**: a shell whose Rust half
  * holds the socket must dial through it, and a page opened outside one must
- * keep the webview's own socket (that page cannot reach `invoke` at all, and
- * its own socket is also what keeps the browser role unclaimed). Both arms
- * are silent when wrong - the page connects either way, and only the parked
- * webview's fate differs - so it gets its own test rather than a comment.
+ * keep the webview's own socket (that page cannot reach `invoke` at all).
+ * Both arms are silent when wrong - the page connects either way, and only
+ * the parked webview's fate differs - so it gets its own test rather than a
+ * comment.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';

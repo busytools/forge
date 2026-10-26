@@ -1,7 +1,6 @@
 //! One connection: the upgrade, what the server says first, and the loop
 //! that answers what a client asks for.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,12 +14,14 @@ use tokio::sync::{mpsc, oneshot};
 
 use base64::Engine as _;
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::BrowserPart;
+use forge_primitives::browser::{BrowserFrame, BrowserTabList, BrowserViewState};
 use forge_primitives::document::DocumentRead;
-use forge_workspace::browser::{BrowserRelay, BrowserRequest, Notice, Release};
+use forge_workspace::browser::BrowserAttachment;
+use serde_json::json;
 
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
+use super::frame::FrameTransport as _;
 use super::wire::{
     FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
     encode_subject, encode_subject_timed, floor_cursor, page,
@@ -90,19 +91,11 @@ impl Drop for Holds<'_> {
     }
 }
 
-/// Why an ask failed because its host sent the frames a step out of order.
-///
-/// Named rather than left to the driver's own words: the ordering contract is
-/// this socket's, and the sentence a session reads should say which half of it
-/// was broken.
-const BEFORE_ANSWER: &str = "the browser host sent an image frame before the answer that \
-                              declares the image, so the call cannot be completed";
-
 /// How often a connection is asked to prove it is still there.
 ///
 /// **The socket carried no keepalive**, so a peer that vanished without
 /// closing - a slept machine, a wedged process, a network that went away -
-/// left its browser role held and any companion waiting, with neither side
+/// left its viewer attached and any companion waiting, with neither side
 /// told the other was gone. Every WebSocket client answers a Ping without its
 /// app's involvement, so the answer is the proof.
 pub(crate) const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
@@ -111,7 +104,7 @@ pub(crate) const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
 /// missed beats: long enough that a busy peer is never cut, short enough that
 /// a role is not held by a corpse for the minutes a TCP retransmission timeout
 /// takes. **Chosen, not measured**: the one number it changes for a person is
-/// how fast a call on a paused host fails (the ask's own bound is longer).
+/// how fast a call on a paused host fails (a tool call's own bound is longer).
 pub(crate) const HEARTBEAT_DEAD: Duration = Duration::from_secs(60);
 
 /// One connection's keepalive: the ping it has out, if any.
@@ -187,66 +180,6 @@ impl Keepalive {
     }
 }
 
-/// Why an in-flight ask failed because a force-take moved the role mid-call.
-///
-/// Named like [`BEFORE_ANSWER`]: the call was not wrong, the role moved out
-/// from under it, and the session should read which of the two happened.
-const HOST_GONE_BY_TAKE: &str = "another client took the browser role before the answer arrived, \
-                                  so the call cannot be completed";
-
-/// The browser role this connection holds, and what is in flight under it.
-struct Hosting {
-    /// The asks the relay routes here, in the order they were made.
-    asks: mpsc::UnboundedReceiver<BrowserRequest>,
-    /// What the relay says about the role itself - a force-take away, a
-    /// promotion in - and which seats exist, for the client's sweep.
-    notices: mpsc::UnboundedReceiver<Notice>,
-    /// The asks sent to the client and not yet answered, by id.
-    in_flight: HashMap<u64, InFlight>,
-    /// The role itself, given back when this drops, a panic included.
-    role: BrowserRole,
-}
-
-impl Hosting {
-    /// Offer the role for `id`, and keep the channel asks would arrive on.
-    ///
-    /// **Offering and holding are different**, and the channel is kept either
-    /// way: a connection that offers while another holds the role waits in
-    /// line, and the relay promotes it there when the holder goes - which is
-    /// only possible because the channel it will be sent asks on already
-    /// exists. A waiter receives nothing until then, so what it costs is an
-    /// idle receiver. `true` says the offer was also taken.
-    fn offer(relay: &Arc<BrowserRelay>, id: u64) -> (Self, bool) {
-        let (to_host, asks) = mpsc::unbounded_channel();
-        let (notices_tx, notices) = mpsc::unbounded_channel();
-        let held = relay.register(id, to_host, notices_tx);
-        (
-            Self {
-                asks,
-                notices,
-                in_flight: HashMap::new(),
-                role: BrowserRole { relay: Arc::clone(relay), id, ending: None },
-            },
-            held,
-        )
-    }
-}
-
-/// Gives the browser role back on the way out, however the connection ends.
-///
-/// A guard rather than a line at the end of the loop, for the same reason
-/// [`Holds`] is one: a panic while encoding an answer would otherwise leave
-/// the role held by a dead connection, and no client could take it again.
-struct BrowserRole {
-    relay: Arc<BrowserRelay>,
-    id: u64,
-    /// Which side ended the connection, set on the way out. Unset reaches the
-    /// drop only when the connection task never got that far - a panic, or a
-    /// return before the loop, which are failures rather than a client
-    /// closing.
-    ending: Option<Release>,
-}
-
 /// Counts this connection among the attached clients for as long as it
 /// lives, so a document hand-off can tell a viewer exists to open on. A
 /// guard, for the same reason [`Holds`] is one: the count must come back
@@ -266,41 +199,205 @@ impl Drop for AttachedClient {
     }
 }
 
-impl Drop for BrowserRole {
-    fn drop(&mut self) {
-        self.relay.unregister(self.id, self.ending.unwrap_or(Release::Failed));
+/// One tab this connection is viewing: its profile, its id, its frames and
+/// its state.
+struct Viewing {
+    key: String,
+    id: u16,
+    /// The tab this connection is on. **Every frame, gesture and state frame
+    /// is this tab's**; another tab's paint is not this viewer's to draw.
+    tab: u16,
+    frames: tokio::sync::watch::Receiver<Option<BrowserFrame>>,
+    view: tokio::sync::watch::Receiver<BrowserViewState>,
+    nav: tokio::sync::watch::Receiver<Option<forge_primitives::browser::BrowserNavState>>,
+    failures: tokio::sync::watch::Receiver<Option<String>>,
+    files: tokio::sync::watch::Receiver<Option<forge_primitives::browser::BrowserFileAsk>>,
+    downloads: tokio::sync::broadcast::Receiver<forge_primitives::browser::BrowserDownload>,
+    audio: tokio::sync::broadcast::Receiver<forge_primitives::browser::BrowserAudio>,
+    /// The last sequence written to the socket, so a change that re-announces
+    /// the same newest frame is not sent twice.
+    last_frame: Option<u32>,
+}
+
+impl Viewing {
+    fn new(attachment: BrowserAttachment) -> Self {
+        Self {
+            key: attachment.key,
+            id: attachment.id,
+            tab: attachment.tab,
+            frames: attachment.frames,
+            view: attachment.view,
+            nav: attachment.nav,
+            failures: attachment.failures,
+            files: attachment.files,
+            downloads: attachment.downloads,
+            audio: attachment.audio,
+            last_frame: None,
+        }
     }
 }
 
-/// One ask sent to the host, waiting for its answer - and then, when the
-/// answer declared images, for the frames that carry their bytes.
-struct InFlight {
-    /// The tool call's answer, on its way back to the relay.
-    reply: oneshot::Sender<Result<Vec<BrowserPart>, String>>,
-    /// The parts the answer declared, in order; `None` until it arrives.
-    parts: Option<Vec<BrowserPart>>,
-    /// The indices of `parts` that are images, in order.
-    images: Vec<usize>,
-    /// How many of `images` have had their bytes filled in.
-    filled: usize,
+/// This connection's browser half: the tab it draws and the strip it follows.
+///
+/// **One value rather than two arguments**, because the read loop and its
+/// per-message handler already carry the connection's whole mutable state and
+/// two more fields would push both past the arity a reader can hold.
+#[derive(Default)]
+struct BrowserViewing {
+    viewing: Option<Viewing>,
+    tabs: Option<tokio::sync::watch::Receiver<BrowserTabList>>,
 }
+
+/// What a viewer has to say to the loop.
+enum ViewEvent {
+    Frame(BrowserFrame),
+    State(BrowserViewState),
+    Nav(forge_primitives::browser::BrowserNavState),
+    Failed(String),
+    File(forge_primitives::browser::BrowserFileAsk),
+    Download(forge_primitives::browser::BrowserDownload),
+    Audio(forge_primitives::browser::BrowserAudio),
+}
+
+/// The next thing this connection's viewer has for the loop.
+///
+/// **A connection with no viewer parks here**, so its branch is inert
+/// rather than ending the loop - the same shape [`next_update`] uses. The
+/// watch holds one value per source, so a viewer that falls behind is
+/// served the newest frame rather than a queue.
+async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
+    let Some(viewing) = viewing.as_mut() else { return std::future::pending().await };
+    loop {
+        // **A sender that ends says which one it was.** The tab's own state
+        // and history end with the tab; the profile's senders end with the
+        // browser. One refusal for both told a viewer on a closed tab that
+        // the whole browser had gone.
+        let ready = tokio::select! {
+            changed = viewing.frames.changed() => changed.map(|()| 0_u8).map_err(|_| 10_u8),
+            changed = viewing.view.changed() => changed.map(|()| 1_u8).map_err(|_| 11_u8),
+            changed = viewing.failures.changed() => changed.map(|()| 2_u8).map_err(|_| 12_u8),
+            changed = viewing.nav.changed() => changed.map(|()| 3_u8).map_err(|_| 13_u8),
+            changed = viewing.files.changed() => changed.map(|()| 4_u8).map_err(|_| 14_u8),
+            download = viewing.downloads.recv() => match download {
+                Ok(download) => return ViewEvent::Download(download),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    tracing::warn!(
+                        "a viewer fell behind a download and lost it (event_name \
+                         browser_download_lagged)"
+                    );
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    std::future::pending().await
+                }
+            },
+            packet = viewing.audio.recv() => match packet {
+                // **Only this viewer's tab is heard.** One profile's audio
+                // broadcast carries every tab, and another page's sound is
+                // not this viewer's to play.
+                Ok(packet) if packet.tab == viewing.tab => return ViewEvent::Audio(packet),
+                // Another tab's packet, or one a viewer fell behind: it
+                // loses packets, not the stream, and the next it can take
+                // resumes playback.
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    std::future::pending().await
+                }
+            },
+        };
+        match ready {
+            Ok(0) => {
+                let frame = viewing.frames.borrow_and_update().clone();
+                // **The watch is this tab's own**, so a frame from another
+                // tab cannot arrive here; the tab check is the wire's own
+                // identity, kept against a frame that names another.
+                if let Some(frame) = frame
+                    && frame.tab == viewing.tab
+                    && viewing.last_frame != Some(frame.seq)
+                {
+                    viewing.last_frame = Some(frame.seq);
+                    return ViewEvent::Frame(frame);
+                }
+            }
+            Ok(1) => return ViewEvent::State(*viewing.view.borrow_and_update()),
+            Ok(2) => {
+                if let Some(reason) = viewing.failures.borrow_and_update().clone() {
+                    return ViewEvent::Failed(reason);
+                }
+            }
+            Ok(3) => {
+                if let Some(nav) = *viewing.nav.borrow_and_update() {
+                    return ViewEvent::Nav(nav);
+                }
+            }
+            Ok(4) => {
+                if let Some(ask) = *viewing.files.borrow_and_update() {
+                    return ViewEvent::File(ask);
+                }
+            }
+            Ok(_) => {}
+            // **The tab's own senders go when the tab does**, and the
+            // refusal names it so the client lowers that surface and can pick
+            // another. The profile's senders going is the browser's end.
+            // **A host's death is the cause when it has one**: the failure
+            // watch is published before the per-tab senders close, and a
+            // viewer that woke on the close alone would read the tab as
+            // closed and never hear why.
+            Err(10 | 11 | 13) => {
+                if let Some(reason) = viewing.failures.borrow().clone() {
+                    return ViewEvent::Failed(reason);
+                }
+                return ViewEvent::Failed(format!("tab {} was closed", viewing.tab));
+            }
+            Err(_) => {
+                if let Some(reason) = viewing.failures.borrow().clone() {
+                    return ViewEvent::Failed(reason);
+                }
+                return ViewEvent::Failed("the browser was closed".to_owned());
+            }
+        }
+    }
+}
+
+/// The next tab list this connection asked to follow, or a future that never
+/// resolves while it follows none - the same shape [`next_view_event`] uses,
+/// so a connection with no strip parks rather than ending the loop.
+async fn next_tab_change(
+    tabs: &mut Option<tokio::sync::watch::Receiver<BrowserTabList>>,
+) -> Option<BrowserTabList> {
+    let Some(tabs) = tabs.as_mut() else { return std::future::pending().await };
+    match tabs.changed().await {
+        Ok(()) => Some(tabs.borrow_and_update().clone()),
+        // The profile's rows are gone with the service: nothing more will
+        // change, and the branch stays out of the way.
+        Err(_) => std::future::pending().await,
+    }
+}
+
+/// The largest message a client may send.
+///
+/// **The cap is abuse's, not a prompt's.** A command carries a session's
+/// whole prompt text, and 16 MiB is the bound the socket has always
+/// allowed; the dictation payload's 16 KiB is a frame size, and applying it
+/// to every inbound message tore the connection on a large prompt - with no
+/// reply on a prompt, the loss was silent (measured on the dev stack).
+const MAX_CLIENT_MESSAGE_BYTES: usize = 16 * 1024 * 1024 + 10;
 
 /// Take the upgrade and give the connection its own task.
 ///
-/// The frame limit is set to the image cap here, and what that does to the
-/// defaults is worth stating because it goes both ways: it RAISES the frame
-/// limit (16 MiB by default, and an image frame is that plus its header) and
-/// LOWERS the message limit (64 MiB by default). One byte past the cap is
-/// carried on purpose, so an image a shade too big is refused by
-/// [`super::frame`] - which fails the ask it belongs to, naming the reason -
-/// rather than tearing the connection down at the socket layer, where the
-/// asker would be told only that its host went away.
+/// Both tungstenite limits are raised to the one inbound cap: the frame
+/// limit (16 MiB by default here, exactly the cap) and the message limit
+/// (64 MiB by default, lowered to the cap so one message cannot be several
+/// frames past what a single frame may be). A frame the cap refuses never
+/// reaches [`super::frame`]; anything under it does, and a dictation payload
+/// a shade too big is refused there with its reason rather than tearing the
+/// socket.
 pub async fn upgrade(
     ws: WebSocketUpgrade,
     State(state): State<Arc<TransportState>>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
 ) -> Response {
-    let limit = super::frame::MAX_IMAGE_BYTES + super::frame::IMAGE_HEADER_BYTES + 1;
+    let limit = MAX_CLIENT_MESSAGE_BYTES;
     ws.max_frame_size(limit)
         .max_message_size(limit)
         .on_upgrade(move |socket| greet(socket, state, peer))
@@ -406,9 +503,9 @@ where
     // prompt as able to answer it, and the core parks a turn on that reply
     // rather than failing it.
     let mut updates: Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)> = None;
-    // None until a subscribe declares the browser capability and the role is
-    // free. Dropping it hands the role back.
-    let mut hosting: Option<Hosting> = None;
+    // The tab this connection is viewing and the seat's tab rows it follows,
+    // each once the client asks.
+    let mut browser = BrowserViewing::default();
     // Answers to reply-carrying commands, sent by the tasks that ran them:
     // the read loop hands a reply off rather than awaiting it, so a slow
     // handler holds nothing behind it (#2445).
@@ -421,25 +518,17 @@ where
         &mut holds,
         &mut updates,
         &mut dictate,
-        &mut hosting,
+        &mut browser,
         &reply_tx,
         &mut answers,
         caller,
     )
     .await;
-    // **Which side ended the connection**, read before the hosting drops: the
-    // role it gives back carries this into the relay's trail, so a host that
-    // vanished on a socket error is not indistinguishable from one the client
-    // closed on purpose.
-    if let Some(hosting) = hosting.as_mut() {
-        hosting.role.ending.get_or_insert_with(|| match &outcome {
-            Ok(()) => Release::Closed,
-            // **The write bound is its own ending**: the peer never closed and
-            // its socket never failed - it stopped reading, which is what
-            // ended the connection (#2473).
-            Err(error) if error.downcast_ref::<WriteStalled>().is_some() => Release::Stalled,
-            Err(_) => Release::Failed,
-        });
+    // **A viewer's count comes off however the connection ends.** A socket
+    // error and a client closing both leave the profile's viewer set, and a
+    // role the gone viewer held is released with it.
+    if let Some(host) = state.browser_host.as_ref() {
+        host.detach(me).await;
     }
     if let Err(error) = &outcome
         && let Some(stalled) = error.downcast_ref::<WriteStalled>()
@@ -573,7 +662,7 @@ async fn run_connection<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    hosting: &mut Option<Hosting>,
+    browser: &mut BrowserViewing,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
     caller: Caller,
@@ -584,14 +673,15 @@ where
         + Unpin
         + Send,
 {
+    let me = caller.id;
     let mut held = Batch::default();
     // The served-record bound every frame to a client takes (#2374), read once
     // rather than per frame.
     let cap = state.surface.tool_record_cap_bytes();
     // **The peer proves it is there by answering.** Without this a connection
     // whose peer went away without closing reads nothing for ever, and the
-    // browser role it holds sits with it. The first tick is consumed because
-    // an interval fires at once.
+    // viewer it holds sits with it. The first tick is consumed because an
+    // interval fires at once.
     let beat_every = state.heartbeat.every;
     let beat_dead = state.heartbeat.dead;
     let mut beat = tokio::time::interval(beat_every);
@@ -616,7 +706,8 @@ where
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
                 handle_client(
-                    socket, state, watching, holds, updates, dictate, hosting, reply_tx, caller, msg,
+                    socket, state, watching, holds, updates, dictate, browser, reply_tx, caller,
+                    msg,
                 )
                 .await?;
             }
@@ -651,7 +742,7 @@ where
                     initiator: Some(id),
                     ..
                 } = &update
-                    && *id == caller.id
+                    && *id == me
                 {
                     dictate.stamp(key, *generation);
                 }
@@ -662,13 +753,13 @@ where
                     generation,
                     ..
                 } = &update
-                    && *id == caller.id
+                    && *id == me
                 {
                     dictate.retire(key, outcome, *generation);
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
-                if forwards(&update, &watching.subjects, caller.id) {
+                if forwards(&update, &watching.subjects, me) {
                     // **A fatal goes out now, not on the batch's clock.** The
                     // exit it announces is already on its way - `workspace.
                     // shutdown` follows the run loop's return - and a frame
@@ -684,73 +775,178 @@ where
                     }
                 }
             }
-            // **The role's own channel and its asks, raced as one future**
-            // because `select!` wants one borrow of the hosting: an ask on
-            // its way out to this host, or the relay saying the role moved.
-            event = next_hosting_event(hosting) => {
+            // **The viewed profile's frames and state, raced as one future**
+            // because `select!` wants one borrow of the viewer.
+            event = next_view_event(&mut browser.viewing) => {
+                // What the core already said goes out first, the same rule
+                // every send here keeps.
+                batch::flush(socket, held.take()).await?;
                 match event {
-                    HostingEvent::Ask(request) => {
-                        // What the core already said goes out first, the same
-                        // rule the client-message arm keeps: an ask is composed
-                        // after the news that preceded it, so nothing the core
-                        // emitted before this call lands behind it.
-                        batch::flush(socket, held.take()).await?;
-                        if let Some(hosting) = hosting.as_mut() {
-                            hosting.in_flight.insert(
-                                request.id,
-                                InFlight {
-                                    reply: request.reply,
-                                    parts: None,
-                                    images: Vec::new(),
-                                    filled: 0,
-                                },
-                            );
-                        }
+                    ViewEvent::Frame(frame) => {
+                        // **The transport owns how a frame reaches the
+                        // person**: the connection hands it over and never
+                        // formats one itself.
+                        let mut transport = super::frame::SocketFrames { socket: &mut *socket };
+                        transport.deliver(&frame).await?;
+                    }
+                    ViewEvent::State(state) => {
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
                         send(
                             socket,
-                            ServerMessage::BrowserAsk {
-                                id: request.id,
-                                seat: request.seat,
-                                tool: request.tool,
-                                args: request.args,
+                            ServerMessage::BrowserView {
+                                id: viewing.id,
+                                profile: viewing.key.clone(),
+                                tab: viewing.tab,
+                                controller: state.controller,
+                                viewers: state.viewers,
+                                viewer: me,
                             },
                         )
                         .await?;
                     }
-                    // **The role taken away.** A force-take tells this
-                    // connection before its next ask would have arrived. Every
-                    // call it was carrying fails with the take's own sentence
-                    // - not the relay's HOST_GONE, which would say the holder
-                    // went away when it was displaced - and the client is told,
-                    // because its strip must not go on saying it hosts.
-                    HostingEvent::Notice(Notice::Taken) => {
-                        fail_every_in_flight(hosting, HOST_GONE_BY_TAKE);
-                        // No ending is recorded here: `claim` already recorded
-                        // the take, and by the time this drops the role is the
-                        // claimant's, so the release reports neither.
-                        hosting.take();
-                        batch::flush(socket, held.take()).await?;
-                        send(socket, ServerMessage::BrowserRole { hosting: false }).await?;
+                    // **The page navigated on its own**: a link click or a
+                    // fragment moves the bar's arrows, and nobody asked.
+                    ViewEvent::Nav(nav) => {
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        send(
+                            socket,
+                            ServerMessage::BrowserNavState {
+                                id: viewing.id,
+                                tab: viewing.tab,
+                                can_back: nav.can_back,
+                                can_forward: nav.can_forward,
+                            },
+                        )
+                        .await?;
                     }
-                    // **The role handed over.** A promotion arrives without an
-                    // ask to make it obvious, so it is said the way the grant
-                    // is: the strip must not go on saying another client
-                    // drives a browser this connection is now being asked for.
-                    // The core's own news goes out first, the same rule every
-                    // other send keeps.
-                    HostingEvent::Notice(Notice::Granted) => {
-                        batch::flush(socket, held.take()).await?;
-                        send(socket, ServerMessage::BrowserRole { hosting: true }).await?;
+                    // **A page's file chooser goes to the person driving it.**
+                    // The shell opens its picker and answers with the bytes;
+                    // a watcher that is not the controller is not asked.
+                    // **The ask is the profile's, so every viewer's
+                    // connection sees it; only the controller answers it.**
+                    // A watcher that answered with no files would cancel the
+                    // very dialog the controller is showing - the picker
+                    // opened for one client and died because another one was
+                    // watching. A chooser with no controller at all is the
+                    // one case that is cancelled here, once: nothing can
+                    // answer it.
+                    ViewEvent::File(ask) => {
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        // **A chooser belongs to its tab's viewer.** A viewer
+                        // watching another tab is never asked to pick for it.
+                        if ask.tab != viewing.tab {
+                            continue;
+                        }
+                        let controller = viewing.view.borrow().controller;
+                        if controller.is_some_and(|holder| holder != me) {
+                            continue;
+                        }
+                        if controller.is_none() {
+                            // A slightly older ask may already have been
+                            // cancelled by another viewer's connection; only
+                            // the one still outstanding is cancelled.
+                            if viewing.files.borrow().is_some()
+                                && let Some(host) = state.browser_host.as_ref()
+                                && let Err(why) = host
+                                    .answer_files(&viewing.key, viewing.tab, ask.id, Vec::new())
+                                    .await
+                            {
+                                tracing::warn!(
+                                    "a file chooser could not be cancelled without a controller \
+                                     (event_name browser_file_cancel_failed, profile {}, id {}): \
+                                     {why}",
+                                    viewing.key,
+                                    ask.id,
+                                );
+                            }
+                            continue;
+                        }
+                        send(
+                            socket,
+                            ServerMessage::BrowserFileDialog {
+                                id: ask.id,
+                                tab: ask.tab,
+                                multiple: ask.multiple,
+                            },
+                        )
+                        .await?;
                     }
-                    // **Which seats exist, for the client's profile sweep.**
-                    // Sent whole, on every capable connection: the client
-                    // deletes the profiles of the seats the set no longer
-                    // holds. The core's own news first, as ever.
-                    HostingEvent::Notice(Notice::Seats(seats)) => {
-                        batch::flush(socket, held.take()).await?;
-                        send(socket, ServerMessage::BrowserSeats { seats }).await?;
+                    // **A finished download goes to the person driving.** A
+                    // watcher's connection receives the broadcast and drops
+                    // it; the save door is the controller's.
+                    ViewEvent::Download(download) => {
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        // **A save is the tab's too**: a controller watching
+                        // another tab is not offered this file.
+                        if download.tab != viewing.tab {
+                            continue;
+                        }
+                        if viewing.view.borrow().controller != Some(me) {
+                            continue;
+                        }
+                        let data = download.error.is_none().then(|| {
+                            base64::engine::general_purpose::STANDARD.encode(&download.bytes)
+                        });
+                        send(
+                            socket,
+                            ServerMessage::BrowserDownload {
+                                tab: download.tab,
+                                name: download.name,
+                                data,
+                                error: download.error,
+                            },
+                        )
+                        .await?;
+                    }
+                    // **The page's own sound goes to the person driving.**
+                    // Only the controller hears; a watcher's connection drops
+                    // the packet rather than playing another person's page.
+                    ViewEvent::Audio(packet) => {
+                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        if viewing.view.borrow().controller != Some(me) {
+                            continue;
+                        }
+                        let mut transport = super::frame::SocketFrames { socket: &mut *socket };
+                        transport.deliver_audio(&packet).await?;
+                    }
+                    // **A browser that stopped is said, not left as a frozen
+                    // frame.** The viewer is dropped: nothing more arrives,
+                    // and the client re-attaches when it opens the surface
+                    // again.
+                    ViewEvent::Failed(reason) => {
+                        let Some(viewed) = browser.viewing.as_ref() else { continue };
+                        let (id, tab) = (viewed.id, viewed.tab);
+                        browser.viewing = None;
+                        // **The gone viewer comes off the profile too.** The
+                        // connection lives on, so without this the profile
+                        // kept a phantom viewer and a role held by a surface
+                        // that is not looking at it.
+                        if let Some(host) = state.browser_host.as_ref() {
+                            host.detach(me).await;
+                        }
+                        send(socket, ServerMessage::BrowserSurfaceFailed { id, tab, reason })
+                            .await?;
                     }
                 }
+            }
+            // **The strip's rows, once it asked for them.** A tab that
+            // opens, closes or changes hands is pushed as the whole list, so
+            // the client never has to poll a read it already subscribed to.
+            changed = next_tab_change(&mut browser.tabs) => {
+                let Some(list) = changed else { continue };
+                batch::flush(socket, held.take()).await?;
+                send(
+                    socket,
+                    ServerMessage::BrowserTabs {
+                        id: list.id,
+                        profile: list.profile,
+                        up: list.up,
+                        connected: list.connected,
+                        closing_at_ms: list.closing_at_ms,
+                        rows: list.rows,
+                    },
+                )
+                .await?;
             }
             // **The keepalive's beat.** A ping that went unanswered past the
             // bound is the evidence, never a quiet read: a busy connection
@@ -770,16 +966,10 @@ where
                         tracing::debug!(
                             target: "forge_server::transport",
                             event_name = "connection_reaped",
-                            client = caller.id,
+                            client = me,
                             waited_ms = waited.as_secs_f64() * 1000.0,
                             "the peer never answered the keepalive's ping, so its connection is ended",
                         );
-                        // Not the client closing, and not a socket error: the
-                        // keepalive ended this, which is what the role's
-                        // release records.
-                        if let Some(hosting) = hosting.as_mut() {
-                            hosting.role.ending = Some(Release::Reaped);
-                        }
                         break;
                     }
                 }
@@ -848,64 +1038,6 @@ async fn next_update(
     }
 }
 
-/// The relay's next ask, or a future that never resolves while this
-/// connection does not hold the browser role - the same shape as
-/// [`next_update`], and for the same reason: a disabled `select!` branch is
-/// what keeps a connection the role was never given out of the way.
-/// What the hosting has to say to the loop: one tool call to carry out, or
-/// the relay saying the role itself moved.
-enum HostingEvent {
-    Ask(BrowserRequest),
-    Notice(Notice),
-}
-
-/// The next thing the hosting has for the loop - one future, because both
-/// channels hang off the same borrow and `select!` takes one per branch.
-///
-/// **A closed channel is not the connection's end, and this is the seam a
-/// force-take runs through.** The relay drops both of a displaced holder's
-/// senders, so its channels close - and the last word, the `Taken` notice, is
-/// still IN the closed notice channel: `recv` on a closed channel delivers
-/// what it holds and only then reads as done. So each channel is drained
-/// first, a closed one is waited past rather than satisfied, and both closed
-/// parks the branch: the connection stays a client - a viewer, told what
-/// happened - where ending it would have taken its socket down mid-test and
-/// mid-life. A connection with no hosting parks here too, so its branch is
-/// inert rather than ending the loop.
-///
-/// It answers an `HostingEvent` and never a `None`: every way out of this
-/// future is either an event or a park, because a closed channel is not the
-/// connection's end (see above).
-async fn next_hosting_event(hosting: &mut Option<Hosting>) -> HostingEvent {
-    match hosting.as_mut() {
-        Some(hosting) => loop {
-            if let Ok(notice) = hosting.notices.try_recv() {
-                return HostingEvent::Notice(notice);
-            }
-            if let Ok(request) = hosting.asks.try_recv() {
-                return HostingEvent::Ask(request);
-            }
-            let asks_dead = hosting.asks.is_closed();
-            let notices_dead = hosting.notices.is_closed();
-            if asks_dead && notices_dead {
-                return std::future::pending().await;
-            }
-            let next = tokio::select! {
-                ask = hosting.asks.recv(), if !asks_dead => ask.map(HostingEvent::Ask),
-                notice = hosting.notices.recv(), if !notices_dead => {
-                    notice.map(HostingEvent::Notice)
-                }
-            };
-            if let Some(event) = next {
-                return event;
-            }
-            // A channel closed under the select with nothing left in it:
-            // loop, and either the other channel or the park decides.
-        },
-        None => std::future::pending().await,
-    }
-}
-
 /// Answer one client message.
 async fn handle_client<S>(
     socket: &mut S,
@@ -914,48 +1046,27 @@ async fn handle_client<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    hosting: &mut Option<Hosting>,
+    browser: &mut BrowserViewing,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     caller: Caller,
     msg: Message,
 ) -> anyhow::Result<()>
 where
-    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
+    let viewing = &mut browser.viewing;
+    let tabs = &mut browser.tabs;
+    let me = caller.id;
     // The served-record bound every frame to a client takes (#2374), read once
     // rather than per frame.
     let cap = state.surface.tool_record_cap_bytes();
     let text = match msg {
         Message::Text(text) => text,
-        // A binary message is a frame of one of the two kinds. Neither is
-        // answered: a take's audio has no reply channel, and an image frame
-        // completes an answer that is already on its way back.
+        // **A client's binary frame is audio, or it is not a frame this
+        // server takes.** Nothing binary comes from a client for the browser:
+        // browser frames are the server's to send.
         Message::Binary(bytes) => {
-            match frame_route(&bytes, dictate) {
-                FrameRoute::Image { id, bytes } => browser_image_bytes(hosting, id, &bytes),
-                FrameRoute::Refused(refusal) => {
-                    // An image frame this server cannot take cannot fill the
-                    // part that is waiting for it, and the ask it belongs to
-                    // would wait forever. Nothing names which ask a refused
-                    // frame was for, so every ask waiting on an image is
-                    // failed with the reason - a failure a session can read,
-                    // where a wait with no end is not. **A dictation refusal
-                    // is not that**: it belongs to the audio stream, and
-                    // failing image waits on it would name an image error
-                    // over a microphone frame.
-                    if refusal.concerns_images() {
-                        fail_awaiting_images(
-                            hosting,
-                            &format!(
-                                "an image frame this server cannot take: {}",
-                                refusal.reason()
-                            ),
-                        );
-                    }
-                    take_frame(&state.surface, dictate, caller.id, FrameRoute::Refused(refusal));
-                }
-                other => take_frame(&state.surface, dictate, caller.id, other),
-            }
+            take_frame(&state.surface, dictate, me, frame_route(&bytes, dictate));
             return Ok(());
         }
         _ => return Ok(()),
@@ -973,7 +1084,7 @@ where
         .await;
     };
     match client {
-        ClientMessage::Subscribe { what, answering, browser, declare } => {
+        ClientMessage::Subscribe { what, answering } => {
             // **The open path's own clock (#2374).** From this message being
             // read to the snapshot being written - the span a client's seat
             // switch waits on this half for, whatever subject it names; the
@@ -987,41 +1098,8 @@ where
                     event_name = "client_subscribed",
                     slot = %slot.display(),
                     peer = %caller.peer,
-                    declare,
                     "a client subscribed a seat, from the address it is attached on",
                 );
-            }
-            // **The browser role, offered once per connection.** A capable
-            // client declares it on every subscribe it makes; the first
-            // declaration while the role is free takes it, and a later one
-            // finds this connection already in place. A declaration that
-            // arrives while another client holds the role changes nothing -
-            // one host drives the one browser, and being the second is not an
-            // error: the relay keeps this connection's channel and hands it
-            // the role when the holder goes, so nothing has to be declared
-            // again for the handover to happen.
-            // **The role is said out loud, grant or wait**, after the
-            // snapshot: the client knew only that it COULD host, and its
-            // strip needs "does". A declaration that waits is told `false`
-            // too - an unsaid false is indistinguishable from a socket that
-            // has not been told yet, and the dock refuses a hand-off's raise
-            // on "told not the host" (#2519). A force-take later is the same
-            // frame with `false`. `None` when this connection already offered
-            // and has its answer. Sent last so the subscribe's own answer
-            // keeps being the snapshot.
-            let mut role_answer: Option<bool> = None;
-            // The seat set a fresh offer is answered with: the client's
-            // profile sweep reads it, so a capable connection learns which
-            // seats exist the moment it declares - boot, a reconnect, or a
-            // second window. `None` when the store could not be read: no set
-            // is sent, because a client reading "no seats" would delete
-            // every profile it holds.
-            let mut seats: Option<Vec<SessionSlot>> = None;
-            if browser && hosting.is_none() {
-                let (offering, held) = Hosting::offer(&state.browser, caller.id);
-                *hosting = Some(offering);
-                role_answer = Some(held);
-                seats = state.surface.live_seats();
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
@@ -1039,15 +1117,8 @@ where
             // in. The open no longer waits on those reads (#2506); a seat
             // nothing has ever read still takes the record's own fallback, so
             // its cost is the cold open's and nothing more.
-            //
-            // **A declare holds nothing**, like the watch entry and the
-            // attachment below: it re-states the browser capability against a
-            // subject the client already watches, and the client never counts
-            // it, so nothing would ever give a hold back.
             let mut hold_ms = 0.0;
-            if let Subject::Session(slot) = &what
-                && !declare
-            {
+            if let Subject::Session(slot) = &what {
                 // **Every session subscribe holds the seat**, a sessionless
                 // one included - its watch waits for the session (#1706) - and
                 // every taken hold is remembered here so the two paths a
@@ -1081,15 +1152,12 @@ where
                     // **A subscription is not a showing.** This connection
                     // hears the seat's frames from here, and the marks are
                     // spent when it says the seat is on screen (`Showing`),
-                    // not when it starts listening. A declare is not a page
-                    // opening the subject either, so it does not watch.
+                    // not when it starts listening.
                     let seat = match &what {
                         Subject::Session(slot) => Some(slot.clone()),
                         _ => None,
                     };
-                    if !declare {
-                        watching.subjects.push(what.clone());
-                    }
+                    watching.subjects.push(what.clone());
                     let write = send_frame_timed(
                         socket,
                         ServerMessage::Snapshot { subject: what, data },
@@ -1101,20 +1169,13 @@ where
                     // way: the snapshot was encoded before the death trace is
                     // spent, so its row still carries the death, and the home
                     // re-send that follows carries it cleared.
-                    if !declare
-                        && let Some(slot) = &seat
+                    if let Some(slot) = &seat
                         && watching.showing.as_ref() == Some(slot)
                         && !watching.showing_attached
                     {
                         spend_showing(socket, state, watching, slot).await?;
                     }
-                    // **A declare is not an open.** It re-states the browser
-                    // capability against a subject the client already watches
-                    // and takes no hold and no watch, so no page came on
-                    // screen and the line would be a switch nobody made.
-                    if let Some(slot) = &seat
-                        && !declare
-                    {
+                    if let Some(slot) = &seat {
                         // The snapshot's own write, its own record: the open
                         // below keeps the slices, so the write's numbers are
                         // not repeated there (#2506).
@@ -1182,12 +1243,6 @@ where
                              glue",
                         );
                     }
-                    if let Some(hosting) = role_answer {
-                        send(socket, ServerMessage::BrowserRole { hosting }).await?;
-                    }
-                    if let Some(seats) = seats {
-                        return send(socket, ServerMessage::BrowserSeats { seats }).await;
-                    }
                     Ok(())
                 }
                 // A seat nobody has started is an ANSWER rather than a
@@ -1196,12 +1251,8 @@ where
                 Err(refusal) => {
                     // The hold every session subscribe takes goes back with
                     // the refusal, or a view of a seat that does not exist
-                    // would keep its loop running behind nothing. A DECLARE
-                    // takes none - giving one back here would return the hold
-                    // the client's own subscribe is still using.
-                    if let Subject::Session(slot) = &what
-                        && !declare
-                    {
+                    // would keep its loop running behind nothing.
+                    if let Subject::Session(slot) = &what {
                         holds.give_back(slot);
                     }
                     // **The refusal names the seat it refused** (#2420): the
@@ -1222,19 +1273,6 @@ where
                         },
                     )
                     .await?;
-                    // **The role was answered at register, before the
-                    // snapshot could refuse** - so the answer is owed here
-                    // too, or a connection that holds the role (and will be
-                    // sent asks) is one the client believes never got it, and
-                    // a waiting one is never told it does not. The seat set
-                    // is the client's sweep to run, so it is owed here as
-                    // well - the offer was made, refused snapshot or not.
-                    if let Some(hosting) = role_answer {
-                        send(socket, ServerMessage::BrowserRole { hosting }).await?;
-                    }
-                    if let Some(seats) = seats {
-                        return send(socket, ServerMessage::BrowserSeats { seats }).await;
-                    }
                     Ok(())
                 }
             }
@@ -1247,16 +1285,16 @@ where
             // claim another's - the field never crosses the wire.
             let command = match *command {
                 Command::DictateStream { key, options, surface, .. } => {
-                    Command::DictateStream { key, options, surface, initiator: Some(caller.id) }
+                    Command::DictateStream { key, options, surface, initiator: Some(me) }
                 }
                 Command::DictateStop { key, submit, .. } => {
-                    Command::DictateStop { key, submit, initiator: Some(caller.id) }
+                    Command::DictateStop { key, submit, initiator: Some(me) }
                 }
                 Command::DictateReadAloudStart { .. } => {
-                    Command::DictateReadAloudStart { initiator: Some(caller.id) }
+                    Command::DictateReadAloudStart { initiator: Some(me) }
                 }
                 Command::DictateReadAloudStop { keep, .. } => {
-                    Command::DictateReadAloudStop { keep, initiator: Some(caller.id) }
+                    Command::DictateReadAloudStop { keep, initiator: Some(me) }
                 }
                 other => other,
             };
@@ -1276,7 +1314,7 @@ where
             };
             // Where a command's answer goes, decided before anything acts.
             //
-            // Five commands report through the reply and have no update behind
+            // Eight commands report through the reply and have no update behind
             // them, so omitting `reply_to` on one of those is not a client
             // declining a reply - it is a client declining to learn whether
             // the work happened. Every other command is fire-and-forget: its
@@ -1290,7 +1328,7 @@ where
             let dispatch_id = command.dispatch_id();
             match (reply_to, answers_through_a_reply(&command)) {
                 (Some(to), true) => {
-                    dispatched(caller.id, &command);
+                    dispatched(me, &command);
                     dispatch_answering(state, command, to, reply_tx);
                     Ok(())
                 }
@@ -1322,7 +1360,7 @@ where
                     .await
                 }
                 (None, false) => {
-                    dispatched(caller.id, &command);
+                    dispatched(me, &command);
                     match state.surface.dispatch(command) {
                         Ok(()) => {
                             // Claimed as soon as the dispatch answers - Ok for a
@@ -1663,54 +1701,293 @@ where
             };
             send(socket, ServerMessage::FileContent { session, path, sha, content }).await
         }
-        ClientMessage::BrowserTakeRole => {
-            // The claimant must have offered first: the relay answers a host
-            // down the channel a capable declare created, and a connection
-            // that never declared has none. Both outcomes answer with the
-            // same frame - the control that sent this draws the truth either
-            // way, so a refusal needs no words.
-            let claimed = hosting.is_some() && state.browser.claim(caller.id);
-            send(socket, ServerMessage::BrowserRole { hosting: claimed }).await
+        ClientMessage::BrowserView { seat, tab, reply_to } => {
+            // **A re-attach is a switch**: the tab this connection was
+            // viewing gives its viewer up before the new one takes it, or
+            // the old tab keeps a phantom viewer and its controller role.
+            if viewing.is_some()
+                && let Some(host) = state.browser_host.as_ref()
+            {
+                host.detach(me).await;
+                *viewing = None;
+            }
+            // **An attach that cannot happen is answered.** A client that
+            // sent a `reply_to` learns the refusal through it and reaches its
+            // failed state; one that did not still gets the error frame.
+            let Some(host) = state.browser_host.as_ref() else {
+                let why = "this server has no browser to view".to_owned();
+                return refuse_attach(socket, reply_to, &why, seat).await;
+            };
+            match host.attach(me, &seat, tab).await {
+                Ok(attachment) => {
+                    let key = attachment.key.clone();
+                    let id = attachment.id;
+                    let tab = attachment.tab;
+                    // **The attach's own frames carry the state they hold**:
+                    // the receivers are read as seen, so the loop announces
+                    // only what moves after them rather than repeating the
+                    // state the client already drew.
+                    let mut fresh = Viewing::new(attachment);
+                    let now = *fresh.view.borrow_and_update();
+                    let read_nav = host.nav_state(&key, tab).await;
+                    // The watch also carries a page-driven move that landed
+                    // while the attach was in flight.
+                    let watched_nav = *fresh.nav.borrow_and_update();
+                    let nav = read_nav.or(watched_nav);
+                    // **The kept frame goes to the viewer that attaches.**
+                    // The newest frame is a value, not an event: a surface
+                    // opening on a still page would otherwise wait for the
+                    // next paint. The watch carries the whole profile's newest
+                    // paint, so another tab's frame is not this surface's.
+                    let kept = fresh.frames.borrow().clone().filter(|frame| frame.tab == tab);
+                    if let Some(frame) = kept.as_ref() {
+                        fresh.last_frame = Some(frame.seq);
+                    }
+                    *viewing = Some(fresh);
+                    send(
+                        socket,
+                        ServerMessage::BrowserView {
+                            id,
+                            profile: key.clone(),
+                            tab,
+                            controller: now.controller,
+                            viewers: now.viewers,
+                            viewer: me,
+                        },
+                    )
+                    .await?;
+                    if let Some(frame) = kept {
+                        let mut transport = super::frame::SocketFrames { socket: &mut *socket };
+                        transport.deliver(&frame).await?;
+                    }
+                    if let Some(nav) = nav {
+                        send(
+                            socket,
+                            ServerMessage::BrowserNavState {
+                                id,
+                                tab,
+                                can_back: nav.can_back,
+                                can_forward: nav.can_forward,
+                            },
+                        )
+                        .await?;
+                    }
+                    match reply_to {
+                        Some(ask) => {
+                            // **The profile and tab the attach actually
+                            // took**, so the page's Done lowers the browser
+                            // that came up: a hand-off that named no tab was
+                            // resolved to the asking seat's current one.
+                            send(
+                                socket,
+                                ServerMessage::Reply {
+                                    reply_to: ask,
+                                    body: json!({ "ok": true, "profile": key, "tab": tab }),
+                                },
+                            )
+                            .await
+                        }
+                        None => Ok(()),
+                    }
+                }
+                Err(why) => refuse_attach(socket, reply_to, &why, seat).await,
+            }
         }
-        ClientMessage::BrowserAnswer { id, parts, error } => {
-            let Some(hosting) = hosting.as_mut() else {
-                tracing::debug!(
-                    event_name = "browser_answer_without_the_role",
-                    id,
-                    "a browser answer arrived on a connection that does not hold the role",
-                );
+        ClientMessage::BrowserDetach => {
+            // **Lowering is a detach.** It takes this viewer's count off the
+            // profile it was on, so the idle clock can release it and no
+            // phantom viewer keeps the profile warm.
+            if let Some(host) = state.browser_host.as_ref() {
+                host.detach(me).await;
+            }
+            *viewing = None;
+            Ok(())
+        }
+        ClientMessage::BrowserInput { seq, event } => {
+            let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
+            else {
                 return Ok(());
             };
-            let Some(mut in_flight) = hosting.in_flight.remove(&id) else {
-                tracing::debug!(
-                    event_name = "browser_answer_unmatched",
-                    id,
-                    "a browser answer named an ask nothing on this connection is waiting on",
-                );
+            match host.input(&viewing.key, viewing.tab, me, seq, &event).await {
+                Ok(()) => Ok(()),
+                Err(why) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "browser_input".to_owned(),
+                            why,
+                            seat: None,
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
+        }
+        ClientMessage::BrowserFileAnswer { id, files } => {
+            let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
+            else {
                 return Ok(());
             };
-            // A failure is the call's whole answer, and the driver's own
-            // sentence is what the tool returns.
-            if let Some(message) = error {
-                in_flight.reply.send(Err(message)).ok();
-                return Ok(());
+            // **Only the controller answers the ask it was shown.** The id
+            // must be the profile's outstanding one too: a stale answer -
+            // from a superseded dialog, or from a surface that has since
+            // been replaced - would otherwise write bytes and cancel a
+            // chooser that belongs to someone else.
+            let controlling = viewing.view.borrow().controller == Some(me);
+            let outstanding = viewing.files.borrow().as_ref().map(|ask| ask.id) == Some(id);
+            if !controlling || !outstanding {
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "browser_file_answer".to_owned(),
+                        why: "this viewer is not the file chooser's to answer".to_owned(),
+                        seat: None,
+                        dispatch_id: None,
+                    },
+                )
+                .await;
             }
-            let images: Vec<usize> = parts
-                .iter()
-                .enumerate()
-                .filter(|(_, part)| matches!(part, BrowserPart::Image { .. }))
-                .map(|(at, _)| at)
-                .collect();
-            if images.is_empty() {
-                in_flight.reply.send(Ok(parts)).ok();
-                return Ok(());
+            let files = files
+                .into_iter()
+                .map(|file| {
+                    let name = file.name;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(file.data)
+                        .map(|bytes| forge_primitives::browser::BrowserUpload { name, bytes })
+                })
+                .collect::<Result<Vec<_>, _>>();
+            let files = match files {
+                Ok(files) => files,
+                Err(why) => {
+                    return send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "browser_file_answer".to_owned(),
+                            why: format!("a file answer's bytes are not base64: {why}"),
+                            seat: None,
+                            dispatch_id: None,
+                        },
+                    )
+                    .await;
+                }
+            };
+            match host.answer_files(&viewing.key, viewing.tab, id, files).await {
+                Ok(()) => Ok(()),
+                Err(why) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "browser_file_answer".to_owned(),
+                            why,
+                            seat: None,
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
             }
-            // The images' bytes ride their own frames, which follow this
-            // answer on the same socket; the ask is answered when the last
-            // one lands.
-            in_flight.parts = Some(parts);
-            in_flight.images = images;
-            hosting.in_flight.insert(id, in_flight);
+        }
+        ClientMessage::BrowserControl { take } => {
+            let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
+            else {
+                return Ok(());
+            };
+            let (key, tab) = (viewing.key.clone(), viewing.tab);
+            let outcome = if take {
+                host.take_control(&key, tab, me).await
+            } else {
+                host.release_control(&key, tab, me).await;
+                Ok(())
+            };
+            match outcome {
+                Ok(()) => Ok(()),
+                Err(why) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "browser_control".to_owned(),
+                            why,
+                            seat: None,
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
+        }
+        ClientMessage::BrowserNav { back } => {
+            let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
+            else {
+                return Ok(());
+            };
+            let (key, id, tab) = (viewing.key.clone(), viewing.id, viewing.tab);
+            match host.nav(&key, tab, me, back).await {
+                Ok(nav) => {
+                    send(
+                        socket,
+                        ServerMessage::BrowserNavState {
+                            id,
+                            tab,
+                            can_back: nav.can_back,
+                            can_forward: nav.can_forward,
+                        },
+                    )
+                    .await
+                }
+                Err(why) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "browser_nav".to_owned(),
+                            why,
+                            seat: None,
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
+        }
+        ClientMessage::BrowserTabs { seat, reply_to } => {
+            // **The ask is the subscription**: the answer names the rows as
+            // they stand now, and the connection follows the same watch from
+            // here on, so the strip costs one read rather than a poll.
+            let Some(host) = state.browser_host.as_ref() else {
+                let why = "this server has no browser to list".to_owned();
+                return answer_ask(socket, reply_to, "browser_tabs", Err(why)).await;
+            };
+            match host.tabs(&seat).await {
+                Ok(list) => {
+                    // The stream is subscribed before the answer goes out, so
+                    // a change landing between the two is pushed rather than
+                    // lost.
+                    match host.tab_stream(&seat).await {
+                        Ok(stream) => *tabs = Some(stream),
+                        Err(why) => {
+                            tracing::debug!(
+                                event_name = "browser_tab_stream_failed",
+                                seat = %seat.display(),
+                                %why,
+                                "a tab list was read but its stream could not be followed",
+                            );
+                        }
+                    }
+                    answer_ask(socket, reply_to, "browser_tabs", Ok(json!({ "tabs": list }))).await
+                }
+                Err(why) => answer_ask(socket, reply_to, "browser_tabs", Err(why)).await,
+            }
+        }
+        ClientMessage::BrowserResize { width, height, scale } => {
+            // **Only the controller's surface sizes the page**, and the
+            // service is what knows the role: a watcher's window is dropped
+            // rather than moving the page under the person driving it.
+            let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
+            else {
+                return Ok(());
+            };
+            let (key, tab) = (viewing.key.clone(), viewing.tab);
+            host.resize(&key, tab, me, width, height, scale).await;
             Ok(())
         }
         ClientMessage::Unsubscribe { what } => {
@@ -1995,8 +2272,6 @@ enum FrameRoute {
     /// The samples of a dictation frame, for the seats this connection
     /// started.
     Audio(Vec<f32>),
-    /// One browser answer's image bytes, under the answer's id.
-    Image { id: u64, bytes: Vec<u8> },
     /// A binary message that is not a frame this server takes.
     Refused(super::frame::Refusal),
     /// A dictation frame, but this connection has not started a take to give
@@ -2019,10 +2294,6 @@ fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
         Err(refusal) => return FrameRoute::Refused(refusal),
     };
     match decoded {
-        // An image frame carries the answer's id, which is what pairs it with
-        // the answer that declared the image - and it needs no take, because
-        // no take sent it.
-        super::frame::Frame::Image { id, bytes } => FrameRoute::Image { id, bytes },
         super::frame::Frame::Audio(samples) => {
             if !dictate.any() {
                 return FrameRoute::NoTake;
@@ -2057,9 +2328,6 @@ fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameR
                 );
             }
         }
-        // An image frame never reaches here: it is routed by id, and the
-        // caller's own arm is the one place it goes.
-        FrameRoute::Image { .. } => {}
         FrameRoute::Refused(refusal) => tracing::debug!(
             event_name = "binary_frame_refused",
             reason = %refusal.reason(),
@@ -2072,110 +2340,81 @@ fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameR
     }
 }
 
-/// Fill one image part with the bytes its frame carried, and answer the ask
-/// once the last image is filled.
-///
-/// **Which part a frame fills is its order**, not anything the frame says:
-/// the frames follow their answer on one socket, so the first carries the
-/// first image part. The id says which ANSWER a frame belongs to, which is
-/// what two sessions asking at once need to be told apart.
-fn browser_image_bytes(hosting: &mut Option<Hosting>, id: u64, bytes: &[u8]) {
-    let Some(hosting) = hosting.as_mut() else {
-        tracing::debug!(
-            event_name = "browser_image_without_the_role",
-            id,
-            "an image frame arrived on a connection that does not hold the browser role",
-        );
-        return;
-    };
-    let Some(in_flight) = hosting.in_flight.get_mut(&id) else {
-        tracing::debug!(
-            event_name = "browser_image_unmatched",
-            id,
-            "an image frame named an ask nothing on this connection is waiting on",
-        );
-        return;
-    };
-    let Some(parts) = in_flight.parts.as_mut() else {
-        // **A frame before its answer is a malformed pair, not slowness**, so
-        // the ask fails naming it rather than being left to wait for parts an
-        // answer has not declared. The answer that was supposed to come first
-        // is dropped when it arrives, for an ask nothing is waiting on.
-        let refused = hosting.in_flight.remove(&id);
-        if let Some(in_flight) = refused {
-            tracing::debug!(
-                event_name = "browser_image_before_its_answer",
-                id,
-                "an image frame arrived before the answer that declared the image",
-            );
-            in_flight.reply.send(Err(BEFORE_ANSWER.to_owned())).ok();
-        }
-        return;
-    };
-    let Some(&at) = in_flight.images.get(in_flight.filled) else {
-        tracing::debug!(
-            event_name = "browser_image_with_no_part_waiting",
-            id,
-            "an image frame arrived with every image part of its answer already filled",
-        );
-        return;
-    };
-    if let Some(BrowserPart::Image { bytes: into, .. }) = parts.get_mut(at) {
-        *into = bytes.to_vec();
-    }
-    in_flight.filled += 1;
-    if in_flight.filled == in_flight.images.len() {
-        let Some(in_flight) = hosting.in_flight.remove(&id) else {
-            return;
-        };
-        if let Some(parts) = in_flight.parts {
-            in_flight.reply.send(Ok(parts)).ok();
-        }
-    }
-}
-
-/// Fail every call this connection is carrying, whatever it was waiting for.
-///
-/// **The sentence is the point.** Without this, what fails an in-flight ask is
-/// the reply sender being dropped with the hosting, and the relay reads that
-/// as the holder having gone away - which is a reason that names the wrong
-/// thing: a take displaced this connection and it is still here.
-fn fail_every_in_flight(hosting: &mut Option<Hosting>, why: &str) {
-    let Some(hosting) = hosting.as_mut() else { return };
-    for (_, in_flight) in hosting.in_flight.drain() {
-        in_flight.reply.send(Err(why.to_owned())).ok();
-    }
-}
-
-/// Fail every ask on this connection that is waiting for an image, naming why.
-///
-/// A frame whose bytes cannot be taken is the end of those asks: the part it
-/// was for is never filled, and the alternative to failing them is a session's
-/// tool call waiting on a promise nothing can keep.
-fn fail_awaiting_images(hosting: &mut Option<Hosting>, why: &str) {
-    let Some(hosting) = hosting.as_mut() else {
-        return;
-    };
-    let waiting: Vec<u64> = hosting
-        .in_flight
-        .iter()
-        .filter(|(_, in_flight)| {
-            in_flight.parts.is_some() && in_flight.filled < in_flight.images.len()
-        })
-        .map(|(id, _)| *id)
-        .collect();
-    for id in waiting {
-        if let Some(in_flight) = hosting.in_flight.remove(&id) {
-            in_flight.reply.send(Err(why.to_owned())).ok();
-        }
-    }
-}
-
 async fn send<S>(socket: &mut S, message: ServerMessage) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     send_frame(socket, message).await.map(|_| ())
+}
+
+/// Answer one strip ask: through the reply it carried, or as the error frame
+/// when it carried none.
+async fn answer_ask<S>(
+    socket: &mut S,
+    reply_to: Option<u64>,
+    what: &str,
+    outcome: Result<serde_json::Value, String>,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    match (reply_to, outcome) {
+        (Some(id), Ok(mut body)) => {
+            if let Some(map) = body.as_object_mut() {
+                map.insert("ok".to_owned(), json!(true));
+            }
+            send(socket, ServerMessage::Reply { reply_to: id, body }).await
+        }
+        (Some(id), Err(why)) => {
+            send(
+                socket,
+                ServerMessage::Reply { reply_to: id, body: json!({ "ok": false, "why": why }) },
+            )
+            .await
+        }
+        (None, Ok(_)) => Ok(()),
+        (None, Err(why)) => {
+            send(
+                socket,
+                ServerMessage::Error { what: what.to_owned(), why, seat: None, dispatch_id: None },
+            )
+            .await
+        }
+    }
+}
+
+/// Answer a refused attach: through the client's reply when it sent one, and
+/// as the protocol's error frame otherwise.
+async fn refuse_attach<S>(
+    socket: &mut S,
+    reply_to: Option<u64>,
+    why: &str,
+    seat: SessionSlot,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    match reply_to {
+        Some(reply_to) => {
+            send(
+                socket,
+                ServerMessage::Reply { reply_to, body: json!({ "ok": false, "why": why }) },
+            )
+            .await
+        }
+        None => {
+            send(
+                socket,
+                ServerMessage::Error {
+                    what: "browser_view".to_owned(),
+                    why: why.to_owned(),
+                    seat: Some(seat),
+                    dispatch_id: None,
+                },
+            )
+            .await
+        }
+    }
 }
 
 /// [`send`], answering how many bytes the frame carried.
@@ -2527,16 +2766,16 @@ fn dispatch_answering(
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
     //
-    // The six reply-carrying commands take a sender the wire deliberately
+    // The five reply-carrying commands take a sender the wire deliberately
     // does not carry, and each carries its OWN reply type - a spawned worker
     // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
-    // the review writes with a `bool` and a `ReviewSet`, and an idle warning
-    // with an `IdleVerdict`. So the channel is
-    // built per arm and handed to the shared helper with its own receiver:
-    // one channel cannot carry six different answers. **A variant missing
-    // here hangs its caller**: it falls to the fire-and-forget arm below
-    // with no sender, the workspace answers nobody, and the client waits for
-    // ever (measured live on the delete, 2026-10-17).
+    // and the review writes with a `bool` and a `ReviewSet`. So the channel
+    // is built per arm and handed to the shared helper with its own receiver:
+    // one channel cannot carry five different answers. **A variant missing
+    // here hangs its caller**:
+    // it falls to the fire-and-forget arm below with no sender, the
+    // workspace answers nobody, and the client waits for ever (measured live
+    // on the delete, 2026-10-17).
     match command {
         Command::SpawnWorker {
             project_key,
@@ -2598,25 +2837,11 @@ fn dispatch_answering(
             };
             answered(state, command, to, rx, reply_tx);
         }
-        Command::BrowserIdleWarning {
-            key, profile, idle_minutes, grace_minutes, at_close, ..
-        } => {
-            let (tx, rx) = oneshot::channel();
-            let command = Command::BrowserIdleWarning {
-                key,
-                profile,
-                idle_minutes,
-                grace_minutes,
-                at_close,
-                verdict: Some(tx),
-            };
-            answered(state, command, to, rx, reply_tx);
-        }
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
         // client already has.
         other => {
-            // A seventh reply-carrying variant added without an arm lands
+            // A sixth reply-carrying variant added without an arm lands
             // here: a refusal is answered below, a success is not, so its
             // caller hangs (a despawn-shaped one has no client bound at all).
             // Caught in debug rather than allowed to pass.
@@ -2729,8 +2954,9 @@ fn dispatched(me: u64, command: &Command) {
 /// Whether a command reports its outcome through the reply rather than
 /// through an update on the subscription.
 ///
-/// These five are the ones with nothing behind them on the wire: a client that
-/// omits `reply_to` for one of them has no second way to learn what happened.
+/// These five are the ones with nothing behind them on the wire: a client
+/// that omits `reply_to` for one of them has no second way to learn what
+/// happened.
 fn answers_through_a_reply(command: &Command) -> bool {
     matches!(
         command,
@@ -2739,11 +2965,10 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::UpsertReviewThread { .. }
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
-            | Command::BrowserIdleWarning { .. }
     )
 }
 
-/// Dispatch one of those six, and answer the client that asked.
+/// Dispatch one of those five, and answer the client that asked.
 ///
 /// A client that asked for an answer always hears one - INCLUDING a refusal,
 /// so it is never left watching a channel that stays empty. The wait and the
@@ -2780,12 +3005,6 @@ mod tests {
     use super::*;
     use crate::transport::Heartbeat;
     use crate::work::WorkCache;
-
-    /// The address a test's own socket is attached from; no listener is
-    /// bound, so nothing dials it.
-    fn attached_from() -> std::net::SocketAddr {
-        "127.0.0.1:0".parse().expect("a test address")
-    }
 
     /// **Only a ping that went out can go unanswered.** The state holds no
     /// read clock at all, so a quiet read - a connection busy in one long
@@ -2834,6 +3053,12 @@ mod tests {
         assert_eq!(keepalive.sent(), None, "the deadline starts when the ping is on the wire");
     }
 
+    /// The address a test's own socket is attached from; no listener is
+    /// bound, so nothing dials it.
+    fn attached_from() -> std::net::SocketAddr {
+        "127.0.0.1:0".parse().expect("a test address")
+    }
+
     /// A sink that accepts every frame at once, for the tests that only need
     /// a send to complete.
     struct NullSink;
@@ -2860,6 +3085,62 @@ mod tests {
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Result<(), Self::Error>> {
             std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A sink whose flush yields once before it finishes: the write waited,
+    /// and for no measurable time.
+    struct YieldsOnce {
+        yielded: bool,
+    }
+
+    impl futures_util::Sink<Message> for YieldsOnce {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if !self.yielded {
+                self.yielded = true;
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// The clock a measured write reads, recording the frame each start was
+    /// handed and answering a fixed second. **Deterministic**: the test never
+    /// waits, and a start read taken before the frame exists records nothing.
+    struct FakeClock {
+        starts: std::cell::RefCell<Vec<usize>>,
+        base: Instant,
+    }
+
+    impl WriteClock for FakeClock {
+        fn start(&self, frame: &str) -> Instant {
+            self.starts.borrow_mut().push(frame.len());
+            self.base
+        }
+
+        fn end(&self) -> Instant {
+            self.base + Duration::from_secs(1)
         }
     }
 
@@ -2948,62 +3229,6 @@ mod tests {
         }
     }
 
-    /// A sink whose flush yields once before it finishes: the write waited,
-    /// and for no measurable time.
-    struct YieldsOnce {
-        yielded: bool,
-    }
-
-    impl futures_util::Sink<Message> for YieldsOnce {
-        type Error = axum::Error;
-
-        fn poll_ready(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
-            Ok(())
-        }
-        fn poll_flush(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            if !self.yielded {
-                self.yielded = true;
-                cx.waker().wake_by_ref();
-                return std::task::Poll::Pending;
-            }
-            std::task::Poll::Ready(Ok(()))
-        }
-        fn poll_close(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), Self::Error>> {
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-
-    /// The clock a measured write reads, recording the frame each start was
-    /// handed and answering a fixed second. **Deterministic**: the test never
-    /// waits, and a start read taken before the frame exists records nothing.
-    struct FakeClock {
-        starts: std::cell::RefCell<Vec<usize>>,
-        base: Instant,
-    }
-
-    impl WriteClock for FakeClock {
-        fn start(&self, frame: &str) -> Instant {
-            self.starts.borrow_mut().push(frame.len());
-            self.base
-        }
-
-        fn end(&self) -> Instant {
-            self.base + Duration::from_secs(1)
-        }
-    }
-
     /// **The stamp is taken after the send returns**, which is the caller's
     /// ordering and not the state machine's: a ping held in a full buffer
     /// must owe nothing until it is on the wire. The held sink is the stall,
@@ -3075,34 +3300,19 @@ mod tests {
             async move { drive(&mut peer, &state, attached_from()).await }
         });
 
-        // This connection declaring itself capable is what takes the role; the
-        // snapshot answering the subscribe is the frame whose write stops.
+        // The snapshot answering the subscribe is the frame whose write
+        // stops.
         inbound
             .send(Message::Text(
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Usage,
                     answering: false,
-                    browser: true,
-                    declare: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),
             ))
             .expect("the peer's one message goes");
         stuck.await.expect("the subscribe's answer reaches the socket");
-        let host = state
-            .browser
-            .testing_host()
-            .expect("the connection holds the role before its write blocks");
-
-        // A second capable connection is already in line behind it.
-        let waiter = host + 1_000;
-        let (waiter_host, _waiter_asks) = mpsc::unbounded_channel();
-        let (waiter_notices, mut notices) = mpsc::unbounded_channel();
-        assert!(
-            !state.browser.register(waiter, waiter_host, waiter_notices),
-            "the second capable connection waits in line",
-        );
 
         // **The bound, reached on the test's own clock**: a drive that never
         // ends fails by name here rather than hanging the run.
@@ -3120,18 +3330,6 @@ mod tests {
             stalled.waited >= WRITE_BOUND,
             "the bound's own record carries how long the write ran: {:?}",
             stalled.waited,
-        );
-
-        assert_eq!(
-            state.browser.testing_host(),
-            Some(waiter),
-            "the role passed to the client already in line",
-        );
-        assert_eq!(notices.try_recv(), Ok(Notice::Granted), "which is told it holds it");
-        assert_eq!(
-            state.browser.testing_departed(),
-            Some((host, Release::Stalled)),
-            "and the release names the write bound, not a close or a socket failure",
         );
     }
 
@@ -3257,7 +3455,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
         // The ask needs a subscriber that can ANSWER it to land on - the
@@ -3327,7 +3525,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
 
@@ -3363,7 +3561,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
         let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
@@ -3412,7 +3610,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
 
@@ -3930,7 +4128,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
@@ -4039,7 +4237,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
@@ -4130,7 +4328,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
@@ -4281,7 +4479,7 @@ mod tests {
             conversations: Arc::new(conversations),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
         let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
@@ -4455,7 +4653,7 @@ mod tests {
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             client: forge_primitives::ClientConfig::default(),
-            browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+            browser_host: None,
             heartbeat: Heartbeat::default(),
         };
         let seat = SessionSlot::lead("TestOrg", "proj");
@@ -4648,8 +4846,6 @@ mod tests {
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Home,
                     answering: false,
-                    browser: false,
-                    declare: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),
@@ -4701,8 +4897,6 @@ mod tests {
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Session(slot.clone()),
                     answering: false,
-                    browser: false,
-                    declare: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),
@@ -4989,8 +5183,6 @@ mod tests {
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Home,
                     answering: false,
-                    browser: false,
-                    declare: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),
@@ -5035,5 +5227,49 @@ mod tests {
 
         drop(to_server);
         let _ = driven.await;
+    }
+
+    /// **A closed tab names itself, not the browser.** The tab's own state
+    /// and history end with it; a viewer told "the browser was closed"
+    /// lowered the whole surface instead of that tab.
+    #[tokio::test]
+    async fn a_closed_tab_names_itself_in_the_failure() {
+        use forge_primitives::browser::{BrowserTabList, BrowserViewState};
+
+        let (_frames, frames_rx) = tokio::sync::watch::channel(None);
+        let (view, view_rx) = tokio::sync::watch::channel(BrowserViewState::default());
+        drop(view);
+        let (_nav, nav_rx) = tokio::sync::watch::channel(None);
+        let (_failures, failures_rx) = tokio::sync::watch::channel(None::<String>);
+        let (_files, files_rx) = tokio::sync::watch::channel(None);
+        let (_downloads, downloads_rx) = tokio::sync::broadcast::channel(4);
+        let (_audio, audio_rx) = tokio::sync::broadcast::channel(4);
+        let (_tabs, tabs_rx) = tokio::sync::watch::channel(BrowserTabList {
+            profile: "O/default".to_owned(),
+            id: 1,
+            up: true,
+            connected: true,
+            closing_at_ms: None,
+            rows: Vec::new(),
+        });
+        let attachment = forge_workspace::browser::BrowserAttachment {
+            key: "O/default".to_owned(),
+            id: 1,
+            tab: 3,
+            frames: frames_rx,
+            view: view_rx,
+            tabs: tabs_rx,
+            nav: nav_rx,
+            failures: failures_rx,
+            files: files_rx,
+            downloads: downloads_rx,
+            audio: audio_rx,
+        };
+        let mut viewing = Some(Viewing::new(attachment));
+
+        match next_view_event(&mut viewing).await {
+            ViewEvent::Failed(reason) => assert_eq!(reason, "tab 3 was closed"),
+            _ => panic!("the tab's own end is the surface's refusal"),
+        }
     }
 }

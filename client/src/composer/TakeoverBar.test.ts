@@ -2,7 +2,13 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { selectTab, surface } from '../browser/surface.svelte';
 import TakeoverBar from './TakeoverBar.svelte';
+
+vi.mock('../browser/surface.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser/surface.svelte')>();
+  return { ...actual, selectTab: vi.fn(() => Promise.resolve(null)) };
+});
 
 let shown: ReturnType<typeof mount> | null = null;
 
@@ -15,14 +21,22 @@ async function stop(): Promise<void> {
   if (shown !== null) await unmount(shown);
   shown = null;
   document.body.innerHTML = '';
+  surface.viewer = null;
+  surface.controller = null;
+  surface.tabs = null;
 }
 
-/** One bar, mounted for one test; never re-mounted inside a test. */
+/** One bar, mounted for one test; never re-mounted inside a test. The
+ *  surface holds the controller role, so the arrows are live unless a test
+ *  takes the role away. */
 async function bar(
   nav: { can_back: boolean; can_forward: boolean },
   onnav: (direction: 'back' | 'forward') => void,
+  holding = true,
 ): Promise<HTMLElement> {
   await stop();
+  surface.viewer = 1;
+  surface.controller = holding ? 1 : null;
   const target = document.createElement('div');
   document.body.appendChild(target);
   shown = mount(TakeoverBar, {
@@ -76,5 +90,119 @@ describe("the takeover bar's history arrows", () => {
     const target = await bar({ can_back: true, can_forward: true }, onnav);
     arrow(target, 'forward').click();
     expect(onnav).toHaveBeenCalledWith('forward');
+  });
+
+  /// **A watcher's arrows are dead even on a page with history**: the server
+  /// refuses the move, and a live-looking arrow would send a gesture the
+  /// person can see does nothing.
+  it('draws both arrows disabled for a viewer that does not hold the role', async () => {
+    const target = await bar({ can_back: true, can_forward: true }, () => {}, false);
+    expect(arrow(target, 'back').disabled, 'a watcher moves nothing').toBe(true);
+    expect(arrow(target, 'forward').disabled, 'and nothing forward either').toBe(true);
+  });
+});
+
+describe("the takeover bar's tab picker", () => {
+  /// **Each option names the tab, its page and its owner**, so the person
+  /// picking knows whose agent the tab belongs to, and a switch re-attaches
+  /// to that tab.
+  it('lists the profile tabs with their owner and switches on a pick', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    surface.tab = 2;
+    surface.tabs = {
+      profile: 'Busytools/work',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 2,
+          title: 'org tabs fixture',
+          url: 'http://127.0.0.1:8799/',
+          owner: { org: 'Busytools', project: 'forge', label: 'lead' },
+          state: 'idle',
+        },
+        {
+          number: 3,
+          title: '',
+          url: 'https://example.com/',
+          owner: { org: 'Busytools', project: 'forge', label: 'w1' },
+          state: 'in_use',
+        },
+      ],
+    };
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: { title: 'browser hand-off', onback: () => {} },
+    });
+    flushSync();
+
+    const picker = target.querySelector<HTMLSelectElement>('.tb-pick');
+    expect(picker, 'the bar draws the picker').not.toBeNull();
+    const options = [...(picker?.options ?? [])].map((option) => option.text);
+    expect(options[0]).toContain('2');
+    expect(options[0]).toContain('org tabs fixture');
+    expect(options[0]).toContain('Busytools/forge/lead');
+    expect(options[1]).toContain('https://example.com/');
+    expect(options[1]).toContain('Busytools/forge/w1');
+
+    if (picker !== null) {
+      picker.value = '3';
+      picker.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    expect(selectTab).toHaveBeenCalledWith(3);
+  });
+
+  /// **The list can land after the bar.** The socket's pushed list arrives
+  /// once the attach has answered, so the select is drawn after its options
+  /// exist; the effect is what makes it show the tab being viewed rather
+  /// than its first option. Mounting with the list already present hides
+  /// that, because the option's own `selected` attribute agrees by luck.
+  it('takes the viewed tab when the list arrives after the bar', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.tab = 3;
+    surface.tabs = null;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: { title: 'browser hand-off', onback: () => {} },
+    });
+    flushSync();
+    expect(target.querySelector('.tb-pick'), 'no list, no picker').toBeNull();
+
+    surface.tabs = {
+      profile: 'Busytools/work',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 2,
+          title: 'two',
+          url: 'http://b/',
+          owner: { org: 'Busytools', project: 'forge', label: 'lead' },
+          state: 'idle',
+        },
+        {
+          number: 3,
+          title: 'three',
+          url: 'http://c/',
+          owner: { org: 'Busytools', project: 'forge', label: 'lead' },
+          state: 'idle',
+        },
+      ],
+    };
+    flushSync();
+    const picker = target.querySelector<HTMLSelectElement>('.tb-pick');
+    expect(picker, 'the bar draws the picker once the list lands').not.toBeNull();
+    expect(picker?.value, 'the viewed tab is the one the picker shows').toBe('3');
   });
 });

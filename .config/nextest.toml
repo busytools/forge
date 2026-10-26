@@ -24,3 +24,16 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 [[profile.default.overrides]]
 filter = 'test(the_committed_socket_contract_is_still_what_the_server_emits) or test(every_subject_round_trips_through_its_fixture)'
 success-output = "immediate"
+
+# **The CEF live tests boot real browser hosts**, each a Chromium of its own,
+# and the host's ready check allows fifteen seconds from its own start. Two
+# at a time starved the macOS CI runner once the suite reached 165 tests
+# (measured 2026-10-24: `reap_live`'s identity check failed one run and
+# `download_live`'s announcement the next), so one host boots at a time; the
+# rest of the suite still runs in parallel.
+[test-groups]
+cef-live = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(veto_live) or binary(input_live) or binary(frame_roundtrip) or binary(record_live) or binary(audio_live) or binary(download_live) or binary(file_live) or binary(host_bundle) or binary(reap_live) or binary(tabs_live) or binary(browser_service)'
+test-group = 'cef-live'

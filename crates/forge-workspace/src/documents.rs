@@ -193,6 +193,8 @@ mod tests {
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
             vault_roots: roots,
             handoff: None,
+            browser_profile: forge_primitives::browser::ProfileKey::of("TestOrg", "default")
+                .expect("a profile key"),
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(
             PathBuf::from("/tmp/forge-vault-roots-test"),

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # scripts/vendor_browser_stack.sh - fetch, verify and unpack the driver
-# stack the client bundles inside the app: node and @playwright/mcp for the
-# desktop, libnode for Android. This is the driver, not the engine: the
-# desktop's Chromium is staged by `just stage-cef`, and the phone keeps its
-# system WebView, so nothing here fetches a browser.
+# stack the server runs: node and @playwright/mcp, beside the browser host
+# forge ships. This is the driver, not the engine: the engine is the CEF
+# host bundle `scripts/stage-browser-host.sh` builds, and a client carries
+# neither (the browser belongs to the server now).
 #
 # Idempotent at the pins below: anything already there at its pinned version
-# is left alone. `just client-tauri-bundle` and `just client-release` run
-# this before they build, so a release never ships without it, and the pins
-# are printed either way so a release log names the stack it shipped.
+# is left alone. `scripts/install.sh` runs this after staging the host, and
+# the pins are printed either way so an install log names the stack it put
+# down.
 #
 # Where each hash comes from, because they are not all the same kind:
 #
@@ -18,60 +18,35 @@
 #             integrity, so the pin is the version itself.
 #             `--ignore-scripts` keeps playwright's installer from fetching
 #             a browser the host does not use.
-#   libnode - the gmaclennan/nodejs-mobile Android zip, hashed by this repo
-#             when the pin was first vendored and verified against the
-#             release's artifact; the fork's own build is a patches recipe
-#             over a pinned upstream Node tag (see the issue's vetting note).
-#
-# Usage:
-#   scripts/vendor_browser_stack.sh            # desktop: node + driver
-#   scripts/vendor_browser_stack.sh --android  # android: libnode + headers
 #
 # Env overrides:
-#   FORGE_BROWSER_STACK_DIR   where the desktop stack lands (default: the
-#                             client's own browser-stack/ directory, which
-#                             is gitignored)
+#   FORGE_BROWSER_STACK_DIR   where the stack lands (default: forge's
+#                             app-support browser root, which is where the
+#                             server reads it)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 NODE_VERSION="v24.21.0"
 NODE_SHA256="bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057"
 PLAYWRIGHT_MCP_VERSION="0.0.83"
-# The Android engine: gmaclennan/nodejs-mobile, the maintained Node 24 line
-# (the nodejs-mobile org fork is dead at 18.20.4). One ABI: what the client
-# ships.
-LIBNODE_VERSION="24.18.0-0"
-LIBNODE_SHA256="ceb86b0b8130006195a60cd37393ebe0fd665b644ce8d5674dfba1da65d3be28"
-LIBNODE_ABI="arm64-v8a"
 
-ANDROID_MODE=false
-if [ "${1:-}" = "--android" ]; then
-    ANDROID_MODE=true
-fi
-
-STACK="${FORGE_BROWSER_STACK_DIR:-$REPO/client/src-tauri/browser-stack}"
-ANDROID_DIR="$REPO/client/src-tauri/gen/android/app/src/main"
-
-if [ "$ANDROID_MODE" = false ]; then
-    case "$(uname -s)-$(uname -m)" in
-        Darwin-arm64)
-            NODE_ARCH="darwin-arm64"
-            ;;
-        Darwin-x86_64)
-            echo "[ERROR] only Apple Silicon is vendored so far: the x64 artifacts carry their" >&2
-            echo "        own hashes, and nothing here has measured or pinned them." >&2
-            exit 1
-            ;;
-        *)
-            echo "[ERROR] the desktop driver stack is vendored for macOS only: this is $(uname -s)-$(uname -m)." >&2
-            echo "        Windows is parked (issue #1774); Android vendors with --android." >&2
-            exit 1
-            ;;
-    esac
-fi
+case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64)
+        NODE_ARCH="darwin-arm64"
+        ;;
+    Darwin-x86_64)
+        echo "[ERROR] only Apple Silicon is vendored so far: the x64 artifacts carry their" >&2
+        echo "        own hashes, and nothing here has measured or pinned them." >&2
+        exit 1
+        ;;
+    *)
+        echo "[ERROR] the driver stack is vendored for macOS only: this is $(uname -s)-$(uname -m)." >&2
+        echo "        Windows is parked (issue #1774)." >&2
+        exit 1
+        ;;
+esac
 
 need() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -81,52 +56,16 @@ need() {
 }
 need curl
 need shasum
-if [ "$ANDROID_MODE" = true ]; then
-    need unzip
-else
-    need npm
-    need tar
-fi
+need npm
+need tar
 
-# **The generated copy is not pruned by anything.** Tauri's resource copy
-# into gen/android's assets never deletes files that no longer exist in the
-# source, and the Android packer ships whatever gen/ holds - so a stale
-# `browser/` tree (a vendored Chromium from before the machine's browser
-# switch) shipped a 516MB APK from a source tree that was already clean
-# (measured 2026-10-08). The Android bundle carries ONLY the driver
-# (playwright-mcp); the mac node binary and any vendored browser are dead
-# weight there. Clear the non-driver subdirs at their source, both arms.
-prune_generated_stack() {
-    local gen="$REPO/client/src-tauri/gen/android/app/src/main/assets/browser-stack"
-    [ -d "$gen" ] || return 0
-    # An allowlist, not a denylist: the Android bundle carries the driver
-    # tree and NOTHING else, so anything else a wider config ever copies
-    # dies here rather than shipping (a denylist has to learn every new
-    # name; the 516MB APK was one it had not learned).
-    for entry in "$gen"/*; do
-        [ -e "$entry" ] || continue
-        if [ "$(basename "$entry")" != "playwright-mcp" ]; then
-            echo "[..] removing the stale generated copy $(basename "$entry")"
-            find "$entry" -depth -delete
-        fi
-    done
-}
+STACK="${FORGE_BROWSER_STACK_DIR:-$HOME/Library/Application Support/forge/browser/stack}"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-browser-stack.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-# The engine is CEF in the app bundle now, staged by `just stage-cef`, and a
-# `browser/` tree from when a whole Chromium was vendored is removed here:
-# `bundle.resources` globs the whole stack, so a leftover would keep packing a
-# second browser nothing can launch into every release.
-if [ -d "$STACK/browser" ]; then
-    echo "[..] removing the stale vendored browser tree"
-    find "$STACK/browser" -depth -delete
-fi
-prune_generated_stack
-
 # Fail on bytes that are not the pinned ones. A partial download and a
-# tampered one look the same here, and both must not reach the bundle.
+# tampered one look the same here, and both must not reach the install.
 verify_sha256() {
     local file="$1" want="$2" what="$3"
     local got
@@ -144,76 +83,6 @@ fetch() {
     echo "[..] fetching $url"
     curl -fSL --retry 3 -o "$out" "$url"
 }
-
-# --- android: libnode and its headers --------------------------------------
-#
-# The engine the in-app driver links against. `libnode.so` goes to jniLibs
-# (the only place an app may dlopen from), the headers to the cpp tree the
-# JNI shim compiles against. Both are gitignored; this script is what puts
-# them there.
-
-if [ "$ANDROID_MODE" = true ]; then
-    need unzip
-    prune_generated_stack
-    zip_name="nodejs-mobile-android-$LIBNODE_VERSION.zip"
-    lib_out="$ANDROID_DIR/jniLibs/$LIBNODE_ABI/libnode.so"
-    inc_out="$ANDROID_DIR/cpp/nodejs-mobile/include"
-    marker="$ANDROID_DIR/cpp/nodejs-mobile/manifest.txt"
-    if [ -f "$lib_out" ] && [ -f "$marker" ] && grep -q "libnode $LIBNODE_VERSION" "$marker" 2>/dev/null; then
-        echo "[..] libnode $LIBNODE_VERSION is already vendored"
-    else
-        fetch "https://github.com/gmaclennan/nodejs-mobile/releases/download/v$LIBNODE_VERSION/$zip_name" "$WORK/$zip_name"
-        verify_sha256 "$WORK/$zip_name" "$LIBNODE_SHA256" "libnode $LIBNODE_VERSION"
-        mkdir -p "$(dirname "$lib_out")" "$(dirname "$inc_out")"
-        unzip -q -o "$WORK/$zip_name" -d "$WORK/njm" "bin/$LIBNODE_ABI/libnode.so"
-        find "$inc_out" -depth -delete 2>/dev/null || true
-        unzip -q -o "$WORK/$zip_name" -d "$WORK/njm" "include/*"
-        mkdir -p "$inc_out"
-        cp -R "$WORK/njm/include/node" "$inc_out/node"
-        install -m 644 "$WORK/njm/bin/$LIBNODE_ABI/libnode.so" "$lib_out"
-    fi
-
-    # libnode.so links libc++_shared; the NDK's copy must ride beside it in
-    # jniLibs (AGP packages the STL only for its own shared-STL bookkeeping,
-    # and the shim selects the STL from CMake). Taken from the newest
-    # installed NDK, the same one the android build resolves.
-    sdk=""
-    for candidate in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Library/Android/sdk" /opt/homebrew/share/android-commandlinetools; do
-        [ -n "$candidate" ] || continue
-        if [ -d "$candidate/ndk" ] || [ -d "$candidate/platforms" ]; then
-            sdk="$candidate"
-            break
-        fi
-    done
-    ndk=""
-    if [ -n "$sdk" ] && [ -d "$sdk/ndk" ]; then
-        ndk="$(ls -1 "$sdk/ndk" | sort -V | tail -n1)"
-        ndk="$sdk/ndk/$ndk"
-    fi
-    if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
-        echo "[ERROR] no Android NDK found to take libc++_shared.so from - set ANDROID_HOME" >&2
-        exit 1
-    fi
-    # The NDK's prebuilt dir is host-tagged: darwin-x86_64 on macOS (also on
-    # Apple Silicon, the toolchains are fat binaries), linux-x86_64 elsewhere
-    # - the README's non-macOS advice depends on this resolving.
-    case "$(uname -s)" in
-        Darwin) ndk_host="darwin-x86_64" ;;
-        Linux) ndk_host="linux-x86_64" ;;
-        *) ndk_host="" ;;
-    esac
-    stl_src="$ndk/toolchains/llvm/prebuilt/$ndk_host/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
-    if [ ! -f "$stl_src" ]; then
-        echo "[ERROR] libc++_shared.so not found under $ndk" >&2
-        exit 1
-    fi
-    install -m 644 "$stl_src" "$(dirname "$lib_out")/libc++_shared.so"
-    printf 'libnode %s %s (gmaclennan/nodejs-mobile, %s)\n' \
-        "$LIBNODE_VERSION" "$LIBNODE_SHA256" "$LIBNODE_ABI" > "$marker"
-    echo "[OK] android engine at $ANDROID_DIR"
-    echo "     libnode $LIBNODE_VERSION ($LIBNODE_ABI, $(du -sh "$lib_out" | awk '{print $1}'))"
-    exit 0
-fi
 
 # --- node: bin/node alone -------------------------------------------------
 
@@ -250,7 +119,17 @@ else
     fi
 fi
 
-printf 'node %s %s\n@playwright/mcp %s (npm integrity)\n' \
+# --- the file chooser patch: applied on every run -------------------------
+#
+# **Playwright intercepts the page's file chooser**, so CEF's own dialog never
+# fires while the driver is attached. The patch makes the driver surface each
+# chooser on the socket forge binds, and the host answers it through the same
+# MCP tool that owns the captured chooser. It is reapplied here so a stack
+# vendored before the patch is brought up to it, and it fails loudly when a
+# version bump changes the pinned listener it patches.
+node "$SCRIPT_DIR/patch_browser_stack.mjs" "$STACK"
+
+printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nforge-file-chooser-patch 2\n' \
     "$NODE_VERSION" "$NODE_SHA256" "$PLAYWRIGHT_MCP_VERSION" \
     > "$STACK/manifest.txt"
 

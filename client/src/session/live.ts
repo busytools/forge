@@ -26,7 +26,6 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
-import { canHost } from '../browser/host';
 import { cronNames } from '../chat/cron-names.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
@@ -709,13 +708,10 @@ function createSeat(
    */
   function open(): void {
     if (seat.held !== null && seat.opened === 0) {
-      connection.relist(subject, { answering: seat.answering, browser: canHost() });
+      connection.relist(subject, { answering: seat.answering });
       seat.opened = 1;
     } else {
-      seat.held = connection.subscribe(subject, {
-        answering: seat.answering,
-        browser: canHost(),
-      });
+      seat.held = connection.subscribe(subject, { answering: seat.answering });
       seat.opened += 1;
     }
     seat.asking = true;

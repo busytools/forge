@@ -1,9 +1,9 @@
-//! The narrow surface the browser tools call: one ask, sent to whichever
-//! client holds the browser role.
+//! The narrow surface the browser tools call: one call, sent to the server's
+//! browser fleet.
 //!
 //! Mirrors [`crate::mcp::review::facade`]: the `Tool` impls hold an
 //! `Arc<dyn BrowserFacade>` so their tests drive a `MockBrowserFacade`
-//! instead of a live relay.
+//! instead of a live fleet.
 
 use std::sync::Arc;
 
@@ -12,13 +12,13 @@ use forge_primitives::SessionSlot;
 use forge_primitives::browser::{BrowserPart, HandOff, HandOffEnding};
 use serde_json::Value;
 
-use crate::browser::BrowserRelay;
+use crate::browser::NO_BROWSER_HOST;
 use crate::workspace::Workspace;
 
-/// The relay, as one tool call sees it.
+/// The fleet, as one tool call sees it.
 #[async_trait]
 pub trait BrowserFacade: Send + Sync {
-    /// Run one browser tool through the registered host, answering with the
+    /// Run one browser tool through the server's fleet, answering with the
     /// parts it returned or the reason the call failed.
     async fn call(
         &self,
@@ -27,8 +27,8 @@ pub trait BrowserFacade: Send + Sync {
         args: Value,
     ) -> Result<Vec<BrowserPart>, String>;
 
-    /// Ask the person at a client to act in a browser tab, and wait for their
-    /// word.
+    /// Ask the person at a client to act in one of the seat's browser tabs,
+    /// and wait for their word.
     ///
     /// **No timeout.** The ask dock's own timelines say a held prompt sits for
     /// hours, and the session is meant to wait as long as it takes; the one
@@ -39,20 +39,19 @@ pub trait BrowserFacade: Send + Sync {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        profile: Option<&str>,
+        tab: u16,
     ) -> Result<HandOffEnding, String>;
 }
 
-/// Production impl: the workspace's own relay, and the workspace itself for
-/// the one tool that parks on the person rather than on the browser.
+/// Production impl: the server's fleet, and the workspace itself for the one
+/// tool that parks on the person rather than on the browser.
 pub struct ProdBrowserFacade {
-    relay: Arc<BrowserRelay>,
     workspace: std::sync::Weak<Workspace>,
 }
 
 impl ProdBrowserFacade {
     pub fn from_workspace(workspace: &Arc<Workspace>) -> Arc<dyn BrowserFacade> {
-        Arc::new(Self { relay: workspace.browser_relay(), workspace: Arc::downgrade(workspace) })
+        Arc::new(Self { workspace: Arc::downgrade(workspace) })
     }
 }
 
@@ -64,24 +63,26 @@ impl BrowserFacade for ProdBrowserFacade {
         tool: &str,
         args: Value,
     ) -> Result<Vec<BrowserPart>, String> {
-        self.relay.ask(seat, tool, args).await
+        // **Read at call time**: the fleet is installed onto the workspace
+        // after boot wiring, and a facade holding the port from construction
+        // would answer every call from the state before it.
+        match self.workspace.upgrade().and_then(|workspace| workspace.browser_host()) {
+            Some(host) => host.call(seat, tool, args).await,
+            None => Err(NO_BROWSER_HOST.to_owned()),
+        }
     }
 
     async fn hand_off(
         &self,
         seat: &SessionSlot,
         reason: &str,
-        profile: Option<&str>,
+        tab: u16,
     ) -> Result<HandOffEnding, String> {
         let Some(workspace) = self.workspace.upgrade() else {
             return Err("the workspace went away before the hand-off was staged".to_owned());
         };
-        let handoff = HandOff {
-            id: uuid::Uuid::new_v4(),
-            reason: reason.to_owned(),
-            profile: profile.map(str::to_owned),
-        };
-        let (id, answer) = workspace.register_browser_hand_off(seat, handoff);
+        let handoff = HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab };
+        let (id, answer) = workspace.register_browser_hand_off(seat, handoff).await?;
         let guard =
             ResolveHandOffOnDrop { workspace: Arc::clone(&workspace), id, caller: seat.clone() };
         let ending = answer.await.map_err(|_| {
@@ -123,7 +124,7 @@ pub struct MockBrowserFacade {
     pub answer: parking_lot::Mutex<Result<Vec<BrowserPart>, String>>,
     /// What `hand_off` answers with, and what it was asked.
     pub hand_off_answer: parking_lot::Mutex<Result<HandOffEnding, String>>,
-    pub hand_offs: parking_lot::Mutex<Vec<(String, Option<String>)>>,
+    pub hand_offs: parking_lot::Mutex<Vec<(String, u16)>>,
 }
 
 #[cfg(test)]
@@ -163,10 +164,10 @@ impl BrowserFacade for MockBrowserFacade {
         &self,
         seat: &SessionSlot,
         reason: &str,
-        profile: Option<&str>,
+        tab: u16,
     ) -> Result<HandOffEnding, String> {
         self.seats.lock().push(seat.clone());
-        self.hand_offs.lock().push((reason.to_owned(), profile.map(str::to_owned)));
+        self.hand_offs.lock().push((reason.to_owned(), tab));
         self.hand_off_answer.lock().clone()
     }
 }
@@ -174,31 +175,27 @@ impl BrowserFacade for MockBrowserFacade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::BrowserRequest;
+    use crate::browser::testing::StubHost;
     use tokio::sync::mpsc;
 
-    /// The production facade is the relay: one ask out, the host's answer
-    /// back, with the tool and args it was called with.
+    /// The production facade is the server's fleet: one call out, the host's
+    /// answer back, with the tool and args it was called with.
     #[tokio::test]
-    async fn the_production_facade_sends_the_ask_through_the_relay() {
+    async fn the_production_facade_sends_the_call_to_the_installed_host() {
         let (workspace, _rx) = Workspace::testing_stub();
-        let (to_host, mut asks) = mpsc::unbounded_channel::<BrowserRequest>();
-        let (notices, _notice_rx) = mpsc::unbounded_channel();
-        assert!(workspace.browser_relay().register(3, to_host, notices));
+        let (calls, mut heard) = mpsc::unbounded_channel();
+        workspace.install_browser_host(Arc::new(StubHost { calls }));
         let facade = ProdBrowserFacade::from_workspace(&workspace);
         let seat = SessionSlot::lead("TestOrg", "proj");
-
-        let host = tokio::spawn(async move {
-            let request = asks.recv().await.expect("the ask arrives");
-            assert_eq!(request.tool, "browser_click", "the host is told which tool");
-            assert_eq!(request.args, serde_json::json!({ "target": "e5" }));
-            request.reply.send(Ok(vec![BrowserPart::Text { text: "clicked".to_owned() }])).ok();
-        });
 
         let answer =
             facade.call(&seat, "browser_click", serde_json::json!({ "target": "e5" })).await;
 
-        host.await.expect("the host task ran");
+        assert_eq!(
+            heard.try_recv(),
+            Ok(("browser_click".to_owned(), serde_json::json!({ "target": "e5" }))),
+            "the host is told which tool, with its arguments verbatim",
+        );
         assert_eq!(answer, Ok(vec![BrowserPart::Text { text: "clicked".to_owned() }]));
     }
 
@@ -209,12 +206,14 @@ mod tests {
     #[tokio::test]
     async fn a_hand_off_waiter_that_dies_is_reported_as_abandoned() {
         let (workspace, mut rx) = Workspace::testing_stub();
+        let (calls, _heard) = mpsc::unbounded_channel();
+        workspace.install_browser_host(Arc::new(StubHost { calls }));
         let facade = ProdBrowserFacade::from_workspace(&workspace);
         let seat = SessionSlot::lead("TestOrg", "proj");
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
             let seat = seat.clone();
-            async move { facade.hand_off(&seat, "solve the CAPTCHA", None).await }
+            async move { facade.hand_off(&seat, "solve the CAPTCHA", 2).await }
         });
         // The hand-off lands in the registry, which is what the blocked call
         // just did.
@@ -248,15 +247,33 @@ mod tests {
         assert!(workspace.browser_handoffs.lock().is_empty(), "and leaves nothing registered");
     }
 
-    /// With no client holding the role, the facade answers the relay's own
-    /// refusal rather than inventing one of its own.
+    /// With no fleet on the workspace, the facade answers the named refusal
+    /// rather than inventing one of its own.
     #[tokio::test]
-    async fn the_production_facade_carries_the_relays_refusal() {
+    async fn a_workspace_with_no_host_refuses_by_name() {
         let (workspace, _rx) = Workspace::testing_stub();
         let facade = ProdBrowserFacade::from_workspace(&workspace);
         let refused = facade
             .call(&SessionSlot::lead("TestOrg", "proj"), "browser_close", serde_json::json!({}))
             .await;
-        assert_eq!(refused, Err(crate::browser::NO_BROWSER_CLIENT.to_owned()));
+        assert_eq!(refused, Err(crate::browser::NO_BROWSER_HOST.to_owned()));
+    }
+
+    /// **A hand-off on a tab that is not the session's never reaches a
+    /// person.** The fleet's refusal is the tool call's, and no ask is
+    /// parked or drawn.
+    #[tokio::test]
+    async fn a_hand_off_on_an_unknown_tab_is_refused_by_name() {
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let (calls, _heard) = mpsc::unbounded_channel();
+        workspace.install_browser_host(Arc::new(StubHost { calls }));
+        let facade = ProdBrowserFacade::from_workspace(&workspace);
+        let seat = SessionSlot::lead("TestOrg", "proj");
+
+        let refused = facade.hand_off(&seat, "look at this", 0).await;
+
+        assert_eq!(refused, Err("tab 0 is not open".to_owned()));
+        assert!(workspace.browser_handoffs.lock().is_empty(), "nothing is parked");
+        assert!(rx.try_recv().is_err(), "and no view is told to draw a dock");
     }
 }

@@ -54,11 +54,6 @@ function recording(sent: Record<string, unknown>[], board: BoardWire): { connect
     },
     more: refuse,
     frame: refuse,
-    onBrowserAsk: refuse,
-    browserRole: refuse,
-    onBrowserRole: refuse,
-    onProfilesChanged: refuse,
-    takeBrowserRole: refuse,
     onMessage: (fn: (message: ServerMessage) => void) => {
       listeners.add(fn);
       return () => {

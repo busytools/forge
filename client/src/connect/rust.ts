@@ -3,18 +3,17 @@
  * this is the page's window onto it.
  *
  * **Why the socket moved.** A parked webview stops consuming its socket -
- * display off, the screen locked, a page never shown, all stop it - and a
- * `browser_ask` frame that dies in delivery parks the session's tool call
- * with it (the 2026-10-10 catch: twelve asks at the 200s bound across two
- * seats). The socket, the asks and the seat records live in the Rust process
- * now, which does not park, and this file is the one seam between the halves.
+ * display off, the screen locked, a page never shown, all stop it - and the
+ * records it was fed stop arriving. The socket and the seat records live in
+ * the Rust process now, which does not park, and this file is the one seam
+ * between the halves. The browser's frames ride the Rust half's socket too:
+ * the desktop overlay draws them there, and the phone hands each one to this
+ * page, which paints it on a canvas.
  *
  * **The page's model is unchanged.** Every frame arrives as itself over
  * `client://inbound`, and the stores, the conversation and the dock fold it
  * exactly as they folded the websocket's own stream - including a kind this
- * build has never seen, which is drawn plainly rather than dropped. What the
- * shim adds is the connection's own facts, which never rode the frames: where
- * it is in its life, who holds the browser role, and the ask ring.
+ * build has never seen, which is drawn plainly rather than dropped.
  *
  * **The heartbeat is this side's half of the catch-up.** The Rust half counts
  * frames while the page is away - a parked page's timers stop, which is the
@@ -24,30 +23,29 @@
  * merely live again.
  *
  * The web build keeps `socket.ts`: this file is chosen at `connectTo` by
- * `canHost()`, the same marker that gates the browser role.
+ * `canHost()`, the same marker that gates the browser surface.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-import { callDown, callUp } from '../browser/inflight.svelte';
 import {
   MORE_TURNS,
   skewOf,
   slotOf,
   subjectFromKey,
-  type BrowserAnswer,
-  type BrowserAsk,
+  type BrowserInputEvent,
   type Command,
   type ServerMessage,
   type Skew,
   type Subject,
 } from '../protocol';
+import { playPacket } from '../browser/audio';
 import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
 import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
 import { StreamGate } from '../session/stream';
-import { report, type Connection, type ConnectionStatus } from '../socket';
+import { report, type BrowserFrame, type Connection, type ConnectionStatus } from '../socket';
 import { Stores, type Store } from '../stores';
 import { coversHome } from '../wire/fleet';
 import { settingsFrom } from '../wire/types';
@@ -64,10 +62,10 @@ const HEARTBEAT_MS = 5_000;
 /**
  * The commands a PAGE dispatches that answer through a reply.
  *
- * The server's own set is `answers_through_a_reply`; it also carries
- * `browser_idle_warning`, which only the Rust half's idle sweep sends. These
- * are the page commands with nothing behind them on the wire: a client that
- * omits `reply_to` for one of them has no second way to learn what happened.
+ * The server's own set is `answers_through_a_reply`, which also carries
+ * commands the server dispatches itself, like a hand-off's answer. These are
+ * the page commands with nothing behind them on the wire: a client that omits
+ * `reply_to` for one of them has no second way to learn what happened.
  */
 const ANSWERS_THROUGH_A_REPLY = new Set([
   'spawn_worker',
@@ -92,9 +90,53 @@ function variantOf(command: Command): string {
 interface DesktopState {
   status: ConnectionStatus;
   greeting: ServerMessage | null;
-  role: boolean;
-  /** Whether the shell has been told the role on this connection (#2519). */
-  roleKnown: boolean;
+}
+
+/** One `client://browser-frame` payload: a host frame, base64 pixels. */
+interface ShellFrame {
+  profile: number;
+  tab: number;
+  seq: number;
+  width: number;
+  height: number;
+  format: number;
+  key: boolean;
+  bytes: string;
+}
+
+/** One `client://browser-audio` payload: interleaved i16 samples, base64. */
+interface ShellAudio {
+  profile: number;
+  tab: number;
+  seq: number;
+  rate: number;
+  channels: number;
+  samples: string;
+}
+
+/** The frame a shell payload carries, or `null` for a shape that is not one. */
+function frameOf(payload: ShellFrame): BrowserFrame | null {
+  if (
+    typeof payload.profile !== 'number' ||
+    typeof payload.tab !== 'number' ||
+    typeof payload.bytes !== 'string' ||
+    typeof payload.width !== 'number' ||
+    typeof payload.height !== 'number'
+  ) {
+    return null;
+  }
+  const binary = atob(payload.bytes);
+  const bytes = new Uint8Array(binary.length);
+  for (let at = 0; at < binary.length; at += 1) bytes[at] = binary.charCodeAt(at);
+  return {
+    profile: payload.profile,
+    tab: payload.tab,
+    seq: typeof payload.seq === 'number' ? payload.seq : 0,
+    width: payload.width,
+    height: payload.height,
+    key: payload.key === true,
+    bytes,
+  };
 }
 
 /** One `client://refused` payload. */
@@ -137,27 +179,15 @@ class RustConnection implements Connection {
   private readonly stores = new Stores();
   private readonly listeners = new Set<(message: ServerMessage) => void>();
   private readonly statuses = new Set<(status: ConnectionStatus) => void>();
-  private readonly roles = new Set<(hosting: boolean) => void>();
-  /** The strip's re-reads after the host swept its profiles: the sweep runs
-   *  in the Rust half, and this is how a page learns its rows moved. */
-  private readonly swept = new Set<() => void>();
-  /**
-   * The ask handler, kept for the interface's own sake: on the desktop no
-   * ask reaches this page at all - the Rust half answers them - so nothing
-   * ever calls this. `hostTheBrowser` is not the desktop's path.
-   */
-  private handler: ((ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>) | null = null;
+  /** The page's viewers of the relayed frames: the phone's canvas. */
+  private readonly frames = new Set<(frame: BrowserFrame) => void>();
   private stops: UnlistenFn[] = [];
   private beat: ReturnType<typeof setInterval> | null = null;
   private state: ConnectionStatus = 'connecting';
-  private hosting = false;
-  /** Whether the shell has said the role on this connection, grant or wait. */
-  private roleTold = false;
   private heldSettings: ClientSettings | null = null;
   private heldSkew: Skew | null = null;
   private heldProtocol: number | null = null;
   private greeted: string | null = null;
-  private asks = 0;
   /**
    * The seat this client has on screen, re-sent on every reconnect.
    *
@@ -218,15 +248,23 @@ class RustConnection implements Connection {
     this.stops.push(
       await listen<DesktopRefusal>('client://refused', (event) => this.refuse(event.payload)),
     );
+    // **The phone's frames arrive here**: a platform with no native overlay
+    // is handed each relayed frame as base64 and this page's canvas draws it
+    // (the desktop's overlay draws its own and this listener never fires).
     this.stops.push(
-      await listen<boolean>('client://role', (event) => this.roleMoved(event.payload)),
+      await listen<ShellFrame>('client://browser-frame', (event) => {
+        const frame = frameOf(event.payload);
+        if (frame === null) return;
+        for (const fn of this.frames) fn(frame);
+      }),
     );
+    // **The phone hears the page here.** The shell hands every audio packet
+    // over; the desktop plays its own and never emits these.
     this.stops.push(
-      await listen<number>('client://asks', (event) => this.asksMoved(event.payload)),
-    );
-    this.stops.push(
-      await listen('client://profiles', () => {
-        for (const hear of this.swept) hear();
+      await listen<ShellAudio>('client://browser-audio', (event) => {
+        const packet = event.payload;
+        if (typeof packet?.samples !== 'string') return;
+        playPacket(packet.samples, packet.rate, packet.channels);
       }),
     );
     await invoke('client_connect', { url });
@@ -242,7 +280,6 @@ class RustConnection implements Connection {
 
   private async stateMoved(): Promise<void> {
     const state = await invoke<DesktopState>('client_state');
-    this.roleHeard(state.role, state.roleKnown);
     // The greeting is read by value: two reads of one greeting are two
     // objects, and the surfaces draw the skew notice off the message itself.
     const greeting = state.greeting === null ? null : JSON.stringify(state.greeting);
@@ -276,30 +313,6 @@ class RustConnection implements Connection {
     // then `Showing`, and the web's `onopen` keeps the same one.
     for (const fn of this.statuses) fn(next);
     if (next === 'open' && this.shown !== null) this.sendShowing(this.shown);
-  }
-
-  private roleMoved(hosting: boolean): void {
-    // A `client://role` frame IS the answer, `false` included.
-    this.roleHeard(hosting, true);
-  }
-
-  private roleHeard(hosting: boolean, known: boolean): void {
-    this.roleTold = known;
-    if (this.hosting === hosting) return;
-    this.hosting = hosting;
-    for (const fn of this.roles) fn(hosting);
-  }
-
-  /** The strip's ring, fed from the Rust half's own count of asks. */
-  private asksMoved(inflight: number): void {
-    while (this.asks < inflight) {
-      this.asks += 1;
-      callUp();
-    }
-    while (this.asks > inflight) {
-      this.asks -= 1;
-      callDown();
-    }
   }
 
   private refuse(payload: DesktopRefusal): void {
@@ -405,7 +418,7 @@ class RustConnection implements Connection {
     }
   }
 
-  subscribe(what: Subject, options?: { answering?: boolean; browser?: boolean }): Store {
+  subscribe(what: Subject, options?: { answering?: boolean }): Store {
     if (this.state === 'closed') {
       // Nothing replays a subscribe made after the connection went, so a live
       // store here would promise a snapshot that is never coming.
@@ -415,7 +428,6 @@ class RustConnection implements Connection {
     void invoke('client_subscribe', {
       what,
       answering: options?.answering ?? false,
-      browser: options?.browser ?? false,
     }).catch((why: unknown) => {
       report('a subscribe could not reach the shell', why);
     });
@@ -464,11 +476,10 @@ class RustConnection implements Connection {
    * drift away from the server's. This re-asks with the role the seat already
    * declared.
    */
-  relist(what: Subject, options?: { answering?: boolean; browser?: boolean }): void {
+  relist(what: Subject, options?: { answering?: boolean }): void {
     void invoke('client_relist', {
       what,
       answering: options?.answering ?? false,
-      browser: options?.browser ?? false,
     }).catch((why: unknown) => {
       report('a relist could not reach the shell', why);
     });
@@ -579,43 +590,19 @@ class RustConnection implements Connection {
     return true;
   }
 
-  onBrowserAsk(fn: (ask: BrowserAsk) => BrowserAnswer | Promise<BrowserAnswer>): () => void {
-    this.handler = fn;
-    return () => {
-      if (this.handler === fn) this.handler = null;
-    };
-  }
-
-  browserRole(): boolean {
-    return this.hosting;
-  }
-
-  browserRoleKnown(): boolean {
-    return this.roleTold;
-  }
-
-  onBrowserRole(fn: (hosting: boolean) => void): () => void {
-    this.roles.add(fn);
-    return () => {
-      this.roles.delete(fn);
-    };
-  }
-
-  onProfilesChanged(fn: () => void): () => void {
-    this.swept.add(fn);
-    return () => {
-      this.swept.delete(fn);
-    };
-  }
-
-  takeBrowserRole(): void {
-    if (this.state !== 'open') {
-      report('the browser role could not be claimed', 'the socket is not open');
-      return;
-    }
-    void invoke('client_take_role').catch((why: unknown) => {
-      report('the browser role could not be claimed', why);
+  browserInput(event: BrowserInputEvent): boolean {
+    if (this.state !== 'open') return false;
+    void invoke('client_browser_input', { event }).catch((why: unknown) => {
+      report('a browser gesture could not reach the shell', why);
     });
+    return true;
+  }
+
+  onBrowserFrame(fn: (frame: BrowserFrame) => void): () => void {
+    this.frames.add(fn);
+    return () => {
+      this.frames.delete(fn);
+    };
   }
 
   onMessage(fn: (message: ServerMessage) => void): () => void {

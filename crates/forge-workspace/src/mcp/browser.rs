@@ -1,25 +1,25 @@
 //! The browser family: the core `@playwright/mcp` tools, forwarded to the
-//! one client connection that holds the browser role.
+//! server's browser fleet.
 //!
 //! **Names and shapes are upstream's, exactly.** A prompt written against a
 //! Playwright MCP server names `browser_navigate` and passes a snapshot's
-//! `target` ref, so the tools register unprefixed, with upstream's own
+//! `target` ref, so the tools register unprefixed, with upstream's
 //! descriptions and argument schemas - transcribed from `@playwright/mcp`
 //! 0.0.83's `tools/list`, the capture preserved with the V1 spec. Anything
-//! this family added on top (a `profile` name, a forced click) would be a
+//! this family added on top (a hand-off `tab`, a forced click) would be a
 //! shape upstream does not have and a prompt that means something else
-//! here.
+//! here; the close's description is the one upstream sentence this family
+//! replaces, because a close here closes the session's current tab.
 //!
 //! **The family is any-caller, and it is not a toggleable one.** The browser
-//! is one machine-global client, not a scope like reviews or crons: every
-//! session may drive it, and with no browser-capable client connected each
-//! tool answers the named error rather than pretending the surface is
-//! absent.
+//! is one machine-global one, not a scope like reviews or crons: every
+//! session may drive it, and a workspace with no fleet answers the no-host
+//! refusal rather than pretending the surface is absent.
 //!
-//! **The tool carries no logic.** It forwards the call to the host and hands
-//! back what the host returned - refs only mean something inside the client's
-//! page state, so a server-side implementation of any of these is impossible
-//! by construction, which is why the relay exists at all.
+//! **The tool carries no logic.** It forwards the call to the fleet and
+//! hands back the parts it returned - refs only mean something inside that
+//! browser's own page state, so the server drives the page rather than
+//! answering for it.
 
 use std::sync::Arc;
 
@@ -127,12 +127,15 @@ impl BrowserTool {
         let Some(reason) = args.get("reason").and_then(Value::as_str) else {
             return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
         };
-        let profile = match args.get("profile") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(name)) => Some(name.as_str()),
-            Some(other) => return Err(format!("`profile` is the name of a profile, not {other}")),
+        let Some(tab) = args.get("tab").and_then(Value::as_u64) else {
+            return Err(
+                "browser_hand_off needs `tab`: the number of one of this session's tabs".to_owned()
+            );
         };
-        match self.facade.hand_off(&self.slot, reason, profile).await? {
+        let Ok(tab) = u16::try_from(tab) else {
+            return Err(format!("`tab` is a tab's number, not {tab}"));
+        };
+        match self.facade.hand_off(&self.slot, reason, tab).await? {
             HandOffEnding::Done => Ok(vec![BrowserPart::Text {
                 text: "The person is done in the browser; carry on from where you left off."
                     .to_owned(),
@@ -252,9 +255,6 @@ mod tests {
                 .expect("a schema describes an object")
                 .keys()
                 .map(String::as_str)
-                // `profile` is on every tool, ours rather than the capture's,
-                // and pinned per-tool by the specs tests.
-                .filter(|name| *name != "profile")
                 .collect();
             got.sort_unstable();
             let mut want: Vec<&str> = properties.to_vec();
@@ -308,12 +308,12 @@ mod tests {
         );
     }
 
-    /// No client holding the role is a tool error naming the reason, not an
-    /// empty result or a hang.
+    /// A refused call is a tool error naming the reason, not an empty result
+    /// or a hang.
     #[tokio::test]
     async fn a_refused_call_is_a_tool_error_naming_the_reason() {
         let mock = Arc::new(MockBrowserFacade::new());
-        *mock.answer.lock() = Err(crate::browser::NO_BROWSER_CLIENT.to_owned());
+        *mock.answer.lock() = Err(crate::browser::NO_BROWSER_HOST.to_owned());
         let tool = BrowserTool {
             spec: spec_named("browser_navigate"),
             facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
@@ -325,7 +325,7 @@ mod tests {
         assert!(out.is_error, "the refusal is the call's failure");
         assert_eq!(
             out.blocks,
-            vec![ToolOutputBlock::Text { text: crate::browser::NO_BROWSER_CLIENT.to_owned() }],
+            vec![ToolOutputBlock::Text { text: crate::browser::NO_BROWSER_HOST.to_owned() }],
             "and it carries the reason a session can act on",
         );
     }
@@ -358,14 +358,13 @@ mod tests {
         );
     }
 
-    /// **The whole seam, from a tool call to the channel the workspace hands
-    /// out.** A tool driven through the built server is answered by a host
-    /// registered through `Workspace::browser_relay()` - the same accessor the
-    /// spawn builds its facade from - so a facade wired to a relay of its own
-    /// fails here rather than shipping as every browser tool answering "no
-    /// browser-capable client connected" while a client sits attached.
+    /// **The whole seam, from a tool call to the fleet the server installs.**
+    /// A tool driven through the built server is answered by the host
+    /// installed on the workspace, so a facade reading a fleet of its own
+    /// fails here rather than shipping as every browser tool answering the
+    /// no-host refusal while a fleet runs beside it.
     #[tokio::test]
-    async fn a_tool_driven_through_the_server_asks_the_relay_the_workspace_hands_out() {
+    async fn a_tool_driven_through_the_server_reaches_the_installed_host() {
         use crate::mcp::browser::facade::ProdBrowserFacade;
         use crate::mcp::cron::facade::MockCronFacade;
         use crate::mcp::gotify::facade::MockGotifyFacade;
@@ -377,12 +376,9 @@ mod tests {
         use tokio::sync::mpsc;
 
         let (workspace, _updates) = crate::workspace::Workspace::testing_stub();
-        let (to_host, mut asks) = mpsc::unbounded_channel();
-        let (notices, _notice_rx) = mpsc::unbounded_channel();
-        assert!(
-            workspace.browser_relay().register(1, to_host, notices),
-            "precondition: the role is free on a fresh workspace",
-        );
+        let (calls, mut heard) = mpsc::unbounded_channel();
+        workspace
+            .install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
 
         let server = crate::mcp::build_forge_server(
             crate::mcp::ForgeServerFacades {
@@ -405,12 +401,6 @@ mod tests {
             crate::mcp::SessionKind::Worker,
         );
 
-        let host = tokio::spawn(async move {
-            let request = asks.recv().await.expect("the ask reached the registered host");
-            assert_eq!(request.tool, "browser_close", "and names the tool that was called");
-            request.reply.send(Ok(vec![BrowserPart::Text { text: "closed".to_owned() }])).ok();
-        });
-
         let answer = server
             .dispatch(&forge_sdk::mcp::protocol::JsonRpcRequest {
                 jsonrpc: "2.0".to_owned(),
@@ -420,18 +410,14 @@ mod tests {
             })
             .await
             .expect("a tools/call is answered");
-        // Bounded, so a facade wired to a relay of its own fails here -
-        // naming what never happened - rather than holding the run open.
-        tokio::time::timeout(std::time::Duration::from_secs(5), host)
-            .await
-            .expect(
-                "the ask reached the registered host rather than the tool answering without one",
-            )
-            .expect("the host task ran");
 
+        let heard = heard.try_recv().expect(
+            "the call reached the installed host rather than the tool answering without one",
+        );
+        assert_eq!(heard.0, "browser_close", "and names the tool that was called");
         let encoded = format!("{answer:?}");
         assert!(
-            encoded.contains("closed"),
+            encoded.contains("clicked"),
             "the tool's answer is the host's parts, so the call reached it: {encoded}",
         );
         assert!(!encoded.contains("no browser-capable client"), "{encoded}");
@@ -450,20 +436,18 @@ mod tests {
         };
 
         let out = tool
-            .call(ToolInput {
-                value: json!({ "reason": "solve the CAPTCHA", "profile": "job-hunt" }),
-            })
+            .call(ToolInput { value: json!({ "reason": "solve the CAPTCHA", "tab": 3 }) })
             .await;
 
         assert!(!out.is_error, "{:?}", out.blocks);
         assert!(
             mock.calls.lock().is_empty(),
-            "the hand-off never reaches the relay: the person is the ask, not the browser",
+            "the hand-off never reaches the browser: the person is the ask, not the tool",
         );
         assert_eq!(
             mock.hand_offs.lock().as_slice(),
-            [("solve the CAPTCHA".to_owned(), Some("job-hunt".to_owned()))],
-            "the reason and the profile cross to the park verbatim",
+            [("solve the CAPTCHA".to_owned(), 3)],
+            "the reason and the tab cross to the park verbatim",
         );
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("carry on"), "Done tells the model to carry on: {text}");
@@ -481,11 +465,30 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in" }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("declined"), "{text}");
+    }
+
+    /// No tab is the call's own mistake too: the person is asked to look at
+    /// one tab, and a hand-off that named none would raise the wrong page.
+    #[tokio::test]
+    async fn a_hand_off_without_a_tab_is_refused() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in" }) }).await;
+
+        assert!(out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("`tab`"), "{text}");
+        assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
     }
 
     /// No reason is the call's own mistake, answered before anything parks.
@@ -519,7 +522,7 @@ mod tests {
             slot: seat(),
         };
 
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in" }) }).await;
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
 
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);

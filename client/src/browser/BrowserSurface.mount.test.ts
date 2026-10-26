@@ -5,14 +5,39 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./host', () => ({
   canHost: vi.fn(() => true),
   drawsSurface: vi.fn(() => true),
-  showBrowser: vi.fn(() => Promise.resolve({ profile: '@shared' })),
-  hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
+  drawsCanvas: vi.fn(() => false),
+  keptFrame: vi.fn(() => Promise.resolve(null)),
+  showBrowser: vi.fn(() => Promise.resolve({ profile: 'hunt', tab: 1 })),
+  hideBrowser: vi.fn(() => Promise.resolve(true)),
+  listTabs: vi.fn(() =>
+    Promise.resolve({
+      profile: 'hunt',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [],
+    }),
+  ),
+  tabListOf: (value: unknown) => value,
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
+  resizeBrowser: vi.fn(() => Promise.resolve()),
+  takeControl: vi.fn(() => Promise.resolve()),
 }));
 
-import { reportSurfaceRect } from './host';
+import { hideBrowser, reportSurfaceRect } from './host';
 import BrowserSurface from './BrowserSurface.svelte';
 import { surface } from './surface.svelte';
+import type { Connection } from '../socket';
+
+/**
+ * The connection this surface draws through. The page area's measurement is
+ * the whole subject here, so the two members the surface can reach are stubs.
+ */
+const connection = {
+  onBrowserFrame: () => () => {},
+  browserInput: () => {},
+} as unknown as Connection;
 
 let shown: ReturnType<typeof mount> | null = null;
 
@@ -22,7 +47,7 @@ function open(phase: 'opening' | 'live' | 'failed'): HTMLElement {
   surface.reason = phase === 'failed' ? 'the browser host did not start' : null;
   const target = document.createElement('div');
   document.body.appendChild(target);
-  shown = mount(BrowserSurface, { target });
+  shown = mount(BrowserSurface, { target, props: { connection } });
   flushSync();
   return target;
 }
@@ -31,11 +56,13 @@ beforeEach(() => {
   surface.phase = 'closed';
   surface.profile = null;
   surface.reason = null;
-  surface.epoch = 42;
   vi.mocked(reportSurfaceRect).mockClear();
 });
 
 afterEach(() => {
+  // **A live surface's unmount closes itself asynchronously**, and that
+  // reset can land in the next test; close it synchronously first.
+  surface.phase = 'closed';
   if (shown !== null) void unmount(shown);
   shown = null;
   document.body.innerHTML = '';
@@ -45,26 +72,53 @@ describe('the browser surface', () => {
   it("reports the page area's box to the shell on mount", () => {
     open('live');
     expect(reportSurfaceRect).toHaveBeenCalledTimes(1);
-    const [rect, scale, epoch] = vi.mocked(reportSurfaceRect).mock.calls[0] ?? [];
+    const [rect, viewport, scale] = vi.mocked(reportSurfaceRect).mock.calls[0] ?? [];
     expect(rect).toMatchObject({ x: 0, y: 0 });
+    expect(viewport, "the page's own viewport rides with the area").toMatchObject({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
     expect(scale).toBe(window.devicePixelRatio || 1);
-    expect(epoch, 'the report names the open it belongs to').toBe(42);
   });
 
-  /// **A new open re-reports even when the layout has not moved.** The shell
-  /// refuses a report measured for another open, so a retry or reopen at the
-  /// same size still needs one report carrying the new epoch.
+  /// **A new open re-reports even when the layout has not moved.** The store
+  /// mints a generation per open, and a takeover mounts afresh for each, so a
+  /// retry or reopen at the same size still reports its page area.
   it('reports again when a new open takes the surface', () => {
     open('live');
-    const target = document.querySelector('.takeover-page');
-    expect(target, 'the page area mounted').not.toBeNull();
-    surface.epoch = 43;
-    flushSync();
+    const first = document.querySelector('.takeover-page');
+    expect(first, 'the page area mounted').not.toBeNull();
+    if (shown !== null) void unmount(shown);
+    shown = null;
+    document.body.innerHTML = '';
+    open('live');
     expect(reportSurfaceRect, 'the new open is measured by its own report').toHaveBeenCalledTimes(
       2,
     );
-    const [, , epoch] = vi.mocked(reportSurfaceRect).mock.calls[1] ?? [];
-    expect(epoch).toBe(43);
+  });
+
+  /// **A teardown closes only the mount it belongs to.** A retry or a pick
+  /// keeps the same mount; a newer takeover is a new mount, and an older
+  /// instance's teardown must not lower it.
+  it('a stale mount teardown does not close a newer takeover', async () => {
+    surface.phase = 'live';
+    surface.profile = null;
+    const firstTarget = document.createElement('div');
+    document.body.appendChild(firstTarget);
+    const first = mount(BrowserSurface, { target: firstTarget, props: { connection } });
+    flushSync();
+    const secondTarget = document.createElement('div');
+    document.body.appendChild(secondTarget);
+    const second = mount(BrowserSurface, { target: secondTarget, props: { connection } });
+    flushSync();
+
+    vi.mocked(hideBrowser).mockClear();
+    await unmount(first);
+    expect(hideBrowser, 'the older mount does not close the newer surface').not.toHaveBeenCalled();
+    await unmount(second);
+    await vi.waitFor(() =>
+      expect(hideBrowser, 'the current mount closes its surface').toHaveBeenCalled(),
+    );
   });
 
   /// **The shell can ask for the measurement again.** A refused report was

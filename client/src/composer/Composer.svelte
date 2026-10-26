@@ -6,14 +6,7 @@
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/host';
-  import {
-    clearHandOff,
-    closeSurface,
-    failSurface,
-    handOffRefusal,
-    openSurface,
-    surface,
-  } from '../browser/surface.svelte';
+  import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -427,7 +420,6 @@
     const held = ask;
     if (held !== null && held.kind === 'browser_hand_off') {
       box.shownHandOff = held.request.id;
-      box.shownHandOffProfile = held.request.profile;
       box.ended = null;
     }
   });
@@ -507,7 +499,7 @@
       // touches this shell. Through the store, so the page's phase follows
       // the shell's answer instead of staying live over a closed surface.
       if (surface.hand_off?.id === id) clearHandOff(id);
-      void closeSurface(held.shownHandOffProfile, at);
+      void closeSurface(null, at);
     });
   });
 
@@ -539,9 +531,13 @@
   });
 
   // The reader's eye is in that slot: a prompt takes the box and the keyboard
-  // with it, and the field takes it back when the box returns.
+  // with it, and the field takes it back when the box returns. **The browser
+  // takeover owns the keyboard while it is up**: its hidden field is what
+  // types into the page, and a box that took it back swallowed the phone's
+  // typing into the chat behind the picture.
   $effect(() => {
     if (ask !== null) return;
+    if (surface.phase !== 'closed') return;
     if (field !== null) field.focus();
   });
 
@@ -1085,11 +1081,18 @@
    * bare picture with no way back to the chat is a trap. With no ask the bar
    * carries only back-to-chat.
    */
+  /**
+   * The profile this surface really drives, spelled the way the strip does.
+   * **The server's resolved name wins over the row's own.**
+   */
+  const attachedName = $derived(surface.attachedProfile ?? surface.profile);
   const takeoverTitle = $derived(
     takeoverAsk === null
-      ? 'the browser'
-      : takeoverAsk.request.profile != null
-        ? `browser hand-off · ${takeoverAsk.request.profile}`
+      ? attachedName === null
+        ? 'the browser'
+        : `the browser · ${attachedName}`
+      : takeoverAsk.request.tab !== null
+        ? `browser hand-off · tab ${takeoverAsk.request.tab}`
         : 'browser hand-off',
   );
 
@@ -1097,14 +1100,13 @@
   function takeoverAnswer(done: boolean): void {
     if (takeoverAsk === null) return;
     const id = takeoverAsk.request.id;
-    const profile = takeoverAsk.request.profile;
     remember(id);
     try {
       void connection.dispatch({ respond_browser_hand_off: { key: slot, id, done } }, slot);
     } catch (error) {
       report('the answer was not sent', error);
     }
-    void closeSurface(profile, slot);
+    void closeSurface(null, slot);
     clearHandOff(id);
   }
 
@@ -1146,22 +1148,19 @@
    * sentence.
    */
   function takeoverRetry(): void {
-    // **A retry re-raises the surface it stands over, and the role rule is
-    // the hand-off's alone.** With no hand-off attached, the failed surface
-    // is the person's own show - a profile another seat holds, a browser that
-    // did not start - so it re-shows THAT profile straight to the shell, even
-    // while a hand-off ask is parked elsewhere. An attached hand-off retries
-    // its own profile, after asking the role (#2519).
-    if (surface.hand_off !== null) {
-      const refusal = handOffRefusal(connection.browserRoleKnown(), connection.browserRole());
-      if (refusal !== null) {
-        failSurface(refusal);
-        return;
-      }
-      void openSurface(takeoverAsk?.request.profile ?? surface.profile, slot);
-      return;
-    }
-    void openSurface(surface.profile, slot);
+    const asked = takeoverAsk?.request.tab ?? null;
+    // **A retry does not reopen a dead tab**, the ask's own included: a
+    // parked hand-off can outlive the tab it named. Only a tab the current
+    // list still names is retried; otherwise the server's current tab is
+    // asked for, which is what a fresh host has.
+    const rows = surface.tabs?.rows ?? [];
+    const named = (tab: number | null): tab is number =>
+      tab !== null && rows.some((row) => row.number === tab);
+    void openSurface(
+      surface.profile,
+      slot,
+      named(asked) ? asked : named(surface.tab) ? surface.tab : null,
+    );
   }
 
   /**
@@ -1242,7 +1241,7 @@
     {#if ring === 'load'}
       <span class="sr" role="status">opening the microphone</span>
     {/if}
-    <Pinned info={pinnedRow.of(seatKey)} {connection} {slot} />
+    <Pinned info={pinnedRow.of(seatKey)} {slot} />
     {#if blocker !== null}
       <div class="box">
         <div class="blocked">

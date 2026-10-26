@@ -1401,6 +1401,10 @@ impl crate::Workspace {
         let _ = self
             .update_tx
             .send(SessionUpdate::Handoff { key: request.slot.clone(), handoff: record });
+        // **A swap is a replacement**: the previous occupant's tabs close
+        // before its successor starts, or the new occupant's first call would
+        // inherit them. A parked hand-off's tab is the fleet's to keep.
+        self.replace_browser_seat(&request.slot);
         if let Err(error) = self.dispatch(Command::NewSession {
             key: request.slot.clone(),
             cwd: request.cwd,
@@ -2166,6 +2170,36 @@ mod tests {
         }
     }
 
+    /// **A successor replaces the seat's tabs before it starts**: the old
+    /// occupant's tabs belong to it, and the new occupant's first call must
+    /// not inherit them.
+    #[tokio::test]
+    async fn a_successor_replaces_the_seats_tabs_before_it_starts() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        workspace.enable_test_dispatch_intercept();
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        workspace
+            .install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
+        let slot = SessionSlot::lead("Busytools", "forge");
+        let token = workspace.begin_swap(&slot);
+
+        Arc::clone(&workspace).run_handoff(swap_request(&slot, Some(token))).await;
+
+        let (what, args) = tokio::time::timeout(std::time::Duration::from_secs(2), heard.recv())
+            .await
+            .expect("the fleet hears the replacement")
+            .expect("a replacement");
+        assert_eq!(what, "replace_seat", "the seat is replaced: {args}");
+        assert_eq!(args, serde_json::json!(slot));
+        assert!(
+            workspace
+                .drain_test_dispatch_buffer()
+                .iter()
+                .any(|command| matches!(command, Command::NewSession { .. })),
+            "and the successor is dispatched after it",
+        );
+    }
+
     /// A new swap on the seat invalidates the token that opened the last one,
     /// and a closed gate owns nothing.
     #[test]
@@ -2193,6 +2227,9 @@ mod tests {
 
         let (workspace, mut rx) = crate::Workspace::testing_stub();
         workspace.enable_test_dispatch_intercept();
+        let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        workspace
+            .install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
         let slot = SessionSlot::lead("Busytools", "forge");
         let token = workspace.begin_swap(&slot);
         let mut build =
@@ -2219,6 +2256,12 @@ mod tests {
         assert!(
             workspace.pending_brief_for(&slot).is_none(),
             "and no brief is left waiting for a successor that was never started",
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), heard.recv())
+                .await
+                .is_err(),
+            "a lost seat's tabs are not replaced",
         );
         while let Ok(frame) = rx.try_recv() {
             assert!(

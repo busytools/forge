@@ -6,7 +6,7 @@ import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { noteSnapshot, noteSubscribe } from './perf';
-import { connect, type Connection, type ConnectionStatus } from './socket';
+import { connect, type BrowserFrame, type Connection, type ConnectionStatus } from './socket';
 import { onRefusal, type Refusal } from './refusals';
 import {
   PROTOCOL_VERSION,
@@ -46,15 +46,9 @@ async function stubServer() {
 
   /** Everything the client has sent, in order. */
   const received: ClientMessage[] = [];
-  /** Every binary frame the client sent, in order - a browser image's bytes. */
+  /** Every binary frame the client sent, in order - the dictation's audio. */
   const binary: Buffer[] = [];
-  /**
-   * Both kinds in ONE log, in arrival order.
-   *
-   * The order is the contract for a browser answer - the answer first, then
-   * its image frames - and two separate arrays cannot state it: a frame that
-   * overtook its answer would look exactly like one that followed it.
-   */
+  /** Both kinds in ONE log, in arrival order. */
   const arrivals: ({ kind: 'json'; message: ClientMessage } | { kind: 'frame'; bytes: Buffer })[] =
     [];
   server.on('connection', (socket) => {
@@ -80,9 +74,36 @@ async function stubServer() {
     send(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
     },
+    /** One relayed browser frame, as the server sends it: kind tag, the
+     *  host's 14-byte header, then the encoded pixels. */
+    sendFrame(frame: {
+      profile: number;
+      tab: number;
+      seq: number;
+      width: number;
+      height: number;
+      key: boolean;
+      bytes: Uint8Array;
+    }) {
+      const bytes = Buffer.alloc(15 + frame.bytes.length);
+      bytes[0] = 1;
+      bytes.writeUInt16LE(frame.profile, 1);
+      bytes.writeUInt16LE(frame.tab, 3);
+      bytes.writeUInt32LE(frame.seq, 5);
+      bytes.writeUInt16LE(frame.width, 9);
+      bytes.writeUInt16LE(frame.height, 11);
+      bytes[13] = 1;
+      bytes[14] = frame.key ? 1 : 0;
+      Buffer.from(frame.bytes).copy(bytes, 15);
+      for (const socket of sockets) socket.send(bytes);
+    },
     /** One frame exactly as given, for a frame that is not JSON at all. */
     raw(text: string) {
       for (const socket of sockets) socket.send(text);
+    },
+    /** A binary frame exactly as given, for one this page cannot read. */
+    sendBinary(bytes: Buffer) {
+      for (const socket of sockets) socket.send(bytes);
     },
     /** Drop every client, as a server restart or a lost network would. */
     drop() {
@@ -236,8 +257,6 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: true,
-      browser: false,
-      declare: false,
     });
 
     // Off unless said otherwise, so a read-only client cannot hang a turn.
@@ -247,8 +266,6 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: 'usage',
       answering: false,
-      browser: false,
-      declare: false,
     });
   });
 
@@ -294,8 +311,6 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: false,
-      browser: false,
-      declare: false,
     });
   });
 
@@ -746,8 +761,6 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: false,
-      browser: false,
-      declare: false,
     });
     // And the store is still holding what it had while the server answers.
     expect(conn.store(HOME)?.snapshot()).toEqual({ projects: ['a'] });
@@ -783,8 +796,6 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: true,
-      browser: false,
-      declare: false,
     });
 
     // One entry is left, so exactly one re-ask: a second would mean the count
@@ -1381,301 +1392,89 @@ describe('the connection', () => {
   });
 });
 
-describe('the browser role', () => {
+describe('the browser viewer', () => {
   /**
-   * The capability is declared on the subscribe and kept across a reconnect:
-   * a drop that re-asked for the subject without it would leave the client
-   * attached, drawing, and unable to host anything the session asked for.
+   * **A gesture crosses as itself, with its own sequence.** The server
+   * drops an event at or below the last one the role carried, so the
+   * sequence is the wire's own ordering.
    */
-  it('declares the capability, and re-declares it when the socket comes back', async () => {
+  it('sends a gesture with its own sequence', async () => {
     const { server, conn } = await connected();
-    conn.subscribe(HOME, { browser: true });
-    await until(() => server.received.length === 1, 'the subscribe to arrive');
-    expect(server.received[0]).toEqual({
-      kind: 'subscribe',
-      what: HOME,
-      answering: false,
-      browser: true,
-      declare: false,
+    conn.browserInput({ kind: 'text', text: 'hello' });
+    conn.browserInput({
+      kind: 'wheel',
+      x: 1,
+      y: 2,
+      delta_x: 0,
+      delta_y: 40,
+      modifiers: {
+        alt: false,
+        control: false,
+        meta: false,
+        shift: false,
+      },
     });
-
-    server.drop();
-    await until(() => server.received.length >= 2, 'the re-ask');
-    expect(server.received[1]).toEqual({
-      kind: 'subscribe',
-      what: HOME,
-      answering: false,
-      browser: true,
-      declare: false,
-    });
+    await until(() => server.received.length === 2, 'both gestures to arrive');
+    expect(server.received[0]).toMatchObject({ kind: 'browser_input', seq: 1 });
+    expect(server.received[1]).toMatchObject({ kind: 'browser_input', seq: 2 });
   });
 
   /**
-   * One ask in, one answer out, under the ask's own id: the parts the handler
-   * returned cross as the answer, and a failure crosses as the reason rather
-   * than as an empty result.
+   * **A relayed frame is the host's own bytes.** The tag names the kind, the
+   * header states the size it was painted at, and the page's viewer gets one
+   * object with the header read and the payload untouched.
    */
-  it('answers an ask with the parts its handler returned', async () => {
+  it("hands a relayed frame to the page's viewer", async () => {
     const { server, conn } = await connected();
-    conn.onBrowserAsk(async (ask) => {
-      // A promise, because the shell's own handler is one: it goes to the
-      // Tauri side and comes back.
-      await Promise.resolve();
-      return {
-        parts: [
-          { type: 'text', text: `${ask.tool} -> ${String((ask.args as { url: string }).url)}` },
-        ],
-      };
-    });
+    const heard: BrowserFrame[] = [];
+    conn.onBrowserFrame((frame) => heard.push(frame));
 
-    server.send({
-      kind: 'browser_ask',
-      id: 7,
-      seat: LEAD,
-      tool: 'browser_navigate',
-      args: { url: 'https://example.com' },
+    server.sendFrame({
+      profile: 5,
+      tab: 2,
+      seq: 7,
+      width: 800,
+      height: 600,
+      key: true,
+      bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]),
     });
-    await until(() => server.received.length === 1, 'the answer to arrive');
-    expect(server.received[0]).toEqual({
-      kind: 'browser_answer',
-      id: 7,
-      parts: [{ type: 'text', text: 'browser_navigate -> https://example.com' }],
-      error: null,
-    });
+    await until(() => heard.length === 1, 'the frame to arrive');
+    const frame = heard[0];
+    expect(frame?.profile).toBe(5);
+    expect(frame?.tab).toBe(2);
+    expect(frame?.seq).toBe(7);
+    expect([frame?.width, frame?.height]).toEqual([800, 600]);
+    expect(frame?.key).toBe(true);
+    expect([...(frame?.bytes ?? [])]).toEqual([0x52, 0x49, 0x46, 0x46]);
   });
 
-  /**
-   * An image part's mime crosses on the answer and its BYTES ride a binary
-   * frame under the same id: the tag, the id big-endian, then the bytes.
-   */
-  it('sends an image part as a mime on the answer and bytes in their own frame', async () => {
+  /** **A binary frame this page cannot read is said, not dropped.** A short
+   *  header or an unknown kind used to vanish without a trace. */
+  it('says a binary frame it cannot read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { server, conn } = await connected();
-    conn.onBrowserAsk(() => ({
-      parts: [
-        { type: 'text', text: 'captured' },
-        { type: 'image', mime_type: 'image/png', bytes: new Uint8Array([0x89, 0x50]) },
-      ],
-    }));
+    const heard: BrowserFrame[] = [];
+    conn.onBrowserFrame((frame) => heard.push(frame));
 
-    server.send({
-      kind: 'browser_ask',
-      id: 9,
-      seat: LEAD,
-      tool: 'browser_take_screenshot',
-      args: {},
-    });
-    await until(() => server.received.length === 1 && server.binary.length === 1, 'the answer');
-
-    expect(server.received[0]).toEqual({
-      kind: 'browser_answer',
-      id: 9,
-      parts: [
-        { type: 'text', text: 'captured' },
-        { type: 'image', mime_type: 'image/png' },
-      ],
-      error: null,
-    });
-    const frame = server.binary[0];
-    expect(frame?.[0], 'the browser-image kind tag').toBe(1);
-    expect(frame?.readBigUInt64BE(1), 'the answer id, big-endian').toBe(9n);
-    expect([...(frame?.subarray(9) ?? [])], 'the image bytes').toEqual([0x89, 0x50]);
-
-    // **The answer goes FIRST.** A frame that overtook the answer declaring
-    // its image is a pair the server refuses - and fails the call over - so
-    // the order is asserted as it arrived, rather than from two separate
-    // lists that cannot tell an overtaking frame from a following one.
-    expect(
-      server.arrivals.map((arrival) => arrival.kind),
-      'the answer crossed before the frame it belongs to',
-    ).toEqual(['json', 'frame']);
-  });
-
-  /**
-   * **A frame that could not be sent cannot be skipped.** The answer is
-   * already on the wire, so its image can never arrive and the tool call
-   * would wait on a promise this client cannot keep. The connection drops
-   * instead: the server fails that ask naming the host that went away, and
-   * the reconnect re-declares the capability.
-   */
-  it('drops the connection when an image frame cannot be sent', async () => {
-    const { server, conn } = await connected();
-    conn.subscribe(HOME, { browser: true });
-    await until(() => server.received.length === 1, 'the subscribe to arrive');
-    conn.onBrowserAsk(() => ({
-      parts: [{ type: 'image', mime_type: 'image/png', bytes: new Uint8Array([1]) }],
-    }));
-
-    // The fault is a FRAME that cannot be sent, not the answer: the answer is
-    // a string and goes through, and the frame after it is what fails.
-    const send = vi.spyOn(WebSocket.prototype, 'send').mockImplementation((data: unknown) => {
-      if (typeof data !== 'string') throw new Error('the socket is gone');
-    });
-    server.send({
-      kind: 'browser_ask',
-      id: 3,
-      seat: LEAD,
-      tool: 'browser_take_screenshot',
-      args: {},
-    });
-    await untilStatus(
-      conn,
-      'connecting',
-      'the connection to drop rather than leave the answer half-sent',
+    server.sendBinary(Buffer.from([9, 1, 2]));
+    await until(
+      () => warn.mock.calls.some((call) => String(call[0]).includes('not a browser frame')),
+      'the refusal to be said',
     );
-    send.mockRestore();
+    expect(heard, 'nothing is drawn from it').toHaveLength(0);
+    warn.mockRestore();
   });
 
-  /**
-   * A handler that throws is a failed tool call with the reason named, and a
-   * connection that cannot host answers the same shape: the session's turn
-   * gets an answer either way rather than waiting on one that never comes.
-   *
-   * **Known flake, seen once on 2026-10-09** in a full-suite run (147 files
-   * in parallel): the first `until` ran out of `WAIT_MS` before the answer
-   * landed, green on re-run and in every quiet run. TODO: both waits here are
-   * wall-clock budgets over two whole connects, so the fix is waiting on the
-   * frame itself - a longer budget only moves the edge.
-   */
-  it('answers a failure rather than nothing when it cannot serve the ask', async () => {
+  /** A viewer call while the socket is down goes nowhere and says so. */
+  it('refuses a viewer call while the socket is down', async () => {
     const { server, conn } = await connected();
-    conn.onBrowserAsk(() => {
-      throw new Error('the driver is not running');
-    });
-    server.send({ kind: 'browser_ask', id: 1, seat: LEAD, tool: 'browser_close', args: {} });
-    await until(() => server.received.length === 1, 'the failed answer');
-    const failed = server.received[0];
-    expect(failed).toMatchObject({ kind: 'browser_answer', id: 1, parts: [] });
-    const why = server.received.find((m) => m.kind === 'browser_answer')?.error ?? '';
-    expect(why).toContain('the driver is not running');
-
-    // No handler at all is the same shape: a client that was sent an ask it
-    // has no way to serve says so.
-    const alone = await connected();
-    alone.server.send({ kind: 'browser_ask', id: 2, seat: LEAD, tool: 'browser_close', args: {} });
-    await until(() => alone.server.received.length === 1, 'the refusal');
-    expect(alone.server.received[0]).toMatchObject({
-      kind: 'browser_answer',
-      id: 2,
-      parts: [],
-      error: 'this client cannot host the browser',
-    });
+    conn.close();
+    expect(conn.browserInput({ kind: 'text', text: 'x' })).toBe(false);
+    expect(server.received).toEqual([]);
   });
+});
 
-  /**
-   * **An escalation is re-declared.** A shell that comes up before its host
-   * resolves subscribes without the capability and subscribes again once it
-   * can host - and the second declare has to reach the server, or the role
-   * never moves.
-   */
-  it('re-declares when the capability is added', async () => {
-    const { server, conn } = await connected();
-    conn.subscribe(HOME, { browser: false });
-    await until(() => server.received.length === 1, 'the first subscribe');
-    expect(server.received[0]).toMatchObject({ kind: 'subscribe', browser: false });
-
-    conn.subscribe(HOME, { browser: true });
-    await until(() => server.received.length === 2, 'the escalated declare');
-    expect(server.received[1]).toMatchObject({ kind: 'subscribe', browser: true });
-  });
-
-  /**
-   * **A take re-declares first.** The relay registers only declared
-   * connections, so a connection displaced by an earlier take - the very one
-   * whose strip draws the override - must declare again for the claim to move
-   * anything; without it the click comes back `false` and nothing happens.
-   */
-  it('re-declares with a take, so a displaced connection can claim', async () => {
-    const { server, conn } = await connected();
-    conn.subscribe(HOME, { browser: false });
-    await until(() => server.received.length === 1, 'the first subscribe');
-
-    conn.takeBrowserRole();
-    await until(() => server.received.length === 3, 'the declare and the claim');
-    expect(
-      server.received[1],
-      'the declare goes first, carrying the capability and saying it is a declare',
-    ).toMatchObject({
-      kind: 'subscribe',
-      browser: true,
-      declare: true,
-    });
-    expect(server.received[2], 'and the claim follows it').toEqual({ kind: 'browser_take_role' });
-  });
-
-  /**
-   * **The role frame is the only thing that says "you host".** It flips the
-   * read and reaches every listener; `takeBrowserRole` puts the claim on the
-   * wire; and a drop clears it, because the role belonged to the connection
-   * that went rather than to the page.
-   */
-  it('keeps the role from the server frame, claims it, and clears it on a drop', async () => {
-    const { server, conn } = await connected();
-    const heard: boolean[] = [];
-    conn.onBrowserRole((now) => heard.push(now));
-    expect(conn.browserRole(), 'before any frame, this client does not host').toBe(false);
-    expect(
-      conn.browserRoleKnown(),
-      'and nobody has said so yet - the silence is not a refusal to host',
-    ).toBe(false);
-
-    server.send({ kind: 'browser_role', hosting: true });
-    await until(() => conn.browserRole(), 'the grant to land');
-    expect(conn.browserRoleKnown(), 'the frame is what makes the role a reading').toBe(true);
-    expect(heard, 'the listener heard the grant').toEqual([true]);
-
-    conn.takeBrowserRole();
-    await until(() => server.received.length === 1, 'the claim to arrive');
-    expect(server.received[0], 'the claim crosses as its own frame').toEqual({
-      kind: 'browser_take_role',
-    });
-
-    server.drop();
-    await until(() => !conn.browserRole(), 'the drop to clear the role');
-    expect(conn.browserRoleKnown(), 'a dropped connection has been told nothing').toBe(false);
-    expect(heard, 'and the drop is said out loud').toEqual([true, false]);
-  });
-
-  /**
-   * **A refused take is a frame too.** The socket stays open, and the role
-   * frame with `false` is what says the claim did not move it - a refusal
-   * that were silence would leave the click unanswered on screen.
-   */
-  it('reads a refused take from its frame, with the socket still open', async () => {
-    const { server, conn } = await connected();
-    const heard: boolean[] = [];
-    conn.onBrowserRole((now) => heard.push(now));
-
-    conn.takeBrowserRole();
-    await until(() => server.received.length === 1, 'the claim to arrive');
-    server.send({ kind: 'browser_role', hosting: false });
-
-    await until(() => heard.length === 1, 'the refusal to land');
-    expect(heard, 'the refusal is said out loud rather than left silent').toEqual([false]);
-    expect(conn.browserRole(), 'and it is what the read now is').toBe(false);
-  });
-
-  /**
-   * **A claim while the socket is down is a record, not a send.** The guard
-   * is the whole difference between a click that says why it did nothing and
-   * a frame thrown into a dead socket.
-   */
-  it('records a claim made while the socket is down rather than sending it', async () => {
-    const { server, conn } = await connected();
-    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      conn.close();
-      conn.takeBrowserRole();
-
-      expect(warned, 'the click is recorded with its reason').toHaveBeenCalledWith(
-        'forge client: the browser role could not be claimed',
-        'the socket is not open',
-      );
-      expect(server.received, 'and nothing crossed').toEqual([]);
-    } finally {
-      warned.mockRestore();
-    }
-  });
-
+describe('frames this client draws', () => {
   /**
    * **A repaired stretch is a frame this client DRAWS, and the socket must
    * know it.** The chat folds it through its own listener, so this switch has

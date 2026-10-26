@@ -1,0 +1,8 @@
+          eventsHelper.addEventListener(p, "filechooser", (chooser) => {
+            this.setModalState({
+              type: "fileChooser",
+              description: "File chooser",
+              fileChooser: chooser,
+              clearedBy: { tool: uploadFile.schema.name, skill: "upload" }
+            });
+          }),

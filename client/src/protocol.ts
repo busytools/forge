@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 12;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -248,6 +248,33 @@ function isSlot(value: unknown): value is SessionSlot {
  */
 export type DocumentKind = 'markdown' | 'pdf' | 'text' | { other: string };
 
+/** One tab as a client's browser strip draws it. */
+export interface BrowserTabRow {
+  /** The host's tab number, which frames and input speak. */
+  number: number;
+  title: string;
+  url: string;
+  /** The session whose calls drive it. */
+  owner: SessionSlot;
+  /** The server's own word, kept whole: a state this page has not seen is
+   *  drawn as itself rather than as a neighbour it does not mean. */
+  state: string;
+}
+
+/** One profile's tabs and how the profile itself is doing. */
+export interface BrowserTabList {
+  profile: string;
+  /** The id the binary frames carry for the profile. */
+  id: number;
+  /** Whether its browser host is up. */
+  up: boolean;
+  /** Whether a driver is attached and running. */
+  connected: boolean;
+  /** When the idle clock closes it, as Unix epoch milliseconds. */
+  closing_at_ms: number | null;
+  rows: BrowserTabRow[];
+}
+
 /** What a client sends. */
 export type ClientMessage =
   | {
@@ -263,26 +290,6 @@ export type ClientMessage =
        * for the connection.
        */
       answering: boolean;
-      /**
-       * Whether this client can host the browser.
-       *
-       * Off unless the client says otherwise, and the declaration is a claim
-       * about what this client can DO: one connection holds the role, every
-       * browser ask routes to it, and a client that declared the capability
-       * it does not have is sent asks it will answer with a failure - which
-       * shows up as a session's tool call failing, not as the client's.
-       */
-      browser: boolean;
-      /**
-       * Whether this frame is the role DECLARE: the re-statement of the
-       * browser capability a client makes as it claims the role.
-       *
-       * The server answers it with the subject's snapshot like any
-       * subscribe, but holds NOTHING for it - no watch entry, no
-       * attachment, no seat hold - because the client never counts it and
-       * so would never give one back.
-       */
-      declare: boolean;
     }
   | { kind: 'unsubscribe'; what: Subject }
   /**
@@ -337,20 +344,39 @@ export type ClientMessage =
    */
   | { kind: 'document_read'; session: SessionSlot; path: string; reviewable: boolean }
   /**
-   * The host's answer to one `browser_ask`.
+   * Attach this connection to one of a seat's browser tabs, as a viewer.
    *
-   * `parts` are what the tool returned, in order; an image part's BYTES do
-   * not cross here - they ride a binary frame under this same id, one frame
-   * per image part in the order the parts are listed. `error` is the call's
-   * failure, and a failed answer carries no parts.
+   * `tab` is the tab to drive; `null` is the asking seat's current tab, else
+   * its profile's first. Attaching again replaces what this connection was
+   * viewing. The answer is a `browser_view` naming the profile's wire id and
+   * the tab, then a `browser_nav_state`, then frames.
    */
-  | { kind: 'browser_answer'; id: number; parts: BrowserPart[]; error: string | null }
+  | {
+      kind: 'browser_view';
+      seat: SessionSlot;
+      tab: number | null;
+      /** Answers the attach when the sender waits; the shell's does. */
+      reply_to?: number | null;
+    }
   /**
-   * Take the browser role from whoever holds it, which is the force override
-   * a second capable client offers. The server answers with a `browser_role`
-   * frame either way, so a refused take is visible rather than silent.
+   * The tabs of this seat's profile, for a client's strip.
+   *
+   * Answered through `reply_to` with `{ok: true, tabs}`, where `tabs` is a
+   * [`BrowserTabList`]; the connection then follows every change as a pushed
+   * `browser_tabs`.
    */
-  | { kind: 'browser_take_role' };
+  | { kind: 'browser_tabs'; seat: SessionSlot; reply_to?: number | null }
+  /** Stop viewing the attached profile: the takeover lowered. */
+  | { kind: 'browser_detach' }
+  /**
+   * One input event from the controlling viewer. **The wire carries the
+   * gesture, not CDP**: the server maps it to the engine's own input.
+   */
+  | { kind: 'browser_input'; seq: number; event: BrowserInputEvent }
+  /** Take the controller role for the viewed surface, or give it back. */
+  | { kind: 'browser_control'; take: boolean }
+  /** Move the viewed page through its own history: the bar's arrows. */
+  | { kind: 'browser_nav'; back: boolean };
 
 /** What the server sends. */
 export type ServerMessage =
@@ -499,57 +525,80 @@ export type ServerMessage =
       dispatch_id?: number | null;
     }
   /**
-   * One browser tool call, sent to the client that holds the browser role.
-   *
-   * The socket's first request in this direction. It is answered with a
-   * `browser_answer` under this same `id`; nothing else pairs the two, so an
-   * ask left unanswered is a session's tool call waiting.
+   * A profile's viewer state: which viewer controls it, and how many are
+   * attached. `id` is the profile's wire id, the same one the binary frames
+   * carry; `viewer` is this connection's own, which is what `controller`
+   * names when this surface holds the role.
    */
-  | { kind: 'browser_ask'; id: number; seat: SessionSlot; tool: string; args: unknown }
+  | {
+      kind: 'browser_view';
+      id: number;
+      profile: string;
+      /** The tab this state is for; a frame for another tab is not this one's. */
+      tab: number;
+      controller: number | null;
+      viewers: number;
+      viewer: number;
+    }
+  /** Where the viewed tab's history sits: what the bar's arrows may do. */
+  | {
+      kind: 'browser_nav_state';
+      id: number;
+      tab: number;
+      can_back: boolean;
+      can_forward: boolean;
+    }
+  /** The viewed tab's browser stopped, and why. */
+  | { kind: 'browser_surface_failed'; id: number; tab: number; reason: string }
   /**
-   * Whether THIS connection holds the browser role: sent when a capable
-   * declare is granted, and when a force-take takes the role away. Before
-   * this frame a client knew only that it COULD host, and a strip that went
-   * on saying "you" after losing the role would be a lie its reader acts on.
+   * The viewed profile's tabs, pushed once the connection asked with
+   * `browser_tabs` and then once per change.
    */
-  | { kind: 'browser_role'; hosting: boolean };
+  | ({ kind: 'browser_tabs' } & BrowserTabList);
 
-/**
- * One part of a browser tool's answer, as it crosses the socket.
- *
- * An image names its mime type here and its bytes travel in their own binary
- * frame: base64 inside this JSON would pay a third again for a screenshot.
- */
-export type BrowserPart = { type: 'text'; text: string } | { type: 'image'; mime_type: string };
-
-/**
- * One part as a host holds it: the same shape, with an image's bytes in hand.
- *
- * The socket strips the bytes into their frame, so what a handler returns is
- * this and what crosses is {@link BrowserPart}.
- */
-export type BrowserAnswerPart =
-  { type: 'text'; text: string } | { type: 'image'; mime_type: string; bytes: Uint8Array };
-
-/** One browser ask, as the handler that answers it reads it. */
-export interface BrowserAsk {
-  /** The id the answer must come back under. */
-  id: number;
-  /** The seat whose session asked. */
-  seat: SessionSlot;
-  /** Upstream's own tool name, unprefixed. */
-  tool: string;
-  /** The arguments the CLI sent, exactly as it sent them. */
-  args: unknown;
+/** The modifier keys a person held for one input gesture. */
+export interface InputModifiers {
+  alt: boolean;
+  control: boolean;
+  meta: boolean;
+  shift: boolean;
 }
 
 /**
- * What a host answers an ask with: the tool's parts, or the reason it failed.
+ * One input event a controlling viewer sends, in CSS pixels for the page's
+ * viewport.
  *
- * A failure is an ANSWER, not a silence - the session's tool call returns it
- * as the reason the call did not happen, which is what a person reads.
+ * **A gesture, not CDP**: the server turns a press into the engine's own
+ * input, and the method names stay there.
  */
-export type BrowserAnswer = { parts: BrowserAnswerPart[] } | { error: string };
+export type BrowserInputEvent =
+  | {
+      kind: 'mouse';
+      action: 'move' | 'press' | 'release';
+      x: number;
+      y: number;
+      /** 0 left, 1 right, 2 middle. */
+      button: number;
+      clicks: number;
+      modifiers: InputModifiers;
+    }
+  | {
+      kind: 'wheel';
+      x: number;
+      y: number;
+      delta_x: number;
+      delta_y: number;
+      modifiers: InputModifiers;
+    }
+  | {
+      kind: 'key';
+      down: boolean;
+      key: string;
+      code: string;
+      windows_vk: number;
+      modifiers: InputModifiers;
+    }
+  | { kind: 'text'; text: string };
 
 /**
  * The largest page one `more` asks for, and the page the history walks use.

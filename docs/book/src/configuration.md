@@ -44,7 +44,17 @@ An array of tables. At least one is required, or the load fails with
 | `name`              | string           | yes      | Must be unique across orgs.                                         |
 | `accounts`          | array of strings | yes      | Each entry must match an `[[accounts]]` `display_name`.             |
 | `fallback_accounts` | array of strings | no       | Accounts the walk reaches after the pinned ones. Absent means none. |
+| `browser_profile`   | string           | no       | The browser profile the org's projects drive unless they override it. Absent is `default`. |
 | `projects`          | array of tables  | yes      | Written as `[[orgs.projects]]`. An org with none fails the load.    |
+
+`browser_profile` names the browser every project in the org drives. The
+key is the org and the name joined - `browser_profile = "work"` under
+`name = "Busytools"` is the profile `Busytools/work` - and its cache and
+logins live under the server's `browser/profiles/Busytools/work/cef`. A
+name is 1 to 64 characters of letters, digits, dot, dash or underscore,
+and a bad one fails the load naming the key and the value. A project's
+own `browser_profile` keeps the same name inside its org and overrides
+the org's.
 
 `accounts` is the account subset every project in this org may spawn
 under. Rules enforced at load:
@@ -264,6 +274,7 @@ quietly applying nothing.
 | `model`           | string  |         | The project's model. Fills the CLI's model slots at spawn (`ANTHROPIC_DEFAULT_HAIKU_MODEL`, `_OPUS_MODEL`, `_SONNET_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL` all carry it) and is the session default a `/model` change overrides. Must be declared by at least one account in the org, or the load fails - a model no account serves would otherwise stamp every slot and 503 each session's first request. Required: the walk that picks a session's account matches on the model an account serves, so a project without one is refused at spawn. |
 | `vault_roots`     | array   | `[]`    | Extra roots the document read accepts beyond the session's own tree, so a project's documents can live outside its repo (a vault, a shared spec directory). Each entry is an absolute path, `~` or a `~/` path; a relative one fails the load. |
 | `handoff`         | table   | none    | Written as `[orgs.projects.handoff]` under its own entry. Sets this project's handoff trigger; every key is optional and falls back to the top-level `[handoff]` section above. |
+| `browser_profile` | string  | the org's | The browser profile's name inside this project's org: a project setting `work` under `Busytools` drives `Busytools/work`. Absent keeps the org's, and a bad name fails the load naming the key and the value. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -630,6 +641,18 @@ from here.** A client is its own program and draws everything itself; the
 socket hands it data. A bind that fails is fatal on the headless binary:
 with no view of its own it would serve nothing.
 
+## `[browser]`
+
+The server's browser: how often a host encodes frames, how good they
+are, and how long a profile nobody uses stays up. Absent means every
+default.
+
+| Key             | Type    | Default | Notes                                                                                                                                                                                                                                                                                                                             |
+| --------------- | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fps`           | integer | `30`    | Frames encoded per second, between `1` and `120`. CEF paints at its own cadence and faster paints are coalesced to this rate before the encoder runs, so the key bounds the encode cost a watching viewer causes. A paused host - one with no viewer attached - encodes nothing whatever this is. A value outside the range fails the load (`[browser] fps must be 1 to 120`). |
+| `quality`       | integer | `75`    | Lossy WebP quality for the frames between key frames, `0` to `100`. A key frame is lossless regardless: the first frame of a surface and every frame after a resize or a pause. A value over `100` fails the load (`[browser] quality must be 0 to 100`). |
+| `idle_minutes`  | integer | `30`    | The idle release, on the server's clock: after this many minutes with no browser call and no viewer attached, the profile's host is closed. The close ends the host and its tabs; the cache and logins stay, and the next call starts a fresh host whose boot tab the first page call adopts. **A viewer attached or a hand-off waiting on the person holds the profile open** - the sweep skips both rather than closing a page someone is looking at. A lower does not reset the clock; the next call or attach does. **The clocks live in the server's memory**, so a restart grants every browser a fresh window. |
+
 ## `[client]`
 
 Which of the sets forge ships a client draws with. Absent means every
@@ -640,8 +663,6 @@ name unset, which is the built-in.
 | `mark`  | string | unset, drawing panes                              | The mark a client draws, by name: `panes`, `klin`, `lanes`, `f_slab`, `split`, `spine`, `grid`, `clamp`, `strike`, `nest`, `chamfer`, `tally` or `stencil_f`. A fixed set rather than a file path, so every option is one forge has drawn.                                |
 | `theme` | string | unset, drawing dark                               | The palette, by name. `dark` is the only one shipped so far; a second is its own pass, since every state colour needs a treatment that stays legible on the new background.                                                                                               |
 | `font`  | string | unset, drawing Fira Code for prose and code alike | The typeface, by name. Fira Code is vendored, bundled with the client and licensed OFL 1.1; `system` is the opt-out to the stacks the OS already has. `--ui` and `--mono` come from here rather than from the stylesheet, so this is the only place a typeface is chosen. |
-| `browser_idle_minutes` | integer | unset, meaning 20                      | The idle release: after this many minutes with no browser call, raise or lower, a named profile's creator is sent a heads-up over the socket's prompt channel. A live session gets the heads-up as a turn; a seat with no live session has nobody to tell, and its browser closes quietly instead. **The shared browser is never announced** - it closes quietly at the grace. **A hand-off waiting on the person always holds the profile** - it is neither warned about nor closed, and neither is a profile whose window is up. |
-| `browser_grace_minutes` | integer | unset, meaning 10                     | How long the browser lives past its idle bound unless it is used - for a named profile, after its heads-up. The close is a real close: logins and the profile stay, and the next call brings the browser back on the page you last saw - the CEF host keeps one page target, so there are no Brave-era tabs to restore - but a filled form does not survive it. **The clocks live in the client's memory**, so a client restart grants every browser a fresh window. |
 
 ## `[documents]`
 
@@ -666,8 +687,8 @@ nothing forge ships; this key picks by name, never by path`), because a
 setting that is quietly ignored reads as the key not working. Like the
 port checks, none of them run while the socket is disabled.
 
-`mark`, `theme`, `font` and the idle pair are a client's settings rather
-than the server's, and the socket carries them to a client on connect, so a
+`mark`, `theme` and `font` are a client's settings rather than the
+server's, and the socket carries them to a client on connect, so a
 client never reads `forge.toml` for itself and the file stays the one
 source of truth. The server draws none of them: the socket serves no page.
 
@@ -688,7 +709,7 @@ a misspelled `fallback_accounts` would otherwise read as "no
 fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[models."<name>"]`, `[handoff]` and
 `[orgs.projects.handoff]`, `[[slack]]`, `[gotify]`, `[systemone]`,
-`[gateway]`, `[dictate]`, `[plugins]`, `[server]` and `[client]`.
+`[gateway]`, `[dictate]`, `[plugins]`, `[server]`, `[browser]` and `[client]`.
 
 A key forge itself retired is a declared ghost rather than an unknown
 key, so a stale `forge.toml` still boots and warns instead of failing:
@@ -697,7 +718,10 @@ device`. In the tables above a stray key is a typo and is refused; a
 ghost is the exception,
 because its whole job is to accept what a live config still carries - so
 what a retired section holds is unconstrained and only the section
-itself warns.
+itself warns. The retired `[client]` keys `browser_idle_minutes` and
+`browser_grace_minutes` are ghosts in the same way: the server reads
+`[browser] idle_minutes` now, and an old config's pair is accepted with a
+warning rather than failing the load.
 
 **`[web]` is the one retired section that fails the load.** It is a
 declared ghost too, but a hard stop rather than a warning

@@ -299,12 +299,8 @@ export function fakeConnection() {
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     close: () => {},
-    onBrowserAsk: () => () => {},
-    browserRole: () => false,
-    browserRoleKnown: () => false,
-    onBrowserRole: () => () => {},
-    onProfilesChanged: () => () => {},
-    takeBrowserRole: () => {},
+    browserInput: () => false,
+    onBrowserFrame: () => () => {},
   };
 
   return {

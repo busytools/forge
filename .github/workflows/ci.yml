@@ -47,6 +47,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       client: ${{ steps.filter.outputs.client }}
       client_tauri: ${{ steps.filter.outputs.client_tauri }}
+      browser: ${{ steps.filter.outputs.browser }}
       scripts: ${{ steps.filter.outputs.scripts }}
       gate: ${{ steps.filter.outputs.gate }}
     steps:
@@ -85,6 +86,33 @@ jobs:
               - 'clippy.toml'
               - 'Cargo.toml'
               - 'rust-toolchain.toml'
+            # The macOS-only workspace half is the browser host, and only a
+            # macOS runner compiles it; a change here must run that job even
+            # when no client file moved. **The live gate is the server's
+            # browser_service test** over the workspace's browser port, so the
+            # files it compiles or drives are this job's paths too.
+            # **The list is forge-server's dependency graph**, because the
+            # macOS job compiles forge-server and its live test: every crate
+            # that may break that build runs it, and so does the lockfile
+            # that resolves them. forge-test-harness is not on this graph.
+            browser:
+              - 'crates/forge-browser/**'
+              - 'crates/forge-server/**'
+              - 'crates/forge-workspace/**'
+              - 'crates/forge-agent/**'
+              - 'crates/forge-gateway/**'
+              - 'crates/forge-connectors/**'
+              - 'crates/forge-dictate/**'
+              - 'crates/forge-capture/**'
+              - 'crates/forge-system-one/**'
+              - 'crates/forge-sdk/**'
+              - 'crates/forge-primitives/**'
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'rust-toolchain.toml'
+              - 'clippy.toml'
+              - 'scripts/**'
+              - '.config/nextest.toml'
             scripts:
               - 'scripts/**'
             gate:
@@ -124,9 +152,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The recipe is what runs the scripts' tests, so the step's composition
-      # has one home; `just` is here for it and for the client-dependency pin,
-      # which drives the recipe the gate runs.
+      # The vendor-patch test runs the patcher with node, at the version the
+      # repo pins in scripts/vendor_browser_stack.sh.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      # The recipe is what runs the scripts, so the step's composition has one
+      # home; `just` is here for it and for the client-dependency pin, which
+      # drives the recipe the gate runs.
       - uses: taiki-e/install-action@just
       - run: just script-tests
 
@@ -315,15 +348,16 @@ jobs:
       - run: just client-tauri-clippy
       - run: just client-tauri-test
 
-  # **The only job that compiles the engine.** The CEF module is macOS-only;
-  # the Linux job above proves the rest of the shell compiles and that the
-  # stub refuses by name, but no Ubuntu runner can compile the bridge, its
-  # render handler or its tests. This one does - the same two steps, on the
-  # platform the framework ships on.
+  # **The only jobs that compile the macOS-only halves.** The CEF code is
+  # macOS-gated on BOTH sides: the workspace's `forge-browser` (the host, its
+  # ring, the driver and the service) and the shell's native overlay. Ubuntu
+  # jobs prove the rest compiles and the stubs refuse by name, but no Linux
+  # runner can compile either half. This job does: the workspace's macOS-only
+  # crates in the server binary's configuration, then the shell's own steps.
   client-tauri-macos:
-    name: client shell (macOS, CEF)
+    name: client shell and browser host (macOS)
     needs: changes
-    if: needs.changes.outputs.client_tauri == 'true' || needs.changes.outputs.gate == 'true'
+    if: needs.changes.outputs.client_tauri == 'true' || needs.changes.outputs.browser == 'true' || needs.changes.outputs.scripts == 'true' || needs.changes.outputs.gate == 'true'
     runs-on: macos-14
     env:
       # cef-dll-sys unpacks the distribution under CEF_PATH/<version> and
@@ -334,13 +368,15 @@ jobs:
       # The distribution is what this job downloads: cef-dll-sys fetches a
       # 307 MB archive on a cold build. Keyed on the pinned cef-dll-sys
       # version rather than the lockfile, so an unrelated dependency move
-      # does not pay for the download again. The wrapper's cmake/ninja build
-      # stays in rust-cache below: that is target-dir output keyed by the
-      # lockfile, which is what rust-cache covers.
+      # does not pay for the download again. **The workspace's lock carries
+      # it**: the browser host is where CEF lives now, and the client's own
+      # lock no longer names it. The wrapper's cmake/ninja build stays in
+      # rust-cache below: that is target-dir output keyed by the lockfile,
+      # which is what rust-cache covers.
       - name: Read the pinned CEF version
         id: cef
         run: |
-          version=$(awk '/^name = "cef-dll-sys"$/{getline; sub(/^version = "/, ""); sub(/"$/, ""); print}' client/src-tauri/Cargo.lock)
+          version=$(awk '/^name = "cef-dll-sys"$/{getline; sub(/^version = "/, ""); sub(/"$/, ""); print}' Cargo.lock)
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
@@ -354,9 +390,38 @@ jobs:
         with:
           shared-key: cargo-${{ runner.os }}
           key: client-tauri
-          workspaces: client/src-tauri -> target
+          workspaces: |
+            . -> target
+            client/src-tauri -> target
       - uses: taiki-e/install-action@nextest
       - uses: taiki-e/install-action@just
+      # The server's browser host and the server arm that installs it: a
+      # compile error here passes every Ubuntu job.
+      - run: cargo check -p forge-browser -p forge-server --all-targets
+      # The host's own tests are macOS-gated, so the Ubuntu workspace job
+      # skips them by name; this is where they run. One of them identifies a
+      # host by the INSTALLED bundle's path, so this job stages one where
+      # `just install` would put it.
+      - run: cargo build -p forge-browser --bin forge-browser
+      - run: scripts/stage-browser-host.sh
+        env:
+          FORGE_BROWSER_BIN: target/debug/forge-browser
+      # `--run-ignored all` includes the host tests that need the installed
+      # bundle: the staged one above is at this crate's version, which is
+      # exactly what the service checks before launching.
+      - run: cargo nextest run -p forge-browser --all-features --run-ignored all
+      # **The fleet end to end**: the server's live browser test drives the
+      # staged host through the vendored driver. It needs the driver stack,
+      # which `just install` also vendors, and the host bundle staged above.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: scripts/vendor_browser_stack.sh
+        env:
+          FORGE_BROWSER_STACK_DIR: ${{ runner.temp }}/forge-browser-stack
+      - run: cargo nextest run -p forge-server --test browser_service --run-ignored ignored-only
+        env:
+          FORGE_BROWSER_TEST_STACK: ${{ runner.temp }}/forge-browser-stack
       - run: just client-tauri-clippy
       - run: just client-tauri-test
 
@@ -410,7 +475,7 @@ jobs:
               "docs": ("rust",),
               "client": ("client",),
               "client-tauri": ("client_tauri",),
-              "client-tauri-macos": ("client_tauri",),
+              "client-tauri-macos": ("client_tauri", "browser", "scripts"),
           }
 
           problems = []

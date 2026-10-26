@@ -1,8 +1,10 @@
 {
   "server_message": {
-    "BrowserAsk": "browser_ask",
-    "BrowserRole": "browser_role",
-    "BrowserSeats": "browser_seats",
+    "BrowserDownload": "browser_download",
+    "BrowserFileDialog": "browser_file_dialog",
+    "BrowserNavState": "browser_nav_state",
+    "BrowserSurfaceFailed": "browser_surface_failed",
+    "BrowserView": "browser_view",
     "CommitDiff": "commit_diff",
     "DocumentRead": "document_read",
     "Error": "error",
@@ -44,7 +46,6 @@
     "FileIndexChanged": "file_index_changed",
     "ForgeAccountIdentity": "forge_account_identity",
     "GotifyNotificationAppended": "gotify_notification_appended",
-    "Handoff": "handoff",
     "HistoryReplayed": "history_replayed",
     "HookObservation": "hook_observation",
     "McpOperationError": "mcp_operation_error",
@@ -98,6 +99,8 @@
   "command": {
     "AnswerDocumentHandOff": "answer_document_hand_off",
     "BrowserIdleWarning": "browser_idle_warning",
+    "BrowserProfileClose": "browser_profile_close",
+    "BrowserProfileDelete": "browser_profile_delete",
     "Cancel": "cancel",
     "CancelQueuedPrompt": "cancel_queued_prompt",
     "CloseSession": "close_session",
@@ -121,7 +124,6 @@
     "DictateStop": "dictate_stop",
     "DictateStream": "dictate_stream",
     "DictateUninstall": "dictate_uninstall",
-    "Handoff": "handoff",
     "MarketplaceAdd": "marketplace_add",
     "MarketplaceRepair": "marketplace_repair",
     "NewSession": "new_session",
@@ -157,36 +159,26 @@
     "UpsertReviewThread": "upsert_review_thread"
   },
   "client_message": {
-    "BrowserAnswer": "browser_answer",
-    "BrowserTakeRole": "browser_take_role",
+    "BrowserControl": "browser_control",
+    "BrowserDetach": "browser_detach",
+    "BrowserFileAnswer": "browser_file_answer",
+    "BrowserInput": "browser_input",
+    "BrowserNav": "browser_nav",
+    "BrowserProfileClose": "browser_profile_close",
+    "BrowserProfileDelete": "browser_profile_delete",
+    "BrowserProfiles": "browser_profiles",
+    "BrowserResize": "browser_resize",
+    "BrowserView": "browser_view",
     "Command": "command",
     "CommitDiff": "commit_diff",
     "DocumentRead": "document_read",
     "FileContent": "file_content",
     "More": "more",
     "SeatRange": "seat_range",
-    "Showing": "showing",
     "Subscribe": "subscribe",
     "Unsubscribe": "unsubscribe"
   },
   "payload_sampled": {
-    "BrowserAsk": {
-      "": [
-        "args",
-        "id",
-        "kind",
-        "seat",
-        "tool"
-      ],
-      "/args": [
-        "url"
-      ],
-      "/seat": [
-        "label",
-        "org",
-        "project"
-      ]
-    },
     "BrowserHandOffPending": {
       "": [
         "kind",
@@ -212,10 +204,29 @@
         "project"
       ]
     },
-    "BrowserRole": {
+    "BrowserNavState": {
       "": [
-        "hosting",
+        "can_back",
+        "can_forward",
+        "id",
         "kind"
+      ]
+    },
+    "BrowserSurfaceFailed": {
+      "": [
+        "id",
+        "kind",
+        "reason"
+      ]
+    },
+    "BrowserView": {
+      "": [
+        "controller",
+        "id",
+        "kind",
+        "profile",
+        "viewer",
+        "viewers"
       ]
     },
     "ChatAppended": {
@@ -611,8 +622,6 @@
         "version"
       ],
       "/settings": [
-        "browser_grace_minutes",
-        "browser_idle_minutes",
         "dictate",
         "font",
         "mark",
@@ -864,9 +873,7 @@
         "ready"
       ],
       "/data/accounts/loading[]": [
-        "at_cap",
         "auth",
-        "cooling",
         "display_name",
         "last_error",
         "retry_after",
@@ -966,17 +973,90 @@
     }
   },
   "client_sampled": {
-    "BrowserAnswer": {
+    "BrowserDetach": {
       "": [
-        "error",
-        "id",
+        "kind"
+      ]
+    },
+    "BrowserInput": {
+      "": [
+        "event",
         "kind",
-        "parts"
+        "seq"
       ],
-      "/parts[]": [
-        "mime_type",
-        "text",
-        "type"
+      "/event": [
+        "action",
+        "button",
+        "clicks",
+        "kind",
+        "modifiers",
+        "x",
+        "y"
+      ],
+      "/event/modifiers": [
+        "alt",
+        "control",
+        "meta",
+        "shift"
+      ]
+    },
+    "BrowserProfileClose": {
+      "": [
+        "kind",
+        "name",
+        "reply_to",
+        "seat"
+      ],
+      "/seat": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "BrowserProfileDelete": {
+      "": [
+        "kind",
+        "name",
+        "reply_to",
+        "seat"
+      ],
+      "/seat": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "BrowserProfiles": {
+      "": [
+        "kind",
+        "reply_to",
+        "seat"
+      ],
+      "/seat": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "BrowserResize": {
+      "": [
+        "height",
+        "kind",
+        "scale",
+        "width"
+      ]
+    },
+    "BrowserView": {
+      "": [
+        "kind",
+        "profile",
+        "reply_to",
+        "seat"
+      ],
+      "/seat": [
+        "label",
+        "org",
+        "project"
       ]
     },
     "DocumentRead": {
@@ -1022,8 +1102,6 @@
     "Subscribe": {
       "": [
         "answering",
-        "browser",
-        "declare",
         "kind",
         "what"
       ]
@@ -1108,17 +1186,19 @@
   },
   "binary_frames": {
     "header_bytes": 1,
-    "image_header_bytes": 9,
     "max_payload_bytes": 16384,
-    "max_image_bytes": 16777216,
     "kinds": [
       {
         "name": "Dictation",
         "tag": 0
       },
       {
-        "name": "BrowserImage",
+        "name": "BrowserFrame",
         "tag": 1
+      },
+      {
+        "name": "BrowserAudio",
+        "tag": 2
       }
     ],
     "fixtures": {
@@ -1135,15 +1215,9 @@
           0.125
         ]
       },
-      "browser_image": {
-        "hex": "01010203040506070889504e47",
-        "id": "72623859790382856",
-        "bytes": [
-          137,
-          80,
-          78,
-          71
-        ]
+      "browser_frame": {
+        "hex": "01010203",
+        "refusal": "kind tag 1 is a frame the server sends, not one a client does"
       }
     }
   }

@@ -146,12 +146,6 @@
           listeners.delete(fn);
         };
       },
-      // The browser row reads the role as it draws and subscribes to it -
-      // without these the whole strip throws on the /fixture route.
-      browserRole: () => false,
-      onBrowserRole: () => () => undefined,
-      onProfilesChanged: () => () => undefined,
-      takeBrowserRole: () => undefined,
       onStatus: () => () => undefined,
       store: () => undefined,
       settings: () => null,
@@ -364,7 +358,6 @@
     <div class="surf devfoot">
       <Pinned
         info={pinnedRow.of(subjectKey({ session: canned.page.slot }))}
-        connection={canned.held.connection}
         slot={canned.page.slot}
       />
     </div>
