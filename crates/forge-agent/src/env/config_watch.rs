@@ -159,12 +159,19 @@ mod tests {
     const WAIT: Duration = Duration::from_secs(5);
     const QUIET: Duration = Duration::from_millis(800);
 
-    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, UnboundedReceiver<()>, ConfigWatch) {
+    async fn fixture() -> (tempfile::TempDir, std::path::PathBuf, UnboundedReceiver<()>, ConfigWatch)
+    {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("forge.toml");
         std::fs::write(&path, "initial = true\n").expect("write config");
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let watch = watch(path.clone(), tx).expect("watch starts");
+        // The write that created the file can mint its event just after the
+        // stream starts. Rewrite once and drain that burst, so each test
+        // begins from a quiet watch rather than racing the fixture's own
+        // write.
+        std::fs::write(&path, "initial = true\n").expect("settle write");
+        let _ = tokio::time::timeout(WAIT, rx.recv()).await;
         (dir, path, rx, watch)
     }
 
@@ -174,7 +181,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_plain_write_notifies_once() {
-        let (_dir, path, mut rx, _watch) = fixture();
+        let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "changed = 1\n").expect("write");
         assert!(next(&mut rx).await, "a write to the watched file notifies");
         assert!(
@@ -185,7 +192,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_atomic_save_notifies_and_the_watch_survives_the_rename() {
-        let (_dir, path, mut rx, _watch) = fixture();
+        let (_dir, path, mut rx, _watch) = fixture().await;
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, "replaced = 1\n").expect("write temp");
         std::fs::rename(&tmp, &path).expect("rename over the config");
@@ -200,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn two_rapid_writes_coalesce_into_one() {
-        let (_dir, path, mut rx, _watch) = fixture();
+        let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "first = 1\n").expect("first write");
         std::fs::write(&path, "second = 1\n").expect("second write");
         assert!(next(&mut rx).await, "the burst notifies");
@@ -212,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sibling_file_notifies_nothing() {
-        let (_dir, path, mut rx, _watch) = fixture();
+        let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(path.with_file_name("other.toml"), "sibling = 1\n").expect("sibling");
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
@@ -222,7 +229,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_deleted_file_still_notifies_and_its_return_applies() {
-        let (_dir, path, mut rx, _watch) = fixture();
+        let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::remove_file(&path).expect("remove");
         assert!(
             next(&mut rx).await,
