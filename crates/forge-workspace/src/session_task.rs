@@ -850,9 +850,8 @@ impl SessionTask {
                     request: wire_request,
                 });
                 // Spawned for both outcomes: the forwarder is the only
-                // consumer of `response_rx`, so a `Cancelled` sent below
-                // would reach a dropped receiver and leave the bridge
-                // waiting for ever.
+                // consumer of `response_rx`, so without it a `Cancelled`
+                // sent below is discarded and the bridge waits for ever.
                 spawn_permission_response_forwarder(
                     Arc::clone(&self.handle),
                     response_rx,
@@ -908,9 +907,8 @@ impl SessionTask {
                     request: wire_request,
                 });
                 // Spawned for both outcomes: the forwarder is the only
-                // consumer of `response_rx`, so a `Cancelled` sent below
-                // would reach a dropped receiver and leave the bridge
-                // waiting for ever.
+                // consumer of `response_rx`, so without it a `Cancelled`
+                // sent below is discarded and the bridge waits for ever.
                 spawn_question_response_forwarder(
                     Arc::clone(&self.handle),
                     response_rx,
@@ -7216,8 +7214,10 @@ mod tests {
             "the orphaned permission answers the bridge Cancelled, got {cmd:?}",
         );
         assert!(
-            agent_rx.try_recv().is_err(),
-            "the orphaned permission forwards exactly one response",
+            tokio::time::timeout(std::time::Duration::from_millis(200), agent_rx.recv())
+                .await
+                .is_err(),
+            "a second permission response is the duplicate this catches",
         );
     }
 
@@ -7284,8 +7284,10 @@ mod tests {
             "the orphaned question answers the bridge Cancelled, got {cmd:?}",
         );
         assert!(
-            agent_rx.try_recv().is_err(),
-            "the orphaned question forwards exactly one response",
+            tokio::time::timeout(std::time::Duration::from_millis(200), agent_rx.recv())
+                .await
+                .is_err(),
+            "a second question response is the duplicate this catches",
         );
     }
 
