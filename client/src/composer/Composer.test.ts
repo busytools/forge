@@ -5729,6 +5729,40 @@ describe('the dock', () => {
     });
   });
 
+  /** **Words that never left are not a message to read.** A send the socket
+   *  refused used to answer `feedback` anyway, telling the session to read a
+   *  prompt nobody sent and ending the park on nothing; the dock stays live,
+   *  so the reader can press send again when the socket is back. */
+  it('keeps the hand-off parked when the feedback never left', () => {
+    const shared = wire();
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+
+    shared.down = true;
+    send.click();
+    flushSync();
+    expect(commands(harness), 'the refused send answers nothing').toEqual([]);
+
+    shared.down = false;
+    send.click();
+    flushSync();
+    expect(
+      commands(harness).map((command) => Object.keys(command)[0]),
+      'and the retry sends the words and then the ending',
+    ).toEqual(['prompt_under', 'respond_browser_hand_off']);
+  });
+
   /** **A key inside the raised takeover is the page's, not the dock's.** The
    *  native overlay holds the keyboard while the surface is up, and a key the
    *  bar itself receives must not reach the dock's refusal - Escape in a

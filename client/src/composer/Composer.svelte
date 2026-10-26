@@ -1138,7 +1138,11 @@
         slot,
       );
     } catch (error) {
+      // **Nothing left, so there is nothing to read.** Answering feedback here
+      // would tell the session to read a message that never went, and the
+      // park would end on words nobody sent; the dock stays live to retry.
       report('the feedback was not sent', error);
+      return;
     }
     takeoverAnswer('feedback');
   }
