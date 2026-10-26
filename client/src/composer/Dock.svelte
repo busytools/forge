@@ -707,6 +707,14 @@
   const inField = (event: KeyboardEvent): boolean =>
     event.target instanceof HTMLElement && event.target.closest('[data-editor="dock"]') !== null;
 
+  /**
+   * Whether a key landed in the marked option's preview, which is a scroller
+   * before it is anything else. By its own mark rather than its class, for the
+   * reason `inField` gives.
+   */
+  const inPreview = (event: KeyboardEvent): boolean =>
+    event.target instanceof HTMLElement && event.target.closest('[data-preview]') !== null;
+
   /** The keys a dock answers to, which are the ones that can do what they say. */
   function onkey(event: KeyboardEvent): void {
     // **A button answers its own keys.** The row model's Enter and Space are
@@ -717,6 +725,9 @@
     if (event.target instanceof HTMLButtonElement && (event.key === 'Enter' || event.key === ' ')) {
       return;
     }
+    // The preview owns the keys that scroll it while it has the keyboard: a
+    // reader there is reading rather than answering. Escape is still the dock's.
+    if (inPreview(event) && event.key !== 'Escape') return;
     if (event.key === 'Escape' && take !== null) {
       // A live take owns the first Escape: it is abandoned and the dock stands,
       // which is the same rule the view this client replaced applied to the
@@ -1101,7 +1112,19 @@
            rendered as markdown rather than shown as its source - the same
            renderer the conversation's prose uses, which escapes what it is
            handed. -->
-        <div class="preview"><Prose text={markedRow.preview} /></div>
+        <!-- **A tab stop, because it is a document.** The sheet bounds it and
+           scrolls it, so the keys that read the rest of it have to reach it. It
+           is not a widget, so it takes no widget role for being focusable. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+          class="preview opt-preview"
+          tabindex="0"
+          role="region"
+          aria-label="the marked option's preview"
+          data-preview
+        >
+          <Prose text={markedRow.preview} />
+        </div>
       {/if}
     {/if}
 

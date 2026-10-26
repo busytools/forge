@@ -3178,6 +3178,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    the renderer's own `.prose` rules set the type inside. */
 .dock .preview { border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-size: var(--fs-data); color: var(--muted); }
+/* The marked option's preview is a DOCUMENT, so it is bounded and scrolls in
+   place: unbound, forty lines of issue body grew the composer lane past the
+   window and `.session-page` clips its grid. The bound leaves the option list
+   and the key line their room. */
+.dock .preview.opt-preview { max-height: min(34vh, 320px); overflow-y: auto; }
 /* The escape hatch is the row's own box, so the field carries no chrome of
    its own: no border, no second panel, no indent - the caret sits in the row
    under its own words, and what is typed there is the answer. */
