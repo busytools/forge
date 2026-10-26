@@ -2474,7 +2474,6 @@ mod tests {
             fill_percent: Some(85),
             total_tokens: Some(850_000),
             max_tokens: Some(1_000_000),
-            compaction_count: 0,
             at_percent: 85,
             brief: forge_primitives::HandoffBrief::default(),
             transcript_path: "/tmp/old.jsonl".to_owned(),

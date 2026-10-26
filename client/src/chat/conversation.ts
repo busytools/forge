@@ -32,6 +32,7 @@ import type { SessionSlot } from '../wire/types';
 import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
+import { stripEscapes } from './text';
 import {
   carriedValue,
   completionText,
@@ -1031,6 +1032,35 @@ function holdsImageResult(turn: Turn): boolean {
       return result.content.some((inner) => (inner as { type?: unknown } | null)?.type === 'image');
     }),
   );
+}
+
+/**
+ * The continuation prompt a compaction leaves behind, which nobody typed.
+ *
+ * It arrives as a user frame right after the boundary frame; the transcript
+ * fold keeps it in the boundary's turn (`is_continuation` in
+ * `conversation_turns.rs`), so the live path has to place it there too.
+ */
+function isContinuationPrompt(message: unknown): boolean {
+  if ((message as { type?: unknown } | null)?.type !== 'user') return false;
+  return blocksIn(message).some((block) => {
+    const held = block as { type?: unknown; text?: unknown } | null;
+    return (
+      held?.type === 'text' &&
+      typeof held.text === 'string' &&
+      stripEscapes(held.text).startsWith(
+        'This session is being continued from a previous conversation',
+      )
+    );
+  });
+}
+
+/** Whether a turn holds the boundary a compaction left, which its continuation belongs beside. */
+function holdsBoundary(turn: Turn): boolean {
+  return turn.messages.some((held) => {
+    const frame = held as { type?: unknown; subtype?: unknown } | null;
+    return frame?.type === 'system' && frame.subtype === 'compact_boundary';
+  });
 }
 
 /** Whether a turn holds the `Skill` call a body of `name` belongs to. */
@@ -3639,9 +3669,18 @@ export class Chat {
       // - a turn the frames built stays live for good (#1486), so a row that
       // carries the frame it ended on is over whatever the flags say, and a
       // prompt arriving after it must still open the next turn's row.
+      //
+      // **And a compaction's continuation is the exception**, in the fold and
+      // here alike: it belongs in the turn holding its boundary, so a turn of
+      // its own would draw the boundary's row and a second, summary-only one.
       const writing = last !== undefined && beingWritten(last) && !carriesResult(last);
+      const joinsBoundary =
+        last !== undefined && isContinuationPrompt(message) && holdsBoundary(last);
       const opens =
-        draws && !isSystem(message) && (last === undefined || (!writing && opensATurn(message)));
+        draws &&
+        !isSystem(message) &&
+        !joinsBoundary &&
+        (last === undefined || (!writing && opensATurn(message)));
       // **The core's own line is the one `system` frame that opens a row**, and
       // only where there is no turn to join. Its only copy is this frame - the
       // CLI wrote none - so on a seat with no turn yet, which is every fresh

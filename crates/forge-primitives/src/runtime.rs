@@ -348,20 +348,6 @@ pub struct ApiRetryUpdate {
     pub error: ApiRetryError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    Compacting,
-    Idle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionTrigger {
-    Manual,
-    Auto,
-}
-
 /// Why a turn ended - surfaced by `AgentEvent::TurnComplete` /
 /// `TurnError` to the UI for status-line classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -648,6 +648,44 @@ describe('the session page over a socket', () => {
   });
 
   /**
+   * **A boundary arriving live moves the figure.** The count is the
+   * conversation's, and a `chat_appended` carrying a boundary is that
+   * conversation compacting - the same event a read counts off the transcript.
+   * A record that only takes the count from a read leaves a session that
+   * compacts while open showing the figure it had before, with no jump to the
+   * cut, until the reader reconnects.
+   */
+  it('moves the compaction figure when a boundary arrives live', async () => {
+    await open(sessionFixture);
+    expect(
+      document.querySelector('.sess .facts')?.textContent ?? '',
+      'precondition: the fixture has taken no compaction',
+    ).not.toContain('compaction');
+
+    const socket = server;
+    if (socket === null) throw new Error('the harness has no server');
+    socket.push({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'system',
+            subtype: 'compact_boundary',
+            uuid: 'compact-live',
+            compact_metadata: { trigger: 'auto', pre_tokens: 10, post_tokens: 2 },
+          },
+        },
+      },
+    });
+
+    await until(
+      () => (document.querySelector('.sess .facts')?.textContent ?? '').includes('1 compaction'),
+      'the header to draw the compaction the live boundary announced',
+    );
+  });
+
+  /**
    * The rail comes from the home subject, which the shell holds for its whole
    * life - so this is also the assertion that the page reads two subjects and
    * not one.

@@ -1552,7 +1552,7 @@ impl SessionTask {
     ///
     /// A compaction boundary bumps the count rather than the frame list: the
     /// CLI's boundary frame is a `ChatAppended` like any other and stays in
-    /// the conversation, and the count is what a view draws its marker from.
+    /// the conversation, and the count is what the header reads.
     ///
     /// **And the copy is a window, not the run.** Its one reader cuts it to
     /// the newest turns, so a session up for days would otherwise carry a run
@@ -2173,7 +2173,6 @@ impl SessionTask {
             });
             return;
         };
-        let compaction_count = self.conversation.as_ref().map_or(0, |(_, count)| *count);
         let policy = workspace.handoff_policy_for(&self.key);
         let cwd = workspace.cwd_for_session(&self.key).unwrap_or_default();
         // Minted, not recorded: the id reaches the slot's row on Connected.
@@ -2203,7 +2202,6 @@ impl SessionTask {
             token,
             reason,
             fill,
-            compaction_count,
             at_percent: policy.at_percent,
             role,
             account: self.handle.display_name(),
@@ -4565,7 +4563,6 @@ mod tests {
                 fill_percent: Some(85),
                 total_tokens: Some(850_000),
                 max_tokens: Some(1_000_000),
-                compaction_count: 0,
                 at_percent: 85,
                 brief: forge_primitives::HandoffBrief::default(),
                 transcript_path: "/tmp/old.jsonl".to_owned(),
@@ -4622,7 +4619,6 @@ mod tests {
                 fill_percent: Some(85),
                 total_tokens: Some(850_000),
                 max_tokens: Some(1_000_000),
-                compaction_count: 0,
                 at_percent: 85,
                 brief: forge_primitives::HandoffBrief::default(),
                 transcript_path: "/tmp/old.jsonl".to_owned(),
