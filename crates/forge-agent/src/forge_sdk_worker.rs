@@ -3238,9 +3238,8 @@ mod tests {
     #[test]
     fn the_conduct_block_carries_the_client_dictation_rule() {
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "Every text box a client draws carries dictation"
-            ),
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Every text box a client draws carries dictation"),
             "the client dictation rule is pinned",
         );
         assert!(
