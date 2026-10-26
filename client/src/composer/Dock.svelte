@@ -708,9 +708,9 @@
     event.target instanceof HTMLElement && event.target.closest('[data-editor="dock"]') !== null;
 
   /**
-   * Whether a key landed in the marked option's preview, which is a scroller
-   * before it is anything else. By its own mark rather than its class, for the
-   * reason `inField` gives.
+   * Whether a key landed in a preview panel, which is a scroller before it is
+   * anything else. By its own mark rather than its class, for the reason
+   * `inField` gives.
    */
   const inPreview = (event: KeyboardEvent): boolean =>
     event.target instanceof HTMLElement && event.target.closest('[data-preview]') !== null;
@@ -907,6 +907,20 @@
     </div>
   {/snippet}
 
+  <!-- **A preview is a document, so it is one region.** Both the marked
+       option's prose and a held Slack post are markdown the reader is being
+       asked to approve, and both are the same panel as a result: the sheet
+       bounds it and gives it its own scroll, and this is the one place that
+       panel is drawn. **A tab stop, because it is a document**: the keys that
+       read the rest of it have to reach it. It is not a widget, so it takes
+       no widget role for being focusable. -->
+  {#snippet previewRegion(label: string, text: string)}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div class="preview" tabindex="0" role="region" aria-label={label} data-preview>
+      <Prose {text} />
+    </div>
+  {/snippet}
+
   {#if collapsed}
     <!-- The bar: the question and the count behind it, and that is all - a
          click (or Enter/Space on it) unfolds the body so the reader can see
@@ -1017,7 +1031,7 @@
          markdown renderer and the same panel: Slack text IS markdown, the
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
-      <div class="preview"><Prose text={ask.request.text} /></div>
+      {@render previewRegion('the post held for approval', ask.request.text)}
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1118,19 +1132,7 @@
            rendered as markdown rather than shown as its source - the same
            renderer the conversation's prose uses, which escapes what it is
            handed. -->
-        <!-- **A tab stop, because it is a document.** The sheet bounds it and
-           scrolls it, so the keys that read the rest of it have to reach it. It
-           is not a widget, so it takes no widget role for being focusable. -->
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <div
-          class="preview opt-preview"
-          tabindex="0"
-          role="region"
-          aria-label="the marked option's preview"
-          data-preview
-        >
-          <Prose text={markedRow.preview} />
-        </div>
+        {@render previewRegion("the marked option's preview", markedRow.preview)}
       {/if}
     {/if}
 
