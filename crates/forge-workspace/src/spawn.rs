@@ -9540,6 +9540,20 @@ mod lead_charter_tests {
         }
     }
 
+    /// Every client text box takes dictation, and a lead planning client
+    /// work names the mechanism with the box - pinned so a charter rewrite
+    /// keeps the rule beside the mockup step it applies from.
+    #[test]
+    fn the_charter_carries_the_dictation_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "the plan names dictation for every text box it adds - `DictateControl` beside \
+                 the box"
+            ),
+            "the dictation rule and its control are pinned",
+        );
+    }
+
     /// A defect the review or the look of a cut surfaces belongs to that
     /// cut, not to the board: the lead fixes it in line with the worker
     /// frozen, and only work outside the cut gets a row. Pinned because
