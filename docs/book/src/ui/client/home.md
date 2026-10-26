@@ -197,7 +197,8 @@ and computes none.
 **Watched is not the same as subscribed.** This client keeps every seat it
 has visited subscribed, so the seat's frames keep arriving after its page
 closes - but a subscription is not a showing: the client tells the server
-which seat is on screen, and only that spends the seat's marks. A turn
+which seat is on screen, and that is what spends the seat's diamond and
+failure mark. A prompt sent to the seat spends its death trace too. A turn
 that finishes on a visited seat nobody is drawing therefore arms its
 diamond, and opening the seat spends it; the subscription is what keeps
 the return instant, not what clears the mark.

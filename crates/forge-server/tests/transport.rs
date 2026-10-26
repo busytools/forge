@@ -2334,11 +2334,7 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
 
     let attached = {
         let mut leaving = connect(&url).await;
-        send(
-            &mut leaving,
-            ClientMessage::Subscribe { what: Subject::Home, answering: true },
-        )
-        .await;
+        send(&mut leaving, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
         snapshot_answering(&mut leaving).await;
         // A completion with nobody showing the seat arms its diamond. Showing
         // the seat spends it and answers with the home, which is the ack that

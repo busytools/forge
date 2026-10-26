@@ -189,10 +189,10 @@ impl ViewSurface {
     /// spent, which is the connection's cue to re-encode the home it holds.
     ///
     /// **Called when the connection's showing and its subscription meet**,
-    /// from whichever half lands second: the web sends its subscribe before
-    /// `Showing` and the desktop's resume sends `Showing` before the
-    /// subscribe, so a showing alone is remembered rather than spent until
-    /// the seat is actually watched.
+    /// from whichever half lands second. Both clients subscribe first on a
+    /// resume, but the route effect that sends `Showing` races the page's
+    /// mount, so a showing alone is remembered rather than spent until the
+    /// seat is actually watched.
     ///
     /// Called after the seat's own snapshot was encoded, deliberately: the
     /// read that spends the mark is the read that shows it.

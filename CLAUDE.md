@@ -222,7 +222,7 @@ CLI's catalogue of the agent types that exist, not a record of the ones
 that ran: an instance's cards and the calls under them are folded from
 the conversation it appears in. Two refreshes ask the core for a new
 snapshot - `refresh_context_usage`, asked on a seat's read, on a turn
-finishing on a seat a page holds, and on a compaction settling, and
+finishing on a seat a page shows, and on a compaction settling, and
 `refresh_mcp_snapshot`, asked on the seat's read when it reports no
 snapshot. A read a further view
 would want goes on that surface; a read only one view makes stays a plain

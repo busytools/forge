@@ -24,12 +24,12 @@ peer that vanished without closing would otherwise read nothing for ever,
 and the viewer it attached as would stay counted on its tab. The pair
 is chosen rather than measured. Every WebSocket client answers a ping
 itself, so a client needs no code for this; one that stops answering is
-disconnected. **What its reconnect must do is the client's own rule, and a
-seat's is different from every other subject's**: forge's clients re-ask the
-non-seat subjects they hold and re-attach only the seat they have on screen,
-leaving the rest stale until their next click - and a client that re-asks the
-seat it is showing must re-send `Showing` too, because the server's showing
-died with the old connection and nothing else would spend the seat's marks.
+disconnected. **What a reconnect must do is the client's own rule, and a
+seat is not like every other subject**: forge's clients re-ask the non-seat
+subjects they hold and re-attach only the seat they have on screen, leaving
+the rest stale until their next click - and a client re-attaching the seat
+it is showing must re-send `Showing` too, because the server's showing died
+with the old connection and nothing else would spend the seat's marks.
 
 **One frame write is bounded too.** The server ends a connection when a
 single write takes longer than 60 seconds: a peer that stopped reading
@@ -226,8 +226,8 @@ driver's captured chooser (or CEF's own dialog when no driver is attached).
 **Only the controller may answer, and only the id the page's outstanding ask
 names**; anything else is refused before a byte is written.
 An empty list is a dismiss; past 16 files or 8 MiB the whole answer is a
-dismiss - 8 because base64 of more than that lands past the 16 MiB inbound
-bound, and a cap that tears the connection is worse than a dismiss.
+dismiss: base64 of anything larger would land past the 16 MiB inbound
+bound, and a cap that tears the connection off is worse than a dismiss.
 
 **`browser_tabs {seat, reply_to}`** - the strip's rows for one seat: the tabs
 of the profile its org and project resolve to. **The answer rides the

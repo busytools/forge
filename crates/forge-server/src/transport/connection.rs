@@ -54,11 +54,12 @@ struct Watching {
     showing: Option<SessionSlot>,
     /// Whether the connection holds the showing's attach on [`Live`].
     ///
-    /// **The two halves arrive in either order**: the web sends its subscribe
-    /// before `showing`, and the desktop's resume sends `showing` before the
-    /// subscribe. A mark is spent only when the pair is complete, so the
-    /// showing that lands first is remembered and the subscribe that
-    /// completes it spends - never both, or the count would be two.
+    /// **The two halves can arrive in either order.** Both clients subscribe
+    /// first on a resume, but the route effect that sends `showing` races the
+    /// page's mount, so a showing can still land before its subscribe. A mark
+    /// is spent only when the pair is complete: the showing that lands first
+    /// is remembered and the subscribe that completes it spends - never both,
+    /// or the count would be two.
     showing_attached: bool,
 }
 
@@ -4854,6 +4855,27 @@ mod tests {
         until(|| home_snapshots(written) == 1, "the home's first read").await;
     }
 
+    /// Subscribe the home AGAIN as an ordering barrier: one socket is handled
+    /// in order, so any frame written before this ask is written before its
+    /// answer - which lets a test assert an ABSENCE without a sleep.
+    async fn subscribed_home_again(
+        to_server: &mpsc::UnboundedSender<Message>,
+        written: &Arc<Mutex<Vec<ServerMessage>>>,
+    ) {
+        let before = home_snapshots(written);
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Home,
+                    answering: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        until(|| home_snapshots(written) == before + 1, "the barrier home read").await;
+    }
+
     /// Whether a seat's snapshot has been written.
     fn seat_read(written: &Arc<Mutex<Vec<ServerMessage>>>) -> bool {
         written.lock().expect("the frame log").iter().any(|frame| {
@@ -4964,17 +4986,31 @@ mod tests {
         subscribed_home(&to_server, &written).await;
         subscribed(&to_server, &slot);
         until(|| seat_read(&written), "the seat's snapshot").await;
-        arm_diamond(&state, &slot);
 
         showing(&to_server, Some(slot.clone()));
-        until(|| home_snapshots(&written) == 2, "the home refresh a spent mark owes").await;
+        until(
+            || Live::lock(&state.live).is_attached(&slot),
+            "the first showing to attach the seat",
+        )
+        .await;
+
+        // **A failure armed BETWEEN the two showings is what makes this
+        // discriminating**: with the early return deleted, the repeat
+        // detaches and re-attaches, finds this mark and re-encodes the home -
+        // with only a diamond armed before the first, a second spend finds
+        // nothing and every assertion passes either way.
+        let domain = fleet.workspace().register_domain_session(slot.clone(), None);
+        domain.lock().failed_turn_at = Some(std::time::SystemTime::now());
 
         showing(&to_server, Some(slot.clone()));
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // A second home read is the barrier: one socket is handled in order,
+        // so a home frame the repeat produced would be written before this
+        // answer. The count is the initial read plus the barrier's own.
+        subscribed_home_again(&to_server, &written).await;
         assert_eq!(
             home_snapshots(&written),
             2,
-            "a repeat showing spent a mark and re-encoded the home again",
+            "a repeat showing spent the failure mark and re-encoded the home",
         );
         assert!(Live::lock(&state.live).is_attached(&slot), "the seat was detached");
 
@@ -4982,8 +5018,8 @@ mod tests {
         let _ = driven.await;
     }
 
-    /// **A showing with no subscribe to pair it with spends nothing.** The
-    /// desktop's resume sends `showing` before the seat's subscribe, so the
+    /// **A showing with no subscribe to pair it with spends nothing.** A page
+    /// whose route effect runs before its mount sends `showing` first, so the
     /// showing is remembered; the subscribe that completes the pair is what
     /// attaches, once.
     #[tokio::test]
@@ -5000,14 +5036,17 @@ mod tests {
         arm_diamond(&state, &slot);
 
         showing(&to_server, Some(slot.clone()));
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // The barrier proves the showing spent nothing BEFORE the seat's own
+        // subscribe completes the pair: a home frame it produced would be
+        // written ahead of this answer on the same socket.
+        subscribed_home_again(&to_server, &written).await;
         assert!(
             !Live::lock(&state.live).is_attached(&slot),
             "a showing for an unwatched seat attached it",
         );
         assert_eq!(
             home_snapshots(&written),
-            1,
+            2,
             "a showing with no read served spent the mark anyway",
         );
 
@@ -5018,7 +5057,7 @@ mod tests {
             "the subscribe completing the pair to attach it",
         )
         .await;
-        until(|| home_snapshots(&written) == 2, "the home refresh a spent mark owes").await;
+        until(|| home_snapshots(&written) == 3, "the home refresh a spent mark owes").await;
 
         drop(to_server);
         let _ = driven.await;
