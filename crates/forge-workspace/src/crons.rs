@@ -25,6 +25,14 @@ use crate::workspace::Workspace;
 /// granularity matches the cron-expression resolution.
 const CRON_TICK_INTERVAL: Duration = Duration::from_secs(60);
 
+/// The gap between warnings while one cooling episode lasts; the ticks in
+/// between repeat at `debug`.
+const COOLING_REWARN_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// India Standard Time's offset from UTC, the clock a reader of the
+/// notice is on.
+const IST_OFFSET_MINUTES: i64 = 5 * 60 + 30;
+
 /// A cron prompt buffered for a sleeping slot: the raw prompt plus whether
 /// this fire is overdue (delivered with a missed marker on drain), and the
 /// entry's identity, which the drained echo names.
@@ -284,6 +292,8 @@ impl Workspace {
         // What THIS pass finds unwakeable, committed at the end so the set
         // holds only the latest pass's answer.
         let mut still_unwakeable = std::collections::HashSet::new();
+        // What THIS pass still found cooling, and when each last warned.
+        let mut still_cooling = std::collections::HashMap::new();
         for id in &due {
             let Some(cron) = snapshot.iter().find(|c| &c.id == id) else { continue };
             // Overdue by more than two ticks: forge or the session was down
@@ -364,6 +374,60 @@ impl Workspace {
                          stays due",
                     );
                 }
+                // Every account serving the project's model is cooling:
+                // the fire stays due, and the reason is said once per
+                // episode rather than on every tick of it.
+                CronFireOutcome::DeferredCooling { cooling } => {
+                    let reset = cooling_reset_text(cooling.reset_in, now);
+                    let warned_before = self.cron_cooling_warned_at(id);
+                    let warn_now = warned_before.is_none_or(|at| {
+                        now.duration_since(at).unwrap_or(Duration::ZERO) >= COOLING_REWARN_INTERVAL
+                    });
+                    if warn_now {
+                        tracing::warn!(
+                            target: "forge_workspace::crons",
+                            event_name = "cron_deferred_cooling",
+                            project = %cron.project_name,
+                            cron_id = %id,
+                            label = cron.team_role.as_deref().unwrap_or("lead"),
+                            org = %cooling.org,
+                            model = %cooling.model,
+                            cooling_accounts = cooling.tried,
+                            reset_in_secs = cooling.reset_in.as_secs(),
+                            resets_at = %reset,
+                            "cron fire deferred: every account serving this project's model is \
+                             cooling, so the wake would be refused; it stays due and retries",
+                        );
+                        let _ = self.update_tx.send(SessionUpdate::ServiceStatus {
+                            severity:
+                                forge_primitives::cloud::service_status::ServiceSeverity::Warning,
+                            message: format!(
+                                "Cron in '{}' deferred: no account serving {} in {} is free \
+                                 ({} account(s) cooling in the org); resets at {reset}",
+                                cron.project_name, cooling.model, cooling.org, cooling.tried,
+                            ),
+                        });
+                    } else {
+                        tracing::debug!(
+                            target: "forge_workspace::crons",
+                            event_name = "cron_deferred_cooling",
+                            project = %cron.project_name,
+                            cron_id = %id,
+                            label = cron.team_role.as_deref().unwrap_or("lead"),
+                            org = %cooling.org,
+                            model = %cooling.model,
+                            cooling_accounts = cooling.tried,
+                            reset_in_secs = cooling.reset_in.as_secs(),
+                            resets_at = %reset,
+                            "cron fire still deferred by the same cooling; the warning for this \
+                             episode already names it",
+                        );
+                    }
+                    // A repeat carries the earlier warning's time forward,
+                    // so the floor counts from that warning, not this tick.
+                    let warned_at = warned_before.filter(|_| !warn_now).unwrap_or(now);
+                    still_cooling.insert(id.clone(), warned_at);
+                }
                 // Command channel closed (shutting down): leave the cron
                 // due so the next boot catch-up re-fires it - don't consume
                 // a fire that never handed off.
@@ -387,8 +451,10 @@ impl Workspace {
         }
         // Commit this pass. Anything not in it - fired, advanced, deleted
         // or simply not due - keeps no marker, so the next time it is
-        // unwakeable the warning is a WARN again.
+        // unwakeable the warning is a WARN again, and the next cooling
+        // episode is a new one.
         self.cron_unwakeable_commit(still_unwakeable);
+        self.cron_cooling_commit(still_cooling);
     }
 
     /// Spawn the cron scheduler: a background task that wakes every
@@ -418,6 +484,40 @@ impl Workspace {
             }
             .instrument(span),
         );
+    }
+}
+
+/// The reset a deferred cron names: the wall clock in IST plus the wait
+/// ahead, so a reader needs no arithmetic on a duration. A reset no
+/// clock can spell falls back to the wait alone rather than panicking
+/// the scheduler.
+fn cooling_reset_text(reset_in: Duration, now: std::time::SystemTime) -> String {
+    let ist = now
+        .checked_add(reset_in)
+        .and_then(|at| at.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+        .and_then(|since_epoch| {
+            chrono::DateTime::from_timestamp(
+                i64::try_from(since_epoch.as_secs()).ok()?,
+                since_epoch.subsec_nanos(),
+            )
+        })
+        .and_then(|at| at.checked_add_signed(chrono::TimeDelta::minutes(IST_OFFSET_MINUTES)));
+    match ist {
+        Some(at) => format!("{} IST (in {})", at.format("%H:%M"), wait_text(reset_in)),
+        None => format!("in {}", wait_text(reset_in)),
+    }
+}
+
+/// A wait as the two largest units that describe it ("1h 5m", "3m 20s").
+fn wait_text(wait: Duration) -> String {
+    let (hours, minutes, seconds) =
+        (wait.as_secs() / 3600, wait.as_secs() % 3600 / 60, wait.as_secs() % 60);
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
     }
 }
 
@@ -1193,6 +1293,264 @@ mod tests {
         );
     }
 
+    /// One captured tracing record: its level, its target and its fields.
+    #[derive(Clone, Default)]
+    struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, String)>>>);
+
+    #[derive(Default)]
+    struct CaughtFields(String);
+
+    impl tracing::field::Visit for CaughtFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = CaughtFields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push((
+                *event.metadata().level(),
+                event.metadata().target().to_owned(),
+                fields.0,
+            ));
+        }
+    }
+
+    /// The records a pass emitted for the cooling event at `level`, as
+    /// their captured fields.
+    fn cooling_records(caught: &Caught, level: tracing::Level) -> Vec<String> {
+        caught
+            .0
+            .lock()
+            .expect("capture")
+            .iter()
+            .filter(|(recorded, target, fields)| {
+                *recorded == level
+                    && target == "forge_workspace::crons"
+                    && fields.contains("cron_deferred_cooling")
+            })
+            .map(|(_, _, fields)| fields.clone())
+            .collect()
+    }
+
+    /// Every `ServiceStatus` a pass sent, which is what a client draws.
+    fn service_notices(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
+    ) -> Vec<String> {
+        drain_updates(rx)
+            .into_iter()
+            .filter_map(|update| match update {
+                SessionUpdate::ServiceStatus { message, .. } => Some(message),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn unix_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs()
+    }
+
+    /// Hold the fixture's one account out of the walk for `wait`, the
+    /// write the usage probe's cap makes.
+    fn cool_for(ws: &Workspace, wait: std::time::Duration) {
+        cool_until(ws, unix_now() + wait.as_secs());
+    }
+
+    /// Hold the fixture's one account out of the walk until `reset_epoch`.
+    fn cool_until(ws: &Workspace, reset_epoch: u64) {
+        ws.gateway.report_probe_limit(&AccountKey("acct-a".to_owned()), Some(reset_epoch));
+    }
+
+    /// `wait` from `now`, nudged to sit half a minute into a minute, so a
+    /// wall clock read for it cannot straddle a minute boundary between
+    /// the test's clock and the scheduler's own read.
+    fn reset_mid_minute(now: std::time::SystemTime, wait: std::time::Duration) -> u64 {
+        let target = now
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs()
+            + wait.as_secs();
+        target - target % 60 + 30
+    }
+
+    /// The IST wall clock a notice prints for `unix_seconds`.
+    fn ist_clock(unix_seconds: u64) -> String {
+        let at = chrono::DateTime::<chrono::Utc>::from(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(unix_seconds),
+        );
+        (at + chrono::TimeDelta::minutes(5 * 60 + 30)).format("%H:%M").to_string()
+    }
+
+    /// End the account's cooldown, so the walk finds it again.
+    fn clear_cooling(ws: &Workspace) {
+        ws.gateway.report_probe_limit(&AccountKey("acct-a".to_owned()), Some(unix_now() - 60));
+    }
+
+    /// A cron deferred by a cooling walk stays due and says why once - the
+    /// model, the org and the reset - with the repeats at debug until the
+    /// 30-minute floor re-warns.
+    ///
+    /// Mutants: warn on every tick (the second fire emits another record
+    /// and notice); drop the cooling detail from either line (it names no
+    /// model, org or reset); silence the repeat instead of recording it;
+    /// print the tick's own clock instead of the reset's; reset the
+    /// re-warn marker on every pass, where the floor counts from the
+    /// repeat rather than from the warning.
+    #[tokio::test]
+    async fn a_cooling_walk_defers_the_cron_and_warns_once_per_episode() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let (ws, _dir) = workspace_with_one_unsettled_account();
+        ws.seed_test_ready_account("acct-a");
+        let mut rx = ws.subscribe();
+        ws.seed_test_cron(schedule("cool", "proj", "stand-up", None));
+        let now = std::time::SystemTime::now();
+        let reset_epoch = reset_mid_minute(now, std::time::Duration::from_secs(2 * 60 * 60));
+        cool_until(&ws, reset_epoch);
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        ws.fire_due_crons(now);
+        let warned = cooling_records(&caught, tracing::Level::WARN);
+        assert_eq!(warned.len(), 1, "the first cooling tick warns once");
+        let fields = &warned[0];
+        let clock = ist_clock(reset_epoch);
+        assert!(fields.contains("org=TestOrg"), "the warning names the org: {fields}");
+        assert!(fields.contains("model=claude-sonnet-5"), "the warning names the model: {fields}");
+        assert!(
+            fields.contains(&format!("resets_at={clock} IST")),
+            "the warning names when the reset lands: {fields}",
+        );
+        assert!(
+            fields.contains("cooling_accounts=1"),
+            "the warning counts the org's cooling accounts: {fields}",
+        );
+        let notices = service_notices(&mut rx);
+        assert_eq!(notices.len(), 1, "and sends the client one notice: {notices:?}");
+        let notice = &notices[0];
+        assert!(notice.contains("claude-sonnet-5"), "the notice names the model: {notice}");
+        assert!(notice.contains("TestOrg"), "the notice names the org: {notice}");
+        assert!(
+            notice.contains(&format!("{clock} IST")),
+            "the notice names when the reset lands: {notice}",
+        );
+        assert!(
+            notice.contains("1 account(s) cooling in the org"),
+            "and counts the accounts the walk skipped: {notice}",
+        );
+
+        ws.fire_due_crons(now + std::time::Duration::from_secs(61));
+        assert_eq!(
+            cooling_records(&caught, tracing::Level::WARN).len(),
+            1,
+            "the repeat tick is debug, not another warning",
+        );
+        assert_eq!(
+            cooling_records(&caught, tracing::Level::DEBUG).len(),
+            1,
+            "and says so at debug rather than staying silent",
+        );
+        assert!(service_notices(&mut rx).is_empty(), "and sends the client nothing");
+
+        // 1860 s after the warning and 1799 s after the repeat: a floor
+        // counted from the repeat would stay silent here.
+        ws.fire_due_crons(now + std::time::Duration::from_secs(30 * 60 + 60));
+        assert_eq!(
+            cooling_records(&caught, tracing::Level::WARN).len(),
+            2,
+            "the 30-minute floor re-warns while it lasts",
+        );
+
+        let entry = ws
+            .crons_for_project("proj")
+            .into_iter()
+            .find(|cron| cron.id == forge_primitives::CronId::from("cool"))
+            .expect("a deferral keeps the entry");
+        assert_eq!(
+            entry.next_fire,
+            std::time::SystemTime::UNIX_EPOCH,
+            "and leaves it due rather than advancing",
+        );
+    }
+
+    /// A cooling episode that clears drops its marker, so the next episode
+    /// warns again rather than reading as a repeat of the last one.
+    ///
+    /// Mutant: keep the marker across a pass that did not find the cron
+    /// cooling, where the second episode stays silent.
+    #[tokio::test]
+    async fn a_cooling_episode_that_clears_warns_again_next_time() {
+        let (ws, _dir) = workspace_with_one_unsettled_account();
+        ws.seed_test_ready_account("acct-a");
+        let mut rx = ws.subscribe();
+        ws.seed_test_cron(schedule("cool", "proj", "stand-up", None));
+        let now = std::time::SystemTime::now();
+
+        cool_for(&ws, std::time::Duration::from_secs(2 * 60 * 60));
+        ws.fire_due_crons(now);
+        assert_eq!(service_notices(&mut rx).len(), 1, "the first episode warns once");
+
+        // The cooldown ends: this pass finds the walk healthy and the fire
+        // lands, its dispatch intercepted rather than spawning a child.
+        ws.enable_test_dispatch_intercept();
+        clear_cooling(&ws);
+        ws.fire_due_crons(now + std::time::Duration::from_secs(61));
+        assert!(service_notices(&mut rx).is_empty(), "a recovered walk has nothing to warn about");
+        assert!(
+            ws.drain_test_dispatch_buffer().iter().any(|command| matches!(
+                command,
+                Command::SpawnProject { project_name, .. } if project_name == "proj"
+            )),
+            "precondition: the recovered fire landed rather than deferring again",
+        );
+
+        // Cooling again, with the same entry due again, is a new episode.
+        cool_for(&ws, std::time::Duration::from_secs(2 * 60 * 60));
+        ws.with_crons_mut(|crons| {
+            let entry = crons
+                .iter_mut()
+                .find(|cron| cron.id == forge_primitives::CronId::from("cool"))
+                .expect("the recovered fire kept the recurring entry");
+            entry.next_fire = now + std::time::Duration::from_secs(120);
+        });
+        ws.fire_due_crons(now + std::time::Duration::from_secs(120));
+        assert_eq!(service_notices(&mut rx).len(), 1, "a new episode warns again");
+    }
+
+    /// A reset no clock can spell still names the wait, rather than
+    /// panicking the scheduler that prints it: one past the end of
+    /// `SystemTime`, and one whose IST offset runs past the last instant
+    /// chrono can hold.
+    #[test]
+    fn an_unformattable_reset_falls_back_to_the_wait() {
+        let last_second = chrono::DateTime::<chrono::Utc>::MAX_UTC.timestamp();
+        let near_the_end = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(
+                u64::try_from(last_second - 60).expect("a positive second count"),
+            );
+        for (reset_in, now) in
+            [(Duration::MAX, std::time::SystemTime::now()), (Duration::from_secs(60), near_the_end)]
+        {
+            let text = cooling_reset_text(reset_in, now);
+            assert!(text.starts_with("in "), "the wait survives without a clock: {text}");
+            assert!(!text.contains("IST"), "and no wall clock is claimed: {text}");
+        }
+    }
+
     #[test]
     fn deliver_asleep_worker_cron_buffers_and_wakes_the_project() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -1716,7 +2074,7 @@ mod tests {
         let cooling = deliver_cron(&ws, "proj", None, "x", false);
         assert_eq!(
             outcome_name(&cooling),
-            "DispatchFailed",
+            "DeferredCooling",
             "a cooling walk is a transient refusal, not a delivered fire",
         );
         assert_eq!(
@@ -1733,6 +2091,7 @@ mod tests {
             crate::spawn::CronFireOutcome::Delivered => "Delivered",
             crate::spawn::CronFireOutcome::TargetGone => "TargetGone",
             crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. } => "TargetCannotBeWoken",
+            crate::spawn::CronFireOutcome::DeferredCooling { .. } => "DeferredCooling",
             crate::spawn::CronFireOutcome::DispatchFailed => "DispatchFailed",
             crate::spawn::CronFireOutcome::SkippedAsleep => "SkippedAsleep",
         }
