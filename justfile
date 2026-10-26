@@ -45,6 +45,7 @@ script-tests:
     python3 scripts/test_ui_word_count.py
     python3 scripts/test_check_client_wasm.py
     python3 scripts/test_browser_stack_patch.py
+    python3 scripts/test_browser_host_focus.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
