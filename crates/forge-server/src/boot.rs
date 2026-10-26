@@ -61,8 +61,207 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     }
 
     start_subsystems(&workspace);
+    install_browser(&workspace)?;
 
     Ok(workspace)
+}
+
+/// Install the server's browser fleet: constructed here, one host and one
+/// driver per profile spawned on first use.
+///
+/// **A missing app-support directory fails the boot**, the same resolution
+/// the durable store needs; the vendored driver stack is not required at
+/// boot, so a server without it boots and its browser calls name what is
+/// missing instead of the whole server refusing to start.
+/// **The join between the config and the fleet's resolver.** The workspace
+/// resolves `forge.toml`'s org and project names; the fleet resolves a seat
+/// against those maps. Both ends have tests, and this is the copy between
+/// them, so it is one named call rather than two lines inside a boot.
+#[cfg(target_os = "macos")]
+fn configure_fleet_profiles(workspace: &Workspace, fleet: &forge_browser::service::BrowserService) {
+    let (orgs, projects) = workspace.browser_profile_config();
+    fleet.configure_profiles(orgs, projects);
+}
+
+#[cfg(target_os = "macos")]
+fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
+    let fleet = Arc::new(
+        forge_browser::service::BrowserService::installed()
+            .map_err(|why| anyhow::anyhow!("forge: {why}"))?,
+    );
+    // **The encoding and the idle clock are the `[browser]` keys**: a
+    // profile nobody has touched closes after the bound.
+    let browser = workspace.browser_settings();
+    fleet.configure_encoding(browser.fps, browser.quality);
+    fleet.configure_idle(browser.idle_minutes);
+    // **The profile names are config's, not a client's**: every seat resolves
+    // its profile from `forge.toml` here, at boot, rather than naming one.
+    configure_fleet_profiles(workspace, &fleet);
+    fleet.start_idle();
+    // **A host an unclean exit left behind is reaped before any profile is
+    // used.** It still holds the profile's singleton lock, and the first
+    // call would wedge on it; the reaper checks the process is really this
+    // bundle's host before it signals anything.
+    let reaper = Arc::clone(&fleet);
+    tokio::spawn(async move { reaper.reap_stale().await });
+    workspace.install_browser_host(Arc::new(HostedBrowser(fleet)));
+    Ok(())
+}
+
+/// A platform with no CEF host: the browser tools answer the no-host refusal
+/// rather than a server that pretends to have a fleet.
+#[cfg(not(target_os = "macos"))]
+fn install_browser(_workspace: &Arc<Workspace>) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// The fleet behind the workspace's port.
+#[cfg(target_os = "macos")]
+struct HostedBrowser(Arc<forge_browser::service::BrowserService>);
+
+#[cfg(target_os = "macos")]
+#[async_trait::async_trait]
+impl forge_workspace::browser::BrowserHost for HostedBrowser {
+    async fn call(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<Vec<forge_primitives::browser::BrowserPart>, String> {
+        self.0.call(seat, tool, args).await
+    }
+
+    async fn attach(
+        &self,
+        viewer: u64,
+        seat: &forge_primitives::SessionSlot,
+        tab: Option<u16>,
+    ) -> Result<forge_workspace::browser::BrowserAttachment, String> {
+        let attachment = self.0.attach(viewer, seat, tab).await?;
+        Ok(forge_workspace::browser::BrowserAttachment {
+            key: attachment.key,
+            id: attachment.id,
+            tab: attachment.tab,
+            frames: attachment.frames,
+            view: attachment.view,
+            tabs: attachment.tabs,
+            nav: attachment.nav,
+            failures: attachment.failures,
+            files: attachment.files,
+            downloads: attachment.downloads,
+            audio: attachment.audio,
+        })
+    }
+
+    async fn answer_files(
+        &self,
+        profile: &str,
+        tab: u16,
+        id: u64,
+        files: Vec<forge_primitives::browser::BrowserUpload>,
+    ) -> Result<(), String> {
+        self.0.answer_files(profile, tab, id, files).await
+    }
+
+    async fn detach(&self, viewer: u64) {
+        self.0.detach(viewer).await;
+    }
+
+    async fn input(
+        &self,
+        profile: &str,
+        tab: u16,
+        viewer: u64,
+        seq: u64,
+        event: &forge_primitives::browser::BrowserInputEvent,
+    ) -> Result<(), String> {
+        self.0.input(profile, tab, viewer, seq, event).await
+    }
+
+    async fn take_control(&self, profile: &str, tab: u16, viewer: u64) -> Result<(), String> {
+        self.0.take_control(profile, tab, viewer).await
+    }
+
+    async fn release_control(&self, profile: &str, tab: u16, viewer: u64) {
+        self.0.release_control(profile, tab, viewer).await;
+    }
+
+    async fn resize(
+        &self,
+        profile: &str,
+        tab: u16,
+        viewer: u64,
+        width: u32,
+        height: u32,
+        scale: f64,
+    ) {
+        self.0.resize(profile, tab, viewer, width, height, scale).await;
+    }
+
+    async fn nav(
+        &self,
+        profile: &str,
+        tab: u16,
+        viewer: u64,
+        back: bool,
+    ) -> Result<forge_primitives::browser::BrowserNavState, String> {
+        self.0.nav(profile, tab, viewer, back).await
+    }
+
+    async fn nav_state(
+        &self,
+        profile: &str,
+        tab: u16,
+    ) -> Option<forge_primitives::browser::BrowserNavState> {
+        self.0.nav_state(profile, tab).await
+    }
+
+    async fn tabs(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+    ) -> Result<forge_primitives::browser::BrowserTabList, String> {
+        self.0.tabs(seat).await
+    }
+
+    async fn tab_stream(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+    ) -> Result<tokio::sync::watch::Receiver<forge_primitives::browser::BrowserTabList>, String>
+    {
+        self.0.tab_stream(seat).await
+    }
+
+    async fn sweep_sessions(&self, seats: &[forge_primitives::SessionSlot]) {
+        self.0.sweep_sessions(seats).await;
+    }
+
+    async fn replace_seat(&self, seat: &forge_primitives::SessionSlot) {
+        self.0.replace_seat(seat).await;
+    }
+
+    fn session_ended(&self, seat: &forge_primitives::SessionSlot) {
+        self.0.session_ended(seat);
+    }
+
+    async fn hand_off_started(
+        &self,
+        seat: &forge_primitives::SessionSlot,
+        tab: u16,
+    ) -> Result<(), String> {
+        self.0.hand_off_started(seat, tab).await
+    }
+
+    async fn hand_off_finished(&self, seat: &forge_primitives::SessionSlot, tab: u16) {
+        self.0.hand_off_finished(seat, tab).await;
+    }
+
+    async fn warm(&self, seat: &forge_primitives::SessionSlot) {
+        self.0.warm(seat).await;
+    }
+
+    async fn stop(&self) -> Vec<String> {
+        self.0.stop_all().await
+    }
 }
 
 /// The subsystem wave the boot starts, in the order it has always started it.
@@ -174,9 +373,9 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
         return Ok(SocketServing::Disabled);
     }
     let addr = std::net::SocketAddr::new(server.bind, server.port);
-    // Built from the workspace so every piece the socket needs is
-    // derived where the workspace is in hand - the browser relay above
-    // all, which must be the one the sessions ask through.
+    // Built from the workspace so every piece the socket needs is derived
+    // where the workspace is in hand - the browser fleet above all, which
+    // must be the one the sessions' own tools drive.
     let state = Arc::new(crate::transport::TransportState::for_workspace(
         workspace,
         workspace.client_config(),
@@ -319,6 +518,8 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::configure_fleet_profiles;
     use super::{BOOT_WAVE_WAIT, start_subsystems, stop_result, wait_for_accounts};
     use std::sync::Arc;
     use std::time::Duration;
@@ -388,6 +589,68 @@ port = {port}
         .expect("write forge.toml");
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
         (Arc::new(workspace), dir)
+    }
+
+    /// **The config's names are the fleet's maps.** The workspace's own
+    /// resolution and the fleet's lookup both have tests; this is the boot's
+    /// copy between them, so a rename on either side fails here.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_fleets_profile_names_are_the_configs() {
+        use forge_primitives::SessionSlot;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            "\
+[[orgs]]
+name = \"Busytools\"
+accounts = [\"Stub\"]
+browser_profile = \"work\"
+
+[[orgs.projects]]
+name = \"forge\"
+path = \"/tmp\"
+
+[[orgs.projects]]
+name = \"apply\"
+path = \"/tmp\"
+browser_profile = \"job\"
+
+[[accounts]]
+display_name = \"Stub\"
+token = \"t\"
+provider = \"openrouter\"
+base_url = \"http://127.0.0.1:9/api\"
+models = [\"claude-sonnet-5\"]
+
+[server]
+enabled = false
+
+[gateway]
+port = 49201
+",
+        )
+        .expect("write forge.toml");
+        let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
+        let fleet = forge_browser::service::BrowserService::at(
+            dir.path().join("browser"),
+            dir.path().join("browser/stack"),
+        );
+
+        configure_fleet_profiles(&workspace, &fleet);
+
+        let key = |project: &str| {
+            fleet
+                .profile_for(&SessionSlot::lead("Busytools", project))
+                .expect("a seat resolves")
+                .as_str()
+                .to_owned()
+        };
+        assert_eq!(key("forge"), "Busytools/work", "the org's name arrives");
+        assert_eq!(key("apply"), "Busytools/job", "the project's override arrives");
     }
 
     /// The wave starts the 60 s usage poller. Its first tick is a minute out

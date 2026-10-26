@@ -67,7 +67,7 @@ async fn serve_over(fleet: &Fleet) -> String {
         conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
         client: forge_primitives::ClientConfig::default(),
-        browser: Arc::new(forge_workspace::browser::BrowserRelay::new()),
+        browser_host: None,
         heartbeat: Heartbeat::default(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");

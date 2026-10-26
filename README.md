@@ -33,7 +33,8 @@ forge-connectors  ->  primitives
 forge-sdk         ->  primitives
 forge-agent       ->  primitives + sdk + gateway
 forge-workspace   ->  primitives + agent + sdk + dictate + gateway + connectors
-forge-server      ->  primitives + workspace + sdk
+forge-browser     ->  primitives + sdk
+forge-server      ->  primitives + workspace + sdk + browser
 forge-test-harness->  primitives + sdk
 ```
 
@@ -48,6 +49,7 @@ forge-test-harness->  primitives + sdk
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder. |
 | [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |
 | [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the server's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from. |
+| [`forge-browser`](crates/forge-browser) | The server's browser: a CEF host process per org profile (shipped as its own signed `Forge Browser.app`) that owns its profile's tabs, the vendored Playwright driver it speaks MCP to, WebP frame encoding per tab, the org profile store and its one-time legacy-tree deletion, the idle release, and the service the tool surface and the viewers call. |
 | [`forge-server`](crates/forge-server) | The server: what a client reads of the core, and no view of its own. The read surface a client uses, the session records as a view sees them, the peer envelope parsing, forge's own slash commands, the transcript fold that says where a conversation's turns sit and the task endings it carries, the sub-agent instance list the session task's own fold keeps and pushes, the `ReadCallOutput` verb (with the workspace's tail reader re-exported for views), the boot path the `forge` binary runs, and the socket that carries all of it. Sits between the workspace and whatever draws. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. This crate ships the `forge` binary. |
 | [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness: replay-based offline tests plus opt-in live capture. |
 

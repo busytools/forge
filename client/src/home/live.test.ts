@@ -126,12 +126,8 @@ function fakeConnection() {
       refreshed.push(what);
       return true;
     },
-    onBrowserAsk: () => () => {},
-    browserRole: () => false,
-    browserRoleKnown: () => false,
-    onBrowserRole: () => () => {},
-    onProfilesChanged: () => () => {},
-    takeBrowserRole: () => {},
+    browserInput: () => false,
+    onBrowserFrame: () => () => {},
     onMessage(fn) {
       messages.add(fn);
       return () => {

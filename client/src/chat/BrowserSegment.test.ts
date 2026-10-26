@@ -2,1308 +2,419 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Connection } from '../socket';
+import { canHost, listTabs, onConnection, onTabs } from '../browser/host';
+import type { BrowserTabList } from '../protocol';
 import type { SessionSlot } from '../wire/types';
-import {
-  browserUsed,
-  canHost,
-  closeProfile,
-  deleteProfile,
-  hideBrowser,
-  listProfiles,
-  profileWindowed,
-  showBrowser,
-  type ProfileRow,
-} from '../browser/host';
 import BrowserSegment from './BrowserSegment.svelte';
+
+const { openSurface, closeSurface, surface } = vi.hoisted(() => ({
+  openSurface: vi.fn(
+    (_profile: string | null, _slot: unknown, _tab: number | null): Promise<string | null> =>
+      Promise.resolve(null),
+  ),
+  closeSurface: vi.fn((_profile: string | null): Promise<string | null> => Promise.resolve(null)),
+  // The surface store's fields the strip reads: the raised profile, the
+  // server's resolved name, the viewed tab and whether it is open at all.
+  surface: {
+    phase: 'closed',
+    profile: null as string | null,
+    attachedProfile: null as string | null,
+    tab: null as number | null,
+  },
+}));
+vi.mock('../browser/surface.svelte', () => ({ openSurface, closeSurface, surface }));
+
+const SLOT: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+
+/** One profile's tabs, as the shell answers the read. */
+function tabs(over: Partial<BrowserTabList> = {}): BrowserTabList {
+  return {
+    profile: 'TestOrg/work',
+    id: 3,
+    up: true,
+    connected: true,
+    closing_at_ms: null,
+    rows: [],
+    ...over,
+  };
+}
+
+/** One tab row, with the server's own fields; an override may be unreadable. */
+function row(over: Record<string, unknown> = {}): BrowserTabList['rows'][number] {
+  return {
+    number: 1,
+    title: 'portal',
+    url: 'https://x/',
+    owner: { org: 'TestOrg', project: 'proj', label: 'lead' },
+    state: 'idle',
+    ...over,
+  };
+}
 
 afterEach(() => {
   vi.mocked(canHost).mockReturnValue(true);
-  vi.mocked(showBrowser).mockClear();
-  vi.mocked(hideBrowser).mockClear();
-  vi.mocked(profileWindowed).mockClear();
-  vi.mocked(deleteProfile).mockClear();
-  // **The panel is PORTALED to the body** (`use:portal`), so a test that ends
-  // with one open would hand it to the next - and the next test's `list()`
-  // would read the stale one. The mount targets live under the body too.
+  vi.mocked(listTabs).mockResolvedValue(tabs());
+  surface.phase = 'closed';
+  surface.profile = null;
+  surface.attachedProfile = null;
+  surface.tab = null;
+  openSurface.mockClear();
+  closeSurface.mockClear();
+  // **The panel is PORTALED to the body**, so a test that ends with one
+  // open would hand it to the next - and the next test's `list()` would read
+  // the stale one.
   document.body.innerHTML = '';
 });
 
-/**
- * The client's own host, mocked so the READ has states a test can drive: the
- * real one answers the empty list outside the shell, which only ever proved
- * the resting row.
- */
+/** The shell's viewer, mocked so the segment's reads have states to drive. */
 vi.mock('../browser/host', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/host')>();
   return {
     ...actual,
     canHost: vi.fn(() => true),
-    listProfiles: vi.fn(() => Promise.resolve([])),
-    closeProfile: vi.fn(() => Promise.resolve(undefined)),
-    deleteProfile: vi.fn(() => Promise.resolve(undefined)),
-    browserUsed: vi.fn(() => Promise.resolve(false)),
-    showBrowser: vi.fn(() => Promise.resolve({ profile: '@shared' })),
-    hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
+    listTabs: vi.fn(() =>
+      Promise.resolve({
+        profile: 'TestOrg/work',
+        id: 3,
+        up: true,
+        connected: true,
+        closing_at_ms: null,
+        rows: [],
+      }),
+    ),
+    onTabs: vi.fn(() => Promise.resolve(() => {})),
+    onConnection: vi.fn(() => Promise.resolve(() => {})),
     drawsSurface: vi.fn(() => true),
-    profileWindowed: vi.fn(() => Promise.resolve(false)),
   };
 });
 
-/**
- * The connection the segment reads its role from and takes it through: a
- * stand-in for the two frames the server sends (the grant, and the loss to a
- * force-take).
- */
-function fakeConnection(hosting = false) {
-  const hearers = new Set<(now: boolean) => void>();
-  const swept = new Set<() => void>();
-  let role = hosting;
-  const taken = vi.fn();
-  const connection = {
-    browserRole: () => role,
-    onBrowserRole: (fn: (now: boolean) => void) => {
-      hearers.add(fn);
-      return () => hearers.delete(fn);
-    },
-    onProfilesChanged: (fn: () => void) => {
-      swept.add(fn);
-      return () => swept.delete(fn);
-    },
-    takeBrowserRole: taken,
-  } as unknown as Connection;
-  return {
-    connection,
-    /** The server saying the role changed. */
-    flip: (now: boolean) => {
-      role = now;
-      for (const hear of hearers) hear(now);
-    },
-    /** The host saying it swept; every open strip re-reads. */
-    swept: () => {
-      for (const hear of swept) hear();
-    },
-    taken,
-  };
-}
-
-/** The segment, mounted with whatever role and slot the test names. */
-function show(hosting = false, slot: SessionSlot | null = null) {
-  const harness = fakeConnection(hosting);
+/** One mounted segment, and a function that takes it down. */
+function show(slot: SessionSlot | null = null) {
   const target = document.createElement('div');
-  document.body.append(target);
-  const app = mount(BrowserSegment, {
-    target,
-    props: { connection: harness.connection, slot },
-  });
+  document.body.appendChild(target);
+  const app = mount(BrowserSegment, { target, props: { slot } });
   flushSync();
-  return { ...harness, target, stop: () => void unmount(app) };
+  return { target, stop: () => void unmount(app) };
 }
 
-const click = (el: Element | null | undefined): void => {
-  if (!(el instanceof HTMLElement)) throw new Error('nothing to click');
-  el.click();
-  flushSync();
+const toggle = (target: HTMLElement): HTMLButtonElement => {
+  const button = target.querySelector<HTMLButtonElement>('.bz-tog');
+  if (button === null) throw new Error('no toggle');
+  return button;
 };
 
-/** The toggle, where the family's pointer handling lives. */
-function toggle(target: HTMLElement): HTMLButtonElement {
-  const el = target.querySelector<HTMLButtonElement>('.bz-tog');
-  if (el === null) throw new Error('no toggle');
-  return el;
-}
-
-function list(target: HTMLElement): Element | null {
-  // **The panel is PORTALED to the body** (`use:portal`), so it is not a
-  // descendant of the mounted segment - and a query scoped to the mount would
-  // read every open panel as absent.
-  void target;
-  return document.body.querySelector('.bz-list');
-}
-
-/** What the segment shows: its own text plus the PORTALED panel's. */
-function shownText(target: HTMLElement): string {
-  const panel = document.body.querySelector('.bz-list');
-  return `${target.textContent ?? ''}${panel?.textContent ?? ''}`;
-}
-
-/** A pointer event of the kind the browser synthesises, with its device said. */
-function pointer(type: string, pointerType: string): PointerEvent {
-  return new PointerEvent(type, { pointerType, bubbles: false });
-}
+const list = (): HTMLElement | null => document.body.querySelector('.bz-list');
 
 describe('the browser segment', () => {
-  it('rests as a count and opens onto the role and the profiles', async () => {
+  it('rests on the tab count and opens onto the profile', async () => {
     const shown = show();
     await vi.waitFor(() => {
       expect(
         shown.target.querySelector('.bz-tog .n')?.textContent,
         'the resting row names the count once a read has answered',
-      ).toBe('0 profiles');
-    });
-    expect(shownText(shown.target), 'and nothing about the role until it is open').not.toContain(
-      'browser connected',
-    );
-
-    click(shown.target.querySelector('.bz-tog'));
-
-    expect(shownText(shown.target), 'a capable client that is not hosting is told so').toContain(
-      'browser not connected',
-    );
-    expect(
-      shownText(shown.target),
-      'the shared profile is always listed: it is reached by naming @shared',
-    ).toContain('shared');
-    await vi.waitFor(() => {
-      expect(
-        shownText(shown.target),
-        'with no NAMED profiles said plainly, once the read has answered',
-      ).toContain('no named profiles yet');
-    });
-    shown.stop();
-  });
-
-  it('waits on the count and the list until a read has answered', () => {
-    // A read that has not answered: neither surface may claim a state.
-    vi.mocked(listProfiles).mockImplementation(() => new Promise<never>(() => undefined));
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-
-    expect(
-      shown.target.querySelector('.bz-tog .n')?.textContent,
-      'the count is not known before a read answers',
-    ).toBe('…');
-    expect(shownText(shown.target), 'and the list says it is reading').toContain(
-      'reading the profiles…',
-    );
-    expect(
-      shownText(shown.target),
-      'an empty row would be a claim about a read that never answered',
-    ).not.toContain('no named profiles yet');
-    shown.stop();
-    vi.mocked(listProfiles).mockImplementation(() => Promise.resolve([]));
-  });
-
-  /** Ved, live round 2026-10-07: the row should say whether the browser has
-   *  been actively used - a flat disc beside the glyph when it has. */
-  it('marks the row once the browser has been used, and not before', async () => {
-    const resting = show(false);
-    await vi.waitFor(() => expect(browserUsed).toHaveBeenCalled());
-    expect(
-      resting.target.querySelector('.bz-tog .dot.idle'),
-      'a browser nobody has driven carries no mark',
-    ).toBeNull();
-    resting.stop();
-
-    vi.mocked(browserUsed).mockResolvedValueOnce(true);
-    const used = show(false);
-    await vi.waitFor(() => {
-      expect(
-        used.target.querySelector('.bz-tog .dot.idle'),
-        'a driven browser says so on the resting row',
-      ).not.toBeNull();
-    });
-    used.stop();
-    vi.mocked(browserUsed).mockResolvedValue(false);
-  });
-
-  /** Ved, live round 2026-10-07: hovering the row must offer the way to SEE
-   *  the browser - the real window, with no session answering anything. */
-  it('raises the browser window from the shared row', () => {
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-
-    const door = list(shown.target)?.querySelector('.bz-show');
-    expect(door, 'the shared row carries the way to look').not.toBeNull();
-    click(door);
-
-    expect(showBrowser, 'the raise the door asks for').toHaveBeenCalledTimes(1);
-    shown.stop();
-  });
-
-  /** The measured bug: the phone's takeover bar lowers on Done as well as on
-   *  its back, and a re-read left on `lowered` alone kept the row saying
-   *  "hide" over a window already down. Every bar word re-reads. */
-  it("re-reads the shared row on the takeover bar's own words", async () => {
-    const shown = show(false);
-    await vi.waitFor(() => expect(profileWindowed).toHaveBeenCalledTimes(1));
-    const before = vi.mocked(profileWindowed).mock.calls.length;
-
-    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'done' }));
-    await vi.waitFor(() => {
-      expect(
-        vi.mocked(profileWindowed).mock.calls.length,
-        'Done lowers the window too; the row must re-read on its word',
-      ).toBeGreaterThan(before);
+      ).toBe('0 tabs');
     });
 
-    const afterDone = vi.mocked(profileWindowed).mock.calls.length;
-    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'raised' }));
-    await vi.waitFor(() => {
-      expect(
-        vi.mocked(profileWindowed).mock.calls.length,
-        'the raise lands on the UI thread after a caller read; its word re-reads too',
-      ).toBeGreaterThan(afterDone);
-    });
-
-    // **`lowered` is now the only word the bar's back sends** - dropping
-    // that arm left every test green before this case existed.
-    const afterRaised = vi.mocked(profileWindowed).mock.calls.length;
-    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'lowered' }));
-    await vi.waitFor(() => {
-      expect(
-        vi.mocked(profileWindowed).mock.calls.length,
-        "the bar's back says lowered, and nothing else - the row must re-read on it",
-      ).toBeGreaterThan(afterRaised);
-    });
-    shown.stop();
-  });
-
-  it("keeps the panel and says the shell's own reason when the window cannot open", async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce(
-      'the client is missing its Chromium framework - reinstall forge',
-    );
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    click(list(shown.target)?.querySelector('.bz-show'));
-
-    await vi.waitFor(() => {
-      expect(shownText(shown.target)).toContain(
-        'the client is missing its Chromium framework - reinstall forge',
-      );
-    });
-    expect(list(shown.target), 'the row stays for a door that failed').not.toBeNull();
-    shown.stop();
-  });
-
-  it('says the read failed rather than claiming there are no profiles', async () => {
-    const shown = show(false);
-    await vi.waitFor(() => expect(listProfiles).toHaveBeenCalledTimes(1));
-    vi.mocked(listProfiles).mockRejectedValueOnce('the profile list would not read');
-
-    click(shown.target.querySelector('.bz-tog'));
-
-    await vi.waitFor(() => {
-      expect(shownText(shown.target)).toContain('the profile list would not read');
-    });
-    expect(
-      shownText(shown.target),
-      'an empty row would be a claim about a read that never answered',
-    ).not.toContain('no named profiles yet');
-    shown.stop();
-  });
-
-  it('keeps the row and says why when the close is refused', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-    // **One is singular.** The count arm has a `=== 1 ? '' : 's'` that
-    // nothing pinned, and "1 profiles" is what a reader sees when it goes.
-    expect(
-      shown.target.querySelector('.bz-tog .n')?.textContent,
-      'one profile reads singular',
-    ).toBe('1 profile');
-
-    // **The close names the ROW's own profile**, not its owner's slot: the
-    // two strings sit beside each other on the row, and a swap would strand
-    // exactly the profile whose owner is gone - the one this door exists for.
-    vi.mocked(closeProfile).mockRejectedValueOnce('no browser profile is open under hunt');
-    click(list(shown.target)?.querySelector('.bz-close'));
-
-    expect(closeProfile, 'the name the row carries is what is closed').toHaveBeenCalledWith('hunt');
-    await vi.waitFor(() => {
-      expect(shownText(shown.target)).toContain('no browser profile is open under hunt');
-    });
-    expect(shownText(shown.target), 'the row is not taken away by a close that failed').toContain(
-      'hunt',
-    );
-    shown.stop();
-  });
-
-  it('arms the delete in the row itself, and keep takes it back', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    click(list(shown.target)?.querySelector('.bz-del'));
-    expect(shownText(shown.target), 'the warning takes the row its own text line').toContain(
-      'its logins and cookies go with it',
-    );
-    expect(
-      list(shown.target)?.querySelector('.bz-del.confirm')?.textContent?.trim(),
-      'and the confirm is the pair delete it / keep',
-    ).toBe('delete it');
-    expect(shownText(shown.target), 'with keep beside it').toContain('keep');
-    expect(shownText(shown.target), 'the row it is confirming for is still named').toContain(
-      'hunt',
-    );
-
-    const keep = [...(list(shown.target)?.querySelectorAll('button') ?? [])].find(
-      (button) => button.textContent?.trim() === 'keep',
-    );
-    click(keep);
-    expect(shownText(shown.target), 'keep puts the verbs back').not.toContain(
-      'its logins and cookies go with it',
-    );
-    expect(
-      list(shown.target)?.querySelector('.bz-del.confirm'),
-      'and nothing is left armed',
-    ).toBeNull();
-    shown.stop();
-  });
-
-  it('deletes after the confirm and says it is working while it waits', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const gate: { finish?: () => void } = {};
-    vi.mocked(deleteProfile).mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          gate.finish = resolve;
-        }),
-    );
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    click(list(shown.target)?.querySelector('.bz-del'));
-    click(list(shown.target)?.querySelector('.bz-del.confirm'));
-    expect(deleteProfile, 'the confirm is what calls the shell').toHaveBeenCalledWith('hunt');
-    expect(
-      shownText(shown.target),
-      'the row reports the work while the shell waits out whatever it waits',
-    ).toContain('deleting...');
-
-    // The delete answered: the outcome names what went, and the row itself
-    // falls away with the files.
-    vi.mocked(listProfiles).mockResolvedValue([]);
-    gate.finish?.();
-    await vi.waitFor(() => {
-      expect(shownText(shown.target), 'the outcome says what went').toContain(
-        "deleted the 'hunt' profile",
-      );
-    });
-    expect(
-      list(shown.target)?.querySelector('.bz-del'),
-      'and the row itself falls away with the files',
-    ).toBeNull();
-    shown.stop();
-  });
-
-  it('keeps the panel open under a pointer inside it and lets the delete land', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    /**
-     * **A real pointer's press, which the plain `.click()` helper never
-     * sends.** The panel is PORTALED to the body, and the leave guard used
-     * to close it on any pointerdown outside the SEGMENT - so live, every
-     * one of its controls unmounted under the press while these tests
-     * stayed green.
-     */
-    const press = (el: Element | null | undefined): void => {
-      if (!(el instanceof HTMLElement)) throw new Error('nothing to press');
-      el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-      flushSync();
-    };
-
-    press(list(shown.target)?.querySelector('.bz-del'));
-    expect(list(shown.target), 'the panel stays under the press').not.toBeNull();
-    click(list(shown.target)?.querySelector('.bz-del'));
-    expect(shownText(shown.target), 'and the confirm is armed').toContain(
-      'its logins and cookies go with it',
-    );
-    press(list(shown.target)?.querySelector('.bz-del.confirm'));
-    click(list(shown.target)?.querySelector('.bz-del.confirm'));
-    expect(deleteProfile, 'the delete ran').toHaveBeenCalledWith('hunt');
-    shown.stop();
-  });
-
-  it('returns focus to the toggle before the confirm unmounts', async () => {
-    // **The webview behaviour this protects against cannot be pinned here.**
-    // A focusout fired because the focused element was REMOVED is
-    // Chromium/WebView2/Android's; jsdom fires none. What this test pins is
-    // the fix's own contract: the toggle holds focus by the time `armed`
-    // clears, so a webview that does fire the event sees the reader still
-    // on the toggle - `release`'s guard - and keeps the panel, and the
-    // outcome line it is about to draw, up.
-    vi.mocked(deleteProfile).mockImplementation(() => Promise.resolve(undefined));
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    click(list(shown.target)?.querySelector('.bz-del'));
-    // The confirm takes focus on the tick after the arming click.
-    await vi.waitFor(() => {
-      expect(
-        document.activeElement?.textContent?.trim(),
-        'arming the confirm put focus on its Keep',
-      ).toBe('keep');
-    });
-    click(list(shown.target)?.querySelector('.bz-del.confirm'));
-    expect(document.activeElement, 'the toggle holds focus before the confirm unmounts').toBe(
-      shown.target.querySelector('.bz-tog'),
-    );
-    shown.stop();
-  });
-
-  it('draws the delete outcome and stands the empty line aside for it', async () => {
-    // The shell answers at once: an earlier test left a gated implementation
-    // in place, and `mockClear` in `afterEach` clears calls, not those.
-    vi.mocked(deleteProfile).mockImplementation(() => Promise.resolve(undefined));
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    click(list(shown.target)?.querySelector('.bz-del'));
-    click(list(shown.target)?.querySelector('.bz-del.confirm'));
-    vi.mocked(listProfiles).mockResolvedValue([]);
-    await vi.waitFor(() => {
-      expect(shownText(shown.target), 'the outcome names what went').toContain(
-        "deleted the 'hunt' profile",
-      );
-    });
-    expect(
-      shownText(shown.target),
-      'and the empty line stands aside - the outcome explains the emptiness',
-    ).not.toContain('no named profiles yet');
-    shown.stop();
-  });
-
-  it('re-reads when the host says it swept', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('1 profile'));
-
-    // A seat despawned in the core and the shell swept; the notice is the
-    // only word the page gets, and the resting count must follow it.
-    vi.mocked(listProfiles).mockResolvedValue([]);
-    shown.swept();
-    await vi.waitFor(() => {
-      expect(shown.target.querySelector('.bz-tog .n')?.textContent, 'the count followed').toBe(
-        '0 profiles',
-      );
-    });
-    shown.stop();
-  });
-
-  it('keeps the row and says why when the delete is refused', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    vi.mocked(deleteProfile).mockRejectedValueOnce('no profile named hunt on this client');
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    click(list(shown.target)?.querySelector('.bz-del'));
-    click(list(shown.target)?.querySelector('.bz-del.confirm'));
-    await vi.waitFor(() => {
-      expect(shownText(shown.target)).toContain('no profile named hunt on this client');
-    });
-    expect(shownText(shown.target), 'a refused delete leaves the row standing').toContain('hunt');
-    shown.stop();
-  });
-
-  it("keeps each row's deleting mark while another row's delete is still running", async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-      {
-        name: 'scout',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const gates: Record<string, () => void> = {};
-    vi.mocked(deleteProfile).mockImplementation(
-      (name: string) =>
-        new Promise<void>((resolve) => {
-          gates[name] = resolve;
-        }),
-    );
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('scout'));
-
-    const rowFor = (name: string) => {
-      const row = [...(list(shown.target)?.querySelectorAll('.bz-it') ?? [])].find((it) =>
-        it.textContent?.includes(name),
-      );
-      if (!(row instanceof HTMLElement)) throw new Error(`no row for ${name}`);
-      return row;
-    };
-    const marks = () => (shownText(shown.target)?.match(/deleting\.\.\./g) ?? []).length;
-
-    click(rowFor('hunt').querySelector('.bz-del'));
-    click(rowFor('hunt').querySelector('.bz-del.confirm'));
-    click(rowFor('scout').querySelector('.bz-del'));
-    click(rowFor('scout').querySelector('.bz-del.confirm'));
-    await vi.waitFor(() => {
-      expect(marks(), 'both rows report the work at once').toBe(2);
-    });
-
-    // The first delete answers: its ROW falls away with the re-read - the
-    // outcome line that names it stays, which is the status the click is
-    // owed - and the second row's mark must survive the first's completion.
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'scout',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    gates.hunt?.();
-    await vi.waitFor(() => {
-      expect(
-        [...(list(shown.target)?.querySelectorAll('.bz-it') ?? [])].some(
-          (it) => it.querySelector('.nm')?.textContent === 'hunt',
-        ),
-        'the first row falls away',
-      ).toBe(false);
-      expect(shownText(shown.target), 'and its outcome names what went').toContain(
-        "deleted the 'hunt' profile",
-      );
-      expect(marks(), "and the second row's mark is still there").toBe(1);
-    });
-
-    vi.mocked(listProfiles).mockResolvedValue([]);
-    gates.scout?.();
-    await vi.waitFor(() => {
-      expect(marks(), 'the last completion clears it').toBe(0);
-    });
-    shown.stop();
-  });
-
-  it('lists a closed profile with no close and a way to delete it', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: '',
-        running: false,
-        opened: true,
-        windowed: false,
-        closed: true,
-      },
-    ]);
-    const shown = show(false, { org: 'Busytools', project: 'forge', label: 'lead' });
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    expect(shownText(shown.target), 'a closed profile says what it still holds').toContain(
-      'its logins are still here',
-    );
-    expect(
-      list(shown.target)?.querySelector('.bz-close'),
-      'nothing is open for close to close',
-    ).toBeNull();
-    const row = [...(list(shown.target)?.querySelectorAll('.bz-it') ?? [])].find(
-      (it) => it.querySelector('.nm')?.textContent === 'hunt',
-    );
-    expect(
-      row?.querySelector('.bz-del'),
-      'and the delete is the door that reaches it',
-    ).not.toBeNull();
-    shown.stop();
-  });
-
-  /** A closed profile row: no live entry behind it, its files still here. */
-  const closedRow = (name: string, owner = ''): ProfileRow => ({
-    name,
-    owner,
-    running: false,
-    opened: true,
-    windowed: false,
-    closed: true,
-  });
-
-  /** A row whose driver is there to answer. */
-  const runningRow = (name: string, owner = 'Busytools/forge/lead'): ProfileRow => ({
-    name,
-    owner,
-    running: true,
-    opened: true,
-    windowed: false,
-    closed: false,
-  });
-
-  /** The row whose `.nm` reads `name`, as one string (the PORTALED panel's). */
-  const rowText = (target: HTMLElement, name: string): string =>
-    [...(list(target)?.querySelectorAll('.bz-it') ?? [])]
-      .find((it) => it.querySelector('.nm')?.textContent === name)
-      ?.textContent?.trim() ?? '';
-
-  /**
-   * **The bulk door lists what it will take before it acts**, and the list is
-   * exactly the closed rows: a running profile's logins are not on it, a
-   * live seat's closed profile is, and neither is one whose driver merely
-   * died - that name is still held, and its logins are still its seat's.
-   */
-  it('the delete-all lists the closed profiles before it acts', async () => {
-    const live = 'Busytools/forge/lead';
-    vi.mocked(listProfiles).mockResolvedValue([
-      closedRow('hunt', live),
-      closedRow('kdp-sweep'),
-      runningRow('shown', live),
-      // A dead driver keeps its entry - the shell holds the name - so it is
-      // not running and not closed either.
-      { ...runningRow('dead-driver', live), running: false },
-    ]);
-    const shown = show(false, { org: 'Busytools', project: 'forge', label: 'lead' });
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp-sweep'));
-
-    expect(shownText(shown.target), 'the door names how many it would take').toContain('2 closed');
-    click(list(shown.target)?.querySelector('.bz-del-all'));
-    const bulk = list(shown.target)?.querySelector('.bz-bulk');
-
-    expect(bulk, 'the confirm is what the door arms, not a delete').not.toBeNull();
-    expect(bulk?.textContent, "a live seat's closed profile is on the list").toContain('hunt');
-    expect(bulk?.textContent, 'with the seat it belongs to').toContain(live);
-    expect(bulk?.textContent, 'an ownerless one is on it too, said plainly').toContain('no owner');
-    expect(bulk?.textContent, 'and the profile that is not closed is not on it').not.toContain(
-      'shown',
-    );
-    expect(
-      bulk?.textContent,
-      'nor the one whose driver died: its name is still held, so it is not closed',
-    ).not.toContain('dead-driver');
-    expect(deleteProfile, 'nothing is deleted before the confirm').not.toHaveBeenCalled();
-
-    // Escape backs out of the confirm, not the panel, with the focus kept.
-    const keep = list(shown.target)?.querySelector<HTMLButtonElement>('[data-keep-bulk]') ?? null;
-    if (keep === null) throw new Error('no bulk keep');
-    keep.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    flushSync();
-    expect(
-      list(shown.target)?.querySelector('.bz-bulk'),
-      'escape backs out of the confirm, not the panel',
-    ).toBeNull();
-    expect(list(shown.target), 'and the list the reader was in stays open').not.toBeNull();
-    expect(document.activeElement, 'with the focus back on the toggle').toBe(toggle(shown.target));
-    shown.stop();
-  });
-
-  /**
-   * **One delete per closed profile, run the row's own way**: each row
-   * reports its own work while the shell waits, and the summary says what
-   * went once they all settle.
-   */
-  it("the delete-all runs the row's own delete once per closed profile", async () => {
-    const gates: Record<string, () => void> = {};
-    vi.mocked(deleteProfile).mockImplementation(
-      (name: string) =>
-        new Promise<void>((resolve) => {
-          gates[name] = resolve;
-        }),
-    );
-    vi.mocked(listProfiles).mockResolvedValue([
-      closedRow('hunt'),
-      closedRow('kdp-sweep'),
-      runningRow('shown'),
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp-sweep'));
-
-    click(list(shown.target)?.querySelector('.bz-del-all'));
-    click(list(shown.target)?.querySelector('.bz-bulk .bz-del.confirm'));
-    const marks = (): number => (shownText(shown.target).match(/deleting\.\.\./g) ?? []).length;
-    await vi.waitFor(() => {
-      expect(marks(), 'one delete per closed row, each reporting its own work').toBe(2);
-    });
-    expect(
-      vi
-        .mocked(deleteProfile)
-        .mock.calls.map((call) => call[0])
-        .sort(),
-      'exactly the closed names went to the shell, once each',
-    ).toEqual(['hunt', 'kdp-sweep']);
-    expect(
-      list(shown.target)?.querySelector('.bz-del-all'),
-      'and the door waits while the deletes run',
-    ).toBeNull();
-
-    // The deletes settle: the rows fall away with their files and the
-    // summary says what went.
-    vi.mocked(listProfiles).mockResolvedValue([runningRow('shown')]);
-    gates.hunt?.();
-    gates['kdp-sweep']?.();
-    await vi.waitFor(() => {
-      expect(shownText(shown.target), 'the summary says what went').toContain(
-        'deleted 2 closed profiles and their saved logins',
-      );
-    });
-    expect(
-      list(shown.target)?.querySelector('.bz-del-all'),
-      'nothing closed is left, so the door goes with them',
-    ).toBeNull();
-    shown.stop();
-  });
-
-  /**
-   * **A refused delete in the bulk leaves its profile standing and says
-   * why** - on the row that stayed, in the shell's own words - while the
-   * rest go and the summary says what went.
-   */
-  it('a refused bulk delete leaves its profile and says why, while the rest go', async () => {
-    // The shell refuses the FIRST name it is handed - hunt, in the list's own
-    // order - and takes the second. A rejection reason is the command's own
-    // string, which is why `mockRejectedValueOnce` carries it here.
-    vi.mocked(deleteProfile).mockResolvedValue(undefined);
-    vi.mocked(deleteProfile).mockRejectedValueOnce(
-      'the profile could not be removed: it is in use',
-    );
-    vi.mocked(listProfiles).mockResolvedValue([closedRow('hunt'), closedRow('kdp-sweep')]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp-sweep'));
-
-    click(list(shown.target)?.querySelector('.bz-del-all'));
-    click(list(shown.target)?.querySelector('.bz-bulk .bz-del.confirm'));
-    // The shell refused hunt and took kdp-sweep: the re-read answers what is
-    // left.
-    vi.mocked(listProfiles).mockResolvedValue([closedRow('hunt')]);
-    await vi.waitFor(() => {
-      expect(
-        rowText(shown.target, 'hunt'),
-        "the shell's words land on the row that stayed",
-      ).toContain('the profile could not be removed: it is in use');
-    });
-    expect(
-      [...(list(shown.target)?.querySelectorAll('.bz-it .nm') ?? [])].map((nm) => nm.textContent),
-      'and the profile that went is off the list, the refused one left on it',
-    ).toEqual(['shared', 'hunt']);
-    expect(shownText(shown.target), 'the summary says what went').toContain(
-      'deleted 1 closed profile and its saved logins',
-    );
-    shown.stop();
-  });
-
-  it('takes escape as leaving the confirm, not the panel', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    click(list(shown.target)?.querySelector('.bz-del'));
-    const confirm = list(shown.target)?.querySelector('.bz-del.confirm');
-    if (!(confirm instanceof HTMLElement)) throw new Error('no confirm');
-    confirm.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    flushSync();
-
-    expect(shownText(shown.target), 'the warning goes').not.toContain(
-      'its logins and cookies go with it',
-    );
-    expect(list(shown.target), 'and the list the reader was in stays open').not.toBeNull();
-    shown.stop();
-  });
-
-  it('moves the focus onto keep when a delete arms, and escape backs out from there', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Busytools/forge/lead',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('hunt'));
-
-    click(list(shown.target)?.querySelector('.bz-del'));
-    await vi.waitFor(() => {
-      expect(
-        document.activeElement?.textContent?.trim(),
-        'arming puts the focus on keep, where Escape reaches',
-      ).toBe('keep');
-    });
-
-    const keep = list(shown.target)?.querySelector<HTMLButtonElement>('[data-keep="hunt"]') ?? null;
-    if (keep === null) throw new Error('no keep');
-    keep.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    flushSync();
-
-    expect(shownText(shown.target), 'the warning goes').not.toContain(
-      'its logins and cookies go with it',
-    );
-    expect(list(shown.target), 'and the list stays open').not.toBeNull();
-    expect(document.activeElement, 'with the focus back on the toggle').toBe(toggle(shown.target));
-    shown.stop();
-  });
-
-  it('opens on hover and closes once the pointer leaves', async () => {
-    const shown = show(false);
-    expect(list(shown.target), 'closed at rest').toBeNull();
-
-    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
-    flushSync();
-    expect(list(shown.target), 'the pointer arriving opens it').not.toBeNull();
-
-    toggle(shown.target).dispatchEvent(pointer('pointerleave', 'mouse'));
-    await vi.waitFor(() => {
-      expect(list(shown.target), 'and leaving closes it').toBeNull();
-    });
-    shown.stop();
-  });
-
-  it('reads a tap as open: the synthesised enter must not eat the click', () => {
-    const shown = show(false);
-    // A finger: pointerenter arrives with pointerType touch, then the click.
-    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'touch'));
     toggle(shown.target).click();
     flushSync();
-
-    expect(list(shown.target), 'the first tap leaves the panel open').not.toBeNull();
+    expect(list(), 'the row opens a panel').not.toBeNull();
+    expect(list()?.textContent, 'the resolved profile is named').toContain('TestOrg/work');
+    await vi.waitFor(() => {
+      expect(list()?.textContent, 'and no tabs says so plainly').toContain('no tabs yet');
+    });
     shown.stop();
   });
 
-  it('reads a tap as open when the press itself focuses the toggle first', () => {
-    // Chromium's measured tap order: pointerdown and pointerup complete
-    // first, then the compat mousedown, the focus it causes, and the click.
-    // The focus a press puts there must not open the panel for the click to
-    // shut - an open the reader never saw.
-    const shown = show(false);
-    window.dispatchEvent(pointer('pointerdown', 'touch'));
-    window.dispatchEvent(pointer('pointerup', 'touch'));
-    toggle(shown.target).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    toggle(shown.target).dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-    toggle(shown.target).dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  /// **The rows are the server's answer**, drawn with the tabs' own states:
+  /// a call in flight spins the work ring, a parked hand-off marks the held
+  /// tab, and an idle one carries the idle disc.
+  it("draws the server's tabs with their numbers, owners and states", async () => {
+    vi.mocked(listTabs).mockResolvedValue(
+      tabs({
+        rows: [
+          row({ number: 1, title: 'portal', url: 'https://x/', state: 'in_use' }),
+          row({
+            number: 2,
+            title: '',
+            url: 'about:blank',
+            owner: { org: 'TestOrg', project: 'proj', label: 'w1' },
+            state: 'held',
+          }),
+          row({ number: 3, title: 'docs', state: 'idle' }),
+        ],
+      }),
+    );
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('3 tabs'),
+    );
     toggle(shown.target).click();
     flushSync();
-
-    expect(list(shown.target), 'the tap opens and stays open').not.toBeNull();
+    const rows = [...(list()?.querySelectorAll('.bz-it') ?? [])];
+    const driven = rows.find((entry) => entry.textContent?.includes('tab 1'));
+    expect(driven?.querySelector('.ring'), 'a call in flight spins the work ring').not.toBeNull();
+    expect(driven?.textContent, 'and the row names its owner').toContain('TestOrg/proj/lead');
+    expect(driven?.textContent, 'and the state in the server words').toContain('in use');
+    const held = rows.find((entry) => entry.textContent?.includes('tab 2'));
+    expect(held?.querySelector('.dot.warn'), 'a held tab carries its own mark').not.toBeNull();
+    // **A tab with no title reads as its address**, not as an empty cell.
+    expect(held?.textContent, 'the address stands in for a missing title').toContain('about:blank');
+    const idle = rows.find((entry) => entry.textContent?.includes('tab 3'));
+    expect(idle?.querySelector('.dot.idle'), 'an idle tab carries the idle disc').not.toBeNull();
     shown.stop();
   });
 
-  it('keeps the panel while the pointer crosses into it', async () => {
-    const shown = show(false);
-    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
-    flushSync();
-    toggle(shown.target).dispatchEvent(pointer('pointerleave', 'mouse'));
-    const panel = list(shown.target);
-    if (!(panel instanceof HTMLElement)) throw new Error('no panel');
-    panel.dispatchEvent(pointer('pointerenter', 'mouse'));
-
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(list(shown.target), 'the crossing is not a departure').not.toBeNull();
-    shown.stop();
-  });
-
-  it('opens on a keyboard focus', () => {
-    const shown = show(false);
-    toggle(shown.target).dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-    flushSync();
-
-    expect(list(shown.target), 'focus opens it').not.toBeNull();
-    shown.stop();
-  });
-
-  it('opens on a keyboard focus after a press that focused nothing', () => {
-    // A press on the already-focused toggle: no focusin consumes the press,
-    // so the mouseup is what lets go - without it the next Tab would find
-    // the door shut.
-    const shown = show(false);
-    toggle(shown.target).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    toggle(shown.target).dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-    flushSync();
-    toggle(shown.target).dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
-    flushSync();
-
-    expect(list(shown.target), 'the keyboard focus still opens it').not.toBeNull();
-    shown.stop();
-  });
-
-  it('keeps the panel while focus crosses into it, and drops it when focus leaves', async () => {
-    const shown = show(false);
-    click(toggle(shown.target));
-    const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
-    if (control === null) throw new Error('no control');
-
-    // Tabbing from the toggle into a control: a bubbling focusout whose
-    // related target is inside the segment is a crossing, not a leave.
-    control.focus();
-    toggle(shown.target).dispatchEvent(
-      new FocusEvent('focusout', { bubbles: true, relatedTarget: control }),
+  /// **A row with no owner is refused, not drawn under an invented one**: a
+  /// tab belongs to the session whose calls drive it, and a row that cannot
+  /// say whose it is fails the read with the reason.
+  it('fails the read when a tab names no owner', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ owner: null })] }));
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('count unknown'),
     );
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(list(shown.target), 'the crossing keeps it').not.toBeNull();
-
-    toggle(shown.target).dispatchEvent(
-      new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }),
+    toggle(shown.target).click();
+    flushSync();
+    expect(list()?.textContent, 'the reason is drawn, in its own words').toContain(
+      'names no owner',
     );
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(list(shown.target), 'and a real leave drops it').toBeNull();
     shown.stop();
   });
 
-  it('collapses on the toggle, like every sibling row', () => {
-    const shown = show(false);
-    click(toggle(shown.target));
-    expect(list(shown.target), 'opened').not.toBeNull();
-
-    click(toggle(shown.target));
-    expect(list(shown.target), 'and the same click closes what the reader saw').toBeNull();
-    shown.stop();
-  });
-
-  it('keeps the panel while a control inside it holds focus', async () => {
-    const shown = show(false);
-    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
+  /// **Show raises the takeover on that tab of the profile**, and the row
+  /// carries the tab number so the page lands on the tab the person picked.
+  it('raises the takeover for the seat and the tab the row names', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ number: 4 })] }));
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
+    toggle(shown.target).click();
     flushSync();
-    const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
+    const showIt = list()?.querySelector<HTMLButtonElement>('.bz-show');
+    if (showIt == null) throw new Error('no show control');
+    showIt.click();
+    await vi.waitFor(() => expect(openSurface).toHaveBeenCalledWith('TestOrg/work', SLOT, 4));
+    shown.stop();
+  });
+
+  /// **A tab this page already fronts says hide**, and its own lower is the
+  /// surface's, not the server's.
+  it('lowers the tab this client already fronts', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ number: 4 })] }));
+    surface.phase = 'live';
+    surface.profile = 'TestOrg/work';
+    surface.attachedProfile = 'TestOrg/work';
+    surface.tab = 4;
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
+    toggle(shown.target).click();
+    flushSync();
+    const hide = list()?.querySelector<HTMLButtonElement>('[aria-label="hide tab 4"]');
+    expect(hide?.textContent?.trim()).toBe('hide');
+    hide?.click();
+    await vi.waitFor(() => expect(closeSurface).toHaveBeenCalledWith('TestOrg/work', SLOT));
+    shown.stop();
+  });
+
+  /// **Another client's tab is not this client's hide.** The state is the
+  /// server's, and which tab this page paints is its own.
+  it('offers show for a tab another client fronts', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ number: 4 })] }));
+    surface.phase = 'live';
+    surface.profile = 'TestOrg/work';
+    surface.attachedProfile = 'TestOrg/work';
+    surface.tab = 1;
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
+    toggle(shown.target).click();
+    flushSync();
+    const showIt = list()?.querySelector<HTMLButtonElement>('[aria-label^="show tab 4"]');
+    expect(showIt?.textContent?.trim(), 'this client is not showing it').toBe('show');
+    shown.stop();
+  });
+
+  /// **The strip carries no profile verbs**: a profile is not closed or
+  /// deleted from here, and a tab is not created - it belongs to the calls
+  /// that drive it.
+  it('carries no close or delete verb', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ number: 4 })] }));
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
+    toggle(shown.target).click();
+    flushSync();
+    expect(list()?.querySelector('.bz-close'), 'no close verb').toBeNull();
+    expect(list()?.querySelector('.bz-del'), 'no delete verb').toBeNull();
+    shown.stop();
+  });
+
+  it('collapses on the toggle and returns focus on Escape', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row()] }));
+    const shown = show();
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
+    toggle(shown.target).click();
+    flushSync();
+    expect(list(), 'opened').not.toBeNull();
+
+    toggle(shown.target).click();
+    flushSync();
+    expect(list(), 'and the same click closes it').toBeNull();
+
+    toggle(shown.target).click();
+    flushSync();
+    const control = list()?.querySelector<HTMLButtonElement>('.bz-show') ?? null;
     if (control === null) throw new Error('no control');
     control.focus();
-
-    toggle(shown.target).dispatchEvent(pointer('pointerleave', 'mouse'));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(list(shown.target), 'a leave does not unmount the focused control').not.toBeNull();
-    shown.stop();
-  });
-
-  it('leaves focus on the toggle when Escape closes', () => {
-    const shown = show(false);
-    toggle(shown.target).dispatchEvent(pointer('pointerenter', 'mouse'));
-    flushSync();
-    const control = list(shown.target)?.querySelector<HTMLButtonElement>('.bz-override') ?? null;
-    if (control === null) throw new Error('no control');
-    control.focus();
-
     control.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     flushSync();
-
-    expect(list(shown.target), 'Escape closes the panel').toBeNull();
+    expect(list(), 'Escape closes the panel').toBeNull();
     expect(document.activeElement, 'and the toggle takes the focus').toBe(toggle(shown.target));
     shown.stop();
   });
 
-  it('offers the override only where a click can honestly serve it, and sends it', () => {
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-
-    const take = list(shown.target)?.querySelector('.bz-override');
-    expect(take, 'capable and not hosting: the override is the door').not.toBeNull();
-    click(take);
-    expect(shown.taken, 'and pressing it asks the server for the role').toHaveBeenCalledTimes(1);
-    shown.stop();
-  });
-
-  it('draws no override where this client cannot drive anything', () => {
-    vi.mocked(canHost).mockReturnValue(false);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-
-    expect(shownText(shown.target)).toContain('browser not connected');
-    expect(
-      list(shown.target)?.querySelector('.bz-override'),
-      'nothing to override with no host',
-    ).toBeNull();
-    shown.stop();
-  });
-
-  it('flips on the role frame: holding it drops the override and says so', () => {
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    expect(list(shown.target)?.querySelector('.bz-override')).not.toBeNull();
-
-    shown.flip(true);
-    flushSync();
-
-    expect(shownText(shown.target), 'the role frame is what the line reads').toContain(
-      'browser connected',
+  /// **The hover names the resolved profile and how it stands**, and the
+  /// idle deadline reads as the minutes the person has.
+  it('names the profile, the connection and the closing time', async () => {
+    vi.mocked(listTabs).mockResolvedValue(
+      tabs({
+        connected: false,
+        closing_at_ms: Date.now() + 90_000,
+        rows: [row()],
+      }),
     );
-    expect(
-      list(shown.target)?.querySelector('.bz-override'),
-      'a holder offers no override',
-    ).toBeNull();
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog')?.getAttribute('title')).toContain(
+        'TestOrg/work · the host is up, no driver attached · closing in 2m',
+      ),
+    );
     shown.stop();
   });
 
-  /** The show/hide button on the row whose `.nm` reads `name` (shared included). */
-  function rowButton(target: HTMLElement, name: string): Element | null {
-    // The rows live in the PORTALED panel, not under the mount.
-    const panel = list(target);
-    if (panel === null) return null;
-    return (
-      [...panel.querySelectorAll('.bz-it')]
-        .find((el) => el.querySelector('.nm')?.textContent === name)
-        ?.querySelector('button.bz-show') ?? null
-    );
-  }
-
-  /** **The list is this slot's own**: another slot's profile is not this
-   *  seat's business, and the count is the slot's, not the client's. */
-  it('reads for its own slot and draws what the shell serves', async () => {
-    // **The shell filters, the page does not filter again.** The read must
-    // carry this page's seat - that is what makes another seat's profile
-    // unreachable here - and the rows drawn are the ones the shell served.
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'mine',
-        owner: 'Org/proj/me',
-        running: true,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false, { org: 'Org', project: 'proj', label: 'me' });
-    await vi.waitFor(() => {
-      expect(listProfiles, 'the read carries this seat').toHaveBeenCalledWith({
-        org: 'Org',
-        project: 'proj',
-        label: 'me',
-      });
-    });
+  /// **The mark is the server's own row**, not this client's attachment:
+  /// the phone holds no attachment of its own and still shows it.
+  it('says a connected browser on the resting row', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs());
+    const shown = show();
     await vi.waitFor(() => {
       expect(
-        shown.target.querySelector('.bz-tog .n')?.textContent,
-        'the count is what the shell served',
-      ).toBe('1 profile');
-    });
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => {
-      expect(shownText(shown.target), "this slot's profile is listed").toContain('mine');
+        shown.target.querySelector('.bz-tog .dot.ok'),
+        'a connected browser carries the ok disc',
+      ).not.toBeNull();
     });
     shown.stop();
   });
 
-  /**
-   * **A never-opened profile is not one whose driver is gone** (Ved, live,
-   * 2026-10-12): the seat's auto profile exists from its first browser
-   * call - which itself ran on the shared browser - so no driver ever
-   * started for it, and "its driver is gone" read as a fault where "not
-   * opened yet" is the truth.
-   */
-  it('says not-opened-yet for a profile whose browser never ran', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'forge-lead',
-        owner: 'Busytools/forge/lead',
-        running: false,
-        opened: false,
-        windowed: false,
-        closed: false,
-      },
-      {
-        name: 'was-open',
-        owner: 'Busytools/forge/lead',
-        running: false,
-        opened: true,
-        windowed: false,
-        closed: false,
-      },
-    ]);
-    const shown = show(false);
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('forge-lead'));
-
-    const rowText = (name: string): string =>
-      [...(list(shown.target)?.querySelectorAll('.bz-it') ?? [])]
-        .find((it) => it.querySelector('.nm')?.textContent === name)
-        ?.textContent?.trim() ?? '';
-    expect(rowText('forge-lead'), 'a never-opened profile says so').toContain('not opened yet');
-    expect(rowText('forge-lead'), 'and never claims a driver went missing').not.toContain(
-      'its driver is gone',
+  /// **A refused raise is drawn, and a read landing behind it does not erase
+  /// the sentence.**
+  it('draws a refused raise and keeps it when a read lands behind it', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ number: 4 })] }));
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
     );
-    expect(rowText('was-open'), 'one that HAS been opened keeps the old line').toContain(
-      'its driver is gone',
+    toggle(shown.target).click();
+    flushSync();
+
+    // A read is in flight when the raise is refused.
+    let land: (answer: BrowserTabList) => void = () => {};
+    vi.mocked(listTabs).mockReturnValueOnce(
+      new Promise((resolve) => {
+        land = resolve;
+      }),
+    );
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'raised' }));
+    flushSync();
+    openSurface.mockResolvedValueOnce('the browser host is gone');
+    list()?.querySelector<HTMLButtonElement>('.bz-show')?.click();
+    await vi.waitFor(() =>
+      expect(list()?.textContent, "the shell's own words").toContain('the browser host is gone'),
+    );
+
+    land(tabs({ rows: [row({ number: 4 })] }));
+    // **Let the stale read land, then render it**: without the flush the
+    // assertion reads the previous DOM and passes whatever the guard did.
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(list()?.textContent, 'the stale read did not erase the refusal').toContain(
+      'the browser host is gone',
     );
     shown.stop();
   });
 
-  /**
-   * **A closed profile and a dead driver must not read alike.** Both are not
-   * running, and only the closed one is on the bulk list - so the row that
-   * goes says closed, whatever owner it has, and the row whose entry is
-   * still held keeps its driver words.
-   */
-  it('a closed row and a dead driver do not read alike', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      closedRow('kdp', 'Busytools/forge/lead'),
-      // A held entry whose driver died: not running, and not closed.
-      { ...runningRow('was-open', 'Busytools/forge/lead'), running: false },
-    ]);
-    const shown = show(false, { org: 'Busytools', project: 'forge', label: 'lead' });
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => expect(shownText(shown.target)).toContain('kdp'));
-
-    expect(
-      rowText(shown.target, 'kdp'),
-      'a closed profile says closed and keeps its logins note, owner and all',
-    ).toContain('Busytools/forge/lead · closed · its logins are still here');
-    expect(rowText(shown.target, 'kdp'), 'and never claims a driver that left').not.toContain(
-      'its driver is gone',
+  /// **The engine line names what runs the page, and says so when nothing
+  /// does**, on both platforms.
+  it('names the engine behind the page and says when there is none', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ up: false, connected: false, rows: [] }));
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('0 tabs'),
     );
-    expect(
-      rowText(shown.target, 'was-open'),
-      'a held entry whose driver died keeps its words',
-    ).toContain('its driver is gone');
-    expect(rowText(shown.target, 'was-open'), 'and is not read as closed').not.toContain('closed');
+    toggle(shown.target).click();
+    flushSync();
+    expect(list()?.querySelector('.bz-engine')?.textContent).toBe('nothing to run a page');
+    expect(list()?.textContent, 'and no host is up').toContain('no host up');
+
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row()] }));
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'raised' }));
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
+    expect(list()?.querySelector('.bz-engine')?.textContent).toBe("the server's own Chromium");
     shown.stop();
   });
 
-  /** **A window that is up reads hide, on the shared line too**: the person
-   *  lowers it from the strip rather than hunting the window's X. */
-  it("the shared line's button lowers the window it raised", async () => {
-    vi.mocked(profileWindowed).mockResolvedValue(true);
-    const shown = show();
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => {
-      expect(rowButton(shown.target, 'shared')?.textContent, 'a window up reads hide').toContain(
-        'hide',
-      );
+  /// **A pushed list moves the panel without a poll**, which is how a tab
+  /// that opens or closes under the person arrives.
+  it('follows a pushed tab list', async () => {
+    let push: (answer: BrowserTabList) => void = () => {};
+    vi.mocked(onTabs).mockImplementation((fn) => {
+      push = fn;
+      return Promise.resolve(() => {});
     });
-    click(rowButton(shown.target, 'shared'));
-    expect(hideBrowser, 'the shared line lowers the shared window').toHaveBeenCalledWith(
-      null,
-      null,
+    vi.mocked(listTabs).mockResolvedValue(tabs());
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('0 tabs'),
+    );
+
+    push(tabs({ rows: [row({ number: 2 })] }));
+    flushSync();
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
     );
     shown.stop();
   });
 
-  /** A profile row toggles the same way, and **a refused hide is drawn** -
-   *  the button said hide, so a silence would read as done. */
-  it('a profile whose window is up says hide, and a refused hide is drawn', async () => {
-    vi.mocked(listProfiles).mockResolvedValue([
-      {
-        name: 'hunt',
-        owner: 'Org/proj/me',
-        running: true,
-        opened: true,
-        windowed: true,
-        closed: false,
-      },
-    ]);
-    vi.mocked(hideBrowser).mockResolvedValueOnce('no browser profile is open under hunt');
-    const shown = show(false, { org: 'Org', project: 'proj', label: 'me' });
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => {
-      expect(rowButton(shown.target, 'hunt')?.textContent, 'a window up reads hide').toContain(
-        'hide',
-      );
+  /// **A reconnect re-reads the tabs.** The push subscription lived on the
+  /// socket that dropped; without the read the strip froze on its last list.
+  it('re-reads the tabs when the connection is new again', async () => {
+    const seen: { notice: (() => void) | null } = { notice: null };
+    vi.mocked(onConnection).mockImplementation((fn) => {
+      seen.notice = fn;
+      return Promise.resolve(() => {});
     });
-    click(rowButton(shown.target, 'hunt'));
-    expect(hideBrowser, 'the row lowers its own window').toHaveBeenCalledWith('hunt', null);
-    await vi.waitFor(() => {
-      expect(shownText(shown.target), 'a refused hide is drawn, not swallowed').toContain(
-        'no browser profile is open under hunt',
-      );
-    });
-    shown.stop();
-  });
+    vi.mocked(listTabs).mockResolvedValue(tabs());
+    const shown = show(SLOT);
+    await vi.waitFor(() => expect(listTabs).toHaveBeenCalledTimes(1));
 
-  /** **A failed shared-line read is drawn**: the catch that says so was
-   *  revertible to a silence with every test green, and a button quietly
-   *  pinned to "show" reads as a window that is down. */
-  it('draws a shared-line read that failed', async () => {
-    vi.mocked(profileWindowed).mockRejectedValueOnce('the browser window state would not read');
-    const shown = show();
-    click(shown.target.querySelector('.bz-tog'));
-    await vi.waitFor(() => {
-      expect(shownText(shown.target), 'a shared-line read that failed says so').toContain(
-        'the browser window state would not read',
-      );
-    });
+    vi.mocked(listTabs).mockClear();
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ number: 3 })] }));
+    seen.notice?.();
+    await vi.waitFor(() => expect(listTabs).toHaveBeenCalledTimes(1));
+    flushSync();
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
     shown.stop();
   });
 });

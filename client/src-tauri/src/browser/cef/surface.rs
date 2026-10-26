@@ -1,87 +1,105 @@
-//! The takeover's picture and its input.
+//! The takeover's picture and its gestures.
 //!
-//! The browser is windowless; its frames arrive in the shared ring. This
-//! module lays a native view over the takeover's page area - the whole window
-//! under the bar - draws the ring's latest frame into its layer, and turns
-//! the view's mouse, wheel and key events into CDP input for the host's page.
-//! The page under it reports that area ([`Rect`]) and keeps drawing its state
-//! lines until the first frame lands.
+//! The browser lives on the server; its frames arrive encoded over the
+//! socket. This module lays a native view over the takeover's page area - the
+//! whole window under the bar - decodes each frame and draws it into the
+//! view's layer, and turns the view's mouse, wheel and key events into the
+//! gestures the server injects. The page under it reports that area
+//! ([`Rect`]) and keeps drawing its state lines until the first frame lands.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use forge_primitives::browser::{BrowserInputEvent, MouseAction};
 use objc2::rc::Allocated;
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{DefinedClass as _, MainThreadMarker, define_class, extern_methods, msg_send};
-use objc2_app_kit::{NSResponder, NSTrackingArea, NSTrackingAreaOptions, NSView};
+use objc2_app_kit::{
+    NSAutoresizingMaskOptions, NSResponder, NSTrackingArea, NSTrackingAreaOptions, NSView,
+};
 use objc2_core_foundation::CFData;
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize};
-
+use objc2_quartz_core::kCAGravityResizeAspect;
 use tauri::{Emitter as _, Manager as _};
-
-use super::input::{self, InputEvent, MouseKind, Sender};
-use super::osr::{MAX_HEIGHT, MAX_WIDTH, Ring};
-use super::spawn::ActiveHost;
-use crate::browser::NavDirection;
 
 #[cfg(feature = "testing")]
 pub mod testing;
 
-/// Where the page says its takeover's page area is, in CSS pixels from the
-/// viewport's top-left, and the device pixel ratio it is drawn at.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-    pub scale: f64,
+use super::input;
+use crate::browser::Rect;
+
+/// One decoded frame, in the pixel layout CEF painted it.
+pub struct Frame {
+    /// The profile whose page this is, so a warning names it.
+    pub profile: u16,
+    /// The tab this picture belongs to, so a warning names it too.
+    pub tab: u16,
+    pub width: u32,
+    pub height: u32,
+    /// RGBA or RGB bytes, whichever the bitstream carried.
+    pub pixels: Vec<u8>,
+    /// Whether `pixels` carries an alpha channel (four bytes per pixel).
+    pub alpha: bool,
 }
 
-impl Rect {
-    fn sane(self) -> Self {
-        Self {
-            x: self.x.max(0.0),
-            y: self.y.max(0.0),
-            width: self.width.max(1.0),
-            height: self.height.max(1.0),
-            scale: if self.scale > 0.0 { self.scale } else { 1.0 },
-        }
+/// Decode one WebP frame the server relayed.
+///
+/// **A frame whose pixels do not match the header's size is dropped**, not
+/// stretched: the header is the host's own statement about the frame, and a
+/// mismatch is a corrupt or truncated relay rather than a page to draw.
+pub fn decode(profile: u16, tab: u16, webp: &[u8], width: u32, height: u32) -> Option<Frame> {
+    let image = webp::Decoder::new(webp).decode()?;
+    if image.width() != width || image.height() != height {
+        return None;
     }
+    let pixels = image.to_vec();
+    let alpha = match pixels.len() {
+        len if len == (width as usize) * (height as usize) * 4 => true,
+        len if len == (width as usize) * (height as usize) * 3 => false,
+        _ => return None,
+    };
+    Some(Frame { profile, tab, width, height, pixels, alpha })
 }
 
 /// One open surface's native half.
 struct Overlay {
     /// The view, held by AppKit; this is only an address on the main thread.
     view: usize,
-    generation: u64,
-    cancel: Arc<AtomicBool>,
-    /// **The mapping the layer is reading.** CoreAnimation releases a frame's
-    /// image on its next transaction commit, so the ring stays mapped until
-    /// the view is gone and a commit has had its turn; otherwise the bytes
-    /// are unmapped under a live CGImage.
-    ring: Arc<Ring>,
-    /// The page connection, for the bar's arrows: the command that comes
-    /// from the DOM has no view to reach through, so the slot keeps one.
-    sender: Sender,
+    /// The page's own viewport, for the look rig's composite: the snapshot
+    /// it draws must be the page's size, not the window's.
+    viewport: NSSize,
 }
 
 static OVERLAY: Mutex<Option<Overlay>> = Mutex::new(None);
-static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// **The look driver's window onto the overlay.** The overlay's view address,
+/// its frame in the window's content view, the content view's own size and
+/// the page's viewport - a screenshot draws the page's snapshot at the page's
+/// size, and the picture where it really is.
+#[cfg(feature = "look-driver")]
+pub fn look_overlay() -> Option<(usize, NSRect, NSSize, NSSize)> {
+    let slot = OVERLAY.lock().ok()?;
+    let overlay = slot.as_ref()?;
+    // SAFETY: read on the main thread by the caller, while the slot holds it.
+    unsafe {
+        let view = &*(overlay.view as *const OverlayView);
+        let superview = view.superview()?;
+        Some((overlay.view, view.frame(), superview.bounds().size, overlay.viewport))
+    }
+}
 
 struct OverlayIvars {
-    sender: Mutex<Option<Sender>>,
-    /// The app, for the one key that acts on the surface itself (Cmd+W).
+    /// The app, for the one key that acts on the surface itself (Cmd+W) and
+    /// for the socket the gestures go back on.
     app: Mutex<Option<tauri::AppHandle>>,
 }
 
 impl Default for OverlayIvars {
     fn default() -> Self {
-        Self { sender: Mutex::new(None), app: Mutex::new(None) }
+        Self { app: Mutex::new(None) }
     }
 }
 
@@ -92,8 +110,7 @@ define_class!(
 
     impl OverlayView {
         /// **objc2 requires an ivars class's initializer to call
-        /// `set_ivars`.** Without it every slot read is uninitialized memory,
-        /// and the first Open drops whatever `set_app` reads there.
+        /// `set_ivars`.** Without it every slot read is uninitialized memory.
         #[unsafe(method_id(initWithFrame:))]
         unsafe fn init_with_frame(
             this: Allocated<Self>,
@@ -120,36 +137,35 @@ define_class!(
             if let Some(window) = self.window() {
                 window.makeFirstResponder(Some(self as &NSResponder));
             }
-            self.mouse(MouseKind::Press, event);
+            self.mouse(MouseAction::Press, event);
         }
 
         #[unsafe(method(mouseUp:))]
         unsafe fn mouse_up(&self, event: &objc2_app_kit::NSEvent) {
-            self.mouse(MouseKind::Release, event);
+            self.mouse(MouseAction::Release, event);
         }
 
         #[unsafe(method(mouseDragged:))]
         unsafe fn mouse_dragged(&self, event: &objc2_app_kit::NSEvent) {
-            self.mouse(MouseKind::Move, event);
+            self.mouse(MouseAction::Move, event);
         }
 
         #[unsafe(method(mouseMoved:))]
         unsafe fn mouse_moved(&self, event: &objc2_app_kit::NSEvent) {
-            self.mouse(MouseKind::Move, event);
+            self.mouse(MouseAction::Move, event);
         }
 
         #[unsafe(method(scrollWheel:))]
         unsafe fn scroll_wheel(&self, event: &objc2_app_kit::NSEvent) {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
             let (x, y) = css_point(point);
-            let event = InputEvent::Wheel {
+            self.send(BrowserInputEvent::Wheel {
                 x,
                 y,
                 delta_x: -event.scrollingDeltaX(),
                 delta_y: -event.scrollingDeltaY(),
-                modifiers: modifiers(event),
-            };
-            self.send(event);
+                modifiers: input::modifiers(event.modifierFlags()),
+            });
         }
 
         /// **Command chords arrive here first.** AppKit routes key
@@ -157,10 +173,10 @@ define_class!(
         /// and Tauri's default menu matches Cmd+W (Close Window) and the
         /// Edit menu's Cmd+A/X/C/V/Z even with no responder of its own. The
         /// surface claims those eight while IT holds first responder: Cmd+W
-        /// lowers the takeover, the editing chords go to the page over CDP,
-        /// Cmd+[ and Cmd+] move through the page's history, and everything
-        /// else defers to the superclass, which is the app's menu -
-        /// including when the DOM bar's feedback field has focus.
+        /// lowers the takeover, the editing chords go to the page, Cmd+[ and
+        /// Cmd+] move through the page's history, and everything else defers
+        /// to the superclass, which is the app's menu - including when the
+        /// DOM bar's feedback field has focus.
         #[unsafe(method(performKeyEquivalent:))]
         unsafe fn perform_key_equivalent(
             &self,
@@ -181,15 +197,15 @@ define_class!(
                     true.into()
                 }
                 Equivalent::Page(character) => {
-                    self.send_command(character, modifiers(event));
+                    self.send_command(character, event.modifierFlags());
                     true.into()
                 }
                 Equivalent::Back => {
-                    self.navigate(NavDirection::Back);
+                    self.navigate(true);
                     true.into()
                 }
                 Equivalent::Forward => {
-                    self.navigate(NavDirection::Forward);
+                    self.navigate(false);
                     true.into()
                 }
                 Equivalent::Defer => objc2::msg_send![super(self), performKeyEquivalent: event],
@@ -214,33 +230,34 @@ define_class!(
                     && !option
                     && !control
                     && let Some(character) = character_of(event)
-                    && editing_key(character).is_some()
+                    && input::editing_key(character).is_some()
                 {
-                    self.send_command(character, modifiers(event));
+                    self.send_command(character, flags);
                 }
                 return;
             }
             if let Some((key, code, vk)) = input::special_key(keycode) {
-                self.send(InputEvent::Key {
+                let modifiers = input::modifiers(flags);
+                self.send(BrowserInputEvent::Key {
                     down: true,
-                    key,
-                    code,
+                    key: key.to_owned(),
+                    code: code.to_owned(),
                     windows_vk: vk,
-                    modifiers: modifiers(event),
+                    modifiers,
                 });
-                self.send(InputEvent::Key {
+                self.send(BrowserInputEvent::Key {
                     down: false,
-                    key,
-                    code,
+                    key: key.to_owned(),
+                    code: code.to_owned(),
                     windows_vk: vk,
-                    modifiers: modifiers(event),
+                    modifiers,
                 });
                 return;
             }
             if let Some(characters) = event.characters() {
                 let text = characters.to_string();
                 if !text.is_empty() {
-                    self.send(InputEvent::Text(text));
+                    self.send(BrowserInputEvent::Text { text });
                 }
             }
         }
@@ -261,35 +278,48 @@ impl OverlayView {
         fn new_with_frame(this: Allocated<Self>, frame: NSRect) -> objc2::rc::Retained<Self>;
     );
 
-    fn mouse(&self, kind: MouseKind, event: &objc2_app_kit::NSEvent) {
+    fn mouse(&self, action: MouseAction, event: &objc2_app_kit::NSEvent) {
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
         let (x, y) = css_point(point);
-        self.send(InputEvent::Mouse {
-            kind,
+        self.send(BrowserInputEvent::Mouse {
+            action,
             x,
             y,
             button: event.buttonNumber() as i32,
             clicks: event.clickCount() as i32,
-            modifiers: modifiers(event),
+            modifiers: input::modifiers(event.modifierFlags()),
         });
     }
 
-    fn send(&self, event: InputEvent) {
-        if let Some(sender) = self.ivars().sender.lock().ok().and_then(|slot| slot.clone()) {
-            sender.send(event);
+    fn send(&self, event: BrowserInputEvent) {
+        if let Some(app) = self.ivars().app.lock().ok().and_then(|slot| slot.clone()) {
+            // **A gesture that never leaves this view is a dead page with no
+            // line**; moves and wheels are a stream, so only the discrete
+            // gestures are said at the level the client log keeps.
+            let streaming = matches!(
+                &event,
+                BrowserInputEvent::Mouse { action: MouseAction::Move, .. }
+                    | BrowserInputEvent::Wheel { .. }
+            );
+            if streaming {
+                tauri_plugin_log::log::debug!(
+                    "the overlay sent a gesture (event_name client_browser_input_sent, {})",
+                    describe(&event)
+                );
+            } else {
+                tauri_plugin_log::log::info!(
+                    "the overlay sent a gesture (event_name client_browser_input_sent, {})",
+                    describe(&event)
+                );
+            }
+            crate::bridge::browser_input(&app, event);
         }
     }
 
-    /// The arrows' keyboard route: the page connection owns the move.
-    fn navigate(&self, direction: NavDirection) {
-        if let Some(sender) = self.ivars().sender.lock().ok().and_then(|slot| slot.clone()) {
-            sender.navigate(direction);
-        }
-    }
-
-    fn set_sender(&self, sender: Sender) {
-        if let Ok(mut slot) = self.ivars().sender.lock() {
-            *slot = Some(sender);
+    /// The arrows' keyboard route: the server owns the move.
+    fn navigate(&self, back: bool) {
+        if let Some(app) = self.ivars().app.lock().ok().and_then(|slot| slot.clone()) {
+            crate::bridge::browser_nav(&app, back);
         }
     }
 
@@ -319,60 +349,80 @@ impl OverlayView {
         same_responder(responder, self as *const Self as usize)
     }
 
-    /// An editing chord to the page: pasteboard text for Cmd+V - the host has
+    /// An editing chord to the page: pasteboard text for Cmd+V - the page has
     /// no native edit menu, and a widget cannot read the pasteboard itself -
     /// and a key pair for the rest.
-    fn send_command(&self, character: char, modifiers: i32) {
+    fn send_command(&self, character: char, flags: objc2_app_kit::NSEventModifierFlags) {
         if character == 'v' {
             if let Some(text) = pasteboard_text() {
-                self.send(InputEvent::Text(text));
+                self.send(BrowserInputEvent::Text { text });
             }
             return;
         }
-        let Some((key, code, windows_vk)) = editing_key(character) else { return };
-        self.send(InputEvent::Key { down: true, key, code, windows_vk, modifiers });
-        self.send(InputEvent::Key { down: false, key, code, windows_vk, modifiers });
+        let Some((key, code, windows_vk)) = input::editing_key(character) else { return };
+        let modifiers = input::modifiers(flags);
+        self.send(BrowserInputEvent::Key {
+            down: true,
+            key: key.to_owned(),
+            code: code.to_owned(),
+            windows_vk,
+            modifiers,
+        });
+        self.send(BrowserInputEvent::Key {
+            down: false,
+            key: key.to_owned(),
+            code: code.to_owned(),
+            windows_vk,
+            modifiers,
+        });
     }
 
-    /// Draw the ring's latest frame. **The bytes are the ring's own**: a
-    /// no-copy CFData and CGImage reference the shared mapping, so this side
-    /// copies nothing - a frame at this size is tens of megabytes, and a copy
-    /// per frame at 60 Hz is the difference between a live page and a
-    /// stuttering one.
-    ///
-    /// # Safety
-    ///
-    /// `pixels` points at `width * height * 4` readable bytes that outlive
-    /// the layer's use of them (the host's ring lives for its process).
-    unsafe fn draw_frame(&self, pixels: *const u8, width: usize, height: usize) {
-        let Some(layer) = self.layer() else { return };
-        // SAFETY: the ring's pixels outlive this image, and
-        // `kCFAllocatorNull` is CF's "do not free these bytes" allocator - a
-        // NULL deallocator asserts and aborts.
-        let Some(data) = (unsafe {
-            CFData::with_bytes_no_copy(
-                None,
-                pixels,
-                (width * height * 4) as isize,
-                objc2_core_foundation::kCFAllocatorNull,
-            )
-        }) else {
+    /// Draw one decoded frame. **The bytes are copied into the CFData**: a
+    /// frame is a few megabytes and the copy is one memcpy, where handing
+    /// CoreAnimation a borrowed buffer would free it under a live image when
+    /// the next frame replaces this one.
+    fn draw_frame(&self, frame: &Frame) {
+        let Some(layer) = self.layer() else {
+            tauri_plugin_log::log::debug!("client_browser_frame_no_layer");
             return;
         };
-        let Some(provider) = CGDataProvider::with_cf_data(Some(&data)) else { return };
-        let Some(space) = CGColorSpace::new_device_rgb() else { return };
-        // CEF paints BGRA: little-endian 32-bit with alpha first.
-        let bitmap = CGBitmapInfo(
-            CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0,
-        );
-        // SAFETY: the buffer is a full BGRA frame of exactly this size.
+        // **Every frame is handed to CoreGraphics as RGBA.** A lossy WebP
+        // frame decodes to three bytes a pixel, and `CGImage::new` refuses
+        // `kCGImageAlphaNone` next to a 32-bit byte order - the image came
+        // back nil and the surface stayed black (measured on the dev stack).
+        let rgba: Vec<u8> = if frame.alpha {
+            frame.pixels.clone()
+        } else {
+            let (pixels, _) = frame.pixels.as_chunks::<3>();
+            let mut rgba = Vec::with_capacity(pixels.len() * 4);
+            for pixel in pixels {
+                rgba.extend_from_slice(pixel);
+                rgba.push(0xFF);
+            }
+            rgba
+        };
+        let data = CFData::from_bytes(&rgba);
+        let Some(provider) = CGDataProvider::with_cf_data(Some(&data)) else {
+            tauri_plugin_log::log::debug!("client_browser_frame_no_provider");
+            return;
+        };
+        let Some(space) = CGColorSpace::new_device_rgb() else {
+            tauri_plugin_log::log::debug!("client_browser_frame_no_colour_space");
+            return;
+        };
+        let bits = 32;
+        // RGBA, straight alpha: bytes in memory are R,G,B,A.
+        let bitmap = CGBitmapInfo(CGImageAlphaInfo::Last.0 | CGImageByteOrderInfo::Order32Big.0);
+        let row = frame.width * 4;
+        // SAFETY: the buffer is a full frame of exactly this size, and the
+        // CFData owns a copy that outlives the image.
         let image = unsafe {
             CGImage::new(
-                width,
-                height,
+                frame.width as usize,
+                frame.height as usize,
                 8,
-                32,
-                width * 4,
+                bits,
+                row as usize,
                 Some(&space),
                 bitmap,
                 Some(&provider),
@@ -381,11 +431,28 @@ impl OverlayView {
                 CGColorRenderingIntent::RenderingIntentDefault,
             )
         };
-        let Some(image) = image else { return };
-        let frame = self.frame();
-        if frame.size.width > 0.0 {
-            layer.setContentsScale(width as f64 / frame.size.width);
+        let Some(image) = image else {
+            tauri_plugin_log::log::warn!(
+                "a browser frame could not become an image (event_name \
+                 client_browser_frame_unpaintable, profile {}, tab {}, {}x{})",
+                frame.profile,
+                frame.tab,
+                frame.width,
+                frame.height
+            );
+            return;
+        };
+        let bounds = self.frame();
+        if bounds.size.width > 0.0 {
+            layer.setContentsScale(f64::from(frame.width) / bounds.size.width);
         }
+        // **A frame keeps its own shape.** The page is laid out to the
+        // controller's surface, so a watcher's surface can have another
+        // aspect (a phone's portrait page on a desktop) and CoreAnimation's
+        // default stretches it. Fitting it leaves bars, as the phone's canvas
+        // does; only the controller sends input, and its frame matches.
+        // SAFETY: the constant is QuartzCore's own immutable string.
+        unsafe { layer.setContentsGravity(kCAGravityResizeAspect) };
         // SAFETY: CGImage and id share the object pointer; the layer retains it.
         let contents = unsafe {
             &*(objc2_core_foundation::CFRetained::as_ptr(&image).as_ptr().cast::<AnyObject>())
@@ -394,10 +461,25 @@ impl OverlayView {
     }
 }
 
-/// Whether the window's first responder IS this view. A seam because the
-/// gate is what keeps the bar's DOM feedback field on the menu's own editing.
+/// Whether the window's first responder IS this view.
 fn same_responder(responder: Option<usize>, view: usize) -> bool {
     responder.is_some_and(|responder| responder == view)
+}
+
+/// One gesture, for the log.
+fn describe(event: &BrowserInputEvent) -> String {
+    match event {
+        BrowserInputEvent::Mouse { action, x, y, .. } => {
+            format!("mouse {action:?} at {x:.0},{y:.0}")
+        }
+        BrowserInputEvent::Wheel { x, y, delta_x, delta_y, .. } => {
+            format!("wheel at {x:.0},{y:.0} by {delta_x:.0},{delta_y:.0}")
+        }
+        BrowserInputEvent::Key { down, key, .. } => {
+            format!("key {} {key}", if *down { "down" } else { "up" })
+        }
+        BrowserInputEvent::Text { text } => format!("text {} bytes", text.len()),
+    }
 }
 
 /// What a Command key equivalent does when the surface has the keyboard.
@@ -444,30 +526,6 @@ pub fn route_equivalent(
     }
 }
 
-fn modifiers(event: &objc2_app_kit::NSEvent) -> i32 {
-    use objc2_app_kit::NSEventModifierFlags as Flags;
-    let flags = event.modifierFlags();
-    input::cdp_modifiers(
-        flags.contains(Flags::Option),
-        flags.contains(Flags::Control),
-        flags.contains(Flags::Command),
-        flags.contains(Flags::Shift),
-    )
-}
-
-/// A letter key with Command held: the browser's own edit shortcuts, which a
-/// text insert cannot express.
-fn editing_key(character: char) -> Option<(&'static str, &'static str, i32)> {
-    Some(match character.to_ascii_lowercase() {
-        'a' => ("a", "KeyA", 65),
-        'x' => ("x", "KeyX", 88),
-        'c' => ("c", "KeyC", 67),
-        'v' => ("v", "KeyV", 86),
-        'z' => ("z", "KeyZ", 90),
-        _ => return None,
-    })
-}
-
 /// The character a key event names, as the menu would match it.
 fn character_of(event: &objc2_app_kit::NSEvent) -> Option<char> {
     let characters = event.charactersIgnoringModifiers()?;
@@ -483,52 +541,190 @@ fn pasteboard_text() -> Option<String> {
     if text.is_empty() { None } else { Some(text) }
 }
 
-/// Open the surface over the takeover's page area: size the host's view,
-/// place the overlay exactly at the page's rect, and start drawing the ring.
-pub async fn attach(
-    app: &tauri::AppHandle,
-    host: Arc<ActiveHost>,
-    rect: Rect,
-) -> Result<(), String> {
-    let rect = rect.sane();
-    request_rect(&host, rect);
-    let generation = GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-    let cancel = Arc::new(AtomicBool::new(false));
+/// A point in the view, as the page's CSS pixels.
+///
+/// **The overlay is laid at the page area's own rect, so its points ARE the
+/// page's CSS pixels.** Scaling by the frame's size treated the frame's
+/// DEVICE pixels as CSS ones and doubled every gesture on a retina display
+/// (measured on the dev stack: clicks and wheels landed off the page).
+fn css_point(point: NSPoint) -> (f64, f64) {
+    (point.x, point.y)
+}
 
-    // The person's file picker is the client's own panel, asked for by the
-    // input task when a click lands on a file input.
-    let (panels, mut panel_requests) =
-        tokio::sync::mpsc::unbounded_channel::<input::PanelRequest>();
-    let panel_app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(request) = panel_requests.recv().await {
-            let picked = pick_file(&panel_app).await;
-            let _ = request.reply.send(picked);
-        }
-    });
-    let sender = input::start(host.port, Arc::clone(&cancel), panels, app.clone()).await?;
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "the client window is not there".to_owned())?;
-    let (placed_tx, placed_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-    let cancel_for_closure = Arc::clone(&cancel);
-    let ring_for_view = Arc::clone(&host.ring);
+/// The view's frame inside its superview, for a page area in CSS pixels.
+///
+/// **The page's viewport is the WEBVIEW, not its superview.** A titled
+/// window's webview can sit inset inside the superview, and a rect measured
+/// from the page's own top-left that skipped that inset started high enough
+/// to cover the takeover's bar (measured on the dev stack: a 40 px bar was
+/// under the picture).
+fn frame_for(webview: &NSView, superview: &NSView, rect: Rect, inset: f64) -> NSRect {
+    // **The page measures top-down and each view measures under its own
+    // orientation.** The page area's top-left is converted as a POINT through
+    // the window, then read back in the parent's orientation, so the picture
+    // lands under the bar whichever view is flipped (a rect conversion
+    // mirrored a whole-frame twice as often as it should: measured on the
+    // dev stack, the picture covered the bar again).
+    //
+    // **`inset` is the chrome above the page**: page y 0 is that far below
+    // the webview's own top in a titled window (zero in full screen).
+    let bounds = webview.bounds().size;
+    let top_left = if webview.isFlipped() {
+        NSPoint::new(rect.x, inset + rect.y)
+    } else {
+        NSPoint::new(rect.x, bounds.height - inset - rect.y)
+    };
+    let in_window = webview.convertPoint_toView(top_left, None);
+    let in_parent = superview.convertPoint_fromView(in_window, None);
+    let origin = if superview.isFlipped() {
+        in_parent
+    } else {
+        NSPoint::new(in_parent.x, in_parent.y - rect.height)
+    };
+    NSRect::new(origin, NSSize::new(rect.width, rect.height))
+}
+
+/// One superview rect back in the page's top-down coordinates, for the log.
+fn page_y_of(webview: &NSView, rect: NSRect) -> f64 {
+    page_y(webview.bounds().size.height, rect.origin.y, rect.size.height, webview.isFlipped())
+}
+
+/// One y between the page's top-down measure and a view's own measure.
+///
+/// **A view that is not flipped measures from the bottom**, so the mirror is
+/// what keeps the picture under the bar instead of over it - and the same
+/// mirror reads a placed rect back for the log.
+fn page_y(height: f64, y: f64, rect_height: f64, flipped: bool) -> f64 {
+    if flipped { y } else { height - y - rect_height }
+}
+
+/// Lay the overlay over the takeover's page area, or move it there.
+///
+/// **One view per surface, moved rather than rebuilt.** Every page-area
+/// report used to lay a fresh view and remember only the newest, so the
+/// older ones stayed in the hierarchy holding their last picture: going back
+/// to the chat took one view down and left the paint over it (measured on
+/// the dev stack).
+///
+/// **Placed on the main thread**: the view is AppKit's, and the call is made
+/// from a command that already runs there.
+pub fn attach(app: &tauri::AppHandle, rect: Rect, viewport: super::super::Viewport) {
+    let rect = rect.sane();
+    let viewport = viewport.sane();
     let app_for_view = app.clone();
+    let Some(window) = app.get_webview_window("main") else {
+        tauri_plugin_log::log::warn!("the client window is not there; the surface is not laid");
+        return;
+    };
     let scheduled = window.with_webview(move |platform| {
         // SAFETY: this runs on the main thread, and the platform view is the
         // webview's own NSView for the window's lifetime.
-        let placed = unsafe {
+        unsafe {
             let webview = platform.inner().cast::<NSView>();
             match (webview.as_ref(), MainThreadMarker::new()) {
                 (Some(webview), Some(mtm)) => match webview.superview() {
                     Some(superview) => {
-                        let overlay = OverlayView::new_with_frame(
-                            mtm.alloc::<OverlayView>(),
-                            frame_for(&superview, rect),
+                        // **The page's top is not the webview's top in a
+                        // titled window.** The chrome above the page is the
+                        // webview's height less the page viewport's, and a
+                        // picture placed from page coordinates without it
+                        // covers the bar by exactly that much.
+                        let inset = (webview.bounds().size.height - viewport.height).max(0.0);
+                        let placed = frame_for(webview, &superview, rect, inset);
+                        // Read back in the page's own coordinates: the top
+                        // must land on the page area's y, or the picture is
+                        // over the bar.
+                        let back = webview.convertRect_fromView(placed, Some(&superview));
+                        let window = webview.window();
+                        let window_frame = window.as_deref().map(|window| window.frame());
+                        let screen = |rect: NSRect| -> String {
+                            let Some(window) = window.as_deref() else { return "none".to_owned() };
+                            let in_window = superview.convertRect_toView(rect, None);
+                            let frame = window.convertRectToScreen(in_window);
+                            format!(
+                                "{},{} {}x{}",
+                                frame.origin.x, frame.origin.y, frame.size.width, frame.size.height
+                            )
+                        };
+                        let overlay_screen = screen(placed);
+                        let webview_screen = screen(webview.frame());
+                        let webview_frame = webview.frame();
+                        tauri_plugin_log::log::info!(
+                            "the picture is laid (event_name client_browser_surface_attached, \
+                             asked y {}, landed y {}, viewport inset {inset}, h {}, flipped {}, \
+                             placed at {},{},{}x{}, super flipped {}, super {}x{}, window {}, \
+                             overlay screen {}, webview screen {}, webview frame {},{},{}x{})",
+                            rect.y,
+                            page_y_of(webview, back) - inset,
+                            back.size.height,
+                            webview.isFlipped(),
+                            placed.origin.x,
+                            placed.origin.y,
+                            placed.size.width,
+                            placed.size.height,
+                            superview.isFlipped(),
+                            superview.bounds().size.width,
+                            superview.bounds().size.height,
+                            window_frame.map_or_else(
+                                || "none".to_owned(),
+                                |frame| format!(
+                                    "{},{} {}x{}",
+                                    frame.origin.x,
+                                    frame.origin.y,
+                                    frame.size.width,
+                                    frame.size.height
+                                )
+                            ),
+                            overlay_screen,
+                            webview_screen,
+                            webview_frame.origin.x,
+                            webview_frame.origin.y,
+                            webview_frame.size.width,
+                            webview_frame.size.height
                         );
-                        overlay.set_sender(sender.clone());
+                        let here = &*superview as *const NSView;
+                        // Bound outside the `if let`: the lock's guard lives
+                        // through that body, and taking it again inside would
+                        // deadlock.
+                        let current =
+                            OVERLAY.lock().ok().and_then(|slot| slot.as_ref().map(|o| o.view));
+                        if let Some(current) = current {
+                            let view = &*(current as *const OverlayView);
+                            let same =
+                                view.superview().as_deref().map(|each| each as *const NSView)
+                                    == Some(here);
+                            if same {
+                                view.setFrame(placed);
+                                if let Ok(mut slot) = OVERLAY.lock()
+                                    && let Some(overlay) = slot.as_mut()
+                                {
+                                    overlay.viewport = NSSize::new(viewport.width, viewport.height);
+                                }
+                                return;
+                            }
+                            // A view from a window that is gone: take it down
+                            // rather than leave it drawing nowhere.
+                            view.removeFromSuperview();
+                            *OVERLAY.lock().expect("the overlay slot") = None;
+                        }
+                        let overlay =
+                            OverlayView::new_with_frame(mtm.alloc::<OverlayView>(), placed);
                         overlay.set_app(app_for_view.clone());
                         overlay.setWantsLayer(true);
+                        // **The picture tracks the window between reports.**
+                        // A resize moves the webview with its own autoresizing
+                        // while this view keeps whatever frame it was last
+                        // given; a page report usually follows, but one that
+                        // lands before the layout settles leaves the picture
+                        // over the bar. Both margins stay fixed, and the layer
+                        // clips its own image, so nothing outgrows its frame.
+                        overlay.setAutoresizingMask(
+                            NSAutoresizingMaskOptions::ViewWidthSizable
+                                | NSAutoresizingMaskOptions::ViewHeightSizable,
+                        );
+                        if let Some(layer) = overlay.layer() {
+                            layer.setMasksToBounds(true);
+                        }
                         superview.addSubview(&overlay);
                         let area = NSTrackingArea::initWithRect_options_owner_userInfo(
                             mtm.alloc::<NSTrackingArea>(),
@@ -551,238 +747,55 @@ pub async fn attach(
                         let view = &*overlay as *const OverlayView as usize;
                         *OVERLAY.lock().expect("the overlay slot") = Some(Overlay {
                             view,
-                            generation,
-                            cancel: Arc::clone(&cancel_for_closure),
-                            ring: Arc::clone(&ring_for_view),
-                            sender,
+                            viewport: NSSize::new(viewport.width, viewport.height),
                         });
                         // **The local reference goes; the hierarchy keeps
                         // one.** `addSubview` retained the view, so letting
                         // this Retained drop is what keeps a second reference
                         // from leaking per open.
-                        Ok(())
                     }
-                    None => Err("the client window's content view is not there".to_owned()),
+                    None => tauri_plugin_log::log::warn!(
+                        "the client window's content view is not there; the surface is not laid"
+                    ),
                 },
-                _ => Err("the browser surface must be placed on the main thread".to_owned()),
+                _ => tauri_plugin_log::log::warn!(
+                    "the browser surface must be placed on the main thread"
+                ),
             }
-        };
-        let _ = placed_tx.send(placed);
+        }
     });
     if let Err(why) = scheduled {
-        cancel.store(true, Ordering::Release);
-        return Err(format!("the window's webview cannot be reached: {why}"));
+        tauri_plugin_log::log::warn!("the window's webview cannot be reached: {why}");
     }
-    // The placement runs on the main thread; a placement that never lands
-    // must not hold the person's Open forever.
-    match tokio::time::timeout(std::time::Duration::from_secs(3), placed_rx).await {
-        // **Logged only once the closure has answered.** The line used to sit
-        // before this await, so a placement that timed out still claimed one.
-        Ok(Ok(Ok(()))) => tauri_plugin_log::log::info!(
-            "surface placed (event_name cef_surface_placed, rect {:.0}x{:.0} at {:.0},{:.0}, \
-             scale {})",
-            rect.width,
-            rect.height,
-            rect.x,
-            rect.y,
-            rect.scale,
-        ),
-        Ok(Ok(Err(why))) => {
-            cancel.store(true, Ordering::Release);
-            return Err(why);
-        }
-        _ => {
-            cancel.store(true, Ordering::Release);
-            return Err("the browser surface could not be placed over the conversation".to_owned());
-        }
-    }
-
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let mut last = 0_u64;
-        let mut last_size = (0_usize, 0_usize);
-        let mut checked = std::time::Instant::now();
-        let mut last_focus = 1_u32;
-        loop {
-            if cancel.load(Ordering::Acquire) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(4)).await;
-            // **A dead or frozen host must not leave its last frame up with
-            // no words.** The state is the host's own word, the process is
-            // checked for exit, and the DevTools endpoint proves the message
-            // loop still answers - a static page paints nothing, so frames
-            // alone cannot tell a quiet page from a wedged host. The header
-            // is read and dropped before the probe: a raw pointer cannot
-            // cross the await.
-            if checked.elapsed() >= std::time::Duration::from_secs(2) {
-                checked = std::time::Instant::now();
-                let (state, visible, focused) = {
-                    let header = host.ring.header();
-                    // SAFETY: the ring is mapped for the host's lifetime.
-                    unsafe {
-                        (
-                            (*header).state.load(Ordering::Acquire),
-                            (*header).visible.load(Ordering::Relaxed),
-                            (*header).focused.load(Ordering::Relaxed),
-                        )
-                    }
-                };
-                if focused != last_focus {
-                    last_focus = focused;
-                    tauri_plugin_log::log::debug!(
-                        "the browser host reports focus {focused} (event_name cef_surface_focus)"
-                    );
-                }
-                let alive = super::spawn::alive(host.pid);
-                let answers = alive && super::spawn::probe(host.port).await;
-                if state == super::osr::STATE_FAILED || visible == 0 || !answers {
-                    let why = if state == super::osr::STATE_FAILED {
-                        "the browser could not start"
-                    } else {
-                        "the browser stopped answering"
-                    };
-                    let _ = app.emit("browser_surface_failed", why.to_owned());
-                    detach(&app);
-                    break;
-                }
-            }
-            let header = host.ring.header();
-            // SAFETY: the ring is mapped for the host's lifetime.
-            let frame = unsafe { (*header).frame.load(Ordering::Acquire) };
-            if frame == last || frame % 2 != 0 {
-                continue;
-            }
-            last = frame;
-            let width = unsafe { (*header).width.load(Ordering::Relaxed) } as usize;
-            let height = unsafe { (*header).height.load(Ordering::Relaxed) } as usize;
-            if width == 0 || height == 0 {
-                continue;
-            }
-            if (width, height) != last_size {
-                last_size = (width, height);
-                // SAFETY: the ring is mapped for the host's lifetime.
-                let (request_width, request_height, request_scale) = unsafe {
-                    (
-                        (*header).request_width.load(Ordering::Relaxed),
-                        (*header).request_height.load(Ordering::Relaxed),
-                        (*header).request_scale_milli.load(Ordering::Relaxed),
-                    )
-                };
-                tauri_plugin_log::log::debug!(
-                    "the host painted a new size (event_name cef_surface_paint_size, delivered \
-                     {width}x{height}, requested {request_width}x{request_height}, scale_milli \
-                     {request_scale})"
-                );
-            }
-            let ring = Arc::clone(&host.ring);
-            let _ = app.run_on_main_thread(move || {
-                let slot = OVERLAY.lock().expect("the overlay slot");
-                let Some(overlay) = slot.as_ref() else { return };
-                if overlay.generation != generation {
-                    return;
-                }
-                // SAFETY: the view lives while this generation is current,
-                // both guarded on the main thread by the same slot; the ring
-                // outlives the layer's use of its pixels.
-                unsafe {
-                    let view = &*(overlay.view as *const OverlayView);
-                    view.draw_frame(ring.pixels(), width, height);
-                }
-            });
-        }
-    });
-    Ok(())
 }
 
-/// Ask the host's ring for a view size, logging the request so every applied
-/// rect is named by the log that asked for it.
-fn request_rect(host: &ActiveHost, rect: Rect) {
-    let width = paint_px(rect.width * raster(rect));
-    let height = paint_px(rect.height * raster(rect));
-    let scale = raster(rect);
-    tauri_plugin_log::log::debug!(
-        "the surface asks for a paint size (event_name cef_surface_rect_requested, port {}, rect \
-         {:.0}x{:.0} at {:.0},{:.0}, paint {width}x{height}, scale {scale:.2})",
-        host.port,
-        rect.width,
-        rect.height,
-        rect.x,
-        rect.y,
-    );
-    host.ring.request(width, height, scale);
-}
-
-/// Move and resize the surface; the host's view size follows.
-pub fn set_rect(app: &tauri::AppHandle, host: &ActiveHost, rect: Rect) {
-    let rect = rect.sane();
-    // The same raster the attach asks for; the view still moves in points.
-    request_rect(host, rect);
-    let Some(generation) = OVERLAY.lock().ok().and_then(|slot| slot.as_ref().map(|o| o.generation))
-    else {
-        return;
-    };
+/// Draw one decoded frame on the main thread.
+pub fn draw(app: &tauri::AppHandle, frame: &Arc<Frame>) {
+    let frame = Arc::clone(frame);
     let _ = app.run_on_main_thread(move || {
         let slot = OVERLAY.lock().expect("the overlay slot");
         let Some(overlay) = slot.as_ref() else { return };
-        if overlay.generation != generation {
-            return;
-        }
-        // SAFETY: the view lives while this generation is current.
+        // SAFETY: the view lives while the slot holds it, both on the main
+        // thread.
         unsafe {
             let view = &*(overlay.view as *const OverlayView);
-            if let Some(superview) = view.superview() {
-                view.setFrame(frame_for(&superview, rect));
-            }
+            view.draw_frame(&frame);
         }
     });
-}
-
-/// The takeover's arrows, from the page's own DOM: move the open surface's
-/// page through its history. Answers why when no surface is up, so a bar
-/// whose click arrives late says so rather than pretending.
-pub fn navigate(direction: NavDirection) -> Result<(), String> {
-    let slot = OVERLAY.lock().map_err(|_| "the browser surface's state is unusable".to_owned())?;
-    let Some(overlay) = slot.as_ref() else {
-        return Err("the browser surface is not up".to_owned());
-    };
-    overlay.sender.navigate(direction);
-    Ok(())
-}
-
-/// The surface opened on a host that was already attached: publish the page's
-/// history again. The bar resets its arrows on every open, so the shell's
-/// change-only dedupe would otherwise leave them disabled until the page's
-/// history moves. A first open needs nothing - the attach's own read is the
-/// first one.
-pub fn refresh_history() {
-    if let Ok(slot) = OVERLAY.lock()
-        && let Some(overlay) = slot.as_ref()
-    {
-        overlay.sender.refresh_history();
-    }
 }
 
 /// Close the surface: stop drawing and take the overlay down.
 pub fn detach(app: &tauri::AppHandle) {
     let overlay = OVERLAY.lock().ok().and_then(|mut slot| slot.take());
     let Some(overlay) = overlay else { return };
-    tauri_plugin_log::log::debug!(
-        "releasing the surface's ring (event_name cef_surface_released, ring {})",
-        overlay.ring.name,
+    tauri_plugin_log::log::info!(
+        "the picture is taken down (event_name client_browser_surface_detached)"
     );
-    overlay.cancel.store(true, Ordering::Release);
     let view = overlay.view;
-    let later = app.clone();
     let _ = app.run_on_main_thread(move || {
-        // The slot is already empty, so no queued draw reaches the view; the
-        // hierarchy still retains it until this call takes it out.
         // SAFETY: main thread, and the view is in the hierarchy.
         unsafe {
             let view = &*(view as *const OverlayView);
-            // **The frame goes before the mapping does.** CoreAnimation
-            // releases its image on the transaction commit at the end of this
-            // turn; the ring stays mapped one turn longer, below.
             if let Some(layer) = view.layer() {
                 layer.setContents(None);
             }
@@ -801,248 +814,44 @@ pub fn detach(app: &tauri::AppHandle) {
                 }
             }
         }
-        // The ring's mapping drops after CoreAnimation has committed the
-        // empty contents: the image references the mapped pixels until then.
-        let _ = later.run_on_main_thread(move || drop(overlay));
     });
-}
-
-/// The person's file picker, in the CLIENT's process and window: the app they
-/// are looking at, which is what gives the panel focus. The host cancels its
-/// own dialog, so this is the only picker a click can raise.
-async fn pick_file(app: &tauri::AppHandle) -> Option<Vec<String>> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let _ = app.run_on_main_thread(move || {
-        let _ = tx.send(client_panel());
-    });
-    rx.await.ok().flatten()
-}
-
-fn client_panel() -> Option<Vec<String>> {
-    use objc2::MainThreadMarker;
-    use objc2::runtime::NSObjectProtocol as _;
-    use objc2_app_kit::{NSApp, NSModalResponseOK, NSOpenPanel};
-
-    let mtm = MainThreadMarker::new()?;
-    // `activate` is macOS 14+; the selector is chosen at run time so the
-    // 11.0 target still starts and the panel takes focus on older systems.
-    let app = NSApp(mtm);
-    unsafe {
-        if app.respondsToSelector(objc2::sel!(activate)) {
-            let _: () = objc2::msg_send![&*app, activate];
-        } else {
-            let _: () = objc2::msg_send![&*app, activateIgnoringOtherApps: true];
-        }
-    }
-    let panel = NSOpenPanel::openPanel(mtm);
-    panel.setCanChooseFiles(true);
-    panel.setCanChooseDirectories(false);
-    panel.setAllowsMultipleSelection(false);
-    if panel.runModal() != NSModalResponseOK {
-        return None;
-    }
-    let mut paths = Vec::new();
-    for url in panel.URLs().iter() {
-        if let Some(path) = url.path() {
-            paths.push(path.to_string());
-        }
-    }
-    Some(paths)
-}
-
-/// The overlay's frame in its superview's (bottom-left) coordinates.
-fn frame_for(superview: &NSView, rect: Rect) -> NSRect {
-    let bounds = superview.bounds();
-    NSRect::new(
-        NSPoint::new(rect.x, bounds.size.height - rect.y - rect.height),
-        NSSize::new(rect.width, rect.height),
-    )
-}
-
-fn paint_px(value: f64) -> u32 {
-    value.round().clamp(1.0, f64::from(u32::MAX)) as u32
-}
-
-/// The raster the surface asks for: 1.5x, or less when the takeover is
-/// larger than the ring's 4K budget.
-///
-/// **A fixed 1.5 breaks input on a big display**: past 2560x1440 CSS the
-/// paint size clamps, the page is laid out wider than the frame it is drawn
-/// into, and clicks land off. Deriving the scale from the rect keeps the
-/// paint exact at every size that fits the ring; a raster below 1 paints the
-/// view at 1:1 (the host's `view_rect`/`screen_info` read the request, not the
-/// paint), and a takeover past the ring's pixels cannot be drawn at all - its
-/// frames are dropped rather than copied past the mapping.
-fn raster(rect: Rect) -> f64 {
-    let fit = (f64::from(MAX_WIDTH) / rect.width).min(f64::from(MAX_HEIGHT) / rect.height);
-    // **Never above the display's own ratio** - a 1x screen gains nothing
-    // from a 1.5x raster but pays for every pixel - and never above the 1.5
-    // the probe measured as the legible ceiling.
-    let ceiling = rect.scale.clamp(1.0, 1.5);
-    fit.min(ceiling).clamp(0.25, 1.5)
-}
-
-/// A point in the overlay's own (flipped) coordinates, in CSS pixels for the
-/// page's viewport. **The mapping is 1:1**: the overlay is placed and sized
-/// in points, and a point is the page's CSS pixel at the current zoom; the
-/// device scale only lives in the frame buffer.
-fn css_point(point: NSPoint) -> (f64, f64) {
-    (point.x, point.y)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// **The frame's bytes are the ring's, and the data must not free
-    /// them.** With a NULL deallocator CFData takes ownership of memory it
-    /// never allocated and the release aborts in libmalloc - the invalid
-    /// free this pins. The bytes here are a stack array on purpose: on a
-    /// regression the release aborts inside this test rather than quietly
-    /// freeing a heap buffer that happened to be valid.
+    /// **The page measures top-down; a view that is not flipped measures
+    /// from the bottom.** Skipping the mirror put the picture a bar's height
+    /// high - over the bar and short at the bottom, measured on the dev
+    /// stack - and the read-back is the same mirror.
     #[test]
-    fn the_frame_data_does_not_free_the_rings_bytes() {
-        let pixels = [0xAB_u8; 64 * 64 * 4];
-        // SAFETY: the construction matches `draw_frame`: no-copy bytes the
-        // caller keeps alive, and the null allocator as the deallocator.
-        let data = unsafe {
-            CFData::with_bytes_no_copy(
-                None,
-                pixels.as_ptr(),
-                pixels.len() as isize,
-                objc2_core_foundation::kCFAllocatorNull,
-            )
-        }
-        .expect("a no-copy data");
-        drop(data);
-        assert_eq!(pixels[0], 0xAB, "the release left the ring's bytes alone");
+    fn a_page_rect_is_mirrored_for_a_view_that_is_not_flipped() {
+        assert_eq!(page_y(900.0, 40.0, 860.0, false), 0.0, "40 from the top is 0 from the bottom");
+        assert_eq!(page_y(900.0, 40.0, 860.0, true), 40.0, "a flipped view already measures down");
+        assert_eq!(
+            page_y(900.0, 0.0, 860.0, false),
+            40.0,
+            "and the read-back mirrors the same way"
+        );
     }
 
-    /// **A takeover bigger than 2560x1440 CSS must not clamp the paint.**
-    /// The scale comes down with the rect, so the ring's 4K budget is never
-    /// hit and the page is never laid out wider than the frame it is drawn
-    /// into - which is what kept clicks on their targets on a 6K display.
+    /// **Only exactly Command is the takeover's**, and only with the overlay
+    /// focused: everything else is the app's menu.
     #[test]
-    fn a_large_takeover_raster_fits_the_ring() {
-        let big = Rect { x: 0.0, y: 0.0, width: 3000.0, height: 1700.0, scale: 2.0 };
-        let scale = raster(big);
-        assert!(big.width * scale <= f64::from(MAX_WIDTH) + 1.0, "width fits the ring");
-        assert!(big.height * scale <= f64::from(MAX_HEIGHT) + 1.0, "height fits the ring");
-        assert!(scale < 1.5, "and comes down from the default to do it");
-        let one_x = Rect { x: 0.0, y: 0.0, width: 900.0, height: 500.0, scale: 1.0 };
-        assert_eq!(raster(one_x), 1.0, "a 1x display is never out-sampled");
-    }
-
-    /// Whether the window's responder IS this view - the gate that keeps the
-    /// bar's DOM field on the menu's own editing.
-    #[test]
-    fn only_the_surface_itself_counts_as_having_the_keyboard() {
-        assert!(same_responder(Some(7), 7));
-        assert!(!same_responder(Some(8), 7), "the webview is not the surface");
-        assert!(!same_responder(None, 7), "no responder, no keyboard");
-    }
-
-    /// **Cmd+W and the five editing chords are the takeover's, and only
-    /// while it holds the keyboard.** The menu matches characters and exact
-    /// modifiers, so the routing does too: a Dvorak comma is not W, and
-    /// Cmd+Shift/Option/Control+W are the app's.
-    #[test]
-    fn the_takeover_routes_cmd_w_and_the_editing_chords_only_while_focused() {
+    fn only_an_exact_command_equivalent_is_the_surfaces() {
         assert_eq!(route_equivalent('w', true, false, false, false, true), Equivalent::Lower);
-        assert_eq!(
-            route_equivalent('w', true, false, false, false, false),
-            Equivalent::Defer,
-            "the bar's field keeps the menu's own editing"
-        );
-        assert_eq!(
-            route_equivalent(',', true, false, false, false, true),
-            Equivalent::Defer,
-            "Dvorak: the W keycode is a comma, and the menu matches characters"
-        );
+        assert_eq!(route_equivalent('[', true, false, false, false, true), Equivalent::Back);
+        assert_eq!(route_equivalent(']', true, false, false, false, true), Equivalent::Forward);
+        assert_eq!(route_equivalent('a', true, false, false, false, true), Equivalent::Page('a'));
         assert_eq!(route_equivalent('w', true, true, false, false, true), Equivalent::Defer);
         assert_eq!(route_equivalent('w', true, false, true, false, true), Equivalent::Defer);
         assert_eq!(route_equivalent('w', true, false, false, true, true), Equivalent::Defer);
-        for character in ['a', 'x', 'c', 'v', 'z'] {
-            assert_eq!(
-                route_equivalent(character, true, false, false, false, true),
-                Equivalent::Page(character),
-                "Cmd+{character} goes to the page"
-            );
-            assert_eq!(
-                route_equivalent(character, true, false, false, false, false),
-                Equivalent::Defer,
-                "an unfocused surface leaves Cmd+{character} to the menu"
-            );
-            assert_eq!(
-                route_equivalent(character, true, true, false, false, true),
-                Equivalent::Defer,
-                "Cmd+Shift+{character} is the app's"
-            );
-        }
-        assert_eq!(route_equivalent('q', true, false, false, false, true), Equivalent::Defer);
-    }
-
-    /// **Cmd+[ and Cmd+] are the browser's back and forward**, claimed only
-    /// with exactly Command like the other chords - and only while the
-    /// surface holds the keyboard. Cmd+Shift+[ is a brace, the app's; a
-    /// neighbouring key is nothing.
-    #[test]
-    fn the_takeover_routes_cmd_bracket_to_the_page_s_history() {
+        assert_eq!(route_equivalent('w', false, false, false, false, true), Equivalent::Defer);
         assert_eq!(
-            route_equivalent('[', true, false, false, false, true),
-            Equivalent::Back,
-            "Cmd+[ goes back"
-        );
-        assert_eq!(
-            route_equivalent(']', true, false, false, false, true),
-            Equivalent::Forward,
-            "Cmd+] goes forward"
-        );
-        for character in ['[', ']'] {
-            assert_eq!(
-                route_equivalent(character, true, false, false, false, false),
-                Equivalent::Defer,
-                "an unfocused surface leaves Cmd+{character} to the menu"
-            );
-            for (shift, option, control) in
-                [(true, false, false), (false, true, false), (false, false, true)]
-            {
-                assert_eq!(
-                    route_equivalent(character, true, shift, option, control, true),
-                    Equivalent::Defer,
-                    "Cmd+{character} with an extra modifier is the app's \
-                     (shift {shift}, option {option}, control {control})"
-                );
-            }
-        }
-        assert_eq!(
-            route_equivalent('\\', true, false, false, false, true),
+            route_equivalent('w', true, false, false, false, false),
             Equivalent::Defer,
-            "a bracket's neighbour is not the chord"
+            "the bar's feedback field keeps its own editing"
         );
-    }
-
-    #[test]
-    fn a_rect_with_no_size_still_has_a_pixel() {
-        let rect = Rect { x: -5.0, y: -5.0, width: 0.0, height: 0.0, scale: 0.0 }.sane();
-        assert_eq!(rect.x, 0.0);
-        assert_eq!(rect.y, 0.0);
-        assert!(rect.width >= 1.0);
-        assert!(rect.height >= 1.0);
-        assert_eq!(rect.scale, 1.0);
-    }
-
-    #[test]
-    fn the_view_size_is_the_rect_in_device_pixels() {
-        assert_eq!(paint_px(1100.0 * 2.0), 2200);
-        assert_eq!(paint_px(0.0), 1);
-    }
-
-    #[test]
-    fn a_point_maps_one_to_one_into_the_page() {
-        // The overlay is placed in points, which are the page's CSS pixels:
-        // the device scale lives in the buffer, never in the input mapping.
-        assert_eq!(css_point(NSPoint::new(0.0, 0.0)), (0.0, 0.0));
-        assert_eq!(css_point(NSPoint::new(13.5, 620.0)), (13.5, 620.0));
     }
 }

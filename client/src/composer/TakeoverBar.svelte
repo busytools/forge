@@ -12,7 +12,8 @@
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
-  import { surface } from '../browser/surface.svelte';
+  import { tabRows } from '../browser/host';
+  import { holdsControl, selectTab, surface, takeControl } from '../browser/surface.svelte';
   import type { NavState } from '../browser/surface.svelte';
   import type { Take } from './wire';
 
@@ -61,6 +62,13 @@
   } = $props();
 
   let feedbackOpen = $state(false);
+  /** The tab picker's own select: **its value is set here rather than by the
+   *  select's binding**, which does not take when the options arrive after
+   *  the viewed tab does. */
+  let picker = $state<HTMLSelectElement | null>(null);
+  $effect(() => {
+    if (picker !== null && surface.tab !== null) picker.value = String(surface.tab);
+  });
   let barEl = $state<HTMLDivElement | null>(null);
 
   // The page area starts under the bar; a row the bar grows by (a take's card)
@@ -85,6 +93,38 @@
     if (text === '' || onfeedback === null) return;
     onfeedback(text);
   }
+
+  /**
+   * Whether this surface's gestures reach the page. **Exactly one viewer
+   * holds the role**, and the server names whose; a surface that does not
+   * hold it draws the page and sends nothing until the person takes it.
+   */
+  const holding = $derived(holdsControl());
+
+  /** The viewed profile's tabs, as the server last pushed them: the same
+   *  rows the strip draws, so the owner is the session's name and not the
+   *  wire object. */
+  const tabs = $derived.by(() => {
+    if (surface.tabs === null) return [];
+    try {
+      return tabRows(surface.tabs);
+    } catch {
+      // The strip reports the unreadable list; the picker has nothing to
+      // offer from it.
+      return [];
+    }
+  });
+
+  /**
+   * One tab picked from the bar: a re-attach on that tab, which replaces what
+   * this connection was watching. **A tab is never created or closed here** -
+   * it belongs to the calls that drive it.
+   */
+  function pick(event: Event): void {
+    const chosen = Number((event.currentTarget as HTMLSelectElement).value);
+    if (!Number.isInteger(chosen) || chosen < 1) return;
+    void selectTab(chosen);
+  }
 </script>
 
 <div class="takeover-bar" role="region" aria-label="the browser takeover" bind:this={barEl}>
@@ -96,7 +136,7 @@
         type="button"
         aria-label="back"
         title="back (Cmd+[)"
-        disabled={!nav.can_back}
+        disabled={!holding || !nav.can_back}
         onclick={() => onnav?.('back')}
       >
         <Icon name="back" />
@@ -106,20 +146,49 @@
         type="button"
         aria-label="forward"
         title="forward (Cmd+])"
-        disabled={!nav.can_forward}
+        disabled={!holding || !nav.can_forward}
         onclick={() => onnav?.('forward')}
       >
         <Icon name="forward" />
       </button>
     </span>
     <span class="tb-title">{title}</span>
-    {#if onretry !== null}
-      <span class="tb-acts">
-        <button class="tb-btn" type="button" onclick={onretry}>try again</button>
-      </span>
+    {#if tabs.length > 0}
+      <select
+        class="tb-pick"
+        aria-label="the tab to view"
+        title="the profile's tabs"
+        disabled={surface.phase !== 'live' && surface.phase !== 'failed'}
+        bind:this={picker}
+        value={surface.tab === null ? '' : String(surface.tab)}
+        onchange={pick}
+      >
+        {#each tabs as row (row.number)}
+          <option value={row.number} selected={surface.tab === row.number}>
+            {row.number} · {row.title !== ''
+              ? row.title
+              : row.url !== ''
+                ? row.url
+                : `tab ${row.number}`} · {row.owner}
+          </option>
+        {/each}
+      </select>
     {/if}
-    {#if ondone !== null && onnotnow !== null}
-      <span class="tb-acts">
+    <span class="tb-acts">
+      {#if surface.phase === 'live'}
+        <button
+          class="tb-btn"
+          type="button"
+          aria-pressed={holding}
+          onclick={() => void takeControl(!holding)}
+        >
+          {holding ? 'release control' : 'take control'}
+        </button>
+      {/if}
+      {#if onretry !== null}
+        <button class="tb-btn" type="button" onclick={onretry}>try again</button>
+      {/if}
+      {#if ondone !== null && onnotnow !== null}
         <button class="tb-btn" type="button" onclick={ondone}>Done</button>
         {#if onfeedback !== null}
           <button
@@ -132,8 +201,8 @@
           </button>
         {/if}
         <button class="tb-btn d" type="button" onclick={onnotnow}>Not now</button>
-      </span>
-    {/if}
+      {/if}
+    </span>
   </div>
   {#if feedbackOpen && onfeedback !== null}
     <div class="tb-feedback">

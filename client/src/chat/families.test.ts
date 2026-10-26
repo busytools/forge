@@ -24,7 +24,7 @@ describe('the row a call is summarised under', () => {
   });
 
   it('gives the browser tools their own row and globe', () => {
-    // The sessions drive the client's own browser, so the row names what it
+    // The sessions drive the server's own browser, so the row names what it
     // drives rather than the driver's server that carried it - and a browser
     // call is one whatever server the name wore.
     for (const name of [

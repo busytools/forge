@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { hideBrowser, showBrowser } from '../browser/host';
-import { openSurface, surface } from '../browser/surface.svelte';
+import { surface } from '../browser/surface.svelte';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -20,11 +20,11 @@ vi.mock('../browser/host', async (importOriginal) => {
     // and the shell's own doors are mocked below on that basis.
     canHost: vi.fn(() => true),
     drawsSurface: vi.fn(() => true),
-    // No window in tests: the shell's raise answers the profile it raised,
-    // or the reason it could not. The default takes it as landing; a case
+    // No window in tests: the shell's raise answers the reason it could not
+    // land, or null when it did. The default takes it as landing; a case
     // that wants the failure resolves the reason instead.
-    showBrowser: vi.fn(() => Promise.resolve({ profile: 'job-hunt' })),
-    hideBrowser: vi.fn(() => Promise.resolve({ lowered: true })),
+    showBrowser: vi.fn(() => Promise.resolve({ profile: 'job-hunt', tab: 2 })),
+    hideBrowser: vi.fn(() => Promise.resolve(true)),
   };
 });
 
@@ -440,9 +440,6 @@ beforeEach(() => {
   surface.phase = 'closed';
   surface.profile = null;
   surface.reason = null;
-  // A hand-off attached by a case that never answers it would otherwise
-  // outlive it and decide the next case's retry path.
-  surface.hand_off = null;
 });
 
 describe("the reader's draft", () => {
@@ -869,6 +866,30 @@ describe('the box', () => {
       document.activeElement,
       'and the take brings it back, so an immediate Enter submits',
     ).toBe(field());
+  });
+
+  /**
+   * **The browser takeover owns the keyboard while it is up.** Its hidden
+   * field is what types into the page; the composer's own reclaim ran on the
+   * keyboard's resize and pulled the focus back, so the phone's typing never
+   * reached the page and the words landed in the chat behind the picture
+   * (measured on the dev stack).
+   */
+  it('leaves the keyboard to the browser takeover while it is up', () => {
+    open({});
+    expect(document.activeElement, 'the box owns it while no takeover').toBe(field());
+
+    const page = document.createElement('input');
+    document.body.append(page);
+    surface.phase = 'live';
+    page.focus();
+    flushSync();
+    expect(document.activeElement, 'the takeover keeps the keyboard').toBe(page);
+
+    surface.phase = 'closed';
+    flushSync();
+    expect(document.activeElement, 'and the box takes it back when it lowers').toBe(field());
+    page.remove();
   });
 
   /**
@@ -5473,7 +5494,7 @@ describe('the dock', () => {
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     expect(drawn()).toContain('needs you');
-    expect(drawn()).toContain('browser hand-off · job-hunt');
+    expect(drawn()).toContain('browser hand-off · tab 2');
     expect(drawn(), "the reason is the session's own words, in full").toContain(
       'The sign-in page is showing a CAPTCHA.',
     );
@@ -5526,12 +5547,9 @@ describe('the dock', () => {
     // answer is what takes it down. This line was the live bug's fix and
     // nothing pinned it.
     expect(hideBrowser, 'the window comes down with the answer').toHaveBeenCalledTimes(1);
-    // **The hand-off's own profile, not the shared one**: lowering the wrong
-    // window would leave the person's browser up while the answer said done.
-    expect(hideBrowser, "and it is that hand-off's profile that comes down").toHaveBeenCalledWith(
-      'job-hunt',
-      SLOT,
-    );
+    // **The attach this page holds is the one that comes down**: Done lowers
+    // the tab Open raised, never another surface's.
+    expect(hideBrowser, 'and it is that raise that comes down').toHaveBeenCalledWith(null, SLOT);
   });
 
   /** **A hand-off that named no profile still lowers the browser its Open
@@ -5539,16 +5557,16 @@ describe('the dock', () => {
    *  passes that seat, so the shell resolves the lower the same way. Without
    *  the seat the page asked for the shared browser, the seat's surface
    *  stayed up, and Done left the takeover covering the chat. */
-  it('lowers the seat-own browser of a hand-off that named no profile', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead' });
-    open({ record: record({ pending_asks: [browserHandOffAsk({ profile: null })] }) });
+  it('lowers the seat-own browser of a hand-off with no readable tab', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead', tab: 1 });
+    open({ record: record({ pending_asks: [browserHandOffAsk({ tab: null })] }) });
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise names no profile and carries the seat').toHaveBeenCalledWith(
+      expect(showBrowser, 'the raise names no tab and carries the seat').toHaveBeenCalledWith(
         null,
         SLOT,
-        expect.any(Number),
+        null,
       ),
     );
     flushSync();
@@ -5624,7 +5642,7 @@ describe('the dock', () => {
       },
     });
 
-    expect(hideBrowser, 'the hand-off profile comes down').toHaveBeenCalledWith('job-hunt', SLOT);
+    expect(hideBrowser, 'the attach this page holds comes down').toHaveBeenCalledWith(null, SLOT);
   });
 
   it('declines the hand-off with Not now, which is the same release', () => {
@@ -5659,13 +5677,17 @@ describe('the dock', () => {
     expect(surface.reason).toContain('did not start in time');
     expect(drawn(), 'and the bar offers the door back').toContain('try again');
 
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt' });
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt', tab: 2 });
     barAction('try again').click();
     await Promise.resolve();
     await Promise.resolve();
     flushSync();
 
     expect(showBrowser).toHaveBeenCalledTimes(2);
+    expect(
+      showBrowser,
+      'the retry asks for the profile current tab, not the parked ask dead tab',
+    ).toHaveBeenLastCalledWith(null, SLOT, null);
     expect(surface.phase, 'the second ask landed').toBe('live');
   });
 
@@ -5778,177 +5800,12 @@ describe('the dock', () => {
    * carries the ASKING SEAT, which the shell checks against the profile's
    * record before it raises anything. */
   it('opens the browser window', async () => {
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt' });
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt', tab: 2 });
     open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
     await vi.waitFor(() =>
-      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(
-        'job-hunt',
-        SLOT,
-        expect.any(Number),
-      ),
-    );
-  });
-
-  /**
-   * **The hand-off's page lives in the ONE browser a session drives, and
-   * only the client holding the browser role has it (#2519).** A client that
-   * is not the host raised its own browser anyway, showing a page that had
-   * nothing to do with the session: Ved saw another app or another tab on the
-   * phone while the desktop held the browser. The role is the client's own
-   * read, and the card says the truth rather than opening the wrong surface.
-   */
-  it("does not raise this client's own browser when another client holds the role", async () => {
-    const shared = wire();
-    shared.connection.browserRole = () => false;
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
-
-    action('Open browser').click();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushSync();
-
-    expect(
-      showBrowser,
-      'no local browser is raised for a page this client does not hold',
-    ).not.toHaveBeenCalled();
-    expect(surface.phase, 'and no takeover is opened here').toBe('closed');
-    expect(drawn(), 'the card says where the page is').toContain('another connected client');
-    expect(drawn(), 'and that Open here does not move it, so it is not a retry').toContain(
-      'does not move it',
-    );
-    expect(drawn(), "the strip's override is named as the door, and what it cannot do").toContain(
-      'without carrying that page across',
-    );
-  });
-
-  /** **A role nobody has said is not a role reading.** The relay has not
-   *  answered this connection yet - a reconnect's grant is in flight - and a
-   *  client that was the host still has its page; reading the silence as
-   *  "another client drives it" would refuse a raise whose page is right
-   *  here. */
-  it('still raises while the relay has not said the role', async () => {
-    const shared = wire();
-    shared.connection.browserRole = () => false;
-    shared.connection.browserRoleKnown = () => false;
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
-
-    action('Open browser').click();
-    await vi.waitFor(() =>
-      expect(showBrowser, 'the unsaid role keeps the raise').toHaveBeenCalledWith(
-        'job-hunt',
-        SLOT,
-        expect.any(Number),
-      ),
-    );
-  });
-
-  /** **A refusal does not outlive the raise it refused** (#2520's gate). The
-   *  role moves to this client (the strip's override) and the same Open then
-   *  lands; a card still saying the page is elsewhere would be false over
-   *  buttons that now work. */
-  it('clears the refusal once a later open lands', async () => {
-    const shared = wire();
-    let hosting = false;
-    shared.connection.browserRole = () => hosting;
-    shared.connection.browserRoleKnown = () => true;
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
-
-    action('Open browser').click();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushSync();
-    expect(drawn(), 'precondition: the refusal is drawn').toContain('another connected client');
-
-    hosting = true;
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt' });
-    action('Open browser').click();
-    await vi.waitFor(() => expect(surface.phase, 'the second ask landed').toBe('live'));
-    flushSync();
-
-    expect(drawn(), 'the stale refusal is gone').not.toContain('another connected client');
-  });
-
-  /** **The takeover's retry is the same raise** (#2520's gate). When the role
-   *  has moved while this surface was failed, try again says where the page
-   *  is rather than raising this client's browser. */
-  it('refuses the takeover retry on a client that does not hold the role', async () => {
-    const shared = wire();
-    let hosting = true;
-    shared.connection.browserRole = () => hosting;
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
-    vi.mocked(showBrowser).mockResolvedValueOnce('the browser did not start in time - try again');
-    action('Open browser').click();
-    await vi.waitFor(() =>
-      expect(surface.phase, 'precondition: the surface failed').toBe('failed'),
-    );
-    flushSync();
-    vi.mocked(showBrowser).mockClear();
-
-    hosting = false;
-    barAction('try again').click();
-    await Promise.resolve();
-    await Promise.resolve();
-    flushSync();
-
-    expect(showBrowser, "the retry does not raise this client's browser").not.toHaveBeenCalled();
-    expect(surface.reason, 'and the bar says where the page is').toContain(
-      'another connected client',
-    );
-  });
-
-  /** **The bar's retry is not the hand-off's alone** (#2520's gate). The
-   *  person's own show can fail too - a profile another seat holds, a browser
-   *  that did not start - and its retry must still reach the shell; only a
-   *  surface standing for a hand-off asks who holds the browser first. */
-  it("retries the strip's own failed show on a client that does not hold the role", async () => {
-    const shared = wire();
-    shared.connection.browserRole = () => false;
-    shared.connection.browserRoleKnown = () => true;
-    open({ record: record() }, shared);
-    vi.mocked(showBrowser).mockResolvedValueOnce('the browser did not start in time - try again');
-    await openSurface(null);
-    await vi.waitFor(() => expect(surface.phase, 'precondition: the show failed').toBe('failed'));
-    flushSync();
-    expect(surface.hand_off, 'precondition: no hand-off stands behind this surface').toBeNull();
-    vi.mocked(showBrowser).mockClear();
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: '@shared' });
-
-    barAction('try again').click();
-    await vi.waitFor(() =>
-      expect(showBrowser, "the strip's retry still reaches the shell").toHaveBeenCalledTimes(1),
-    );
-    await vi.waitFor(() => expect(surface.phase, 'and the retried show lands').toBe('live'));
-  });
-
-  /** **A retry re-raises the surface it stands over** (#2520's gate, mixed
-   *  state): a hand-off ask can be parked while its Open was never pressed,
-   *  so the failed surface is the strip's own show. The retry must re-show
-   *  the strip's profile, not the parked hand-off's, and the role rule is
-   *  the hand-off's alone. */
-  it("retries the strip's own failed show while a hand-off is parked", async () => {
-    const shared = wire();
-    shared.connection.browserRole = () => false;
-    shared.connection.browserRoleKnown = () => true;
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
-
-    vi.mocked(showBrowser).mockResolvedValueOnce('the browser did not start in time - try again');
-    await openSurface(null);
-    await vi.waitFor(() => expect(surface.phase, 'precondition: the show failed').toBe('failed'));
-    flushSync();
-    expect(surface.hand_off, 'precondition: the parked ask never raised').toBeNull();
-    expect(surface.profile, 'precondition: the failed surface is the shared one').toBeNull();
-    vi.mocked(showBrowser).mockClear();
-    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'forge-lead' });
-
-    barAction('try again').click();
-    await vi.waitFor(() =>
-      expect(showBrowser, "the retry re-raises the show's own profile").toHaveBeenCalledWith(
-        null,
-        SLOT,
-        expect.any(Number),
-      ),
+      expect(showBrowser, 'the raise the approval is for').toHaveBeenCalledWith(null, SLOT, 2),
     );
   });
 

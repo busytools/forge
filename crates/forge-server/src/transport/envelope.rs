@@ -5,7 +5,6 @@
 //! message is without knowing its shape. **The tag is the contract**:
 //! adding a variant is compatible and renaming one is not.
 
-use forge_primitives::browser::BrowserPart;
 use forge_primitives::document::DocumentKind;
 use forge_primitives::git_diff::LayerState;
 use forge_primitives::{ClientConfig, SessionSlot};
@@ -205,33 +204,12 @@ pub enum ClientMessage {
         /// case never arises while this client is attached.
         #[serde(default)]
         answering: bool,
-        /// Whether this client can host the browser.
-        ///
-        /// A client declares this only when it really can: the browser has one
-        /// host at a time and every ask routes to it, so a client counted as
-        /// able to drive answers asks it cannot serve. Off unless said
-        /// otherwise, and additive - a client built before the field reads as
-        /// unable rather than as refused.
-        #[serde(default)]
-        browser: bool,
-        /// Whether this frame is the role DECLARE: the re-statement of the
-        /// browser capability a client makes as it claims the role, answered
-        /// with the subject's snapshot like any subscribe but holding NOTHING
-        /// - no watch entry, no attachment, no seat hold.
-        ///
-        /// It has to hold nothing because the client never counts it: a
-        /// declared seat was left counted as watched for the life of the
-        /// connection, its unwatched-completion mark never arming.
-        /// Off unless said otherwise, so a client that predates the field
-        /// keeps a plain subscribe's meaning.
-        #[serde(default)]
-        declare: bool,
     },
     Unsubscribe {
         what: Subject,
     },
     /// `reply_to` is set only when the client wants an answer - which is the
-    /// five commands whose reply rides a oneshot, and nothing else.
+    /// eight commands whose reply rides a oneshot, and nothing else.
     ///
     /// Boxed because a command is 360 bytes and every other variant here is
     /// a fraction of that (clippy::large_enum_variant). Serde writes a box
@@ -269,29 +247,72 @@ pub enum ClientMessage {
         session: SessionSlot,
         sha: String,
     },
-    /// The host's answer to one `browser_ask`.
+    /// Attach this connection to one of a seat's browser tabs, as a viewer.
     ///
-    /// `parts` are what the tool returned, in order. An image part's BYTES do
-    /// not cross here: they ride their own binary frame under this same id,
-    /// one frame per image part in the order the parts are listed, because a
-    /// screenshot is megabytes and base64 pays a third again for it. `error`
-    /// is the call's failure - the driver's own sentence - and a failed answer
-    /// carries no parts.
-    BrowserAnswer {
-        id: u64,
-        #[serde(default)]
-        parts: Vec<BrowserPart>,
-        #[serde(default)]
-        error: Option<String>,
+    /// `tab` is the tab to drive; `None` is the asking seat's current tab,
+    /// else its profile's first. The answer is a `browser_view` naming the
+    /// profile's wire id and the tab, then a `browser_nav_state`, then frames
+    /// as they paint. Attaching again replaces what this connection was
+    /// viewing.
+    BrowserView {
+        seat: SessionSlot,
+        tab: Option<u16>,
+        /// Answers the attach: `{"ok": true, "profile": <the one attached>,
+        /// "tab": <the tab>}`, or `{"ok": false, "why": ...}` with the
+        /// server's own words. **A raise that cannot be answered is a dark
+        /// surface**, so a client that can wait sends one; the profile and tab
+        /// are what the page's Done lowers.
+        reply_to: Option<u64>,
     },
-    /// Take the browser role from whoever holds it.
+    /// The files a person chose for a page's dialog, or none for a dismiss.
     ///
-    /// The claimant must have declared itself capable first (its `subscribe`
-    /// carried `browser: true`), because the relay answers a host down the
-    /// channel that declaration created. The holder is told its role is gone
-    /// and its in-flight calls fail, so a take-over is loud on both sides
-    /// rather than half-done.
-    BrowserTakeRole,
+    /// **The bytes cross base64** because the wire is JSON; the server
+    /// writes them to its own temp directory and hands the host the paths,
+    /// because the host reads a file's content at the moment it is answered.
+    BrowserFileAnswer {
+        id: u64,
+        files: Vec<BrowserFileWire>,
+    },
+    /// Stop viewing the attached profile. **Lowering the takeover is a
+    /// detach**: the idle clock counts an attached viewer as a use, and a
+    /// connection that switched profiles must not leave a phantom viewer on
+    /// the old one.
+    BrowserDetach,
+    /// One input event from the controlling viewer.
+    ///
+    /// `seq` is the viewer's own ordering: the server drops an event at or
+    /// below the last one the role carried, so a superseded gesture never
+    /// lands late. The event is the gesture, not CDP - the server maps it.
+    BrowserInput {
+        seq: u64,
+        event: forge_primitives::browser::BrowserInputEvent,
+    },
+    /// Take the controller role, or give it back.
+    BrowserControl {
+        take: bool,
+    },
+    /// Move through the page's history: the takeover bar's arrows.
+    BrowserNav {
+        back: bool,
+    },
+    /// The controller's surface changed size: the page is laid out to it.
+    ///
+    /// `width` and `height` are the surface's DEVICE pixels - the client
+    /// multiplies its CSS box by the ratio it draws at - and `scale` is that
+    /// ratio, which the host gives CEF.
+    BrowserResize {
+        width: u32,
+        height: u32,
+        scale: f64,
+    },
+    /// The tabs of this seat's profile, for a client's strip. Answered
+    /// through `reply_to` with `{"ok": true, "tabs": {
+    /// "profile", "id", "up", "connected", "closing_at_ms", "rows" }}`, and
+    /// then pushed as a `browser_tabs` whenever they change.
+    BrowserTabs {
+        seat: SessionSlot,
+        reply_to: Option<u64>,
+    },
     /// One document, read out of a seat's own tree for a viewer's route.
     ///
     /// `path` resolves against the seat's working directory, and `reviewable`
@@ -321,6 +342,13 @@ pub enum ClientMessage {
         path: String,
         sha: Option<String>,
     },
+}
+
+/// One chosen file on the wire: its name and its bytes, base64.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserFileWire {
+    pub name: String,
+    pub data: String,
 }
 
 /// What the server sends.
@@ -418,16 +446,69 @@ pub enum ServerMessage {
         reply_to: u64,
         body: serde_json::Value,
     },
-    /// Whether this connection holds the browser role.
+    /// One tab's viewer state: which viewer controls it, and how many are
+    /// attached.
     ///
-    /// Sent when it is granted (the answer to a capable declare or a
-    /// force-take) and when it is LOST to a force-take, so a client's own
-    /// browser strip says the truth: before this frame, "I could host" and
-    /// "I do host" looked the same from the client's side, and a strip that
-    /// went on saying it hosted after losing the role is a lie a person acts
-    /// on.
-    BrowserRole {
-        hosting: bool,
+    /// Sent on attach and whenever either changes, so every viewer draws the
+    /// same truth about who is driving. `id` is the profile's wire id, the
+    /// same one the binary frames carry; `tab` is the tab this state is for;
+    /// and `viewer` is THIS connection's own - the number `controller` names
+    /// when this viewer holds the role, so a bar can say "Take control"
+    /// rather than guessing.
+    BrowserView {
+        id: u16,
+        profile: String,
+        tab: u16,
+        controller: Option<u64>,
+        viewers: u32,
+        viewer: u64,
+    },
+    /// Where the viewed tab's history sits: what the bar's arrows may do.
+    BrowserNavState {
+        id: u16,
+        tab: u16,
+        can_back: bool,
+        can_forward: bool,
+    },
+    /// The viewed tab's browser stopped.
+    ///
+    /// A host that died under a viewer is said out loud: a frozen last frame
+    /// reads as a slow page, and the person has no way to tell the two apart.
+    BrowserSurfaceFailed {
+        id: u16,
+        tab: u16,
+        reason: String,
+    },
+    /// The tabs of the viewer's profile, as a client's strip draws them.
+    ///
+    /// Pushed to a connection that asked with `browser_tabs`, once per change:
+    /// `up` is the host process, `connected` is a driver attached to it, and
+    /// `closing_at_ms` is the idle clock's deadline.
+    BrowserTabs {
+        id: u16,
+        profile: String,
+        up: bool,
+        connected: bool,
+        closing_at_ms: Option<u64>,
+        rows: Vec<forge_primitives::browser::BrowserTabRow>,
+    },
+    /// A page asked for a file: the shell opens its picker and answers
+    /// [`ClientMessage::BrowserFileAnswer`] under the same id. **`tab` is the
+    /// tab that asked**, so a viewer is asked only for the one it is on.
+    BrowserFileDialog {
+        id: u64,
+        tab: u16,
+        multiple: bool,
+    },
+    /// A page's download finished on the server: the shell opens its save
+    /// door and writes the bytes, or says `error` and writes nothing. `tab`
+    /// is the tab it started from.
+    BrowserDownload {
+        tab: u16,
+        name: String,
+        /// The file's bytes, base64; absent when `error` says why not.
+        data: Option<String>,
+        error: Option<String>,
     },
     Error {
         what: String,
@@ -442,25 +523,6 @@ pub enum ServerMessage {
         /// press minted: a client that holds a draft until its own dispatch
         /// answers tells this refusal from any other by it.
         dispatch_id: Option<u64>,
-    },
-    /// One browser tool call, sent to the client that holds the browser role.
-    ///
-    /// **The first request this socket carries in this direction.** A tool's
-    /// handler cannot run on this side - a snapshot's `target` refs only mean
-    /// something inside the client's page state - so the call is forwarded to
-    /// the host and its answer comes back on the same id. `id` is minted by
-    /// the relay, unique for the process's life, so it stays unambiguous
-    /// across a host change.
-    BrowserAsk {
-        id: u64,
-        /// The seat whose session is asking, for a client that shows who
-        /// drives what.
-        seat: SessionSlot,
-        /// Upstream's own tool name, unprefixed.
-        tool: String,
-        /// The arguments the CLI sent, verbatim: the driver validates them
-        /// against the same schema the tool published.
-        args: serde_json::Value,
     },
     /// One document, as the read answered: the seat it was read for, the
     /// path it resolved to, the bytes, the detected kind, the flag the
@@ -490,18 +552,6 @@ pub enum ServerMessage {
         threads: Vec<forge_primitives::review::ReviewThread>,
         reviews: Vec<forge_primitives::ReviewSet>,
     },
-    /// The seats that exist right now, for a browser-capable client's
-    /// profile sweep.
-    ///
-    /// Sent to every capable connection whenever one declares and whenever a
-    /// worker despawns: the client deletes the named profiles whose owning
-    /// seat is not in the set - its own seat's profiles and the shared
-    /// browser are untouched - so a despawned worker's profiles do not
-    /// outlive it. Whole rather than a delta: the set is authoritative at
-    /// the moment it is sent and the sweep that reads it is idempotent.
-    BrowserSeats {
-        seats: Vec<SessionSlot>,
-    },
 }
 
 /// One repaired frame: the number the seat minted for it, and the update
@@ -528,13 +578,6 @@ pub struct ClientSettings {
     pub mark: Option<String>,
     pub theme: Option<String>,
     pub font: Option<String>,
-    /// The idle release's two numbers, off the same `[client]` keys: how
-    /// many minutes a named profile may sit untouched before its creator is
-    /// warned, and how long it lives past that bound. The shared browser is
-    /// never warned - it closes at the same total, quietly. `None` is the
-    /// built-in pair.
-    pub browser_idle_minutes: Option<u64>,
-    pub browser_grace_minutes: Option<u64>,
     /// The axes a client that captures starts on and resets to: the
     /// `[dictate]` keys, over the crate's own defaults. A client that
     /// captures sends the values in force with each take, so this is the
@@ -550,8 +593,6 @@ impl ClientSettings {
             mark: client.mark.clone(),
             theme: client.theme.clone(),
             font: client.font.clone(),
-            browser_idle_minutes: client.browser_idle_minutes,
-            browser_grace_minutes: client.browser_grace_minutes,
             dictate,
         }
     }
@@ -628,127 +669,201 @@ mod tests {
         assert_eq!(accounts.usage.len(), 1);
     }
 
-    /// The seats frame a capable client is sent for its profile sweep: the
-    /// live set crosses whole, a seat keeping the three names a slot is.
+    /// **A file chooser and its answer name the same dialog.** The answer's
+    /// bytes cross base64 because the wire is JSON, and a client that lost
+    /// the id would hand the server files for a dialog it cannot match.
     #[test]
-    fn a_browser_seats_frame_carries_the_live_set() {
-        let sent = ServerMessage::BrowserSeats {
-            seats: vec![
-                SessionSlot::lead("TestOrg", "proj"),
-                SessionSlot::worker("TestOrg", "proj", "w1"),
-            ],
-        };
-        let json = serde_json::to_string(&sent).expect("encode");
-        assert!(json.contains("\"kind\":\"browser_seats\""), "{json}");
-        let ServerMessage::BrowserSeats { seats } = serde_json::from_str(&json).expect("decode")
-        else {
-            panic!("{json} decoded into another message")
-        };
-        assert_eq!(seats.len(), 2, "the whole set crosses");
-        assert_eq!(seats[1].label(), "w1", "a seat is the slot's three names");
-    }
-
-    /// The ask a browser tool call makes, and the answer the host sends back.
-    ///
-    /// The id is what pairs them, and the seat is what a client shows when it
-    /// says who is driving; the parts are the tool's own result.
-    #[test]
-    fn a_browser_ask_and_its_answer_round_trip() {
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        let asked = ServerMessage::BrowserAsk {
-            id: 7,
-            seat: seat.clone(),
-            tool: "browser_navigate".to_owned(),
-            args: serde_json::json!({ "url": "https://example.com" }),
-        };
-        let json = serde_json::to_string(&asked).expect("encode");
-        assert!(json.contains("\"kind\":\"browser_ask\""), "{json}");
-        let ServerMessage::BrowserAsk { id, seat: asked_for, tool, args } =
+    fn a_browser_file_dialog_and_its_answer_round_trip() {
+        let ask = ServerMessage::BrowserFileDialog { id: 7, tab: 2, multiple: true };
+        let json = serde_json::to_string(&ask).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_file_dialog\""), "{json}");
+        let ServerMessage::BrowserFileDialog { id, tab, multiple } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
-        assert_eq!(id, 7, "the id the answer comes back under");
-        assert_eq!(asked_for, seat, "the seat whose session asked");
-        assert_eq!(tool, "browser_navigate");
-        assert_eq!(args["url"], "https://example.com", "the arguments cross verbatim");
+        assert_eq!((id, multiple), (7, true));
 
-        let answered = ClientMessage::BrowserAnswer {
+        let answer = ClientMessage::BrowserFileAnswer {
             id: 7,
-            parts: vec![
-                forge_primitives::browser::BrowserPart::Text { text: "navigated".to_owned() },
-                forge_primitives::browser::BrowserPart::Image {
-                    mime_type: "image/png".to_owned(),
-                    bytes: Vec::new(),
-                },
-            ],
+            files: vec![BrowserFileWire { name: "cv.pdf".to_owned(), data: "AAEC".to_owned() }],
+        };
+        let json = serde_json::to_string(&answer).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_file_answer\""), "{json}");
+        let ClientMessage::BrowserFileAnswer { id, files } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(id, 7);
+        assert_eq!(tab, 2, "the ask names the tab it belongs to");
+        assert_eq!(files[0].name, "cv.pdf");
+        assert_eq!(files[0].data, "AAEC", "the bytes cross base64");
+
+        // **A download carries either bytes or its refusal, never both.**
+        let saved = ServerMessage::BrowserDownload {
+            tab: 2,
+            name: "report.pdf".to_owned(),
+            data: Some("AAEC".to_owned()),
             error: None,
         };
-        let json = serde_json::to_string(&answered).expect("encode");
-        assert!(json.contains("\"kind\":\"browser_answer\""), "{json}");
-        let ClientMessage::BrowserAnswer { id, parts, error } =
+        let json = serde_json::to_string(&saved).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_download\""), "{json}");
+        let ServerMessage::BrowserDownload { tab, name, data, error } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
-        assert_eq!(id, 7, "the same id the ask carried");
-        assert_eq!(parts.len(), 2, "both parts cross");
-        assert!(
-            matches!(&parts[1], forge_primitives::browser::BrowserPart::Image { mime_type, .. }
-                if mime_type == "image/png"),
-            "the image part crosses with its mime: {parts:?}",
-        );
-        assert!(error.is_none(), "and no failure rides a result");
+        assert_eq!(tab, 2, "the save names the tab it started from");
+        assert_eq!(name, "report.pdf");
+        assert_eq!(data.as_deref(), Some("AAEC"));
+        assert!(error.is_none());
 
-        let failed = ClientMessage::BrowserAnswer {
-            id: 8,
-            parts: Vec::new(),
-            error: Some("the driver is not running".to_owned()),
+        let refused = ServerMessage::BrowserDownload {
+            tab: 2,
+            name: "huge.bin".to_owned(),
+            data: None,
+            error: Some("this file is larger than 32 MiB".to_owned()),
         };
-        let json = serde_json::to_string(&failed).expect("encode");
-        let ClientMessage::BrowserAnswer { id, parts, error } =
+        let json = serde_json::to_string(&refused).expect("encode");
+        let ServerMessage::BrowserDownload { data, error, .. } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
-        assert_eq!(id, 8);
-        assert!(parts.is_empty(), "a failure carries no parts");
-        assert_eq!(error.as_deref(), Some("the driver is not running"), "and names its reason");
+        assert!(data.is_none(), "a refusal carries no bytes");
+        assert!(error.is_some_and(|why| why.contains("32 MiB")));
     }
 
-    /// A subscribe declares whether the client can host the browser, and one
-    /// that says nothing about it is not a host: the field is additive, so a
-    /// client built before it reads as unable rather than as a refusal. The
-    /// declare flag is the same shape, and its default is the safe one: a
-    /// subscribe that does not say it is a declare holds what it watches.
+    /// **A viewer's attach, its state, and the input it sends.**
+    ///
+    /// The profile id is what pairs the state with the binary frames, and the
+    /// tab is which of them the viewer is on; the input carries the person's
+    /// gesture and its own sequence, never a CDP method - the server is what
+    /// maps one to the other.
     #[test]
-    fn a_subscribe_declares_the_browser_capability_and_defaults_to_none() {
-        let sent = ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: false,
-            browser: true,
-            declare: true,
+    fn a_browser_view_and_its_input_round_trip() {
+        let attached = ClientMessage::BrowserView {
+            seat: SessionSlot::lead("TestOrg", "proj"),
+            tab: Some(3),
+            reply_to: Some(41),
         };
-        let json = serde_json::to_string(&sent).expect("encode");
-        assert!(json.contains("\"browser\":true"), "{json}");
-        assert!(json.contains("\"declare\":true"), "{json}");
-        let ClientMessage::Subscribe { browser, declare, .. } =
+        let json = serde_json::to_string(&attached).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_view\""), "{json}");
+        let ClientMessage::BrowserView { seat, tab, reply_to } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
-        assert!(browser, "the declaration survives the round trip");
-        assert!(declare, "and so does the declare flag");
+        assert_eq!(seat, SessionSlot::lead("TestOrg", "proj"), "the seat crosses");
+        assert_eq!(tab, Some(3), "and the tab it named");
+        assert_eq!(reply_to, Some(41), "and the answer the asker waits on");
 
-        // The shape a client that predates the field sends.
-        let older: ClientMessage =
-            serde_json::from_str(r#"{"kind":"subscribe","what":"home","answering":false}"#)
-                .expect("an older subscribe decodes");
-        let ClientMessage::Subscribe { browser, declare, .. } = older else {
-            panic!("an older subscribe is still a subscribe")
+        let view = ServerMessage::BrowserView {
+            id: 3,
+            profile: "shared".to_owned(),
+            tab: 2,
+            controller: Some(9),
+            viewers: 2,
+            viewer: 9,
         };
-        assert!(!browser, "a client that says nothing is not a host");
-        assert!(!declare, "and a subscribe that says nothing is a plain subscribe");
+        let json = serde_json::to_string(&view).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_view\""), "{json}");
+        let ServerMessage::BrowserView { id, tab, controller, viewers, viewer, .. } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(id, 3, "the id the frames carry");
+        assert_eq!(tab, 2, "the tab the state is for");
+        assert_eq!(controller, Some(9), "who holds the role");
+        assert_eq!(viewers, 2, "and how many are attached");
+        assert_eq!(viewer, 9, "and this connection's own number");
+
+        let input = ClientMessage::BrowserInput {
+            seq: 4,
+            event: forge_primitives::browser::BrowserInputEvent::Mouse {
+                action: forge_primitives::browser::MouseAction::Press,
+                x: 1.0,
+                y: 2.0,
+                button: 0,
+                clicks: 1,
+                modifiers: forge_primitives::browser::InputModifiers::default(),
+            },
+        };
+        let json = serde_json::to_string(&input).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_input\""), "{json}");
+        assert!(json.contains("\"action\":\"press\""), "the gesture crosses as itself: {json}");
+        let ClientMessage::BrowserInput { seq, event } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(seq, 4);
+        assert!(matches!(event, forge_primitives::browser::BrowserInputEvent::Mouse { .. }));
+
+        let failed = ServerMessage::BrowserSurfaceFailed {
+            id: 3,
+            tab: 2,
+            reason: "the browser host exited".to_owned(),
+        };
+        let json = serde_json::to_string(&failed).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_surface_failed\""), "{json}");
+        assert!(json.contains("\"tab\":2"), "the failure names the tab that stopped: {json}");
+    }
+
+    /// **The strip's whole read crosses as one list**, so a client draws the
+    /// tabs, the host's health and the idle deadline from one frame rather
+    /// than a read per field. The rows carry the owning session, which is what
+    /// the strip groups by.
+    #[test]
+    fn a_browser_tabs_list_carries_its_rows_and_the_profile_state() {
+        let asked = ClientMessage::BrowserTabs {
+            seat: SessionSlot::lead("TestOrg", "proj"),
+            reply_to: Some(7),
+        };
+        let json = serde_json::to_string(&asked).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_tabs\""), "{json}");
+
+        let list = ServerMessage::BrowserTabs {
+            id: 4,
+            profile: "TestOrg/default".to_owned(),
+            up: true,
+            connected: false,
+            closing_at_ms: Some(1_760_000_000_000),
+            rows: vec![forge_primitives::browser::BrowserTabRow {
+                number: 2,
+                title: "portal".to_owned(),
+                url: "https://x/".to_owned(),
+                owner: SessionSlot::worker("TestOrg", "proj", "w"),
+                state: forge_primitives::browser::BrowserTabState::InUse,
+            }],
+        };
+        let json = serde_json::to_string(&list).expect("encode");
+        assert!(json.contains("\"kind\":\"browser_tabs\""), "{json}");
+        let ServerMessage::BrowserTabs { id, up, connected, closing_at_ms, rows, .. } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(id, 4, "the id the binary frames carry");
+        assert!(up && !connected, "the host and the driver are two facts");
+        assert_eq!(closing_at_ms, Some(1_760_000_000_000));
+        assert_eq!(rows.len(), 1, "and the rows the strip draws");
+        assert_eq!(rows[0].owner, SessionSlot::worker("TestOrg", "proj", "w"));
+    }
+
+    /// A subscribe that says nothing about answering reads as one that cannot
+    /// answer: the core parks a turn on an answering client, so the default
+    /// has to be the safe one.
+    #[test]
+    fn a_subscribe_defaults_to_not_answering() {
+        let older: ClientMessage = serde_json::from_str(r#"{"kind":"subscribe","what":"home"}"#)
+            .expect("a bare subscribe decodes");
+        let ClientMessage::Subscribe { answering, .. } = older else {
+            panic!("a bare subscribe is still a subscribe")
+        };
+        assert!(!answering, "a client that says nothing cannot answer");
     }
 
     /// The document read a viewer's route makes, and the answer it gets.
@@ -816,12 +931,7 @@ mod tests {
 
     #[test]
     fn a_subscribe_round_trips_through_json() {
-        let sent = ClientMessage::Subscribe {
-            what: Subject::Home,
-            answering: true,
-            browser: false,
-            declare: false,
-        };
+        let sent = ClientMessage::Subscribe { what: Subject::Home, answering: true };
         let json = serde_json::to_string(&sent).expect("encode");
         assert!(json.contains("\"kind\":\"subscribe\""), "{json}");
 
@@ -1230,8 +1340,8 @@ mod tests {
             mark: Some("strike".to_owned()),
             theme: Some("dark".to_owned()),
             font: Some("system".to_owned()),
-            browser_idle_minutes: Some(45),
-            browser_grace_minutes: Some(15),
+            browser_idle_minutes: None,
+            browser_grace_minutes: None,
         };
         let axes = DictateAxes {
             styling: forge_dictate::normalize::Styling::Formal,
@@ -1244,8 +1354,6 @@ mod tests {
         assert_eq!(settings.mark.as_deref(), Some("strike"));
         assert_eq!(settings.theme.as_deref(), Some("dark"));
         assert_eq!(settings.font.as_deref(), Some("system"));
-        assert_eq!(settings.browser_idle_minutes, Some(45), "the idle release's bound rides too");
-        assert_eq!(settings.browser_grace_minutes, Some(15));
         assert_eq!(settings.dictate, axes, "and the axes a capturing client starts on");
     }
 }

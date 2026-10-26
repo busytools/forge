@@ -82,7 +82,7 @@ export type KindRow =
  * Whether a call drives the sessions' browser.
  *
  * **Its own kind, not the driver's.** These come over the wire under the
- * `playwright` server name, which is plumbing: the browser is the client's
+ * `playwright` server name, which is plumbing: the browser is the server's
  * own, and a row that says `playwright:` names the wrong thing. A name is a
  * browser call whatever server carried it - `mcp__playwright__browser_click`
  * and `mcp__forge__browser_navigate` alike.

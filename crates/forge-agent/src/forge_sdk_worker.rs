@@ -259,18 +259,16 @@ itself - use the `browser_*` tools when your tool list carries them: \
 `browser_navigate` then `browser_snapshot` before concluding anything is \
 unreadable, and act through the snapshot rather than scraping HTML. \
 Anything only the person can do - a CAPTCHA, a sign-in, a confirmation - \
-goes through `browser_hand_off`: name the profile you drove, or the \
-seat's own profile is raised instead of your page. Their screen raises the \
-real window on the page you were driving, Done lowers it, and it answers \
-like any ask. A \
-named `profile` is a browser of its own with its own logins, owned by the \
-session that first names it; omit it unless the work genuinely needs \
-those logins. On the phone there is one browser: every call drives it, and \
-a named `profile`, `@shared` included, is refused. Never launch a browser \
+goes through `browser_hand_off`: name the tab you are handing over, and \
+their screen raises that tab exactly as it stands. Done lowers it, and it \
+answers like any ask. An agent never names a profile: forge resolves it \
+from the session's org and project - the org's profile, or the project's \
+own override - and every tab belongs to the session that opened it. Never \
+launch a browser \
 to drive a page, and never drive the \
-person's own browser or its tabs - the family reaches only the browser \
-this session drives on the client's host. With no client connected a call \
-fails by name, so do not retry in a loop.";
+person's own browser or its tabs - the family reaches only the server's \
+browser, through this session's own tab. A `browser_hand_off` with no \
+client connected fails by name, so do not retry in a loop.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on
@@ -3248,30 +3246,15 @@ mod tests {
             "the hand-off moment is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "name the profile you drove, or the seat's own profile is raised instead of \
-                 your page"
-            ),
-            "the hand-off profile clause is pinned",
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("name the tab you are handing over"),
+            "the hand-off names its tab",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "named `profile` is a browser of its own with its own logins, owned by the \
-                 session that first names it"
+                "An agent never names a profile: forge resolves it from the session's org and \
+                 project"
             ),
-            "the profile moment is pinned",
-        );
-        // **The phone is one browser and refuses every name.** The clause
-        // rides the always-on block, so a session on the phone is not told
-        // an omitted profile reaches a browser the phone does not have.
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("On the phone there is one browser: every call drives it"),
-            "the phone's single browser is pinned",
-        );
-        assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("`@shared` included, is refused"),
-            "and the phone's refusal of every name is pinned",
+            "the profile is resolved, not a tool argument",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
@@ -3281,15 +3264,22 @@ mod tests {
             "the browser prohibition ships to a fresh install with no user-scope file, so it is \
              pinned",
         );
+        // **The tools reach the server's fleet, not a browser on the
+        // client.** The phone is a viewer of that same fleet; the block must
+        // not describe a client-hosted browser or a phone-only one.
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("reaches only the browser this session drives on the client's host"),
-            "the browser paragraph names the host the tools reach",
+                .contains("reaches only the server's browser, through this session's own tab"),
+            "the browser paragraph names the fleet the tools reach",
+        );
+        assert!(
+            !FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("On the phone there is one browser"),
+            "the cut moved the phone to a viewer, so the phone-only browser clause is gone",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("With no client connected a call fails by name"),
-            "the no-client failure is pinned",
+                .contains("A `browser_hand_off` with no client connected fails by name"),
+            "only the hand-off needs an attached client, and its failure is pinned",
         );
     }
 

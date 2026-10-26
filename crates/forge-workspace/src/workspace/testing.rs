@@ -419,7 +419,7 @@ impl Workspace {
             gateway_bind_error: Mutex::new(None),
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
-            browser: Arc::new(crate::browser::BrowserRelay::new()),
+            browser_host: std::sync::OnceLock::new(),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs: parking_lot::Mutex::new(HashMap::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
@@ -588,6 +588,9 @@ impl Workspace {
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
             vault_roots: Vec::new(),
             handoff: None,
+            browser_profile: forge_primitives::browser::ProfileKey::from_parts_for_test(
+                "TestOrg", "default",
+            ),
         });
     }
 

@@ -236,10 +236,6 @@ function stub() {
       return () => listeners.delete(fn);
     },
     onStatus: () => () => undefined,
-    browserRole: () => false,
-    onBrowserRole: () => () => undefined,
-    onProfilesChanged: () => () => undefined,
-    takeBrowserRole: () => undefined,
     store: (what: Parameters<Connection['store']>[0]) => stores.get(what),
     settings: () => null,
     status: () => 'open' as const,

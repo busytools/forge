@@ -98,31 +98,29 @@ describe('the ask as the composer reads it', () => {
   });
 });
 
-describe('the v6 hand-off read', () => {
+describe('the browser hand-off read', () => {
   /**
-   * **The old field is READ, not dropped.** v6 called the hand-off's profile
-   * name `context` (the v7 bump renamed the field and the tool argument), and
-   * a v1.1.0 server is exactly what a mixed install sends: dropping the old
-   * name would drive the SHARED profile while the model asked for a named
-   * one, which is a silent wrong answer rather than a skew.
+   * **The tab is the ask.** It is what the person's Open raises, so a frame
+   * whose tab this page cannot read opens the seat's own current tab rather
+   * than a guessed number.
    */
-  it('reads a v6 hand-off context as the profile, and a v7 profile as itself', () => {
-    const v6 = askFrom({
+  it('reads the tab a hand-off names, and nothing for one it cannot', () => {
+    const named = askFrom({
       kind: 'browser_hand_off',
-      request: { id: 'h1', reason: 'solve the CAPTCHA', context: 'job-hunt' },
+      request: { id: 'h1', reason: 'solve the CAPTCHA', tab: 3 },
     });
-    expect(v6).toEqual({
+    expect(named).toEqual({
       kind: 'browser_hand_off',
-      request: { id: 'h1', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+      request: { id: 'h1', reason: 'solve the CAPTCHA', tab: 3 },
     });
 
-    const v7 = askFrom({
+    const unreadable = askFrom({
       kind: 'browser_hand_off',
-      request: { id: 'h2', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+      request: { id: 'h2', reason: 'solve the CAPTCHA', tab: 'three' },
     });
-    expect(v7).toEqual({
+    expect(unreadable).toEqual({
       kind: 'browser_hand_off',
-      request: { id: 'h2', reason: 'solve the CAPTCHA', profile: 'job-hunt' },
+      request: { id: 'h2', reason: 'solve the CAPTCHA', tab: null },
     });
   });
 });

@@ -6,22 +6,7 @@ import Pinned from './Pinned.svelte';
 import Frames from './testing/Frames.svelte';
 import Lagging from './testing/Lagging.svelte';
 import { git } from './git.svelte';
-import type { Connection } from '../socket';
 import type { TurnInfo } from './units';
-
-/**
- * The connection the strip's segments read on mount: the browser segment
- * registers a role listener and reads the role as it draws, so this answers
- * those two and refuses nothing - these tests never press override.
- */
-function untouched(): Connection {
-  return {
-    browserRole: () => false,
-    onBrowserRole: () => () => {},
-    onProfilesChanged: () => () => {},
-    takeBrowserRole: () => {},
-  } as unknown as Connection;
-}
 
 /**
  * The strip pinned above the box: the row it is handed, and what a running
@@ -65,7 +50,7 @@ const opening = (): TurnInfo => ({
 let app: Record<string, unknown> | null = null;
 
 function draw(info: TurnInfo | null): void {
-  app = mount(Pinned, { target: document.body, props: { info, connection: untouched() } });
+  app = mount(Pinned, { target: document.body, props: { info } });
   flushSync();
 }
 
@@ -135,7 +120,7 @@ describe('the strip pinned above the box', () => {
     // (Ved, 2026-10-09: "it stops and then it just jumps to a bigger value").
     app = mount(Frames, {
       target: document.body,
-      props: { connection: untouched() },
+      props: {},
     });
     flushSync();
     expect(words()).toContain('0.0s');
@@ -163,7 +148,7 @@ describe('the strip pinned above the box', () => {
     // passes it.
     const column = mount(Lagging, {
       target: document.body,
-      props: { connection: untouched() },
+      props: {},
     }) as unknown as { lag: () => void };
     app = column;
     flushSync();

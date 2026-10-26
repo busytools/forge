@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
-  import type { Connection } from '../../socket';
   import type { TurnInfo } from '../units';
   import Pinned from '../Pinned.svelte';
 
@@ -19,8 +18,6 @@
    * rather than arriving as a prop, because the row below reads the seeded
    * value and a prop read at init is only ever its first value anyway.
    */
-  let { connection }: { connection: Connection } = $props();
-
   let info = $state<TurnInfo>({
     running: true,
     failed: false,
@@ -44,4 +41,4 @@
   });
 </script>
 
-<Pinned {info} {connection} />
+<Pinned {info} />

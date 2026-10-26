@@ -1,5 +1,0 @@
-{
-  "bundle": {
-    "resources": ["browser-stack/playwright-mcp/**/*"]
-  }
-}

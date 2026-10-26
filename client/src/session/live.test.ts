@@ -1425,12 +1425,8 @@ function drivable(refusedAtFirst = false): Driveable {
       return true;
     },
     frame: () => false,
-    onBrowserAsk: () => () => {},
-    browserRole: () => false,
-    browserRoleKnown: () => false,
-    onBrowserRole: () => () => {},
-    onProfilesChanged: () => () => {},
-    takeBrowserRole: () => {},
+    browserInput: () => false,
+    onBrowserFrame: () => () => {},
     onMessage: (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);

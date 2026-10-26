@@ -7,12 +7,13 @@
 //! and passes a snapshot's `target` ref, so a renamed tool or a moved
 //! argument is a prompt that resolves to something else. The additions this
 //! family carries beyond upstream are marked as such, and each names an
-//! argument upstream does not have - `force`, `expression` - or stands as a
-//! tool of its own: built from the same driver, or - `browser_profile_delete`
-//! alone - answered by the client's host and never reaching a driver.
+//! argument upstream does not have - `force`, `expression`, the hand-off's
+//! `tab` - or stands as a tool of its own built from the same driver.
+//! `browser_close`'s description is this family's own: it names the session's
+//! current tab, which is what a close means here.
 //!
 //! Kept apart from the tools themselves so the surface a model reads is one
-//! table rather than twenty-nine structs: a shape is edited here and nowhere
+//! table rather than a struct apiece: a shape is edited here and nowhere
 //! else.
 
 use serde_json::{Value, json};
@@ -27,18 +28,14 @@ pub(crate) struct ToolSpec {
 
 /// The whole surface, in upstream's own order.
 ///
-/// Every tool carries the optional `profile` name: a session says which
-/// profile a call drives, and the client routes on it - an omitted name is
-/// the calling seat's own, and the shared browser is named `@shared` - except
-/// `browser_profile_delete`, which names the profile to remove in `name` and
-/// is answered by the client's host. **The phone is one browser**: every
-/// call there drives it, and a named profile, `@shared` included, is
-/// refused.
+/// **No tool names a profile.** Profiles are config-owned: a session drives
+/// the one its org and project resolve to in `forge.toml`, and its calls land
+/// on its own tabs.
 pub(crate) fn specs() -> Vec<ToolSpec> {
-    let mut specs = vec![
+    let specs = vec![
         ToolSpec {
             name: "browser_close",
-            description: "Close the page",
+            description: "Close the calling session's current tab",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -642,7 +639,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                         "description": "Operation to perform"
                     },
                     "index": {
-                        "description": "Tab index, used for close/select. If omitted for close, current tab is closed.",
+                        "description": "The tab's number, from browser_tabs list. Used for close/select; another session's tab is refused.",
                         "type": "number"
                     },
                     "url": {
@@ -740,69 +737,40 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                     "reason": {
                         "type": "string",
                         "description": "What needs doing, in the session's own words. It is shown on the prompt, so name the page and the act rather than the tool."
+                    },
+                    "tab": {
+                        "type": "number",
+                        "description": "The number of one of this session's tabs, from browser_tabs list: the tab the person is asked to look at."
                     }
                 },
-                "required": ["reason"],
+                "required": ["reason", "tab"],
                 "additionalProperties": false
             }),
         },
-        // **Answered by the client's host, not the driver**: a profile's
-        // delete never drives a page, so this one addition rides the relay
-        // and stops at the host. It is a seat's own door - only the profile
-        // this seat opened can go through it; the person's wider door is the
-        // browser strip.
+        // **A take is the host's, not the driver's.** The page is laid out
+        // at the file's own size for the duration, and the host's encoder
+        // writes the viewport; the controller's view comes back on stop.
         ToolSpec {
-            name: "browser_profile_delete",
-            description: "Delete one of this seat's own browser profiles, removing its saved logins, cookies and sessions for good. Only a profile this seat opened can be deleted; the shared browser and another seat's profiles are refused.",
+            name: "browser_record_start",
+            description: "Record the page's viewport into a silent 1280x720 MP4 at 30 frames a second, laying the page out at that size for the take. The file stays on the machine the browser runs on. Call browser_record_stop to finish it; the recording stops itself at 180 seconds.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "The name of the profile to delete"
-                    }
-                },
-                "required": ["name"],
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        ToolSpec {
+            name: "browser_record_stop",
+            description: "Stop the running recording, answer the file it wrote with its length and size, and put the controller's own view back.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
                 "additionalProperties": false
             }),
         },
     ];
-    for spec in &mut specs {
-        let Some(schema) = spec.schema.as_object_mut() else { continue };
-        let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
-            continue;
-        };
-        // The hand-off is the one tool whose `profile` chooses what the PERSON
-        // is shown rather than what this session drives, so its description
-        // says that instead. The delete is the one tool that carries no
-        // `profile` at all: its own `name` argument IS the profile it acts on.
-        if spec.name == "browser_profile_delete" {
-            continue;
-        }
-        // **The phone is one browser.** Its shell refuses every name,
-        // `@shared` included, so a description that said an omitted profile
-        // drives the seat's own would be false there this cut ships.
-        let phone = " The phone has one browser: every call drives it there, and a named profile, \
-                     `@shared` included, is refused.";
-        let description = if spec.name == "browser_hand_off" {
-            "Name of the browser profile to raise for the person. **Omit it to raise this \
-             seat's own profile**; name `@shared` to raise the browser's own profile. Only this \
-             seat's own profile can be raised; another seat's is refused. The raise is on the \
-             client's host, never the person's own browser or its tabs."
-        } else {
-            "Name of the browser profile to drive. **Omit it to drive this seat's own \
-                profile**, named after its project and label and opened on its first call. Name \
-                `@shared` to drive the browser's own profile, the one every seat shares - its \
-                tabs are whatever the person or another seat left there, so name it \
-                deliberately. A call reaches the client's host, never the person's own browser \
-                or its tabs. A named profile belongs to the SEAT that first names it; another \
-                seat naming it is refused."
-        };
-        let description = format!("{description}{phone}");
-        properties
-            .insert("profile".to_owned(), json!({ "type": "string", "description": description }));
-    }
     specs
 }
 
@@ -810,13 +778,46 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
 mod tests {
     use super::*;
 
-    /// The surface is twenty-nine tools: the 25 upstream published and the
-    /// four this family adds. A count is the cheap half; the shape of each
-    /// is pinned below.
+    /// **Profiles are config-owned.** A session drives the profile its project
+    /// resolves to, so no tool takes a profile name any more: a schema that
+    /// still declared one would let a model pin a call to a browser it cannot
+    /// choose.
+    #[test]
+    fn no_tool_names_a_profile_any_more() {
+        for spec in specs() {
+            let properties = spec.schema["properties"].as_object().expect("a schema");
+            assert!(!properties.contains_key("profile"), "{} still takes a profile", spec.name);
+        }
+    }
+
+    /// **A hand-off's tab is what the person is shown**, so the tool requires
+    /// it and says where the number comes from - and profiles being
+    /// config-owned, there is no delete verb.
+    #[test]
+    fn a_hand_off_names_the_tab_it_wants_seen() {
+        let spec =
+            specs().into_iter().find(|spec| spec.name == "browser_hand_off").expect("the tool");
+        let required = spec.schema["required"].as_array().expect("required");
+        assert!(required.iter().any(|value| value == "tab"), "the tab is required");
+        assert!(
+            spec.schema["properties"]["tab"]["description"]
+                .as_str()
+                .expect("a description")
+                .contains("one of this session's tabs")
+        );
+        assert!(
+            !specs().iter().any(|spec| spec.name == "browser_profile_delete"),
+            "profiles are config-owned; there is no delete verb",
+        );
+    }
+
+    /// The surface is thirty tools: the 25 upstream published and the five
+    /// this family adds. A count is the cheap half; the shape of each is
+    /// pinned below.
     #[test]
     fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
-        assert_eq!(names.len(), 29, "25 upstream tools and four additions: {names:?}");
+        assert_eq!(names.len(), 30, "25 upstream tools and five additions: {names:?}");
         for upstream in [
             "browser_close",
             "browser_resize",
@@ -850,8 +851,9 @@ mod tests {
             names.contains(&"browser_click_and_capture")
                 && names.contains(&"browser_form_state")
                 && names.contains(&"browser_hand_off")
-                && names.contains(&"browser_profile_delete"),
-            "the four beyond-upstream tools are on the surface: {names:?}",
+                && names.contains(&"browser_record_start")
+                && names.contains(&"browser_record_stop"),
+            "the five beyond-upstream tools are on the surface: {names:?}",
         );
     }
 
@@ -873,77 +875,6 @@ mod tests {
                 !spec.description.is_empty(),
                 "{} has no description for the model to read",
                 spec.name,
-            );
-        }
-    }
-
-    /// **Every tool takes an optional `profile` name - except the delete,
-    /// whose own `name` IS the profile it acts on.** A session says which
-    /// profile a call drives; a call that names none drives the calling
-    /// seat's own, and the shared browser is named `@shared`. The schema is
-    /// where the model learns the argument exists, and a closed schema that
-    /// did not declare it would REFUSE the call - so this is the contract's
-    /// own half, not decoration.
-    #[test]
-    fn every_tool_takes_an_optional_profile_name() {
-        for spec in specs() {
-            if spec.name == "browser_profile_delete" {
-                assert!(
-                    spec.schema["properties"].get("profile").is_none(),
-                    "the delete carries its profile as `name`, not as the driving argument: {}",
-                    spec.schema,
-                );
-                assert_eq!(
-                    spec.schema["required"],
-                    json!(["name"]),
-                    "and `name` is what it requires: {}",
-                    spec.schema,
-                );
-                continue;
-            }
-            assert_eq!(
-                spec.schema["properties"]["profile"]["type"],
-                json!("string"),
-                "{} declares no profile name: {}",
-                spec.name,
-                spec.schema,
-            );
-            let described =
-                spec.schema["properties"]["profile"]["description"].as_str().unwrap_or_default();
-            assert!(
-                described.contains("the client's host, never the person's own browser or its tabs"),
-                "{} does not say which browser a call reaches: {}",
-                spec.name,
-                spec.schema,
-            );
-            // **The default and the shared browser are named in the text the
-            // model reads**: an omitted profile is the seat's own, and the
-            // shared browser has a reserved word - a stale description here
-            // is the tab leak handed back as an instruction (#2535).
-            assert!(
-                described.contains("@shared"),
-                "{} does not name the shared browser's reserved word: {described}",
-                spec.name,
-            );
-            assert!(
-                described.contains("this seat's own profile"),
-                "{} does not say what an omitted profile drives: {described}",
-                spec.name,
-            );
-            // **The phone is one browser and refuses every name**, so a
-            // description that stopped at the desktop rule would be false on
-            // a platform this cut ships.
-            assert!(
-                described.contains("The phone has one browser"),
-                "{} does not state the phone's single browser: {described}",
-                spec.name,
-            );
-            let required = &spec.schema["required"];
-            assert!(
-                required.as_array().is_none_or(|required| !required.contains(&json!("profile"))),
-                "{} must not require a profile: {}",
-                spec.name,
-                spec.schema,
             );
         }
     }

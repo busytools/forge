@@ -8,7 +8,7 @@
  * cause is on the far side.
  */
 
-import { canHost, hostTheBrowser, installTakeoverHook } from '../browser/host';
+import { canHost } from '../browser/host';
 import { connect, type Connection } from '../socket';
 import { DEFAULT_SERVER_PORT, settingsFrom, type ClientSettings } from '../wire/types';
 import { connectRust } from './rust';
@@ -193,23 +193,13 @@ export async function connectTo(
   const normalized = normalizeAddress(input);
   if ('why' in normalized) return { ok: false, kind: 'address', why: normalized.why };
 
-  // **The shell keeps its socket in the Rust half** (the 2026-10-10 fix): a
-  // parked webview stops consuming a socket it holds itself, and every ask
-  // behind it dies. The desktop dials through the bridge instead; the web
-  // build - and a dev page in a plain browser - keeps the webview's own
-  // socket, which is also what keeps the browser role unclaimed there.
+  // **The shell keeps its socket in the Rust half**: a parked webview stops
+  // consuming a socket it holds itself, and the records behind it stall. The
+  // desktop and the phone dial through the bridge (the phone's Rust half
+  // hands the relayed frames to its canvas); the web build - and a dev page
+  // in a plain browser - keeps the webview's own socket.
   const desktop = canHost();
   const connection = desktop ? connectRust(normalized.url) : connect(normalized.url);
-  if (desktop) {
-    // The asks are answered in the Rust half, so nothing here registers a
-    // handler; the takeover hook is every shell's own.
-    installTakeoverHook();
-  } else {
-    // The shell is the browser host: a page's subscription declares the
-    // capability (see the subscribes), and the asks that follow land here, on
-    // their way to the Rust side.
-    hostTheBrowser(connection);
-  }
   try {
     const { settings } = await greeting(connection, handshakeMs);
     return { ok: true, address: input.trim(), settings, connection };
