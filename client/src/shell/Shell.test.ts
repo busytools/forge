@@ -404,25 +404,31 @@ describe('the shell at launch', () => {
    * the roster the page already holds.
    */
   it('announces the shown seat once the page is not looked at', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null });
-    forges.push(forge);
-    await openAt('/session/TestOrg/proj/lead', forge.address);
-    await until(() => forge.homeReads() >= 1, 'the launch to take');
-
-    const shown: string[] = [];
-    class Note {
-      static permission: NotificationPermission = 'granted';
-      static requestPermission = (): Promise<NotificationPermission> => Promise.resolve('granted');
-      onclick: (() => void) | null = null;
-      title: string;
-      constructor(title: string) {
-        this.title = title;
-        shown.push(title);
-      }
-      close(): void {}
-    }
-    vi.stubGlobal('Notification', Note);
+    // **The premise is this case's own**: jsdom answers `hasFocus()` from the
+    // last focused element, and this case creates none. Earlier cases in the
+    // file focus a composer, which made this pass only in file order.
+    const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     try {
+      const forge = await stubForge({ mark: null, theme: null, font: null });
+      forges.push(forge);
+      await openAt('/session/TestOrg/proj/lead', forge.address);
+      await until(() => forge.homeReads() >= 1, 'the launch to take');
+
+      const shown: string[] = [];
+      class Note {
+        static permission: NotificationPermission = 'granted';
+        static requestPermission = (): Promise<NotificationPermission> =>
+          Promise.resolve('granted');
+        onclick: (() => void) | null = null;
+        title: string;
+        constructor(title: string) {
+          this.title = title;
+          shown.push(title);
+        }
+        close(): void {}
+      }
+      vi.stubGlobal('Notification', Note);
+
       const lead = homeWire.agents[0];
       if (lead === undefined) throw new Error('the fixture carries no lead row');
       // The launch's own read seeded the fixture's ask, so this is a NEW one:
@@ -438,6 +444,7 @@ describe('the shell at launch', () => {
       await until(() => shown.length === 1, 'the ask to be announced on the blur');
       expect(shown[0], 'the notification names the seat').toContain('proj');
     } finally {
+      focused.mockRestore();
       vi.unstubAllGlobals();
     }
   });
