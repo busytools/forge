@@ -678,6 +678,129 @@ mod tests {
         assert_eq!(row.reason.as_deref(), Some("the subprocess exited"), "and the row carries why");
     }
 
+    /// **Closing a failed seat dismisses its failure.** The failure record is
+    /// what parks the row in the needs-you group, and the close is the reader
+    /// saying they have seen it: the trace goes with the close so the seat
+    /// starts clean next time. Catches a close that releases the session and
+    /// leaves the failure holding the row red.
+    #[test]
+    fn closing_a_failed_lead_dismisses_its_spawn_failure() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.record_spawn_failure_for_test(&lead, "the account was rate limited");
+
+        let agents = surface.agents();
+        assert_eq!(
+            agents.for_project(&project).first().map(|row| row.lifecycle),
+            Some(SessionLifecycleState::Failed),
+            "the failed spawn is the row the close has to dismiss",
+        );
+
+        workspace
+            .dispatch(forge_workspace::Command::CloseSession { session_key: lead.clone() })
+            .expect("a close on a failed lead is dispatched");
+
+        assert_eq!(
+            workspace.session_activity(&lead),
+            SessionLifecycleState::Sleeping,
+            "the dismissed seat reads asleep rather than failed",
+        );
+        let agents = surface.agents();
+        assert!(
+            agents.for_project(&project).is_empty(),
+            "and it contributes no row: no session, no failure, no death",
+        );
+    }
+
+    /// A worker whose spawn failed before an entry outlived it is still on the
+    /// roster through its persisted row, and the close has only a failure
+    /// trace to dismiss. The row stays - it is what lets the label start
+    /// again - and reads asleep rather than failed.
+    #[test]
+    fn closing_a_stranded_failed_worker_dismisses_its_failure_and_keeps_its_row() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
+        // A project with no lead behind it contributes no rows at all, so the
+        // project keeps a lead here for its worker row to be on the roster.
+        workspace.register_domain_session(SessionSlot::lead("TestOrg", "forge"), None);
+        workspace.seed_test_worker_row(&project, "reviewer");
+        workspace.record_spawn_failure_for_test(&slot, "the account was rate limited");
+
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .iter()
+            .find(|row| row.slot == slot)
+            .expect("the failed worker has a row");
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Failed,
+            "which is the one the close dismisses",
+        );
+
+        workspace
+            .dispatch(forge_workspace::Command::CloseWorker {
+                project_key: project.clone(),
+                label: "reviewer".to_owned(),
+            })
+            .expect("a close on a failed worker is dispatched");
+
+        assert_eq!(workspace.spawn_failure(&slot), None, "the failure trace is dismissed");
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .iter()
+            .find(|row| row.slot == slot)
+            .expect("the persisted row stays, so the label can be started again");
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Sleeping,
+            "and it reads asleep rather than failed",
+        );
+    }
+
+    /// A failed worker whose entry survived as a tombstone draws its failure
+    /// from the entry rather than the slot record, so the close has to take
+    /// the entry too. The persisted row stays for the same reason.
+    #[test]
+    fn closing_a_failed_worker_with_a_tombstone_entry_keeps_its_row() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(Arc::clone(&workspace));
+        let project =
+            surface.roster().project_named("forge").expect("configured project").key.clone();
+        let slot = SessionSlot::worker("TestOrg", "forge", "reviewer");
+        // The project needs a lead behind it for its worker rows to be drawn.
+        workspace.register_domain_session(SessionSlot::lead("TestOrg", "forge"), None);
+        workspace.seed_test_worker_row(&project, "reviewer");
+        workspace.insert_live_worker(&project, worker_row("reviewer", WorkerLiveness::Failed));
+
+        workspace
+            .dispatch(forge_workspace::Command::CloseWorker {
+                project_key: project.clone(),
+                label: "reviewer".to_owned(),
+            })
+            .expect("a close on a failed worker is dispatched");
+
+        assert!(workspace.list_live_workers(&project).is_empty(), "the tombstone entry goes");
+        let agents = surface.agents();
+        let row = agents
+            .for_project(&project)
+            .iter()
+            .find(|row| row.slot == slot)
+            .expect("the persisted row stays, so the label can be started again");
+        assert_eq!(
+            row.lifecycle,
+            SessionLifecycleState::Sleeping,
+            "and it reads asleep rather than failed",
+        );
+    }
+
     fn worker_row(label: &str, status: WorkerLiveness) -> forge_workspace::WorkerEntry {
         forge_workspace::WorkerEntry {
             label: label.to_owned(),

@@ -6540,6 +6540,9 @@ impl Workspace {
         let cascade_project = cascade_project.flatten().map(|view| view.key);
         if let Some(project_key) = cascade_project {
             for entry in self.drain_live_workers(&project_key) {
+                // Cleared before the removal frame that makes a view re-read,
+                // for the same reason `announce_release` clears the lead's.
+                self.clear_spawn_failure(&entry.slot);
                 let worktree =
                     crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
@@ -6564,7 +6567,13 @@ impl Workspace {
     /// has not started: a lead before its cascade, a worker before its own
     /// kill - where a despawn's removal frame only follows the worktree
     /// cleanup, minutes later (#1930).
+    ///
+    /// The seat's failure record goes with the announcement, before the frame
+    /// that makes a view re-read: a close is the reader's answer to a failed
+    /// attempt, and a trace that outlived the seat kept its row in the
+    /// needs-you group with nothing left to act on.
     pub(crate) fn announce_release(self: &Arc<Self>, key: &SessionSlot) {
+        self.clear_spawn_failure(key);
         let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
@@ -6582,6 +6591,10 @@ impl Workspace {
     /// Use `release_session_with_cascade` instead when the caller is
     /// the lead-row close gesture.
     pub(crate) fn release_session(self: &Arc<Self>, session_key: &SessionSlot) {
+        // The failure record exists to keep a failed attempt visible while a
+        // reader can act on it; a released seat is no longer that, and one
+        // left standing would keep its next start reading Failed.
+        self.clear_spawn_failure(session_key);
         // **A closed seat is gone now, not at the next sweep.** The fleet
         // hears the tombstone before the close work, so a hand-off resolved
         // after it does not keep the tab for a session that has ended; the
