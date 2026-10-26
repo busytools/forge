@@ -2530,6 +2530,19 @@ impl Workspace {
                 session_kind,
             )
         };
+        // The child's `claude` process fetches this list once and keeps it
+        // for its life, so a later "Tool X not found" is answerable only
+        // from here.
+        let surface = forge_server.tool_names();
+        tracing::debug!(
+            target: "forge_workspace::mcp",
+            event_name = "session_tool_surface",
+            slot = %session_slot.display(),
+            lead = session_slot.is_lead(),
+            count = surface.len(),
+            tools = %surface.join(","),
+            "the forge tool surface handed to this spawn",
+        );
 
         #[cfg(any(test, feature = "testing"))]
         {

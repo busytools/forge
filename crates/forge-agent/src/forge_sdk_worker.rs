@@ -28,7 +28,9 @@ use crate::{
 /// Opening line of the forge MCP append. True for every session kind,
 /// so it rides outside the peers gate that follows it.
 const FORGE_MCP_SERVER_LINE: &str = "\
-You have an in-process forge MCP server (mcp__forge__).";
+You have an in-process forge MCP server (mcp__forge__). Its tool surface is \
+fixed when this session starts: a tool that answers \"not found\" is not on \
+this session's list, so reach for another tool rather than retrying it.";
 
 /// Paragraph naming the agent-coordination tools. Included only when
 /// the session's `forge` server actually registered `agents__*` tools -
@@ -3131,6 +3133,24 @@ mod tests {
         assert!(
             prompt.contains("cron__create"),
             "it names forge's own cron surface instead: {prompt}",
+        );
+    }
+
+    /// **A session cannot learn its tool surface's lifetime from anywhere
+    /// else.** The CLI fixes its registry when the process starts and
+    /// answers a name it never got with a bare "not found", so the base
+    /// append says what that answer means rather than leaving a session to
+    /// retry a name nothing will answer.
+    #[test]
+    fn the_base_append_says_the_tool_surface_is_fixed_at_spawn() {
+        let out = build_forge_system_prompt(false, None, None);
+        assert!(
+            out.contains("tool surface is fixed when this session starts"),
+            "the fixed-surface rule rides the base append for every kind: {out}",
+        );
+        assert!(
+            out.contains("reach for another tool rather than retrying it"),
+            "and tells the session not to retry a name nothing will answer: {out}",
         );
     }
 

@@ -98,6 +98,10 @@ impl LoggingRuntime {
 /// which reaches tracing through the llama-cpp-2 crate under both its
 /// hyphenated target and its module path. What it reports is the model
 /// loading itself, not forge, so it is not forge's warning to raise.
+///
+/// `forge_workspace::mcp` carries the surface each spawn hands its child:
+/// that list is fixed once the child starts, so the record is the only way
+/// a later "tool not found" can be traced.
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.input=debug,\
     app.lifecycle=debug,\
@@ -108,6 +112,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::output_tail=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
+    forge_workspace::mcp=debug,\
     forge_workspace::dictate=debug,\
     forge_dictate=debug,\
     llama_cpp_2=error,\
