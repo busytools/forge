@@ -1991,6 +1991,20 @@ where
             host.resize(&key, tab, me, width, height, scale).await;
             Ok(())
         }
+        ClientMessage::ClientPerf { records } => {
+            // **A page's own instrument, not forge's health**: a batch that
+            // could not be written is one client's lost diagnostic, so it is
+            // read at `debug` and names where it went.
+            if let Err(why) = crate::perf_log::append(&records) {
+                tracing::debug!(
+                    event_name = "client_perf_write_failed",
+                    records = records.len(),
+                    %why,
+                    "a client's perf batch could not be written",
+                );
+            }
+            Ok(())
+        }
         ClientMessage::Unsubscribe { what } => {
             // No answer: the client asked to stop hearing, and there is
             // nothing to say back.

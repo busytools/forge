@@ -11,7 +11,7 @@
     serverParameter,
   } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
-  import { noteSeatClick } from '../perf';
+  import { noteSeatClick, setPerfSocket } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
@@ -92,6 +92,7 @@
   onDestroy(() => {
     destroyed = true;
     uninstallBrowser();
+    setPerfSocket(null);
     connection?.close();
   });
 
@@ -304,6 +305,9 @@
     // its overlay to this connection, and a page drives the server's browser
     // over this socket.
     installBrowser(connected.connection);
+    // **The web build's perf records ride this socket.** The shell writes its
+    // own through `client_perf`; a page has no file, so the server holds it.
+    setPerfSocket((records) => connected.connection.clientPerf?.(records) ?? false);
     // The reason belonged to the launch that produced it. Left standing, the
     // door a Back lands on accuses a forge that has just answered.
     failure = null;

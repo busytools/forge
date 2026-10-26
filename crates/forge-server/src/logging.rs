@@ -207,7 +207,8 @@ fn default_log_path() -> anyhow::Result<PathBuf> {
     Ok(base_dir.join(DEFAULT_LOG_FILE_NAME))
 }
 
-fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
+/// The directory forge's own logs live in, which a client's perf log shares.
+pub(crate) fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
     if let Some(dir) = dirs::data_local_dir() {
         return Ok(dir.join(DEFAULT_LOG_DIR).join("logs"));
     }

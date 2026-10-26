@@ -17,10 +17,10 @@ tabs and encodes each tab's painted frame as a WebP still onto a local
 socket; the server relays the newest one to every viewer of that tab. The
 client carries no engine, no driver and no browser profile: it is a viewer.
 
-**The phone is a viewer too.** The same frames, the same bar, the same Take
-control: the page paints each frame on a canvas where the desktop's shell
-lays a native view. **The canvas keeps the picture's shape**: a wide page in
-a portrait phone is scaled to fit with the takeover's own background above
+**The phone and the web are viewers too.** The same frames, the same bar, the
+same Take control: the page paints each frame on a canvas where the desktop's
+shell lays a native view. **The canvas keeps the picture's shape**: a wide page
+in a portrait phone is scaled to fit with the takeover's own background above
 and below it, and taking control lays the page out at the phone's shape, so
 the bands fall away. **A finger drives the page the way a mouse does**: a
 tap is a press and its release, a one-finger swipe is a wheel, and a tap on
@@ -29,7 +29,11 @@ compositions cross as the same key and text events the desktop overlay
 sends. **The bar wraps on a finger's screen**: a hand-off's row is wider than
 a portrait phone, so its actions take a line of their own and **Done**,
 **something's wrong…** and **Not now** stay reachable at 393 and 430 points.
-Neither client has a WebView engine or an in-process node any more.
+**The web page is the same client with no shell at all**: its takeover is a
+fixed overlay the page owns, its canvas is the picture, and every call the
+desktop makes to the shell - attach, list, detach, control, navigate, resize -
+is the socket's own message instead. Neither client has a WebView engine or an
+in-process node any more.
 
 ## What it draws
 
@@ -38,7 +42,7 @@ Neither client has a WebView engine or an in-process node any more.
 | The hand-off's card | `browser hand-off · tab N`; **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar | the `browser_hand_off` ask, and the page's own surface state |
 | The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
 | The feedback line | a text field and **send**: the person's words go to the agent as a prompt and the hand-off is declined | the page's own state; the prompt rides the socket |
-| The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's canvas |
+| The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's and the web page's canvas |
 | The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide** | the `browser_tabs` ask and its pushed frame |
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
 | The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on both platforms, or `nothing to run a page` | the tab list |
@@ -109,19 +113,29 @@ tab, which replaces what this connection was watching.
 **The picture is the server's own frame.** The host paints windowless and
 encodes a WebP still; the server relays the newest frame for the viewed tab
 to each viewer, and the client decodes it - into a layer at the page area's
-rect on the desktop, onto a canvas on the phone. **Both keep the picture's
+rect on the desktop, onto a canvas on the phone and on the web. **Both keep the picture's
 shape**: a frame laid out for another viewer's surface is fitted with bars
 rather than stretched, and taking control lays the page out at this surface's
 shape so the bars fall away. There is no screen capture anywhere, so the
 Screen Recording grant, the picker and its monthly re-approval are not part
 of this surface.
 
+**A page with no shell draws its own takeover.** On the web the overlay is a
+fixed box the page owns - the bar at the top, the canvas under it - and every
+call the desktop makes to its shell is a socket message instead: an attach
+names the seat and tab and its reply says which profile and tab it took, the
+tab list's ask subscribes the push that follows, a lower is a detach, the role
+is a control message, the arrows are a navigation, and the surface's size is a
+resize. There is no rect to report, because the page's own box is the surface;
+the canvas still draws only the viewed tab, and a key or a click rides the same
+input messages the desktop and the phone send.
+
 **Show and hide are this client's own.** The marks come from the server's tab
 list - the row's dot means the profile's host is connected (an idle dot means
 the host is up with no driver), and a tab's own mark says in use, idle or held
-- but each row's button reads this page's own surface: a phone shows **show**
-while the desktop holds the picture on that tab, and lowering here gives only
-this client's viewer back.
+- but each row's button reads this page's own surface: a phone or a web page
+shows **show** while the desktop holds the picture on that tab, and lowering
+here gives only this client's viewer back.
 
 **A windowless page must stay a visible page.** The host asks CEF for a
 visible, focused page (`WasHidden(0)`, `SetFocus(1)`) and drives its frames
@@ -238,4 +252,6 @@ screen; the page area is the rest.
 title bar and its traffic lights stay where they are and leaving is the
 ordinary window. Back to chat, the strip's hide and the phone's hardware Back
 all lower the layer the same way, whatever opened it, and the strip and the
-dock return with it.
+dock return with it. **On the web it is a layer over the tab's page**, fixed to
+the viewport, so the chat is still under it and Back to chat returns to it
+without leaving the app.

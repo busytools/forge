@@ -350,6 +350,7 @@ census!(ClientMessage,
         BrowserTabs struct,
         DocumentRead struct,
         FileContent struct,
+        ClientPerf struct,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
@@ -886,6 +887,14 @@ fn frames_record() -> Value {
             session: seat.clone(),
             path: "src/lib.rs".to_owned(),
             sha: None,
+        },
+        ClientMessage::ClientPerf {
+            records: vec![json!({
+                "schema": "forge-perf/v1",
+                "kind": "frame",
+                "run_id": "r",
+                "ts_ms": 3,
+            })],
         },
     ];
     for sample in &client_messages {
@@ -1734,6 +1743,15 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
             session: SessionSlot::lead("TestOrg", "proj"),
             path: "src/a.rs".to_owned(),
             sha: None,
+        }),
+    );
+    // **The page's own perf batch.** The page writes `records` by hand, so a
+    // rename here leaves a batch nothing on the server reads, with both
+    // suites green.
+    sampled.insert(
+        "ClientPerf".to_owned(),
+        sample(ClientMessage::ClientPerf {
+            records: vec![json!({"schema": "forge-perf/v1", "kind": "frame", "ts_ms": 3})],
         }),
     );
     sampled

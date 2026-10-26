@@ -27,7 +27,7 @@ import {
   type Skew,
   type Subject,
 } from './protocol';
-import { noteSnapshot, noteSubscribe } from './perf';
+import { noteSnapshot, noteSubscribe, type PerfRecord } from './perf';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
 import { settingsFrom } from './wire/types';
@@ -201,6 +201,16 @@ export interface Connection {
    * engine's own input.
    */
   browserInput(event: BrowserInputEvent): boolean;
+  /**
+   * The page's own perf records, carried over the socket for a client with no
+   * shell to write them.
+   *
+   * Answers whether the batch went: `false` means the socket is down, and the
+   * caller drops it rather than queueing an unbounded backlog. **Absent on a
+   * connection with no socket of its own** - the desktop bridge, whose page
+   * writes through the shell's invoke instead.
+   */
+  clientPerf?(records: PerfRecord[]): boolean;
   /**
    * Hear each browser frame the server relays, as its host's own wire: the
    * profile id, the sequence, the view size, the key flag and the encoded
@@ -1021,7 +1031,7 @@ export function connect(
   }
 
   /** One message on its way with no reply: `false` when nothing went. */
-  function sendBrowser(message: ClientMessage): boolean {
+  function sendClient(message: ClientMessage): boolean {
     if (!isOpen()) return false;
     sendNow(message);
     return true;
@@ -1097,11 +1107,12 @@ export function connect(
         return held['tabs'];
       });
     },
-    browserDetach: () => sendBrowser({ kind: 'browser_detach' }),
-    browserControl: (take) => sendBrowser({ kind: 'browser_control', take }),
-    browserNav: (back) => sendBrowser({ kind: 'browser_nav', back }),
+    browserDetach: () => sendClient({ kind: 'browser_detach' }),
+    browserControl: (take) => sendClient({ kind: 'browser_control', take }),
+    browserNav: (back) => sendClient({ kind: 'browser_nav', back }),
     browserResize: (width, height, scale) =>
-      sendBrowser({ kind: 'browser_resize', width, height, scale }),
+      sendClient({ kind: 'browser_resize', width, height, scale }),
+    clientPerf: (records) => sendClient({ kind: 'client_perf', records }),
     more(conversation, before = null, turns = MORE_TURNS) {
       if (!isOpen()) return false;
       sendNow({ kind: 'more', conversation, before, turns });

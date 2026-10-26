@@ -817,6 +817,20 @@ describe('the connection', () => {
     ]);
   });
 
+  /// **The page's perf records ride its own socket**, and a socket that is
+  /// down answers `false` so its sink drops the batch rather than queueing it.
+  it('carries a perf batch over the socket', async () => {
+    const { server, conn } = await connected();
+    const mark = { schema: 'forge-perf/v1', kind: 'frame' as const, run_id: 'r', ts_ms: 3 };
+    const perf = conn.clientPerf;
+    if (perf === undefined) throw new Error('a socket connection carries the perf batch');
+    expect(perf([mark])).toBe(true);
+    await until(() => server.received.length === 1, 'the perf batch');
+    expect(server.received[0]).toEqual({ kind: 'client_perf', records: [mark] });
+    conn.close();
+    expect(perf([mark]), 'a batch with no socket is dropped, not queued').toBe(false);
+  });
+
   /**
    * The socket carries no history, so a reconnect re-asks. The store keeps
    * what it had until the fresh snapshot arrives, or the reader watches the
