@@ -32,7 +32,7 @@ a portrait phone, so its actions take a line of their own and **Done**,
 **The web page is the same client with no shell at all**: its takeover is a
 fixed overlay the page owns, its canvas is the picture, and every call the
 desktop makes to the shell - attach, list, detach, control, navigate, resize -
-is the socket's own message instead. Neither client has a WebView engine or an
+is the socket's own message instead. No client has a WebView engine or an
 in-process node any more.
 
 ## What it draws
@@ -97,10 +97,14 @@ reported as a bare timeout.
 
 **Every viewer is a watcher until it takes the role on that tab.** A surface
 attaches to one tab and receives every frame that tab paints; **exactly one
-attached viewer holds the controller role on it**, and only its gestures,
-history arrows and resize reach the page. The bar's **take control** moves the
-role to this surface (the previous holder becomes a watcher at that moment),
-and **release control** gives it back with nobody holding it. A watcher's
+attached viewer holds the controller role on it**, and only its gestures and
+history arrows reach the page. **The layout follows the role, and with nobody
+holding it it belongs to the tab's longest-watching viewer** - so a page with
+no shell still lays its own view out while it is the only one watching, and a
+second watcher never moves the page under the first. The bar's **take
+control** moves the role to this surface (the previous holder becomes a
+watcher at that moment), and **release control** gives it back with nobody
+holding it. A watcher's
 arrows are drawn disabled: the move is the controller's, and the server
 refuses one from anyone else. The server pushes who holds it to every viewer
 of the tab, so two surfaces draw the same truth, and each knows its own viewer
@@ -115,9 +119,9 @@ encodes a WebP still; the server relays the newest frame for the viewed tab
 to each viewer, and the client decodes it - into a layer at the page area's
 rect on the desktop, onto a canvas on the phone and on the web. **Every client
 keeps the picture's shape**: a frame laid out for another viewer's surface is
-fitted with bars rather than stretched, and taking control (or, on the web, a
-watcher with nobody driving) lays the page out at this surface's shape so the
-bars fall away. There is no screen capture anywhere, so the
+fitted with bars rather than stretched, and taking control (or, on the web,
+being the tab's longest-watching watcher while nobody drives it) lays the page
+out at this surface's shape so the bars fall away. There is no screen capture anywhere, so the
 Screen Recording grant, the picker and its monthly re-approval are not part
 of this surface.
 
