@@ -37,15 +37,24 @@ use crate::window::Cdp;
 use crate::{channel, engine, osr, veto};
 
 /// What one call knows about the browser it looked up, and the page it drives.
-struct Driven<'a> {
+struct Driven {
     generation: u64,
     pid: u32,
     port: u16,
     tab: u16,
-    target: &'a str,
     /// The call's remaining budget, so a replacement's own listing cannot
     /// outlive it (an upload is deliberately bounded at 10 s).
     bound: Duration,
+}
+
+/// The call a failure is handled for: the driver tool it ran as, the name the
+/// caller used, and the arguments a repeat would send. **The two names differ
+/// only for a tool forge composes**, so a failure still names what the session
+/// asked for.
+struct Call<'a> {
+    tool: &'a str,
+    reported: &'a str,
+    args: &'a Value,
 }
 
 /// One browser call's tool, budget and the host it drives.
@@ -892,7 +901,7 @@ impl BrowserService {
             (reported, args)
         };
         let retry_args = args.clone();
-        let (tab, outcome, target) = self
+        let (tab, outcome, _) = self
             .drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port, generation })
             .await;
         // **The agent answered a chooser the driver had not reported yet.**
@@ -909,10 +918,8 @@ impl BrowserService {
         let outcome = self
             .after_failure(
                 &profile,
-                Driven { generation, pid, port, tab, target: &target, bound },
-                tool,
-                reported,
-                &retry_args,
+                Driven { generation, pid, port, tab, bound },
+                Call { tool, reported, args: &retry_args },
                 outcome,
             )
             .await;
@@ -1873,13 +1880,12 @@ impl BrowserService {
     async fn after_failure(
         &self,
         profile: &Arc<Profile>,
-        driven: Driven<'_>,
-        tool: &str,
-        reported: &str,
-        args: &Value,
+        driven: Driven,
+        call: Call<'_>,
         outcome: Result<Vec<BrowserPart>, String>,
     ) -> Result<Vec<BrowserPart>, String> {
-        let Driven { generation, pid, port, tab, target, bound } = driven;
+        let Driven { generation, pid, port, tab, bound, .. } = driven;
+        let Call { tool, reported, args } = call;
         let drove = HostIdentity { pid, port, generation };
         let why = match outcome {
             Ok(parts) => {
@@ -1903,20 +1909,17 @@ impl BrowserService {
                 return Err(dead_host_answer(profile, host, &why));
             }
         }
+        let again = Call { tool, reported, args };
         if driver::stale_page(&why) {
             return self
-                .rebuild_after_dead_page(
-                    profile, generation, drove, tab, target, tool, reported, args, bound, &why,
-                )
+                .rebuild_after_dead_page(profile, generation, drove, tab, again, bound, &why)
                 .await;
         }
         if driver::died(&why) {
             // **A driver that never answered is dead, not a page.** It is
             // replaced on this call rather than waiting for a restart.
             return self
-                .replace_dead_driver(
-                    profile, generation, drove, tab, tool, reported, args, bound, &why,
-                )
+                .replace_dead_driver(profile, generation, drove, tab, again, bound, &why)
                 .await;
         }
         // **A driver built against a browser that is gone is dropped.** The
@@ -2042,13 +2045,11 @@ impl BrowserService {
         generation: u64,
         drove: HostIdentity,
         tab: u16,
-        _target: &str,
-        tool: &str,
-        reported: &str,
-        args: &Value,
+        call: Call<'_>,
         bound: Duration,
         why: &str,
     ) -> Result<Vec<BrowserPart>, String> {
+        let Call { tool, reported, args } = call;
         // **One rebuild at a time, and the cooldown lives inside it.** Two
         // calls that both read an old `stale_since` would otherwise both
         // rebuild, and the second would clear the driver the first installed.
@@ -2168,12 +2169,11 @@ impl BrowserService {
         generation: u64,
         drove: HostIdentity,
         tab: u16,
-        tool: &str,
-        reported: &str,
-        args: &Value,
+        call: Call<'_>,
         bound: Duration,
         why: &str,
     ) -> Result<Vec<BrowserPart>, String> {
+        let Call { tool, reported, args } = call;
         {
             let state = profile.state.lock().await;
             // **A newer driver is not this call's to clear**: the call drove
@@ -5287,8 +5287,8 @@ fn device_pixels(css: u32, scale: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome, DeadHost,
-        DeadPageOutcome, Driven, Profile, State, UploadRequest, agent_upload_paths,
+        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome,
+        DeadHost, DeadPageOutcome, Driven, Profile, State, UploadRequest, agent_upload_paths,
         agent_upload_refused, begin_upload, captured_generation, clear_if_dead, controller_size,
         dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
         file_name, installed_generation, note_agent_answered, note_surfaced_opened,
@@ -5665,9 +5665,7 @@ mod tests {
                 generation,
                 drove,
                 1,
-                "browser_snapshot",
-                "browser_snapshot",
-                &json!({}),
+                Call { tool: "browser_snapshot", reported: "browser_snapshot", args: &json!({}) },
                 Duration::from_secs(1),
                 "the driver did not answer browser_tabs within 9 s",
             )
@@ -7030,17 +7028,8 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
-                Driven {
-                    generation: 1,
-                    pid: 1,
-                    port: 9,
-                    tab: 1,
-                    target: "T1",
-                    bound: Duration::from_secs(150),
-                },
-                "browser_click",
-                "browser_click",
-                &json!({}),
+                Driven { generation: 1, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
+                Call { tool: "browser_click", reported: "browser_click", args: &json!({}) },
                 Err(dead.to_owned()),
             )
             .await
@@ -7059,17 +7048,8 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
-                Driven {
-                    generation: 2,
-                    pid: 1,
-                    port: 9,
-                    tab: 1,
-                    target: "T1",
-                    bound: Duration::from_secs(150),
-                },
-                "browser_click",
-                "browser_click",
-                &json!({}),
+                Driven { generation: 2, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
+                Call { tool: "browser_click", reported: "browser_click", args: &json!({}) },
                 Err(dead.to_owned()),
             )
             .await
@@ -7083,17 +7063,8 @@ mod tests {
         let again = service
             .after_failure(
                 &profile,
-                Driven {
-                    generation: 2,
-                    pid: 1,
-                    port: 9,
-                    tab: 1,
-                    target: "T1",
-                    bound: Duration::from_secs(150),
-                },
-                "browser_click",
-                "browser_click",
-                &json!({}),
+                Driven { generation: 2, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
+                Call { tool: "browser_click", reported: "browser_click", args: &json!({}) },
                 Err(dead.to_owned()),
             )
             .await
@@ -7133,17 +7104,8 @@ mod tests {
         let (outcome, ()) = tokio::join!(
             service.after_failure(
                 &profile,
-                Driven {
-                    generation: 1,
-                    pid: 1,
-                    port: 9,
-                    tab: 1,
-                    target: "T1",
-                    bound: Duration::from_secs(150)
-                },
-                "browser_click",
-                "browser_click",
-                &no_args,
+                Driven { generation: 1, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
+                Call { tool: "browser_click", reported: "browser_click", args: &no_args },
                 Err(dead.to_owned()),
             ),
             bump,
