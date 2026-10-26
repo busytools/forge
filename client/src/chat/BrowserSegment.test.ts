@@ -107,21 +107,54 @@ const list = (): HTMLElement | null => document.body.querySelector('.bz-list');
 
 describe('the browser segment', () => {
   it('rests on the tab count and opens onto the profile', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row()] }));
     const shown = show();
     await vi.waitFor(() => {
       expect(
         shown.target.querySelector('.bz-tog .n')?.textContent,
         'the resting row names the count once a read has answered',
-      ).toBe('0 tabs');
+      ).toBe('1 tab');
     });
 
     toggle(shown.target).click();
     flushSync();
     expect(list(), 'the row opens a panel').not.toBeNull();
     expect(list()?.textContent, 'the resolved profile is named').toContain('TestOrg/work');
-    await vi.waitFor(() => {
-      expect(list()?.textContent, 'and no tabs says so plainly').toContain('no tabs yet');
+    shown.stop();
+  });
+
+  /// **A profile with nothing behind it draws no row at all.** Ved saw
+  /// "0 tabs / no host is up" on a page that had never used the browser; an
+  /// empty row is noise, not a state.
+  it('draws nothing when the profile has no host and no tabs', async () => {
+    vi.mocked(listTabs).mockResolvedValue(tabs({ up: false, connected: false, rows: [] }));
+    const shown = show();
+    await vi.waitFor(() => expect(listTabs).toHaveBeenCalledTimes(1));
+    flushSync();
+    expect(
+      shown.target.querySelector('.bz-tog'),
+      'no row for a browser nothing invoked',
+    ).toBeNull();
+    shown.stop();
+  });
+
+  /// **The last tab closing takes the row with it**, on the same rule the
+  /// first tab appearing brought it in on.
+  it('leaves when the last tab closes', async () => {
+    let push: (answer: BrowserTabList) => void = () => {};
+    vi.mocked(onTabs).mockImplementation((fn) => {
+      push = fn;
+      return Promise.resolve(() => {});
     });
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row({ number: 2 })] }));
+    const shown = show(SLOT);
+    await vi.waitFor(() =>
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+    );
+
+    push(tabs({ up: true, rows: [] }));
+    flushSync();
+    expect(shown.target.querySelector('.bz-tog'), 'a closed tab takes the row away').toBeNull();
     shown.stop();
   });
 
@@ -302,7 +335,7 @@ describe('the browser segment', () => {
   /// **The mark is the server's own row**, not this client's attachment:
   /// the phone holds no attachment of its own and still shows it.
   it('says a connected browser on the resting row', async () => {
-    vi.mocked(listTabs).mockResolvedValue(tabs());
+    vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row()] }));
     const shown = show();
     await vi.waitFor(() => {
       expect(
@@ -354,10 +387,10 @@ describe('the browser segment', () => {
   /// **The engine line names what runs the page, and says so when nothing
   /// does**, on both platforms.
   it('names the engine behind the page and says when there is none', async () => {
-    vi.mocked(listTabs).mockResolvedValue(tabs({ up: false, connected: false, rows: [] }));
+    vi.mocked(listTabs).mockResolvedValue(tabs({ up: false, connected: false, rows: [row()] }));
     const shown = show(SLOT);
     await vi.waitFor(() =>
-      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('0 tabs'),
+      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
     );
     toggle(shown.target).click();
     flushSync();
@@ -366,10 +399,11 @@ describe('the browser segment', () => {
 
     vi.mocked(listTabs).mockResolvedValue(tabs({ rows: [row()] }));
     window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'raised' }));
+    // The count is unchanged, so the engine line is what says the new list
+    // landed rather than the row the previous one drew.
     await vi.waitFor(() =>
-      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('1 tab'),
+      expect(list()?.querySelector('.bz-engine')?.textContent).toBe("the server's own Chromium"),
     );
-    expect(list()?.querySelector('.bz-engine')?.textContent).toBe("the server's own Chromium");
     shown.stop();
   });
 
@@ -383,9 +417,9 @@ describe('the browser segment', () => {
     });
     vi.mocked(listTabs).mockResolvedValue(tabs());
     const shown = show(SLOT);
-    await vi.waitFor(() =>
-      expect(shown.target.querySelector('.bz-tog .n')?.textContent).toBe('0 tabs'),
-    );
+    await vi.waitFor(() => expect(listTabs).toHaveBeenCalledTimes(1));
+    flushSync();
+    expect(shown.target.querySelector('.bz-tog'), 'nothing yet, nothing drawn').toBeNull();
 
     push(tabs({ rows: [row({ number: 2 })] }));
     flushSync();

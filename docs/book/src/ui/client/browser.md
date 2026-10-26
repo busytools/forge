@@ -43,7 +43,7 @@ in-process node any more.
 | The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
 | The feedback line | a text field and **send**: the person's words go to the agent as a prompt and the hand-off is declined | the page's own state; the prompt rides the socket |
 | The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's and the web page's canvas |
-| The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide** | the `browser_tabs` ask and its pushed frame |
+| The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide**. **The row is drawn only while the profile has a tab**: a browser nothing has invoked is no row at all | the `browser_tabs` ask and its pushed frame |
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
 | The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on both platforms, or `nothing to run a page` | the tab list |
 | The states | `opening the browser…`, the server's sentence when it failed, the host's own death sentence - `the browser host exited (signal 9; pid 1234); the next call brings it back` - when a host dies under the surface (the cause is a signal or an exit code), and the page's own error page when a load fails | the page's surface state, and the server's failure frame |
@@ -129,6 +129,11 @@ is a control message, the arrows are a navigation, and the surface's size is a
 resize. There is no rect to report, because the page's own box is the surface;
 the canvas still draws only the viewed tab, and a key or a click rides the same
 input messages the desktop and the phone send.
+
+**The row exists only while there is something behind it.** A profile with no
+tab is a browser nothing has invoked: the segment draws nothing at all rather
+than an empty row saying `0 tabs`, and the list's own pushes bring it in with
+the first tab and take it away when the last one closes.
 
 **Show and hide are this client's own.** The marks come from the server's tab
 list - the row's dot means the profile's host is connected (an idle dot means

@@ -220,7 +220,8 @@ used to hold.
 [browser.md](./browser.md)): its panel lists the tabs of the profile this
 seat's project resolves to, show raises one of them as the full-window
 takeover, hide lowers it, and the sessions keep driving the same tabs
-underneath while it is closed.
+underneath while it is closed. **It draws only while that profile has a
+tab**, so a page that has never used the browser carries no browser row.
 
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every
 seat has a tree - a worker's own worktree, the lead's checkout - so it

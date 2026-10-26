@@ -372,103 +372,113 @@
     leaving = null;
     shut();
   }
+  /**
+   * **The row is only there when there is something behind it.** A profile
+   * with no tab is a browser nothing has invoked yet, and an empty row saying
+   * "0 tabs" is noise on every page that has never used one - so it draws
+   * nothing at all. The list's own pushes decide it, so the row appears when
+   * the first tab does and leaves when the last one closes.
+   */
+  const present = $derived(listing !== null && listing.rows.length > 0);
 </script>
 
-<span class="bz-seg" class:open bind:this={segEl}>
-  <button
-    type="button"
-    class="bz-tog"
-    aria-expanded={open}
-    aria-label="the browser's tabs"
-    title={hover}
-    onclick={toggle}
-    onpointerenter={(event) => {
-      if (hovering(event)) hold();
-    }}
-    onpointerleave={(event) => {
-      if (hovering(event)) release();
-    }}
-    onfocusin={focusIn}
-    onfocusout={release}
-    onkeydown={esc}
-  >
-    <Icon name="web" />
-    {#if listing?.up && listing.connected}
-      <span class="dot ok" title="the browser is connected"></span>
-    {:else if listing?.up}
-      <span class="dot idle" title="the browser host is up"></span>
-    {:else if capable && listing !== null}
-      <Icon name="x" class="bad" />
-    {/if}
-    browser
-    <span class="n">{count}</span>
-  </button>
-
-  {#if open}
-    <div
-      class="bz-list"
-      style={limits}
-      bind:this={panelEl}
-      use:portal
-      role="group"
+{#if present}
+  <span class="bz-seg" class:open bind:this={segEl}>
+    <button
+      type="button"
+      class="bz-tog"
+      aria-expanded={open}
       aria-label="the browser's tabs"
+      title={hover}
+      onclick={toggle}
       onpointerenter={(event) => {
         if (hovering(event)) hold();
       }}
       onpointerleave={(event) => {
         if (hovering(event)) release();
       }}
+      onfocusin={focusIn}
       onfocusout={release}
+      onkeydown={esc}
     >
-      <div class="bz-state">
-        <span class="tx">
-          {listing === null ? 'reading the browser' : `${listing.profile} · ${connectedText}`}
-        </span>
-        <span class="tx bz-engine">
-          {closingText ?? (listing?.up ? "the server's own Chromium" : 'nothing to run a page')}
-        </span>
-      </div>
-
-      {#each rows as row (row.number)}
-        <div class="bz-it">
-          {#if mark(row) === 'ring'}
-            <span class="ring" title="a call is driving this tab"></span>
-          {:else if mark(row) === 'held'}
-            <span class="dot warn" title="a hand-off is waiting here"></span>
-          {:else}
-            <span class="dot idle" title="this tab is idle"></span>
-          {/if}
-          <span class="nm">tab {row.number}</span>
-          <span class="tx" title={row.url}>{row.title}</span>
-          <span class="tx">{row.owner} · {row.stateText}</span>
-          {#if capable}
-            <button
-              type="button"
-              class="bz-take bz-show"
-              aria-label={fronting(row.number)
-                ? `hide tab ${row.number}`
-                : `show tab ${row.number} of ${listing?.profile ?? 'the browser'}`}
-              onclick={() => show(row.number)}
-              onkeydown={esc}
-            >
-              {fronting(row.number) ? 'hide' : 'show'}
-            </button>
-          {/if}
-        </div>
-      {/each}
-
-      {#if !capable}
-        <div class="bz-it">
-          <Icon name="x" class="bad" />
-          <span class="tx">this client cannot show the browser</span>
-        </div>
-      {:else if read === 'loading' && listing === null}
-        <div class="bz-it"><span class="tx">reading the browser's tabs…</span></div>
-      {:else if read === 'failed'}
-        <div class="bz-it"><span class="tx bad">{why}</span></div>
-      {:else if rows.length === 0}
-        <div class="bz-it"><span class="tx">no tabs yet</span></div>
+      <Icon name="web" />
+      {#if listing?.up && listing.connected}
+        <span class="dot ok" title="the browser is connected"></span>
+      {:else if listing?.up}
+        <span class="dot idle" title="the browser host is up"></span>
+      {:else if capable && listing !== null}
+        <Icon name="x" class="bad" />
       {/if}
-    </div>
-  {/if}
-</span>
+      browser
+      <span class="n">{count}</span>
+    </button>
+
+    {#if open}
+      <div
+        class="bz-list"
+        style={limits}
+        bind:this={panelEl}
+        use:portal
+        role="group"
+        aria-label="the browser's tabs"
+        onpointerenter={(event) => {
+          if (hovering(event)) hold();
+        }}
+        onpointerleave={(event) => {
+          if (hovering(event)) release();
+        }}
+        onfocusout={release}
+      >
+        <div class="bz-state">
+          <span class="tx">
+            {listing === null ? 'reading the browser' : `${listing.profile} · ${connectedText}`}
+          </span>
+          <span class="tx bz-engine">
+            {closingText ?? (listing?.up ? "the server's own Chromium" : 'nothing to run a page')}
+          </span>
+        </div>
+
+        {#each rows as row (row.number)}
+          <div class="bz-it">
+            {#if mark(row) === 'ring'}
+              <span class="ring" title="a call is driving this tab"></span>
+            {:else if mark(row) === 'held'}
+              <span class="dot warn" title="a hand-off is waiting here"></span>
+            {:else}
+              <span class="dot idle" title="this tab is idle"></span>
+            {/if}
+            <span class="nm">tab {row.number}</span>
+            <span class="tx" title={row.url}>{row.title}</span>
+            <span class="tx">{row.owner} · {row.stateText}</span>
+            {#if capable}
+              <button
+                type="button"
+                class="bz-take bz-show"
+                aria-label={fronting(row.number)
+                  ? `hide tab ${row.number}`
+                  : `show tab ${row.number} of ${listing?.profile ?? 'the browser'}`}
+                onclick={() => show(row.number)}
+                onkeydown={esc}
+              >
+                {fronting(row.number) ? 'hide' : 'show'}
+              </button>
+            {/if}
+          </div>
+        {/each}
+
+        {#if !capable}
+          <div class="bz-it">
+            <Icon name="x" class="bad" />
+            <span class="tx">this client cannot show the browser</span>
+          </div>
+        {:else if read === 'loading' && listing === null}
+          <div class="bz-it"><span class="tx">reading the browser's tabs…</span></div>
+        {:else if read === 'failed'}
+          <div class="bz-it"><span class="tx bad">{why}</span></div>
+        {:else if rows.length === 0}
+          <div class="bz-it"><span class="tx">no tabs yet</span></div>
+        {/if}
+      </div>
+    {/if}
+  </span>
+{/if}
