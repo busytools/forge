@@ -524,9 +524,12 @@ async fn wait_for_layout(
 /// pixel ratio was left at 1 for the rest of the host's life. It now moves
 /// the profile's ring, the same path a viewer's own resize takes, so the
 /// viewport, the outer size and the ratio all move together.
+///
+/// **That window is then the person's to replace**: their own surface report
+/// is a resize like any other, and the last one wins.
 #[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_resize_moves_the_painted_surface_and_keeps_the_ratio() {
+async fn an_agent_resize_is_the_window_until_the_next_resize() {
     let stack = stack();
     assert!(
         stack.join("node/bin/node").is_file(),
@@ -577,6 +580,21 @@ async fn an_agent_resize_moves_the_painted_surface_and_keeps_the_ratio() {
         json!({
             "innerWidth": 1120, "innerHeight": 760,
             "outerWidth": 1120, "outerHeight": 760, "dpr": 2,
+        }),
+    )
+    .await;
+
+    // **The person's own surface report is a resize, and the last one wins.**
+    // The client re-sends its region on a layout change and when it takes
+    // control; either puts its own window back.
+    service.resize(&key, tab, 7, 2880, 2128, 2.0).await;
+    wait_for_layout(
+        &service,
+        &seat,
+        "a viewer's report after the tool's resize puts the viewer's window back",
+        json!({
+            "innerWidth": 1440, "innerHeight": 1064,
+            "outerWidth": 1440, "outerHeight": 1064, "dpr": 2,
         }),
     )
     .await;
