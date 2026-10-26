@@ -93,8 +93,10 @@ to run before handing over a change there.
 The last line it prints is its verdict: `[OK] check: ...`,
 `[ERROR] check: <step> failed`, `[ERROR] check: group reported nothing
 (<group>)` when a group died without a report, or
-`[ERROR] check: the gate lock was not acquired (held by pid N)` when
-another gate on the machine held the lock past the wait bound. A failing
+`[ERROR] check: the gate lock was not acquired`, with `(held by pid N)`
+when a gate on the machine held the lock past the wait bound and no pid
+when the lock itself could not be taken. The prefix names the recipe:
+`check:`, `check-serial:` or `check-delta:`. A failing
 group stops at its own first failure; the other groups still run; every
 failing group's log tail is printed before the verdict; and when a step
 fails, the verdict names it and the later steps in its group that did not

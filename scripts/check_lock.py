@@ -18,6 +18,8 @@ Usage:
 Env:
   FORGE_CHECK_LOCK_DIR      directory holding check.lock (tests)
   FORGE_CHECK_LOCK_TIMEOUT  seconds to wait for a holder (default 3600)
+  FORGE_CHECK_LOCK_TEST_AFTER_FORK  tests only: a command run after the gate
+                              is forked and before its pid is recorded
 """
 
 import fcntl
@@ -196,6 +198,13 @@ def run(command, label):
 
     state["phase"] = "launching"
     proc = subprocess.Popen(command, start_new_session=True)
+    seam = os.environ.get("FORGE_CHECK_LOCK_TEST_AFTER_FORK")
+    if seam:
+        subprocess.run(
+            ["sh", "-c", seam],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     state["proc"] = proc
     state["phase"] = "running"
     if state["pending"] is not None:

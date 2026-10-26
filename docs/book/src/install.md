@@ -76,7 +76,8 @@ just check
 That runs four independent groups concurrently: the fast checks
 (`cargo fmt --check`, the Unicode punctuation gate, and the scripts' own
 tests, `script-tests`: the release manifest's, the client-dependency
-bootstrap's, the browser-stack patch's and the gate lock's), the Rust workspace
+bootstrap's, the check-group orchestrator's, the gate lock's, the client-wasm
+check's and the browser-stack patch's), the Rust workspace
 (`cargo clippy --all-targets --workspace -- -D warnings`
 once per feature set, with and without `--all-features`,
 `cargo nextest run --workspace --all-features`,
@@ -168,12 +169,16 @@ answer the no-host refusal by name. **No browser needs installing**: a
 client built where the server has no engine answers the browser doors with
 the server's own sentence rather than a timeout.
 
-The run ends on a verdict line naming its own result, `[OK] check: ...`
-or `[ERROR] check: <step> failed`, or `[ERROR] check: group reported
-nothing (<group>)` when a group died without a report. A failing group
-stops at its own first failure; the other groups still run; every failing
-group's log tail is printed before the verdict; and the verdict names the
-first failing step and the later steps in that group that did not run. That
+The run ends on a verdict line naming its own result: `[OK] check: ...`,
+`[ERROR] check: <step> failed`, `[ERROR] check: group reported nothing
+(<group>)` when a group died without a report, or
+`[ERROR] check: the gate lock was not acquired (held by pid N)` when
+another gate on the machine held the lock past the wait bound. A failing
+group stops at its own first failure; the other groups still run; every
+failing group's log tail is printed before the verdict; and when a step
+fails, the verdict names it and the later steps in that group that did not
+run. The lock verdict is the one with no step behind it: it arrives before
+any step runs. That
 line is deliberately the last one written: piping the output through
 `tail` reports tail's exit status rather than the recipe's, so a red gate
 reads green to whoever ran it unless the result travels in the text.

@@ -1054,8 +1054,9 @@ check-serial:
 # boot them beside an in-flight `just check`. The recipe is only the wrapper;
 # the slice is `scripts/check_delta.sh`.
 #
-# Ends on `[OK] check-delta: ...` or `[ERROR] check-delta: <step> failed` as
-# its last line.
+# Ends on `[OK] check-delta: ...`, `[ERROR] check-delta: <step> failed` or
+# `[ERROR] check-delta: the gate lock was not acquired (held by pid N)` when
+# another gate holds the lock past the wait bound, as its last line.
 #
 # Delta gate for one review round; the final head runs the full `just check`.
 [no-exit-message]
