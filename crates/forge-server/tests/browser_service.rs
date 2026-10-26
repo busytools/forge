@@ -401,3 +401,64 @@ async fn a_tab_listing_never_creates_a_page() {
         assert!(targets.is_empty(), "round {round}: a listing creates no page: {targets:?}");
     }
 }
+
+/// **A driver rebuild renames every page, and a session keeps its own.**
+/// Creating a tab rebuilds the driver, and a fresh Playwright backend gives
+/// every page a new guid. The first seat's next evaluate must still be its
+/// own document, not a new about:blank, and the tab number it was shown must
+/// still be the one a hand-off accepts (row c00bd4de).
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_driver_rebuild_keeps_a_sessions_page() {
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let one = SessionSlot::worker("TestOrg", "proj", "one");
+    let two = SessionSlot::worker("TestOrg", "proj", "two");
+    let page = "data:text/html,<title>kept</title><h1 id=kept>kept</h1>";
+
+    service
+        .call(&one, "browser_navigate", json!({ "url": page }))
+        .await
+        .expect("the first seat's page opens");
+    let tab = service.tabs(&one).await.expect("rows").rows[0].number;
+
+    // **A second seat's first call creates a tab**, and creating one rebuilds
+    // the driver, renaming every page the first seat holds.
+    service.call(&two, "browser_snapshot", json!({})).await.expect("the second seat opens");
+
+    let answer = service
+        .call(
+            &one,
+            "browser_evaluate",
+            json!({ "function": "() => [location.href, !!document.getElementById('kept')]" }),
+        )
+        .await
+        .expect("the first seat's page is still driven");
+    let text = answer
+        .iter()
+        .find_map(|part| match part {
+            forge_primitives::browser::BrowserPart::Text { text } => Some(text.clone()),
+            forge_primitives::browser::BrowserPart::Image { .. } => None,
+        })
+        .unwrap_or_default();
+    assert!(text.contains(page), "the first seat's own document answers: {text}");
+    assert!(text.contains("true"), "and its content is there, not a blank tab: {text}");
+
+    let rows = service.tabs(&one).await.expect("rows").rows;
+    assert!(
+        rows.iter().any(|row| row.number == tab),
+        "the seat keeps the tab it was shown: {rows:?}",
+    );
+    service.hand_off_started(&one, tab).await.expect("the number a tool printed is accepted");
+    service.hand_off_finished(&one, tab).await;
+
+    service.close(&one).await.expect("the profile closes");
+}
