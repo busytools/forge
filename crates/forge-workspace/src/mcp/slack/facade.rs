@@ -826,6 +826,11 @@ impl SlackFacade for ProdSlackFacade {
     ) -> Result<Vec<SlackUser>, SlackReadError> {
         let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
         let needle = query.trim().to_lowercase();
+        // An empty needle would match the whole directory; the tool refuses
+        // it, and a direct facade call gets nothing rather than everyone.
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut found: Vec<SlackUser> = api
             .list_users()
             .await
@@ -2830,6 +2835,18 @@ mod tests {
             ["U3"],
             "the display name matches even when neither the handle nor the real name does",
         );
+    }
+
+    /// An empty query must not widen into the whole directory when the
+    /// facade is called directly rather than through the tool.
+    #[tokio::test]
+    async fn a_user_resolver_returns_nothing_for_an_empty_query() {
+        let (facade, _ws, api, _rx) = facade_with_recording_slack();
+        api.seed_users(vec![directory_user("U1", "ved", None, None, false)]);
+
+        let found = facade.users(Some("acme"), "   ").await.expect("the guard is not a failure");
+
+        assert!(found.is_empty(), "an empty query matches nobody");
     }
 
     /// The failure this resolver exists for is a wrong id silently
