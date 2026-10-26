@@ -4,6 +4,7 @@
   import { heldReserve, sizes } from './row-sizes';
 
   import Icon from '../components/Icon.svelte';
+  import { cannotPaint } from '../paint';
   import { noteConversationOpened, noteDrawn } from '../perf';
   import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
@@ -80,6 +81,8 @@
   const PAGE_VIEWPORTS = 1.5;
   /** How long the arrival mark stays on the newest item's wrapper. */
   const ARRIVE_MS = 300;
+  /** The longest a return's hold waits for a paint before it lifts anyway. */
+  const HOLD_MAX_MS = 250;
   /** How far above the last pin counts as the reader when no input preceded it. */
   const DISARM_SLACK = 48;
   /** How long after a wheel, touch or up-scrolling key its events read as the reader's. */
@@ -304,6 +307,18 @@
    * page landing. One flag cannot tell those apart from the ordinary case.
    */
   let outstanding = $state(0);
+  /**
+   * Whether a seat the column already holds is being entered, until the frame
+   * it drew has painted.
+   *
+   * **A return draws its held row before it pays a history read**: the paging
+   * triggers ride the list's first measurements, which a browser delivers
+   * before the paint, so the fetch could leave for a row the reader had not
+   * seen (#2572 retro). The walk the hold refuses is run when it lifts.
+   */
+  let entering = false;
+  /** Which entry the hold belongs to, so only the newest one lifts it. */
+  let entered = 0;
   /** Whether the last prepend has landed but the list has not taken it yet. */
   let settling = $state(false);
   /** The prepend count this component has already accounted for. */
@@ -711,6 +726,31 @@
       // self-healed in 250ms where this does not.
       readerHeld = false;
       aimedAt = null;
+      // **A return holds the walk until its own draw has painted.** Two
+      // frames, because a frame's callbacks run before its paint. A first
+      // visit has no held row to protect, and a hidden page has no paint.
+      const mine = (entered += 1);
+      entering = !fresh && !cannotPaint();
+      if (entering) {
+        let deadline: ReturnType<typeof setTimeout> | null = null;
+        const lift = (): void => {
+          if (entered !== mine || !entering) return;
+          entering = false;
+          if (deadline !== null) clearTimeout(deadline);
+          deadline = null;
+          // **The lift pays both automatic triggers the hold refused.** The
+          // fit, and the pin echo's reach ask - that band is serviced by no
+          // other ask, so the offset is read again here and the page still
+          // owed. Whichever goes first, the other finds the ask in flight.
+          if (viewport !== null && viewport.scrollTop < REACH) loadOlder(pageTurns());
+          fillFittingRoom();
+        };
+        // **A throttled window produces no frames**, so the hold carries its
+        // own deadline and cannot leave the fit waiting on a paint that is
+        // not coming.
+        deadline = setTimeout(lift, HOLD_MAX_MS);
+        requestAnimationFrame(() => requestAnimationFrame(lift));
+      }
     }
     placedFor = which;
     // The seat coming on screen is put there from what was kept, not from a
@@ -728,6 +768,11 @@
     return () => {
       unsubscribe();
     };
+  });
+
+  // A hold that outlived its column must not ask for a seat nothing draws.
+  $effect(() => () => {
+    entered += 1;
   });
 
   /**
@@ -1180,6 +1225,9 @@
    * take a page it does not need.
    */
   function fillFittingRoom(): void {
+    // **A seat being entered pays no page fetch** (`entering`): the fit is
+    // read again once the entry's own draw has painted.
+    if (entering) return;
     if (viewport === null || viewport.scrollHeight === 0) return;
     // **A refused conversation is its own retry's to recover.** A refusal
     // publishes; without this the fill re-asks on every refusal at the frame
@@ -1360,8 +1408,10 @@
         // the reader-state machinery below is the echo's to run - but a landing
         // that puts the foot inside the near-top reach is an event the ask rode
         // in the base app, and a history shorter than the room would otherwise
-        // never ask for what is above it.
-        if (offset < REACH) loadOlder(pageTurns());
+        // never ask for what is above it. **The entry's own pin echo is the
+        // one exception** (`entering`): it is the machine's event, not a
+        // reader's, and the lift runs the ask it refuses.
+        if (offset < REACH && !entering) loadOlder(pageTurns());
         return;
       }
     }

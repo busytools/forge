@@ -74,10 +74,12 @@ just check
 ```
 
 That runs four independent groups concurrently: the fast checks
-(`cargo fmt --check`, the Unicode punctuation gate, and the scripts' own
-tests, `script-tests`: the release manifest's, the client-dependency
-bootstrap's, the check-group orchestrator's, the gate lock's, the client-wasm
-check's and the browser-stack patch's), the Rust workspace
+(`cargo fmt --check`, the Unicode punctuation gate, the book's client-page
+word-count gate, and the scripts' own tests, `script-tests`: the release
+manifest's, the client-dependency bootstrap's, the check-group orchestrator's,
+the gate lock's, the book's client-page word-count test's, the client-wasm
+check's, the browser-stack patch's and the browser-host focus test's), the
+Rust workspace
 (`cargo clippy --all-targets --workspace -- -D warnings`
 once per feature set, with and without `--all-features`,
 `cargo nextest run --workspace --all-features`,

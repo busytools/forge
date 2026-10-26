@@ -687,22 +687,35 @@ function settled(held: SessionRecord): SessionRecord {
  * difference here is a row count rather than a picture.
  */
 function appendFrame(conversation: Conversation, message: unknown): Conversation {
-  const last = conversation.turns[conversation.turns.length - 1];
+  // **A boundary moves the count**, the same rule the server's own copy keeps
+  // (`transport/conversation.rs`): the frame is appended like any other, and
+  // the header reads the count it increments rather than a figure only a read
+  // refreshes.
+  const held = isCompactBoundary(message)
+    ? { ...conversation, compaction_count: conversation.compaction_count + 1 }
+    : conversation;
+  const last = held.turns[held.turns.length - 1];
   const opens =
     last === undefined || (fold([message]).length > 0 && !isSystem(message) && opensATurn(message));
   if (opens) {
-    return { ...conversation, turns: [...conversation.turns, { key: null, messages: [message] }] };
+    return { ...held, turns: [...held.turns, { key: null, messages: [message] }] };
   }
-  if (last === undefined) return conversation;
+  if (last === undefined) return held;
   return {
-    ...conversation,
-    turns: [...conversation.turns.slice(0, -1), { ...last, messages: [...last.messages, message] }],
+    ...held,
+    turns: [...held.turns.slice(0, -1), { ...last, messages: [...last.messages, message] }],
   };
 }
 
 /** Whether a frame is a `system` frame, which is a report about a turn rather than part of one. */
 function isSystem(message: unknown): boolean {
   return record(message)['type'] === 'system';
+}
+
+/** The frame a compaction leaves at the cut, which is what moves the count. */
+function isCompactBoundary(message: unknown): boolean {
+  const frame = record(message);
+  return frame['type'] === 'system' && frame['subtype'] === 'compact_boundary';
 }
 
 /** Whether a frame opens a turn of its own rather than joining the live one: what a person said. */

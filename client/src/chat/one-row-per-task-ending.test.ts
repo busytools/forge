@@ -5,7 +5,7 @@ import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { connect, type Connection } from '../socket';
+import { connect, MAX_RETRY_MS, type Connection } from '../socket';
 import { watchSession } from '../session/live';
 import type { SessionSlot } from '../wire/types';
 import { Chat } from './conversation';
@@ -207,7 +207,19 @@ async function stubForge() {
   };
 }
 
-async function waitFor(what: string, predicate: () => boolean, ms = 5000): Promise<void> {
+/**
+ * How long a wait here is given: a page crossing a real socket can ride the
+ * client's own reconnect ceiling, so the budget is that plus the span the
+ * page's own parse needs.
+ */
+const WAIT_MS = MAX_RETRY_MS + 3_000;
+
+// A case here can carry five waits in sequence, so the file's own deadline is
+// that sum rather than vitest's five-second default, which is one wait's
+// budget and leaves a chained case to red on a bare timeout.
+vi.setConfig({ testTimeout: WAIT_MS * 5 + 5_000 });
+
+async function waitFor(what: string, predicate: () => boolean, ms = WAIT_MS): Promise<void> {
   const until = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() > until) throw new Error(`timed out waiting for ${what}`);

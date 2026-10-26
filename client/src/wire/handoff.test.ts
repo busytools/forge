@@ -9,7 +9,6 @@ const wire = (extra: Record<string, unknown> = {}): unknown => ({
   fill_percent: 85,
   total_tokens: 850_000,
   max_tokens: 1_000_000,
-  compaction_count: 1,
   at_percent: 85,
   brief: {
     ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead', 'cwd /tmp'] }],

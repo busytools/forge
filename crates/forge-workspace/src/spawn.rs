@@ -1887,12 +1887,14 @@ pub(crate) fn handle_close_worker(
 /// Tell the browser fleet which seats remain: **the seat is down, so its
 /// tabs go with it**, except any a parked hand-off holds. The sweep runs off
 /// the teardown path, which is reaping a child and can take minutes; a fleet
-/// that is not installed is a workspace with no browsers to sweep.
+/// that is not installed is a workspace with no browsers to sweep. The
+/// snapshot carries its capture generation, so the fleet drops a sweep that
+/// arrives after a newer capture.
 fn sweep_browser_seats(workspace: &Arc<Workspace>) {
-    let (Some(host), Some(seats)) = (workspace.browser_host(), workspace.live_seats()) else {
+    let (Some(host), Some(snapshot)) = (workspace.browser_host(), workspace.live_seats()) else {
         return;
     };
-    tokio::spawn(async move { host.sweep_sessions(&seats).await });
+    tokio::spawn(async move { host.sweep_sessions(&snapshot.seats, snapshot.generation).await });
 }
 
 /// Warm the seat's browser profile: create the entry and start its host, with
@@ -6670,7 +6672,7 @@ provider = "anthropic"
         // **The close's own signals come first**: the seat is ended and its
         // tabs replaced before the sweep names the seats that remain.
         let mut ended = Vec::new();
-        let (what, seats) = loop {
+        let (what, sweep) = loop {
             let (what, args) =
                 tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
                     .await
@@ -6685,13 +6687,17 @@ provider = "anthropic"
         };
         assert_eq!(what, "sweep_sessions", "the fleet is told the seats that remain");
         assert_eq!(ended.len(), 1, "the despawned seat was told ended before the sweep: {ended:?}");
-        let labels: Vec<&str> = seats
+        let labels: Vec<&str> = sweep["seats"]
             .as_array()
             .expect("a seat set")
             .iter()
             .filter_map(|seat| seat.get("label").and_then(serde_json::Value::as_str))
             .collect();
         assert_eq!(labels, vec!["lead"], "the seat that went is not in the set");
+        assert!(
+            sweep["generation"].as_u64().is_some_and(|generation| generation >= 1),
+            "a capture generation travels with the set, and zero is the fleet's floor: {sweep}",
+        );
     }
 
     /// Regression: closing ONE worker must NOT cascade to the others.
@@ -9532,6 +9538,20 @@ mod lead_charter_tests {
                 "the lead charter does not carry the landing rule ({why}): {clause}",
             );
         }
+    }
+
+    /// Every client text box takes dictation, and a lead planning client
+    /// work names the mechanism with the box - pinned so a charter rewrite
+    /// keeps the rule beside the mockup step it applies from.
+    #[test]
+    fn the_charter_carries_the_dictation_rule() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "the plan names dictation for every text box it adds - `DictateControl` beside \
+                 the box"
+            ),
+            "the dictation rule and its control are pinned",
+        );
     }
 
     /// A defect the review or the look of a cut surfaces belongs to that

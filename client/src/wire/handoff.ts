@@ -20,7 +20,6 @@ export interface HandoffRecord {
   fill_percent: number | null;
   total_tokens: number | null;
   max_tokens: number | null;
-  compaction_count: number;
   at_percent: number;
   ground_truth: HandoffSection[];
   judgment: HandoffSection[];
@@ -39,7 +38,6 @@ export function handoffOf(value: unknown): HandoffRecord | null {
     fill_percent: number(held['fill_percent']),
     total_tokens: number(held['total_tokens']),
     max_tokens: number(held['max_tokens']),
-    compaction_count: number(held['compaction_count']) ?? 0,
     at_percent: number(held['at_percent']) ?? 0,
     ground_truth: sectionsOf(brief['ground_truth']),
     judgment: sectionsOf(brief['judgment']),

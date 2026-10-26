@@ -43,7 +43,12 @@ history is the record.
 ## The loop
 
 1. **Plan the feature and pick its label** (the label names the worker, its
-   task row and the stack directory).
+   task row and the stack directory). **A client cut's plan names both
+   transports** - the browser's socket (`client/src/socket.ts`) and the
+   desktop's, which the page reaches through `client/src/connect/rust.ts`
+   and the shell holds in Rust (`client/src-tauri/src/socket.rs`, behind the
+   commands in `lib.rs`) - **and every transition the cut touches** (seat
+   switch, Home, unmount, resume), with a test listed for each.
 2. **Spawn the worker with worktree isolation** (the recipe builds and boots
    from that worktree, never the main checkout). Its charter is this skill's
    loop; kick it. **The
@@ -58,6 +63,12 @@ history is the record.
    anything of the maintainer's.
 4. **The maintainer looks**, via the worker's AskUserQuestion, one page or one
    behavior at a time, against the stack (deep) or the dev client (shallow).
+   **A seat cut's look drives a real page**: leave to Home and return, and
+   one suspend/resume, with a frame recorder running and the click-to-row
+   numbers reported. The recorder is the app shell's - the client's perf log
+   (`client/src/perf.ts` into `client/src-tauri/src/perf.rs`) writes only
+   inside Tauri - so a seat cut's look runs in the app shell, not a browser
+   tab. A checklist of clicks is not a look.
 5. **PR + the lead's review loop.** Fixes land on the branch; the stack
    rebuilds and restarts from it.
 6. **For feature-scale work, the post-review re-look** (Ved's ruling): after
@@ -146,8 +157,9 @@ history is the record.
      (the greeting deadline), not a hang. Point it back at `127.0.0.1:8790`
      when the stack dies.
    - App shell (when the feature needs one - browser hosting, dictation
-     capture): the Tauri debug shell from the worktree, same connect screen,
-     same address. **A scratch shell is a rebuilt BUNDLE with its own
+     capture): the Tauri shell from the worktree, same connect screen, same
+     address - a debug build is fine unless the look includes the browser,
+     which takes the release build below. **A scratch shell is a rebuilt BUNDLE with its own
      identifier** (the browser E2E rebuilt under `dev.vedhavyas.forge.e2ebrowser`)
      - and it must be the built bundle, not `tauri dev`: an unbundled dev
      shell's storage is keyed by process name rather than by identifier, so
@@ -176,6 +188,20 @@ history is the record.
      2026-10-19: `set_fullscreen`, `toggleFullScreen:` at level 0 with the app
      activated, and simple full screen all failed from a direct exec, and all
      worked from `open -n`).
+   - **A look that includes the browser stages the RELEASE halves, never the
+     debug ones.** Build the host with `nice -n 10 cargo build --release -p
+     forge-browser --bin forge-browser` and stage it into the stack's own
+     HOME - `FORGE_BROWSER_BIN=<worktree>/target/release/forge-browser
+     FORGE_BROWSER_HOST_DIR="$STACK/home/Library/Application Support/forge/browser-host"
+     scripts/stage-browser-host.sh` - because the stack's server resolves the
+     bundle under its redirected HOME, not the live one. When the look runs
+     in the app shell, build that shell as a release bundle too (`tauri
+     build`, the same `--config` override; never `tauri dev`). Then restart
+     the scratch server so its host processes are replaced: a running debug
+     host outlives a rebuild. A debug host encodes a 1440x900 frame in about
+     2 s and a debug shell decodes one in about 68 ms, which reads as broken
+     typing rather than a slow build. The debug host is for tests, never for
+     a look.
    - The stack takes browser WebSockets as they come - a raw handshake with an
      Origin header answers 101 plus the greeting; no CORS step exists.
 6. **Drive headlessly when useful**: `forge-protocol-client --url
@@ -280,5 +306,6 @@ history is the record.
 - The shallow depth end to end (the dev client alone, pointed at the live
   forge).
 - A taken scratch gateway port's refusal (read from code, not exercised).
-- Interactive trust acceptance; a release/perf build; two stacks at once; any
-  keychain interaction from the redirected HOME's child sessions.
+- Interactive trust acceptance; two stacks at once; any keychain interaction
+  from the redirected HOME's child sessions. A browser look's release host and
+  shell are required above; their cold-cache build time is unmeasured.

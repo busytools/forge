@@ -41,6 +41,15 @@ pub struct BrowserAttachment {
     pub audio: tokio::sync::broadcast::Receiver<forge_primitives::browser::BrowserAudio>,
 }
 
+/// A live-seat snapshot and the generation its capture took.
+///
+/// [`Workspace::live_seats`] serialises captures, so the generation orders
+/// whole seat sets; a sweep applies only a newer one (see [`BrowserHost`]).
+pub struct LiveSeats {
+    pub generation: u64,
+    pub seats: Vec<SessionSlot>,
+}
+
 /// The server's browser fleet, as the workspace calls it.
 #[async_trait::async_trait]
 pub trait BrowserHost: Send + Sync {
@@ -134,7 +143,10 @@ pub trait BrowserHost: Send + Sync {
 
     /// The seats that remain: a tab whose session is gone is closed, except a
     /// tab a parked hand-off holds. Called when a seat is torn down.
-    async fn sweep_sessions(&self, seats: &[SessionSlot]);
+    /// **`generation` orders captures** ([`LiveSeats`]): a sweep at or below
+    /// the last applied one is dropped, so a stale snapshot cannot re-admit
+    /// an ended seat.
+    async fn sweep_sessions(&self, seats: &[SessionSlot], generation: u64);
 
     /// A `/new` or `/resume`: the slot stays and the previous occupant's tabs
     /// close, except a tab a parked hand-off holds.
@@ -387,8 +399,11 @@ pub(crate) mod testing {
             Err("no viewers here".to_owned())
         }
 
-        async fn sweep_sessions(&self, seats: &[SessionSlot]) {
-            self.heard("sweep_sessions", serde_json::json!(seats));
+        async fn sweep_sessions(&self, seats: &[SessionSlot], generation: u64) {
+            self.heard(
+                "sweep_sessions",
+                serde_json::json!({ "seats": seats, "generation": generation }),
+            );
         }
 
         async fn replace_seat(&self, seat: &SessionSlot) {

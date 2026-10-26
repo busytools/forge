@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { brandPath } from '../brand';
 import { PROTOCOL_VERSION } from '../protocol';
-import { type Connection } from '../socket';
+import { MAX_RETRY_MS, type Connection } from '../socket';
 import { DEFAULT_MARK, DEFAULT_SERVER_PORT, MARK_NAMES } from '../wire/types';
 import {
   DEFAULT_ADDRESS,
@@ -31,11 +31,28 @@ async function stubServer(version = PROTOCOL_VERSION, release: string | null = n
   });
   return {
     address: `127.0.0.1:${port}`,
+    /** How many clients it still has on the end of it. */
+    live: () => server.clients.size,
     async close() {
       for (const client of server.clients) client.terminate();
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+/**
+ * How long a wait here is given: the close handshake crosses a real socket,
+ * and the client's own reconnect ceiling is what a wedged one would ride.
+ */
+const WAIT_MS = MAX_RETRY_MS + 1_000;
+
+/** Wait until `check` holds, or fail rather than tear down mid-handshake. */
+async function until(what: string, check: () => boolean): Promise<void> {
+  const deadline = Date.now() + WAIT_MS;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 const servers: Awaited<ReturnType<typeof stubServer>>[] = [];
@@ -53,10 +70,11 @@ const connections: Connection[] = [];
 
 afterEach(async () => {
   for (const connection of connections.splice(0)) connection.close();
-  // The close loop lets each connection's close handshake finish, so the
-  // stub's terminate finds no live socket and the report never fires. This
-  // settle is the margin in which that handshake completes.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Each close handshake has to finish before the stub terminates its end, or
+  // the failure is reported against a connection the reader already closed.
+  await until('the close handshake to finish', () =>
+    servers.every((server) => server.live() === 0),
+  );
   for (const server of servers.splice(0)) await server.close();
 });
 

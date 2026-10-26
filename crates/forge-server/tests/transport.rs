@@ -8035,7 +8035,7 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
         Ok(self.tabs.subscribe())
     }
 
-    async fn sweep_sessions(&self, _seats: &[SessionSlot]) {}
+    async fn sweep_sessions(&self, _seats: &[SessionSlot], _generation: u64) {}
 
     async fn replace_seat(&self, _seat: &SessionSlot) {}
 

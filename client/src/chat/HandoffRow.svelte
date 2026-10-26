@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
-
   import Chevron from '../components/Chevron.svelte';
   import CopyButton from '../session/CopyButton.svelte';
   import { grouped } from './numbers';
@@ -18,15 +16,9 @@
    * conversation stays above the row and the old session is one `/resume`
    * away.
    */
-  let {
-    handoff,
-    open = false,
-  }: {
-    handoff: HandoffRecord;
-    open?: boolean;
-  } = $props();
+  let { handoff }: { handoff: HandoffRecord } = $props();
 
-  let opened = $state(untrack(() => open));
+  let opened = $state(false);
 
   const pair = $derived(`${shortId(handoff.from)} \u{2192} ${shortId(handoff.to)}`);
 

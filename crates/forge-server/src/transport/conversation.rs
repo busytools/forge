@@ -341,7 +341,8 @@ impl Conversation {
         // **A boundary that arrives moves the count**, the same way the
         // session task's own retain does. Without this the record reports the
         // value its last SEED carried, which is stale for every compaction
-        // since - and a view draws a marker from it.
+        // since - and the header reads the count while the boundary draws its
+        // own row.
         if matches!(message, Message::CompactBoundary { .. }) {
             self.compaction_count = self.compaction_count.saturating_add(1);
         }
@@ -1148,7 +1149,6 @@ mod tests {
             fill_percent: Some(85),
             total_tokens: Some(850_000),
             max_tokens: Some(1_000_000),
-            compaction_count: 0,
             at_percent: 85,
             brief: forge_primitives::HandoffBrief::default(),
             transcript_path: "/tmp/old.jsonl".to_owned(),
@@ -1382,7 +1382,7 @@ mod tests {
     }
 
     /// A compaction the session reports MOVES the seat's count, which is what
-    /// a view draws its marker from.
+    /// the header reads.
     ///
     /// **The boundary arrives as a frame rather than in a seed**, so a record
     /// that took only the count its last connect carried would report the
