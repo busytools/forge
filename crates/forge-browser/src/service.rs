@@ -6449,7 +6449,11 @@ mod tests {
             Some((800, 600, 1.0)),
             "a nonsense ratio draws at 1"
         );
-        assert_eq!(owner_size(Some(7), &two, 7, 0, 0, 99.0), Some((1, 1, 8.0)), "bounded both ways");
+        assert_eq!(
+            owner_size(Some(7), &two, 7, 0, 0, 99.0),
+            Some((1, 1, 8.0)),
+            "bounded both ways"
+        );
     }
 
     /// **Two orgs share nothing**: their wire ids differ (what a frame is

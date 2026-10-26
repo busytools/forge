@@ -822,7 +822,7 @@ describe('the connection', () => {
   it('carries a perf batch over the socket', async () => {
     const { server, conn } = await connected();
     const mark = { schema: 'forge-perf/v1', kind: 'frame' as const, run_id: 'r', ts_ms: 3 };
-    const perf = conn.clientPerf;
+    const perf = conn.clientPerf?.bind(conn);
     if (perf === undefined) throw new Error('a socket connection carries the perf batch');
     expect(perf([mark])).toBe(true);
     await until(() => server.received.length === 1, 'the perf batch');
