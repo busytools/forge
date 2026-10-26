@@ -1424,7 +1424,7 @@ mod record_session_tool_surface_tests {
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let slot = SessionSlot::worker("Busytools", "forge", "surface");
-        let displayed = slot.display().to_string();
+        let displayed = slot.display();
         tracing::subscriber::with_default(subscriber, || {
             record_session_tool_surface(&slot, false, &["agents__list", "browser_form_state"]);
         });
