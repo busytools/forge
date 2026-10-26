@@ -400,6 +400,21 @@ pub fn stale_page(why: &str) -> bool {
     DEAD_PAGE.iter().any(|line| why.contains(line))
 }
 
+/// Whether a failure is one of ours running past its bound: the driver never
+/// answered the MCP request. A tool's own timeout arrives as the tool's
+/// error text and does not match this prefix.
+pub fn timed_out(why: &str) -> bool {
+    why.starts_with("the driver did not answer ")
+}
+
+/// Whether a failure says the driver itself is dead and must be replaced: its
+/// held page outlived its renderer, it never finished attaching, or it
+/// stopped answering at all. **The call that finds any of these replaces it
+/// on that call.**
+pub fn died(why: &str) -> bool {
+    stale_page(why) || timed_out(why) || attach_timed_out(why)
+}
+
 /// Map one MCP result onto the parts the socket carries.
 ///
 /// **A block this host cannot carry is an error rather than a silence.** The
@@ -589,6 +604,34 @@ mod tests {
             ),
             "a different initializeServer failure without the timeout is not this class",
         );
+    }
+
+    /// **A bound of ours is a dead driver; a tool's own timeout is not.** The
+    /// builder is the only place the sentence is written, so this reads it
+    /// rather than matching prose by hand.
+    #[test]
+    fn a_call_bound_that_expired_is_a_dead_driver_and_a_tools_timeout_is_not() {
+        let expired = did_not_answer("browser_tabs", Duration::from_secs(150));
+        assert!(timed_out(&expired), "our own bound expiring is the driver's silence");
+        assert!(died(&expired), "and it makes the driver dead");
+        assert!(
+            !timed_out("### Error\nTimeoutError: page.click: Timeout 30000ms exceeded."),
+            "a tool's own timeout is the tool's, not the driver's",
+        );
+        assert!(
+            !died("### Error\nTimeoutError: page.click: Timeout 30000ms exceeded."),
+            "so it replaces nothing",
+        );
+        assert!(died(&attach_failure_line()), "an attach that never finished is still dead");
+        assert!(
+            died("browserBackend.callTool: Cannot read properties of undefined (reading '_page')"),
+            "and so is a held page outliving its renderer",
+        );
+    }
+
+    /// The measured attach timeout, in whole.
+    fn attach_failure_line() -> String {
+        "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.".to_owned()
     }
 
     /// **Both measured dead-page prefixes are recognised**, and a page

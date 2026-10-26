@@ -52,6 +52,14 @@ pub fn index_of(tabs: &[DriverTab], page: &str) -> Option<usize> {
     tabs.iter().find(|tab| tab.id == page).map(|tab| tab.index)
 }
 
+/// The Playwright index of the page a CDP target names right now.
+pub fn index_of_target(tabs: &[DriverTab], target: &str) -> Option<usize> {
+    if target.is_empty() {
+        return None;
+    }
+    tabs.iter().find(|tab| tab.target == target).map(|tab| tab.index)
+}
+
 /// The pages the driver lists that no tab claims. **A page the driver made
 /// for itself is not a host tab**, and it is closed by its target so the
 /// listing cannot grow pages nothing paints.
@@ -214,6 +222,37 @@ impl TabRegistry {
         if let Some(entry) = self.tabs.get_mut(&tab) {
             target.clone_into(&mut entry.target);
         }
+    }
+
+    /// Re-pair one row with the name a fresh driver gives its page. **A
+    /// driver replacement renames every page** - the guid belongs to the
+    /// driver's connection - while the CDP target is the browser's and
+    /// survives it. The number stays this registry's.
+    pub fn reidentify(&mut self, tab: u16, id: &str) {
+        if let Some(entry) = self.tabs.get_mut(&tab) {
+            id.clone_into(&mut entry.id);
+        }
+    }
+
+    /// Re-pair every row the fresh listing names by its target, answering how
+    /// many changed. A row whose target the listing does not carry is left
+    /// alone: its page may be mid-navigation, and inventing a name for it is
+    /// how a tab comes to mean another page.
+    pub fn reidentify_from(&mut self, listing: &[DriverTab]) -> usize {
+        let mut changed = 0;
+        for tab in self.tabs.values_mut() {
+            if tab.target.is_empty() {
+                continue;
+            }
+            let Some(row) = listing.iter().find(|row| row.target == tab.target) else {
+                continue;
+            };
+            if row.id != tab.id {
+                row.id.clone_into(&mut tab.id);
+                changed += 1;
+            }
+        }
+        changed
     }
 
     pub(crate) fn owned(&self, session: &SessionSlot, tab: u16) -> Result<&Tab, String> {
@@ -383,6 +422,46 @@ mod tests {
         assert_eq!(registry.number_of("page1"), Some(tab), "the page guid is the stable name");
         assert_eq!(registry.number_of("old-target"), None, "a test does not need the target");
         assert_eq!(registry.owner(tab), Some(&seat), "the number and owner stay");
+    }
+
+    /// **A fresh driver renames every page; the target is what survives it.**
+    /// Each row is re-paired by its target, a page the listing does not name
+    /// keeps its old name, and the number stays the registry's.
+    #[test]
+    fn a_replaced_driver_is_re_paired_by_target() {
+        let seat = SessionSlot::lead("O", "p");
+        let mut registry = TabRegistry::default();
+        let one = registry
+            .adopt(1, seat.clone(), "old-1", "T1", "one", "http://a/")
+            .expect("the first tab");
+        let two = registry
+            .adopt(2, seat.clone(), "old-2", "T2", "two", "http://b/")
+            .expect("the second tab");
+        let listing = [tab_row(0, "new-1", "T1"), tab_row(1, "new-2", "T2")];
+
+        assert_eq!(super::index_of_target(&listing, "T2"), Some(1), "the target names the index");
+        assert_eq!(super::index_of_target(&listing, ""), None, "an unread target names nothing");
+        assert_eq!(registry.reidentify_from(&listing), 2, "both rows follow their targets");
+        assert_eq!(registry.id(one), Some("new-1"));
+        assert_eq!(registry.id(two), Some("new-2"));
+        assert_eq!(registry.number_of("new-1"), Some(one), "the page keeps its number");
+
+        // A page the fresh listing does not name is left alone: inventing a
+        // name for it is how a tab comes to mean another page.
+        let missing = [tab_row(0, "new-1", "T1")];
+        assert_eq!(registry.reidentify_from(&missing), 0);
+        assert_eq!(registry.id(two), Some("new-2"), "the unnamed row keeps its name");
+    }
+
+    fn tab_row(index: usize, id: &str, target: &str) -> DriverTab {
+        DriverTab {
+            index,
+            id: id.to_owned(),
+            target: target.to_owned(),
+            title: String::new(),
+            url: String::new(),
+            current: false,
+        }
     }
 
     #[test]
