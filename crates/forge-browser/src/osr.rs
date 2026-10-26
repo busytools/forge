@@ -22,9 +22,10 @@ use cef::{
     WrapRenderHandler,
 };
 
-/// The largest surface a host allocates room for: a 4K display's worth of
-/// device pixels. A frame past it is dropped rather than copied past the
-/// mapping - a takeover that needs more than this cannot be drawn.
+/// The frame budget's sides: 3840x2160 device pixels of room, and a frame
+/// past their AREA is dropped rather than copied past the mapping. **A
+/// surface's CSS layout is not bounded by them** - the ring cuts the raster
+/// to keep it, and only a layout past the budget at 1x stops at the budget.
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 
@@ -283,17 +284,18 @@ impl Ring {
 
     /// Ask the host for another paint size (device pixels) and scale. The
     /// host adopts it on its next pump and tells CEF.
+    ///
+    /// **The surface's layout is what the caller names, and the frame budget
+    /// only limits the raster** (`budgeted_request`).
     pub fn request(&self, width: u32, height: u32, scale: f64) {
+        let (width, height, scale_milli) = budgeted_request(width, height, scale_milli(scale));
         // SAFETY: the header is mapped; the sequence is published last so the
         // host never reads a half-written request.
         unsafe {
             let header = &*self.header();
-            header.request_width.store(width.clamp(1, MAX_WIDTH), Ordering::Relaxed);
-            header.request_height.store(height.clamp(1, MAX_HEIGHT), Ordering::Relaxed);
-            header.request_scale_milli.store(
-                rounded_u32((scale * 1000.0).clamp(100.0, 8_000.0), 1_000),
-                Ordering::Relaxed,
-            );
+            header.request_width.store(width, Ordering::Relaxed);
+            header.request_height.store(height, Ordering::Relaxed);
+            header.request_scale_milli.store(scale_milli, Ordering::Relaxed);
             header.request_seq.fetch_add(1, Ordering::AcqRel);
         }
     }
@@ -605,10 +607,14 @@ impl ViewSize {
         })
     }
 
+    /// **Every path that names a tab's size lands here** - the profile's
+    /// resize and a take's own - so the frame budget is spent here once, and
+    /// a raw surface request cannot outgrow the ring on either of them.
     pub fn set(&self, width: u32, height: u32, scale: f64) {
-        self.width.store(width.clamp(1, MAX_WIDTH), Ordering::Relaxed);
-        self.height.store(height.clamp(1, MAX_HEIGHT), Ordering::Relaxed);
-        self.scale_milli.store(scale_milli(scale), Ordering::Relaxed);
+        let (width, height, scale_milli) = budgeted_request(width, height, scale_milli(scale));
+        self.width.store(width, Ordering::Relaxed);
+        self.height.store(height, Ordering::Relaxed);
+        self.scale_milli.store(scale_milli, Ordering::Relaxed);
     }
 
     fn get(&self) -> (u32, u32, u32) {
@@ -861,6 +867,56 @@ pub(crate) fn scale_milli(scale: f64) -> u32 {
     rounded_u32((scale * 1000.0).clamp(100.0, 8_000.0), 1_000)
 }
 
+/// The request a surface's device pixels become, with the ring's frame budget
+/// held.
+///
+/// **When no viewport override is applied, the budget caps the pixels painted
+/// and never the CSS size the page lays out at**: cutting a 2x surface's
+/// request halved the page's layout and every click landed right of the pixel
+/// under the pointer (measured on a live host at 2048x1112). The raster gives
+/// instead; only a layout past the budget at 1x is itself cut, since no frame
+/// can hold it. **An override moves the page's CSS size without moving the
+/// frame**, so that mode is the driver's to clear, not this budget's.
+fn budgeted_request(
+    request_width: u32,
+    request_height: u32,
+    request_milli: u32,
+) -> (u32, u32, u32) {
+    let scale = (f64::from(request_milli) / 1000.0).clamp(0.1, 8.0);
+    let budget = f64::from(MAX_WIDTH) * f64::from(MAX_HEIGHT);
+    let mut layout_width = rounded_u32(f64::from(request_width) / scale, 1).max(1);
+    let mut layout_height = rounded_u32(f64::from(request_height) / scale, 1).max(1);
+    // The margin absorbs the paint's own rounding up past an exact budget.
+    let area = f64::from(layout_width) * f64::from(layout_height);
+    if area > budget {
+        let shrink = (budget / area).sqrt() * 0.998;
+        layout_width = rounded_u32(f64::from(layout_width) * shrink, 1).max(1);
+        layout_height = rounded_u32(f64::from(layout_height) * shrink, 1).max(1);
+    }
+    // The largest raster whose painted frame the ring holds, never past the
+    // caller's own scale.
+    let area = f64::from(layout_width) * f64::from(layout_height);
+    let fit = (budget / area).sqrt();
+    let mut raster_milli = scale_milli(scale.min(fit));
+    loop {
+        let painted_width =
+            rounded_u32(f64::from(layout_width) * f64::from(raster_milli) / 1000.0, 1).max(1);
+        let painted_height =
+            rounded_u32(f64::from(layout_height) * f64::from(raster_milli) / 1000.0, 1).max(1);
+        if raster_milli <= 100
+            || f64::from(painted_width) * f64::from(painted_height) <= budget * 0.999
+        {
+            break;
+        }
+        raster_milli -= 1;
+    }
+    (
+        rounded_u32(f64::from(layout_width) * f64::from(raster_milli) / 1000.0, 1).max(1),
+        rounded_u32(f64::from(layout_height) * f64::from(raster_milli) / 1000.0, 1).max(1),
+        raster_milli,
+    )
+}
+
 /// Whether a paint is for the view size the driver last asked for.
 ///
 /// **The slack is the DIP round trip's own error**, not a tolerance for a
@@ -887,10 +943,11 @@ fn view_size(request_width: u32, request_height: u32, scale_milli: u32) -> (i32,
 
 /// A rounded device-pixel count from a computed size.
 ///
-/// **The cast is the only arithmetic route from a float to a count**, and
-/// every caller derives its value from the ring's own clamped request sizes,
-/// so the result is bounded by `MAX_WIDTH * 8`; a non-finite or negative
-/// value takes `fallback` rather than wrapping.
+/// **The cast is the only arithmetic route from a float to a count**; a
+/// non-finite or negative value takes `fallback`, and a finite one saturates
+/// at the type's bounds rather than wrapping. Callers may hold a surface past
+/// the frame budget (the request path no longer clamps to `MAX_WIDTH`), so the
+/// value is not pre-bounded by them.
 fn rounded_u32(value: f64, fallback: u32) -> u32 {
     if !value.is_finite() || value < 0.0 {
         return fallback;
@@ -898,21 +955,21 @@ fn rounded_u32(value: f64, fallback: u32) -> u32 {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "bounded by the ring's request caps and checked non-negative"
+        reason = "rounded from a finite, non-negative value, and the cast saturates at u32::MAX"
     )]
     let count = value.round() as u32;
     count
 }
 
 /// A rounded DIP size from a computed view, with the same bound as
-/// [`rounded_u32`].
+/// [`rounded_u32`] but answering the wider signed type.
 fn rounded_i32(value: f64, fallback: i32) -> i32 {
     if !value.is_finite() || value > f64::from(i32::MAX) {
         return fallback;
     }
     #[expect(
         clippy::cast_possible_truncation,
-        reason = "bounded by the ring's request caps and checked in range"
+        reason = "rounded from a finite value at most i32::MAX, and the cast saturates below it"
     )]
     let points = value.round() as i32;
     points
@@ -958,6 +1015,79 @@ impl Ring {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **With no viewport override, the frame budget never moves the page's
+    /// layout.** A surface's device pixels stop at the budget; the CSS size
+    /// the page lays out at does not.
+    /// A desktop takeover of 2048x1112 at 2x asks for 4096x2224, past the
+    /// ring's 3840x2160, and every gesture the surface sent landed right of
+    /// the pixel under the pointer while the layout was clamped to 1920x1080.
+    #[test]
+    fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
+        let name = "/forge-cef-test-budget";
+        let ring = Ring::create(name, 4, 4).expect("a test ring");
+        let request = |width, height, scale| {
+            ring.request(width, height, scale);
+            // SAFETY: the header is mapped for this process's whole life.
+            let header = unsafe { &*ring.header() };
+            let (width, height, scale) = (
+                header.request_width.load(Ordering::Relaxed),
+                header.request_height.load(Ordering::Relaxed),
+                header.request_scale_milli.load(Ordering::Relaxed),
+            );
+            (view_size(width, height, scale), painted_size(width, height, scale))
+        };
+
+        // The desktop takeover: 2048x1112 CSS at 2x.
+        let (view, painted) = request(4096, 2224, 2.0);
+        assert_eq!(view, (2048, 1112), "the page keeps the surface's CSS size");
+        assert!(
+            f64::from(painted.0) * f64::from(painted.1)
+                <= f64::from(MAX_WIDTH) * f64::from(MAX_HEIGHT),
+            "the frame stays inside the ring's budget, {painted:?}"
+        );
+        assert!(
+            (f64::from(painted.0) / f64::from(painted.1) - 2048.0 / 1112.0).abs() < 0.01,
+            "and keeps the surface's shape, {painted:?}"
+        );
+
+        // A portrait phone: 390x780 CSS at 3x.
+        let (view, painted) = request(1170, 2340, 3.0);
+        assert_eq!(view, (390, 780), "the phone's page keeps its own size");
+        assert_eq!(painted, (1170, 2340), "inside the area budget, the raster is untouched");
+
+        // A surface inside the budget is untouched.
+        let (view, painted) = request(1920, 1080, 2.0);
+        assert_eq!((view, painted), ((960, 540), (1920, 1080)), "no budget, no change");
+
+        // Past the budget in CSS pixels even at 1x there is no frame to hold
+        // the layout, so the layout is what stops.
+        let (view, painted) = request(5120, 2880, 1.0);
+        assert!(
+            f64::from(painted.0) * f64::from(painted.1)
+                <= f64::from(MAX_WIDTH) * f64::from(MAX_HEIGHT),
+            "the ceiling holds the frame, {painted:?}"
+        );
+        assert!(
+            (f64::from(view.0) / f64::from(view.1) - 5120.0 / 2880.0).abs() < 0.01,
+            "and keeps the surface's shape, {view:?}"
+        );
+
+        // **A take's own resize names a tab's size too**, on the same raw
+        // surface request: restoring the controller's view must not outgrow
+        // the ring either.
+        let size = ViewSize::of_ring(&ring);
+        size.set(4096, 2224, 2.0);
+        let (width, height, scale) = size.get();
+        assert_eq!(view_size(width, height, scale), (2048, 1112), "the take's restore keeps it");
+        let painted = painted_size(width, height, scale);
+        assert!(
+            f64::from(painted.0) * f64::from(painted.1)
+                <= f64::from(MAX_WIDTH) * f64::from(MAX_HEIGHT),
+            "and stays paintable, {painted:?}"
+        );
+        Ring::unlink(name);
+    }
 
     /// **The frame is the bytes and the counter is a seqlock.** A reader
     /// takes an even counter and the pixels behind it; a frame of another

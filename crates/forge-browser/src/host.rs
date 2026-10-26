@@ -26,7 +26,7 @@ use std::time::Duration;
 use cef::*;
 
 use crate::engine::{HostApp, elapsed_ms, initialize, pump};
-use crate::osr::{Header, MAX_HEIGHT, MAX_WIDTH, Ring, STATE_FAILED, STATE_LIVE};
+use crate::osr::{Header, Ring, STATE_FAILED, STATE_LIVE};
 
 /// The launch arguments, as the server passes them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1023,11 +1023,16 @@ pub fn run(args: &Args) -> ExitCode {
         // SAFETY: the header is mapped for this process's whole life.
         let header_ref = unsafe { &*header };
         // The driver asked for another view size: adopt it and tell CEF.
+        //
+        // **The ring already holds the frame budget**, so neither axis is
+        // clamped here: a tall phone frame fits the area budget while passing
+        // MAX_HEIGHT, and clamping it halved the page's layout under the
+        // surface that asked for it.
         let request = header_ref.request_seq.load(Ordering::Acquire);
         if request != last_request {
             last_request = request;
-            let width = header_ref.request_width.load(Ordering::Relaxed).clamp(1, MAX_WIDTH);
-            let height = header_ref.request_height.load(Ordering::Relaxed).clamp(1, MAX_HEIGHT);
+            let width = header_ref.request_width.load(Ordering::Relaxed).max(1);
+            let height = header_ref.request_height.load(Ordering::Relaxed).max(1);
             let scale = header_ref.request_scale_milli.load(Ordering::Relaxed).clamp(100, 8_000);
             header_ref.width.store(width, Ordering::Relaxed);
             header_ref.height.store(height, Ordering::Relaxed);
