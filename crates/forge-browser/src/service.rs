@@ -291,6 +291,11 @@ impl BrowserService {
         self.store.org_profile(key).join("cef")
     }
 
+    /// Where a profile's takes sit: `<root>/profiles/<org>/<name>/recordings`.
+    fn recordings_dir(&self, key: &ProfileKey) -> PathBuf {
+        self.store.org_profile(key).join("recordings")
+    }
+
     /// The gate for one profile key, held across its open and its teardown.
     fn gate(&self, key: &str) -> Arc<AsyncMutex<()>> {
         self.gates
@@ -2745,7 +2750,8 @@ impl BrowserService {
             .unwrap_or_else(PoisonError::into_inner)
             .current(seat)
             .ok_or_else(|| "this session has no tab to record".to_owned())?;
-        let dir = self.root.join("recordings");
+        let key = self.target(seat)?;
+        let dir = self.recordings_dir(&key);
         std::fs::create_dir_all(&dir)
             .map_err(|why| format!("the recordings directory cannot be made: {why}"))?;
         if let Some(free) = free_bytes(&dir)
@@ -2766,7 +2772,7 @@ impl BrowserService {
         };
         prune_recordings(&dir, KEEP);
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let path = dir.join(format!("{}-{stamp}.mp4", profile.key));
+        let path = dir.join(format!("{stamp}.mp4"));
         // **A take's layout is a resize's business**: the lock a resize holds
         // across its request spans this start, so a window request cannot land
         // after the take laid its tab out.
@@ -7309,6 +7315,118 @@ mod tests {
         );
         let ledger = profile.chooser_ledger.lock().unwrap_or_else(PoisonError::into_inner);
         assert_eq!((ledger.surfaced, ledger.pre_answered), (0, 0));
+    }
+
+    /// **A first take on a fresh profile opens its own file.** The
+    /// recordings directory is the profile's, so a fresh profile has none
+    /// until its first take; without making it, AVAssetWriter refuses with
+    /// "Cannot create file" on every real profile.
+    #[tokio::test]
+    async fn a_first_take_writes_into_its_profiles_own_recordings_directory() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().join("browser"), dir.path().join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        let profile = service.entry(&seat).await.expect("a profile entry");
+        seed_tab(&profile, &seat);
+
+        // A host that runs the real writer: the answer the take waits on is
+        // AVFoundation's own.
+        let (input, lines) = std::sync::mpsc::channel();
+        let answers = profile.recorded.clone();
+        let pixels = vec![
+            0_u8;
+            usize::try_from(crate::record::WIDTH * crate::record::HEIGHT * 4)
+                .expect("a frame")
+        ];
+        let slot: crate::record::FrameSlot = Arc::new(Mutex::new(Some(Arc::new(pixels))));
+        let ring_name = format!("/forge-first-take-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: profile.dir.clone(),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        let host = std::thread::spawn(move || {
+            let mut recorder = None;
+            while let Ok(line) = lines.recv() {
+                match crate::input::parse_host_line(&line) {
+                    Some(crate::input::HostInput::RecordStart { path, .. }) => {
+                        let state =
+                            match crate::record::Recorder::start(path.into(), Arc::clone(&slot)) {
+                                Ok(started) => {
+                                    recorder = Some(started);
+                                    super::RecordingState {
+                                        started: true,
+                                        seconds: 0,
+                                        bytes: 0,
+                                        capped: false,
+                                        error: None,
+                                    }
+                                }
+                                Err(why) => super::RecordingState {
+                                    started: false,
+                                    seconds: 0,
+                                    bytes: 0,
+                                    capped: false,
+                                    error: Some(why),
+                                },
+                            };
+                        answers.send_replace(Some(state));
+                    }
+                    Some(crate::input::HostInput::RecordStop) => {
+                        let stopped = recorder.take().map(crate::record::Recorder::stop);
+                        let outcome = stopped.unwrap_or(crate::record::Outcome {
+                            seconds: 0,
+                            bytes: 0,
+                            capped: false,
+                            error: None,
+                        });
+                        answers.send_replace(Some(super::RecordingState {
+                            started: false,
+                            seconds: outcome.seconds,
+                            bytes: outcome.bytes,
+                            capped: outcome.capped,
+                            error: outcome.error,
+                        }));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let started = service.record_start(&seat).await.expect("the first take starts");
+        assert!(
+            matches!(
+                started.as_slice(),
+                [forge_primitives::browser::BrowserPart::Text { text }]
+                    if text.starts_with("Recording the page into")
+            ),
+            "the take reports that it started: {started:?}"
+        );
+        let path = profile
+            .recording
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .expect("a live take")
+            .1;
+        let own = service.store.org_profile(&service.profile_for(&seat).expect("the seat's key"));
+        assert!(
+            path.starts_with(&own),
+            "the take lands under the profile's own directory: {}",
+            path.display()
+        );
+        assert!(path.is_file(), "the writer opened the file at {}", path.display());
+
+        service.record_stop(&seat).await.expect("the take stops");
+        host.join().expect("the fake host ends");
+        crate::osr::Ring::unlink(&ring_name);
     }
 
     /// **A stop refuses by name when there is no take**, and never starts a

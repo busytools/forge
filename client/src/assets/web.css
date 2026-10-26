@@ -40,8 +40,9 @@
 
 /* ---------- one scrollbar skin for every scroller on the page ----------
    The root viewport (the home page scrolls the document), the rail, the chat,
-   the autocomplete, the segment list, the dictation popover and both text
-   fields - the composer's and the dock's. An unstyled bar is a white or grey
+   the autocomplete, the segment list, the dictation popover, both text
+   fields - the composer's and the dock's - and the dock's own scrollers, its
+   option list and its preview panels. An unstyled bar is a white or grey
    strip against the dark panels. The parts do not take the element's own
    cursor, so the pointer is set per part; the thumb brightens on hover and
    again while dragged. `scrollbar-gutter: stable` stays each scroller's own
@@ -54,6 +55,8 @@ html::-webkit-scrollbar,
 .pop::-webkit-scrollbar,
 .box textarea::-webkit-scrollbar,
 .dock .notes::-webkit-scrollbar,
+.dock .opts::-webkit-scrollbar,
+.dock .preview::-webkit-scrollbar,
 .dr-body::-webkit-scrollbar {
   width: 8px;
   cursor: pointer;
@@ -66,6 +69,8 @@ html::-webkit-scrollbar-track,
 .pop::-webkit-scrollbar-track,
 .box textarea::-webkit-scrollbar-track,
 .dock .notes::-webkit-scrollbar-track,
+.dock .opts::-webkit-scrollbar-track,
+.dock .preview::-webkit-scrollbar-track,
 .dr-body::-webkit-scrollbar-track {
   background: transparent;
   cursor: pointer;
@@ -78,6 +83,8 @@ html::-webkit-scrollbar-corner,
 .pop::-webkit-scrollbar-corner,
 .box textarea::-webkit-scrollbar-corner,
 .dock .notes::-webkit-scrollbar-corner,
+.dock .opts::-webkit-scrollbar-corner,
+.dock .preview::-webkit-scrollbar-corner,
 .dr-body::-webkit-scrollbar-corner {
   background: transparent;
   cursor: pointer;
@@ -90,6 +97,8 @@ html::-webkit-scrollbar-thumb,
 .pop::-webkit-scrollbar-thumb,
 .box textarea::-webkit-scrollbar-thumb,
 .dock .notes::-webkit-scrollbar-thumb,
+.dock .opts::-webkit-scrollbar-thumb,
+.dock .preview::-webkit-scrollbar-thumb,
 .dr-body::-webkit-scrollbar-thumb {
   background: var(--s3);
   border-radius: 99px;
@@ -103,6 +112,8 @@ html::-webkit-scrollbar-thumb:hover,
 .pop::-webkit-scrollbar-thumb:hover,
 .box textarea::-webkit-scrollbar-thumb:hover,
 .dock .notes::-webkit-scrollbar-thumb:hover,
+.dock .opts::-webkit-scrollbar-thumb:hover,
+.dock .preview::-webkit-scrollbar-thumb:hover,
 .dr-body::-webkit-scrollbar-thumb:hover {
   background: var(--line);
 }
@@ -114,6 +125,8 @@ html::-webkit-scrollbar-thumb:active,
 .pop::-webkit-scrollbar-thumb:active,
 .box textarea::-webkit-scrollbar-thumb:active,
 .dock .notes::-webkit-scrollbar-thumb:active,
+.dock .opts::-webkit-scrollbar-thumb:active,
+.dock .preview::-webkit-scrollbar-thumb:active,
 .dr-body::-webkit-scrollbar-thumb:active {
   background: var(--muted);
 }
@@ -3172,12 +3185,19 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
-/* The marked option's own prose: markdown on the wire, rendered as markdown
-   rather than shown as its source. Flush with the dock's own left edge - it is
-   a panel belonging to the prompt, not a caption hanging off the option - and
-   the renderer's own `.prose` rules set the type inside. */
+/* The preview's own prose: markdown on the wire, rendered as markdown rather
+   than shown as its source. Flush with the dock's own left edge - it is a
+   panel belonging to the prompt, not a caption hanging off the option - and
+   the renderer's own `.prose` rules set the type inside.
+
+   **A preview is a DOCUMENT**, so it is bounded and scrolls in place:
+   unbound, forty lines of issue body - or a long Slack post held for
+   approval - grew the composer lane past the window, and `.session-page`
+   clips its grid. The bound leaves the option list and the key line their
+   room. */
 .dock .preview { border: 1px solid var(--line); border-radius: 9px;
-  padding: 7px 11px; font-size: var(--fs-data); color: var(--muted); }
+  padding: 7px 11px; font-size: var(--fs-data); color: var(--muted);
+  max-height: min(34vh, 320px); overflow-y: auto; }
 /* The escape hatch is the row's own box, so the field carries no chrome of
    its own: no border, no second panel, no indent - the caret sits in the row
    under its own words, and what is typed there is the answer. */
