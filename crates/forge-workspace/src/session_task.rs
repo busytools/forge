@@ -7127,6 +7127,11 @@ mod tests {
             task.domain.lock().pending_interactions.contains_key("tu-1"),
             "the request parks a pending permission slot"
         );
+        assert_eq!(
+            workspace.pending_request_seq(&key),
+            1,
+            "the permission has its own identity on the wire",
+        );
 
         task.execute_command(Command::RespondPermission {
             key: key.clone(),
@@ -7326,6 +7331,11 @@ mod tests {
             session_id: key.display(),
             request: question_request_fixture("tu-q1"),
         });
+        assert_eq!(
+            workspace.pending_request_seq(&key),
+            1,
+            "the question has its own identity on the wire",
+        );
 
         task.execute_command(Command::RespondPermission {
             key: key.clone(),
