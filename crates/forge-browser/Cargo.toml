@@ -97,6 +97,10 @@ required-features = ["testing"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]`: the nav watch's
+# retry clock is a wall-clock sleep, and a test that waits it out for real
+# would be a multi-second flake on a loaded machine.
+tokio = { workspace = true, features = ["test-util"] }
 
 # The live host tests signal their own child; the module is macOS-gated with
 # the engine it starts.

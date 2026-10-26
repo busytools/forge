@@ -69,6 +69,11 @@ const TAB_NEEDLE = readFileSync(
   "utf8",
 ).replace(/\n$/, "");
 
+const TABLIST_NEEDLE = readFileSync(
+  new URL("./playwright-mcp-0.0.83-tablist.txt", import.meta.url),
+  "utf8",
+).replace(/\n$/, "");
+
 // **A page guid survives a navigation; a CEF target id does not.** The
 // service keys its tabs by the guid and reads the target id afresh on every
 // listing, because CEF swaps it when the page navigates and CDP input is
@@ -147,6 +152,24 @@ const OLD_REPLACEMENT = [
   "          }),",
 ].join("\n");
 
+// **A tab listing reads, it does not create.** Upstream's `list` arm calls
+// `ensureTab()`, which calls `context.newPage()` whenever the driver has no
+// current tab - so listing a profile whose tabs are all closed manufactures a
+// page, a target and a renderer per call. The page it makes never becomes the
+// driver's current tab on this host, so the next listing makes another: a
+// watch that lists on a retry clock grows the host without bound (#2581).
+// `ensureBrowserContext` keeps what the listing legitimately needs - the
+// context, the request interception and the per-tab listeners that arm the
+// file chooser - and creates nothing.
+const TABLIST_REPLACEMENT = [
+  "        switch (params2.action) {",
+  '          case "list": {',
+  "            // FORGE_TAB_LIST_READS 1: a listing reads, never creates a page.",
+  "            await context.ensureBrowserContext();",
+  "            break;",
+  "          }",
+].join("\n");
+
 const PATCHES = [
   {
     label: "file chooser",
@@ -171,6 +194,17 @@ const PATCHES = [
       "scripts/patch_browser_stack.mjs with the @playwright/mcp version.",
     twice: "the tab listing appears more than once; refusing to guess.",
   },
+  {
+    label: "tab list reads",
+    marker: "FORGE_TAB_LIST_READS 1",
+    needle: TABLIST_NEEDLE,
+    replacement: TABLIST_REPLACEMENT,
+    missing:
+      "the pinned Playwright bundle does not carry the tab list arm this patch " +
+      "expects (ensureTab). Bump scripts/patch_browser_stack.mjs with the " +
+      "@playwright/mcp version.",
+    twice: "the tab list arm appears more than once; refusing to guess.",
+  },
 ];
 
 const args = process.argv.slice(2);
@@ -180,6 +214,10 @@ if (args[0] === "--print-needle") {
 }
 if (args[0] === "--print-tabs-needle") {
   process.stdout.write(`${TAB_NEEDLE}\n`);
+  process.exit(0);
+}
+if (args[0] === "--print-tablist-needle") {
+  process.stdout.write(`${TABLIST_NEEDLE}\n`);
   process.exit(0);
 }
 if (args[0] === "--print-old") {
