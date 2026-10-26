@@ -37,6 +37,8 @@ function shellLink(): BrowserLink {
     /** **The phone paints the frames itself**: its shell has no native
      *  overlay, so the frames the Rust half relays land in the page. */
     paintsCanvas: typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent),
+    /** The shell's watcher window never moves the page under the driver. */
+    sizesAsWatcher: false,
 
     async show(profile, seat, tab): Promise<OpenAnswer> {
       try {

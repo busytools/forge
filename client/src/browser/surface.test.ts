@@ -21,11 +21,20 @@ vi.mock('./link', () => ({
   reportSurfaceRect: vi.fn(),
   resizeBrowser: vi.fn(() => Promise.resolve()),
   showBrowser: vi.fn(),
+  sizesAsWatcher: vi.fn(() => false),
   takeControl: vi.fn(() => Promise.resolve()),
 }));
 
 import type { BrowserTabList } from '../protocol';
-import { canAttach, drawsSurface, hideBrowser, listTabs, resizeBrowser, showBrowser } from './link';
+import {
+  canAttach,
+  drawsSurface,
+  hideBrowser,
+  listTabs,
+  resizeBrowser,
+  showBrowser,
+  sizesAsWatcher,
+} from './link';
 import {
   closeSurface,
   openSurface,
@@ -59,6 +68,7 @@ beforeEach(() => {
   hostable.mockReset();
   hostable.mockReturnValue(true);
   resize.mockClear();
+  vi.mocked(sizesAsWatcher).mockReturnValue(false);
   surface.viewer = null;
   surface.controller = null;
   surface.phase = 'closed';
@@ -81,6 +91,20 @@ describe('the browser surface', () => {
     surface.controller = 8;
     setRegion({ x: 0, y: 40, width: 800, height: 600 }, { width: 800, height: 640 }, 2);
     expect(resize, "a watcher's window sends nothing").not.toHaveBeenCalled();
+  });
+
+  /// **A page with no shell sizes its own view while watching.** No other
+  /// client is behind it, so the layout must not wait for the role.
+  it('sizes the page while watching where the link says the page is alone', () => {
+    vi.mocked(sizesAsWatcher).mockReturnValue(true);
+    surface.viewer = 7;
+    surface.controller = 8;
+    setRegion({ x: 0, y: 40, width: 800, height: 600 }, { width: 800, height: 640 }, 2);
+    expect(resize, 'the page lays itself out without taking the role').toHaveBeenCalledWith(
+      1600,
+      1200,
+      2,
+    );
   });
 
   /// **Taking the role sends the size the surface already has**: the page

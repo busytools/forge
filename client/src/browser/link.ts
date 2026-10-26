@@ -29,6 +29,15 @@ export interface BrowserLink {
   readonly drawsSurface: boolean;
   /** Whether the page paints the frames itself, on a canvas. */
   readonly paintsCanvas: boolean;
+  /**
+   * Whether this page lays the viewed page out to its own box while it is a
+   * watcher.
+   *
+   * **A shell does not**: its watcher window must not move the page under the
+   * person driving, and the server refuses it anyway. A page with no shell has
+   * no other client behind it to size the view, so it does.
+   */
+  readonly sizesAsWatcher: boolean;
   show(profile: string | null, seat: SessionSlot | null, tab: number | null): Promise<OpenAnswer>;
   hide(profile: string | null, seat: SessionSlot | null): Promise<HideAnswer>;
   /** The page area's box, for a shell to place its native layer in. */
@@ -65,6 +74,7 @@ const OFFLINE: BrowserLink = {
   attachable: false,
   drawsSurface: false,
   paintsCanvas: false,
+  sizesAsWatcher: false,
   show: () => Promise.resolve('this page is not connected'),
   hide: () => Promise.resolve('this page is not connected'),
   reportRect: () => Promise.resolve(),
@@ -120,6 +130,11 @@ export function drawsSurface(): boolean {
 
 export function drawsCanvas(): boolean {
   return browserLink().paintsCanvas;
+}
+
+/** Whether this page sizes the viewed page while it is only watching. */
+export function sizesAsWatcher(): boolean {
+  return browserLink().sizesAsWatcher;
 }
 
 export function showBrowser(

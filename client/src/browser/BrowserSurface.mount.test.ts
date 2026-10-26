@@ -31,6 +31,7 @@ vi.mock('./link', () => ({
   onView: vi.fn(() => Promise.resolve(() => {})),
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
   resizeBrowser: vi.fn(() => Promise.resolve()),
+  sizesAsWatcher: vi.fn(() => false),
   takeControl: vi.fn(() => Promise.resolve()),
 }));
 

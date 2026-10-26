@@ -30,14 +30,23 @@ function wireLink(connection: Connection & BrowserWire): BrowserLink {
     newest = frame;
   });
 
+  /** The size this page last asked the server for, so a repeat asks nothing. */
+  let asked: { width: number; height: number; scale: number } | null = null;
+
   return {
     attachable: true,
     drawsSurface: true,
     paintsCanvas: true,
+    /** **A page is the only client behind its own view**, so it sizes it. */
+    sizesAsWatcher: true,
 
     async show(profile, seat, tab): Promise<OpenAnswer> {
       if (seat === null) return 'this page has no seat to attach the browser to';
       void profile;
+      // **An attach re-asks the size.** Another client may have moved the
+      // profile's surface while this page was away, so the cache cannot say
+      // what the page is laid out at until this page asks again.
+      asked = null;
       try {
         return await connection.browserView(seat, tab);
       } catch (why) {
@@ -55,7 +64,13 @@ function wireLink(connection: Connection & BrowserWire): BrowserLink {
     reportRect: () => Promise.resolve(),
 
     resize(width, height, scale): Promise<void> {
-      connection.browserResize(width, height, scale);
+      // **A size the page already has is not a request.** A re-measure that
+      // lands on the same box must not force the host through another layout.
+      const last = asked;
+      if (last !== null && last.width === width && last.height === height && last.scale === scale) {
+        return Promise.resolve();
+      }
+      if (connection.browserResize(width, height, scale)) asked = { width, height, scale };
       return Promise.resolve();
     },
 

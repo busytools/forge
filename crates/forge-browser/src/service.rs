@@ -2027,8 +2027,13 @@ impl BrowserService {
         }
     }
 
-    /// Lay one tab out to its controller's surface. A resize from anyone else
-    /// is ignored: the page must not move under the person driving it.
+    /// Lay one tab out to a viewer's surface.
+    ///
+    /// **A held controller owns the layout** - the page must not move under
+    /// the person driving it - and with nobody holding the role a viewer may
+    /// lay the page out for its own surface. A size the page already has is
+    /// not a request: a re-attach or a re-measure that lands on the same box
+    /// must not force the host through another layout.
     pub async fn resize(
         &self,
         profile: &str,
@@ -2052,7 +2057,13 @@ impl BrowserService {
         };
         // **A take owns the layout**: the controller's resize is remembered
         // and applied again when the recording ends.
-        *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) = (width, height, scale);
+        {
+            let mut surface = profile.surface.lock().unwrap_or_else(PoisonError::into_inner);
+            if *surface == (width, height, scale) {
+                return;
+            }
+            *surface = (width, height, scale);
+        }
         if profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
             return;
         }
@@ -4601,7 +4612,11 @@ fn controller_size(
     height: u32,
     scale: f64,
 ) -> Option<(u32, u32, f64)> {
-    if controller != Some(viewer) {
+    // **A held role owns the layout; an unheld one belongs to whoever is
+    // looking.** With nobody driving, a viewer sizing its own surface moves
+    // nothing out from under anyone, and that is what lets a page with no
+    // shell lay its view out without taking control.
+    if controller.is_some() && controller != Some(viewer) {
         return None;
     }
     let scale = if scale.is_finite() && scale > 0.0 { scale.clamp(0.1, 8.0) } else { 1.0 };
@@ -6390,16 +6405,22 @@ mod tests {
         assert_ne!(other.id, mine.id, "two orgs, two browsers");
     }
 
-    /// **Only the controller's surface moves the page.** A watcher's window,
-    /// or one from before anyone took the role, is refused before any host is
-    /// touched; a nonsense ratio draws at 1 rather than poisoning CEF.
+    /// **A held role owns the page's layout; an unheld one belongs to whoever
+    /// is looking.** A watcher's window never moves the page under the person
+    /// driving it, and a viewer with nobody driving may lay out its own view -
+    /// a page with no shell must not need the role to size itself. A nonsense
+    /// ratio draws at 1 rather than poisoning CEF.
     #[test]
-    fn a_resize_is_the_controllers_and_nobody_elses() {
-        assert_eq!(controller_size(None, 7, 800, 600, 2.0), None, "no role, no size");
+    fn a_resize_follows_the_holder_and_falls_to_a_viewer_when_nobody_holds_it() {
+        assert_eq!(
+            controller_size(None, 7, 800, 600, 2.0),
+            Some((800, 600, 2.0)),
+            "with no role a viewer sizes its own view"
+        );
         assert_eq!(
             controller_size(Some(8), 7, 800, 600, 2.0),
             None,
-            "a watcher's window never moves the page"
+            "a watcher's window never moves the page under the holder"
         );
         assert_eq!(controller_size(Some(7), 7, 800, 600, 2.0), Some((800, 600, 2.0)));
         assert_eq!(

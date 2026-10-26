@@ -38,6 +38,7 @@ import {
   reportSurfaceRect,
   resizeBrowser,
   showBrowser,
+  sizesAsWatcher,
   takeControl as sendControl,
 } from './link';
 
@@ -610,5 +611,8 @@ export function setRegion(
 ): void {
   region = { width: rect.width, height: rect.height, scale };
   void reportSurfaceRect(rect, viewport, scale);
-  if (holdsControl()) void resizeToRegion();
+  // **A page with no shell is the only client behind its own view**, so it
+  // lays the page out while it is only watching; a shell's watcher stays
+  // quiet, because the server refuses it under a held role anyway.
+  if (holdsControl() || sizesAsWatcher()) void resizeToRegion();
 }

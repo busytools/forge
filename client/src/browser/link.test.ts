@@ -15,6 +15,7 @@ import {
   onView,
   resizeBrowser,
   showBrowser,
+  sizesAsWatcher,
   takeControl,
 } from './link';
 
@@ -135,6 +136,27 @@ describe('the wire link', () => {
     const fake = install();
     await resizeBrowser(1600, 1200, 2);
     expect(fake.wire.browserResize).toHaveBeenCalledWith(1600, 1200, 2);
+  });
+
+  /// **A page with no shell is the client that sizes its own view**, without
+  /// taking the controller role.
+  it('sizes the page as a watcher, unlike the shell', () => {
+    install();
+    expect(sizesAsWatcher(), 'the page lays itself out').toBe(true);
+  });
+
+  /// **A size the page already has is not a request**: a re-measure that lands
+  /// on the same box must not force the host through another layout. An
+  /// attach forgets the cache, because another client may have moved it.
+  it('asks once for one size, and re-asks after an attach', async () => {
+    const fake = install();
+    await resizeBrowser(1600, 1200, 2);
+    await resizeBrowser(1600, 1200, 2);
+    expect(fake.wire.browserResize, 'the same size asks nothing twice').toHaveBeenCalledTimes(1);
+
+    await showBrowser(null, SEAT, 1);
+    await resizeBrowser(1600, 1200, 2);
+    expect(fake.wire.browserResize, 'an attach is a fresh ask').toHaveBeenCalledTimes(2);
   });
 
   /// **The arrows are the wire's own move**, and back is the named direction.
