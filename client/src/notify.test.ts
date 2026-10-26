@@ -271,6 +271,38 @@ describe('delivering an ask', () => {
     expect(requestPermission, 'the next gesture asks again').toHaveBeenCalledTimes(2);
   });
 
+  /// **A refusal latches for the asks already held.** Browsers never prompt
+  /// again after a block, so the held queue is dropped and no later gesture
+  /// asks - the alternative is an unbounded no-op loop on every gesture.
+  it('drops the held asks and stops asking after a refusal', async () => {
+    vi.resetModules();
+    const requestPermission = vi.fn(() => Promise.resolve('denied' as const));
+    const shown = vi.fn();
+    class Note {
+      static permission: NotificationPermission = 'default';
+      static requestPermission = requestPermission;
+      onclick: (() => void) | null = null;
+      constructor() {
+        shown();
+      }
+      close(): void {}
+    }
+    vi.stubGlobal('Notification', Note);
+    const fresh = await import('./notify');
+    fresh.deliverAsk({ slot: OTHER, kind: 'question' });
+    fresh.deliverAsk({ slot: LEAD, kind: 'permission' });
+
+    window.dispatchEvent(new Event('pointerdown'));
+    await vi.waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(1));
+    expect(shown, 'a refusal shows nothing').not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event('keydown'));
+    window.dispatchEvent(new Event('pointerdown'));
+    await Promise.resolve();
+    expect(requestPermission, 'a refusal is never asked again').toHaveBeenCalledTimes(1);
+    expect(shown, 'and the asks held at refusal are dropped').not.toHaveBeenCalled();
+  });
+
   /// **The words name the seat and the ask**, and a lead's title is the
   /// project alone - the same seat a page title spells.
   it('names the seat and the ask in the notification', () => {
@@ -280,7 +312,7 @@ describe('delivering an ask', () => {
     });
     expect(askWords({ slot: OTHER, kind: 'hand_off' })).toEqual({
       title: 'forge \u{b7} forge \u{b7} worker',
-      body: 'a handoff is waiting',
+      body: 'a hand-off is waiting',
     });
   });
 

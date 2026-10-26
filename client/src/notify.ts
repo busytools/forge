@@ -90,8 +90,8 @@ export function askWords(notice: AskNotice): { title: string; body: string } {
     notice.kind === 'question'
       ? 'a question is waiting'
       : notice.kind === 'permission'
-        ? 'a permission is waiting'
-        : 'a handoff is waiting';
+        ? 'a permission prompt is waiting'
+        : 'a hand-off is waiting';
   return { title: `forge \u{b7} ${seat}`, body };
 }
 
@@ -167,9 +167,11 @@ function arm(): void {
     };
     Notification.requestPermission().then(
       (answer) => {
-        // **Only an answer latches.** A browser that refuses without asking
-        // reports `default`, so the asks go back and the next gesture may
-        // carry them rather than the queue being silently emptied.
+        // **A denial is final for the page**: browsers never prompt again
+        // after a block, so the held asks are dropped and no later gesture
+        // asks. Anything that is not an answer (`default`) puts the asks
+        // back for the next gesture instead of emptying the queue.
+        if (answer === 'denied') return;
         if (answer !== 'granted') {
           requeue();
           return;
