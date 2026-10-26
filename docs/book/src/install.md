@@ -124,10 +124,14 @@ separate commands, and a failure on either side lands on the same verdict
 line.
 
 CI runs each build and test job in `ci.yml` only for the paths it serves,
-so a docs-only pull request does not wait for the Rust or client jobs, and
-a Rust-only one does not wait for the client's CEF job unless it touches
-one of the shell's shared inputs: `crates/forge-capture`, `clippy.toml`,
-the root `Cargo.toml` or `rust-toolchain.toml`. One job, `ci-required`,
+so a docs-only pull request does not wait for the Rust or client jobs. The
+client's CEF job serves every crate in `forge-server`'s dependency graph -
+`forge-browser`, `forge-server`, `forge-workspace`, `forge-agent`,
+`forge-gateway`, `forge-connectors`, `forge-dictate`, `forge-capture`,
+`forge-system-one`, `forge-sdk` and `forge-primitives` - and the inputs
+that resolve or build them: `Cargo.lock`, the root `Cargo.toml`,
+`rust-toolchain.toml`, `clippy.toml`, `scripts/` and the nextest config.
+One job, `ci-required`,
 always runs, depends on every job in that workflow, and fails when a job
 that ran failed or when a job whose paths changed was skipped. The ruleset
 requires two checks: `ci-required` there, and `build site` from the docs
