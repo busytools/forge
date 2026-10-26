@@ -1202,11 +1202,14 @@
             <span><kbd>Enter</kbd> {submitLabel}</span>
           {/if}
         {:else if ask.kind === 'slack_draft'}
-          <!-- **The region is first in the tab order**, so the first Tab
-             reaches the post rather than an action: name the scroll, then the
-             stops in order. -->
-          <span><kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll the post</span>
-          <span><kbd>Tab</kbd> into the post, then the actions</span>
+          <!-- **The order is the order that works.** A held post arrives with
+             the keyboard on the dock root, where the arrows are the dock's own
+             and move nothing; they scroll only once the keyboard is in the
+             region, so the Tab leads. -->
+          <span
+            ><kbd>Tab</kbd> into the post, then <kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll it</span
+          >
+          <span><kbd>Tab</kbd> again for Post and Don't send</span>
           <span><kbd>Enter</kbd> activates</span>
         {:else}
           <span><kbd>Tab</kbd> between the actions</span>

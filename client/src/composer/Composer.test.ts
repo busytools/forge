@@ -4150,9 +4150,12 @@ describe('the dock', () => {
       post.getAttribute('aria-label'),
       "with the post's own label, not the option preview's",
     ).toBe('the post held for approval');
-    expect(drawn(), 'the key line names the scroll the region takes').toContain('scroll the post');
-    expect(drawn(), 'and does not promise Tab reaches the actions before it').not.toContain(
-      'between the actions',
+    expect(
+      drawn(),
+      'the key line leads with the Tab that reaches the region, where the arrows scroll',
+    ).toContain('Tab into the post, then ↑↓ scroll it');
+    expect(drawn(), 'and names the second Tab for the two actions').toContain(
+      "Tab again for Post and Don't send",
     );
   });
 
