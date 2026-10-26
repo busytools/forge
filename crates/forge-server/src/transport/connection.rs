@@ -1980,9 +1980,10 @@ where
             }
         }
         ClientMessage::BrowserResize { width, height, scale } => {
-            // **Only the controller's surface sizes the page**, and the
-            // service is what knows the role: a watcher's window is dropped
-            // rather than moving the page under the person driving it.
+            // **The role owns the page's layout, or the tab's longest watcher
+            // while nobody holds it**, and the service is what knows whose it
+            // is: another viewer's window is dropped rather than moving the
+            // page under the one driving it.
             let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
             else {
                 return Ok(());

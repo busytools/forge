@@ -2030,10 +2030,10 @@ impl BrowserService {
     /// Lay one tab out to a viewer's surface.
     ///
     /// **A held controller owns the layout** - the page must not move under
-    /// the person driving it - and with nobody holding the role a viewer may
-    /// lay the page out for its own surface. A size the page already has is
-    /// not a request: a re-attach or a re-measure that lands on the same box
-    /// must not force the host through another layout.
+    /// the person driving it - and with nobody holding the role it belongs to
+    /// the tab's longest-watching viewer, never to whoever asks. A size the
+    /// page already has is not a request: a re-attach or a re-measure that
+    /// lands on the same box must not force the host through another layout.
     pub async fn resize(
         &self,
         profile: &str,
@@ -2050,8 +2050,15 @@ impl BrowserService {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&tab)
             .map(|(holder, _)| *holder);
+        let watchers = profile
+            .viewers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&tab)
+            .cloned()
+            .unwrap_or_default();
         let Some((width, height, scale)) =
-            controller_size(controller, viewer, width, height, scale)
+            owner_size(controller, &watchers, viewer, width, height, scale)
         else {
             return;
         };
@@ -4603,20 +4610,22 @@ fn tool_tab(args: &Value) -> Result<u16, String> {
     u16::try_from(number).map_err(|_| format!("{number} is not a tab number"))
 }
 
-/// The view a resize asks for, when the caller holds the role: the role as a
-/// value, so a watcher's window is refused before any host is touched.
-fn controller_size(
+/// The view a resize asks for, when the caller owns the tab's layout: its
+/// controller while the role is held, else its longest-watching viewer.
+///
+/// **One owner, never whoever asks**: two viewers sizing the same unheld tab
+/// would move the page under each other, and a page with no shell still lays
+/// its own view out while it is the only one watching.
+fn owner_size(
     controller: Option<u64>,
+    watchers: &HashSet<u64>,
     viewer: u64,
     width: u32,
     height: u32,
     scale: f64,
 ) -> Option<(u32, u32, f64)> {
-    // **A held role owns the layout; an unheld one belongs to whoever is
-    // looking.** With nobody driving, a viewer sizing its own surface moves
-    // nothing out from under anyone, and that is what lets a page with no
-    // shell lay its view out without taking control.
-    if controller.is_some() && controller != Some(viewer) {
+    let owner = controller.or_else(|| watchers.iter().copied().min());
+    if owner != Some(viewer) {
         return None;
     }
     let scale = if scale.is_finite() && scale > 0.0 { scale.clamp(0.1, 8.0) } else { 1.0 };
@@ -4628,14 +4637,14 @@ mod tests {
     use super::{
         BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadPageOutcome, Driven,
         Profile, State, UploadRequest, agent_upload_paths, agent_upload_refused, attach_failure,
-        begin_upload, captured_generation, clear_if_dead, controller_size, dead_page_answer,
-        death_cause, file_name, installed_generation, note_agent_answered, note_surfaced_opened,
-        note_upload_finished, pair_tab_events, stage_agent_uploads, upload_request, write_uploads,
+        begin_upload, captured_generation, clear_if_dead, dead_page_answer, death_cause, file_name,
+        installed_generation, note_agent_answered, note_surfaced_opened, note_upload_finished,
+        owner_size, pair_tab_events, stage_agent_uploads, upload_request, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::ProfileKey;
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::time::Duration;
     use tokio::sync::Notify;
 
@@ -6405,30 +6414,42 @@ mod tests {
         assert_ne!(other.id, mine.id, "two orgs, two browsers");
     }
 
-    /// **A held role owns the page's layout; an unheld one belongs to whoever
-    /// is looking.** A watcher's window never moves the page under the person
-    /// driving it, and a viewer with nobody driving may lay out its own view -
-    /// a page with no shell must not need the role to size itself. A nonsense
-    /// ratio draws at 1 rather than poisoning CEF.
+    /// **A held role owns the page's layout; an unheld one belongs to the tab's
+    /// longest-watching viewer.** A second unheld viewer's window never moves
+    /// the page under the first, a page with no shell still lays its own view
+    /// out while it is the only one watching, and a nonsense ratio draws at 1
+    /// rather than poisoning CEF.
     #[test]
-    fn a_resize_follows_the_holder_and_falls_to_a_viewer_when_nobody_holds_it() {
+    fn a_resize_follows_the_controller_else_the_longest_watcher() {
+        let alone = HashSet::from([7]);
         assert_eq!(
-            controller_size(None, 7, 800, 600, 2.0),
+            owner_size(None, &alone, 7, 800, 600, 2.0),
             Some((800, 600, 2.0)),
-            "with no role a viewer sizes its own view"
+            "the only viewer sizes its own view"
+        );
+        let two = HashSet::from([7, 9]);
+        assert_eq!(
+            owner_size(None, &two, 9, 800, 600, 2.0),
+            None,
+            "a second viewer never moves the page under the first"
         );
         assert_eq!(
-            controller_size(Some(8), 7, 800, 600, 2.0),
+            owner_size(None, &two, 7, 640, 480, 1.0),
+            Some((640, 480, 1.0)),
+            "the longest-watching viewer owns the unheld layout"
+        );
+        assert_eq!(
+            owner_size(Some(8), &two, 7, 800, 600, 2.0),
             None,
             "a watcher's window never moves the page under the holder"
         );
-        assert_eq!(controller_size(Some(7), 7, 800, 600, 2.0), Some((800, 600, 2.0)));
+        assert_eq!(owner_size(Some(7), &two, 7, 800, 600, 2.0), Some((800, 600, 2.0)));
         assert_eq!(
-            controller_size(Some(7), 7, 800, 600, f64::NAN),
+            owner_size(Some(7), &two, 7, 800, 600, f64::NAN),
             Some((800, 600, 1.0)),
             "a nonsense ratio draws at 1"
         );
-        assert_eq!(controller_size(Some(7), 7, 0, 0, 99.0), Some((1, 1, 8.0)), "bounded both ways");
+        assert_eq!(owner_size(Some(7), &two, 7, 0, 0, 99.0), Some((1, 1, 8.0)), "bounded both ways");
     }
 
     /// **Two orgs share nothing**: their wire ids differ (what a frame is
