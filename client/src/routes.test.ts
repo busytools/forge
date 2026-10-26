@@ -8,9 +8,11 @@ import {
   hrefFor,
   hrefForSlot,
   parseRoute,
+  shownSeat,
   titleFor,
   type Route,
 } from './routes';
+import type { SessionSlot } from './wire/types';
 
 /**
  * The jsdom location is one per file: `goTo` pushes and the parameter test
@@ -307,5 +309,23 @@ describe('the document route', () => {
 
   it('is not a document without a path', () => {
     expect(parseRoute('/doc/Busytools/forge/lead')).toEqual({ name: 'notFound' });
+  });
+});
+
+describe('the seat a route has on screen', () => {
+  const slot: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+
+  /**
+   * **The route is the only thing that decides what is shown.** Every page
+   * that carries a seat shows it; a page that carries none shows none.
+   */
+  it('names the seat a route has on screen, and none for every other page', () => {
+    expect(shownSeat({ name: 'session', slot })).toEqual(slot);
+    expect(shownSeat({ name: 'review', slot })).toEqual(slot);
+    expect(shownSeat({ name: 'files', slot })).toEqual(slot);
+    expect(shownSeat({ name: 'doc', slot, path: '/a.md', reviewable: false })).toEqual(slot);
+    expect(shownSeat({ name: 'home' })).toBeNull();
+    expect(shownSeat({ name: 'board', org: 'o', project: 'p' })).toBeNull();
+    expect(shownSeat({ name: 'models' })).toBeNull();
   });
 });

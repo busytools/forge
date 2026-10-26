@@ -67,6 +67,11 @@ function withoutDocument(path: string): string {
   return path === '/index.html' ? '/' : path;
 }
 
+/** The seat a route has on screen, which is what the server reads as showing. */
+export function shownSeat(at: Route): SessionSlot | null {
+  return 'slot' in at ? at.slot : null;
+}
+
 /** The route a path names. Anything the server does not serve is `notFound`. */
 export function parseRoute(path: string): Route {
   const segments = withoutDocument(path)

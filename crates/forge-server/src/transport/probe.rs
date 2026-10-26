@@ -28,7 +28,7 @@ pub struct ContextProbe {
     last_asked: HashMap<SessionSlot, Instant>,
 }
 
-/// Why the socket did not ask a seat a page holds, so a reading that has
+/// Why the socket did not ask a seat a page shows, so a reading that has
 /// stopped moving is answered from the log rather than from a repro.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Declined {

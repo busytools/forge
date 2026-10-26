@@ -126,6 +126,9 @@ function fakeConnection() {
       refreshed.push(what);
       return true;
     },
+    showing() {},
+    relist() {},
+    release() {},
     browserInput: () => false,
     onBrowserFrame: () => () => {},
     onMessage(fn) {

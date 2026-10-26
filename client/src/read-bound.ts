@@ -26,8 +26,9 @@
  *
  * **The store is the state the bound reads**, so nothing else has to track
  * it: `ready` and `refused` are answers and only `loading` is a read still
- * owed, and an answer or a refusal is what ends the retries. A subject whose
- * last reader let go is asked for by nobody and is left alone.
+ * owed, and an answer or a refusal is what ends the retries. A subject with
+ * no store is asked for by nobody and is left alone - a visited seat keeps
+ * its store, so a seat's read is bounded for the connection's life.
  */
 
 import type { Subject } from './protocol';

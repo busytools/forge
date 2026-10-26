@@ -268,6 +268,9 @@ export function fakeConnection() {
       refreshed.push(what);
       return true;
     },
+    showing() {},
+    relist() {},
+    release() {},
     dispatch(command: Command) {
       dispatched.push(command);
       return null;

@@ -412,8 +412,9 @@ async fn a_late_subscriber_sees_the_same_board_and_home() {
 
 /// Showing a seat spends the marks the home carries for it - the diamond
 /// and the failure mark both clear by showing the seat - so the home is
-/// re-sent as part of the attach. Without it the row keeps a spent mark
-/// until the next unrelated redraw, which can be half a minute away.
+/// re-sent when the connection says it has the seat on screen. Without it
+/// the row keeps a spent mark until the next unrelated redraw, which can be
+/// half a minute away.
 #[tokio::test]
 async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds() {
     let (url, fleet) = a_server().await;
@@ -450,6 +451,7 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    send(&mut socket, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
     // Read as an absence, for the reason the failure-mark case gives: the
     // re-send not coming is what this catches, and it should say so itself.
     let resent = match next_server_within(&mut socket, 700).await {
@@ -459,7 +461,7 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
     assert_eq!(
         resent,
         Some(Subject::Home),
-        "and the attach re-sends the home, because showing the seat spent its marks",
+        "and showing the seat re-sends the home, because it spent the seat's marks",
     );
 }
 
@@ -487,6 +489,7 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    send(&mut socket, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
     // Read as an absence: the failure this catches is the re-send NOT coming,
     // and the generic wait's own panic would name the wait instead of it.
     let resent = match next_server_within(&mut socket, 700).await {
@@ -496,7 +499,7 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
     assert_eq!(
         resent,
         Some(Subject::Home),
-        "the attach re-sends the home, because showing the seat spent its failure mark",
+        "showing the seat re-sends the home, because it spent the failure mark",
     );
 }
 
@@ -545,6 +548,7 @@ async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    send(&mut socket, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
     // Read as an absence, for the reason the failure-mark case gives: the
     // re-send not coming is what this catches, and it should say so itself.
     let resent = match next_server_within(&mut socket, 700).await {
@@ -554,7 +558,7 @@ async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
     assert_eq!(
         resent,
         Some(Subject::Home),
-        "the attach re-sends the home, because showing the seat spent the death",
+        "showing the seat re-sends the home, because it spent the death",
     );
 
     // The spent trace leaves a row that is still there and clean: the seat
@@ -594,9 +598,10 @@ async fn showing_a_seat_with_nothing_to_spend_leaves_the_home_alone() {
     .await;
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
+    send(&mut socket, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
     assert!(
         next_server_within(&mut socket, 700).await.is_none(),
-        "the home was re-sent for an attach that spent nothing",
+        "the home was re-sent for a showing that spent nothing",
     );
 }
 
@@ -1773,6 +1778,14 @@ fn a_reading_past_the_gate() -> ContextUsage {
 /// and handed back beside it.
 async fn a_page_on(url: &str, what: Subject) -> (Client, serde_json::Value) {
     let mut socket = connect(url).await;
+    // **A page on a seat SHOWS it** (Ved, 2026-10-25). The subscribe carries
+    // the seat's frames; the showing is what spends its marks and what makes
+    // a turn finishing on it a turn the reader watched. Sent BEFORE the
+    // subscribe so the snapshot answering the subscribe proves both crossed -
+    // a showing has no answer of its own.
+    if let Subject::Session(slot) = &what {
+        send(&mut socket, ClientMessage::Showing { seat: Some(slot.clone()) }).await;
+    }
     send(&mut socket, ClientMessage::Subscribe { what, answering: true }).await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
     (socket, data)
@@ -1916,7 +1929,7 @@ async fn a_seat_that_already_reports_an_mcp_snapshot_is_not_asked_again() {
     assert!(command.is_none(), "a seat that reports a snapshot is not asked again: {command:?}");
 }
 
-/// A turn finishing on a seat a page is holding is the moment its reading
+/// A turn finishing on a seat a page shows is the moment its reading
 /// stops being true: the transcript grew by the turn, and the number the seat
 /// holds was taken before it.
 ///
@@ -1924,7 +1937,7 @@ async fn a_seat_that_already_reports_an_mcp_snapshot_is_not_asked_again() {
 /// probe per read, and this one keeps a reading from standing for the life of
 /// its occupant.
 #[tokio::test]
-async fn a_turn_finishing_on_a_seat_a_page_holds_asks_the_core_for_a_reading() {
+async fn a_turn_finishing_on_a_seat_a_page_shows_asks_the_core_for_a_reading() {
     let (url, fleet) = a_server().await;
     let mut asked = a_reporting_seat(&fleet, a_small_reading());
     let (_socket, data) = a_page_on(&url, Subject::Session(lead_seat())).await;
@@ -2321,12 +2334,56 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
 
     let attached = {
         let mut leaving = connect(&url).await;
+        send(&mut leaving, ClientMessage::Subscribe { what: Subject::Home, answering: true }).await;
+        snapshot_answering(&mut leaving).await;
+        // A completion with nobody showing the seat arms its diamond. Showing
+        // the seat spends it and answers with the home, which is the ack that
+        // the seat was attached before the drop - a showing that spent
+        // nothing sends no frame at all.
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: lead_seat(),
+            msg: serde_json::from_value(serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1,
+                "duration_api_ms": 1,
+                "is_error": false,
+                "num_turns": 1,
+                "session_id": "s",
+            }))
+            .expect("parse a result message"),
+            origin: None,
+            source: None,
+        });
+        assert!(
+            snapshot_until(&mut leaving, Subject::Home, |data| {
+                data.get("unseen")
+                    .and_then(|held| held.as_array())
+                    .is_some_and(|held| !held.is_empty())
+            })
+            .await,
+            "precondition: the completion armed the seat's diamond",
+        );
         send(
             &mut leaving,
             ClientMessage::Subscribe { what: Subject::Session(lead_seat()), answering: true },
         )
         .await;
         snapshot_answering(&mut leaving).await;
+        // The subscription alone spends nothing; the seat is attached by the
+        // connection saying it has it on screen.
+        send(&mut leaving, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
+        // **The answer must be the one this showing earned**: the diamond the
+        // completion armed is gone from the home it re-sends.
+        assert!(
+            snapshot_until(&mut leaving, Subject::Home, |data| {
+                data.get("unseen")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|unseen| !unseen.iter().any(|held| held["label"] == "lead"))
+            })
+            .await,
+            "the showing's home answer: the seat was attached and its diamond spent before the drop",
+        );
         // Counted WITH it attached, so the transport's own fold is in the
         // number either way.
         let attached = fleet.subscriber_count();

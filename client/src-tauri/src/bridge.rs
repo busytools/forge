@@ -113,7 +113,26 @@ struct State {
     /// arbitrary and would re-ask a different subject per run.
     order: Vec<String>,
     socket: Option<Socket>,
+    /// Which socket is the CURRENT one, so a replaced socket's late events -
+    /// a `Status::Open` from a watcher still retrying behind a fresh
+    /// connection - are ignored rather than counted.
+    socket_id: u64,
     status: &'static str,
+    /// How many sockets have OPENED on this bridge.
+    ///
+    /// **The page's proof that the connection it believes open is the one
+    /// still there.** A webview suspended across a drop and its reconnect
+    /// wakes to a socket that is already `open` again: every queued
+    /// connection notice re-reads the CURRENT state, so the page never sees
+    /// the `connecting` and would keep a frozen record for ever. A greeting
+    /// is not that proof - the first socket's greeting is delivered twice
+    /// and two reconnects to one server carry the same value - so the shell
+    /// counts the sockets themselves and the page compares.
+    ///
+    /// Bumped on every `Status::Open`, not in [`Bridge::connect`]: the
+    /// socket reconnects itself, and its own retries never pass through
+    /// `connect`.
+    generation: u64,
     greeting: Option<Value>,
     /// When the page last heartbeated, and how many frames went unforwarded
     /// while it was presumed parked. **Every suppressed frame except a
@@ -166,6 +185,16 @@ impl Drop for Picking<'_> {
     }
 }
 
+/// The next socket number for a bridge, unique for the process's life.
+///
+/// Process-wide rather than per bridge so two bridges in one process - a
+/// test's, a scratch instance beside the real one - cannot hand the same
+/// number to different sockets.
+fn mint_socket_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl Bridge {
     pub fn new(
         app: Option<tauri::AppHandle>,
@@ -177,7 +206,9 @@ impl Bridge {
                 held: HashMap::new(),
                 order: Vec::new(),
                 socket: None,
+                socket_id: 0,
                 status: "connecting",
+                generation: 0,
                 greeting: None,
                 last_beat: None,
                 suppressed: 0,
@@ -472,6 +503,11 @@ impl Bridge {
             None => Arc::new(|_: &[u8]| {}),
         };
         let socket = Socket::open_with_frames(url, tx, frames, sound);
+        // **This socket's own identity.** The old socket is closed below, but
+        // its task can still deliver a queued event after the swap; the id is
+        // what keeps a stale `Status::Open` from bumping the page's
+        // generation or writing to the fresh connection's state.
+        let socket_id = mint_socket_id();
         let wanted: Vec<(Value, bool, usize)> = {
             let mut state = self.lock();
             // **The park outlives the connection it was kept across**: a
@@ -482,7 +518,14 @@ impl Bridge {
             while let Some(message) = state.parked.pop_front() {
                 self.emit(ClientEvent::Inbound(message));
             }
+            // **The old socket ends with the swap**, and its id goes with it:
+            // a watcher left retrying behind the new connection is a second
+            // socket writing into one bridge.
+            if let Some(previous) = state.socket.take() {
+                previous.close();
+            }
             state.socket = Some(socket.clone());
+            state.socket_id = socket_id;
             state.status = "connecting";
             state.greeting = None;
             state.last_beat = Some(Instant::now());
@@ -491,6 +534,14 @@ impl Bridge {
             let mut wanted = Vec::with_capacity(state.order.len());
             for key in &state.order {
                 if let Some(watch) = state.held.get(key) {
+                    // **A seat is the page's own to re-open.** Only the shown
+                    // seat re-attaches after a resume; the rest re-attach on
+                    // their next click, so re-asking every visited seat here
+                    // would pay a whole record each for seats nobody is
+                    // looking at.
+                    if !watch.what.is_string() {
+                        continue;
+                    }
                     wanted.push((watch.what.clone(), watch.answering, watch.readers));
                 }
             }
@@ -508,7 +559,7 @@ impl Bridge {
         let bridge = Arc::clone(self);
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                bridge.socket_event(event);
+                bridge.socket_event(socket_id, event);
             }
         });
     }
@@ -561,6 +612,52 @@ impl Bridge {
         }
     }
 
+    /// Say which seat the page has on screen, `None` for none.
+    ///
+    /// **A state assertion, not an event**: the page re-sends it on every
+    /// reconnect, and the server spends a seat's marks on it and never on a
+    /// subscription.
+    pub fn showing(&self, seat: Option<Value>) {
+        let state = self.lock();
+        if let Some(socket) = &state.socket {
+            socket.showing(seat);
+        }
+    }
+
+    /// Ask again for a subject the page still holds, **without counting a
+    /// reader**: the record and the page's store both survived the drop, and
+    /// only the server's subscription went with the socket.
+    pub fn relist(&self, what: Value, answering: bool) {
+        let state = self.lock();
+        let key = records::subject_key(&what);
+        let held_answering = state.held.get(&key).map(|watch| watch.answering).unwrap_or(false);
+        if let Some(socket) = &state.socket {
+            socket.relist(what, held_answering || answering);
+        }
+    }
+
+    /// Give a subject back entirely: every page reader's subscription and
+    /// the server's entries for it.
+    ///
+    /// **The count released is the server's, not the page's.** After a
+    /// resume the bridge may hold two readers where the wire holds one, so
+    /// one unsubscribe call per reader would send a frame the server has
+    /// nothing for and leave the one it does hold standing; the socket's own
+    /// count is what caps the sends.
+    pub fn release(&self, what: &Value) {
+        let key = records::subject_key(what);
+        let mut state = self.lock();
+        state.held.remove(&key);
+        state.order.retain(|held| *held != key);
+        state.records.release(&key);
+        // **The socket gives back the wire's count.** A relist raises it
+        // above this side's readers, so looping the readers would leave a
+        // subscription and its work-watch hold standing.
+        if let Some(socket) = &state.socket {
+            socket.release(what.clone());
+        }
+    }
+
     /// Ask again for a subject the page already holds: the core answers with
     /// a snapshot, which replaces the record whole. **The declaration is the
     /// held one**: a refresh with flags of its own would escalate a seat
@@ -579,6 +676,7 @@ impl Bridge {
         let state = self.lock();
         json!({
             "status": state.status,
+            "generation": state.generation,
             "greeting": state.greeting,
         })
     }
@@ -769,7 +867,14 @@ impl Bridge {
         }
     }
 
-    fn socket_event(self: &Arc<Self>, event: SocketEvent) {
+    fn socket_event(self: &Arc<Self>, socket_id: u64, event: SocketEvent) {
+        // **A replaced socket's late events are not this connection's.** A
+        // `Status::Open` from a watcher still retrying behind a fresh socket
+        // would otherwise bump the generation the page reads and synthesize a
+        // reconnect pair on a live wire.
+        if self.lock().socket_id != socket_id {
+            return;
+        }
         match event {
             SocketEvent::Status(status) => self.status_moved(status),
             SocketEvent::Message { value, bytes, parse_ms } => {
@@ -805,6 +910,10 @@ impl Bridge {
                 Status::Closed => "closed",
             };
             if status == Status::Open {
+                // **A socket opened**, which is the generation the page
+                // compares: see the field's own comment for why a greeting
+                // cannot stand in for it.
+                state.generation = state.generation.saturating_add(1);
                 // A fresh connection's frames are forwarded at once: the page
                 // is there (it just asked to connect), and the first
                 // heartbeat carries the proof rather than the promise. The
@@ -1397,7 +1506,8 @@ mod tests {
     /// here is about what the bridge does with a frame.
     fn sent(bridge: &Arc<Bridge>, message: Value) {
         let bytes = serde_json::to_string(&message).map_or(0, |text| text.len());
-        bridge.socket_event(SocketEvent::Message { value: message, bytes, parse_ms: 0.5 });
+        let id = bridge.lock().socket_id;
+        bridge.socket_event(id, SocketEvent::Message { value: message, bytes, parse_ms: 0.5 });
     }
 
     /// Park the page: nothing has heartbeated for longer than `FRESH_MS`.
@@ -1604,10 +1714,11 @@ mod tests {
     async fn a_refused_subscribe_reaches_the_page() {
         let (bridge, mut rx) = bridge();
         let key = "session:Busytools\u{0}forge\u{0}lead";
-        bridge.socket_event(SocketEvent::Refused {
-            key: key.to_owned(),
-            why: "no session there".to_owned(),
-        });
+        let id = bridge.lock().socket_id;
+        bridge.socket_event(
+            id,
+            SocketEvent::Refused { key: key.to_owned(), why: "no session there".to_owned() },
+        );
         let ClientEvent::Refused { key: seen, why } = event(&mut rx, |_| true).await else {
             unreachable!("the first event is the refusal");
         };
@@ -1668,24 +1779,148 @@ mod tests {
 
     /// A subject two page readers hold is re-asked once per OPEN one on a
     /// reconnect from the connect screen: the count is the server's, and one
-    /// ask would leave the seat half-watched.
+    /// ask would leave the subject half-watched. **A seat is not among them**
+    /// - it is the page's own to re-open after a drop - so the count is
+    /// pinned on a subject the connection does carry across.
     #[tokio::test]
     async fn a_subject_two_readers_hold_is_re_asked_per_reader() {
         let mut server = stub().await;
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(seat(), true);
-        bridge.subscribe(seat(), true);
+        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         bridge.connect(server.url.clone());
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         let second = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(second["what"], seat(), "the second ask is the same subject");
+        assert_eq!(second["what"], json!("home"), "the second ask is the same subject");
         assert!(
             tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
             "exactly two: one per open subscription"
+        );
+    }
+
+    /// **A replaced socket's late events are not the live connection's.** The
+    /// bridge closes the old socket at the swap, but its task can still
+    /// deliver a queued `Status::Open`; counting it would bump the generation
+    /// the page reads and synthesize a reconnect pair on a live wire - which
+    /// zeroes every visited seat's subscription count and clears a running
+    /// take. The socket's own id is what tells the two apart.
+    #[tokio::test]
+    async fn a_replaced_sockets_late_open_does_not_touch_the_live_connection() {
+        let server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        let first = bridge.lock().socket_id;
+        connected(&bridge).await;
+
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        let second = bridge.lock().socket_id;
+        assert_ne!(first, second, "precondition: the bridge swapped sockets");
+        let generation = bridge.lock().generation;
+
+        bridge.socket_event(first, SocketEvent::Status(Status::Open));
+        bridge.socket_event(first, SocketEvent::Status(Status::Connecting));
+        let state = bridge.lock();
+        assert_eq!(state.generation, generation, "a replaced socket's open bumped the generation");
+        assert_eq!(state.status, "open", "a replaced socket's drop moved the live connection");
+    }
+
+    /// **A page-driven reconnect re-attaches no seat by itself.** Only the
+    /// shown seat comes back live, through the page's own `relist`; every
+    /// other visited seat waits for its next click, so a reconnect does not
+    /// pay a whole record each for seats nobody is looking at.
+    #[tokio::test]
+    async fn a_reconnect_from_the_connect_screen_asks_for_no_seat() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        bridge.connect(server.url.clone());
+        // **Wait for the new socket to be up**, or the absence proves nothing:
+        // an assertion 200 ms after a dial that never landed reads the same as
+        // a resume that stayed quiet.
+        connected(&bridge).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "a seat re-attached itself on resume instead of waiting for a click",
+        );
+    }
+
+    /// **The showing crosses as the frame the server reads**, `null`
+    /// included: it is a state assertion, and "nothing of mine is on screen"
+    /// is one of its states.
+    #[tokio::test]
+    async fn a_showing_crosses_as_its_own_frame() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+
+        bridge.showing(Some(seat()["session"].clone()));
+        let shown = server.heard_until(|v| v["kind"] == "showing").await;
+        assert_eq!(shown["seat"], seat()["session"], "the seat rode the frame");
+
+        bridge.showing(None);
+        let cleared = server.heard_until(|v| v["kind"] == "showing").await;
+        assert_eq!(cleared["seat"], Value::Null, "nothing on screen crosses as null");
+    }
+
+    /// **A relist asks again without counting a reader.** The page's store
+    /// survived the drop, so only the wire's half went; counting a second
+    /// reader here would leave an unsubscribe one short for the life of the
+    /// connection.
+    #[tokio::test]
+    async fn a_relist_asks_without_counting_a_reader() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        bridge.relist(seat(), false);
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], seat(), "the relist asked for the same subject");
+        assert_eq!(again["answering"], true, "the held declaration was not raised into the relist",);
+
+        let key = records::subject_key(&seat());
+        assert_eq!(
+            bridge.lock().held.get(&key).map(|watch| watch.readers),
+            Some(1),
+            "the relist counted a second reader",
+        );
+    }
+
+    /// **A release gives back what the WIRE holds, not what the page holds.**
+    /// A relist raises the socket's count without raising this side's
+    /// readers, so a release that looped the readers would leave one server
+    /// subscription - and its work-watch hold - standing until the
+    /// connection closed.
+    #[tokio::test]
+    async fn a_release_gives_back_the_wire_count_after_a_relist() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        // A relist asks once more on the wire while the reader count stays 1.
+        bridge.relist(seat(), false);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        bridge.release(&seat());
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the release gave back fewer entries than the wire held",
         );
     }
 

@@ -337,7 +337,8 @@ census!(Command,
 // command does nothing when it is pressed.
 census!(ClientMessage,
     [
-        Subscribe struct, Unsubscribe struct, Command struct, More struct, SeatRange struct,
+        Subscribe struct, Unsubscribe struct, Showing struct, Command struct, More struct,
+        SeatRange struct,
         CommitDiff struct,
         BrowserView struct,
         BrowserFileAnswer struct,
@@ -851,27 +852,40 @@ fn frames_record() -> Value {
         "a command's wire name moved"
     );
 
-    // All five, because they are cheap and the client writes these tags by
-    // hand: nothing else in the tree would notice one moving.
+    // **Every variant**, because they are cheap and the client writes these
+    // tags by hand: nothing else in the tree would notice one moving.
     let client_messages = [
         ClientMessage::Subscribe { what: Subject::Home, answering: false },
         ClientMessage::Unsubscribe { what: Subject::Home },
+        ClientMessage::Showing { seat: None },
+        ClientMessage::Showing { seat: Some(seat.clone()) },
         ClientMessage::Command {
             command: Box::new(Command::Cancel { key: seat.clone() }),
             reply_to: None,
         },
         ClientMessage::More { conversation: seat.clone(), before: None, turns: 1 },
+        ClientMessage::SeatRange { slot: seat.clone(), epoch: None, from: 1, to: 2 },
+        ClientMessage::CommitDiff { session: seat.clone(), sha: "4f68708".to_owned() },
         ClientMessage::BrowserView { seat: seat.clone(), tab: Some(3), reply_to: None },
+        ClientMessage::BrowserFileAnswer { id: 1, files: Vec::new() },
+        ClientMessage::BrowserDetach,
         ClientMessage::BrowserInput {
             seq: 1,
             event: forge_primitives::browser::BrowserInputEvent::Text { text: "hi".to_owned() },
         },
         ClientMessage::BrowserControl { take: true },
         ClientMessage::BrowserNav { back: true },
+        ClientMessage::BrowserResize { width: 1280, height: 800, scale: 2.0 },
+        ClientMessage::BrowserTabs { seat: seat.clone(), reply_to: None },
         ClientMessage::DocumentRead {
             session: seat.clone(),
             path: "docs/readme.md".to_owned(),
             reviewable: true,
+        },
+        ClientMessage::FileContent {
+            session: seat.clone(),
+            path: "src/lib.rs".to_owned(),
+            sha: None,
         },
     ];
     for sample in &client_messages {

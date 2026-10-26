@@ -308,9 +308,8 @@
       canned.held = answerWith(page);
       // **The seat's subscription is what carries the page** (#2420): the
       // fixture mounts the column without a Session page, so nothing else
-      // opens the seat - a conversation's hold keeps a subscription alive, it
-      // does not open one - and the column would wait on a snapshot nobody
-      // asked for.
+      // opens the seat - the conversation only listens - and the column would
+      // wait on a snapshot nobody asked for.
       watchSession(canned.held.connection, page.slot, false).subscribe(() => undefined);
       // The record's cards, seeded the way a session's own read seeds them:
       // this fixture mounts Chat without a Session, so nothing else would and

@@ -27,7 +27,6 @@ import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import { cannotPaint } from '../paint';
 import { inFlightOf } from '../session/apply';
-import { watchSession } from '../session/live';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
@@ -1522,6 +1521,29 @@ export class Chat {
     return runningAt(this.connection, this.slot, this.turnRunning);
   }
 
+  /**
+   * Take the newest page the seat's store holds, for a column mounting where
+   * nothing answered: a visited seat keeps its subscription, so a return gets
+   * no snapshot and a fresh column draws what the frames have kept current.
+   */
+  private seedFromStore(): void {
+    if (this.held.loaded) return;
+    const snapshot = this.connection.store({ session: this.slot })?.snapshot();
+    if (snapshot === null || snapshot === undefined) return;
+    const data = snapshot as { conversation?: unknown };
+    const conversation = (data.conversation ?? {}) as {
+      turns?: unknown;
+      cursor?: unknown;
+      handoff?: unknown;
+    };
+    const record = handoffOf(conversation.handoff);
+    if (record !== null) this.seedHandoffTurn(record, 'ahead');
+    const rows = pageTurns(conversation.turns);
+    if (rows.length === 0) return;
+    const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
+    this.takePage(rows, cursor, 'newest');
+  }
+
   /** The newest row carries the running row while the core says a turn is running. */
   private answered(held: Conversation): Conversation {
     const last = held.turns.length - 1;
@@ -1556,20 +1578,12 @@ export class Chat {
   }
 
   /**
-   * Hold the seat, listen to it, and take the page its snapshot carries.
+   * Listen to the seat and take the page its snapshot carries.
    *
-   * **The hold lives with the conversation, not with the page** (Ved,
-   * 2026-10-09): the server sends a seat's frames to a subscriber of that
-   * seat, so a subscription given back on leave would make "every frame folds
-   * for every seat" untrue for exactly the frames that matter. A kept
-   * conversation keeps receiving; the DRAW is what waits.
-   *
-   * **It is a HOLD on the seat's one subscription, not a subscribe of its
-   * own.** The page opens that subscription and holds it too, and two
-   * subscribes are two whole records encoded and sent to a client that keeps
-   * one copy - 6.5 MB twice on a large seat, measured 2026-10-09. The
-   * subscription goes with the last holder, so a page leaving a seat this
-   * conversation still folds sends nothing at all.
+   * **The subscription is the seat's own and outlives the page** (Ved,
+   * 2026-10-25): a visited seat stays subscribed for the life of the
+   * connection, so a conversation holds nothing and a page leaving it sends
+   * nothing. A kept conversation keeps receiving; the DRAW is what waits.
    *
    * **The snapshot carries the newest page and its cursor, so the switch does
    * not ask for it twice** (#2420). The subscribe's own answer is seeded as
@@ -1579,10 +1593,15 @@ export class Chat {
    */
   start(): () => void {
     if (this.running !== null) return this.running;
-    const release = watchSession(this.connection, this.slot, false).hold();
     // Where the seat already is, for a seat a visit has answered before: a
     // return subscribes nothing, so nothing else would say.
     this.heard(this.heldRunning());
+    // **A column that mounts on a seat the client already holds seeds from
+    // the seat's own record.** A visited seat keeps its subscription (Ved,
+    // 2026-10-25), so no snapshot follows a return; the record the frames
+    // kept current carries the newest page, and taking it here is what makes
+    // a Home round trip draw at once with no read of the seat.
+    this.seedFromStore();
     const stopMessages = this.connection.onMessage((message: ServerMessage) =>
       this.receive(message),
     );
@@ -1670,7 +1689,6 @@ export class Chat {
         window.removeEventListener('pageshow', wake);
         window.removeEventListener('focus', wake);
       }
-      release();
       this.clearRetry();
       this.running = null;
     };
@@ -1737,12 +1755,13 @@ export class Chat {
   showing(): void {
     if (this.shown) return;
     this.shown = true;
-    // **The refresh is the guarded one** (#2420): it refuses over a
-    // conversation with no page yet - that load is the subscribe's to answer -
-    // so a return cannot ship a page beside the snapshot. A RETURN to a loaded
-    // conversation keeps the refresh, which is the reconcile for a read that
-    // failed or a stamp missed while away.
-    if (!this.refresh()) this.returnWanted = true;
+    // **A return reads nothing of its own.** The subscription outlives the
+    // page, so the frames never stopped and what is held is current; the
+    // read a return used to make was the old subscription's compensation.
+    // A DROP is the one case that lost frames, and `missed` is what records
+    // it - the status handler asks on the reconnect, and a return meeting
+    // the same in-flight ask holds its want.
+    if (this.missed && !this.refresh()) this.returnWanted = true;
   }
 
   /** A return whose refresh was swallowed: fire it now that the ask settled. */

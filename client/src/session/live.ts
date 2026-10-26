@@ -14,18 +14,19 @@
  * slot the update carries, so a store's contents are this seat's and nothing
  * else's.
  *
- * **The subscription follows its HOLDERS, and the RECORD stays.** One page
- * opens the seat's subscription - its own answer is the whole record - and
- * every holder after it rides that one: a page drawing the seat, and the
- * conversation folding it. A page leaving gives its own hold back; the
- * subscription goes with the last of them, because a held subscription reads
- * as a showing seat to the server and showing spends the marks a seat earns.
- * The record stays either way, so a return draws what it holds, and while the
- * conversation holds the seat a return asks for nothing at all.
+ * **A visited seat is subscribed for the life of the connection, and its
+ * RECORD is kept with it.** The first page to draw a seat opens the
+ * subscription - its own answer is the whole record - and leaving no longer
+ * gives it back, so every frame keeps folding into a record that is current
+ * the moment the seat is drawn again. Only two things release it: its session
+ * ending (`releaseSeat`), and the connection closing. **Showing a seat is a
+ * separate message**, sent by the route, and that is what spends a seat's
+ * marks; the subscription spends nothing.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
+import { releaseConversation } from '../chat/conversations';
 import { cronNames } from '../chat/cron-names.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
@@ -72,18 +73,6 @@ interface Seat {
   held: Store | null;
   /** How many subscriptions this seat opened, to give back as many when it is let go. */
   opened: number;
-  /**
-   * How many holders keep this seat's subscription open.
-   *
-   * **A subscription is opened once and held by whoever needs it** (Ved's
-   * ruling, 2026-10-09: the conversation folds every frame of every seat):
-   * the page drawing the seat, and the conversation keeping its frames. The
-   * page leaving gives its own hold back, and the seat's subscription goes
-   * with the LAST of them - so a page's return sends nothing while the
-   * conversation still holds it, and a seat nobody holds is let go exactly as
-   * it was before.
-   */
-  holders: number;
   /** What the seat is subscribed as: a later reader that can answer raises it. */
   answering: boolean;
   /**
@@ -166,8 +155,8 @@ interface Seat {
    * with it.
    */
   repairHeld: { seq: number; span: number; update: SessionUpdate }[];
-  /** Hold the seat's subscription open, answering the release: see `hold`. */
-  hold: () => () => void;
+  /** Release the seat because its session ended: see `end`. */
+  end: () => void;
   /**
    * Open the seat's subscription: see `open`.
    *
@@ -247,17 +236,15 @@ const OUTRUN_CAP = 3;
 /**
  * Watch one seat.
  *
- * **The seat's record is the client's; its subscription follows its holders.**
- * The first page to show a seat opens its subscription - that answer is what
- * fills its history - and every holder after that, a page or a conversation,
- * rides the one subscription and is handed what the seat holds. The
- * subscription goes with the last holder, and a return while any holder
- * remains asks for nothing: the record it held draws, and the frames never
- * stopped.
+ * **The seat's record is the client's, and so is its subscription.** The first
+ * page to show a seat opens its subscription - that answer is what fills its
+ * history - and no visit gives it back: every later visit is handed what the
+ * seat holds, and the frames never stopped. Only a session ending
+ * ([`releaseSeat`]) and the connection closing release it.
  *
  * **The subscribe happens with the first reader**, not at this call: a caller
  * that takes the store and never subscribes opens nothing of its own, and a
- * seat whose page is the only holder is subscribed by that page's own first
+ * seat whose page is the only reader is subscribed by that page's own first
  * read. The second opener is the role: a page that can answer raises a seat
  * held as an observer, and that raise is a subscribe whether or not any page
  * has subscribed the store yet.
@@ -295,7 +282,7 @@ export function watchSession(
    * cancelled at birth.
    */
   answering: boolean,
-): { subscribe: Readable<SessionRead>['subscribe']; hold: () => () => void } {
+): { subscribe: Readable<SessionRead>['subscribe'] } {
   const subject: Subject = { session: slot };
   const key = subjectKey(subject);
   const visited = seats(connection);
@@ -306,16 +293,15 @@ export function watchSession(
     visited.set(key, seat);
   } else if (answering && !seat.answering) {
     // **The role only ever rises, and a page that can answer has to say so.**
-    // A seat held before any page reached it has no subscription yet - the
-    // conversation's hold keeps one alive, it does not open one - so this IS
-    // its open, under the stronger role. A seat already subscribed as an
-    // observer is re-asked under that role, which is one subscribe: what a
-    // page mounting with a dock would have sent for itself.
+    // A seat nothing has subscribed yet has no open to ride, so this IS its
+    // open, under the stronger role. A seat already subscribed as an observer
+    // is re-asked under that role, which is one subscribe: what a page
+    // mounting with a dock would have sent for itself.
     seat.answering = true;
     seat.open();
   }
 
-  return { subscribe: seat.view.subscribe, hold: seat.hold };
+  return { subscribe: seat.view.subscribe };
 }
 
 /** The seats held on one connection, made on first use. */
@@ -325,6 +311,16 @@ function seats(connection: Connection): Map<string, Seat> {
   const fresh = new Map<string, Seat>();
   SEATS.set(connection, fresh);
   return fresh;
+}
+
+/** Release a seat whose session has ended: no subscription outlives it. */
+export function releaseSeat(connection: Connection, slot: SessionSlot): void {
+  const held = SEATS.get(connection);
+  const key = subjectKey({ session: slot });
+  const seat = held?.get(key);
+  if (held === undefined || seat === undefined) return;
+  held.delete(key);
+  seat.end();
 }
 
 /** One seat, opened: subscribed, listened to, and holding the record an update is applied to. */
@@ -350,20 +346,16 @@ function createSeat(
    */
   function showing(): () => void {
     shown = true;
-    seat.holders += 1;
-    // A return: the page is back. **Nothing is asked for a seat whose
-    // subscription is still open** - the conversation holds it for as long as
-    // it folds the seat (Ved, 2026-10-09), and a re-ask would re-encode and
-    // re-send a whole record this client already holds. `opened === 0` is the
-    // one case a subscribe is owed: the last holder let the seat go, and this
-    // is the first reader back. Its answer is the whole record, and the held
-    // record draws until it lands.
+    // **A visited seat is subscribed once and stays subscribed** (Ved,
+    // 2026-10-25): the first visit opens it, and leaving no longer gives it
+    // back, so a return draws the record the frames kept current. Only a
+    // session ending and the connection closing release it.
     if (seat.opened === 0) open();
     if (seat.wire === null) read();
     return leaving;
   }
 
-  /** This page has gone: its own hold on the seat goes with it. */
+  /** This page has gone; the seat and its subscription stay. */
   function leaving(): void {
     shown = false;
     // No frame paints for a page that has gone, so a record still waiting for
@@ -372,65 +364,35 @@ function createSeat(
     // **A refused seat gives its subscription back, and stays.** A refusal is
     // an answer rather than a subscription ("a refused subscribe leaves
     // nothing to hear"), so nothing is left to draw and the next visit opens
-    // the seat afresh - but the seat itself is kept, because a conversation
-    // holding it must go on holding whatever the next visit finds. Forgetting
-    // it here would leave that conversation's hold on a seat nothing owns, and
-    // the next visit's page would give the subscription back with the
-    // conversation still folding it.
+    // the seat afresh - while the seat itself is kept for that visit to find.
+    // `release` gives back every reader and every server entry at once, so a
+    // drop that zeroed `opened` cannot leave a store or a wire subscription
+    // behind.
     if (seat.held?.state().kind === 'refused') {
-      if (seat.opened > 0) {
-        for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
-        seat.opened = 0;
-      }
+      connection.release(subject);
+      seat.opened = 0;
       seat.held = null;
       publish(null, null);
-      give_back();
       return;
     }
-    give_back();
   }
 
   /**
-   * One holder lets the seat go, and the subscription goes with the LAST of
-   * them.
+   * Release the seat because its session has ended: no subscription outlives
+   * it.
    *
-   * **A held subscription reads as a SHOWING seat to the server**, and
-   * showing spends every mark the seat earns - the failure mark and the
-   * diamond both are cleared by it - so a seat nobody holds is given back.
-   * What does not give it back is a page leaving a seat a conversation still
-   * folds: the frames keep arriving for it (Ved, 2026-10-09), and the return
-   * would otherwise pay a second encode of the record the client already
-   * holds. The record and the held store stay either way, so a return draws
-   * what it holds while a re-subscribe's answer - the whole record, as a
-   * reconnect's is - lands.
+   * **This is one of only two doors that give a visited seat back**, the
+   * other being the connection closing. A page leaving does not. `release`
+   * gives back what the CONNECTION holds for the seat, not what `opened`
+   * remembers: after a resume the server holds one where the page may hold
+   * two readers, and a release that walked the readers would leave one
+   * subscription, one work-watch hold and one store standing.
    */
-  function give_back(): void {
-    if (seat.holders > 0) seat.holders -= 1;
-    if (seat.holders > 0) return;
-    if (seat.opened > 0) {
-      for (let left = seat.opened; left > 0; left -= 1) connection.unsubscribe(subject);
-      seat.opened = 0;
-    }
-  }
-
-  /**
-   * Keep the seat's subscription open until the returned release is called.
-   *
-   * The conversation's own hold, and the reason a left seat keeps folding:
-   * the server sends a seat's frames to a subscriber of that seat, so a
-   * subscription given back with the page would drop exactly the frames the
-   * ruling keeps (Ved, 2026-10-09). Balanced with the page's own hold, so a
-   * seat nobody holds is still let go.
-   *
-   * **It keeps a subscription alive; it does not open one.** The conversation
-   * lives inside the page that draws the seat, so the page is what opens it -
-   * as itself or as the role a page that can answer declares - and a hold
-   * taken first opens nothing rather than subscribing a seat as an observer
-   * the page would then have to re-ask under its own role.
-   */
-  function hold(): () => void {
-    seat.holders += 1;
-    return give_back;
+  function end(): void {
+    if (released) return;
+    connection.release(subject);
+    seat.opened = 0;
+    release();
   }
 
   const seat: Seat = {
@@ -439,7 +401,6 @@ function createSeat(
     refused: null,
     held: null,
     opened: 0,
-    holders: 0,
     answering,
     asking: false,
     epoch: null,
@@ -449,7 +410,7 @@ function createSeat(
     outrun: 0,
     repairFrom: null,
     repairHeld: [],
-    hold,
+    end,
     open,
   };
 
@@ -624,6 +585,14 @@ function createSeat(
     if (released) return;
     released = true;
     clearRetry();
+    stopMessages?.();
+    stopStatus?.();
+    stopMessages = null;
+    stopStatus = null;
+    // **The seat's conversation goes with the seat**: its column's listeners
+    // stop, so a same-slot successor's frames are not folded into a
+    // conversation nothing draws. The rest of the connection's are kept.
+    releaseConversation(connection, key);
     pageReturns?.release();
     visited.delete(key);
   }
@@ -679,12 +648,11 @@ function createSeat(
    * recorded and asked for when the answer lands.
    *
    * **A seat with no subscription asks nothing, because there is nothing to
-   * ask on.** The ask is an unsubscribe-then-subscribe pair, so a seat whose
-   * last holder let it go would have this re-attach it: the server reads it as
-   * shown, spending the marks every reader would get, with no holder here
-   * owning it. A held seat asks whether or not a page is drawing it - the
-   * frames never stopped for it, and the return no longer re-reads, so this is
-   * the only ask a seat away from the reader has.
+   * ask on.** A visited seat keeps its subscription, so this guard is reached
+   * only by a seat never opened - and the first visit's own subscribe is its
+   * ask. A held seat asks whether or not a page is drawing it: the frames
+   * never stopped for it, and the return no longer re-reads, so this is the
+   * only ask a seat away from the reader has.
    */
   function reread(): void {
     if (seat.asking || seat.opened === 0) return;
@@ -730,19 +698,27 @@ function createSeat(
   }
 
   /**
-   * Open the seat's subscription, which its first holder is owed.
+   * Open the seat's subscription - the first store, or the socket's half
+   * again after a drop.
    *
-   * **One subscribe, and it opens with the first holder** - a page showing the
-   * seat, or a page that can answer arriving at one held as an observer. Two
-   * subscribes are two whole records encoded and sent to a client that keeps
-   * one copy (6.5 MB twice on a large seat, measured 2026-10-09), and the
-   * subscription goes with the LAST holder rather than with any one of them.
-   * Its answer is the first whole record, and it is an ask this seat made: the
-   * subscribe is what the server answers.
+   * **One subscribe, and it opens with the first reader** - a page showing
+   * the seat, or a page that can answer arriving at one held as an observer.
+   * Two subscribes are two whole records encoded and sent to a client that
+   * keeps one copy (6.5 MB twice on a large seat, measured 2026-10-09).
+   *
+   * **A resume must not open a second store.** The first visit opened one and
+   * the client still holds it; only the server's half died with the socket,
+   * so the resume asks again through `relist`. An escalation to a stronger
+   * role is a real second subscription and still goes through `subscribe`.
    */
   function open(): void {
-    seat.held = connection.subscribe(subject, { answering: seat.answering });
-    seat.opened += 1;
+    if (seat.held !== null && seat.opened === 0) {
+      connection.relist(subject, { answering: seat.answering });
+      seat.opened = 1;
+    } else {
+      seat.held = connection.subscribe(subject, { answering: seat.answering });
+      seat.opened += 1;
+    }
     seat.asking = true;
     seat.askedAt = seat.seen;
   }
@@ -751,12 +727,12 @@ function createSeat(
    * Listen to the seat: its frames, its refusals, and the socket's own life.
    *
    * Setup at the seat's creation rather than at its subscription: the seat
-   * outlives any one subscription (a page's hold goes, a conversation's
-   * stays), and a listener that came and went with it would drop the frames
-   * that crossed in the gap.
+   * outlives any one subscription, and a listener that came and went with it
+   * would drop the frames that crossed in the gap.
    *
-   * Nothing unregisters them: a seat lives on its connection, so its
-   * listeners go with the connection when the client lets it go.
+   * **`release` unregisters them.** A released seat that kept listening would
+   * pin its record and keep folding a same-slot successor's frames into a
+   * seat nothing draws.
    */
   /**
    * Ask the seat for the frames between two numbers.
@@ -933,8 +909,12 @@ function createSeat(
     };
   }
 
+  /** The two listeners this seat installed, unbound when it is released. */
+  let stopMessages: (() => void) | null = null;
+  let stopStatus: (() => void) | null = null;
+
   function watch(): void {
-    connection.onMessage((message) => {
+    stopMessages = connection.onMessage((message) => {
       if (message.kind === 'error') {
         // **A refused subscribe is this seat's own answer only when the socket
         // says so.** The socket hangs a refusal on the ask it answers and
@@ -1073,7 +1053,7 @@ function createSeat(
     // answer that died. The seat keeps this listener, so a drop while nobody is
     // showing the seat still leaves the reconnect's snapshot answered as the
     // whole record it is.
-    connection.onStatus((next: ConnectionStatus) => {
+    stopStatus = connection.onStatus((next: ConnectionStatus) => {
       if (next === 'closed') {
         // **The seat's lifetime ends where its connection's does.** A drop
         // leaves the same connection reconnecting and this seat drawing what
@@ -1083,10 +1063,23 @@ function createSeat(
         return;
       }
       if (next !== 'open') {
+        // **This branch is safe only because a non-open status is a REAL
+        // socket change.** The web's own socket close sends `connecting`, and
+        // the desktop's shell sends the pair when its socket generation
+        // rises; nothing else can reach here on a live wire. Zeroing
+        // `opened` and clearing the take on a socket that never went would
+        // strand every visited seat unattached and drop a recording still
+        // running.
+        //
         // The ask in flight went with the drop, and the record this seat holds
         // is from before it: the answer the reconnect brings is the whole
         // record, so one is wanted.
         seat.asking = false;
+        // **The drop took this seat's subscription with it, and the socket
+        // took the seat's entry out of its own list.** A page still holding
+        // this seat re-attaches below; every other seat stays stale and
+        // re-attaches on its next click, which is the resume rule.
+        seat.opened = 0;
         // The take goes with the socket: the core drops a take whose reader
         // went away, so the fold's own claim dies here - left standing, the
         // record draws a recording that is over (#1880).
@@ -1096,11 +1089,18 @@ function createSeat(
         }
         return;
       }
-      // **The reconnect re-subscribes every subject this connection holds**,
-      // so a beat armed across the drop would be a second ask behind the
-      // connection's own. The ask it sends is the one that answers - and a
-      // refusal it meets arms the beat again.
+      // **The socket re-asks the non-seat subjects it holds, and this seat's
+      // own re-attach is below**, so a beat armed across the drop would be a
+      // second ask behind them. The attach below is the one that answers -
+      // and a refusal it meets arms the beat again.
       clearRetry();
+      // **Only the seat on screen comes back live.** The rest stay stale and
+      // re-attach on their next click, which is the resume rule; the shown
+      // seat's own answer is the whole record. `opened === 0` is the seat
+      // that HAD a subscription and lost it with the drop - one opened while
+      // the socket was down never sent its subscribe, and the connection's
+      // own re-ask on open is what carries it.
+      if (shown && seat.opened === 0) open();
     });
   }
 

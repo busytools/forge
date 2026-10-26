@@ -89,6 +89,8 @@ function variantOf(command: Command): string {
 /** What the Rust half's `client_state` answers. */
 interface DesktopState {
   status: ConnectionStatus;
+  /** How many sockets have opened in the shell; absent on an older shell. */
+  generation?: number;
   greeting: ServerMessage | null;
 }
 
@@ -189,6 +191,28 @@ class RustConnection implements Connection {
   private heldProtocol: number | null = null;
   private greeted: string | null = null;
   /**
+   * The seat this client has on screen, re-sent on every reconnect.
+   *
+   * The server's showing is per connection, and a drop ends it; `null` is
+   * "nothing of mine is on screen" rather than "not attached".
+   */
+  private shown: SessionSlot | null = null;
+  /**
+   * The shell's socket generation this page last saw at an `open`, and
+   * whether a status transition has been watched since.
+   *
+   * **A generation, not a greeting.** The shell delivers the first socket's
+   * greeting twice (once on `client_state`, once as a frame) and two
+   * reconnects to one server carry the same greeting value, so a greeting
+   * count cannot tell a socket this page saw from one it slept through.
+   * The shell counts the sockets themselves; a RISING number while this
+   * page still believes the connection open is a reconnect it missed, and
+   * `transition` records a drop the page really watched, so a visible
+   * reconnect does not fire the pair a second time.
+   */
+  private generation: number | null = null;
+  private transition = false;
+  /**
    * The bound on a subscription's first read: a subject still loading when
    * it runs out is asked again through `client_refresh`, so a snapshot lost
    * between the server and the page is not a wait with nothing behind it.
@@ -264,12 +288,44 @@ class RustConnection implements Connection {
       this.greeted = greeting;
       this.heard(state.greeting);
     }
+    const generation = typeof state.generation === 'number' ? state.generation : null;
+    if (state.status === 'open' && generation !== null) {
+      const known = this.generation;
+      if (known === null) {
+        // The first connect: nothing to compare against.
+        this.generation = generation;
+        this.transition = false;
+      } else if (generation > known) {
+        // **A socket this page never saw open.** A drop the page watched
+        // fires `connecting` through its own notice, which is what
+        // `transition` records; if none arrived, the webview slept across
+        // the whole drop and must run the pair itself, exactly once -
+        // recording the generation first makes a second queued notice of
+        // the same socket a no-op.
+        const missed = !this.transition;
+        this.generation = generation;
+        if (missed) {
+          this.move('connecting');
+          this.move('open');
+        }
+        // **Cleared AFTER the pair.** The synthesized `connecting` sets
+        // `transition` as a real one would, and leaving it set would make the
+        // NEXT missed reconnect read as watched: the page would record the
+        // new generation and never zero `opened`, relist or re-send Showing.
+        this.transition = false;
+      }
+    }
     this.move(state.status);
   }
 
   private move(next: ConnectionStatus): void {
     if (this.state === next) return;
     this.state = next;
+    // **A transition this page really watched.** A drop is the only status
+    // move into a non-open state, and it is what tells a socket change the
+    // page saw from one it slept through; `stateMoved` clears it once the
+    // generation it belongs to is recorded.
+    if (next !== 'open') this.transition = true;
     // A closed connection's holds die with it: the reconnect's answer is the
     // whole record, and the numbers start wherever it says.
     if (next === 'closed') {
@@ -280,7 +336,11 @@ class RustConnection implements Connection {
     // fresh deadline: the subscribe went out when the socket opened, and a
     // lost first answer would otherwise leave them loading forever.
     if (next === 'open') this.bounds.rearmLoading();
+    // **Listeners first, then `Showing`.** The page's own re-attach runs on
+    // this status and issues its `relist`; the spec's order is re-subscribe,
+    // then `Showing`, and the web's `onopen` keeps the same one.
     for (const fn of this.statuses) fn(next);
+    if (next === 'open' && this.shown !== null) this.sendShowing(this.shown);
   }
 
   private refuse(payload: DesktopRefusal): void {
@@ -401,6 +461,59 @@ class RustConnection implements Connection {
     // transport: its news passes through rather than opening a hole over a
     // history nobody is reading.
     if (last && typeof what !== 'string') this.gate.releaseSeat(what.session);
+  }
+
+  /**
+   * Tell the server which seat is on screen.
+   *
+   * **Remembered and re-sent on every reconnect**: the server's showing is
+   * per connection, and a drop ends it. `null` is "nothing of mine is on
+   * screen", not "I am not attached".
+   */
+  showing(seat: SessionSlot | null): void {
+    this.shown = seat;
+    if (this.state === 'open') this.sendShowing(seat);
+  }
+
+  private sendShowing(seat: SessionSlot | null): void {
+    void invoke('client_showing', { seat }).catch((why: unknown) => {
+      report('a showing could not reach the shell', why);
+    });
+  }
+
+  /**
+   * Ask again for a subject whose store this client still holds.
+   *
+   * **A subscription's two halves die differently.** A socket drop takes the
+   * server's half and leaves the store here open; asking again through
+   * `subscribe` would count a second reader in the shell, and its count would
+   * drift away from the server's. This re-asks with the role the seat already
+   * declared.
+   */
+  relist(what: Subject, options?: { answering?: boolean }): void {
+    void invoke('client_relist', {
+      what,
+      answering: options?.answering ?? false,
+    }).catch((why: unknown) => {
+      report('a relist could not reach the shell', why);
+    });
+  }
+
+  /**
+   * Give a subject back entirely: every store reader this page holds for it,
+   * and every subscription the shell holds for it.
+   *
+   * **The shell owns the count**: the page may hold two readers where the
+   * wire holds one, so the unsubscribe frames are the bridge's to send.
+   */
+  release(what: Subject): void {
+    while (this.stores.get(what) !== undefined) this.stores.close(what);
+    void invoke('client_release', { what }).catch((why: unknown) => {
+      report('a release could not reach the shell', why);
+    });
+    // The gate stops sequencing it: a released seat's news passes through
+    // rather than opening a hole over a history nobody is reading.
+    if (typeof what !== 'string') this.gate.releaseSeat(what.session);
   }
 
   /** `true` when the ask went, which is what a bound re-arms on. */

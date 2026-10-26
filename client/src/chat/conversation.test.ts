@@ -1969,14 +1969,16 @@ describe('the conversation the chat draws', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    server.send(page([turn('t1', 'first')], null));
+    server.send(record([turn('t1', 'first')], null));
 
-    chat.refresh();
-    const asked = server.more().length;
-
+    // A drop lost frames, so a return to the seat holds a read of its own -
+    // and the reconnect's ask is already in flight when the seat shows again.
+    server.reach('closed');
+    server.reach('open');
     chat.leaving();
     chat.showing();
-    expect(server.more().length, 'the return did not ask yet').toBe(asked);
+    const asked = server.more().length;
+    expect(asked, 'the reconnect asked the newest page').toBe(1);
 
     server.send(page([turn('t1', 'first')], null));
     expect(server.more().length, 'the held want fires on the settle').toBe(asked + 1);
@@ -2595,7 +2597,7 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
-  it('asks no page when an unloaded seat shows, and the newest when a loaded one does', () => {
+  it('asks no page for a return, whether the seat holds a page or not', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -2607,20 +2609,11 @@ describe('the conversation the chat draws', () => {
     expect(server.more(), 'an unloaded return asks nothing').toEqual([]);
 
     server.send(record([turn('t1', 'first'), turn('t2', 'second')], '1'));
-    expect(server.more(), 'the swallowed return asks once the seed lands').toEqual([
-      { kind: 'more', conversation: LEAD, before: null, turns: MORE_TURNS },
-    ]);
-    server.send(page([turn('t1', 'first'), turn('t2', 'second')], '1'));
+    expect(server.more(), 'the seed is the subscribe answer').toEqual([]);
 
     chat.leaving();
     chat.showing();
-    expect(server.more(), 'a return refreshes the loaded conversation').toHaveLength(2);
-    expect(server.more().at(-1), 'and its ask is the newest page').toEqual({
-      kind: 'more',
-      conversation: LEAD,
-      before: null,
-      turns: MORE_TURNS,
-    });
+    expect(server.more(), 'a loaded return reads nothing: the seat stayed subscribed').toEqual([]);
   });
 
   it('walks a reconnect page that shares nothing down to the held tail', () => {

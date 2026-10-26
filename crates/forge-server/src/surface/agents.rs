@@ -182,18 +182,17 @@ impl ViewSurface {
         self.workspace.session_failed_turn(slot)
     }
 
-    /// A subscribe has served `slot`, which is this view saying the seat was
+    /// A client has `slot` on screen, which is this view saying the seat was
     /// shown: a death the reader had not been shown is spent with it - the
     /// mark and its reason leave the row - so a crash nobody watched is the
     /// durable trace until someone looks. Answers whether anything was
     /// spent, which is the connection's cue to re-encode the home it holds.
     ///
-    /// **"Shown" is the SUBJECT's granularity, not the page's**: any
-    /// subscriber to the seat - the chat, the review page, a document
-    /// hand-off - serves it and spends the trace, whether or not that page
-    /// ever draws the failure. Narrowing this would need the server to know
-    /// which page is on the other end, which is the client's business and
-    /// not something the wire carries.
+    /// **Called when the connection's showing and its subscription meet**,
+    /// from whichever half lands second. Both clients subscribe first on a
+    /// resume, but the route effect that sends `Showing` races the page's
+    /// mount, so a showing alone is remembered rather than spent until the
+    /// seat is actually watched.
     ///
     /// Called after the seat's own snapshot was encoded, deliberately: the
     /// read that spends the mark is the read that shows it.

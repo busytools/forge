@@ -18,7 +18,7 @@
   import Models from '../models/Models.svelte';
   import { notePerfSurface, perfSurface } from '../perf';
   import Review from '../review/Review.svelte';
-  import { titleFor, type Route } from '../routes';
+  import { shownSeat, titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
   import type { ClientSettings } from '../wire/types';
@@ -83,6 +83,15 @@
     return watchBoard(open).subscribe(($next) => {
       board = $next;
     });
+  });
+
+  // **The shown seat is the route's, not the subscription's.** The server
+  // spends a seat's marks on this message, so a client that keeps every
+  // visited seat subscribed says which one the reader is actually on. A
+  // reconnect re-sends it from the connection's own memory.
+  $effect(() => {
+    if (connection === null) return;
+    connection.showing(shownSeat(route));
   });
 
   /**
@@ -207,13 +216,12 @@
          shows; absent it, the seat is subscribed as an observer. -->
     <!-- **Not keyed on the seat, deliberately.** A palette switch moves the
          route in place and the page keeps its instance - which is the
-         contract, not an oversight: the CONVERSATION outlives the page (Ved,
-         2026-10-09), so returning to a seat the conversation holds sends
-         nothing; a remount would tear that subscription down and make the
-         return re-ask (measured - the keyed version failed exactly that
-         test). The page's per-seat facts are `$derived` from (wire, slot)
-         and move with the prop; `railMode` and `leftChosen` are the
-         reader's own preferences and persist by design. -->
+         contract, not an oversight: a visited seat keeps its subscription
+         (Ved, 2026-10-25), so returning to one sends nothing; a remount
+         would tear the page's readers down and make the return re-ask. The
+         page's per-seat facts are `$derived` from (wire, slot) and move with
+         the prop; `railMode` and `leftChosen` are the reader's own
+         preferences and persist by design. -->
     <Session
       slot={route.slot}
       {connection}

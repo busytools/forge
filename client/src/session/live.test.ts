@@ -42,7 +42,7 @@ import { connect, MAX_RETRY_MS, type Connection, type ConnectionStatus } from '.
 import type { Store, StoreState, StoreValue } from '../stores';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { REPLACES } from './apply';
-import { watchSession, type SessionRead } from './live';
+import { releaseSeat, watchSession, type SessionRead } from './live';
 import Session from './Session.svelte';
 import Routes from './testing/Routes.svelte';
 
@@ -93,6 +93,7 @@ async function stubServer(
 
   const received: Subscribe[] = [];
   const gone: Subscribe[] = [];
+  const shown: (SessionSlot | null)[] = [];
   const held: { socket: import('ws').WebSocket; before: string }[] = [];
   const sockets = new Set<import('ws').WebSocket>();
   server.on('connection', (socket) => {
@@ -106,6 +107,10 @@ async function stubServer(
     socket.send(JSON.stringify(greeting));
     socket.on('message', (data) => {
       const message = JSON.parse(text(data)) as Subscribe;
+      if (message.kind === 'showing') {
+        shown.push(message.seat ?? null);
+        return;
+      }
       if (message.kind === 'unsubscribe') {
         gone.push(message);
         return;
@@ -191,6 +196,8 @@ async function stubServer(
     received,
     /** Every unsubscribe the client sent: the other half of the count. */
     gone,
+    /** The shown seat after every `showing` frame, in order. */
+    shown,
     /**
      * Drop every socket the client holds, as a laptop left open overnight
      * does: the client reconnects on its own, and nothing about it is asked.
@@ -231,6 +238,8 @@ interface Subscribe {
   answering?: boolean;
   /** A `more`'s handle: null for the newest page, a cursor for an older one. */
   before?: string | null;
+  /** A `showing` frame's seat: null is "nothing of mine is on screen". */
+  seat?: SessionSlot | null;
 }
 
 function text(data: RawData): string {
@@ -691,8 +700,8 @@ describe('the session page over a socket', () => {
    * was a whole record sent twice: the page's record and the conversation
    * both read the seat's frames, and each opened a subscription of its own -
    * 6.5 MB encoded and sent twice on the dotfiles/lead seat (measured
-   * 2026-10-09). The conversation's subscription is the one that outlives
-   * the page (Ved, 2026-10-09), so the page rides it.
+   * 2026-10-09). The conversation only listens now (Ved, 2026-10-25), so the
+   * page's own read is the one subscription.
    */
   it('subscribes the seat once when the conversation mounts with the page', async () => {
     server = await stubServer(sessionFixture);
@@ -710,11 +719,11 @@ describe('the session page over a socket', () => {
       'precondition: the conversation column never mounted',
     ).toBeGreaterThan(0);
     expect(seatSubscribes(), 'the seat was subscribed twice for one cold switch').toBe(1);
-    // **And the one subscribe is the page's own role.** The conversation's
-    // hold keeps a subscription alive, it does not open one - so the page
-    // that can answer is what opens it, as itself. A hold that opened it
-    // first would subscribe the seat as an observer, and a prompt the page
-    // could have drawn would be cancelled at birth instead.
+    // **And the one subscribe is the page's own role.** Nothing else opens a
+    // subscription for the seat - the conversation only folds its frames - so
+    // the page that can answer is what opens it, as itself. A subscription
+    // opened as an observer first would cancel every prompt the page could
+    // have drawn at birth.
     expect(
       seatSubscribe()?.answering,
       'the seat was subscribed under a weaker role than the page declares',
@@ -722,13 +731,12 @@ describe('the session page over a socket', () => {
   });
 
   /**
-   * **A return sends nothing while the conversation still holds the seat.**
-   * The page's subscription used to be the only one, so leaving gave it back
-   * and the return asked again - a whole record re-encoded and re-sent for a
-   * client that still holds it. The conversation's subscription outlives the
-   * page (Ved, 2026-10-09), so the seat is never given up in the first place.
+   * **A return sends nothing because the seat was never given up.** The first
+   * visit subscribes it and the leave keeps it (Ved, 2026-10-25), so the
+   * return draws the record the frames kept current rather than paying a
+   * whole record re-encoded and re-sent for a client that still holds it.
    */
-  it('sends nothing when the route returns to a seat the conversation holds', async () => {
+  it('sends nothing when the route returns to a visit it already made', async () => {
     const W1: SessionSlot = { ...LEAD, label: 'w1' };
     server = await stubServer(sessionFixture);
     connection = connect(server.url);
@@ -818,6 +826,135 @@ describe('the session page over a socket', () => {
     expect(drawn(), 'the switch after a reconnect kept the seat it left').not.toContain(
       'the lead said this',
     );
+  });
+
+  /**
+   * **A resume re-attaches only the seat the reader is on.** A visited seat
+   * keeps its subscription for the connection's life, but a drop takes the
+   * server's half with it, and re-attaching every visited seat would pay a
+   * whole record each for seats nobody is looking at. The shown seat comes
+   * back live; the rest stay stale until their next click.
+   */
+  it('re-attaches only the shown seat after a reconnect', async () => {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    server = await stubServer(sessionFixture, {
+      [subjectKey({ session: LEAD })]: [{ key: 'lead-t1', messages: [say('the lead said this')] }],
+      [subjectKey({ session: W1 })]: [{ key: 'w1-t1', messages: [say('the worker said this')] }],
+    });
+    connection = connect(server.url);
+    const route = writable<Route>({ name: 'session', slot: LEAD });
+    app = mount(Routes, {
+      target: document.body,
+      props: { route, props: routerProps() },
+    });
+    await settle();
+
+    route.set({ name: 'session', slot: W1 });
+    await until(() => seatSubscribesOf(W1) === 1, 'the visit to subscribe w1');
+    route.set({ name: 'session', slot: LEAD });
+    await until(() => server?.shown.at(-1)?.label === 'lead', 'the return to show the lead again');
+
+    const lead = seatSubscribesOf(LEAD);
+    const worker = seatSubscribesOf(W1);
+    server.drop();
+    await until(() => seatSubscribesOf(LEAD) > lead, 'the reconnect to re-attach the shown seat');
+    expect(seatSubscribesOf(LEAD), 'the reconnect asked more than once').toBe(lead + 1);
+    expect(
+      seatSubscribesOf(W1),
+      'a seat away from the reader re-attached by itself on resume',
+    ).toBe(worker);
+    expect(server.shown.at(-1)?.label, 'the reconnect forgot which seat is shown').toBe('lead');
+  });
+
+  /**
+   * **A stale seat draws what it holds on its first click, then catches up.**
+   * The record a resume left behind is kept, so the click draws it at once
+   * with no server round trip - and the attach that makes it live again is
+   * exactly one subscribe.
+   */
+  it('draws a held seat on its first click after a reconnect, then attaches it', async () => {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    server = await stubServer(sessionFixture, {
+      [subjectKey({ session: LEAD })]: [{ key: 'lead-t1', messages: [say('the lead said this')] }],
+      [subjectKey({ session: W1 })]: [{ key: 'w1-t1', messages: [say('the worker said this')] }],
+    });
+    connection = connect(server.url);
+    const route = writable<Route>({ name: 'session', slot: LEAD });
+    app = mount(Routes, {
+      target: document.body,
+      props: { route, props: routerProps() },
+    });
+    await settle();
+    route.set({ name: 'session', slot: W1 });
+    await until(() => drawn().includes('the worker said this'), "w1's record to draw");
+    route.set({ name: 'session', slot: LEAD });
+    await until(() => server?.shown.at(-1)?.label === 'lead', 'the return to the lead');
+
+    const lead = seatSubscribesOf(LEAD);
+    const worker = seatSubscribesOf(W1);
+    server.drop();
+    await until(() => seatSubscribesOf(LEAD) > lead, 'the reconnect to re-attach the shown seat');
+    // **The resume left the stale seat alone**, and the count is frozen here
+    // so the click below cannot be credited with an attach the reconnect
+    // made: a wait on `> worker` alone passes either way.
+    await quiet();
+    const stale = seatSubscribesOf(W1);
+    expect(stale, 'the resume re-attached a seat away from the reader').toBe(worker);
+
+    route.set({ name: 'session', slot: W1 });
+    flushSync();
+    expect(
+      drawn(),
+      'the click waited on the server instead of drawing the record it holds',
+    ).toContain('the worker said this');
+    await until(() => seatSubscribesOf(W1) > stale, 'the click to attach w1');
+    expect(seatSubscribesOf(W1), 'the click attached w1 more than once').toBe(stale + 1);
+  });
+
+  /**
+   * **A Home round trip draws the held conversation at once, with no read.**
+   * The seat's subscription outlives the page, so nothing comes back on the
+   * return to seed a fresh column: the conversation the frames folded has to
+   * survive the page unmounting, which is module state
+   * (`chat/conversations.ts`) rather than the column's own.
+   */
+  it('draws the held conversation after a Home round trip, with no read', async () => {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    server = await stubServer(sessionFixture, {
+      [subjectKey({ session: W1 })]: [{ key: 'w1-t1', messages: [say('the worker said this')] }],
+    });
+    connection = connect(server.url);
+    const route = writable<Route>({ name: 'session', slot: W1 });
+    app = mount(Routes, {
+      target: document.body,
+      props: { route, props: routerProps() },
+    });
+    await until(() => drawn().includes('the worker said this'), "w1's first draw");
+
+    route.set({ name: 'home' });
+    await until(() => document.querySelector('.conv') === null, 'the home route');
+    // A row lands while the reader is away: the seat is still subscribed, so
+    // the client folds it into the conversation it holds.
+    server.push(
+      updateOf({ chat_appended: { key: W1, msg: say('landed while away'), origin: null } }),
+    );
+    await quiet();
+
+    const subscribes = seatSubscribesOf(W1);
+    const reads = server.received.filter((message) => message.kind === 'more').length;
+    route.set({ name: 'session', slot: W1 });
+    flushSync();
+    expect(
+      drawn(),
+      'the return waited on the server instead of drawing the held conversation',
+    ).toContain('landed while away');
+    expect(drawn(), 'the return lost the held conversation').toContain('the worker said this');
+    await settle();
+    expect(seatSubscribesOf(W1), 'the return subscribed the seat again').toBe(subscribes);
+    expect(
+      server.received.filter((message) => message.kind === 'more').length,
+      'the return read the history from the server',
+    ).toBe(reads);
   });
 
   /**
@@ -1130,27 +1267,22 @@ describe('the session page over a socket', () => {
   });
 
   /**
-   * **The count is the property, and it is a pair per visit.** The
-   * subscription follows the page - a held one reads as a SHOWING seat to
-   * the server, and showing spends the marks a seat earns - so a visit, a
-   * leave and a return is a subscribe, an unsubscribe and a subscribe. What
-   * the client keeps is the record, which is what the return draws from.
+   * **A visited seat keeps its subscription between visits.** The first visit
+   * opens it and the leave no longer gives it back, so a return draws the
+   * record the frames kept current without a second subscribe. Only a session
+   * ending and the connection closing release it.
    */
-  it('subscribes on each visit and gives the seat back between them', async () => {
+  it('subscribes on the first visit and keeps the seat between visits', async () => {
     await open(sessionFixture);
     expect(seatSubscribes(), 'precondition: the first visit subscribed the seat').toBe(1);
 
     await leave();
-    // The leave sends its unsubscribe over a real socket, so the frame has a
-    // hop to make before the server has it. The page is unmounted by then, so
-    // the thing waited on is the server's own record of the leave.
-    await until(() => (server?.gone.length ?? 0) > 0, 'the leave to reach the server');
-    expect(server?.gone.length, 'the leave took the seat away from the socket').toBe(1);
+    await quiet();
+    expect(server?.gone.length, 'the leave gave the seat back').toBe(0);
 
     revisit();
     await settle();
-
-    expect(seatSubscribes(), 'the return subscribed the seat again').toBe(2);
+    expect(seatSubscribes(), 'the return re-asked a seat still subscribed').toBe(1);
   });
 
   /**
@@ -1191,10 +1323,9 @@ describe('the session page over a socket', () => {
       server?.received[1]?.answering,
       'the escalation did not declare the answering role',
     ).toBe(true);
-    // The leave between the visits gave the seat back (the subscription
-    // follows the page), and the escalation is the return's own subscribe -
-    // so the one unsubscribe here is the leave's, not the escalation's.
-    expect(server?.gone.length, 'the escalation gave a subscription back of its own').toBe(1);
+    // The leave kept the subscription, so the second subscribe is the
+    // escalation's own and nothing was given back.
+    expect(server?.gone.length, 'the escalation gave a subscription back of its own').toBe(0);
   });
 });
 
@@ -1412,6 +1543,13 @@ function drivable(refusedAtFirst = false): Driveable {
     refresh: () => {
       reads += 1;
       return true;
+    },
+    showing: () => undefined,
+    relist: () => undefined,
+    release: () => {
+      // One entry, which is what these cases hold: the seat's release gives
+      // back what the connection holds for it.
+      unsubscribed += 1;
     },
     dispatch: () => {
       throw new Error('this page dispatched a command the case did not expect');
@@ -2025,58 +2163,88 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
-   * **A page leaving gives its subscription back, and the record it held
-   * stays.** A held subscription reads as a SHOWING seat to the server, and
-   * showing spends every mark the seat earns - the failure mark and the
-   * diamond both - so the subscription follows the page while the record
-   * stays for the return to draw until the return's own subscribe answers
-   * with the whole seat.
+   * **A page leaving keeps its seat subscribed** - the record and the frames
+   * both stay - and only a session ending or the connection closing releases
+   * it (Ved, 2026-10-25).
    */
-  it('gives the subscription back when the last reader leaves, keeping the record', () => {
+  it('keeps the subscription when the last reader leaves, and the record with it', () => {
     const connection = drivable();
     const away = watch(connection);
     away.land(snapshotOf(LEAD));
     away.stop();
-    expect(connection.unsubscribes(), 'the leave gave the seat back').toBe(1);
+    expect(connection.unsubscribes(), 'the leave gave the seat back').toBe(0);
 
     const back = watch(connection);
-    expect(connection.subscribes(), 'and the return subscribed it again').toBe(2);
-    expect(back.read().wire, 'the held record draws until the answer lands').not.toBeNull();
+    expect(connection.subscribes(), 'the return subscribed a seat it never let go').toBe(1);
+    expect(back.read().wire, 'the held record draws').not.toBeNull();
     back.stop();
-    expect(connection.unsubscribes(), 'the second leave gives it back too').toBe(2);
+    expect(connection.unsubscribes(), 'the second leave gave it back too').toBe(0);
   });
 
   /**
-   * **A refused seat a conversation holds keeps that hold.** The refusal gives
-   * the subscription back and clears the record, but the seat itself stays -
-   * and this is why: forgotten, the next visit builds a seat only the page
-   * holds, and that page's leave takes the subscription away with the
-   * conversation still folding it.
+   * **A released seat stops listening.** Its session ended, so its listeners
+   * go with it: a seat left bound would pin its record and keep folding a
+   * same-slot successor's frames into a record nothing draws.
    */
-  it('keeps a refused seat for the holder that outlives the page', () => {
-    const connection = drivable(true);
-    const conversation = watchSession(connection, LEAD, false).hold();
+  it('unbinds a released seat, so a same-slot successor is not folded', () => {
+    const connection = drivable();
+    const first = watch(connection);
+    first.land(snapshotOf(LEAD));
+    const published = first.publishes();
 
-    // A page meets the refusal and leaves: the subscription goes back, and the
-    // seat stays, because the conversation's hold is on it.
+    releaseSeat(connection, LEAD);
+    connection.land(
+      updateOf({ chat_appended: { key: LEAD, msg: spoke("a successor's row"), origin: null } }),
+    );
+    paint();
+
+    expect(first.publishes(), 'a released seat kept folding frames').toBe(published);
+    expect(spoken(first), 'the released seat folded a successor frame').toEqual([]);
+  });
+
+  /**
+   * **A frame keeps folding into a seat nobody is drawing, and the return
+   * draws it** (rule 25). The subscription outlives the page, so the row that
+   * landed while the reader was elsewhere is in the record the click draws -
+   * not re-read, and not lost to a page that stopped listening.
+   */
+  it('folds a frame that lands on an away seat, and draws it on the return', () => {
+    const connection = drivable();
+    const away = watch(connection);
+    away.land(snapshotOf(LEAD));
+    away.stop();
+
+    connection.land(
+      updateOf({ chat_appended: { key: LEAD, msg: spoke('landed while away'), origin: null } }),
+    );
+
+    const back = watch(connection);
+    paint();
+    expect(spoken(back), 'the row that landed on the away seat was dropped').toEqual([
+      'landed while away',
+    ]);
+    expect(connection.subscribes(), 'the return asked for the seat again').toBe(1);
+    back.stop();
+  });
+
+  /**
+   * **A refused seat is given back and kept.** A refusal is an answer, not a
+   * subscription - the next visit opens it afresh - while the seat itself
+   * stays for that visit to find.
+   */
+  it('gives a refused seat back and keeps it for the next visit', () => {
+    const connection = drivable(true);
     const first = watch(connection);
     first.land(snapshotOf(LEAD));
     first.stop();
     expect(connection.unsubscribes(), 'the refused visit gave its subscription back').toBe(1);
 
-    // The seat starts, a page visits it and leaves again. The conversation is
-    // still holding it, so its subscription stays where it is.
     connection.ready();
     const second = watch(connection);
     second.land(snapshotOf(LEAD));
-    const before = connection.unsubscribes();
     second.stop();
-    expect(
-      connection.unsubscribes(),
-      'the page took the seat away from the conversation still holding it',
-    ).toBe(before);
-
-    conversation();
+    expect(connection.unsubscribes(), 'a healthy seat was given back on leave').toBe(1);
+    expect(connection.subscribes(), 'the second visit never re-opened the seat').toBe(2);
   });
 
   /**
@@ -2178,14 +2346,13 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
-   * A replacement frame for a seat nobody is showing stays out of the
-   * socket. The ask would be an unsubscribe-then-subscribe pair, and the
-   * subscribe re-attaches a seat no page is showing: the server reads it
-   * as shown - spending the marks every reader would get - with no counter
-   * here owning it. The return's own subscribe answers with the whole
-   * record, which covers everything the away ask was for.
+   * **An away seat the client still holds is kept current.** Its subscription
+   * outlives the page, so a replacement frame asks for the record afresh
+   * rather than leaving the seat on the old occupant until a return: the
+   * refresh is an ask on the subscription the seat still has, not a second
+   * subscription.
    */
-  it('asks nothing for an away seat when a replacement frame lands', () => {
+  it('refreshes an away seat it still holds when a replacement frame lands', () => {
     const connection = drivable();
     const away = watch(connection);
     away.land(snapshotOf(LEAD));
@@ -2194,9 +2361,9 @@ describe('the record a page holds over an update stream', () => {
 
     connection.land(updateOf(occupant('new-occupant')));
 
-    expect(connection.reads(), 'the away replacement frame asked the server again').toBe(asked);
-    expect(connection.subscribes(), 'and it re-subscribed an away seat').toBe(1);
-    expect(connection.unsubscribes(), 'and it gave one back to do it').toBe(1);
+    expect(connection.reads(), 'the away seat was left on the old occupant').toBe(asked + 1);
+    expect(connection.subscribes(), 'the refresh opened a second subscription').toBe(1);
+    expect(connection.unsubscribes(), 'the refresh gave the subscription back').toBe(0);
   });
 
   /**

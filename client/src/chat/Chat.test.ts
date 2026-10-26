@@ -291,8 +291,8 @@ describe('the chat column as it draws', () => {
     flushSync();
     expect(
       server.asks.filter((ask) => ask.kind === 'more').length,
-      'the return asks the newest page',
-    ).toBe(asked + 1);
+      'the return reads nothing: the seat stayed subscribed',
+    ).toBe(asked);
     expect(drawn(), 'what was kept still draws').toContain('kept');
     expect(drawn(), 'and the frame that arrived while away draws on the return').toContain(
       'arrived while away',

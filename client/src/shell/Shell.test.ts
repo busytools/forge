@@ -9,7 +9,7 @@ import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { noteSeatClick } from '../perf';
-import { PROTOCOL_VERSION } from '../protocol';
+import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
 import type { Connection } from '../socket';
 import { fontStack } from '../theme';
@@ -129,6 +129,8 @@ async function stubForge(
 
   /** Home reads seen, which is what says a connection was taken. */
   let homeReads = 0;
+  /** Every frame a client sent, which is what a release is read from. */
+  const sent: { kind?: unknown; what?: unknown }[] = [];
 
   const greet = (socket: WebSocket): void => {
     socket.send(
@@ -145,6 +147,7 @@ async function stubForge(
     socket.on('message', (raw) => {
       const message: unknown = JSON.parse(frameText(raw));
       const asked = message as { kind?: unknown; what?: unknown };
+      sent.push(asked);
       if (asked.kind === 'subscribe' && asked.what === 'home') {
         homeReads += 1;
         socket.send(JSON.stringify({ kind: 'snapshot', subject: 'home', data: homeWire }));
@@ -166,6 +169,8 @@ async function stubForge(
      * greeting on CI (the accept is one frame earlier than the take).
      */
     homeReads: () => homeReads,
+    /** Every frame a client sent, in order. */
+    sent: () => sent,
     attached,
     /** Let the greeting go, which is what lands a held launch. */
     greet(again: number = version) {
@@ -269,13 +274,18 @@ async function crossed(): Promise<void> {
  * never arrives; the deadline only stops a broken page from hanging the
  * suite.
  */
-async function until(what: () => boolean): Promise<void> {
+async function until(what: () => boolean, why = 'the page to settle'): Promise<void> {
   const deadline = Date.now() + 2_000;
   for (;;) {
     // Flush BEFORE the check, so a condition reading rendered state sees the
     // frame it is waiting on rather than the one before it.
     flushSync();
-    if (what() || Date.now() > deadline) break;
+    if (what()) break;
+    // **A wait that runs out THROWS.** Returning at the deadline let the next
+    // assertion fail with its own opposite-sounding message ("released
+    // twice" for a release that never came), which reads as the wrong
+    // defect.
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${why}`);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   flushSync();
@@ -808,6 +818,42 @@ describe('a seat removed under the reader', () => {
     expect(location.pathname, 'the reader was left on a seat with nothing behind it').toBe(
       '/session/TestOrg/proj/lead',
     );
+  });
+
+  /**
+   * **A seat whose session ended gives its subscription back, exactly once.**
+   * A visited seat is otherwise kept subscribed for the connection's life, so
+   * the session ending is one of the two doors that release it (the other is
+   * the connection closing). The removal frame is this door.
+   */
+  it('releases the subscription of a seat the fleet no longer holds', async () => {
+    const W1: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
+    const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt(`/session/${W1.org}/${W1.project}/${W1.label}`, forge.address);
+
+    // The page's own subscribe is the precondition; the stub does not answer
+    // it, and nothing here needs the record.
+    const key = subjectKey({ session: W1 });
+    const asks = (kind: string): number =>
+      forge
+        .sent()
+        .filter(
+          (frame) =>
+            frame.kind === kind &&
+            typeof frame.what === 'object' &&
+            frame.what !== null &&
+            subjectKey(frame.what as Subject) === key,
+        ).length;
+    await until(() => asks('subscribe') === 1, "the seat's first subscribe");
+    expect(asks('subscribe'), 'the page never subscribed the seat').toBe(1);
+
+    forge.remove(W1, LEAD);
+    await until(() => asks('unsubscribe') === 1, "the removed seat's release");
+    await crossed();
+    expect(asks('unsubscribe'), 'the removed seat was released twice').toBe(1);
+    expect(asks('subscribe'), 'the removed seat was re-subscribed').toBe(1);
   });
 
   /**

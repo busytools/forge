@@ -1026,21 +1026,19 @@ describe('the history above a column that fits', () => {
     await settleFrames();
 
     // Back to the second seat, whose cursor spells the one the column last
-    // asked on the first. The return asks the newest page, and that answer
-    // lands the fill on the seat now drawn: a kept, fitting seat fills on
-    // its own cursor. (This is the switch's behaviour, not a pin on where
-    // the mark lives - the refusal and socket tests carry that.)
+    // asked on the first. The return reads nothing, and the resizes land the
+    // fill on the seat now drawn: a kept, fitting seat fills on its own
+    // cursor. (This is the switch's behaviour, not a pin on where the mark
+    // lives - the refusal and socket tests carry that.)
     column.flip();
-    await settleFrames();
-    server.pageFor(other, [turn('t1'), turn('t2')], '2');
     await settleFrames();
     resized(100);
     resized(100);
     await settleFrames();
     expect(
       asksFor(server, other).map((ask) => ask.before),
-      'the second seat filled on its own cursor - its switch asked no page',
-    ).toEqual([null, '2']);
+      'the second seat filled on its own cursor, with no return read',
+    ).toEqual(['2']);
   });
 });
 

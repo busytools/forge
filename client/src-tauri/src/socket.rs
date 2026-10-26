@@ -8,8 +8,9 @@
 //! nothing parks, and the webview becomes a reader of what this half holds.
 //!
 //! It is a port of the web client's `socket.ts` for the desktop, and the
-//! semantics are the TS tests': a reconnect declares every held
-//! subscription again with the role flags it carried, a refusal is
+//! semantics are the TS tests': a reconnect declares every held subject
+//! again with the role flags it carried - **except a seat, which is the
+//! page's own to re-open** and re-attaches on its next click - a refusal is
 //! attributed to the oldest subscribe still waiting, and a drop fails
 //! whatever a command was holding. The web client at forge.hub has no
 //! Tauri process behind it and keeps `socket.ts`; only the desktop selects
@@ -146,6 +147,22 @@ fn hold(held: &mut Vec<Held>, what: Value, answering: bool) -> Option<String> {
     Some(key)
 }
 
+/// Ask again for a subject the page already holds, adding no reader: the
+/// flags rise in place, and a subject this connection has not held yet (a
+/// fresh socket the page re-attaches on) starts at one - the one the page's
+/// own store is, not a second reader.
+fn relist(held: &mut Vec<Held>, what: Value, answering: bool) -> Option<String> {
+    let key = subject_key(&what);
+    if key.is_empty() {
+        return None;
+    }
+    match held.iter_mut().find(|h| h.key == key) {
+        Some(h) => h.answering |= answering,
+        None => held.push(Held { key: key.clone(), what, answering, count: 1 }),
+    }
+    Some(key)
+}
+
 /// One subscription given back: the count comes off, and the entry - with
 /// the key still outstanding for a refusal - goes only with the last one.
 fn unhold(held: &mut Vec<Held>, awaiting: &mut Vec<String>, what: &Value) {
@@ -174,6 +191,25 @@ enum Outbound {
     },
     Unsubscribe {
         what: Value,
+    },
+    /// The seat the page has on screen, `None` when it shows none. A state
+    /// assertion, re-sent by the page on every reconnect.
+    Showing {
+        seat: Option<Value>,
+    },
+    /// Give a subject back entirely: every subscription this connection
+    /// holds for it, from the wire's own count rather than the page's
+    /// readers - a relist raises that count without raising them.
+    Release {
+        what: Value,
+    },
+    /// Ask again for a subject this half already holds, **without adding a
+    /// reader**: the page's half of a resume, where the record and the page's
+    /// store both survived the drop and only the server's subscription went
+    /// with the socket.
+    Relist {
+        what: Value,
+        answering: bool,
     },
     More {
         conversation: Value,
@@ -329,6 +365,25 @@ impl Socket {
     /// Give one subscription back.
     pub fn unsubscribe(&self, what: Value) {
         let _ = self.tx.send(Outbound::Unsubscribe { what });
+    }
+
+    /// Give a subject back entirely: its held entry, and every subscription
+    /// this connection holds for it. **The count is the wire's**, which a
+    /// relist can raise above the page's reader count.
+    pub fn release(&self, what: Value) {
+        let _ = self.tx.send(Outbound::Release { what });
+    }
+
+    /// Say which seat the page has on screen; `None` for none.
+    pub fn showing(&self, seat: Option<Value>) {
+        let _ = self.tx.send(Outbound::Showing { seat });
+    }
+
+    /// Ask again for a subject this half already holds, without counting a
+    /// reader - the page's own store and this half's record are still here,
+    /// and only the wire's subscription died with the socket.
+    pub fn relist(&self, what: Value, answering: bool) {
+        let _ = self.tx.send(Outbound::Relist { what, answering });
     }
 
     /// Ask for more turns of a conversation.
@@ -545,8 +600,26 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             hold(held, what, answering);
             false
         }
+        // The page re-sends its showing on the reconnect, so a frame taken
+        // while down is dropped rather than queued.
+        Outbound::Showing { .. } => false,
+        // The entry is already held; only its declaration rises, and no
+        // reader is counted - the reconnect then asks exactly what was held.
+        Outbound::Relist { what, answering } => {
+            relist(held, what, answering);
+            false
+        }
         Outbound::Unsubscribe { what } => {
             unhold(held, awaiting, &what);
+            false
+        }
+        // **A release while down is a local drop**: the reconnect asks for
+        // nothing the page has given back, and there is no wire to give it
+        // to here. The outstanding key stays: the server answers in order,
+        // and its refusal must land on the ask that earned it.
+        Outbound::Release { what } => {
+            let key = subject_key(&what);
+            held.retain(|h| h.key != key);
             false
         }
         Outbound::Dispatch { sent, .. } => {
@@ -656,11 +729,24 @@ async fn run(
         say(&events, SocketEvent::Status(Status::Open));
         wait = RETRY_MS;
         let (mut writer, mut reader) = ws.split();
+        // **How many subscriptions the server holds for each subject on this
+        // connection**, so an unsubscribe for a subject the new socket never
+        // heard of is not sent and one the server holds twice is given back
+        // twice. A set under-counts the second case: an escalated seat (the
+        // review page first, then its session page) is two server
+        // subscriptions, and a session end sends two unsubscribes.
+        let mut live: HashMap<String, usize> = HashMap::new();
         // **The declaration is re-asked, once per OPEN subscription** - the
         // server counts, so a subject two callers hold is asked for twice -
         // with the flags it carried: this is how the role survives a drop.
+        //
+        // **A seat here was opened while the socket was DOWN.** The drop took
+        // the seats the old connection carried out of this list, so a visited
+        // seat is never re-asked by a resume; what is left is a seat the page
+        // opened during the drop, whose first answer is still owed.
         for h in &held {
             for _ in 0..h.count {
+                *live.entry(h.key.clone()).or_default() += 1;
                 // Each frame's own wait, so the first one's send is not
                 // reported again as every later frame's (#2513).
                 let queued = tokio::time::Instant::now();
@@ -742,6 +828,7 @@ async fn run(
                                 if let Some(h) = held.iter().find(|h| h.key == key)
                                     && writer.send(h.subscribe_frame()).await.is_ok()
                                 {
+                                    *live.entry(key.clone()).or_default() += 1;
                                     say(
                                         &events,
                                         SocketEvent::Written {
@@ -754,11 +841,77 @@ async fn run(
                                 awaiting.push(key);
                             }
                         }
-                        Outbound::Unsubscribe { what } => {
-                            unhold(&mut held, &mut awaiting, &what);
+                        Outbound::Relist { what, answering } => {
+                            // **One frame, and no reader added**: the entry is
+                            // held from the visit that opened it, or starts at
+                            // one on a fresh connection, and counting again
+                            // would leave an unsubscribe one short.
+                            let key = relist(&mut held, what, answering);
+                            if let Some(key) = key
+                                && let Some(h) = held.iter().find(|h| h.key == key)
+                            {
+                                let queued = tokio::time::Instant::now();
+                                if writer.send(h.subscribe_frame()).await.is_ok() {
+                                    *live.entry(key.clone()).or_default() += 1;
+                                    say(
+                                        &events,
+                                        SocketEvent::Written {
+                                            key: key.clone(),
+                                            declared: false,
+                                            waited_ms: queued.elapsed().as_secs_f64() * 1000.0,
+                                        },
+                                    );
+                                }
+                                awaiting.push(key);
+                            }
+                        }
+                        Outbound::Showing { seat } => {
                             let _ = writer
-                                .send(Message::Text(json!({ "kind": "unsubscribe", "what": what }).to_string().into()))
+                                .send(Message::Text(
+                                    json!({ "kind": "showing", "seat": seat }).to_string().into(),
+                                ))
                                 .await;
+                        }
+                        Outbound::Unsubscribe { what } => {
+                            let key = subject_key(&what);
+                            unhold(&mut held, &mut awaiting, &what);
+                            // **Only what this connection is holding is
+                            // given back, one entry per call**: a drop took
+                            // the server's entries with it, so a seat
+                            // released after a resume - before its click
+                            // re-attached it - has nothing to stop, and a
+                            // seat the server holds twice needs both.
+                            match live.get_mut(&key) {
+                                Some(count) if *count > 1 => {
+                                    *count -= 1;
+                                    let _ = writer
+                                        .send(Message::Text(json!({ "kind": "unsubscribe", "what": what }).to_string().into()))
+                                        .await;
+                                }
+                                Some(_) => {
+                                    live.remove(&key);
+                                    let _ = writer
+                                        .send(Message::Text(json!({ "kind": "unsubscribe", "what": what }).to_string().into()))
+                                        .await;
+                                }
+                                None => {}
+                            }
+                        }
+                        Outbound::Release { what } => {
+                            // **Every entry this connection holds, from the
+                            // wire's count**: a relist raises it above the
+                            // page's readers, and looping those would leave a
+                            // subscription and its work-watch hold standing.
+                            // The awaiting key stays: the server answers in
+                            // order, so its refusal is this ask's, not the
+                            // next store's.
+                            let key = subject_key(&what);
+                            held.retain(|h| h.key != key);
+                            for _ in 0..live.remove(&key).unwrap_or(0) {
+                                let _ = writer
+                                    .send(Message::Text(json!({ "kind": "unsubscribe", "what": what.clone() }).to_string().into()))
+                                    .await;
+                            }
                         }
                         Outbound::More { conversation, before, turns } => {
                             let _ = writer
@@ -958,6 +1111,15 @@ async fn run(
             let _ = tx.send(Err(why.to_owned()));
         }
         awaiting.clear();
+        // **A seat is the page's own to re-open.** The seats this connection
+        // carried leave the list with it, exactly as `socket.ts` clears them
+        // on close: a visited seat is not re-asked by a resume, and only the
+        // shown one re-attaches (the page's `relist`). What a subscribe or
+        // relist ADDS while the socket is down stays, because its first ask
+        // never went.
+        if !closing {
+            held.retain(|h| h.what.is_string());
+        }
         if closing {
             say(&events, SocketEvent::Status(Status::Closed));
             return;
@@ -1545,6 +1707,137 @@ pub(crate) mod tests {
         assert_eq!(again["answering"], true, "the declaration is carried, not defaulted");
     }
 
+    /// **A seat is the page's own to re-open after a drop.** The subscription
+    /// the page left behind is not re-asked by this half; the shown seat is
+    /// re-attached by the page's own `relist`, and the rest wait for a click.
+    #[tokio::test]
+    async fn a_reconnect_re_asks_a_subject_but_never_a_seat() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), true);
+        socket.subscribe(
+            json!({ "session": { "org": "TestOrg", "project": "proj", "label": "lead" } }),
+            true,
+        );
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
+        let _ = stub
+            .heard_until(|v| v["kind"] == "subscribe" && v["what"]["session"]["label"] == "lead")
+            .await;
+
+        stub.kill.send(()).expect("the stub drops its connections");
+        let again = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], json!("home"), "the reconnect stopped re-asking a subject");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "a seat re-attached itself on resume instead of waiting for a click",
+        );
+    }
+
+    /// **A relist asks once and adds no reader**, which is what keeps the
+    /// unsubscribe count level with the server's after a resume.
+    #[tokio::test]
+    async fn a_relist_asks_once_without_raising_the_count() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+
+        socket.relist(json!("home"), true);
+        let relisted = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(relisted["what"], json!("home"));
+        assert_eq!(relisted["answering"], true, "the relist's declaration rode the frame");
+
+        // One held reader, so one re-ask: a relist that counted would ask twice.
+        stub.kill.send(()).expect("the stub drops its connections");
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "the relist raised the count, so the reconnect asked twice",
+        );
+    }
+
+    /// **A seat opened while the socket was down is asked when it comes
+    /// back.** Its first subscribe never went, so this is not the resume rule
+    /// - only a seat that was live on the old connection is left to the page.
+    #[tokio::test]
+    async fn a_seat_opened_while_down_is_asked_on_reconnect() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        stub.kill.send(()).expect("the stub drops its connections");
+        loop {
+            if let SocketEvent::Status(Status::Connecting) = next_event(&mut rx).await {
+                break;
+            }
+        }
+        let seat = json!({ "session": { "org": "TestOrg", "project": "proj", "label": "w1" } });
+        socket.subscribe(seat.clone(), true);
+
+        let asked = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(asked["what"], seat, "a seat opened during the drop was never asked for");
+        assert_eq!(asked["answering"], true, "with the declaration the page made");
+    }
+
+    /// **A relist on a fresh connection asks once**, starting the entry at the
+    /// one reader the page's own store is: a page-driven reconnect builds a
+    /// new socket, and the shown seat re-attaches into a list that is empty.
+    #[tokio::test]
+    async fn a_relist_on_a_fresh_connection_asks_once() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let seat = json!({ "session": { "org": "TestOrg", "project": "proj", "label": "lead" } });
+
+        socket.relist(seat.clone(), true);
+        let asked = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(asked["what"], seat, "the relist asked for the seat");
+        assert_eq!(asked["answering"], true, "with the declaration the page holds");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "the relist asked more than once",
+        );
+    }
+
+    /// **A showing crosses as its own frame**, `null` included: it is the
+    /// wire's state assertion for the seat on screen, and "nothing of mine"
+    /// is one of its states.
+    #[tokio::test]
+    async fn a_showing_crosses_as_its_own_frame() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let seat = json!({ "org": "TestOrg", "project": "proj", "label": "lead" });
+
+        socket.showing(Some(seat.clone()));
+        let shown = stub.heard_until(|v| v["kind"] == "showing").await;
+        assert_eq!(shown["seat"], seat, "the seat rode the frame");
+
+        socket.showing(None);
+        let cleared = stub.heard_until(|v| v["kind"] == "showing").await;
+        assert_eq!(cleared["seat"], Value::Null, "nothing on screen crosses as null");
+    }
+
+    /// **A seat released after a resume has nothing on the wire to give back**
+    /// until its click re-attached it: the drop took the server's entry, and
+    /// the reconnect never asked for it again.
+    #[tokio::test]
+    async fn an_unsubscribe_for_a_seat_the_new_connection_never_asked_is_not_sent() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected(&stub).await;
+        let seat = json!({ "session": { "org": "TestOrg", "project": "proj", "label": "w1" } });
+        socket.subscribe(seat.clone(), true);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+
+        stub.kill.send(()).expect("the stub drops its connections");
+        loop {
+            if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
+                break;
+            }
+        }
+        socket.unsubscribe(seat);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "an unsubscribe went for a seat the new connection never subscribed",
+        );
+    }
+
     /// An unsubscribe drops its held entry: the reconnect that follows does
     /// not ask for it again.
     #[tokio::test]
@@ -1588,6 +1881,30 @@ pub(crate) mod tests {
         assert_eq!(
             key, "session:a\u{0}b\u{0}lead",
             "the refusal lands on the ask that is really outstanding, not the answered one"
+        );
+    }
+
+    /// **A subscription the server holds twice is given back twice.** A role
+    /// escalation is the ordinary way a subject gets two entries, and a set
+    /// would send the first unsubscribe and swallow the second, leaving a dead
+    /// seat's subscription and its work-watch hold until the connection
+    /// closed.
+    #[tokio::test]
+    async fn an_unsubscribe_gives_back_every_entry_the_server_holds() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), false);
+        socket.subscribe(json!("home"), false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+
+        socket.unsubscribe(json!("home"));
+        let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
+        socket.unsubscribe(json!("home"));
+        let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "a third unsubscribe went for a subject held twice",
         );
     }
 
