@@ -18,6 +18,8 @@ import time
 import unittest
 from pathlib import Path
 
+import check_lock
+
 SCRIPT = Path(__file__).with_name("check_lock.py")
 
 
@@ -230,21 +232,39 @@ class CheckLock(unittest.TestCase):
         self.assertFalse(marker.exists(), "the command ran without the lock")
 
     def test_a_term_ignoring_gate_is_killed_after_the_grace(self):
-        # A gate that traps TERM would otherwise hold the machine-wide lock
-        # until FORGE_CHECK_LOCK_TIMEOUT and fail every other gate.
+        # A gate that ignores TERM itself would otherwise hold the machine-wide
+        # lock until FORGE_CHECK_LOCK_TIMEOUT and fail every other gate.
+        child_file = self.root / "gate-child"
+        command = [
+            sys.executable,
+            "-c",
+            "import os, signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n",
+            str(child_file),
+        ]
         run = subprocess.Popen(
-            [str(SCRIPT), "run", "--", "sh", "-c", 'trap "" TERM; sleep 60'],
+            [str(SCRIPT), "run", "--", *command],
             env=self.env(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         self.addCleanup(self.stop, run)
-        self.wait_for_pid(run.pid)
+        gate_pid = self.wait_for_pid_file(
+            child_file, "the gate never named its child"
+        )
 
+        started = time.monotonic()
         run.send_signal(signal.SIGTERM)
         run.wait(timeout=30)
+        elapsed = time.monotonic() - started
 
         self.assertEqual(run.returncode, 143, "the TERM-ignoring gate did not exit 143")
+        self.assertGreaterEqual(
+            elapsed, check_lock.TEARDOWN_GRACE, "the teardown did not wait the grace"
+        )
+        self.assertFalse(running(gate_pid), "the SIGKILL did not land")
         self.assertFalse(self.lock_held(), "the lock survived a TERM-ignoring gate")
 
     def test_a_failed_command_returns_its_code(self):
@@ -294,6 +314,10 @@ class CheckLock(unittest.TestCase):
         # assigned; the child then exists with nothing recording it, and must
         # still be stopped or it holds this test's pipes until its own sleep.
         child_file = self.root / "gate-child"
+        seam = (
+            f'while [ ! -s "{child_file}" ]; do sleep 0.01; done; '
+            'kill -INT "$(ps -o ppid= -p $$)"'
+        )
         done = subprocess.run(
             [
                 str(SCRIPT),
@@ -303,9 +327,7 @@ class CheckLock(unittest.TestCase):
                 "-c",
                 f'echo $$ > "{child_file}"; sleep 30',
             ],
-            env=self.env(
-                FORGE_CHECK_LOCK_TEST_AFTER_FORK='kill -INT "$(ps -o ppid= -p $$)"'
-            ),
+            env=self.env(FORGE_CHECK_LOCK_TEST_AFTER_FORK=seam),
             capture_output=True,
             text=True,
             timeout=15,
@@ -315,15 +337,19 @@ class CheckLock(unittest.TestCase):
             done.returncode, 130, "the signal handler did not run"
         )
         self.assertFalse(self.lock_held(), "the lock survived the signal")
-        if child_file.exists():
-            text = child_file.read_text(encoding="utf8").strip()
-            if text.isdigit():
-                self.assertFalse(
-                    running(int(text)), "the child survived the signal"
-                )
+        child_pid = self.wait_for_pid_file(
+            child_file, "the gate never named its child"
+        )
+        self.assertFalse(running(child_pid), "the child survived the signal")
+
+    def test_sighup_stops_the_gate_tree_and_releases(self):
+        self.signal_run(signal.SIGHUP, 129)
 
     def test_sigint_stops_the_gate_tree_and_releases(self):
         self.signal_run(signal.SIGINT, 130)
+
+    def test_sigquit_stops_the_gate_tree_and_releases(self):
+        self.signal_run(signal.SIGQUIT, 131)
 
     def test_sigterm_stops_the_gate_tree_and_releases(self):
         self.signal_run(signal.SIGTERM, 143)

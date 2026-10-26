@@ -1031,7 +1031,7 @@ check-serial:
 
     root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
     exec "$root/scripts/check_lock.py" run --label check-serial -- "$root/scripts/check_serial.sh" \
-        "{{just_executable()}}" "{{justfile()}}" "{{check_steps}}"
+        "{{just_executable()}}" "{{justfile()}}" "{{check_steps}}" "check-serial"
 
 # A fast slice of the gate for one review round, on the packages a change
 # touches. Each named workspace crate gets its rustfmt check, both clippy
@@ -1049,14 +1049,15 @@ check-serial:
 #   just check-delta client
 #   just check-delta client-tauri
 #
-# It holds the same machine-wide lock `check` does: `crates/forge-browser/tests/*`
-# boot real CEF hosts and are not ignored, so a slice naming forge-browser can
-# boot them beside an in-flight `just check`. The recipe is only the wrapper;
-# the slice is `scripts/check_delta.sh`.
+# It holds the same machine-wide lock `check` does: most of the browser live
+# tests are not ignored (`reap_live` is), so a slice naming forge-browser can
+# boot real CEF hosts beside an in-flight `just check`. The recipe is only the
+# wrapper; the slice is `scripts/check_delta.sh`.
 #
-# Ends on `[OK] check-delta: ...`, `[ERROR] check-delta: <step> failed` or
-# `[ERROR] check-delta: the gate lock was not acquired (held by pid N)` when
-# another gate holds the lock past the wait bound, as its last line.
+# Ends on `[OK] check-delta: ...`, `[ERROR] check-delta: <step> failed`, or
+# `[ERROR] check-delta: the gate lock was not acquired` when the lock itself
+# cannot be taken, `(held by pid N)` when another gate holds it past the wait
+# bound, as its last line.
 #
 # Delta gate for one review round; the final head runs the full `just check`.
 [no-exit-message]
@@ -1066,7 +1067,7 @@ check-delta *packages:
 
     root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
     exec "$root/scripts/check_lock.py" run --label check-delta -- "$root/scripts/check_delta.sh" \
-        "{{just_executable()}}" "{{justfile()}}" "{{packages}}"
+        "{{just_executable()}}" "{{justfile()}}" "{{packages}}" "check-delta"
 
 # Deliberately not a bare `gh run watch`. Piping it masks the exit code
 # AND truncates the log, losing both signals to one pipe - the failure

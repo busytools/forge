@@ -46,8 +46,9 @@ def lock_root(label):
         return override
     home = os.environ.get("HOME")
     if not home:
-        print(f"[ERROR] {label}: no HOME to place the gate lock under", file=sys.stderr)
-        sys.exit(2)
+        config_failure(
+            label, f"[ERROR] {label}: no HOME to place the gate lock under"
+        )
     if sys.platform == "darwin":
         return os.path.join(home, "Library", "Application Support", "forge")
     base = os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")

@@ -3,7 +3,7 @@
 # sets and nextest for the named crates, plus the client's steps or the shell
 # crate's when named.
 #
-# Usage: check_delta.sh <just> <justfile> <packages>
+# Usage: check_delta.sh <just> <justfile> <packages> [label]
 #
 # The machine-wide lock is not this script's: `check-delta` runs through
 # `check_lock.py run`, because the browser live tests are not ignored and a
@@ -17,8 +17,9 @@ set -uo pipefail
 just="$1"
 justfile="$2"
 read -ra packages <<< "$3" || true
+label="${4:-check-delta}"
 if [ "${#packages[@]}" -eq 0 ]; then
-    echo "[ERROR] check-delta: name at least one crate, client or client-tauri" >&2
+    echo "[ERROR] $label: name at least one crate, client or client-tauri" >&2
     exit 1
 fi
 
@@ -26,7 +27,7 @@ verdict=""
 
 on_exit() {
     if [ -z "$verdict" ]; then
-        echo "[ERROR] check-delta: no verdict, the run ended early"
+        echo "[ERROR] $label: no verdict, the run ended early"
     fi
 }
 trap on_exit EXIT
@@ -38,13 +39,13 @@ run_just() {
 # One failing step stops the run and its name lands on the last line, so a
 # caller piping this through `tail` reads the verdict, not tail's status.
 run_step() {
-    local label="$1"
+    local step="$1"
     shift
-    echo "[..] check-delta: $label"
+    echo "[..] $label: $step"
     local status=0
     "$@" || status=$?
     if [ "$status" -ne 0 ]; then
-        verdict="[ERROR] check-delta: $label failed"
+        verdict="[ERROR] $label: $step failed"
         echo "$verdict"
         exit "$status"
     fi
@@ -52,9 +53,9 @@ run_step() {
 
 for package in "${packages[@]}"; do
     case "$package" in
-        client) echo "[..] check-delta: client/ (format, lint, typecheck, test)" ;;
-        client-tauri) echo "[..] check-delta: client/src-tauri/ (fmt, clippy, test)" ;;
-        *) echo "[..] check-delta: $package (fmt, clippy, nextest)" ;;
+        client) echo "[..] $label: client/ (format, lint, typecheck, test)" ;;
+        client-tauri) echo "[..] $label: client/src-tauri/ (fmt, clippy, test)" ;;
+        *) echo "[..] $label: $package (fmt, clippy, nextest)" ;;
     esac
 done
 
@@ -88,5 +89,5 @@ for package in "${packages[@]}"; do
     esac
 done
 
-verdict="[OK] check-delta: all green (${packages[*]})"
+verdict="[OK] $label: all green (${packages[*]})"
 echo "$verdict"
