@@ -2,13 +2,15 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./host', () => ({
-  canHost: vi.fn(() => true),
+vi.mock('./link', () => ({
+  canAttach: vi.fn(() => true),
+  clearBrowserLink: vi.fn(),
   drawsSurface: vi.fn(() => true),
   drawsCanvas: vi.fn(() => false),
   keptFrame: vi.fn(() => Promise.resolve(null)),
   showBrowser: vi.fn(() => Promise.resolve({ profile: 'hunt', tab: 1 })),
   hideBrowser: vi.fn(() => Promise.resolve(true)),
+  installBrowserLink: vi.fn(),
   listTabs: vi.fn(() =>
     Promise.resolve({
       profile: 'hunt',
@@ -19,13 +21,20 @@ vi.mock('./host', () => ({
       rows: [],
     }),
   ),
-  tabListOf: (value: unknown) => value,
+  navigateBrowser: vi.fn(() => Promise.resolve()),
+  onConnection: vi.fn(() => Promise.resolve(() => {})),
+  onFailed: vi.fn(() => Promise.resolve(() => {})),
+  onLower: vi.fn(() => null),
+  onNav: vi.fn(() => Promise.resolve(() => {})),
+  onRemeasure: vi.fn(() => null),
+  onTabs: vi.fn(() => Promise.resolve(() => {})),
+  onView: vi.fn(() => Promise.resolve(() => {})),
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
   resizeBrowser: vi.fn(() => Promise.resolve()),
   takeControl: vi.fn(() => Promise.resolve()),
 }));
 
-import { hideBrowser, reportSurfaceRect } from './host';
+import { hideBrowser, reportSurfaceRect } from './link';
 import BrowserSurface from './BrowserSurface.svelte';
 import { surface } from './surface.svelte';
 import type { Connection } from '../socket';

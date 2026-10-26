@@ -20,6 +20,7 @@
   import { applySettings } from '../theme';
   import { watchUpdate } from '../update/state';
   import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
+  import { installBrowser, uninstallBrowser } from '../browser/surface.svelte';
   import Router from './Router.svelte';
 
   // The connect screen is the front door: it is the first thing a person
@@ -90,6 +91,7 @@
   let destroyed = false;
   onDestroy(() => {
     destroyed = true;
+    uninstallBrowser();
     connection?.close();
   });
 
@@ -298,6 +300,10 @@
     const search = movedParameter(location.search, connected.address);
     if (search !== null) history.replaceState(null, '', `${location.pathname}${search}`);
     connection = connected.connection;
+    // **The browser follows the connection it draws through**: a shell hands
+    // its overlay to this connection, and a page drives the server's browser
+    // over this socket.
+    installBrowser(connected.connection);
     // The reason belonged to the launch that produced it. Left standing, the
     // door a Back lands on accuses a forge that has just answered.
     failure = null;

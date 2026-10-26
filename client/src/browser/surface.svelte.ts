@@ -18,19 +18,28 @@
  */
 
 import type { BrowserTabList } from '../protocol';
+import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
+import { whyText } from './host';
 import {
-  canHost,
+  canAttach,
+  clearBrowserLink,
   drawsSurface,
   hideBrowser,
+  installBrowserLink,
   listTabs,
+  onConnection,
+  onFailed,
+  onLower,
+  onNav,
+  onRemeasure,
+  onTabs,
+  onView,
   reportSurfaceRect,
   resizeBrowser,
   showBrowser,
-  tabListOf,
   takeControl as sendControl,
-  whyText,
-} from './host';
+} from './link';
 
 export type SurfacePhase = 'closed' | 'opening' | 'live' | 'failed';
 
@@ -120,13 +129,12 @@ export const surface: Surface = $state({
 });
 
 /**
- * The phone's hardware Back asks this first: a live takeover is its door,
- * and the answer says whether the Back was consumed. It goes the same way
- * every lower does - the `forge-takeover` word the dock and the strip already
- * fold - so the hand-off is left parked exactly as back-to-chat leaves it.
- * Installed by the shell alone; a plain page has no hardware Back to route.
+ * A platform Back asks this first: a live takeover is its door, and the answer
+ * says whether the Back was consumed. It goes the same way every lower does -
+ * the `forge-takeover` word the dock and the strip already fold - so the
+ * hand-off is left parked exactly as back-to-chat leaves it.
  */
-if (canHost() && typeof window !== 'undefined') {
+if (typeof window !== 'undefined') {
   (window as unknown as { __forgeLower?: () => boolean }).__forgeLower = (): boolean => {
     if (surface.phase === 'closed') return false;
     window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'lowered' }));
@@ -201,9 +209,9 @@ export async function openSurface(
   seat: SessionSlot | null = null,
   tab: number | null = null,
 ): Promise<string | null> {
-  // **The web page draws no takeover of its own.** Outside the shell the
-  // failure belongs to the strip's row, not to a full-screen error.
-  if (!canHost()) return 'this page is not the client';
+  // **A page with no connection draws no browser.** The refusal belongs to
+  // the strip's row, not to a full-screen error.
+  if (!canAttach()) return 'this page is not the client';
   const mine = ++generation;
   const here = drawsSurface();
   if (here) {
@@ -219,8 +227,8 @@ export async function openSurface(
     surface.attachedProfile = null;
     surface.viewer = null;
     surface.controller = null;
-    // The load-time install is the normal one; this retries it after an
-    // import that failed then, so a rejected fetch cannot cost the page its
+    // The link's install is the normal one; this retries it after a listener
+    // that was refused then, so a rejected fetch cannot cost the page its
     // subscriptions for life. Idempotent, and started before the show so the
     // first open already has the listeners a refusal asks through.
     void installSurfaceEvents();
@@ -262,7 +270,7 @@ export async function openSurface(
  * tab it landed on - so this only starts the move and reads its answer.
  */
 export async function selectTab(tab: number): Promise<string | null> {
-  if (!canHost()) return 'this page is not the client';
+  if (!canAttach()) return 'this page is not the client';
   // **A failed surface can still pick a live tab**: the page it was showing
   // may be gone while the profile's other tabs are not.
   if ((surface.phase !== 'live' && surface.phase !== 'failed') || surface.seat === null) {
@@ -351,14 +359,93 @@ export async function closeSurface(
   return null;
 }
 
-/** How many of the shell's listeners are registered; seven is all of them. */
+/** The link's own pushes, as steps; `null` is a door this link has not. */
+interface Step {
+  what: string;
+  start: () => Promise<() => void> | null;
+}
+
+/**
+ * What the surface follows while it is up: the failure state, the keyboard's
+ * way out, the remeasure ask, the roles, and the page's history as it moves.
+ *
+ * **The order is the shell's**, and the counter below makes an install that
+ * was refused resumable: a listener that failed is retried from where it
+ * stopped, never from the start.
+ */
+const STEPS: Step[] = [
+  {
+    what: "the keyboard's way out",
+    start: () =>
+      onLower(() => {
+        // **The keyboard's way out.** The overlay holds first responder while
+        // the surface is up; Cmd+W arrives here, and the page lowers the
+        // surface the same way back-to-chat does - the hand-off stays parked
+        // for the bar's Done or Not now.
+        void closeSurface();
+      }),
+  },
+  {
+    what: 'the remeasure ask',
+    start: () =>
+      onRemeasure(() => {
+        // **A refused report is measured again on the next frame.** The page
+        // that measured a transient layout is the only one that can read the
+        // settled one, and no ResizeObserver fires when only the position
+        // changed.
+        window.dispatchEvent(new Event('forge-surface-remeasure'));
+      }),
+  },
+  { what: 'a failure', start: () => onFailed(failed) },
+  { what: 'the history', start: () => onNav(nav) },
+  { what: 'the viewer state', start: () => onView(viewed) },
+  { what: 'the tabs', start: () => onTabs(tabs) },
+  { what: 'the connection', start: () => onConnection(reconnect) },
+];
+
+/** How many steps are registered; all of them is a surface that follows. */
 let installed = 0;
 /** The attempt in flight, so callers arriving mid-install wait for it. */
 let inFlight: Promise<void> | null = null;
+/** Bumped by a new link, so a stale install cannot count its steps. */
+let armed = 0;
+/** The stops of the listeners already up, replaced with the link. */
+const stops: Array<() => void> = [];
 
 /**
- * The shell's own words while the surface is up: the failure state, the
- * keyboard's way out, the remeasure ask, and the page's history as it moves.
+ * Install the link for this connection and re-arm the surface's listeners.
+ *
+ * **A new connection is a new link, and a new set of pushes**: the listeners
+ * that folded the old connection's frames are let go rather than left folding
+ * another socket's.
+ */
+export function installBrowser(connection: Connection): void {
+  installBrowserLink(connection);
+  releaseEvents();
+  if (drawsSurface()) void installSurfaceEvents();
+}
+
+/** Give the link up with the connection it was made for. */
+export function uninstallBrowser(): void {
+  releaseEvents();
+  clearBrowserLink();
+}
+
+function releaseEvents(): void {
+  armed += 1;
+  inFlight = null;
+  for (const stop of stops.splice(0)) {
+    try {
+      stop();
+    } catch {
+      // A listener the platform already dropped is not a surface's problem.
+    }
+  }
+  installed = 0;
+}
+
+/**
+ * The link's pushes while the surface is up.
  *
  * **The counter is what makes it resumable**: a listener that failed is
  * retried on the next call, from where it stopped, never from the start. The
@@ -367,10 +454,10 @@ let inFlight: Promise<void> | null = null;
  * it up, rather than being dismissed by it.
  */
 export async function installSurfaceEvents(): Promise<void> {
-  if (installed >= 7 || !canHost()) return;
+  if (installed >= STEPS.length || !canAttach()) return;
   while (inFlight !== null) {
     await inFlight;
-    if (installed >= 7) return;
+    if (installed >= STEPS.length) return;
   }
   inFlight = installOnce();
   try {
@@ -381,131 +468,114 @@ export async function installSurfaceEvents(): Promise<void> {
 }
 
 async function installOnce(): Promise<void> {
-  try {
-    const { listen } = await import('@tauri-apps/api/event');
-    if (installed < 1) {
-      // **The keyboard's way out.** The overlay holds first responder while
-      // the surface is up; Cmd+W arrives as this event, and the page lowers
-      // the surface the same way back-to-chat does - the hand-off stays
-      // parked for the bar's Done or Not now.
-      await listen('browser_surface_lower', () => {
-        void closeSurface();
-      });
-      installed = 1;
+  const mine = armed;
+  while (installed < STEPS.length) {
+    const step = STEPS[installed];
+    if (step === undefined) return;
+    // A link with no such door (a page has no Cmd+W) skips the step rather
+    // than stopping the install.
+    const started = step.start();
+    if (started === null) {
+      installed += 1;
+      continue;
     }
-    if (installed < 2) {
-      // **A refused report is measured again on the next frame.** The shell
-      // refused it because it was not this window's page area; the page that
-      // measured a transient layout is the only one that can read the settled
-      // one, and no ResizeObserver fires when only the position changed.
-      await listen('browser_surface_remeasure', () => {
-        window.dispatchEvent(new Event('forge-surface-remeasure'));
-      });
-      installed = 2;
+    try {
+      const stop = await started;
+      if (mine !== armed) {
+        // A newer link replaced this one while the listener was registering:
+        // let this registration go with it.
+        if (typeof stop === 'function') stop();
+        return;
+      }
+      if (typeof stop === 'function') stops.push(stop);
+    } catch {
+      // No event API (a plain page, a test harness), or one listener refused:
+      // the count stays where it got to, and the next call resumes there.
+      return;
     }
-    if (installed < 3) {
-      await listen<unknown>('browser_surface_failed', (event) => {
-        // **A failure after the surface closed is nobody's.** It must not
-        // re-mount the store as failed.
-        if (surface.phase === 'closed') return;
-        const payload = event.payload;
-        let why = 'the browser stopped answering';
-        if (typeof payload === 'string' && payload !== '') {
-          why = payload;
-        } else if (typeof payload === 'object' && payload !== null) {
-          const fields = payload as Record<string, unknown>;
-          const id = typeof fields['id'] === 'number' ? fields['id'] : null;
-          const tab = typeof fields['tab'] === 'number' ? fields['tab'] : null;
-          if (id !== null && tab !== null) {
-            if (surface.id !== null && surface.tab !== null) {
-              // **A failure that names another surface is not this one's**:
-              // a late frame for a superseded attach must not fail the tab
-              // now up.
-              if (id !== surface.id || tab !== surface.tab) return;
-            } else if (surface.phase !== 'live') {
-              // **An unknown pair is unfilterable only on a live surface.**
-              // While opening, the pair is still the previous attach's, and
-              // this frame may be that one's to fail.
-              return;
-            }
-          }
-          if (typeof fields['reason'] === 'string' && fields['reason'] !== '') {
-            why = fields['reason'];
-          }
-        }
-        surface.phase = 'failed';
-        surface.reason = why;
-        // There is no page left to move: the arrows go back to disabled.
-        surface.nav = { can_back: false, can_forward: false };
-        // The shell's surface is gone with the host; the page's keeps the
-        // sentence up until the person answers the hand-off.
-        void hideBrowser(surface.profile);
-      });
-      installed = 3;
-    }
-    if (installed < 4) {
-      // **The arrows are the shell's reading of the page's history.** It is
-      // pushed on every committed navigation, so the bar never guesses what
-      // the page can do.
-      await listen<Record<string, unknown>>('browser_nav_state', (event) => {
-        const flags = event.payload;
-        surface.nav = {
-          can_back: flags.can_back === true,
-          can_forward: flags.can_forward === true,
-        };
-      });
-      installed = 4;
-    }
-    if (installed < 5) {
-      // **The role's truth is the server's push**, so two surfaces draw the
-      // same answer about who is driving; `viewer` is this connection's own
-      // number, which is what makes "take control" a read rather than a
-      // guess.
-      await listen<Record<string, unknown>>('browser_view', (event) => {
-        const state = event.payload;
-        surface.id = typeof state.id === 'number' ? state.id : null;
-        // **The tab is the other half of the frame filter**, and a re-attach
-        // pushes the tab it landed on rather than the one this page asked
-        // for.
-        surface.tab = typeof state.tab === 'number' ? state.tab : surface.tab;
-        surface.viewer = typeof state.viewer === 'number' ? state.viewer : null;
-        surface.controller = typeof state.controller === 'number' ? state.controller : null;
-        // **The server resolves the name**, so a null request reads as the
-        // seat's own profile.
-        if (typeof state.profile === 'string') surface.attachedProfile = state.profile;
-      });
-      installed = 5;
-    }
-    if (installed < 6) {
-      // **The bar's picker follows the pushed list**, so a tab opening or
-      // closing under the person moves the picker with it. A list for another
-      // profile is not this surface's.
-      await listen<unknown>('browser_tabs', (event) => {
-        let list: BrowserTabList;
-        try {
-          list = tabListOf(event.payload);
-        } catch (why) {
-          console.warn(`a pushed tab list could not be read: ${whyText(why)}`);
-          return;
-        }
-        if (surface.attachedProfile !== null && list.profile !== surface.attachedProfile) return;
-        surface.tabs = list;
-      });
-      installed = 6;
-    }
-    if (installed < 7) {
-      // **A subscribe lives with its socket.** A reconnect starts a new one,
-      // so the picker re-reads the tabs it was following rather than freezing
-      // on the last list the dead socket pushed.
-      await listen('client://connection', () => {
-        if (surface.phase === 'live') void readSurfaceTabs(surface.seat);
-      });
-      installed = 7;
-    }
-  } catch {
-    // No event API (a plain page, a test harness), or one listener refused:
-    // the count stays where it got to, and the next call resumes there.
+    installed += 1;
   }
+}
+
+/** **A failure after the surface closed is nobody's.** It must not re-mount
+ *  the store as failed. */
+function failed(payload: unknown): void {
+  if (surface.phase === 'closed') return;
+  let why = 'the browser stopped answering';
+  if (typeof payload === 'string' && payload !== '') {
+    why = payload;
+  } else if (typeof payload === 'object' && payload !== null) {
+    const fields = payload as Record<string, unknown>;
+    const id = typeof fields['id'] === 'number' ? fields['id'] : null;
+    const tab = typeof fields['tab'] === 'number' ? fields['tab'] : null;
+    if (id !== null && tab !== null) {
+      if (surface.id !== null && surface.tab !== null) {
+        // **A failure that names another surface is not this one's**: a late
+        // frame for a superseded attach must not fail the tab now up.
+        if (id !== surface.id || tab !== surface.tab) return;
+      } else if (surface.phase !== 'live') {
+        // **An unknown pair is unfilterable only on a live surface.** While
+        // opening, the pair is still the previous attach's, and this frame may
+        // be that one's to fail.
+        return;
+      }
+    }
+    if (typeof fields['reason'] === 'string' && fields['reason'] !== '') {
+      why = fields['reason'];
+    }
+  }
+  surface.phase = 'failed';
+  surface.reason = why;
+  // There is no page left to move: the arrows go back to disabled.
+  surface.nav = { can_back: false, can_forward: false };
+  // The shell's surface is gone with the host; the page's keeps the sentence
+  // up until the person answers the hand-off.
+  void hideBrowser(surface.profile);
+}
+
+/** **The arrows are the server's reading of the page's history**, pushed on
+ *  every committed navigation, so the bar never guesses what it can do. */
+function nav(flags: Record<string, unknown>): void {
+  surface.nav = {
+    can_back: flags['can_back'] === true,
+    can_forward: flags['can_forward'] === true,
+  };
+}
+
+/**
+ * **The role's truth is the server's push**, so two surfaces draw the same
+ * answer about who is driving; `viewer` is this connection's own number, which
+ * is what makes "take control" a read rather than a guess.
+ */
+function viewed(state: Record<string, unknown>): void {
+  surface.id = typeof state['id'] === 'number' ? state['id'] : null;
+  // **The tab is the other half of the frame filter**, and a re-attach pushes
+  // the tab it landed on rather than the one this page asked for.
+  surface.tab = typeof state['tab'] === 'number' ? state['tab'] : surface.tab;
+  surface.viewer = typeof state['viewer'] === 'number' ? state['viewer'] : null;
+  surface.controller = typeof state['controller'] === 'number' ? state['controller'] : null;
+  // **The server resolves the name**, so a null request reads as the seat's
+  // own profile.
+  if (typeof state['profile'] === 'string') surface.attachedProfile = state['profile'];
+}
+
+/**
+ * **The bar's picker follows the pushed list**, so a tab opening or closing
+ * under the person moves the picker with it. A list for another profile is not
+ * this surface's.
+ */
+function tabs(list: BrowserTabList): void {
+  if (surface.attachedProfile !== null && list.profile !== surface.attachedProfile) return;
+  surface.tabs = list;
+}
+
+/**
+ * **A subscribe lives with its socket.** A reconnect starts a new one, so the
+ * picker re-reads the tabs it was following rather than freezing on the last
+ * list the dead socket pushed.
+ */
+function reconnect(): void {
+  if (surface.phase === 'live') void readSurfaceTabs(surface.seat);
 }
 
 /** The last page area measured, for the size the server lays the page out to. */
@@ -542,8 +612,3 @@ export function setRegion(
   void reportSurfaceRect(rect, viewport, scale);
   if (holdsControl()) void resizeToRegion();
 }
-
-// **Installed at page load, before any surface can open.** The shell pushes
-// the page's history as the surface attaches, and a listener installed on
-// the far side of the open would miss that first answer.
-if (drawsSurface()) void installSurfaceEvents();

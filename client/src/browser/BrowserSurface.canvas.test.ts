@@ -7,13 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * each relayed frame on a canvas and sends the person's gestures back. The
  * desktop's arm (the shell's overlay) is not this test's.
  */
-vi.mock('./host', () => ({
-  canHost: vi.fn(() => true),
+vi.mock('./link', () => ({
+  canAttach: vi.fn(() => true),
+  clearBrowserLink: vi.fn(),
   drawsSurface: vi.fn(() => true),
   drawsCanvas: vi.fn(() => true),
   keptFrame: vi.fn(() => Promise.resolve(null)),
   showBrowser: vi.fn(() => Promise.resolve(null)),
   hideBrowser: vi.fn(() => Promise.resolve(true)),
+  installBrowserLink: vi.fn(),
   listTabs: vi.fn(() =>
     Promise.resolve({
       profile: 'hunt',
@@ -24,14 +26,21 @@ vi.mock('./host', () => ({
       rows: [],
     }),
   ),
-  tabListOf: (value: unknown) => value,
+  navigateBrowser: vi.fn(() => Promise.resolve()),
+  onConnection: vi.fn(() => Promise.resolve(() => {})),
+  onFailed: vi.fn(() => Promise.resolve(() => {})),
+  onLower: vi.fn(() => null),
+  onNav: vi.fn(() => Promise.resolve(() => {})),
+  onRemeasure: vi.fn(() => null),
+  onTabs: vi.fn(() => Promise.resolve(() => {})),
+  onView: vi.fn(() => Promise.resolve(() => {})),
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
   resizeBrowser: vi.fn(() => Promise.resolve()),
   takeControl: vi.fn(() => Promise.resolve()),
 }));
 
 import BrowserSurface from './BrowserSurface.svelte';
-import { keptFrame } from './host';
+import { keptFrame } from './link';
 import { selectTab, setRegion, surface } from './surface.svelte';
 import type { BrowserFrame, Connection } from '../socket';
 import type { BrowserInputEvent } from '../protocol';
@@ -112,7 +121,7 @@ describe('the canvas viewer', () => {
       Promise.resolve({ width: 320, height: 200, close: () => {} }),
     );
     vi.mocked(keptFrame).mockResolvedValue(frame(1));
-    const { showBrowser } = await import('./host');
+    const { showBrowser } = await import('./link');
     vi.mocked(showBrowser).mockResolvedValue({ profile: 'hunt', tab: 2 });
     const { connection } = stubConnection();
     surface.phase = 'failed';

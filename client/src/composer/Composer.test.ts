@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { hideBrowser, showBrowser } from '../browser/host';
+import { hideBrowser, showBrowser } from '../browser/link';
 import { surface } from '../browser/surface.svelte';
 
 /**
@@ -11,14 +11,14 @@ import { surface } from '../browser/surface.svelte';
  * here: outside the shell the real one answers a reason, which only ever
  * proved the could-not line.
  */
-vi.mock('../browser/host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../browser/host')>();
+vi.mock('../browser/link', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser/link')>();
   return {
     ...actual,
     // jsdom is not the shell: the surface gates would answer "not the
     // client" and the takeover's tests would never see their bar. The store
     // and the shell's own doors are mocked below on that basis.
-    canHost: vi.fn(() => true),
+    canAttach: vi.fn(() => true),
     drawsSurface: vi.fn(() => true),
     // No window in tests: the shell's raise answers the reason it could not
     // land, or null when it did. The default takes it as landing; a case

@@ -5,7 +5,7 @@
   import Brand from '../components/Brand.svelte';
   import Icon from '../components/Icon.svelte';
   import BrowserSurface from '../browser/BrowserSurface.svelte';
-  import { drawsSurface } from '../browser/host';
+  import { drawsSurface } from '../browser/link';
   import { surface } from '../browser/surface.svelte';
   import { subjectKey } from '../protocol';
   import { report, type Connection } from '../socket';

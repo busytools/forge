@@ -5,7 +5,7 @@
   import Pinned from '../chat/Pinned.svelte';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
-  import { drawsSurface, navigateBrowser } from '../browser/host';
+  import { drawsSurface, navigateBrowser } from '../browser/link';
   import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';

@@ -10,7 +10,7 @@
 
   import type { BrowserInputEvent, InputModifiers } from '../protocol';
   import type { BrowserFrame, Connection } from '../socket';
-  import { drawsCanvas, keptFrame } from './host';
+  import { drawsCanvas, keptFrame } from './link';
   import { pagePoint } from './point';
   import {
     claimSurfaceMount,

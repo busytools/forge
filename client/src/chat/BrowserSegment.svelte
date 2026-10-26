@@ -1,14 +1,7 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
-  import {
-    canHost,
-    listTabs,
-    onConnection,
-    onTabs,
-    tabRows,
-    whyText,
-    type TabRow,
-  } from '../browser/host';
+  import { tabRows, whyText, type TabRow } from '../browser/host';
+  import { canAttach, listTabs, onConnection, onTabs } from '../browser/link';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import type { BrowserTabList } from '../protocol';
   import { panelStyle, portal } from './strip-panel';
@@ -28,8 +21,8 @@
    */
   let { slot = null }: { slot?: SessionSlot | null } = $props();
 
-  /** Whether this page runs in a shell that can show the server's browser. */
-  const capable = canHost();
+  /** Whether this page can show the server's browser at all. */
+  const capable = canAttach();
 
   let open = $state(false);
   /** The last list the shell answered, and the rows it draws. */

@@ -376,7 +376,15 @@ export type ClientMessage =
   /** Take the controller role for the viewed surface, or give it back. */
   | { kind: 'browser_control'; take: boolean }
   /** Move the viewed page through its own history: the bar's arrows. */
-  | { kind: 'browser_nav'; back: boolean };
+  | { kind: 'browser_nav'; back: boolean }
+  /**
+   * The controller's surface changed size: the page is laid out to it.
+   *
+   * `width` and `height` are the surface's DEVICE pixels - the client
+   * multiplies its CSS box by the ratio it draws at - and `scale` is that
+   * ratio, which the host gives the engine.
+   */
+  | { kind: 'browser_resize'; width: number; height: number; scale: number };
 
 /** What the server sends. */
 export type ServerMessage =

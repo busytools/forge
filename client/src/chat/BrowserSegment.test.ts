@@ -2,7 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { canHost, listTabs, onConnection, onTabs } from '../browser/host';
+import { canAttach, listTabs, onConnection, onTabs } from '../browser/link';
 import type { BrowserTabList } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 import BrowserSegment from './BrowserSegment.svelte';
@@ -52,7 +52,7 @@ function row(over: Record<string, unknown> = {}): BrowserTabList['rows'][number]
 }
 
 afterEach(() => {
-  vi.mocked(canHost).mockReturnValue(true);
+  vi.mocked(canAttach).mockReturnValue(true);
   vi.mocked(listTabs).mockResolvedValue(tabs());
   surface.phase = 'closed';
   surface.profile = null;
@@ -67,11 +67,11 @@ afterEach(() => {
 });
 
 /** The shell's viewer, mocked so the segment's reads have states to drive. */
-vi.mock('../browser/host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../browser/host')>();
+vi.mock('../browser/link', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser/link')>();
   return {
     ...actual,
-    canHost: vi.fn(() => true),
+    canAttach: vi.fn(() => true),
     listTabs: vi.fn(() =>
       Promise.resolve({
         profile: 'TestOrg/work',

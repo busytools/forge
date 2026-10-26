@@ -1,20 +1,31 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./host', () => ({
-  canHost: vi.fn(() => true),
+vi.mock('./link', () => ({
+  canAttach: vi.fn(() => true),
+  clearBrowserLink: vi.fn(),
+  drawsCanvas: vi.fn(() => false),
   drawsSurface: vi.fn(() => true),
-  showBrowser: vi.fn(),
   hideBrowser: vi.fn(),
+  installBrowserLink: vi.fn(),
+  keptFrame: vi.fn(() => Promise.resolve(null)),
   listTabs: vi.fn(),
-  tabListOf: (value: unknown) => value,
+  navigateBrowser: vi.fn(() => Promise.resolve()),
+  onConnection: vi.fn(() => Promise.resolve(() => {})),
+  onFailed: vi.fn(() => Promise.resolve(() => {})),
+  onLower: vi.fn(() => null),
+  onNav: vi.fn(() => Promise.resolve(() => {})),
+  onRemeasure: vi.fn(() => null),
+  onTabs: vi.fn(() => Promise.resolve(() => {})),
+  onView: vi.fn(() => Promise.resolve(() => {})),
   reportSurfaceRect: vi.fn(),
   resizeBrowser: vi.fn(() => Promise.resolve()),
+  showBrowser: vi.fn(),
   takeControl: vi.fn(() => Promise.resolve()),
 }));
 
 import type { BrowserTabList } from '../protocol';
-import { canHost, drawsSurface, hideBrowser, listTabs, resizeBrowser, showBrowser } from './host';
+import { canAttach, drawsSurface, hideBrowser, listTabs, resizeBrowser, showBrowser } from './link';
 import {
   closeSurface,
   openSurface,
@@ -28,7 +39,7 @@ const show = vi.mocked(showBrowser);
 const hide = vi.mocked(hideBrowser);
 const tabs = vi.mocked(listTabs);
 const here = vi.mocked(drawsSurface);
-const hostable = vi.mocked(canHost);
+const hostable = vi.mocked(canAttach);
 const resize = vi.mocked(resizeBrowser);
 
 beforeEach(() => {
