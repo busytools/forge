@@ -32,7 +32,7 @@
 //! handed a copy: nothing here folds a home record.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -162,6 +162,25 @@ struct State {
     asks: crate::asks::Asks,
 }
 
+/// Where a bridge's ask notices go.
+///
+/// **A seam for the tests, not a second delivery**: the shipping type is
+/// `PlatformAlerts`, which hands each notice to the notification thread.
+trait Alerts: Send + Sync {
+    fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind);
+}
+
+/// The shell's delivery: one job per notice on the notification thread.
+struct PlatformAlerts {
+    app: tauri::AppHandle,
+}
+
+impl Alerts for PlatformAlerts {
+    fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind) {
+        crate::notify::raise(&self.app, seat, kind);
+    }
+}
+
 /// The app half, as the Tauri layer drives it.
 pub struct Bridge {
     state: Mutex<State>,
@@ -170,6 +189,12 @@ pub struct Bridge {
     /// that never draws one.
     app: Option<tauri::AppHandle>,
     events: mpsc::UnboundedSender<ClientEvent>,
+    /// Where ask notices go; `None` in a test that does not record them.
+    alerts: Option<Arc<dyn Alerts>>,
+    /// Whether the person is looking at the app, as the last focus or
+    /// life-cycle event said. **Seeded true**: the window is what activated
+    /// the app, and every later change arrives as an event.
+    attention: AtomicBool,
     /// The wire sequence for the viewer's input, minted here so the overlay
     /// and the page share one ordered stream.
     input_seq: AtomicU64,
@@ -205,6 +230,18 @@ impl Bridge {
         app: Option<tauri::AppHandle>,
         events: mpsc::UnboundedSender<ClientEvent>,
     ) -> Arc<Self> {
+        let alerts = app
+            .as_ref()
+            .map(|app| Arc::new(PlatformAlerts { app: app.clone() }) as Arc<dyn Alerts>);
+        Self::with_alerts(app, events, alerts)
+    }
+
+    /// The one constructor, so a test can hand in its own recorder.
+    fn with_alerts(
+        app: Option<tauri::AppHandle>,
+        events: mpsc::UnboundedSender<ClientEvent>,
+        alerts: Option<Arc<dyn Alerts>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
                 records: Records::new(),
@@ -226,6 +263,8 @@ impl Bridge {
             }),
             app,
             events,
+            alerts,
+            attention: AtomicBool::new(true),
             input_seq: AtomicU64::new(0),
             picking: std::sync::atomic::AtomicBool::new(false),
             live_file: AtomicU64::new(0),
@@ -641,7 +680,8 @@ impl Bridge {
         // seat switch is exactly that - so the held roster is read again
         // rather than waiting for the page's next read, which a parked page
         // never makes.
-        self.asks_moved();
+        let notices = self.asks_moved();
+        self.raise(notices);
     }
 
     /// Ask again for a subject the page still holds, **without counting a
@@ -691,48 +731,36 @@ impl Bridge {
         }
     }
 
-    /// The home roster moved: announce the asks it holds for a seat the
-    /// person is not looking at.
+    /// The home roster moved: the asks it holds for a seat the person is not
+    /// looking at.
     ///
     /// **The rule is the page's** (`crate::asks`): a seat is on screen when
     /// it is the shown seat and the window has focus. Runs over the held
-    /// home read, so a parked page's asking costs nothing.
-    fn asks_moved(&self) {
+    /// home read, so a parked page's asking costs nothing. The caller raises
+    /// what this answers, which is what lets a test see the trigger fire.
+    fn asks_moved(&self) -> Vec<(SessionSlot, crate::asks::AskKind)> {
         let focused = self.looking();
-        let notices = {
-            let mut state = self.lock();
-            let State { records, asks, shown, .. } = &mut *state;
-            records
-                .read("home")
-                .and_then(|held| held.ok())
-                .map(|data| asks.rising(data, shown.as_ref(), focused))
-                .unwrap_or_default()
-        };
-        let Some(app) = self.app.as_ref() else { return };
+        let mut state = self.lock();
+        let State { records, asks, shown, .. } = &mut *state;
+        records
+            .read("home")
+            .and_then(|held| held.ok())
+            .map(|data| asks.rising(data, shown.as_ref(), focused))
+            .unwrap_or_default()
+    }
+
+    /// Raise one roster read's notices where this bridge has a delivery.
+    fn raise(&self, notices: Vec<(SessionSlot, crate::asks::AskKind)>) {
+        let Some(alerts) = self.alerts.as_ref() else { return };
         for (seat, kind) in notices {
-            crate::notify::raise(app, &seat, kind);
+            alerts.raise(&seat, kind);
         }
     }
 
     /// **Whether the person is looking at the app**, which the rule's
-    /// exemption turns on.
-    ///
-    /// **Android's window cannot answer this**: tao returns false there
-    /// always, so the app's own resume and suspend state is the truth.
-    /// Everywhere else the window's focus is.
+    /// exemption turns on: the last focus or life-cycle event's own answer.
     fn looking(&self) -> bool {
-        #[cfg(target_os = "android")]
-        {
-            crate::asks::foreground()
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            self.app
-                .as_ref()
-                .and_then(|app| app.get_webview_window("main"))
-                .and_then(|window| window.is_focused().ok())
-                .unwrap_or(false)
-        }
+        self.attention.load(Ordering::Relaxed)
     }
 
     /// Re-evaluate the held roster, for a focus or life-cycle change, and ask
@@ -741,20 +769,24 @@ impl Bridge {
     /// **An ask on the shown seat is silent while it is looked at**, so the
     /// moment the person looks away is a moment that must be read - and no
     /// frame arrives for it.
-    pub fn review_asks(&self) {
-        self.asks_moved();
+    pub fn review_asks(&self, looking: bool) {
+        self.attention.store(looking, Ordering::Relaxed);
+        let notices = self.asks_moved();
+        self.raise(notices);
         if let Some(app) = self.app.as_ref() {
             crate::notify::review(app);
         }
     }
 
-    /// One ask's own frame: read the roster again when the page cannot.
+    /// One ask's own frame: read the roster again while the home is held.
     ///
-    /// **Only a read moves the roster's pending field**, and a parked page
-    /// never asks - so the frame is what keeps the trigger alive there. A
-    /// page that is running reads the roster itself when this update lands
-    /// (`home/live.ts`), so asking here too would be two encodes per ask.
-    /// A view that is not holding the home (a connect screen) asks nothing.
+    /// **Only a read moves the roster's pending field**, and the page's own
+    /// read is not a guarantee: its heartbeat is a page timer, and WebKit
+    /// stops it the instant the display sleeps. A beat newer than `FRESH_MS`
+    /// therefore says nothing about whether the page will read, so the
+    /// roster is always asked for here - one extra encode per ask is the
+    /// cost of not missing the ask that lands in that window. A view that is
+    /// not holding the home (a connect screen) asks nothing.
     fn ask_arrived(&self, update: &Value) {
         let ask = [
             "permission_request",
@@ -767,14 +799,7 @@ impl Bridge {
         if !ask {
             return;
         }
-        let read = {
-            let state = self.lock();
-            // The same presumption `forward` makes, from the same pulse.
-            let fresh =
-                state.last_beat.is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
-            !fresh && state.held.contains_key("home")
-        };
-        if read {
+        if self.lock().held.contains_key("home") {
             self.refresh(&json!("home"));
         }
     }
@@ -1127,7 +1152,8 @@ impl Bridge {
                 // parked with the display off runs no timer of its own, and
                 // this half has the frame either way.
                 if key == "home" {
-                    self.asks_moved();
+                    let notices = self.asks_moved();
+                    self.raise(notices);
                 }
             }
             "update" => {
@@ -1596,6 +1622,47 @@ mod tests {
         (Bridge::new(None, tx), rx)
     }
 
+    /// What a bridge's ask notices went to, so a test can see a trigger fire.
+    #[derive(Default)]
+    struct Recorded {
+        notices: Mutex<Vec<(SessionSlot, crate::asks::AskKind)>>,
+    }
+
+    impl Recorded {
+        fn take(&self) -> Vec<(SessionSlot, crate::asks::AskKind)> {
+            self.notices.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        }
+    }
+
+    impl Alerts for Recorded {
+        fn raise(&self, seat: &SessionSlot, kind: crate::asks::AskKind) {
+            self.notices.lock().unwrap_or_else(PoisonError::into_inner).push((seat.clone(), kind));
+        }
+    }
+
+    /// A bridge that records its ask notices instead of raising them.
+    fn bridge_recording() -> (Arc<Bridge>, mpsc::UnboundedReceiver<ClientEvent>, Arc<Recorded>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let recorded = Arc::new(Recorded::default());
+        let bridge = Bridge::with_alerts(None, tx, Some(Arc::clone(&recorded) as Arc<dyn Alerts>));
+        (bridge, rx, recorded)
+    }
+
+    /// The home subject's snapshot, carrying `data` as the roster.
+    fn home_snapshot(data: Value) -> Value {
+        json!({ "kind": "snapshot", "subject": "home", "data": data })
+    }
+
+    /// One seat's row carrying an ask.
+    fn asking_row(label: &str, seq: u64) -> Value {
+        json!({
+            "slot": { "org": "Busytools", "project": "forge", "label": label },
+            "pending": "question",
+            "pending_depth": 1,
+            "pending_seq": seq,
+        })
+    }
+
     /// Await the next event of a kind, skipping others. **Bounded**: an
     /// event that never comes fails the test in seconds rather than hanging
     /// it (and a mutant that stops an event has to DIE, not stall).
@@ -1904,18 +1971,21 @@ mod tests {
         assert_eq!(again["answering"], false, "with the declaration it was held under");
     }
 
-    /// **An ask's frame asks for the roster again, but only for a parked
-    /// page.** A page that is running re-reads the home itself when the
-    /// update lands, so a read here as well would be two encodes per ask.
-    /// An ordinary turn frame asks nothing on either side of the pulse.
+    /// **An ask's frame asks for the roster again even when the page looks
+    /// awake.** The heartbeat is a page timer and stops the instant the
+    /// display sleeps, so a beat inside `FRESH_MS` is not proof the page
+    /// will read; the ask that lands in that window would raise no banner.
+    /// An ordinary turn frame asks nothing.
     #[tokio::test]
-    async fn an_asks_frame_reads_the_home_only_for_a_parked_page() {
+    async fn an_asks_frame_reads_the_home_whatever_the_beat_says() {
         let mut server = stub().await;
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
         bridge.subscribe(json!("home"), true);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        // A beat this instant is what the page's timer wrote before the
+        // display slept - and the page is already frozen behind it.
         bridge.heartbeat();
 
         // The control: a turn frame is not an ask, so nothing is re-read.
@@ -1931,30 +2001,107 @@ mod tests {
             "an ordinary frame asks for no read",
         );
 
-        let ask = json!({
-            "kind": "update",
-            "update": {
-                "permission_request": {
-                    "key": seat()["session"],
-                    "tool_id": "tu-1",
-                    "request": {},
-                }
-            },
-        });
-        // An awake page reads the roster itself, so the bridge stays quiet.
-        sent(&bridge, ask.clone());
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
-            "the running page's own read is the read",
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": {
+                    "permission_request": {
+                        "key": seat()["session"],
+                        "tool_id": "tu-1",
+                        "request": {},
+                    }
+                },
+            }),
         );
-
-        // A parked page runs no timer, so the ask's frame is the door.
-        park(&bridge);
-        sent(&bridge, ask);
         let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(again["what"], json!("home"), "the parked page's roster is read");
+        assert_eq!(again["what"], json!("home"), "the ask reads the roster inside the beat");
         assert_eq!(again["answering"], true, "with the declaration the home is held under");
+    }
+
+    /// **A home read raises the ask it carries.** Deleting the home arm's
+    /// raise would leave the roster current and the banner unsent.
+    #[tokio::test]
+    async fn a_home_read_raises_a_new_ask() {
+        let (bridge, _rx, recorded) = bridge_recording();
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        // The launch's own read seeds and announces nothing.
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        assert!(recorded.take().is_empty(), "launch is not news");
+
+        sent(
+            &bridge,
+            home_snapshot(json!({ "boot_id": "run-1", "agents": [asking_row("w1", 1)] })),
+        );
+        assert_eq!(
+            recorded.take(),
+            vec![(SessionSlot::worker("Busytools", "forge", "w1"), crate::asks::AskKind::Question)],
+            "the new ask is the one raised",
+        );
+    }
+
+    /// **Clearing the shown seat is what announces the ask it held.** The ask
+    /// arrived while the seat was on screen and looked at, so the home read
+    /// left it unannounced; the showing that takes it off screen raises it.
+    #[tokio::test]
+    async fn looking_away_from_the_shown_seat_raises_its_ask() {
+        let (bridge, _rx, recorded) = bridge_recording();
+        bridge.review_asks(true);
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        bridge.showing(Some(json!({ "org": "Busytools", "project": "forge", "label": "lead" })));
+
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        sent(
+            &bridge,
+            home_snapshot(json!({ "boot_id": "run-1", "agents": [asking_row("lead", 1)] })),
+        );
+        assert!(recorded.take().is_empty(), "looked at, not announced");
+
+        bridge.showing(None);
+        assert_eq!(
+            recorded.take(),
+            vec![(SessionSlot::lead("Busytools", "forge"), crate::asks::AskKind::Question)],
+            "the seat left the screen, so its ask is news",
+        );
+    }
+
+    /// **A focus event re-evaluates the roster.** The ask on the shown seat
+    /// arrived while it was looked at; the event that says the person looked
+    /// away is the one that raises it.
+    #[tokio::test]
+    async fn a_focus_change_raises_the_shown_seats_ask() {
+        let (bridge, _rx, recorded) = bridge_recording();
+        bridge.review_asks(true);
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        bridge.showing(Some(json!({ "org": "Busytools", "project": "forge", "label": "lead" })));
+
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        sent(
+            &bridge,
+            home_snapshot(json!({ "boot_id": "run-1", "agents": [asking_row("lead", 1)] })),
+        );
+        assert!(recorded.take().is_empty(), "looked at, not announced");
+
+        bridge.review_asks(false);
+        assert_eq!(
+            recorded.take(),
+            vec![(SessionSlot::lead("Busytools", "forge"), crate::asks::AskKind::Question)],
+            "the focus event is what raises the glance",
+        );
     }
 
     /// A subject two page readers hold is re-asked once per OPEN one on a

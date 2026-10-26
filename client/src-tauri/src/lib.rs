@@ -596,9 +596,7 @@ pub fn run() {
         {
             #[cfg(mobile)]
             crate::asks::set_foreground(foreground);
-            #[cfg(not(mobile))]
-            let _ = foreground;
-            review_asks(handle);
+            review_asks(handle, foreground);
         }
     });
 }
@@ -621,9 +619,9 @@ fn attention(event: &tauri::WindowEvent) -> Option<bool> {
 
 /// Re-read the asked state for the notification rule, where a focus or a
 /// life-cycle change says the person's gaze moved.
-fn review_asks(handle: &tauri::AppHandle) {
+fn review_asks(handle: &tauri::AppHandle, looking: bool) {
     if let Some(bridge) = handle.try_state::<std::sync::Arc<crate::bridge::Bridge>>() {
-        bridge.review_asks();
+        bridge.review_asks(looking);
     }
 }
 
