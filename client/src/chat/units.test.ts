@@ -4026,6 +4026,19 @@ describe('the frames the fold had no row for', () => {
     expect(noticeOf(units[1])?.mark).toBe('notification');
   });
 
+  it('draws a system subtype it does not know, and stays silent for one drawn elsewhere', () => {
+    const future = fold([{ type: 'system', subtype: 'future_state', uuid: 'f1' }]);
+    expect(kinds(future), 'a subtype the CLI adds still draws').toEqual(['notice']);
+    expect(noticeOf(future[0])?.mark).toBe('future_state');
+    expect(noticeOf(future[0])?.text).toBe('unhandled frame: system/future_state');
+
+    const elsewhere = fold([
+      { type: 'system', subtype: 'background_tasks_changed', tasks: [], uuid: 'b1' },
+      { type: 'system', subtype: 'init', uuid: 'i1' },
+    ]);
+    expect(kinds(elsewhere), 'a list another surface draws, and the handshake').toEqual([]);
+  });
+
   it('draws an unanswered question as a call row marked unanswered', () => {
     const units = fold([
       said([

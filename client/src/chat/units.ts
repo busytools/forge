@@ -516,6 +516,29 @@ function provisional(mark: string, severity: NoticeSeverity, text: string, raw: 
 }
 
 /**
+ * The `system` subtypes whose row is another row's, or which are plumbing.
+ *
+ * The task lifecycle lands on the call it belongs to (the pass above reads
+ * it), the background-task and command lists feed their own surfaces, the
+ * handshake is not content, and a hook run draws from its attachment row.
+ * **The transcript read filters the same list** (its own
+ * `SYSTEM_ROWS_DRAWN_ELSEWHERE`), because the read and the live path are one
+ * obligation - a subtype added here belongs there, and the other way round.
+ */
+const SYSTEM_DRAWN_ELSEWHERE: ReadonlySet<string> = new Set([
+  'task_started',
+  'task_updated',
+  'task_notification',
+  'background_tasks_changed',
+  'commands_changed',
+  'init',
+  'status',
+  'hook_started',
+  'hook_progress',
+  'hook_response',
+]);
+
+/**
  * The frame a page carries, as the fields this fold reads.
  *
  * Every read is tolerant on purpose: a frame is the CLI's own message and a
@@ -2319,6 +2342,23 @@ export function fold(
           ),
         });
         continue;
+      }
+      // **A system subtype this build has no arm for draws as itself**, the
+      // same default the top-level catch-all keeps, so one the CLI adds is
+      // seen on the day it arrives rather than waiting for an arm. Only the
+      // subtypes whose row is drawn elsewhere stay silent here.
+      const system = str(frame, 'subtype');
+      if (system === null || !SYSTEM_DRAWN_ELSEWHERE.has(system)) {
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'system'),
+          notice: provisional(
+            system ?? 'system',
+            'info',
+            `unhandled frame: system${system === null ? '' : `/${system}`}`,
+            frame,
+          ),
+        });
       }
       continue;
     }
