@@ -5612,6 +5612,28 @@ describe('the dock', () => {
     expect(drawn(), 'the reason is drawn where the dock stood').toContain('no longer waiting');
   });
 
+  /** **The dock card's own door before the takeover is up.** The page writes
+   *  this word by hand and nothing else ties it to the core's enum, so a
+   *  rename here would compile, keep every suite green, and leave every
+   *  answer given before Open undecodable - the exact failure the wire test
+   *  exists for, and the one door no client test used to cover. */
+  it('answers the dock card with its own door before Open', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Done').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_browser_hand_off: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          answer: { ending: { type: 'done' }, source: 'dock' },
+        },
+      },
+    ]);
+  });
+
   it('answers the hand-off as the verb says: Done settles it', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 

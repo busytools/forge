@@ -463,13 +463,13 @@ mod tests {
         );
     }
 
-    /// **Every door a client can send crosses as the exact word the client
-    /// writes.** The page builds these by hand: `dock` and `dock_escape` in
-    /// `Dock.svelte`, `takeover` and `feedback` in `Composer.svelte`. Nothing
-    /// else ties the two sides together - the socket record walks keys and
-    /// never values, and each client test asserts only the literal it sends -
-    /// so a rename here would compile, keep every suite green, and make the
-    /// answer undecodable.
+    /// **Every door crosses as the word the server writes, and the client's
+    /// own tests assert the same four literals it writes.** The page builds
+    /// them by hand: `dock` and `dock_escape` in `Dock.svelte`, `takeover`
+    /// and `feedback` in `Composer.svelte`. The socket record walks keys and
+    /// never values, so it cannot catch a rename on either side; this test
+    /// and the client tests that click each door are what do, and a rename
+    /// here without one there would leave the answer undecodable.
     #[test]
     fn every_client_door_crosses_as_the_word_the_client_writes() {
         for (source, word) in [

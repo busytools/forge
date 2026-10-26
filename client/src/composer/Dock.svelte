@@ -1046,7 +1046,7 @@
       <div class="d-q">{ask.request.reason}</div>
       <div class="desc">
         {raiseFailed ??
-          'Open browser shows the page the session prepared, exactly as it stands. The session waits, with no timeout, until Done, Not now or feedback.'}
+          'Open browser shows the page the session prepared, exactly as it stands. The session waits, with no timeout, for your answer.'}
       </div>
     {/if}
 

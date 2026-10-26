@@ -223,9 +223,9 @@ frames per second at the surface's size; CPU was not profiled).
 **A failure is drawn where the person is looking.** The takeover's page area
 carries the server's sentence and the hand-off stays parked; the strip says
 what a refused show or hide said. **Done**, **Not now** and **feedback** are
-the hand-off's answers; the feedback line sends its words as a prompt and ends
-the park as **feedback**, saying the person spoke rather than that they
-declined.
+the hand-off's answers; the feedback line sends its words as a prompt and,
+once they leave, ends the park as **feedback**, saying the person spoke
+rather than that they declined.
 
 ## The widths
 
