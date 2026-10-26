@@ -304,6 +304,11 @@ impl Drop for WorktreeClaimGuard {
     }
 }
 
+/// A test's pause inside [`Workspace::live_seats`]: the sender fires once a
+/// capture is held, and a message on the receiver releases it.
+#[cfg(any(test, feature = "testing"))]
+type LiveSeatsGate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+
 /// spawned [`forge_agent::Agent`] handles, one per active session.
 ///
 /// Construct via [`Workspace::new`]; consume via
@@ -377,6 +382,16 @@ pub struct Workspace {
     /// `None` is a workspace with no browser host (tests, a view): the
     /// browser tools then name their refusal.
     pub(crate) browser_host: std::sync::OnceLock<Arc<dyn crate::browser::BrowserHost>>,
+    /// **Captures do not overlap**: the generation ranks whole captures, so
+    /// the mint and the reads it labels happen under this one lock.
+    live_seats_lock: std::sync::Mutex<()>,
+    /// The generation each [`Self::live_seats`] capture takes, so the fleet
+    /// can drop a snapshot older than the one it last applied.
+    live_seats_generation: std::sync::atomic::AtomicU64,
+    /// A test's hold between [`Self::live_seats`]'s mint and its reads, so a
+    /// capture can be opened across a seat change. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    live_seats_gate: Mutex<Option<LiveSeatsGate>>,
     /// How many client connections are attached, noted by the transport per
     /// connection. A document hand-off reads it before claiming an open: only
     /// a client that draws a document viewer is counted.
@@ -1797,6 +1812,10 @@ impl Workspace {
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             browser_host: std::sync::OnceLock::new(),
+            live_seats_lock: std::sync::Mutex::new(()),
+            live_seats_generation: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            live_seats_gate: Mutex::new(None),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs: parking_lot::Mutex::new(HashMap::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
@@ -6678,8 +6697,13 @@ impl Workspace {
     /// an orphan and closes. **No profile is deleted by that sweep** - a
     /// profile's logins are the org's and stay until the idle clock closes
     /// the host - so the cost of a wrong answer is a closed tab, not a lost
-    /// login. It still holds two rules, because a closed tab is a page an
-    /// agent was working in:
+    /// login. **Captures are serialised, the lock spanning the mint and the
+    /// reads** ([`crate::browser::LiveSeats`]): a higher generation is a later
+    /// seat set, which is what lets the fleet drop a stale one - including for
+    /// a seat released without a sweep of its own, since only a capture that
+    /// read after the release can drop its tombstone and every snapshot still
+    /// listing the seat is older than that capture. It still holds two rules,
+    /// because a closed tab is a page an agent was working in:
     ///
     /// - **It errs toward INCLUSION**: a seat wrongly present leaves one tab
     ///   to the next sweep, while a seat wrongly absent would close a live
@@ -6687,9 +6711,12 @@ impl Workspace {
     /// - **It fails closed**: `None` when the store cannot be read, so no
     ///   caller can mistake an unread store for "no seats exist" and sweep
     ///   everything. Nothing sends a set it could not read.
-    pub fn live_seats(&self) -> Option<Vec<forge_primitives::SessionSlot>> {
+    pub fn live_seats(&self) -> Option<crate::browser::LiveSeats> {
         use std::collections::BTreeSet;
 
+        // **Held across the reads**: the mint ranks a whole capture, so no
+        // other capture may read between the two.
+        let _capture = self.live_seats_lock.lock();
         let views = self.list_projects();
         let stored = {
             let guard = self.db.lock();
@@ -6707,6 +6734,12 @@ impl Workspace {
                 }
             }
         };
+        // Minted after the fail-closed read, so a capture that answers no set
+        // takes no generation.
+        let generation =
+            self.live_seats_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        #[cfg(any(test, feature = "testing"))]
+        self.pass_live_seats_gate();
         let mut triples: BTreeSet<(String, String, String)> = BTreeSet::new();
         for view in &views {
             triples.insert((
@@ -6725,14 +6758,15 @@ impl Workspace {
                 triples.insert((view.org.clone(), view.name.clone(), worker.label));
             }
         }
-        Some(
-            triples
+        Some(crate::browser::LiveSeats {
+            generation,
+            seats: triples
                 .into_iter()
                 .map(|(org, project, label)| {
                     forge_primitives::SessionSlot::new(org, project, label)
                 })
                 .collect(),
-        )
+        })
     }
 
     /// Snapshot the live workers for `project_key`. Returns an empty
@@ -14757,6 +14791,85 @@ provider = "anthropic"
             }
             other => panic!("expected a prompt command, got {other:?}"),
         }
+    }
+
+    /// **Two seat captures never overlap.** The generation ranks whole
+    /// captures, so a capture held between its mint and its reads must hold
+    /// the next one off: a capture that ran there would carry the higher
+    /// number over the older seat set, and the fleet would drop the capture
+    /// that actually read the newer one.
+    #[test]
+    fn a_live_seats_capture_cannot_overlap_another() {
+        let (workspace, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let dir = tempdir().expect("a temp dir");
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("the store");
+        workspace.attach_store_for_test(db);
+        workspace.seed_test_project("forge", "/tmp/forge-capture-overlap");
+        workspace.insert_live_worker(
+            &project,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "w".to_owned(),
+                charter: "c".to_owned(),
+                slot: SessionSlot::worker("Default", "forge", "w"),
+                session_id: None,
+                status: forge_primitives::WorkerLiveness::Running,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("Default", "forge"),
+                needs_tag: false,
+                is_git_repo_at_spawn: false,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let (reached, resume) = workspace.pause_next_live_seats_capture();
+
+        let held = {
+            let workspace = Arc::clone(&workspace);
+            std::thread::spawn(move || workspace.live_seats())
+        };
+        reached
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the first capture is held between its mint and its reads");
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let second = {
+            let workspace = Arc::clone(&workspace);
+            std::thread::spawn(move || {
+                let snapshot = workspace.live_seats();
+                let _ = done_tx.send(());
+                snapshot
+            })
+        };
+        // A capture that could run between the first one's mint and its reads
+        // finishes here; one that cannot reports nothing.
+        let overtook = done_rx.recv_timeout(std::time::Duration::from_millis(500)).is_ok();
+
+        // The seat goes while the first capture is open.
+        let drained = workspace.drain_live_workers(&project);
+        assert_eq!(drained.len(), 1, "the worker was live before the drain");
+        let _ = resume.send(());
+
+        let held = held.join().expect("the held capture returns").expect("the store is readable");
+        let second =
+            second.join().expect("the second capture returns").expect("the store is readable");
+
+        assert!(
+            !overtook,
+            "a second capture must not run while the first is between its mint and its reads",
+        );
+        assert!(held.generation < second.generation, "the held capture keeps the earlier number");
+        assert!(
+            !held.seats.iter().any(|seat| seat.label() == "w"),
+            "the held capture read after the drain",
+        );
+        assert!(
+            second.seats.iter().all(|seat| held.seats.contains(seat)),
+            "the newer number must not carry an older seat set: second={:?} held={:?}",
+            second.seats,
+            held.seats,
+        );
     }
 }
 

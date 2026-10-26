@@ -149,9 +149,11 @@ pub struct BrowserService {
     /// already held a profile could otherwise start a host after the stop;
     /// every launch path refuses once this is up.
     stopped: Arc<AtomicBool>,
-    /// **One sweep at a time.** Two sweeps racing can apply an older seat
-    /// snapshot over a newer one and re-admit an ended seat to `live`.
-    sweep_lock: AsyncMutex<()>,
+    /// **One sweep at a time, and only forward.** The value is the generation
+    /// of the sweep last applied; a capture at or below it is dropped, so a
+    /// stale seat set cannot rebuild `live` over a newer one. The generations
+    /// are an order because the workspace serialises its captures.
+    sweep_lock: AsyncMutex<u64>,
 }
 
 /// The idle release's settings, as the boot configures them.
@@ -187,7 +189,7 @@ impl BrowserService {
             encoding: Mutex::new((15, 75)),
             launch: Arc::new(AsyncMutex::new(())),
             stopped: Arc::new(AtomicBool::new(false)),
-            sweep_lock: AsyncMutex::new(()),
+            sweep_lock: AsyncMutex::new(0),
         }
     }
 
@@ -573,10 +575,15 @@ impl BrowserService {
         self.live.lock().unwrap_or_else(PoisonError::into_inner).remove(seat);
     }
 
-    pub async fn sweep_sessions(&self, seats: &[SessionSlot]) {
-        // **Sweeps serialise**: an older snapshot landing after a newer one
-        // would re-admit an ended seat to `live` and keep its held tab.
-        let _sweep = self.sweep_lock.lock().await;
+    pub async fn sweep_sessions(&self, seats: &[SessionSlot], generation: u64) {
+        // **Sweeps serialise and only move forward**: a capture at or below
+        // the last applied one is dropped, and loses nothing, because its
+        // seat set is the sweep's only input from outside the fleet.
+        let mut applied = self.sweep_lock.lock().await;
+        if generation <= *applied {
+            return;
+        }
+        *applied = generation;
         let ended = {
             let mut ended = self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner);
             // **A seat the sweep did not see is gone for good** (a worker's
@@ -6599,7 +6606,7 @@ mod tests {
         service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab");
         let tab = service.tabs(&seat).await.expect("rows").rows[0].number;
-        service.sweep_sessions(std::slice::from_ref(&seat)).await;
+        service.sweep_sessions(std::slice::from_ref(&seat), 1).await;
         service.hand_off_started(&seat, tab).await.expect("the tab is held");
 
         service.idle_pass().await;
@@ -7280,7 +7287,7 @@ mod tests {
         let worker_tab = service.tabs(&worker).await.expect("rows").rows[1].number;
 
         service.hand_off_started(&worker, worker_tab).await.expect("the tab is held");
-        service.sweep_sessions(std::slice::from_ref(&lead)).await;
+        service.sweep_sessions(std::slice::from_ref(&lead), 1).await;
         let rows = service.tabs(&lead).await.expect("rows").rows;
         assert!(rows.iter().any(|row| row.number == lead_tab));
         assert!(rows.iter().any(|row| row.number == worker_tab), "the held tab survives its owner");
@@ -7488,13 +7495,53 @@ mod tests {
 
         // The sweep sees both configured seats and would call the worker
         // live again; the tombstone is what it cannot re-add.
-        service.sweep_sessions(&[lead.clone(), worker.clone()]).await;
+        service.sweep_sessions(&[lead.clone(), worker.clone()], 1).await;
         service.session_ended(&worker);
-        service.sweep_sessions(&[lead, worker.clone()]).await;
+        service.sweep_sessions(&[lead, worker.clone()], 2).await;
         service.hand_off_finished(&worker, 1).await;
 
         let rows = service.tabs(&worker).await.expect("rows").rows;
         assert!(rows.is_empty(), "Done closes the tab of a seat that ended");
+    }
+
+    /// **An older sweep cannot overwrite a newer one.** Snapshots are captured
+    /// on the command path and applied from spawned tasks, so the lock's order
+    /// is not the capture order: the newer snapshot drops an ended worker's
+    /// tombstone by not listing it, and the older one, applied last, would
+    /// rebuild `live` with the worker in it and let its held tab survive Done.
+    #[tokio::test]
+    async fn an_older_sweep_cannot_re_admit_an_ended_seat() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let worker = SessionSlot::worker("O", "p", "w");
+        let lead = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(&lead, FakeDriver::with_blank("T1"), (1, "T1".to_owned()))
+            .await;
+        service
+            .call(&worker, "browser_snapshot", json!({}))
+            .await
+            .expect("the worker adopts tab 1, which makes it live");
+        service.hand_off_started(&worker, 1).await.expect("the tab is held");
+
+        service.session_ended(&worker);
+        // The newer snapshot no longer lists the worker, so applying it drops
+        // the tombstone; the older one, applied last, still lists it.
+        service.sweep_sessions(std::slice::from_ref(&lead), 2).await;
+        service.sweep_sessions(&[lead.clone(), worker.clone()], 1).await;
+
+        let live = service.live.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert!(live.contains(&lead), "the newer snapshot is applied, not ignored");
+        assert!(
+            !live.contains(&worker),
+            "the older snapshot must not re-admit a seat the newer one dropped",
+        );
+        service.hand_off_finished(&worker, 1).await;
+        let rows = service.tabs(&worker).await.expect("rows").rows;
+        assert!(
+            rows.is_empty(),
+            "a stale snapshot cannot keep the ended seat's tab open past Done",
+        );
     }
 
     /// **The relayed sequence never goes backwards across hosts.** A host
