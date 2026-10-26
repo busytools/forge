@@ -5616,6 +5616,56 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **A compaction's continuation belongs in the boundary's turn on the live
+   * path too.** The transcript fold keeps the continuation prompt in the turn
+   * holding its boundary (`crates/forge-server/src/transcript.rs`), so a live
+   * frame that opens a turn of its own splits what the server folds as one
+   * turn: the boundary's turn draws a compaction row, and the continuation's
+   * own turn draws a second, summary-only one. A page read then puts the
+   * prompt back where the server has it, so the row the reader is looking at
+   * changes under them.
+   */
+  it('keeps a live continuation in the boundary turn, and a re-read draws the same', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    const continued = typed(
+      'This session is being continued from a previous conversation that ran out of context.',
+    );
+    server.update({ chat_appended: { key: LEAD, msg: boundary() } });
+    server.update({ chat_appended: { key: LEAD, msg: continued } });
+
+    /** What the column draws, folded turn by turn as `Turn.svelte` does. */
+    const drawn = (): string =>
+      JSON.stringify(get(chat.value).turns.map((row) => fold(row.messages)));
+
+    const live = get(chat.value).turns;
+    const before = drawn();
+    const cuts = get(chat.value)
+      .turns.flatMap((row) => fold(row.messages))
+      .filter((unit) => unit.kind === 'compaction');
+    expect(cuts, 'one boundary draws one compaction row').toHaveLength(1);
+    expect(live, 'and the continuation opens no turn of its own').toHaveLength(1);
+    const [row] = cuts;
+    expect(
+      row?.kind === 'compaction' ? row.summary : null,
+      'with the continuation riding that row',
+    ).toContain('being continued');
+
+    // The page the server answers with: the same two frames in the one turn
+    // its own fold places them in.
+    server.send(page([{ key: 't1', messages: [typed('first'), boundary(), continued] }], null));
+
+    expect(get(chat.value).turns, 'and a re-read keeps the turn the live path drew').toHaveLength(
+      1,
+    );
+    expect(drawn(), 'and draws exactly what was already drawn').toBe(before);
+    stop();
+  });
+
+  /**
    * The issue's fresh-connect ordering: a second reader attaches, its page
    * stops before the continuation, and the continuation then arrives as a
    * live frame while the seat says a turn is in flight. It joins the settled
