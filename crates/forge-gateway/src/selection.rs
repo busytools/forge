@@ -36,7 +36,8 @@ fn declares(state: &AccountStateMap, key: &AccountKey, model: &str) -> bool {
 
 /// Pick the account for `model` out of `org`'s walk order: the first
 /// account whose declared models include the model. Ready accounts
-/// beat saturated ones, and Bailed accounts are the last resort.
+/// beat saturated ones, and Bailed accounts are the last resort. A
+/// retired account - one a reload removed - is never offered.
 pub fn select_account(
     state: &AccountStateMap,
     pin: &OrgPin,
@@ -52,6 +53,9 @@ pub fn select_account(
         let Some(account) = state.by_key.get(&key) else {
             continue;
         };
+        if account.retired {
+            continue;
+        }
         if !declares(state, &key, model) {
             continue;
         }

@@ -9,11 +9,11 @@
 //! - `<segments>/v1/messages` (query ignored) resolves the binding and
 //!   forwards to the bound account's upstream with the real credential
 //!   attached and the CLI's dummy stripped. A bound session keeps its
-//!   account until the config removes that account entirely; a model the
-//!   account does not declare is still forwarded, because the account was
-//!   the spawn's choice and a running session is not reconfigured. An
-//!   unbound session selects an account now, from the model in its own
-//!   body.
+//!   account for its whole life: an account the config removes is retired
+//!   rather than dropped, and a model the account does not declare is still
+//!   forwarded, because the account was the spawn's choice and a running
+//!   session is not reconfigured. An unbound session selects an account
+//!   now, from the model in its own body.
 //! - The failing response streams back to the CLI untouched, but the
 //!   triggers it carries mark the account exhausted and rotate the
 //!   binding, so the CLI's retry lands on the next account with
@@ -101,8 +101,8 @@ impl Gateway {
     }
 
     /// The rotation numbers from `[gateway]`: the 429 streak count and
-    /// window, and the cooldown when no reset time is known. Called
-    /// once at boot beside the org pins.
+    /// window, and the cooldown when no reset time is known. Called at
+    /// boot and again by a config reload that moved them.
     pub fn set_rotation_numbers(&self, numbers: crate::rotation::RotationNumbers) {
         *self.rotation.lock() = RotationState::with_numbers(numbers);
     }
@@ -216,15 +216,6 @@ impl Gateway {
         retry_after(headers)
             .or_else(|| self.probe_reset_for(account))
             .unwrap_or_else(|| self.rotation.lock().no_reset_cooldown())
-    }
-
-    /// A bound session sticks to its account. Only an account the config
-    /// removed outright (and the pool has since forgotten) re-selects; a
-    /// model-list or token edit leaves the running session where it is.
-    /// `model` is the body's model, kept in the signature for the caller's
-    /// own log line.
-    fn binding_serves(&self, account: &AccountKey, _model: &str) -> bool {
-        self.pool.contains(account)
     }
 
     /// Selection, or the loud response its failure produces.
@@ -401,29 +392,11 @@ impl RouteHandler for Gateway {
 
         // A bound session keeps its account: a model change is forwarded
         // on the account the session spawned under, because that choice
-        // was the spawn's and a running session is not reconfigured. Only
-        // a binding the pool no longer knows re-selects. An unbound
-        // session selects now, from the model in its own body and the org
-        // named in its path; the selection failure names both.
+        // was the spawn's and a running session is not reconfigured. An
+        // unbound session selects now, from the model in its own body and
+        // the org named in its path; the selection failure names both.
         let account = match self.bindings.binding_for(org, project, session) {
-            Some(bound) if self.binding_serves(&bound, &model) => bound,
-            Some(bound) => {
-                // Names where the rotation happened: several sessions
-                // rotate at once, so account alone cannot be attributed.
-                tracing::info!(
-                    target: "forge_gateway::forward",
-                    account = %bound.0,
-                    org = %org,
-                    session = %session,
-                    model = %model,
-                    "the bound account cannot serve the model in the body; re-selecting"
-                );
-                self.bindings.unbind(org, project, session);
-                match self.select_or_fail(org, project, session, &model) {
-                    Ok(account) => account,
-                    Err(response) => return *response,
-                }
-            }
+            Some(bound) => bound,
             None => match self.select_or_fail(org, project, session, &model) {
                 Ok(account) => account,
                 Err(response) => return *response,
@@ -648,6 +621,9 @@ mod tests {
     struct Harness {
         /// The URL a CLI was told to talk to.
         client_url: String,
+        /// The stub upstream, so a test that rewrites the pool's env can
+        /// keep the request off the real network.
+        upstream_url: String,
         gateway: Arc<Gateway>,
         requests: Arc<parking_lot::Mutex<Vec<Recorded>>>,
         script: ScriptHandle,
@@ -704,6 +680,7 @@ mod tests {
         let stub_port = free_port().await;
         let stub_listener = GatewayListener::bind(stub_port).await.expect("stub bind");
         let stub_url = format!("http://127.0.0.1:{stub_port}");
+        let upstream_url = stub_url.clone();
         let stub_handler: Arc<dyn RouteHandler> = upstream.clone();
         tokio::spawn(async move { stub_listener.run(stub_handler).await });
 
@@ -767,7 +744,7 @@ mod tests {
             &account_env,
         );
 
-        Harness { client_url, gateway, requests, script }
+        Harness { client_url, upstream_url, gateway, requests, script }
     }
 
     /// A CLI-shaped POST: the dummy credential in the auth variable's
@@ -1579,6 +1556,56 @@ mod tests {
             response.status(),
             StatusCode::SERVICE_UNAVAILABLE,
             "a zero reset reads as absent, so the default cooldown still applies"
+        );
+    }
+
+    /// A session bound to an account the file removed keeps forwarding on
+    /// it: retirement is not unbinding.
+    #[tokio::test]
+    async fn a_removed_account_still_serves_its_bound_session() {
+        let harness = harness(Duration::ZERO).await;
+        harness.gateway.pool.replace_accounts(&[]);
+
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let requests = harness.requests.lock();
+        assert_eq!(requests.len(), 1, "the removed account still forwards");
+        assert_eq!(
+            requests[0].first("authorization"),
+            Some("Bearer real-openrouter-key"),
+            "the retired account keeps the credential its session was bound with",
+        );
+    }
+
+    /// A token re-minted for an account the file still holds reaches the
+    /// session bound to it on its next request, so rotating a credential
+    /// needs neither a restart nor a new session.
+    #[tokio::test]
+    async fn a_reminted_token_reaches_a_bound_session() {
+        let harness = harness(Duration::ZERO).await;
+        let rotated = HashMap::from([
+            ("ANTHROPIC_BASE_URL".to_owned(), harness.upstream_url.clone()),
+            ("ANTHROPIC_AUTH_TOKEN".to_owned(), "rotated-openrouter-key".to_owned()),
+            ("ANTHROPIC_API_KEY".to_owned(), String::new()),
+        ]);
+        harness.gateway.pool.replace_accounts(&[forge_primitives::account::LoadedAccount {
+            display_name: "OpenRouter".to_owned(),
+            provider: forge_primitives::account::Provider::Openrouter,
+            base_url: None,
+            models: vec!["glm-5.3-flash".to_owned()],
+            model_aliases: std::collections::HashMap::new(),
+            model_slugs: std::collections::HashMap::new(),
+            env: rotated,
+        }]);
+
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let requests = harness.requests.lock();
+        assert_eq!(requests.len(), 1, "exactly one upstream request");
+        assert_eq!(
+            requests[0].first("authorization"),
+            Some("Bearer rotated-openrouter-key"),
+            "the re-minted token rides the next request on the bound session",
         );
     }
 

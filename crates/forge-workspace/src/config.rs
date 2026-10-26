@@ -779,7 +779,8 @@ impl LoadedConfig {
         mark(&mut reload.changed, "models", !same_models(&self.models, &next.models));
         mark(&mut reload.changed, "handoff", self.handoff != next.handoff);
         mark(&mut reload.changed, "systemone", self.systemone != next.systemone);
-        mark(&mut reload.changed, "plugins", self.plugins.auto_update != next.plugins.auto_update);
+        // `[plugins] auto_update` has no reader yet, so a change applies
+        // nothing and is not reported as applied.
         mark(
             &mut reload.changed,
             "server",
@@ -788,7 +789,7 @@ impl LoadedConfig {
         );
         mark(&mut reload.changed, "client", !same_client(&self.client, &next.client));
         mark(&mut reload.changed, "browser", self.browser != next.browser);
-        mark(&mut reload.changed, "slack", !same_slack_connection(&self.slack, &next.slack));
+        mark(&mut reload.changed, "slack", !same_slack_sweep(&self.slack, &next.slack));
         mark(&mut reload.changed, "documents", self.document_max_bytes != next.document_max_bytes);
         mark(&mut reload.changed, "usage", self.usage_poll_interval != next.usage_poll_interval);
         mark(&mut reload.changed, "gateway", self.gateway_rotation != next.gateway_rotation);
@@ -801,9 +802,33 @@ impl LoadedConfig {
         mark(&mut reload.restart_only, "server.bind", self.server.bind != next.server.bind);
         mark(&mut reload.restart_only, "server.port", self.server.port != next.server.port);
         mark(&mut reload.restart_only, "gateway.port", self.gateway_port != next.gateway_port);
-        mark(&mut reload.restart_only, "dictate", self.dictate != next.dictate);
+        // `[dictate]` splits three ways: the key handler reads bind and
+        // mode per event, a client takes its axes at connection open, and
+        // the preflight and the engine's own configuration are built once.
+        let dictate = &self.dictate;
+        let next_dictate = &next.dictate;
+        mark(
+            &mut reload.changed,
+            "dictate",
+            dictate.bind != next_dictate.bind
+                || dictate.mode != next_dictate.mode
+                || dictate.styling != next_dictate.styling
+                || dictate.structure != next_dictate.structure
+                || dictate.context != next_dictate.context,
+        );
+        mark(
+            &mut reload.restart_only,
+            "dictate",
+            dictate.enabled != next_dictate.enabled
+                || dictate.models_dir != next_dictate.models_dir
+                || dictate.language != next_dictate.language
+                || dictate.normalizer != next_dictate.normalizer
+                || dictate.max_capture_minutes != next_dictate.max_capture_minutes
+                || dictate.transcribe_model != next_dictate.transcribe_model
+                || dictate.cleanup_model != next_dictate.cleanup_model,
+        );
         mark(&mut reload.restart_only, "gotify", self.gotify != next.gotify);
-        mark(&mut reload.restart_only, "slack", !same_slack_timing(&self.slack, &next.slack));
+        mark(&mut reload.restart_only, "slack", !same_slack_subsystem(&self.slack, &next.slack));
         reload
     }
 }
@@ -861,22 +886,24 @@ fn same_client(previous: &ClientConfig, next: &ClientConfig) -> bool {
     previous.mark == next.mark && previous.theme == next.theme && previous.font == next.font
 }
 
-fn same_slack_connection(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
-    previous.len() == next.len()
-        && previous
-            .iter()
-            .zip(next)
-            .all(|(old, new)| old.workspace == new.workspace && old.token == new.token)
-}
-
-/// The windows a Slack pump captured when its subsystem started. A token or
-/// label is read per call; these are the keys a reload cannot move.
-fn same_slack_timing(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
+/// The keys the Slack client and its pump capture when the subsystem
+/// starts: the client holds its token, and the pump holds its intervals.
+fn same_slack_subsystem(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
     previous.len() == next.len()
         && previous.iter().zip(next).all(|(old, new)| {
-            old.poll_seconds == new.poll_seconds
+            old.workspace == new.workspace
+                && old.token == new.token
+                && old.poll_seconds == new.poll_seconds
                 && old.dm_poll_seconds == new.dm_poll_seconds
-                && old.thread_idle_days == new.thread_idle_days
+        })
+}
+
+/// The windows the sweep reads from the live config on every pass, so an
+/// edit applies without a restart.
+fn same_slack_sweep(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(old, new)| {
+            old.thread_idle_days == new.thread_idle_days
                 && old.stale_after_hours == new.stale_after_hours
         })
 }

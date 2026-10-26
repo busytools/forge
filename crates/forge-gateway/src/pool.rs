@@ -230,8 +230,8 @@ impl AccountPool {
         }
         // An account the edit removed is retired rather than dropped: a
         // session already bound to it keeps resolving its provider and env,
-        // while the selection walk (which only reads `ordered_keys`) never
-        // offers it again.
+        // while `select_account` skips a retired entry so no new selection
+        // can pick it.
         for (key, previous) in &current.by_key {
             if next.by_key.contains_key(key) {
                 continue;
@@ -241,12 +241,6 @@ impl AccountPool {
             next.by_key.insert(key.clone(), retired);
         }
         *current = next;
-    }
-
-    /// Whether the pool still knows this account: present in the file, or
-    /// retired after its removal and still bound to a running session.
-    pub fn contains(&self, key: &AccountKey) -> bool {
-        self.accounts.lock().by_key.contains_key(key)
     }
 }
 
@@ -311,14 +305,37 @@ mod tests {
             crate::LoadingState::Loading,
             "an account the reload added waits for its first probe",
         );
-        assert!(pool.contains(&gone), "a removed account stays resolvable for a bound session");
         assert!(
-            pool.env(&gone).is_some(),
-            "a bound session can still stamp the removed account's env",
+            pool.provider_and_env(&gone).is_some(),
+            "a bound session still resolves a removed account's provider and env",
         );
-        assert!(
-            !pool.ordered_account_keys().contains(&gone),
-            "the selection walk never offers a removed account again",
+    }
+
+    /// The reload window a guard cannot close: a caller holding the old pin
+    /// (which still names the account) selects against the new pool. The
+    /// retired entry must not answer, or a brand-new session binds to an
+    /// account the edit removed.
+    #[test]
+    fn a_retired_account_is_never_selected() {
+        let pool = AccountPool::new(&[account("Kept"), account("Gone")]);
+        let gone = AccountKey("Gone".to_owned());
+        pool.set_loading(&gone, crate::LoadingState::Ready);
+        pool.replace_accounts(&[account("Kept")]);
+
+        let pin = crate::selection::OrgPin {
+            accounts: vec!["Gone".to_owned()],
+            fallback_accounts: Vec::new(),
+        };
+        let picked =
+            crate::selection::select_account(&pool.accounts.lock(), &pin, "Org", "test-model");
+
+        assert_eq!(
+            picked,
+            Err(crate::selection::SelectionError::NoEligibleAccount {
+                model: "test-model".to_owned(),
+                org: "Org".to_owned(),
+            }),
+            "a retired account is not offered to a new selection",
         );
     }
 }

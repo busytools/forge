@@ -1917,10 +1917,11 @@ impl Workspace {
         Arc::clone(&self.config.read())
     }
 
-    /// Whether a reload is mid-swap. A reader that resolves across one
-    /// retries instead of mixing the old config with the new pool.
-    fn reload_in_progress(&self) -> bool {
-        self.reload_generation.load(std::sync::atomic::Ordering::Acquire) % 2 == 1
+    /// Whether a spawn's resolution ran entirely inside one settled config:
+    /// the generation is odd while a reload swaps state, so the start must
+    /// be even and equal to the end.
+    fn resolution_held(generation: u64, settled: u64) -> bool {
+        generation.is_multiple_of(2) && generation == settled
     }
 
     /// Re-read `<config_dir>/forge.toml` and apply what can change without
@@ -1956,7 +1957,7 @@ impl Workspace {
             .collect();
 
         // Odd while the swap runs. A spawn that resolves across it retries;
-        // see `reload_in_progress`.
+        // see `resolution_held`.
         self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.accounts.replace_accounts(&next.accounts);
         self.gateway.set_org_pins(org_pins(&next));
@@ -1972,13 +1973,14 @@ impl Workspace {
 
         // A new account starts `Loading`; kick the same probe a boot runs
         // so it does not wait for the poller's next tick.
+        let mut loading = Vec::new();
         for key in added_accounts {
             let weak = Arc::downgrade(self);
             let span = tracing::info_span!("account_loading", account = %key.0);
-            tokio::spawn(
+            loading.push(tokio::spawn(
                 async move { crate::account_loader::run_account_loading(key, weak).await }
                     .instrument(span),
-            );
+            ));
         }
 
         // A project-only edit moves the roster, not the pool: the server
@@ -2003,6 +2005,30 @@ impl Workspace {
             })
             .map(|project| (project.org.clone(), project.name.clone()))
             .collect();
+        if !added.is_empty() {
+            if loading.is_empty() {
+                self.start_added_projects(added);
+            } else {
+                // An added project may name an account the same save added,
+                // which is still `Loading`, and the selection walk skips a
+                // `Loading` account: hold the spawn until those probes
+                // settle, the way the boot wave holds.
+                let workspace = Arc::downgrade(self);
+                tokio::spawn(async move {
+                    for handle in loading {
+                        let _ = handle.await;
+                    }
+                    let Some(workspace) = workspace.upgrade() else { return };
+                    workspace.start_added_projects(added);
+                });
+            }
+        }
+        Ok(reload)
+    }
+
+    /// Start the projects a reload added, once any account the same save
+    /// added has settled.
+    fn start_added_projects(self: &Arc<Self>, added: Vec<(String, String)>) {
         for (org, project_name) in added {
             // The boot wave may have started it already; a slot the pool
             // holds needs no second dispatch.
@@ -2022,7 +2048,6 @@ impl Workspace {
                 );
             }
         }
-        Ok(reload)
     }
 
     /// Effective `[client]` settings: which of the sets forge ships a
@@ -2100,16 +2125,16 @@ impl Workspace {
         self.browser_host.get().cloned()
     }
 
-    /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
-    /// a view's key handler per event, so a reload is picked up on the
-    /// next event.
+    /// The push-to-talk key from forge.toml `[dictate] bind`. The value
+    /// rides the seat record a client last read, so a reload reaches the
+    /// key handler on the next seat read rather than the next event.
     pub fn dictate_bind(&self) -> crate::dictate::DictateBind {
         self.config_arc().dictate.bind
     }
 
     /// How press/release maps onto starting and stopping a take, from
-    /// forge.toml `[dictate] mode`. Read by a view's key handler per
-    /// event, so a reload is picked up on the next event.
+    /// forge.toml `[dictate] mode`. It rides the seat record like `bind`,
+    /// so a reload reaches the key handler on the next seat read.
     pub fn dictate_mode(&self) -> crate::dictate::DictateMode {
         self.config_arc().dictate.mode
     }
@@ -2422,11 +2447,11 @@ impl Workspace {
         // pair an old pin with the new pool, so the generation is read
         // before and re-checked after; a straddled resolution retries.
         let (project, account_key) = loop {
-            if self.reload_in_progress() {
+            let generation = self.reload_generation.load(std::sync::atomic::Ordering::Acquire);
+            if !generation.is_multiple_of(2) {
                 std::thread::yield_now();
                 continue;
             }
-            let generation = self.reload_generation.load(std::sync::atomic::Ordering::Acquire);
             let Some(project) = self.project_for_target(&target) else {
                 return Err(WorkspaceError::SpawnResolvesToNoProject {
                     slot: session_slot.display(),
@@ -2457,7 +2482,8 @@ impl Workspace {
                 .into());
             };
             let account_key = self.select_account_for_project(&project, model)?;
-            if self.reload_generation.load(std::sync::atomic::Ordering::Acquire) == generation {
+            let settled = self.reload_generation.load(std::sync::atomic::Ordering::Acquire);
+            if Self::resolution_held(generation, settled) {
                 break (project, account_key);
             }
         };
@@ -2956,10 +2982,10 @@ impl Workspace {
     }
 
     /// The `forge.toml` this workspace loaded. Preflight names it as
-    /// one of the two ways past an account that will not authenticate -
-    /// the one that needs a restart, since config is read at boot. The
-    /// other is repairing the account's own credentials, which a poller
-    /// picks up in place without one.
+    /// one of the two ways past an account that will not authenticate;
+    /// an edit applies to new work as the file changes. The other is
+    /// repairing the account's own credentials, which a poller picks up
+    /// in place without one.
     pub fn config_path(&self) -> PathBuf {
         crate::config::forge_data_dir(&self.config_dir).join("forge.toml")
     }
@@ -13161,6 +13187,20 @@ provider = "anthropic"
             !workspace.gateway.is_cooling(&account),
             "a reload that moved the numbers replaces the rotation state",
         );
+    }
+
+    /// The parity check is what stops a spawn accepting a resolution that
+    /// straddled a reload: an odd generation is a swap in progress, so an
+    /// equal-but-odd pair is not a settled read.
+    #[test]
+    fn a_resolution_must_start_and_end_on_a_settled_generation() {
+        assert!(Workspace::resolution_held(4, 4), "an even, unchanged pair held");
+        assert!(!Workspace::resolution_held(4, 6), "a completed reload invalidates it");
+        assert!(
+            !Workspace::resolution_held(5, 5),
+            "an odd generation is a swap in progress, not a settled read",
+        );
+        assert!(!Workspace::resolution_held(5, 6), "a start mid-swap is never settled");
     }
 
     #[tokio::test]

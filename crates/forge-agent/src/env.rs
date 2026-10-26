@@ -17,3 +17,18 @@ pub mod processes;
 pub mod timezone;
 pub mod token_usage;
 pub mod worktree;
+
+/// Whether an event kind can change a watched path's content. A read
+/// cannot, and it matters: on inotify a read of a watched path is itself
+/// an event, so a watcher that reacts to one feeds itself.
+pub(crate) fn is_content_change(kind: notify::EventKind) -> bool {
+    use notify::EventKind;
+    use notify::event::ModifyKind;
+
+    matches!(
+        kind,
+        EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(_))
+    )
+}
