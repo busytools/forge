@@ -231,8 +231,8 @@ impl forge_workspace::browser::BrowserHost for HostedBrowser {
         self.0.tab_stream(seat).await
     }
 
-    async fn sweep_sessions(&self, seats: &[forge_primitives::SessionSlot]) {
-        self.0.sweep_sessions(seats).await;
+    async fn sweep_sessions(&self, seats: &[forge_primitives::SessionSlot], generation: u64) {
+        self.0.sweep_sessions(seats, generation).await;
     }
 
     async fn replace_seat(&self, seat: &forge_primitives::SessionSlot) {

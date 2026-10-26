@@ -420,6 +420,9 @@ impl Workspace {
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             browser_host: std::sync::OnceLock::new(),
+            live_seats_lock: std::sync::Mutex::new(()),
+            live_seats_generation: std::sync::atomic::AtomicU64::new(0),
+            live_seats_gate: Mutex::new(None),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs: parking_lot::Mutex::new(HashMap::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
@@ -523,6 +526,30 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_scan_gate(&self, gate: Arc<tokio::sync::Semaphore>) {
         *self.test_scan_gate.lock() = Some(gate);
+    }
+
+    /// Hold the next [`Self::live_seats`] capture between its mint and its
+    /// reads: the returned receiver fires once it is held, and a message on
+    /// the returned sender releases it. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn pause_next_live_seats_capture(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        *self.live_seats_gate.lock() = Some((reached_tx, resume_rx));
+        (reached_rx, resume_tx)
+    }
+
+    /// Hold this capture where a test armed [`Self::pause_next_live_seats_capture`].
+    /// Test-only: a production capture never meets a gate.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn pass_live_seats_gate(&self) {
+        let gate = self.live_seats_gate.lock().take();
+        if let Some((reached, resume)) = gate {
+            let _ = reached.send(());
+            let _ = resume.recv();
+        }
     }
 }
 
