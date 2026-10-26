@@ -873,6 +873,14 @@ impl BrowserService {
                 }
             },
         };
+        // **The challenge probe is one fixed page script**, so it reaches the
+        // driver as the evaluate it is; upstream has no tool that answers it.
+        let challenge = tool == "browser_challenge_state";
+        let (tool, args) = if challenge {
+            ("browser_evaluate", json!({ "function": crate::challenge::state_js() }))
+        } else {
+            (tool, args)
+        };
         let retry_args = args.clone();
         let (tab, outcome, target) = self
             .drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port, generation })
@@ -901,6 +909,9 @@ impl BrowserService {
             Ok(mut parts) => {
                 // **A host that answered is not suspect any more.**
                 *profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                if challenge {
+                    parts = challenge_result(parts);
+                }
                 if created {
                     parts.push(BrowserPart::Text { text: format!("tab {tab}") });
                 }
@@ -4710,6 +4721,24 @@ fn captured_generation(state: &State) -> u64 {
 /// aimed at the old one can never match the new driver.
 fn installed_generation(state: &State) -> u64 {
     state.driver_generation.wrapping_add(1)
+}
+
+/// The report an evaluate answer carries, without the evaluate's own
+/// dressing: the `### Result` block is the report, and the code it ran is a
+/// script this tool fixes rather than something the caller sent.
+fn challenge_result(parts: Vec<BrowserPart>) -> Vec<BrowserPart> {
+    parts
+        .into_iter()
+        .map(|part| match part {
+            BrowserPart::Text { text } => {
+                let result =
+                    text.split_once("### Result\n").map_or(text.as_str(), |(_, rest)| rest);
+                let result = result.split("\n### ").next().unwrap_or(result);
+                BrowserPart::Text { text: result.trim().to_owned() }
+            }
+            part @ BrowserPart::Image { .. } => part,
+        })
+        .collect()
 }
 
 /// Whether repeating a tool call cannot land twice on the page.

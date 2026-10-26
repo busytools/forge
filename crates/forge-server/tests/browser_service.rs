@@ -402,6 +402,130 @@ async fn a_tab_listing_never_creates_a_page() {
     }
 }
 
+/// **A challenge frame's presence is not its liveness.** The measured case
+/// is Google's EXPIRED reCAPTCHA overlay: an iframe parked at
+/// `top: -10000px` with `visibility: hidden`, whose rect is still a real
+/// rect at viewport y = -13576. Presence and geometry both read it as live.
+/// The four iframes here are the states the signals have to separate: a
+/// widget the page is showing, the expired one, one that is visible and on
+/// screen but under another element - the case a hit test exists for - and
+/// Turnstile's own title.
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let seat = SessionSlot::lead("TestOrg", "proj");
+
+    // The expired frame carries the vendor in its SRC, the way the measured
+    // one did; the others carry it in the title, which is how each vendor
+    // titles its frame.
+    let fixture = "<iframe src='about:blank' title='reCAPTCHA live' style='position:absolute;\
+            left:100px;top:100px;width:200px;height:100px;border:0'></iframe>\
+        <iframe src='about:blank#recaptcha' title='expired overlay' \
+            style='position:absolute;left:120px;top:-10000px;width:200px;height:100px;\
+            border:0;visibility:hidden'></iframe>\
+        <iframe src='about:blank' title='hCaptcha covered' style='position:absolute;\
+            left:100px;top:300px;width:200px;height:100px;border:0'></iframe>\
+        <div style='position:absolute;left:100px;top:300px;width:200px;height:100px;\
+            background:rgb(238,238,238)'></div>\
+        <iframe src='about:blank' title='Widget containing a Cloudflare security challenge' \
+            style='position:absolute;left:700px;top:100px;width:200px;height:100px;\
+            border:0'></iframe>";
+    // **The fixture is installed into a blank page** rather than navigated
+    // to as a data URL: the challenge probe reads a settled document, and a
+    // data-URL navigation snapshots the page as part of its own answer.
+    service
+        .call(
+            &seat,
+            "browser_navigate",
+            json!({ "url": "data:text/html,<title>fixture</title><h1>fixture</h1>" }),
+        )
+        .await
+        .expect("a blank page opens");
+    let install = format!(
+        "() => {{ document.body.innerHTML = {}; return document.querySelectorAll('iframe').length; }}",
+        serde_json::to_string(&fixture).expect("the fixture is a JSON string"),
+    );
+    service
+        .call(&seat, "browser_evaluate", json!({ "function": install }))
+        .await
+        .expect("the fixture is installed");
+
+    let answer = service
+        .call(&seat, "browser_challenge_state", json!({}))
+        .await
+        .expect("the challenge state answers");
+    let text = answer
+        .iter()
+        .find_map(|part| match part {
+            forge_primitives::browser::BrowserPart::Text { text } => Some(text.clone()),
+            forge_primitives::browser::BrowserPart::Image { .. } => None,
+        })
+        .unwrap_or_default();
+    let state: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|why| panic!("the answer is the report and nothing else ({why}): {text}"));
+
+    assert_eq!(state["challengePresent"], json!(true), "{state}");
+    let challenges = state["challenges"].as_array().expect("the answer lists challenges");
+    assert_eq!(challenges.len(), 4, "each challenge iframe is reported once: {state}");
+    let frame = |title: &str| {
+        challenges
+            .iter()
+            .find(|challenge| challenge["title"] == json!(title))
+            .unwrap_or_else(|| panic!("{title} is reported: {state}"))
+    };
+
+    let live = frame("reCAPTCHA live");
+    assert_eq!(live["vendor"], json!("reCAPTCHA"), "{live}");
+    assert_eq!(live["present"], json!(true), "{live}");
+    assert_eq!(live["visible"], json!(true), "{live}");
+    assert_eq!(live["onScreen"], json!(true), "{live}");
+    assert_eq!(live["hitTestable"], json!(true), "nothing covers it: {live}");
+    assert_eq!(live["live"], json!(true), "{live}");
+
+    let expired = frame("expired overlay");
+    assert_eq!(expired["vendor"], json!("reCAPTCHA"), "the src names the vendor: {expired}");
+    assert_eq!(
+        expired["present"],
+        json!(true),
+        "the expired frame IS present - presence is the trap, not the answer: {expired}",
+    );
+    assert_eq!(expired["visible"], json!(false), "visibility: hidden: {expired}");
+    assert_eq!(expired["onScreen"], json!(false), "a rect at y = -10000 is off screen: {expired}");
+    assert_eq!(expired["hitTestable"], json!(false), "{expired}");
+    assert_eq!(expired["live"], json!(false), "{expired}");
+    assert!(
+        expired["rect"]["y"].as_f64().unwrap_or_default() < 0.0,
+        "the off-screen rect is still reported, which is why geometry alone reads it as live: \
+         {expired}",
+    );
+
+    let covered = frame("hCaptcha covered");
+    assert_eq!(covered["visible"], json!(true), "{covered}");
+    assert_eq!(covered["onScreen"], json!(true), "{covered}");
+    assert_eq!(
+        covered["hitTestable"],
+        json!(false),
+        "a frame under another element is not what a click would reach: {covered}",
+    );
+    assert_eq!(covered["live"], json!(false), "{covered}");
+
+    let turnstile = frame("Widget containing a Cloudflare security challenge");
+    assert_eq!(turnstile["vendor"], json!("Turnstile"), "{turnstile}");
+    assert_eq!(turnstile["live"], json!(true), "{turnstile}");
+
+    service.close(&seat).await.expect("the profile closes");
+}
+
 /// **A driver rebuild renames every page, and a session keeps its own.**
 /// Creating a tab rebuilds the driver, and a fresh Playwright backend gives
 /// every page a new guid. The first seat's next evaluate must still be its

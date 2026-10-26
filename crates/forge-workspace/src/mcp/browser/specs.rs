@@ -728,6 +728,16 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "browser_challenge_state",
+            description: "Report each CAPTCHA challenge frame in the current page: its vendor, whether it is present, visible by computed style, on screen, and hit-testable at its centre, with its rect, so a session can tell a live widget from one the page has hidden.\n\nPresence is not liveness: Google's EXPIRED overlay is a reCAPTCHA iframe parked off screen and hidden, and it is still present with a real rect.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        ToolSpec {
             name: "browser_hand_off",
             description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. The prompt sits with no timeout, like any other ask; it returns once they are done or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared.",
             schema: json!({
@@ -811,13 +821,13 @@ mod tests {
         );
     }
 
-    /// The surface is thirty tools: the 25 upstream published and the five
-    /// this family adds. A count is the cheap half; the shape of each is
+    /// The surface is thirty-one tools: the 25 upstream published and the
+    /// six this family adds. A count is the cheap half; the shape of each is
     /// pinned below.
     #[test]
     fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
-        assert_eq!(names.len(), 30, "25 upstream tools and five additions: {names:?}");
+        assert_eq!(names.len(), 31, "25 upstream tools and six additions: {names:?}");
         for upstream in [
             "browser_close",
             "browser_resize",
@@ -850,10 +860,11 @@ mod tests {
         assert!(
             names.contains(&"browser_click_and_capture")
                 && names.contains(&"browser_form_state")
+                && names.contains(&"browser_challenge_state")
                 && names.contains(&"browser_hand_off")
                 && names.contains(&"browser_record_start")
                 && names.contains(&"browser_record_stop"),
-            "the five beyond-upstream tools are on the surface: {names:?}",
+            "the six beyond-upstream tools are on the surface: {names:?}",
         );
     }
 
