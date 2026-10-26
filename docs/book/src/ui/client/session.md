@@ -270,8 +270,9 @@ where it has moved on) beside the whole thread, its turns in order.
 - **A seat whose session died**: the row carries the death with the reason
   it left, drawn with the failure mark, until the seat is shown - even
   after the seat is back up, when its lifecycle reads what it is now. The
-  trace is spent by any subscribe to the seat, whichever page made it, and
-  an opened lead's page starts a died seat again the way a sleeping one is.
+  trace is spent by the seat being SHOWN: the client says `showing` for the
+  page on screen, and a subscription alone does not spend it. An opened
+  lead's page starts a died seat again the way a sleeping one is.
   **What stays parked**: a Failed row with no death behind it, which is a
   spawn that never came up - the reason line says which - and a seat
   waiting on sign-in, whose lifecycle is its own and is never woken. The

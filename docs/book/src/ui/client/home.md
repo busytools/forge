@@ -101,7 +101,7 @@ as well as a colour, so the row reads without colour:
 | Running | `running` | a turn is in flight, or background work is running |
 | Spawning | `spawning` | the subprocess is coming up |
 | Idle | `idle` | alive, nothing in flight |
-| Finished | `unseen` | a turn completed on a seat no client was attached to |
+| Finished | `unseen` | a turn completed on a seat no client was showing |
 | Needs you | `needs` | a question or a permission prompt is waiting |
 | Sign-in needed | `auth` | the bridge is waiting on `/login` |
 | Failed | `failed` | the session is not running: its spawn never came up, or it died and nothing brought it back |
@@ -187,20 +187,20 @@ seat's conversation), so its line is the words `a turn failed`.
   copy in its own column.
 
 **The unseen mark is drawn from a read of its own.** `unseen` is the list
-of seats whose last turn finished while no client was attached to them,
-and nothing in the records reconstructs it: a turn that ended before a
-client attached leaves nothing in the transcript to say it went
+of seats whose last turn finished while no client was showing them, and
+nothing in the records reconstructs it: a turn that ended before any
+client opened the seat leaves nothing in the transcript to say it went
 unwatched, so a page reading only the messages would draw every settled
 seat as idle. The server keeps that fact and sends it; the client draws it
 and computes none.
 
-**Attached is not the same as drawn.** A client attaches to a seat when it
-subscribes to it, and this client holds every seat it has visited - so no
-mark is armed for those seats while the tab is connected, whether or not
-one of their pages is open. The mark therefore means "no client was
-attached to the seat", not "no client was looking at its page", and the
-difference is the cost of holding a seat rather than re-reading it on
-every return, filed as #1439.
+**Watched is not the same as subscribed.** This client keeps every seat it
+has visited subscribed, so the seat's frames keep arriving after its page
+closes - but a subscription is not a showing: the client tells the server
+which seat is on screen, and only that spends the seat's marks. A turn
+that finishes on a visited seat nobody is drawing therefore arms its
+diamond, and opening the seat spends it; the subscription is what keeps
+the return instant, not what clears the mark.
 
 Two things this page does not draw are the schedules a project holds and the
 account a row chips. Each is drawn elsewhere: the schedules on the session
