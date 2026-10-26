@@ -1,0 +1,340 @@
+//! The pointer's coordinate, live: the page a viewer's surface asks for is
+//! the page it gets, and a click the server sends reaches the pixel it names.
+//!
+//! **The measurement rig for the takeover's offset click**, and the property
+//! that keeps it from coming back: a surface's size is measured in device
+//! pixels - a 2048x1112 desktop takeover at 2x asks for 4096x2224 - and the
+//! frame budget that holds those pixels must never move the CSS size the page
+//! lays out at. When the budget moved the layout instead, the page came back
+//! 1920x1080 under a 2048x1112 surface, the desktop drew it letterboxed, and
+//! every click the surface sent landed right of the pixel under the pointer.
+//!
+//! **These need the real bundle**: they stage the workspace's own host the
+//! way the server ships it, then drive it as the server does.
+
+#![cfg(target_os = "macos")]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![allow(unsafe_code, reason = "a test ends its own child with a signal")]
+
+mod support;
+
+use std::time::{Duration, Instant};
+
+use forge_browser::input::{HostInput, host_line};
+use forge_browser::osr::{MAX_HEIGHT, MAX_WIDTH, Ring};
+use forge_browser::window::Cdp;
+use forge_primitives::browser::{InputModifiers, MouseAction};
+use serde_json::{Value, json};
+
+/// How long CEF is given to boot, paint and answer a gesture.
+const BOUND: Duration = Duration::from_secs(45);
+const POLL_EVERY: Duration = Duration::from_millis(50);
+
+/// A grid page that records where each mousedown landed, and the viewport it
+/// landed in.
+fn grid_page() -> String {
+    let page = "<!doctype html><meta charset=utf-8><style>\
+        html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden}\
+        #g{position:absolute;inset:0;background:\
+        repeating-linear-gradient(to right,#345 0 1px,transparent 1px 100px),\
+        repeating-linear-gradient(to bottom,#345 0 1px,transparent 1px 100px)}</style>\
+        <div id=g></div><script>\
+        window.__clicks=[];\
+        addEventListener('mousedown',function(e){\
+        window.__clicks.push({clientX:e.clientX,clientY:e.clientY,\
+        offsetX:e.offsetX,offsetY:e.offsetY,target:e.target&&e.target.id});},true);\
+        window.__env=function(){var r=document.getElementById('g').getBoundingClientRect();\
+        var v=window.visualViewport;return {innerWidth:innerWidth,innerHeight:innerHeight,\
+        dpr:devicePixelRatio,vw:v?v.width:null,vh:v?v.height:null,vscale:v?v.scale:null,\
+        grid:{x:r.x,y:r.y,width:r.width,height:r.height}};};\
+        </script>";
+    let encoded: String = page
+        .chars()
+        .map(|character| match character {
+            'a'..='z'
+            | 'A'..='Z'
+            | '0'..='9'
+            | '-'
+            | '_'
+            | '.'
+            | '!'
+            | '~'
+            | '*'
+            | '\''
+            | '('
+            | ')'
+            | ';'
+            | ':'
+            | '@'
+            | '&'
+            | '='
+            | '+'
+            | '$'
+            | ','
+            | '/'
+            | '?' => character.to_string(),
+            other => format!("%{:02X}", u32::from(other)),
+        })
+        .collect();
+    format!("data:text/html;charset=utf-8,{encoded}")
+}
+
+/// Whether two environment reports agree on the fields the rig watches.
+fn same_env(left: &Value, right: &Value) -> bool {
+    let field = |value: &Value, name: &str| value.get(name).cloned().unwrap_or(Value::Null);
+    ["innerWidth", "innerHeight", "dpr"].iter().all(|name| field(left, name) == field(right, name))
+}
+
+/// Whether one reported number is `want`, to the pixel the fractional
+/// raster's own arithmetic can move it.
+fn near(value: &Value, name: &str, want: u32) -> bool {
+    value
+        .get(name)
+        .and_then(Value::as_f64)
+        .is_some_and(|each| (each - f64::from(want)).abs() <= 1.0)
+}
+
+/// One click's received coordinate, to the pixel the fractional raster can
+/// move it. **A scale or an offset would miss by tens**, so this catches the
+/// defect while allowing the arithmetic its own rounding.
+fn assert_click(seen: &Value, x: i32, y: i32) {
+    for (name, want) in [("clientX", x), ("clientY", y), ("offsetX", x), ("offsetY", y)] {
+        let got = seen.get(name).and_then(Value::as_f64).expect("a coordinate");
+        assert!(
+            (got - f64::from(want)).abs() <= 1.0,
+            "{name} should be {want} but is {got}: {seen}"
+        );
+    }
+}
+
+struct Fixture {
+    _scratch: tempfile::TempDir,
+    host: support::Host,
+    cdp: Cdp,
+    _events: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    ring: String,
+    ring_handle: Option<Ring>,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.ring_handle.take();
+        Ring::unlink(&self.ring);
+    }
+}
+
+async fn fixture(name: &str) -> Fixture {
+    let scratch = tempfile::tempdir().expect("a scratch dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    let port = support::free_port();
+    let ring = format!("/forge-click-{}-{name}", std::process::id());
+    let log = scratch.path().join("host.log");
+    let host = support::Host::start(&exe, &profile, port, &ring, "1440x900", &[], &log);
+    let id = support::wait_for_page(port, &log, BOUND);
+    let (cdp, events) = Cdp::connect_watch(port, &format!("/devtools/page/{id}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    let mut fixture =
+        Fixture { _scratch: scratch, host, cdp, _events: events, ring, ring_handle: None };
+    fixture.navigate(&grid_page()).await;
+    fixture
+}
+
+impl Fixture {
+    /// Open the ring the host created, once it exists.
+    fn ring(&mut self) -> &Ring {
+        if self.ring_handle.is_none() {
+            let deadline = Instant::now() + BOUND;
+            loop {
+                match Ring::open(&self.ring) {
+                    Ok(ring) => {
+                        self.ring_handle = Some(ring);
+                        break;
+                    }
+                    Err(why) => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "the host never created its ring {}: {why}",
+                            self.ring
+                        );
+                        std::thread::sleep(POLL_EVERY);
+                    }
+                }
+            }
+        }
+        self.ring_handle.as_ref().expect("the ring was just opened")
+    }
+
+    /// Ask the host to lay the page out at `width x height` device pixels
+    /// drawn at `scale`, exactly as a controller's resize does.
+    fn request(&mut self, width: u32, height: u32, scale: f64) {
+        self.ring().request(width, height, scale);
+    }
+
+    /// The frame the host painted, as the ring's header names it.
+    fn painted(&mut self) -> (u32, u32) {
+        let ring = self.ring();
+        // SAFETY: the header is mapped for this process's whole life.
+        let header = unsafe { &*ring.header() };
+        (
+            header.width.load(std::sync::atomic::Ordering::Relaxed),
+            header.height.load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    async fn evaluate(&mut self, expression: &str) -> Value {
+        let reply = self
+            .cdp
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": expression, "returnByValue": true }),
+                None,
+            )
+            .await
+            .expect("the page evaluates");
+        reply.pointer("/result/value").cloned().unwrap_or(Value::Null)
+    }
+
+    async fn navigate(&mut self, url: &str) {
+        self.cdp
+            .call("Page.navigate", json!({ "url": url }), None)
+            .await
+            .expect("the page navigates");
+    }
+
+    /// Wait until the page's environment answers `ok`, failing with what it
+    /// said last. **Every distinct viewport it reports is printed**, so a
+    /// resize that landed in two steps is read as the steps it took.
+    async fn wait_for_env(&mut self, ok: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + BOUND;
+        let mut said = Value::Null;
+        loop {
+            let env = self.evaluate("window.__env ? window.__env() : null").await;
+            if !same_env(&env, &said) {
+                println!("the page reports {env}");
+                said = env.clone();
+            }
+            if ok(&env) {
+                return env;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the page never reported the expected viewport; it says {env}"
+            );
+            tokio::time::sleep(POLL_EVERY).await;
+        }
+    }
+
+    /// One full click at the point the SERVER names, written the way the
+    /// server writes it.
+    fn click(&mut self, x: i32, y: i32) {
+        for action in [MouseAction::Press, MouseAction::Release] {
+            self.host.input(&host_line(&HostInput::Mouse {
+                tab: 1,
+                action,
+                x,
+                y,
+                button: 0,
+                clicks: 1,
+                modifiers: InputModifiers::default(),
+            }));
+        }
+    }
+
+    /// Wait until the page has recorded `count` clicks and answer the last.
+    async fn click_received(&mut self, count: usize) -> Value {
+        let deadline = Instant::now() + BOUND;
+        loop {
+            let clicks = self.evaluate("window.__clicks").await;
+            if let Some(last) =
+                clicks.as_array().filter(|all| all.len() >= count).and_then(|all| all.last())
+            {
+                return last.clone();
+            }
+            assert!(Instant::now() < deadline, "the page never recorded click {count}");
+            tokio::time::sleep(POLL_EVERY).await;
+        }
+    }
+
+    /// A click at the server's own point, and the page's record of it.
+    async fn click_and_read(&mut self, x: i32, y: i32, count: usize) -> Value {
+        self.click(x, y);
+        let seen = self.click_received(count).await;
+        println!("click {x},{y} -> {seen}");
+        seen
+    }
+}
+
+/// **The frame budget never moves the page's layout.** A desktop takeover
+/// measures 2048x1112 CSS pixels at 2x, asking for 4096x2224 device pixels -
+/// past the ring's 3840x2160 budget. Clamping THAT halves the page's layout
+/// to 1920x1080, and the surface then draws a narrower page scaled up and
+/// centred, so a click sent at the overlay's x lands right of the pixel under
+/// the pointer by 55 px at x 700 and 78 px at x 1500 (measured before the
+/// fix). The layout is the surface's to name; only the raster may give.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
+    let mut at = fixture("budget").await;
+
+    // The control: a surface inside the budget lays out exactly as asked,
+    // and the pointer reaches the pixel it names. This proves the rig itself
+    // can report a correct mapping, so the case below is the budget's doing.
+    at.request(1920, 1080, 2.0);
+    let env =
+        at.wait_for_env(|env| near(env, "innerWidth", 960) && near(env, "innerHeight", 540)).await;
+    println!("the in-budget page reports {env}");
+    for (count, (x, y)) in [(1_usize, (100_i32, 100_i32)), (2, (900, 500))] {
+        let seen = at.click_and_read(x, y, count).await;
+        assert_click(&seen, x, y);
+    }
+
+    // The takeover's own shape: 2048x1112 CSS at 2x.
+    at.request(4096, 2224, 2.0);
+    let env = at
+        .wait_for_env(|env| near(env, "innerWidth", 2048) && near(env, "innerHeight", 1112))
+        .await;
+    println!("the takeover's page reports {env}");
+    let (width, height) = at.painted();
+    println!("the host paints {width}x{height}");
+    assert!(
+        u64::from(width) * u64::from(height) <= u64::from(MAX_WIDTH) * u64::from(MAX_HEIGHT),
+        "the frame stays inside the ring's budget, {width}x{height}"
+    );
+    // The frame is the layout at the raster the budget allowed, and the
+    // client scales that back to the surface; a frame whose ratio disagrees
+    // with the surface is the letterbox that moved every click.
+    let dpr = env.get("dpr").and_then(Value::as_f64).expect("a dpr");
+    assert!(
+        (f64::from(width) - 2048.0 * dpr).abs() <= 2.0
+            && (f64::from(height) - 1112.0 * dpr).abs() <= 2.0,
+        "the frame is the layout at the painted raster: {width}x{height} against 2048x1112 at {dpr}"
+    );
+
+    for (count, (x, y)) in [(3_usize, (700_i32, 400_i32)), (4, (1500, 900))] {
+        let seen = at.click_and_read(x, y, count).await;
+        assert_click(&seen, x, y);
+    }
+}
+
+/// **A portrait phone's surface keeps its layout too.** A 390x780 phone at 3x
+/// asks for 1170x2340 device pixels, past the 2160-high budget; the same
+/// clamp laid the page out 390x720 under a 390x780 canvas, so the bottom 60
+/// CSS pixels of every gesture mapped off the page. The canvas maps through
+/// the page area it measured, which is only right when the page is that size.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_phones_surface_past_the_frame_budget_keeps_its_layout_size() {
+    let mut at = fixture("phone").await;
+    at.request(1170, 2340, 3.0);
+    let env =
+        at.wait_for_env(|env| near(env, "innerWidth", 390) && near(env, "innerHeight", 780)).await;
+    println!("the phone's page reports {env}");
+    let (width, height) = at.painted();
+    println!("the host paints {width}x{height}");
+    assert!(
+        u64::from(width) * u64::from(height) <= u64::from(MAX_WIDTH) * u64::from(MAX_HEIGHT),
+        "the frame stays inside the ring's budget, {width}x{height}"
+    );
+    let seen = at.click_and_read(195, 700, 1).await;
+    assert_click(&seen, 195, 700);
+}
