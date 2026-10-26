@@ -28,9 +28,7 @@ use crate::{
 /// Opening line of the forge MCP append. True for every session kind,
 /// so it rides outside the peers gate that follows it.
 const FORGE_MCP_SERVER_LINE: &str = "\
-You have an in-process forge MCP server (mcp__forge__). Its tool surface is \
-fixed when this session starts: a tool that answers \"not found\" is not on \
-this session's list, so reach for another tool rather than retrying it.";
+You have an in-process forge MCP server (mcp__forge__).";
 
 /// Paragraph naming the agent-coordination tools. Included only when
 /// the session's `forge` server actually registered `agents__*` tools -
@@ -395,6 +393,15 @@ pub(crate) async fn spawn_session(
     let extra_mcp_servers = bridge.extra_mcp_servers();
     let sdk_server_names: Vec<String> =
         extra_mcp_servers.iter().map(|(name, _)| name.clone()).collect();
+    // The surface this spawn built, in the CLI's own `mcp__<server>__<tool>`
+    // spelling, so the boot init frame's answer can be diffed against it.
+    let expected_tools: Vec<String> = extra_mcp_servers
+        .iter()
+        .flat_map(|(name, server)| {
+            let prefix = format!("mcp__{name}__");
+            server.tool_names().into_iter().map(move |tool| format!("{prefix}{tool}"))
+        })
+        .collect();
     let account_env = {
         let mut env = bridge.env();
         apply_env_overrides(&mut env, &launch_settings.env_overrides);
@@ -470,8 +477,15 @@ pub(crate) async fn spawn_session(
     let reader_client = client.clone();
     let span = tracing::info_span!("sdk_reader", session_id = %reader_session_id);
     tokio::spawn(
-        reader_loop(events, reader_event_tx, reader_session_id, reader_client, sdk_server_names)
-            .instrument(span),
+        reader_loop(
+            events,
+            reader_event_tx,
+            reader_session_id,
+            reader_client,
+            sdk_server_names,
+            expected_tools,
+        )
+        .instrument(span),
     );
     Ok(())
 }
@@ -625,8 +639,10 @@ async fn reader_loop(
     spawn_session_id: String,
     client: Client,
     sdk_server_names: Vec<String>,
+    expected_tools: Vec<String>,
 ) {
     let mut heal_evaluated = false;
+    let mut surface_recorded = false;
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
@@ -634,6 +650,15 @@ async fn reader_loop(
                     frame_session_id(msg.session_id(), &client.session_id(), &spawn_session_id);
                 log_failed_mcp_servers(&msg, &session_id_for_sdk_msg);
                 let fire = heal_due(&msg, &mut heal_evaluated, &sdk_server_names);
+                if !surface_recorded && let Some(data) = init_data_of(&msg) {
+                    surface_recorded = true;
+                    record_reported_surface(
+                        data,
+                        &sdk_server_names,
+                        &expected_tools,
+                        &session_id_for_sdk_msg,
+                    );
+                }
                 if event_tx
                     .send(AgentEvent::SdkMessage {
                         session_id: session_id_for_sdk_msg.clone(),
@@ -753,6 +778,58 @@ fn sdk_servers_missing_tools(init_data: &serde_json::Value, server_names: &[Stri
             .filter_map(serde_json::Value::as_str)
             .any(|tool| tool.starts_with(&prefix))
     })
+}
+
+/// The tools the CLI's boot init frame lists for this spawn's sdk servers,
+/// in the CLI's `mcp__<server>__<tool>` spelling. `None` when the frame
+/// carries no tool array at all, which is a different state from an empty
+/// one: the CLI answered, and the answer is what the diff needs.
+fn sdk_tools_in_init(
+    init_data: &serde_json::Value,
+    server_names: &[String],
+) -> Option<Vec<String>> {
+    let tools = init_data.get("tools")?.as_array()?;
+    let prefixes: Vec<String> = server_names.iter().map(|name| format!("mcp__{name}__")).collect();
+    Some(
+        tools
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|tool| prefixes.iter().any(|prefix| tool.starts_with(prefix.as_str())))
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// What the two sides disagree about: names this spawn registered that the
+/// CLI's list lacks, and names it lists that this spawn never registered.
+fn surface_delta(expected: &[String], reported: &[String]) -> (Vec<String>, Vec<String>) {
+    (
+        expected.iter().filter(|name| !reported.contains(name)).cloned().collect(),
+        reported.iter().filter(|name| !expected.contains(name)).cloned().collect(),
+    )
+}
+
+/// Record the CLI's own account of the surface it was handed, beside the
+/// one this spawn built. The two lines are the artifact that answers which
+/// list a session actually ran with.
+fn record_reported_surface(
+    init_data: &serde_json::Value,
+    server_names: &[String],
+    expected: &[String],
+    session_id: &str,
+) {
+    let Some(reported) = sdk_tools_in_init(init_data, server_names) else { return };
+    let (missing, extra) = surface_delta(expected, &reported);
+    tracing::debug!(
+        target: "forge_agent::mcp",
+        event_name = "session_tool_surface_reported",
+        session_id = %session_id,
+        expected = expected.len(),
+        reported = reported.len(),
+        missing = %missing.join(","),
+        extra = %extra.join(","),
+        "the sdk tool surface the CLI's boot init frame reports",
+    );
 }
 
 /// The CLI answers `mcp_set_servers` only after the re-handshake it
@@ -2158,6 +2235,50 @@ mod tests {
         );
     }
 
+    /// **The two-sided record has to mean what it says.** The CLI's list is
+    /// scoped to the servers this spawn registered, so another server's
+    /// tools are not this diff's business, and a disagreement is named in
+    /// both directions rather than only the one that was noticed.
+    #[test]
+    fn the_reported_surface_diff_names_what_each_side_lacks() {
+        let data = serde_json::json!({
+            "tools": [
+                "Bash",
+                "mcp__forge__agents__list",
+                "mcp__forge__browser_form_state",
+                "mcp__busymail__search",
+            ],
+        });
+        let names = ["forge".to_owned()];
+        let reported =
+            super::sdk_tools_in_init(&data, &names).expect("the frame carries a tool array");
+        assert_eq!(
+            reported,
+            vec![
+                "mcp__forge__agents__list".to_owned(),
+                "mcp__forge__browser_form_state".to_owned(),
+            ],
+            "only the registered server's tools are this spawn's business",
+        );
+
+        let expected =
+            vec!["mcp__forge__agents__list".to_owned(), "mcp__forge__tasks__list".to_owned()];
+        assert_eq!(
+            super::surface_delta(&expected, &reported),
+            (
+                vec!["mcp__forge__tasks__list".to_owned()],
+                vec!["mcp__forge__browser_form_state".to_owned()],
+            ),
+            "missing is what forge handed and the CLI dropped; extra is the reverse",
+        );
+
+        let no_array = serde_json::json!({"tools": "not-an-array"});
+        assert!(
+            super::sdk_tools_in_init(&no_array, &names).is_none(),
+            "a frame with no tool array is not an empty answer",
+        );
+    }
+
     #[test]
     fn the_heal_fires_only_on_a_missing_boot_frame() {
         let names = ["forge".to_owned()];
@@ -3133,24 +3254,6 @@ mod tests {
         assert!(
             prompt.contains("cron__create"),
             "it names forge's own cron surface instead: {prompt}",
-        );
-    }
-
-    /// **A session cannot learn its tool surface's lifetime from anywhere
-    /// else.** The CLI fixes its registry when the process starts and
-    /// answers a name it never got with a bare "not found", so the base
-    /// append says what that answer means rather than leaving a session to
-    /// retry a name nothing will answer.
-    #[test]
-    fn the_base_append_says_the_tool_surface_is_fixed_at_spawn() {
-        let out = build_forge_system_prompt(false, None, None);
-        assert!(
-            out.contains("tool surface is fixed when this session starts"),
-            "the fixed-surface rule rides the base append for every kind: {out}",
-        );
-        assert!(
-            out.contains("reach for another tool rather than retrying it"),
-            "and tells the session not to retry a name nothing will answer: {out}",
         );
     }
 
@@ -4359,7 +4462,7 @@ mod tests_reader_terminal {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            reader_loop(stream_rx, event_tx, "spawn-id".to_owned(), client, Vec::new()),
+            reader_loop(stream_rx, event_tx, "spawn-id".to_owned(), client, Vec::new(), Vec::new()),
         )
         .await
         .expect("reader_loop returns after a stream error");
@@ -4387,7 +4490,7 @@ mod tests_reader_terminal {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            reader_loop(events, event_tx, "spawn-id".to_owned(), client, Vec::new()),
+            reader_loop(events, event_tx, "spawn-id".to_owned(), client, Vec::new(), Vec::new()),
         )
         .await
         .expect("reader_loop returns after the stream closes");

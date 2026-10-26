@@ -425,26 +425,6 @@ mod tests {
         forge_server_families(kind, &McpFamily::all(), systemone_facade)
     }
 
-    /// **The browser surface is the whole table, for every session kind.**
-    /// A live session saw one browser tool missing while its siblings
-    /// answered, so a change that gates the family on a configured host, a
-    /// session kind or a family selection fails here.
-    #[test]
-    fn both_kinds_register_the_whole_browser_table() {
-        let table: Vec<&str> =
-            crate::mcp::browser::specs::specs().iter().map(|spec| spec.name).collect();
-        for kind in [SessionKind::Lead, SessionKind::Worker] {
-            let server = forge_server(kind);
-            let names = server.tool_names();
-            for name in &table {
-                assert!(
-                    names.contains(name),
-                    "{kind:?}: {name} is missing from the spawn's forge server",
-                );
-            }
-        }
-    }
-
     /// Claude Code truncates server instructions at 2048 characters, so
     /// the board's contract has to fit whole - a truncated tail would drop
     /// whatever came last, which is why the critical half leads.

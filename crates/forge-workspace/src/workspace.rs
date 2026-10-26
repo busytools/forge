@@ -1334,6 +1334,120 @@ fn forge_misuse(usage: &str) -> ForgeAnswer {
     (NoticeSeverity::Error, usage.to_owned())
 }
 
+/// Record the surface a spawn hands its child.
+///
+/// The child fetches this list once and keeps it for its life, so this line
+/// is the only statement of what it was given; the boot init frame's own
+/// answer is recorded beside it.
+fn record_session_tool_surface(slot: &SessionSlot, lead: bool, names: &[&str]) {
+    tracing::debug!(
+        target: "forge_workspace::mcp",
+        event_name = "session_tool_surface",
+        slot = %slot.display(),
+        lead,
+        count = names.len(),
+        tools = %names.join(","),
+        "the forge tool surface handed to this spawn",
+    );
+}
+
+#[cfg(test)]
+mod record_session_tool_surface_tests {
+    use super::record_session_tool_surface;
+    use crate::SessionSlot;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Debug)]
+    struct CaughtEvent {
+        level: tracing::Level,
+        target: String,
+        fields: Vec<(String, String)>,
+    }
+
+    impl CaughtEvent {
+        fn field(&self, name: &str) -> Option<&str> {
+            self.fields.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Caught(Arc<Mutex<Vec<CaughtEvent>>>);
+
+    struct Fields(Vec<(String, String)>);
+
+    impl Visit for Fields {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0.push((field.name().to_owned(), format!("{value:?}")));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.push((field.name().to_owned(), value.to_owned()));
+        }
+
+        fn record_bool(&mut self, field: &Field, value: bool) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields(Vec::new());
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push(CaughtEvent {
+                level: *event.metadata().level(),
+                target: event.metadata().target().to_owned(),
+                fields: fields.0,
+            });
+        }
+    }
+
+    /// **The spawn's line is the artifact a "which list was that session
+    /// handed" report is answered from**, so it is pinned field by field:
+    /// a block that stops emitting, drops the slot, or changes the level
+    /// fails here rather than leaving the record silently thinner.
+    #[test]
+    fn the_record_names_the_slot_kind_count_and_every_tool() {
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let slot = SessionSlot::worker("Busytools", "forge", "surface");
+        let displayed = slot.display().to_string();
+        tracing::subscriber::with_default(subscriber, || {
+            record_session_tool_surface(&slot, false, &["agents__list", "browser_form_state"]);
+        });
+
+        let events = caught.0.lock().expect("capture");
+        let event = events.last().expect("the record was emitted");
+        assert_eq!(
+            event.level,
+            tracing::Level::DEBUG,
+            "a spawn's surface is the session's own fact"
+        );
+        assert_eq!(
+            event.target, "forge_workspace::mcp",
+            "it lands under the default filter's target"
+        );
+        assert_eq!(event.field("event_name"), Some("session_tool_surface"));
+        assert_eq!(event.field("slot"), Some(displayed.as_str()));
+        assert_eq!(event.field("lead"), Some("false"));
+        assert_eq!(event.field("count"), Some("2"));
+        assert_eq!(event.field("tools"), Some("agents__list,browser_form_state"));
+    }
+}
+
 impl Workspace {
     /// Builds a Workspace, kicks off the background catalog scan and the
     /// claude version probe, and loads `<config_dir>/forge.toml`. Errors if
@@ -2530,18 +2644,10 @@ impl Workspace {
                 session_kind,
             )
         };
-        // The child's `claude` process fetches this list once and keeps it
-        // for its life, so a later "Tool X not found" is answerable only
-        // from here.
-        let surface = forge_server.tool_names();
-        tracing::debug!(
-            target: "forge_workspace::mcp",
-            event_name = "session_tool_surface",
-            slot = %session_slot.display(),
-            lead = session_slot.is_lead(),
-            count = surface.len(),
-            tools = %surface.join(","),
-            "the forge tool surface handed to this spawn",
+        record_session_tool_surface(
+            &session_slot,
+            session_slot.is_lead(),
+            &forge_server.tool_names(),
         );
 
         #[cfg(any(test, feature = "testing"))]
