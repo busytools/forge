@@ -4011,6 +4011,93 @@ describe('the dock', () => {
     ).toBe(name?.parentElement);
   });
 
+  /**
+   * **A preview is a document, so it is bounded and scrolls in place.** A
+   * forty-line issue body used to grow the composer lane past the window, and
+   * `.session-page` clips its grid - so the tail of the very thing being
+   * approved was unreachable, with nothing on screen to say it was there.
+   *
+   * Read off the sheet because the bound IS a declaration: jsdom lays out
+   * nothing, so `scrollHeight > clientHeight` here would be asserting this
+   * test's own stubs. The measured geometry at both widths rides the pull
+   * request instead.
+   */
+  it('bounds the marked option preview, so a long one scrolls rather than clipping', () => {
+    // Off the working directory, which the suite runs from the client root:
+    // jsdom's `import.meta.url` is an http one, so it cannot name the file.
+    const sheet = readFileSync('src/assets/web.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = /\.dock \.preview\.opt-preview\s*\{([^}]*)\}/.exec(sheet)?.[1];
+    expect(rule, 'the sheet bounds the option preview').toBeDefined();
+    expect(rule, 'to a height the window decides').toMatch(/max-height:\s*min\([^)]*\)/);
+    expect(rule, 'and gives it its own scroll').toMatch(/overflow-y:\s*(auto|scroll)/);
+  });
+
+  /**
+   * **The preview owns the scroll keys while the keyboard is in it.** Tab is
+   * how a reader with no wheel gets into the region, and the dock's own key
+   * map would otherwise take the arrow to move the mark - so the tab stop
+   * would scroll nothing and the rest of the document would stay unread.
+   */
+  it('keeps the scroll keys for the preview while the keyboard is in it', () => {
+    const long = Array.from(
+      { length: 40 },
+      (_, at) => `paragraph ${String(at + 1)} of the preview`,
+    ).join('\n\n');
+    open({
+      record: record({
+        pending_asks: [
+          questionAsk('tu-q', {
+            options: [
+              { option_id: 'q-long', label: 'The long one', description: null, preview: long },
+              { option_id: 'q-prod', label: 'Production', description: null, preview: null },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const preview = document.querySelector('.dock .preview.opt-preview');
+    if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    expect(preview.tabIndex, 'the region is a tab stop, or no keyboard reaches it').toBe(0);
+    expect(preview.getAttribute('role'), 'and it is named for what it is').toBe('region');
+    expect(preview.getAttribute('aria-label'), 'with a label a screen reader can say').toBeTruthy();
+    preview.focus();
+    flushSync();
+
+    press('ArrowDown');
+
+    expect(
+      options()[0]?.getAttribute('aria-selected'),
+      'an arrow over the preview scrolls it rather than moving the mark',
+    ).toBe('true');
+    expect(document.activeElement, 'and the keyboard stays in the document being read').toBe(
+      preview,
+    );
+  });
+
+  /**
+   * **The rest of the keys are still the dock's.** The region takes the keys
+   * that scroll it and gives every other one back: a character typed while the
+   * keyboard is in the preview is the first character of the reader's own
+   * answer, and swallowing it there would break the type-to-start path the
+   * dock has everywhere else.
+   */
+  it('still takes a character typed from the preview as the answer', () => {
+    open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const preview = document.querySelector('.dock .preview.opt-preview');
+    if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    preview.focus();
+    flushSync();
+
+    press('k');
+
+    const field = document.querySelector('.dock textarea.notes');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the dock drew no words row');
+    expect(field.value, 'the dock received the character').toBe('k');
+    expect(document.activeElement, 'and the caret went where the character landed').toBe(field);
+  });
+
   it("offers the reader's own words as the agent's, which is the wording rule", () => {
     const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
 

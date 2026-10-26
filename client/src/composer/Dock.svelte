@@ -712,6 +712,17 @@
   const inField = (event: KeyboardEvent): boolean =>
     event.target instanceof HTMLElement && event.target.closest('[data-editor="dock"]') !== null;
 
+  /**
+   * Whether a key landed in the marked option's preview, which is a scroller
+   * before it is anything else. By its own mark rather than its class, for the
+   * reason `inField` gives.
+   */
+  const inPreview = (event: KeyboardEvent): boolean =>
+    event.target instanceof HTMLElement && event.target.closest('[data-preview]') !== null;
+
+  /** The keys a scroller answers itself, which are the only ones the dock yields. */
+  const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+
   /** The keys a dock answers to, which are the ones that can do what they say. */
   function onkey(event: KeyboardEvent): void {
     // **A button answers its own keys.** The row model's Enter and Space are
@@ -722,6 +733,12 @@
     if (event.target instanceof HTMLButtonElement && (event.key === 'Enter' || event.key === ' ')) {
       return;
     }
+    // The preview owns the keys that scroll it and nothing else: a character
+    // typed there still starts the reader's own answer, and Enter still submits.
+    // The tab stop is unconditional, so these keys leave the dock even over a
+    // preview too short to scroll; a conditional one would need a live overflow
+    // read, and jsdom cannot measure one to test it.
+    if (inPreview(event) && SCROLL_KEYS.has(event.key)) return;
     if (event.key === 'Escape' && take !== null) {
       // A live take owns the first Escape: it is abandoned and the dock stands,
       // which is the same rule the view this client replaced applied to the
@@ -1106,7 +1123,19 @@
            rendered as markdown rather than shown as its source - the same
            renderer the conversation's prose uses, which escapes what it is
            handed. -->
-        <div class="preview"><Prose text={markedRow.preview} /></div>
+        <!-- **A tab stop, because it is a document.** The sheet bounds it and
+           scrolls it, so the keys that read the rest of it have to reach it. It
+           is not a widget, so it takes no widget role for being focusable. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+        <div
+          class="preview opt-preview"
+          tabindex="0"
+          role="region"
+          aria-label="the marked option's preview"
+          data-preview
+        >
+          <Prose text={markedRow.preview} />
+        </div>
       {/if}
     {/if}
 

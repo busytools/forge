@@ -1985,7 +1985,7 @@ mod tests {
         // Everything at or below this is old news, so the sweep's news is
         // exactly what is posted below.
         let watermark = user
-            .history(&conversation_id, None, 1, None)
+            .history(&conversation_id, None, None, 1, None)
             .await
             .expect("the user reads the channel")
             .messages

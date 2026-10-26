@@ -144,6 +144,7 @@ pub trait SlackApi: Send + Sync {
         &self,
         channel: &str,
         oldest: Option<&str>,
+        newest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError>;
@@ -206,6 +207,9 @@ pub trait SlackApi: Send + Sync {
     ) -> Result<SearchPage, SlackError>;
     /// `users.info` for one user id.
     async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError>;
+    /// Every member in the workspace. Deactivated members are included so
+    /// the caller decides what a row means.
+    async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError>;
     /// `pins.list` for one conversation.
     async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError>;
     /// `bookmarks.list` for one conversation.
@@ -226,10 +230,11 @@ impl SlackApi for SlackClient {
         &self,
         channel: &str,
         oldest: Option<&str>,
+        newest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError> {
-        SlackClient::history(self, channel, oldest, limit, cursor).await
+        SlackClient::history(self, channel, oldest, newest, limit, cursor).await
     }
 
     async fn replies(
@@ -310,6 +315,10 @@ impl SlackApi for SlackClient {
 
     async fn user_info(&self, user: &str) -> Result<SlackUser, SlackError> {
         SlackClient::user_info(self, user).await
+    }
+
+    async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError> {
+        SlackClient::list_users(self).await
     }
 
     async fn pins(&self, channel: &str) -> Result<Vec<SlackPin>, SlackError> {
@@ -785,7 +794,7 @@ async fn fetch_history(
     let mut cursor: Option<String> = None;
     let mut pages = 0;
     loop {
-        let page = api.history(channel, oldest, SWEEP_LIMIT, cursor.as_deref()).await?;
+        let page = api.history(channel, oldest, None, SWEEP_LIMIT, cursor.as_deref()).await?;
         out.extend(page.messages);
         pages += 1;
         match page.next_cursor {
@@ -815,7 +824,7 @@ async fn fetch_recent(
     api: &dyn SlackApi,
     channel: &str,
 ) -> Result<Vec<SlackHistoryMessage>, SlackError> {
-    Ok(api.history(channel, None, SWEEP_LIMIT, None).await?.messages)
+    Ok(api.history(channel, None, None, SWEEP_LIMIT, None).await?.messages)
 }
 
 /// Every reply in a thread, following the cursor. Dedupe is the caller's:
@@ -843,6 +852,52 @@ async fn fetch_replies(
                     parent = %ts,
                     pages,
                     "conversations.replies kept handing back a cursor; stopping the walk",
+                );
+                return Ok(out);
+            }
+            None => return Ok(out),
+        }
+    }
+}
+
+/// Every reply in a thread, the parent first, for a caller reading the thread
+/// rather than advancing a cursor. Slack repeats the parent at the top of
+/// every page, so the result is deduped by `ts`; the first occurrence wins,
+/// which keeps the parent where the contract puts it. `limit` bounds the rows
+/// returned, and the walk stops as soon as it has them.
+pub async fn read_thread(
+    api: &dyn SlackApi,
+    channel: &str,
+    ts: &str,
+    limit: u32,
+) -> Result<Vec<SlackHistoryMessage>, SlackError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<SlackHistoryMessage> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = api.replies(channel, ts, None, limit, cursor.as_deref()).await?;
+        for message in page.messages {
+            if seen.insert(message.ts.clone()) {
+                out.push(message);
+                if out.len() >= limit as usize {
+                    return Ok(out);
+                }
+            }
+        }
+        pages += 1;
+        match page.next_cursor {
+            Some(next) if pages < MAX_REPLY_PAGES => cursor = Some(next),
+            Some(_) => {
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    channel,
+                    parent = %ts,
+                    pages,
+                    "conversations.replies kept handing back a cursor; stopping the read",
                 );
                 return Ok(out);
             }
@@ -1983,6 +2038,102 @@ fn decode_message_page(method: &str, body: &str) -> Result<MessagePage, SlackErr
     Ok(MessagePage { messages, next_cursor: cursor })
 }
 
+/// The params `conversations.history` is called with. Slack calls the newest
+/// bound `latest`, and both bounds are exclusive.
+fn history_params(
+    channel: &str,
+    oldest: Option<&str>,
+    newest: Option<&str>,
+    limit: u32,
+    cursor: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut params = vec![("channel", channel.to_owned()), ("limit", limit.to_string())];
+    if let Some(oldest) = oldest {
+        params.push(("oldest", oldest.to_owned()));
+    }
+    if let Some(newest) = newest {
+        params.push(("latest", newest.to_owned()));
+    }
+    if let Some(cursor) = cursor {
+        params.push(("cursor", cursor.to_owned()));
+    }
+    params
+}
+
+/// Slack's page ceiling for `users.list`.
+const USER_PAGE_LIMIT: u32 = 200;
+
+/// A cursor Slack hands back unchanged must not spin the user walk forever:
+/// at 200 per page this is far past any real workspace, and the failure mode
+/// is an endless request loop against a rate-limited API.
+const MAX_USER_PAGES: usize = 100;
+
+/// One page of `users.list`, with Slack's empty last-page cursor normalised
+/// the way the conversations page is.
+#[derive(Debug)]
+struct UsersPage {
+    members: Vec<SlackUser>,
+    next_cursor: Option<String>,
+}
+
+/// Split out of the async path so the decode is testable without HTTP.
+fn decode_users_page(body: &str) -> Result<UsersPage, SlackError> {
+    #[derive(Deserialize)]
+    struct RawUsersPage {
+        #[serde(default)]
+        members: Vec<SlackUser>,
+        #[serde(default)]
+        response_metadata: Metadata,
+    }
+    let raw: RawUsersPage = decode_envelope("users.list", body)?;
+    let cursor = (!raw.response_metadata.next_cursor.is_empty())
+        .then_some(raw.response_metadata.next_cursor);
+    Ok(UsersPage { members: raw.members, next_cursor: cursor })
+}
+
+/// One page of `users.list`. The walk is split from the HTTP client so its
+/// page cap is reachable from a double that never stops handing back a
+/// cursor.
+#[async_trait::async_trait]
+trait UsersPages: Send + Sync {
+    async fn users_page(&self, cursor: Option<&str>) -> Result<UsersPage, SlackError>;
+}
+
+#[async_trait::async_trait]
+impl UsersPages for SlackClient {
+    async fn users_page(&self, cursor: Option<&str>) -> Result<UsersPage, SlackError> {
+        let mut params = vec![("limit", USER_PAGE_LIMIT.to_string())];
+        if let Some(cursor) = cursor {
+            params.push(("cursor", cursor.to_owned()));
+        }
+        let body = self.call_text("users.list", &params).await?;
+        decode_users_page(&body)
+    }
+}
+
+/// Every member in the workspace, following the cursor. A cursor that never
+/// ends returns what was read, the way the history and reply walks do,
+/// rather than failing the whole lookup.
+async fn walk_users(pages: &dyn UsersPages) -> Result<Vec<SlackUser>, SlackError> {
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_USER_PAGES {
+        let page = pages.users_page(cursor.as_deref()).await?;
+        out.extend(page.members);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => return Ok(out),
+        }
+    }
+    tracing::warn!(
+        target: "forge_connectors::slack",
+        pages = MAX_USER_PAGES,
+        users = out.len(),
+        "users.list kept handing back a cursor; stopping the walk",
+    );
+    Ok(out)
+}
+
 /// The API's ceiling for one search page.
 const SEARCH_COUNT_CAP: u32 = 100;
 
@@ -2165,23 +2316,18 @@ impl SlackClient {
         self.call("auth.test", &[]).await
     }
 
-    /// One page of a conversation's history. `oldest` is omitted entirely
-    /// on a first sweep: Slack treats an empty `oldest` differently from
-    /// an absent one.
+    /// One page of a conversation's history. Each bound is omitted entirely
+    /// when absent: Slack treats an empty `oldest` differently from an
+    /// absent one.
     pub async fn history(
         &self,
         channel: &str,
         oldest: Option<&str>,
+        newest: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<MessagePage, SlackError> {
-        let mut params = vec![("channel", channel.to_owned()), ("limit", limit.to_string())];
-        if let Some(oldest) = oldest {
-            params.push(("oldest", oldest.to_owned()));
-        }
-        if let Some(cursor) = cursor {
-            params.push(("cursor", cursor.to_owned()));
-        }
+        let params = history_params(channel, oldest, newest, limit, cursor);
         let body = self.call_text("conversations.history", &params).await?;
         decode_message_page("conversations.history", &body)
     }
@@ -2380,6 +2526,13 @@ impl SlackClient {
         let params = vec![("user", user.to_owned())];
         let body = self.call_text("users.info", &params).await?;
         decode_user(&body)
+    }
+
+    /// Every member in the workspace, following the cursor. Slack has no
+    /// server-side name search, so a resolver reads the directory and
+    /// matches locally.
+    pub async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError> {
+        walk_users(self).await
     }
 
     /// `pins.list` for one conversation.
@@ -2752,6 +2905,30 @@ mod tests {
             "the edit's own ts is what says the text changed after sending",
         );
         assert_eq!(page.messages[1].edited, None, "an untouched message carries no edit");
+    }
+
+    /// Slack calls the newest bound `latest`, and a bound that was not asked
+    /// for must be absent rather than empty.
+    #[test]
+    fn history_params_carry_each_bound_only_when_it_is_asked_for() {
+        let bounded = history_params("C1", Some("100.0"), Some("200.0"), 50, Some("cur"));
+        assert_eq!(
+            bounded,
+            vec![
+                ("channel", "C1".to_owned()),
+                ("limit", "50".to_owned()),
+                ("oldest", "100.0".to_owned()),
+                ("latest", "200.0".to_owned()),
+                ("cursor", "cur".to_owned()),
+            ],
+            "the newest bound travels as `latest`",
+        );
+
+        let bare = history_params("C1", None, None, 50, None);
+        assert!(
+            !bare.iter().any(|(key, _)| *key == "oldest" || *key == "latest"),
+            "an absent bound is omitted entirely: {bare:?}",
+        );
     }
 
     /// The decoder keeps the repeat: Slack returns the parent on every page
@@ -3283,6 +3460,7 @@ mod tests {
             &self,
             channel: &str,
             oldest: Option<&str>,
+            _newest: Option<&str>,
             _limit: u32,
             cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
@@ -3448,7 +3626,18 @@ mod tests {
                     needed: None,
                 });
             };
-            Ok(SlackUser { id: user.to_owned(), name, real_name: None, tz: None })
+            Ok(SlackUser {
+                id: user.to_owned(),
+                name,
+                real_name: None,
+                tz: None,
+                deleted: false,
+                profile: None,
+            })
+        }
+
+        async fn list_users(&self) -> Result<Vec<SlackUser>, SlackError> {
+            Ok(Vec::new())
         }
 
         async fn pins(&self, _channel: &str) -> Result<Vec<SlackPin>, SlackError> {
@@ -3506,6 +3695,74 @@ mod tests {
         let user = decode_user(body).expect("decodes");
         assert_eq!(user.name, "ved");
         assert_eq!(user.tz.as_deref(), Some("Asia/Kolkata"));
+    }
+
+    /// The resolver matches on the display name as well as the handle and
+    /// real name, and a deactivated member's row is kept (and flagged) so
+    /// the caller can exclude it rather than not knowing it exists.
+    #[test]
+    fn a_users_page_decodes_a_members_display_name_and_deleted_flag() {
+        let body = r#"{
+          "ok": true,
+          "members": [
+            {"id":"U1","name":"ved","real_name":"Vedhavyas S",
+             "profile":{"display_name":"ved"}},
+            {"id":"U2","name":"gina","deleted":true,
+             "profile":{"display_name":"Gina Abrams"}}
+          ],
+          "response_metadata": {"next_cursor": "next"}
+        }"#;
+        let page = decode_users_page(body).expect("decodes");
+        assert_eq!(page.members.len(), 2, "both rows survive the decode");
+        assert_eq!(
+            page.members[0].profile.as_ref().and_then(|p| p.display_name.as_deref()),
+            Some("ved"),
+            "the display name is what people type and the handle is not",
+        );
+        assert!(!page.members[0].deleted);
+        assert!(page.members[1].deleted, "a deactivated member is flagged, not dropped");
+        assert_eq!(page.next_cursor.as_deref(), Some("next"), "the walk can continue");
+    }
+
+    /// A `users.list` source that never stops handing back a cursor, so the
+    /// walk's page cap is reachable without HTTP.
+    #[derive(Default)]
+    struct EndlessUsers {
+        pages: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl UsersPages for EndlessUsers {
+        async fn users_page(&self, _cursor: Option<&str>) -> Result<UsersPage, SlackError> {
+            self.pages.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(UsersPage {
+                members: vec![SlackUser {
+                    id: "U1".to_owned(),
+                    name: "ved".to_owned(),
+                    real_name: None,
+                    tz: None,
+                    deleted: false,
+                    profile: None,
+                }],
+                next_cursor: Some("more".to_owned()),
+            })
+        }
+    }
+
+    /// The cap is what stops a cursor that never ends; the rows already read
+    /// are the answer rather than an error.
+    #[tokio::test]
+    async fn a_user_walk_stops_at_its_page_cap_and_keeps_what_it_read() {
+        let source = EndlessUsers::default();
+
+        let users = walk_users(&source).await.expect("the cap ends the walk without failing");
+
+        assert_eq!(users.len(), MAX_USER_PAGES, "every page read is kept");
+        assert_eq!(
+            source.pages.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_USER_PAGES,
+            "the walk stopped at the cap instead of following the cursor forever",
+        );
     }
 
     #[test]
@@ -5182,6 +5439,53 @@ mod tests {
             Some("150.0".to_owned()),
             "the cursor starts at the mention's ts, never the weeks-old parent",
         );
+    }
+
+    /// A caller reading the thread, rather than advancing a cursor, gets the
+    /// parent once: Slack repeats it at the top of every page, and the tool's
+    /// contract says "parent first, then every reply oldest first".
+    #[tokio::test]
+    async fn read_thread_returns_the_parent_once_across_pages() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_replies("100.0", 2);
+        host.seed_replies_pages(
+            "C1",
+            "100.0",
+            vec![
+                vec![parent.clone(), history_message("110.0", "U1", "first reply")],
+                vec![parent, history_message("120.0", "U1", "second reply")],
+            ],
+        );
+
+        let thread = read_thread(&host, "C1", "100.0", 200).await.expect("the thread is read");
+        let ts: Vec<&str> = thread.iter().map(|message| message.ts.as_str()).collect();
+        assert_eq!(
+            ts,
+            ["100.0", "110.0", "120.0"],
+            "the parent appears once and every reply follows it in order",
+        );
+    }
+
+    /// A thread read stops at the requested count rather than serialising a
+    /// whole long thread into one result.
+    #[tokio::test]
+    async fn read_thread_stops_at_the_limit() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_replies("100.0", 2);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                history_message("110.0", "U1", "first reply"),
+                history_message("120.0", "U1", "second reply"),
+            ],
+        );
+
+        let thread = read_thread(&host, "C1", "100.0", 2).await.expect("the thread is read");
+
+        assert_eq!(thread.len(), 2, "the limit bounds the read");
+        assert_eq!(thread[1].ts, "110.0", "and keeps the oldest reply that fit");
     }
 
     /// Slack repeats the parent on every page of a thread (measured live at
