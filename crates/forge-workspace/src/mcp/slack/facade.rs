@@ -398,12 +398,13 @@ pub(crate) trait SlackFacade: Send + Sync {
         newest: Option<&str>,
     ) -> Result<Vec<SlackHistoryMessage>, SlackReadError>;
 
-    /// Every reply in one thread, the parent first.
+    /// Every reply in one thread, the parent first, up to `limit` rows.
     async fn replies(
         &self,
         workspace: Option<&str>,
         conversation: &str,
         ts: &str,
+        limit: u32,
     ) -> Result<Vec<SlackHistoryMessage>, SlackReadError>;
 
     /// `users.info` for one user id.
@@ -805,9 +806,10 @@ impl SlackFacade for ProdSlackFacade {
         workspace: Option<&str>,
         conversation: &str,
         ts: &str,
+        limit: u32,
     ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
         let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
-        read_thread(api.as_ref(), conversation, ts)
+        read_thread(api.as_ref(), conversation, ts, limit)
             .await
             .map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
@@ -1085,6 +1087,10 @@ pub(crate) type SearchCall = (Option<String>, String, u32, Option<String>);
 #[cfg(test)]
 pub(crate) type HistoryCall = (Option<String>, String, u32, Option<String>, Option<String>);
 
+/// One recorded thread read: workspace, conversation, parent ts, limit.
+#[cfg(test)]
+pub(crate) type RepliesCall = (Option<String>, String, String, u32);
+
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool parses args, resolves the caller, and surfaces results/errors.
 #[cfg(test)]
@@ -1100,7 +1106,7 @@ pub(crate) struct MockSlackFacade {
     pub history_calls: parking_lot::Mutex<Vec<HistoryCall>>,
     pub history_result:
         parking_lot::Mutex<Option<Result<Vec<SlackHistoryMessage>, SlackReadError>>>,
-    pub replies_calls: parking_lot::Mutex<Vec<(Option<String>, String, String)>>,
+    pub replies_calls: parking_lot::Mutex<Vec<RepliesCall>>,
     pub replies_result:
         parking_lot::Mutex<Option<Result<Vec<SlackHistoryMessage>, SlackReadError>>>,
     pub user_calls: parking_lot::Mutex<Vec<(Option<String>, String)>>,
@@ -1191,11 +1197,13 @@ impl SlackFacade for MockSlackFacade {
         workspace: Option<&str>,
         conversation: &str,
         ts: &str,
+        limit: u32,
     ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
         self.replies_calls.lock().push((
             workspace.map(str::to_owned),
             conversation.to_owned(),
             ts.to_owned(),
+            limit,
         ));
         self.replies_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
@@ -2932,7 +2940,7 @@ mod tests {
         );
 
         let messages =
-            facade.replies(Some("acme"), "C1", "100.0").await.expect("the thread is read");
+            facade.replies(Some("acme"), "C1", "100.0", 200).await.expect("the thread is read");
 
         assert_eq!(messages.len(), 2, "the whole thread comes back");
         assert_eq!(messages[0].text, "parent", "the parent is first");

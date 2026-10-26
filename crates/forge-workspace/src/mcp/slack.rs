@@ -1092,6 +1092,12 @@ const DEFAULT_HISTORY_LIMIT: u32 = 50;
 /// Slack's own ceiling for one `conversations.history` page.
 const MAX_HISTORY_LIMIT: u32 = 999;
 
+/// Replies per thread read when the caller does not cap them.
+const DEFAULT_REPLIES_LIMIT: u32 = 200;
+
+/// Slack's own ceiling for one `conversations.replies` page.
+const MAX_REPLIES_LIMIT: u32 = 1000;
+
 /// One message as both read tools report it. `files` keeps the ids an
 /// attachment fetch takes; the file's bearer URL never leaves the connector.
 fn message_row(message: &SlackHistoryMessage) -> serde_json::Value {
@@ -1220,6 +1226,8 @@ struct RepliesArgs {
     workspace: Option<String>,
     conversation: String,
     ts: String,
+    #[serde(default)]
+    limit: Option<u32>,
 }
 
 #[async_trait::async_trait]
@@ -1229,10 +1237,11 @@ impl Tool for Replies {
     }
 
     fn description(&self) -> &'static str {
-        "Read one Slack thread: the parent message first, then every reply oldest first. \
-         `conversation` is the id from slack__list and `ts` the parent message's ts, which is \
-         the `ts` slack__history reports for it. Returns the same row shape as slack__history. \
-         Read-only and not held for approval. Any session in the project may call this."
+        "Read one Slack thread: the parent message first, then replies oldest first, up to \
+         `limit` rows (default 200, max 1000). `conversation` is the id from slack__list and \
+         `ts` the parent message's ts, which is the `ts` slack__history reports for it. Returns \
+         the same row shape as slack__history, with the parent exactly once. Read-only and not \
+         held for approval. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1252,6 +1261,12 @@ impl Tool for Replies {
                     "type": "string",
                     "description": "The parent message's ts.",
                 },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_REPLIES_LIMIT,
+                    "description": "Maximum messages to read (default 200).",
+                },
             },
             "required": ["conversation", "ts"],
             "additionalProperties": false,
@@ -1263,7 +1278,17 @@ impl Tool for Replies {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.replies(args.workspace.as_deref(), &args.conversation, &args.ts).await {
+        let limit = args.limit.unwrap_or(DEFAULT_REPLIES_LIMIT);
+        if limit == 0 || limit > MAX_REPLIES_LIMIT {
+            return tool_error(format!(
+                "`limit` must be between 1 and {MAX_REPLIES_LIMIT}, Slack's page ceiling"
+            ));
+        }
+        match self
+            .facade
+            .replies(args.workspace.as_deref(), &args.conversation, &args.ts, limit)
+            .await
+        {
             Ok(messages) => match serde_json::to_string_pretty(&read_rows(&messages)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("replies serialization failed: {err}")),
@@ -2307,9 +2332,27 @@ mod tests {
         assert_eq!(rows[1]["text"], "reply");
         assert_eq!(
             mock.replies_calls.lock().as_slice(),
-            [(None, "C1".to_owned(), "100.0".to_owned())],
-            "the conversation and parent ts reach the facade",
+            [(None, "C1".to_owned(), "100.0".to_owned(), DEFAULT_REPLIES_LIMIT)],
+            "the conversation, parent ts and default cap reach the facade",
         );
+    }
+
+    #[tokio::test]
+    async fn slack_replies_refuses_a_limit_past_slacks_ceiling() {
+        let mock = Arc::new(MockSlackFacade::new());
+        let tool = Replies { facade: mock.clone() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "ts": "100.0",
+                "limit": 1001,
+            })))
+            .await;
+
+        assert!(out.is_error, "a read past Slack's ceiling cannot be served");
+        assert!(text_of(&out).contains("1000"), "the error names the ceiling: {}", text_of(&out));
+        assert!(mock.replies_calls.lock().is_empty(), "nothing reaches the facade");
     }
 
     #[tokio::test]

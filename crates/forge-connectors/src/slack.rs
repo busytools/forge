@@ -863,15 +863,47 @@ async fn fetch_replies(
 /// Every reply in a thread, the parent first, for a caller reading the thread
 /// rather than advancing a cursor. Slack repeats the parent at the top of
 /// every page, so the result is deduped by `ts`; the first occurrence wins,
-/// which keeps the parent where the contract puts it.
+/// which keeps the parent where the contract puts it. `limit` bounds the rows
+/// returned, and the walk stops as soon as it has them.
 pub async fn read_thread(
     api: &dyn SlackApi,
     channel: &str,
     ts: &str,
+    limit: u32,
 ) -> Result<Vec<SlackHistoryMessage>, SlackError> {
-    let messages = fetch_replies(api, channel, ts, None).await?;
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<SlackHistoryMessage> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    Ok(messages.into_iter().filter(|message| seen.insert(message.ts.clone())).collect())
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = api.replies(channel, ts, None, limit, cursor.as_deref()).await?;
+        for message in page.messages {
+            if seen.insert(message.ts.clone()) {
+                out.push(message);
+                if out.len() >= limit as usize {
+                    return Ok(out);
+                }
+            }
+        }
+        pages += 1;
+        match page.next_cursor {
+            Some(next) if pages < MAX_REPLY_PAGES => cursor = Some(next),
+            Some(_) => {
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    channel,
+                    parent = %ts,
+                    pages,
+                    "conversations.replies kept handing back a cursor; stopping the read",
+                );
+                return Ok(out);
+            }
+            None => return Ok(out),
+        }
+    }
 }
 
 /// Which conversations one pass reads. The DM class covers every DM rather
@@ -5359,13 +5391,35 @@ mod tests {
             ],
         );
 
-        let thread = read_thread(&host, "C1", "100.0").await.expect("the thread is read");
+        let thread = read_thread(&host, "C1", "100.0", 200).await.expect("the thread is read");
         let ts: Vec<&str> = thread.iter().map(|message| message.ts.as_str()).collect();
         assert_eq!(
             ts,
             ["100.0", "110.0", "120.0"],
             "the parent appears once and every reply follows it in order",
         );
+    }
+
+    /// A thread read stops at the requested count rather than serialising a
+    /// whole long thread into one result.
+    #[tokio::test]
+    async fn read_thread_stops_at_the_limit() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_replies("100.0", 2);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                history_message("110.0", "U1", "first reply"),
+                history_message("120.0", "U1", "second reply"),
+            ],
+        );
+
+        let thread = read_thread(&host, "C1", "100.0", 2).await.expect("the thread is read");
+
+        assert_eq!(thread.len(), 2, "the limit bounds the read");
+        assert_eq!(thread[1].ts, "110.0", "and keeps the oldest reply that fit");
     }
 
     /// Slack repeats the parent on every page of a thread (measured live at
