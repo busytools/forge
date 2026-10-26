@@ -1421,6 +1421,18 @@ pub(crate) mod tests {
         let _ = socket;
     }
 
+    /// The pessimistic rate a debug build's frame crosses at on a loaded
+    /// machine: a 70 MiB frame measured ~19 s at load 41-64, which is about
+    /// 3.7 MiB/s, so 3 MiB/s is the floor a bound is derived from (#2273).
+    const CROSS_MIB_PER_SEC: u64 = 3;
+
+    /// How long a frame of `bytes` may take to cross, derived from its own
+    /// weight rather than a number chosen for a quiet machine.
+    fn cross_bound(bytes: usize) -> Duration {
+        let mib = u64::try_from(bytes / (1024 * 1024)).unwrap_or(u64::MAX);
+        Duration::from_secs(2) + Duration::from_secs(mib.div_ceil(CROSS_MIB_PER_SEC))
+    }
+
     /// **A frame past both of tungstenite's defaults is delivered, not
     /// refused.** A seat's whole conversation snapshot crosses as ONE frame,
     /// and the kdp-test seat's is 16.4 MiB - past the 16 MiB frame default,
@@ -1432,11 +1444,13 @@ pub(crate) mod tests {
         let stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
         let blob = "x".repeat(70 * 1024 * 1024);
+        let bytes = blob.len();
         let snapshot = json!({ "kind": "snapshot", "subject": "home", "data": { "blob": blob } });
         stub.say.send(snapshot.clone()).expect("the stub broadcasts");
-        // A frame this size takes seconds to serialize, cross and parse, so
-        // it gets its own bound - the shared two seconds fit the small ones.
-        let event = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        // A frame this size takes seconds to serialize, cross and parse, so it
+        // gets its own bound, derived from its size - the shared two seconds
+        // fit the small ones.
+        let event = tokio::time::timeout(cross_bound(bytes), rx.recv())
             .await
             .expect("the oversized frame within the bound")
             .expect("the socket still feeding");

@@ -21,11 +21,6 @@ const SNAPSHOT = {
   read_aloud: { recorded: false, armed: false, passage: '' },
 } as unknown as DictateModelsWire;
 
-/** Give a timer a chance to fire, for everything it would have set off to show. */
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 100));
-}
-
 describe('the models page over a connection', () => {
   it('subscribes the models subject for as long as it is watched', () => {
     const forge = fakeConnection();
@@ -58,7 +53,7 @@ describe('the models page over a connection', () => {
    * client that answered it with a refresh would ask the server to rebuild
    * what the update already holds.
    */
-  it('takes the snapshot a landed check carries, without asking for a read', async () => {
+  it('takes the snapshot a landed check carries, without asking for a read', () => {
     const forge = fakeConnection();
     const view = watchModels(forge.connection);
     view.subscribe(() => {});
@@ -68,7 +63,6 @@ describe('the models page over a connection', () => {
       check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 0 },
     };
     forge.arrive({ kind: 'update', update: { dictate_models_changed: { models: landed } } });
-    await settle();
 
     expect(get(view).wire?.check).toEqual({
       state: 'fresh',
@@ -86,13 +80,12 @@ describe('the models page over a connection', () => {
    * A page open through a first download would otherwise keep drawing
    * `pending` chips after the models finished loading.
    */
-  it('re-reads when the models finish loading', async () => {
+  it('re-reads when the models finish loading', () => {
     const forge = fakeConnection();
     const view = watchModels(forge.connection);
     view.subscribe(() => {});
 
     forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    await settle();
 
     expect(forge.refreshed).toEqual([MODELS]);
   });
@@ -101,20 +94,18 @@ describe('the models page over a connection', () => {
    * A read is the whole subject, so one already in flight is not queued
    * behind: the answer it is waiting for is the fresher one.
    */
-  it('asks for one read at a time, however many availability flips land', async () => {
+  it('asks for one read at a time, however many availability flips land', () => {
     const forge = fakeConnection();
     const view = watchModels(forge.connection);
     view.subscribe(() => {});
 
     forge.arrive({ kind: 'update', update: 'dictate_availability' });
     forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    await settle();
     expect(forge.refreshed).toEqual([MODELS]);
 
     // The answer frees the pacing, so the next flip is asked for.
     forge.arrive({ kind: 'snapshot', subject: MODELS, data: SNAPSHOT });
     forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    await settle();
     expect(forge.refreshed).toEqual([MODELS, MODELS]);
   });
 
@@ -125,18 +116,16 @@ describe('the models page over a connection', () => {
    * that read's answer aside, no later flip could ever ask again, and the
    * page would stop following loads silently.
    */
-  it('frees the read pacing when a check lands', async () => {
+  it('frees the read pacing when a check lands', () => {
     const forge = fakeConnection();
     const view = watchModels(forge.connection);
     view.subscribe(() => {});
 
     forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    await settle();
     expect(forge.refreshed).toEqual([MODELS]);
 
     forge.arrive({ kind: 'update', update: { dictate_models_changed: { models: SNAPSHOT } } });
     forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    await settle();
 
     expect(forge.refreshed, 'a landing left the pacing latched').toEqual([MODELS, MODELS]);
   });
@@ -157,7 +146,7 @@ describe('the models page over a connection', () => {
    * a page gone must not leave a forge holding a subscription nothing draws,
    * nor a listener that answers the next flip with a read.
    */
-  it('stops asking once the last subscriber goes', async () => {
+  it('stops asking once the last subscriber goes', () => {
     const forge = fakeConnection();
     const view = watchModels(forge.connection);
     const stop = view.subscribe(() => {});
@@ -166,7 +155,6 @@ describe('the models page over a connection', () => {
     expect(forge.unsubscribed).toEqual([MODELS]);
 
     forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    await settle();
     expect(forge.refreshed, 'a frame still reached a released subscription').toEqual([]);
     expect(forge.listening(), 'the release left a listener on the connection').toBe(0);
   });
