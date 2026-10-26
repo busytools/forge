@@ -10,8 +10,10 @@ if (!target) {
 }
 
 // The frame probe, before the mount so the boot's own frames are measured
-// too. A build with no shell starts nothing - `perf.ts` decides that, so
-// the web half pays no cost for a probe it could not write.
+// too. **Every build starts one**: the shell writes its records through its
+// own invoke, and a page with no shell sends the same batches over its
+// socket once the connection is taken (`perf.ts` holds the run's opening
+// line until then).
 startPerfProbe();
 
 mount(App, { target });

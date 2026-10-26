@@ -346,12 +346,24 @@ let writeQueued = false;
 /** The page's own sink: the connection it posts through, once there is one. */
 let socketSink: ((records: PerfRecord[]) => boolean) | null = null;
 
+/** The run's opening line, held until a connection can carry it. */
+let startLine: PerfRecord | null = null;
+
 /**
  * Point the web build's sink at the connection whose socket carries its
  * records. `null` - no connection - drops them.
+ *
+ * **The run's own line goes with the first connection.** The probe starts at
+ * module load, long before a socket exists, so its `run_started` would
+ * otherwise be dropped and a web log would open mid-story.
  */
 export function setPerfSocket(sink: ((records: PerfRecord[]) => boolean) | null): void {
   socketSink = sink;
+  if (sink !== null && startLine !== null) {
+    const line = startLine;
+    startLine = null;
+    sink([line]);
+  }
 }
 
 /**
@@ -363,6 +375,12 @@ export function setPerfSocket(sink: ((records: PerfRecord[]) => boolean) | null)
  */
 function sinkToSocket(records: PerfRecord[]): void {
   pendingWrites.push(...records);
+  // **The opening line is not a loss**: it describes the run, so it is held
+  // until a connection exists rather than going out with a batch nobody
+  // carries.
+  if (startLine === null) {
+    startLine = pendingWrites.find((record) => record.kind === 'run_started') ?? null;
+  }
   if (writeQueued) return;
   writeQueued = true;
   queueMicrotask(() => {

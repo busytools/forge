@@ -1994,14 +1994,24 @@ where
         ClientMessage::ClientPerf { records } => {
             // **A page's own instrument, not forge's health**: a batch that
             // could not be written is one client's lost diagnostic, so it is
-            // read at `debug` and names where it went.
-            if let Err(why) = crate::perf_log::append(&records) {
-                tracing::debug!(
+            // read at `debug` and names where it went. The write runs on the
+            // blocking pool - a file append has no business on a socket's
+            // async task.
+            let count = records.len();
+            match tokio::task::spawn_blocking(move || crate::perf_log::append(&records)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(why)) => tracing::debug!(
                     event_name = "client_perf_write_failed",
-                    records = records.len(),
+                    records = count,
                     %why,
                     "a client's perf batch could not be written",
-                );
+                ),
+                Err(why) => tracing::debug!(
+                    event_name = "client_perf_write_failed",
+                    records = count,
+                    %why,
+                    "a client's perf batch could not be written",
+                ),
             }
             Ok(())
         }

@@ -152,6 +152,31 @@ describe('the web page sink', () => {
     expect(() => perfSink()([mark(1)])).not.toThrow();
     await Promise.resolve();
   });
+
+  /// **The run's own line is not a loss**: the probe starts at module load,
+  /// before any socket exists, so `run_started` waits for the first one and
+  /// a web log never opens mid-story.
+  it('holds the run line until a connection carries it', async () => {
+    const line: PerfRecord = {
+      schema: 'forge-perf/v1',
+      kind: 'run_started',
+      run_id: 'run',
+      ts_ms: 1,
+    };
+    setPerfSocket(null);
+    perfSink()([line]);
+    await Promise.resolve();
+    const posts: PerfRecord[][] = [];
+    try {
+      setPerfSocket((records) => {
+        posts.push(records);
+        return true;
+      });
+      expect(posts, 'the opening line goes with the connection').toEqual([[line]]);
+    } finally {
+      setPerfSocket(null);
+    }
+  });
 });
 
 describe('the frame probe', () => {
