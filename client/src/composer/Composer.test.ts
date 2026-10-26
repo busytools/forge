@@ -4061,7 +4061,10 @@ describe('the dock', () => {
     if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
     expect(preview.tabIndex, 'the region is a tab stop, or no keyboard reaches it').toBe(0);
     expect(preview.getAttribute('role'), 'and it is named for what it is').toBe('region');
-    expect(preview.getAttribute('aria-label'), 'with a label a screen reader can say').toBeTruthy();
+    expect(
+      preview.getAttribute('aria-label'),
+      "with the marked option's label, which is what a screen reader says over its prose",
+    ).toBe("the marked option's preview");
     preview.focus();
     flushSync();
 
@@ -4090,6 +4093,10 @@ describe('the dock', () => {
     if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
     preview.focus();
     flushSync();
+    expect(
+      document.activeElement,
+      'the keyboard is in the region, or the dock would take the character without it',
+    ).toBe(preview);
 
     press('k');
 
@@ -4139,7 +4146,14 @@ describe('the dock', () => {
     );
     expect(post.tabIndex, 'the region is a tab stop, or no keyboard reaches it').toBe(0);
     expect(post.getAttribute('role'), 'and it is named for what it is').toBe('region');
-    expect(post.getAttribute('aria-label'), 'with a label a screen reader can say').toBeTruthy();
+    expect(
+      post.getAttribute('aria-label'),
+      "with the post's own label, not the option preview's",
+    ).toBe('the post held for approval');
+    expect(drawn(), 'the key line names the scroll the region takes').toContain('scroll the post');
+    expect(drawn(), 'and does not promise Tab reaches the actions before it').not.toContain(
+      'between the actions',
+    );
   });
 
   /**
@@ -4156,6 +4170,10 @@ describe('the dock', () => {
     if (!(post instanceof HTMLElement)) throw new Error('the dock drew no held post region');
     post.focus();
     flushSync();
+    expect(
+      document.activeElement,
+      'the keyboard is in the region, or a dock key would pass this without it',
+    ).toBe(post);
 
     press('Escape');
 
