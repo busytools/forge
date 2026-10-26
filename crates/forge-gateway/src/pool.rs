@@ -228,7 +228,25 @@ impl AccountPool {
             state.override_armed = previous.override_armed;
             state.loading = previous.loading;
         }
+        // An account the edit removed is retired rather than dropped: a
+        // session already bound to it keeps resolving its provider and env,
+        // while the selection walk (which only reads `ordered_keys`) never
+        // offers it again.
+        for (key, previous) in &current.by_key {
+            if next.by_key.contains_key(key) {
+                continue;
+            }
+            let mut retired = previous.clone();
+            retired.retired = true;
+            next.by_key.insert(key.clone(), retired);
+        }
         *current = next;
+    }
+
+    /// Whether the pool still knows this account: present in the file, or
+    /// retired after its removal and still bound to a running session.
+    pub fn contains(&self, key: &AccountKey) -> bool {
+        self.accounts.lock().by_key.contains_key(key)
     }
 }
 
@@ -274,8 +292,9 @@ mod tests {
     /// or refuse spawns until the next probe.
     #[test]
     fn a_reload_carries_surviving_accounts_health_across() {
-        let pool = AccountPool::new(&[account("Kept")]);
+        let pool = AccountPool::new(&[account("Kept"), account("Gone")]);
         let kept = AccountKey("Kept".to_owned());
+        let gone = AccountKey("Gone".to_owned());
         pool.set_usage(&kept, snapshot());
         pool.set_loading(&kept, crate::LoadingState::Ready);
 
@@ -291,6 +310,15 @@ mod tests {
             pool.loading_state(&AccountKey("Added".to_owned())),
             crate::LoadingState::Loading,
             "an account the reload added waits for its first probe",
+        );
+        assert!(pool.contains(&gone), "a removed account stays resolvable for a bound session");
+        assert!(
+            pool.env(&gone).is_some(),
+            "a bound session can still stamp the removed account's env",
+        );
+        assert!(
+            !pool.ordered_account_keys().contains(&gone),
+            "the selection walk never offers a removed account again",
         );
     }
 }

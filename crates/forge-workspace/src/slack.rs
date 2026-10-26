@@ -64,21 +64,14 @@ impl SlackWorkspaces {
     /// Labels address workspaces in the MCP tools and the Inspector, so
     /// they must be distinct and the token must be present.
     pub fn from_config(configs: &[SlackConfig], http: &reqwest::Client) -> Result<Self, String> {
-        let mut clients: BTreeMap<String, Arc<dyn SlackApi>> = BTreeMap::new();
-        for config in configs {
-            let label = config.workspace.trim();
-            if label.is_empty() {
-                return Err("a [[slack]] entry has an empty workspace label".to_owned());
-            }
-            if config.token.trim().is_empty() {
-                return Err(format!("slack workspace '{label}' has an empty token"));
-            }
-            if clients.contains_key(label) {
-                return Err(format!("two [[slack]] entries share the label '{label}'"));
-            }
-            let client = Arc::new(SlackClient::new(http.clone(), config.token.clone()));
-            clients.insert(label.to_owned(), client);
-        }
+        validate_configs(configs)?;
+        let clients: BTreeMap<String, Arc<dyn SlackApi>> = configs
+            .iter()
+            .map(|config| {
+                let client = Arc::new(SlackClient::new(http.clone(), config.token.clone()));
+                (config.workspace.trim().to_owned(), client as Arc<dyn SlackApi>)
+            })
+            .collect();
         Ok(Self { clients })
     }
 
@@ -112,6 +105,26 @@ impl SlackWorkspaces {
         }
         out
     }
+}
+
+/// The semantic checks a `[[slack]]` list must pass. Shared by the boot's
+/// client build and the config loader, so a reload refuses what a restart
+/// refuses.
+pub(crate) fn validate_configs(configs: &[SlackConfig]) -> Result<(), String> {
+    let mut labels: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for config in configs {
+        let label = config.workspace.trim();
+        if label.is_empty() {
+            return Err("a [[slack]] entry has an empty workspace label".to_owned());
+        }
+        if config.token.trim().is_empty() {
+            return Err(format!("slack workspace '{label}' has an empty token"));
+        }
+        if !labels.insert(label) {
+            return Err(format!("two [[slack]] entries share the label '{label}'"));
+        }
+    }
+    Ok(())
 }
 
 /// The distinct projects a set of subscriptions belongs to, in the order the

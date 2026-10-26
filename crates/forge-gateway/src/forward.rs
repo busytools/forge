@@ -8,9 +8,10 @@
 //!   auth.
 //! - `<segments>/v1/messages` (query ignored) resolves the binding and
 //!   forwards to the bound account's upstream with the real credential
-//!   attached and the CLI's dummy stripped. A binding keeps the session
-//!   only while its account serves the model in the body: a model the
-//!   bound account cannot serve drops the binding and re-selects. An
+//!   attached and the CLI's dummy stripped. A bound session keeps its
+//!   account until the config removes that account entirely; a model the
+//!   account does not declare is still forwarded, because the account was
+//!   the spawn's choice and a running session is not reconfigured. An
 //!   unbound session selects an account now, from the model in its own
 //!   body.
 //! - The failing response streams back to the CLI untouched, but the
@@ -78,7 +79,9 @@ pub struct Gateway {
     org_pins: parking_lot::Mutex<HashMap<String, crate::selection::OrgPin>>,
     /// Exhaustion marks and cooldowns, shared with the workspace's
     /// `rate_limit_event` reports. The numbers inside arrive from
-    /// `[gateway]` at boot and never change mid-run.
+    /// `[gateway]` at boot and again on a config reload; the cooldown and
+    /// streak maps are the running state and are not replaced by a reload
+    /// that leaves the numbers alone.
     rotation: parking_lot::Mutex<RotationState>,
 }
 
@@ -215,10 +218,13 @@ impl Gateway {
             .unwrap_or_else(|| self.rotation.lock().no_reset_cooldown())
     }
 
-    /// Whether the bound account declares `model`. An unknown account
-    /// serves nothing: the binding is stale and re-selects.
-    fn binding_serves(&self, account: &AccountKey, model: &str) -> bool {
-        self.pool.declares(account, model)
+    /// A bound session sticks to its account. Only an account the config
+    /// removed outright (and the pool has since forgotten) re-selects; a
+    /// model-list or token edit leaves the running session where it is.
+    /// `model` is the body's model, kept in the signature for the caller's
+    /// own log line.
+    fn binding_serves(&self, account: &AccountKey, _model: &str) -> bool {
+        self.pool.contains(account)
     }
 
     /// Selection, or the loud response its failure produces.
@@ -393,12 +399,12 @@ impl RouteHandler for Gateway {
             Err(error) => return text_response(StatusCode::BAD_REQUEST, error.to_string()),
         };
 
-        // A binding keeps the session only while its account can serve
-        // the model in the body: a model change the bound account
-        // cannot serve rotates here, with the prompt-cache miss
-        // accepted. An unbound session selects now, from the model in
-        // its own body and the org named in its path. The selection
-        // failure names both.
+        // A bound session keeps its account: a model change is forwarded
+        // on the account the session spawned under, because that choice
+        // was the spawn's and a running session is not reconfigured. Only
+        // a binding the pool no longer knows re-selects. An unbound
+        // session selects now, from the model in its own body and the org
+        // named in its path; the selection failure names both.
         let account = match self.bindings.binding_for(org, project, session) {
             Some(bound) if self.binding_serves(&bound, &model) => bound,
             Some(bound) => {
@@ -1577,7 +1583,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_model_change_the_bound_account_cannot_serve_rotates() {
+    async fn a_model_change_keeps_the_bound_account() {
         let harness = harness(Duration::ZERO).await;
         pin_only(&harness, "Anthropic");
         harness
@@ -1585,49 +1591,41 @@ mod tests {
             .pool
             .set_loading(&AccountKey("Anthropic".to_owned()), crate::LoadingState::Ready);
         // session-1 is bound to OpenRouter; the body now asks for a
-        // claude model. The binding rotates to the account that serves
-        // it, with the prompt-cache miss accepted.
+        // claude model. The binding stays: a running session keeps the
+        // account it spawned under.
         let response = post_model(&harness.client_url, "claude-sonnet-5").await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
-            Some(AccountKey("Anthropic".to_owned())),
-            "the model change moved the binding to the serving account",
+            Some(AccountKey("OpenRouter".to_owned())),
+            "the model change leaves the binding where it was",
         );
         assert_eq!(harness.requests.lock().len(), 1, "the request was forwarded once");
     }
 
     #[tokio::test]
-    async fn a_model_change_with_no_serving_account_fails_loudly() {
+    async fn a_model_change_with_no_serving_account_still_uses_the_binding() {
         let harness = harness(Duration::ZERO).await;
         pin_only(&harness, "OpenRouter");
         harness
             .gateway
             .pool
             .set_loading(&AccountKey("OpenRouter".to_owned()), crate::LoadingState::Ready);
-        // Bound to OpenRouter and asking for claude: the declared-model
-        // gate refuses the re-selection instead of forwarding to an
-        // account that cannot answer it.
+        // Bound to OpenRouter and asking for claude: the bound account is
+        // still the session's account, so the request is forwarded rather
+        // than failing on a selection walk nobody asked for.
         let response = post_model(&harness.client_url, "claude-sonnet-5").await;
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body = response.text().await.expect("body");
-        assert!(
-            body.contains("claude-sonnet-5") && body.contains("Busytools"),
-            "the failure names the model and the org, got: {body}",
-        );
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-1"),
-            None,
-            "the unservable binding was dropped",
+            Some(AccountKey("OpenRouter".to_owned())),
+            "the binding is kept",
         );
-        assert!(
-            harness.requests.lock().is_empty(),
-            "the request must not reach an account that cannot serve it",
-        );
+        assert_eq!(harness.requests.lock().len(), 1, "the request is forwarded once");
     }
 
     #[tokio::test]
-    async fn a_non_claude_model_on_an_anthropic_binding_rotates_too() {
+    async fn a_non_claude_model_on_an_anthropic_binding_sticks() {
         let harness = harness(Duration::ZERO).await;
         pin_only(&harness, "OpenRouter");
         harness
@@ -1645,8 +1643,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             harness.gateway.bindings.binding_for("Busytools", "forge", "session-2"),
-            Some(AccountKey("OpenRouter".to_owned())),
-            "the declared-model gate is symmetric across both directions",
+            Some(AccountKey("Anthropic".to_owned())),
+            "a bound session is not moved by the model in a request body",
         );
     }
 

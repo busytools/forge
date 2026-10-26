@@ -62,20 +62,20 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
 
     start_subsystems(&workspace);
     #[cfg(target_os = "macos")]
-    let fleet = install_browser(&workspace)?;
+    {
+        let fleet = install_browser(&workspace)?;
+        start_config_watch(&workspace, move |workspace| {
+            refresh_browser(workspace, &fleet);
+        });
+    }
     #[cfg(not(target_os = "macos"))]
-    let fleet = install_browser(&workspace);
-    start_config_watch(Arc::clone(&workspace), fleet);
+    {
+        install_browser(&workspace);
+        start_config_watch(&workspace, |_workspace| {});
+    }
 
     Ok(workspace)
 }
-
-/// The browser fleet a boot installed: one on macOS, none on a platform with
-/// no CEF host.
-#[cfg(target_os = "macos")]
-type InstalledFleet = Option<Arc<forge_browser::service::BrowserService>>;
-#[cfg(not(target_os = "macos"))]
-type InstalledFleet = Option<()>;
 
 /// Watch `forge.toml` for the process's life and apply each valid edit.
 ///
@@ -83,9 +83,13 @@ type InstalledFleet = Option<()>;
 /// nothing else in that tree can trigger a reload. Each event is a whole-file
 /// read: a rejected file leaves the previous config live and logs one WARN,
 /// and an applied one logs the tables that moved and the keys that only a
-/// restart can take.
-fn start_config_watch(workspace: Arc<Workspace>, fleet: InstalledFleet) {
+/// restart can take. `apply` runs for the subsystems the boot holds.
+fn start_config_watch<F>(workspace: &Arc<Workspace>, apply: F)
+where
+    F: Fn(&Workspace) + Send + 'static,
+{
     let path = workspace.config_path();
+    let weak = Arc::downgrade(workspace);
     let (changed, mut edits) = tokio::sync::mpsc::unbounded_channel();
     let watch = match forge_workspace::env::config_watch::watch(path.clone(), changed) {
         Ok(watch) => watch,
@@ -104,9 +108,15 @@ fn start_config_watch(workspace: Arc<Workspace>, fleet: InstalledFleet) {
         // The handle lives in this task, so the watch lives as long as the
         // process (or, in a test, the runtime) without a handle outside.
         let _watch = watch;
-        while edits.recv().await.is_some() {
+        loop {
+            let _ = edits.recv().await;
+            let Some(workspace) = weak.upgrade() else { break };
             match workspace.reload_config() {
                 Ok(reload) => {
+                    // A save that changed nothing is not an apply.
+                    if reload.changed.is_empty() && reload.restart_only.is_empty() {
+                        continue;
+                    }
                     tracing::info!(
                         target: crate::logging::targets::APP_LIFECYCLE,
                         event_name = "config_reloaded",
@@ -114,10 +124,7 @@ fn start_config_watch(workspace: Arc<Workspace>, fleet: InstalledFleet) {
                         restart_only = ?reload.restart_only,
                         "forge.toml applied to the running forge",
                     );
-                    #[cfg(target_os = "macos")]
-                    refresh_browser(&workspace, &fleet);
-                    #[cfg(not(target_os = "macos"))]
-                    refresh_browser(&workspace, fleet);
+                    apply(&workspace);
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -135,17 +142,12 @@ fn start_config_watch(workspace: Arc<Workspace>, fleet: InstalledFleet) {
 
 /// Push the reloaded `[browser]` knobs and profile names into the fleet.
 #[cfg(target_os = "macos")]
-fn refresh_browser(workspace: &Workspace, fleet: &InstalledFleet) {
-    let Some(fleet) = fleet else { return };
+fn refresh_browser(workspace: &Workspace, fleet: &Arc<forge_browser::service::BrowserService>) {
     let browser = workspace.browser_settings();
     fleet.configure_encoding(browser.fps, browser.quality);
     fleet.configure_idle(browser.idle_minutes);
     configure_fleet_profiles(workspace, fleet);
 }
-
-/// A platform with no fleet has nothing to refresh.
-#[cfg(not(target_os = "macos"))]
-fn refresh_browser(_workspace: &Workspace, _fleet: InstalledFleet) {}
 
 /// Install the server's browser fleet: constructed here, one host and one
 /// driver per profile spawned on first use.
@@ -165,7 +167,9 @@ fn configure_fleet_profiles(workspace: &Workspace, fleet: &forge_browser::servic
 }
 
 #[cfg(target_os = "macos")]
-fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<InstalledFleet> {
+fn install_browser(
+    workspace: &Arc<Workspace>,
+) -> anyhow::Result<Arc<forge_browser::service::BrowserService>> {
     let fleet = Arc::new(
         forge_browser::service::BrowserService::installed()
             .map_err(|why| anyhow::anyhow!("forge: {why}"))?,
@@ -186,15 +190,13 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<InstalledFleet>
     let reaper = Arc::clone(&fleet);
     tokio::spawn(async move { reaper.reap_stale().await });
     workspace.install_browser_host(Arc::new(HostedBrowser(Arc::clone(&fleet))));
-    Ok(Some(fleet))
+    Ok(fleet)
 }
 
 /// A platform with no CEF host: the browser tools answer the no-host refusal
 /// rather than a server that pretends to have a fleet.
 #[cfg(not(target_os = "macos"))]
-fn install_browser(_workspace: &Arc<Workspace>) -> InstalledFleet {
-    None
-}
+fn install_browser(_workspace: &Arc<Workspace>) {}
 
 /// The fleet behind the workspace's port.
 #[cfg(target_os = "macos")]
@@ -677,7 +679,7 @@ port = {port}
     async fn a_config_edit_reaches_the_running_workspace() {
         let (workspace, _dir) = boot_fixture();
         let mut updates = workspace.subscribe();
-        start_config_watch(Arc::clone(&workspace), None);
+        start_config_watch(&workspace, |_workspace| {});
 
         let path = workspace.config_path();
         let raw = std::fs::read_to_string(&path).expect("read");

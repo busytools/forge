@@ -778,7 +778,6 @@ impl LoadedConfig {
         );
         mark(&mut reload.changed, "models", !same_models(&self.models, &next.models));
         mark(&mut reload.changed, "handoff", self.handoff != next.handoff);
-        mark(&mut reload.changed, "dictate", self.dictate != next.dictate);
         mark(&mut reload.changed, "systemone", self.systemone != next.systemone);
         mark(&mut reload.changed, "plugins", self.plugins.auto_update != next.plugins.auto_update);
         mark(
@@ -789,6 +788,7 @@ impl LoadedConfig {
         );
         mark(&mut reload.changed, "client", !same_client(&self.client, &next.client));
         mark(&mut reload.changed, "browser", self.browser != next.browser);
+        mark(&mut reload.changed, "slack", !same_slack_connection(&self.slack, &next.slack));
         mark(&mut reload.changed, "documents", self.document_max_bytes != next.document_max_bytes);
         mark(&mut reload.changed, "usage", self.usage_poll_interval != next.usage_poll_interval);
         mark(&mut reload.changed, "gateway", self.gateway_rotation != next.gateway_rotation);
@@ -801,8 +801,9 @@ impl LoadedConfig {
         mark(&mut reload.restart_only, "server.bind", self.server.bind != next.server.bind);
         mark(&mut reload.restart_only, "server.port", self.server.port != next.server.port);
         mark(&mut reload.restart_only, "gateway.port", self.gateway_port != next.gateway_port);
+        mark(&mut reload.restart_only, "dictate", self.dictate != next.dictate);
         mark(&mut reload.restart_only, "gotify", self.gotify != next.gotify);
-        mark(&mut reload.restart_only, "slack", !same_slack(&self.slack, &next.slack));
+        mark(&mut reload.restart_only, "slack", !same_slack_timing(&self.slack, &next.slack));
         reload
     }
 }
@@ -855,19 +856,25 @@ fn same_models(
 }
 
 fn same_client(previous: &ClientConfig, next: &ClientConfig) -> bool {
-    previous.mark == next.mark
-        && previous.theme == next.theme
-        && previous.font == next.font
-        && previous.browser_idle_minutes == next.browser_idle_minutes
-        && previous.browser_grace_minutes == next.browser_grace_minutes
+    // The two browser_idle ghosts are not read by anything: comparing them
+    // would report a change the config does not carry.
+    previous.mark == next.mark && previous.theme == next.theme && previous.font == next.font
 }
 
-fn same_slack(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
+fn same_slack_connection(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
+    previous.len() == next.len()
+        && previous
+            .iter()
+            .zip(next)
+            .all(|(old, new)| old.workspace == new.workspace && old.token == new.token)
+}
+
+/// The windows a Slack pump captured when its subsystem started. A token or
+/// label is read per call; these are the keys a reload cannot move.
+fn same_slack_timing(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
     previous.len() == next.len()
         && previous.iter().zip(next).all(|(old, new)| {
-            old.workspace == new.workspace
-                && old.token == new.token
-                && old.poll_seconds == new.poll_seconds
+            old.poll_seconds == new.poll_seconds
                 && old.dm_poll_seconds == new.dm_poll_seconds
                 && old.thread_idle_days == new.thread_idle_days
                 && old.stale_after_hours == new.stale_after_hours
@@ -1164,6 +1171,13 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     if parsed.web.is_some() {
         return Err(WorkspaceError::WebSectionRenamed { path });
     }
+
+    // The boot's SlackWorkspaces build runs these checks; a reload goes
+    // through the same loader, so it must refuse the same file a restart
+    // would.
+    crate::slack::validate_configs(&parsed.slack).map_err(|message| {
+        WorkspaceError::ConfigInvalid { path: path.clone(), message: format!("slack: {message}") }
+    })?;
 
     if parsed.workers.is_some() {
         tracing::warn!(
@@ -2913,6 +2927,39 @@ poll_second = 45
         let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
         let parsed: ForgeToml = toml::from_str(toml).expect("parses without stale_after_hours");
         assert_eq!(parsed.slack[0].stale_after_hours, 24);
+    }
+
+    /// The loader runs the checks the boot's Slack build runs, so a reload
+    /// cannot accept a list a restart refuses.
+    #[test]
+    fn load_refuses_a_slack_list_the_boot_would_refuse() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Acct"]
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "same"
+token = "x"
+[[slack]]
+workspace = "same"
+token = "y"
+"#,
+        );
+
+        let error = load_from_dir(dir.path()).expect_err("duplicate labels are refused");
+        assert!(matches!(error, WorkspaceError::ConfigInvalid { .. }), "{error}");
+        assert!(error.to_string().contains("share the label"), "{error}");
     }
 
     #[test]

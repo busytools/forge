@@ -318,9 +318,11 @@ pub struct Workspace {
     /// `[gotify]` section. Swapped whole by [`Workspace::reload_config`],
     /// which is why readers take an owned snapshot rather than a reference.
     pub(crate) config: parking_lot::RwLock<Arc<LoadedConfig>>,
-    /// The `[client]` settings every connected view draws with. A reload
-    /// sends the new value, and each live connection re-greets from it.
-    client_settings: tokio::sync::watch::Sender<forge_primitives::ClientConfig>,
+    /// Odd while a reload is swapping state, even when settled. A spawn
+    /// reads it before resolving and re-checks after, so a resolution that
+    /// straddled the swap retries rather than pairing an old project pin
+    /// with the new pool.
+    reload_generation: std::sync::atomic::AtomicU64,
     /// The `[systemone]` decision client, built at boot when the section
     /// is present and enabled; the session MCP servers are handed a
     /// facade over it. `None` keeps the systemone tools out of every
@@ -1776,11 +1778,10 @@ impl Workspace {
         // The statuspage answer is the same for every viewer too, and it
         // has to outlive the view that used to fetch it.
         let service_status: Arc<Mutex<Option<ServiceIssue>>> = Arc::new(Mutex::new(None));
-        let client_settings = tokio::sync::watch::channel(config.client.clone()).0;
         let workspace = Self {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
-            client_settings,
+            reload_generation: std::sync::atomic::AtomicU64::new(0),
             systemone: parking_lot::RwLock::new(systemone),
             catalog,
             app_support,
@@ -1916,6 +1917,12 @@ impl Workspace {
         Arc::clone(&self.config.read())
     }
 
+    /// Whether a reload is mid-swap. A reader that resolves across one
+    /// retries instead of mixing the old config with the new pool.
+    fn reload_in_progress(&self) -> bool {
+        self.reload_generation.load(std::sync::atomic::Ordering::Acquire) % 2 == 1
+    }
+
     /// Re-read `<config_dir>/forge.toml` and apply what can change without
     /// a restart. A reload is a whole-config replacement: the parsed value
     /// goes through the same loader a boot uses, and only a valid file
@@ -1939,26 +1946,51 @@ impl Workspace {
 
         let previous = self.config.read().clone();
         let reload = previous.diff(&next);
+        let added_accounts: Vec<forge_gateway::AccountKey> = next
+            .accounts
+            .iter()
+            .filter(|account| {
+                !previous.accounts.iter().any(|old| old.display_name == account.display_name)
+            })
+            .map(|account| forge_gateway::AccountKey(account.display_name.clone()))
+            .collect();
 
+        // Odd while the swap runs. A spawn that resolves across it retries;
+        // see `reload_in_progress`.
+        self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.accounts.replace_accounts(&next.accounts);
         self.gateway.set_org_pins(org_pins(&next));
-        self.gateway.set_rotation_numbers(next.gateway_rotation);
+        // The setter rebuilds the rotation state, which would empty the
+        // live cooldowns and streaks. Only a reload that moved the numbers
+        // is allowed to do that.
+        if reload.changed.contains(&"gateway") {
+            self.gateway.set_rotation_numbers(next.gateway_rotation);
+        }
         *self.systemone.write() = systemone;
         *self.config.write() = Arc::new(next);
+        self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
-        if reload.changed.iter().any(|table| *table == "accounts" || *table == "orgs") {
+        // A new account starts `Loading`; kick the same probe a boot runs
+        // so it does not wait for the poller's next tick.
+        for key in added_accounts {
+            let weak = Arc::downgrade(self);
+            let span = tracing::info_span!("account_loading", account = %key.0);
+            tokio::spawn(
+                async move { crate::account_loader::run_account_loading(key, weak).await }
+                    .instrument(span),
+            );
+        }
+
+        // A project-only edit moves the roster, not the pool: the server
+        // roster reads it on the next home read, and an `AccountsChanged`
+        // frame here would claim a pool move that did not happen.
+        if reload.changed.contains(&"accounts") {
             self.announce_accounts_changed();
         }
-        if reload.changed.contains(&"client") {
-            // `send_replace` keeps the value for a connection that attaches
-            // between this reload and the next reconnect.
-            let _ = self.client_settings.send_replace(self.config_arc().client.clone());
-        }
-
         // A project the edit added starts as it would at boot; one already
         // declared keeps whatever it is running, and a removed one is left
         // alone.
-        let added: Vec<String> = self
+        let added: Vec<(String, String)> = self
             .config_arc()
             .projects
             .iter()
@@ -1969,9 +2001,14 @@ impl Workspace {
                         .iter()
                         .any(|old| old.org == project.org && old.name == project.name)
             })
-            .map(|project| project.name.clone())
+            .map(|project| (project.org.clone(), project.name.clone()))
             .collect();
-        for project_name in added {
+        for (org, project_name) in added {
+            // The boot wave may have started it already; a slot the pool
+            // holds needs no second dispatch.
+            if self.pool.lock().contains_key(&SessionSlot::lead(&org, &project_name)) {
+                continue;
+            }
             if let Err(error) = self.dispatch(Command::SpawnProject {
                 project_name: project_name.clone(),
                 launch_settings: SessionLaunchSettings::default(),
@@ -1993,15 +2030,6 @@ impl Workspace {
     /// `forge.toml` itself.
     pub fn client_config(&self) -> forge_primitives::ClientConfig {
         self.config_arc().client.clone()
-    }
-
-    /// Watch the `[client]` settings a connection greets with. A reload
-    /// sends the new value, so every live connection re-sends its greeting
-    /// with the sets the client should now draw.
-    pub fn client_settings_watch(
-        &self,
-    ) -> tokio::sync::watch::Receiver<forge_primitives::ClientConfig> {
-        self.client_settings.subscribe()
     }
 
     /// The server browser's own knobs: `[browser]`'s encoding rate and
@@ -2389,34 +2417,50 @@ impl Workspace {
         // is no org, no pin and no model for the walk to run over, and
         // an unregistered spawn would hand the child the account's real
         // credential and a direct base URL.
-        let Some(project) = self.project_for_target(&target) else {
-            return Err(
-                WorkspaceError::SpawnResolvesToNoProject { slot: session_slot.display() }.into()
-            );
-        };
-        // The role and the slot are two statements of the same thing -
-        // the tool surface comes from the first and the address from the
-        // second - so a caller that states them differently is refused
-        // rather than handed a worker's address with a lead's tools.
-        if Self::slot_for_spawn(role, &project) != session_slot {
-            return Err(WorkspaceError::SpawnRoleSlotDisagree {
-                role: role.clone(),
-                slot: session_slot.display(),
+        // Resolving a project and selecting its account reads two different
+        // snapshots (the config and the pool). A reload between them would
+        // pair an old pin with the new pool, so the generation is read
+        // before and re-checked after; a straddled resolution retries.
+        let (project, account_key) = loop {
+            if self.reload_in_progress() {
+                std::thread::yield_now();
+                continue;
             }
-            .into());
-        }
-        // The gateway's walk is the one place a session's account is
-        // decided: it looks the org's pin up, filters cooling accounts
-        // and walks the accounts declaring the model. The spawn only
-        // registers the answer, and that registration is what binds.
-        let Some(model) = project.model.as_deref() else {
-            return Err(WorkspaceError::ProjectModelMissing {
-                project: project.name.clone(),
-                org: project.org.clone(),
+            let generation = self.reload_generation.load(std::sync::atomic::Ordering::Acquire);
+            let Some(project) = self.project_for_target(&target) else {
+                return Err(WorkspaceError::SpawnResolvesToNoProject {
+                    slot: session_slot.display(),
+                }
+                .into());
+            };
+            // The role and the slot are two statements of the same thing -
+            // the tool surface comes from the first and the address from
+            // the second - so a caller that states them differently is
+            // refused rather than handed a worker's address with a lead's
+            // tools.
+            if Self::slot_for_spawn(role, &project) != session_slot {
+                return Err(WorkspaceError::SpawnRoleSlotDisagree {
+                    role: role.clone(),
+                    slot: session_slot.display(),
+                }
+                .into());
             }
-            .into());
+            // The gateway's walk is the one place a session's account is
+            // decided: it looks the org's pin up, filters cooling accounts
+            // and walks the accounts declaring the model. The spawn only
+            // registers the answer, and that registration is what binds.
+            let Some(model) = project.model.as_deref() else {
+                return Err(WorkspaceError::ProjectModelMissing {
+                    project: project.name.clone(),
+                    org: project.org.clone(),
+                }
+                .into());
+            };
+            let account_key = self.select_account_for_project(&project, model)?;
+            if self.reload_generation.load(std::sync::atomic::Ordering::Acquire) == generation {
+                break (project, account_key);
+            }
         };
-        let account_key = self.select_account_for_project(&project, model)?;
         // The account and model checks have passed, so this spawn is
         // committed: record the id its lead will run under, either the
         // one the store held or the one minted in
@@ -13053,6 +13097,69 @@ provider = "anthropic"
             spawned,
             vec!["fresh".to_owned()],
             "only the project the edit added starts; the running one is left alone",
+        );
+    }
+
+    /// `[dictate]`'s derived state is built once at boot, so an edit is
+    /// stored and named restart-only rather than reported as live.
+    #[tokio::test]
+    async fn a_dictate_change_is_restart_only() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw.push_str("\n[dictate]\nenabled = true\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write");
+
+        let reload = workspace.reload_config().expect("the new file is valid");
+
+        assert!(reload.restart_only.contains(&"dictate"), "{reload:?}");
+        assert!(!reload.changed.contains(&"dictate"), "{reload:?}");
+    }
+
+    /// A reload that did not move the gateway's rotation numbers must not
+    /// rebuild the rotation state: an unrelated edit cannot make a cooling
+    /// account eligible again.
+    #[tokio::test]
+    async fn an_unrelated_reload_keeps_the_live_rotation_state() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let account = forge_gateway::AccountKey("Stargate".to_owned());
+        let registration = forge_gateway::binding::Registration {
+            org: "Default".to_owned(),
+            project: "forge".to_owned(),
+            session: "s".to_owned(),
+            account: account.clone(),
+            provider: forge_primitives::account::Provider::Anthropic,
+        };
+        workspace.gateway.bindings.register(
+            &registration,
+            "http://127.0.0.1:1",
+            &std::collections::HashMap::new(),
+        );
+        let reset = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+            + 3_600;
+        workspace.gateway.report_rate_limit("Default", "forge", "s", Some(reset));
+        assert!(workspace.gateway.is_cooling(&account), "the fixture cools the account");
+
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw.push_str("\n[documents]\nmax_size_mib = 11\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write");
+        workspace.reload_config().expect("the new file is valid");
+        assert!(
+            workspace.gateway.is_cooling(&account),
+            "a reload outside [gateway] leaves the live cooldown alone",
+        );
+
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw.push_str("\n[gateway]\nstreak_count = 7\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write");
+        workspace.reload_config().expect("the new file is valid");
+        assert!(
+            !workspace.gateway.is_cooling(&account),
+            "a reload that moved the numbers replaces the rotation state",
         );
     }
 

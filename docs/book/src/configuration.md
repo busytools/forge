@@ -395,8 +395,8 @@ token is probed with a minimal billed messages call instead - its
 response headers carry the 5-hour and 7-day usage windows
 at roughly nine tokens per account per
 usage poll; a rejected token renders as an auth failure whose repair
-is a re-mint. Like every key, it is read once at boot, so
-replacing the token needs a restart.
+is a re-mint. A replaced token is read by the next probe and the next
+session; a session already running keeps the credential it spawned with.
 
 Only key names, never values, are recorded in forge's per-spawn log
 line. These tables hold tokens.
@@ -855,23 +855,24 @@ load.
 
 | Table or key | Takes effect |
 | --- | --- |
-| `[[orgs]]`, `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile` | Live. The roster, pins and next spawn read the new values. An added project with `auto_start = true` starts. A removed project leaves the roster; sessions already running keep running. |
-| `[[accounts]]` - `display_name`, `provider`, `token`, `base_url`, `models`, `model_slugs`, `model_aliases`, `env` | Live. The pool gains, changes or drops accounts. New sessions use the new tokens, running sessions keep theirs, and usage probes follow the new set. |
+| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile` | Live. The server's roster, pins and next spawn read the new values. An added project with `auto_start = true` starts. A removed project leaves the server's roster; sessions already running keep running. An open client sees the new roster on its next home read. |
+| `[[accounts]]` - `display_name`, `provider`, `token`, `base_url`, `models`, `model_slugs`, `model_aliases`, `env` | Live. The pool gains, changes or drops accounts. New sessions use the new tokens, running sessions keep theirs, and usage probes follow the new set. A removed account is retired: sessions bound to it keep working, and new selections never see it. |
 | `[env]` | Live. Folded into each account's env at load, so the next spawn carries it. |
 | `[models."<name>"]` | Live. The next spawn stamps the new parameters. |
 | `[handoff]` | Live. The next handoff reads it. |
-| `[dictate]` | Live. The next model load or path resolution uses it. |
-| `[systemone]` | Live. The client is rebuilt, so the next tool call uses it. |
-| `[plugins] auto_update` | Live for the pane's display; the auto-update run itself is a boot-time act, so a change takes effect at the next boot. |
-| `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. The rotation numbers are replaced. |
+| `[systemone]` | Live for new sessions. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
+| `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. A reload that moved these replaces the rotation numbers; one that did not leaves the live cooldowns and streaks alone. |
 | `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
-| `[server] tool_record_cap_kb`, `first_frame_cap_kb` | Live. The next page, `more` or live frame is bounded by the new value. |
+| `[server] tool_record_cap_kb`, `first_frame_cap_kb` | Live for pages and `more`; a connection already open keeps the cap it read when it opened. |
 | `[server] enabled`, `bind`, `port` | Restart-only. Stored and named in the log; forge never rebinds a live socket. |
 | `[browser] fps`, `quality`, `idle_minutes` | Live. The running service reads the new encoding and idle clock. |
-| `[client] mark`, `theme`, `font` | Live. Every connected client is re-sent its greeting with the new sets. |
+| `[client] mark`, `theme`, `font` | Applies to the next connection. A client snapshots these at its handshake and keeps them until it reconnects. |
 | `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
 | `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |
-| `[gotify]`, `[[slack]]` | Restart-only. Their connections were captured when the subsystem started; the log names them. |
+| `[dictate]` | Restart-only. Its derived state (the preflight, the model pins) is built once at boot. |
+| `[[slack]]` `workspace`, `token` | Live for the next call. |
+| `[[slack]]` `poll_seconds`, `dm_poll_seconds`, `thread_idle_days`, `stale_after_hours` | Restart-only. The pump captured these when its subsystem started; the log names them. |
+| `[gotify]` | Restart-only. A connection is captured when its subsystem starts, so a section added at runtime begins at the next boot. |
 
 **A running session is never reconfigured.** Its account, model, permission
 mode, cwd and environment stay what they spawned with. To pick up a changed
@@ -902,8 +903,9 @@ picks a session's account reads each one's state.
 the failure and the pollers keep re-probing it. The walk still keeps a
 bailed account as a last resort, and picks one when nothing else in the
 pin declares the project's model - which is why the project row stays
-clickable. Fix that account's auth, or remove its `[[accounts]]` block,
-then restart forge to pick the edit up. The screen names both.
+clickable. Fix that account's auth, or remove its `[[accounts]]` block; the
+edit applies to new work, and a session already running keeps what it
+spawned with. The screen names both.
 
 Every project carrying `auto_start = true` still spawns its lead session
 in the background, but none of them is focused: you pick one from the

@@ -1598,14 +1598,13 @@ async fn the_greeting_carries_the_dictate_axes_the_config_set() {
     );
 }
 
-/// A `[client]` edit reaches every connection that is already open: each
-/// re-sends its greeting, so the client redraws with the new sets without a
-/// reconnect.
+/// A `[client]` edit reaches the NEXT connection, not one already open: the
+/// client snapshots its settings at the handshake, so this cut has no live
+/// redraw.
 #[tokio::test]
-async fn a_client_setting_reload_regreets_every_connection() {
+async fn a_client_setting_reload_applies_to_the_next_connection() {
     let (url, fleet) = a_server().await;
     let mut first = connect(&url).await;
-    let mut second = connect(&url).await;
 
     let path = fleet.workspace().config_path();
     let mut raw = std::fs::read_to_string(&path).expect("read");
@@ -1614,24 +1613,24 @@ async fn a_client_setting_reload_regreets_every_connection() {
     let reload = fleet.workspace().reload_config().expect("the new file is valid");
     assert!(reload.changed.contains(&"client"), "the client table moved: {reload:?}");
 
-    for socket in [&mut first, &mut second] {
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
-            .await
-            .expect("a greeting arrives")
-            .expect("frame")
-            .expect("no error");
-        let text = msg.to_text().expect("text");
-        let ServerMessage::Greeting { settings, .. } =
-            serde_json::from_str(text).expect("the greeting decodes")
-        else {
-            panic!("the reloaded greeting is what a connection sends, not {text}")
-        };
-        assert_eq!(
-            settings.mark.as_deref(),
-            Some("klin"),
-            "the reloaded mark reaches the connection without a reconnect",
-        );
-    }
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(500), first.next()).await.is_err(),
+        "an open connection keeps the settings it greeted with",
+    );
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
+    let msg = socket.next().await.expect("a greeting").expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::Greeting { settings, .. } =
+        serde_json::from_str(text).expect("the greeting decodes")
+    else {
+        panic!("the next connection's first frame is its greeting, not {text}")
+    };
+    assert_eq!(
+        settings.mark.as_deref(),
+        Some("klin"),
+        "a connection opened after the reload greets with its sets",
+    );
 }
 
 /// **A large text frame crosses whole.** The inbound cap is the socket's

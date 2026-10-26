@@ -405,8 +405,8 @@ pub async fn upgrade(
 }
 
 /// The frame that tells a client it is speaking to a forge and carries the
-/// `[client]` sets it draws with. Built from whichever settings are current,
-/// so a reload can re-send it to a connection that is already open.
+/// `[client]` sets it draws with. Built when the connection opens, so a
+/// reload applies to the next connection.
 fn greeting_for(client: &forge_primitives::ClientConfig, state: &TransportState) -> ServerMessage {
     ServerMessage::Greeting {
         version: PROTOCOL_VERSION,
@@ -416,39 +416,12 @@ fn greeting_for(client: &forge_primitives::ClientConfig, state: &TransportState)
     }
 }
 
-/// Wait for a `[client]` settings change on a connection's own watch. A
-/// receiver whose sender is gone parks rather than spinning; the sender
-/// lives with the workspace, so that is a shutdown rather than a reload.
-async fn next_client_settings(
-    settings: &mut Option<tokio::sync::watch::Receiver<forge_primitives::ClientConfig>>,
-) -> Option<forge_primitives::ClientConfig> {
-    let changed = {
-        let Some(receiver) = settings.as_mut() else {
-            std::future::pending::<()>().await;
-            return None;
-        };
-        receiver.changed().await.is_ok().then(|| receiver.borrow().clone())
-    };
-    if changed.is_none() {
-        *settings = None;
-    }
-    changed
-}
-
 /// This connection as the log names it: the number its takes are told apart
 /// by, and the address it is attached from.
 #[derive(Clone, Copy)]
 struct Caller {
     id: u64,
     peer: std::net::SocketAddr,
-}
-
-/// What a connection carries into its read loop besides the socket: the
-/// caller the log names it by, and the `[client]` watch a reload re-greets
-/// through.
-struct ConnectionContext {
-    caller: Caller,
-    client_settings: Option<tokio::sync::watch::Receiver<forge_primitives::ClientConfig>>,
 }
 
 /// Greet, then serve the client until it goes.
@@ -464,10 +437,7 @@ where
         + Unpin
         + Send,
 {
-    // Subscribe before the greeting goes out: a reload that lands while the
-    // client is reading it must still reach this connection.
-    let client_settings = state.surface.client_settings_watch();
-    let client = client_settings.borrow().clone();
+    let client = state.surface.client_config();
     let greeting = greeting_for(&client, &state);
     let Ok(text) = serde_json::to_string(&greeting) else {
         tracing::error!(
@@ -485,7 +455,7 @@ where
     {
         return;
     }
-    if let Err(error) = drive(&mut socket, &state, peer, Some(client_settings)).await {
+    if let Err(error) = drive(&mut socket, &state, peer).await {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_ended",
@@ -504,7 +474,6 @@ async fn drive<S>(
     socket: &mut S,
     state: &Arc<TransportState>,
     peer: std::net::SocketAddr,
-    client_settings: Option<tokio::sync::watch::Receiver<forge_primitives::ClientConfig>>,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -561,7 +530,7 @@ where
         &mut browser,
         &reply_tx,
         &mut answers,
-        ConnectionContext { caller, client_settings },
+        caller,
     )
     .await;
     // **A viewer's count comes off however the connection ends.** A socket
@@ -705,7 +674,7 @@ async fn run_connection<S>(
     browser: &mut BrowserViewing,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
-    context: ConnectionContext,
+    caller: Caller,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -713,8 +682,6 @@ where
         + Unpin
         + Send,
 {
-    let caller = context.caller;
-    let mut client_settings = context.client_settings;
     let me = caller.id;
     let mut held = Batch::default();
     // The served-record bound every frame to a client takes (#2374), read once
@@ -762,16 +729,6 @@ where
                 let Some(reply) = reply else { break };
                 batch::flush(socket, held.take()).await?;
                 send(socket, reply).await?;
-            }
-            // **A `[client]` change is a new greeting for this connection.**
-            // The greeting is what configures the client's drawn sets, so a
-            // reload re-sends it rather than leaving them stale until the
-            // next reconnect.
-            client = next_client_settings(&mut client_settings) => {
-                if let Some(client) = client {
-                    batch::flush(socket, held.take()).await?;
-                    send(socket, greeting_for(&client, state)).await?;
-                }
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
@@ -3346,15 +3303,7 @@ mod tests {
         let mut peer = StoppedReading { inbound: peer_in, writing: Some(writing) };
         let driven = tokio::spawn({
             let state = Arc::clone(&state);
-            async move {
-                drive(
-                    &mut peer,
-                    &state,
-                    attached_from(),
-                    Some(state.surface.client_settings_watch()),
-                )
-                .await
-            }
+            async move { drive(&mut peer, &state, attached_from()).await }
         });
 
         // The snapshot answering the subscribe is the frame whose write
@@ -4857,10 +4806,7 @@ mod tests {
             }
         });
         let state = Arc::clone(state);
-        let driven = tokio::spawn(async move {
-            drive(&mut peer, &state, attached_from(), Some(state.surface.client_settings_watch()))
-                .await
-        });
+        let driven = tokio::spawn(async move { drive(&mut peer, &state, attached_from()).await });
         Driven { to_server, written, driven }
     }
 

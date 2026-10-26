@@ -392,11 +392,10 @@ impl Workspace {
         // `new_for_test`'s convention: the stub's whole app-support base
         // sits under the test's own config dir.
         let app_support = Some(config_dir.join("app-support"));
-        let client_settings = tokio::sync::watch::channel(config.client.clone()).0;
         let workspace = Self {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
-            client_settings,
+            reload_generation: std::sync::atomic::AtomicU64::new(0),
             systemone: parking_lot::RwLock::new(systemone),
             catalog: Arc::new(Mutex::new(HashMap::new())),
             app_support,

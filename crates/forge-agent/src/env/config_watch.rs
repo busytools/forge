@@ -6,6 +6,10 @@
 //! temporary file and renames it over the path, and Syncthing applies an
 //! incoming change the same way, so the watch is re-armed on the path
 //! after every burst - a watch held on the replaced inode goes deaf.
+//!
+//! A symlink repointed at a different target produces no event, because the
+//! backend watches the target's directory. Replace the file through the
+//! link, or edit the path the config dir actually names.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,6 +30,7 @@ const REARM_GRACE: Duration = Duration::from_secs(2);
 const REARM_SLOW: Duration = Duration::from_secs(1);
 
 /// A live watch. Dropping it stops the task and with it the watcher.
+#[must_use = "dropping it stops watching forge.toml"]
 pub struct ConfigWatch {
     task: JoinHandle<()>,
 }
@@ -36,17 +41,24 @@ impl Drop for ConfigWatch {
     }
 }
 
-/// Watch `path` and send one `()` per burst of changes to it.
+/// Watch `path` and send one `()` per burst of content changes to it.
 ///
 /// # Errors
 ///
-/// The initial watcher could not be created or armed, which is the
-/// caller's boot failure to report.
+/// There is no Tokio runtime to own the watch task, or the initial watcher
+/// could not be created or armed. Whether that is fatal is the caller's
+/// call: a running forge keeps serving and says it is not watching.
 pub fn watch(path: PathBuf, changed: UnboundedSender<()>) -> std::io::Result<ConfigWatch> {
+    let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+        std::io::Error::other("config_watch::watch needs a Tokio runtime to own the watch")
+    })?;
     let (events, mut incoming) = tokio::sync::mpsc::unbounded_channel::<()>();
     let mut watcher = Some(arm(&path, &events)?);
-    let task = tokio::spawn(async move {
-        while incoming.recv().await.is_some() {
+    let task = runtime.spawn(async move {
+        // The task's own sender keeps this channel open for the watch's
+        // life, so a read never ends it; dropping the handle does.
+        loop {
+            let _ = incoming.recv().await;
             let deadline = tokio::time::Instant::now() + DEBOUNCE;
             loop {
                 tokio::select! {
@@ -92,11 +104,29 @@ impl WatchedPath {
     }
 }
 
+/// Content events only. inotify reports a read of a single watched file as
+/// `Access(Open)`, and re-arming before the notification means the reload's
+/// own read would otherwise trigger the next reload.
+fn is_content_change(kind: notify::EventKind) -> bool {
+    use notify::EventKind;
+    use notify::event::ModifyKind;
+
+    matches!(
+        kind,
+        EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(_))
+    )
+}
+
 fn arm(path: &Path, events: &UnboundedSender<()>) -> std::io::Result<RecommendedWatcher> {
     let target = WatchedPath::new(path);
     let events = events.clone();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         let Ok(event) = result else { return };
+        if !is_content_change(event.kind) {
+            return;
+        }
         if event.paths.iter().any(|event_path| target.matches(event_path)) {
             let _ = events.send(());
         }
@@ -111,10 +141,22 @@ fn arm(path: &Path, events: &UnboundedSender<()>) -> std::io::Result<Recommended
 /// notification anyway and [`slow_rearm`] keeps trying.
 async fn rearm_fast(path: &Path, events: &UnboundedSender<()>) -> Option<RecommendedWatcher> {
     let deadline = tokio::time::Instant::now() + REARM_GRACE;
+    let mut warned = false;
     loop {
         match arm(path, events) {
             Ok(watcher) => return Some(watcher),
             Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound && !warned {
+                    tracing::warn!(
+                        target: "forge_agent::env::config_watch",
+                        event_name = "config_watch_rearm_failed",
+                        path = %path.display(),
+                        error = %error,
+                        "forge.toml could not be watched after an edit; the last good \
+                         config stays live and the watch keeps trying",
+                    );
+                    warned = true;
+                }
                 if tokio::time::Instant::now() >= deadline {
                     tracing::debug!(
                         target: "forge_agent::env::config_watch",
@@ -190,6 +232,22 @@ mod tests {
         );
     }
 
+    /// The reload's own read must not feed the watch. inotify reports a read
+    /// of a single watched file as an access event; accepting it would make
+    /// every reload trigger the next one.
+    #[tokio::test]
+    async fn a_read_does_not_notify() {
+        let (_dir, path, mut rx, _watch) = fixture().await;
+        std::fs::read_to_string(&path).expect("read the watched file");
+        assert!(
+            tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
+            "reading the watched file is not a content change",
+        );
+    }
+
+    /// **The re-arm is what the Linux run proves.** macOS FSEvents survives a
+    /// rename-over without it, so a green run there says nothing about the
+    /// re-arm; the second write is the assertion that matters on Linux.
     #[tokio::test]
     async fn an_atomic_save_notifies_and_the_watch_survives_the_rename() {
         let (_dir, path, mut rx, _watch) = fixture().await;
@@ -217,9 +275,19 @@ mod tests {
         );
     }
 
+    /// The negative control carries its own positive half: a watched write
+    /// notifies exactly once before the sibling write proves silence, so a
+    /// dead watcher cannot pass the test.
     #[tokio::test]
     async fn a_sibling_file_notifies_nothing() {
         let (_dir, path, mut rx, _watch) = fixture().await;
+        std::fs::write(&path, "changed = 1\n").expect("write the watched file");
+        assert!(next(&mut rx).await, "the watched file still notifies");
+        assert!(
+            tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
+            "one watched write is one notification",
+        );
+
         std::fs::write(path.with_file_name("other.toml"), "sibling = 1\n").expect("sibling");
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
@@ -227,6 +295,8 @@ mod tests {
         );
     }
 
+    /// A file that stays missing past the grace window is still reported, and
+    /// the slow re-arm deliberately keeps trying so the file's return applies.
     #[tokio::test]
     async fn a_deleted_file_still_notifies_and_its_return_applies() {
         let (_dir, path, mut rx, _watch) = fixture().await;
