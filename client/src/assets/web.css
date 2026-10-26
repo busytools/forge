@@ -2513,6 +2513,10 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   margin-right: 7px; }
 .conv details.notice > summary { list-style: none; cursor: pointer; }
 .conv details.notice > summary::-webkit-details-marker { display: none; }
+/* A provisional row's tail rides the line: the block rule above is for a
+   notice's own second line, and on a summary it would push the chevron down
+   under the row. */
+.conv details.notice > summary .sub2 { display: inline; margin-top: 0; margin-left: 8px; }
 .conv details.notice .rawbox { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
 .conv details.notice .rawbox pre { margin: 0; font-family: var(--mono); font-size: 11.5px;
   color: var(--text); white-space: pre-wrap; word-break: break-word; }
