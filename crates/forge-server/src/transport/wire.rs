@@ -977,25 +977,30 @@ fn turn_wire(
     key: Option<&str>,
     endings: &HashMap<String, TaskEnding>,
 ) -> TurnWire {
-    let mut frames: Vec<Value> = messages[from..to].iter().map(frame_of).collect();
+    let mut frames: Vec<Value> =
+        messages[from..to].iter().map(|message| frame_of(message, message.session_id())).collect();
     for ending in owed_endings(messages, from, to, endings) {
-        frames.push(frame_of(&forged_ending(ending)));
+        let forged = forged_ending(ending);
+        frames.push(frame_of(&forged, forged.session_id()));
     }
     TurnWire { key: key.map(str::to_owned), messages: frames }
 }
 
-/// One value as the page carries it, or the notice that says it will not.
+/// One message as the page carries it, or the notice that says it will not.
 ///
 /// **A failed encode used to cross as `Value::Null`**, and the fold reads
 /// `type` off every frame - so the page threw on exactly the frame it could
 /// not describe. The notice names the failure and draws in its place: nothing
-/// is dropped, and nothing arrives as a value no reader can read.
-fn frame_of<T: Serialize>(value: &T) -> Value {
+/// is dropped, and nothing arrives as a value no reader can read. The warning
+/// names the session the frame belongs to, which is the identity a reader of
+/// the log can act on.
+fn frame_of<T: Serialize>(value: &T, session: Option<&str>) -> Value {
     match serde_json::to_value(value) {
         Ok(frame) => frame,
         Err(error) => {
             tracing::warn!(
                 event_name = "conversation_frame_unsent",
+                session = session.unwrap_or("unknown"),
                 error = %error,
                 "a conversation frame could not be serialised; drawn as a notice instead",
             );
@@ -2548,7 +2553,7 @@ mod tests {
     /// arrive as a notice naming the failure rather than as `Value::Null`.
     #[test]
     fn a_frame_that_will_not_serialise_draws_a_notice_rather_than_null() {
-        let frame = frame_of(&WillNotSerialise);
+        let frame = frame_of(&WillNotSerialise, Some("a-session"));
         assert!(
             !frame.is_null(),
             "the null this replaces is the value the fold throws on: {frame}",
@@ -2564,7 +2569,7 @@ mod tests {
         };
         assert!(text.contains("could not be serialised"), "the failure is named: {frame}");
 
-        let held = frame_of(&serde_json::json!({ "type": "widget_state", "n": 1 }));
+        let held = frame_of(&serde_json::json!({ "type": "widget_state", "n": 1 }), None);
         assert_eq!(
             held,
             serde_json::json!({ "type": "widget_state", "n": 1 }),
