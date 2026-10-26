@@ -4,9 +4,13 @@
 Two `just check` runs on one machine boot CEF hosts into each other, because
 nextest only serialises the live suite within its own run
 (`.config/nextest.toml`). The lock is a `flock` on a file beside forge's other
-machine-local state: the kernel releases it when the holder dies, including
-SIGKILL, so there is no stale lock to reclaim and no owner to verify. The file
-carries the holder's pid so a waiting gate can name it.
+machine-local state: the kernel releases it when the holder process dies, so
+there is no stale lock to reclaim and no owner to verify. The file carries the
+holder's pid so a waiting gate can name it.
+
+A signal the wrapper can handle (HUP, INT, QUIT, TERM) stops the gate's whole
+tree before the wrapper exits. SIGKILL cannot be forwarded: the kernel frees
+the lock, and that gate's tree is orphaned.
 
 Usage:
   check_lock.py run [--label NAME] -- <command> [args...]
@@ -24,15 +28,23 @@ import sys
 
 DEFAULT_LABEL = "check"
 DEFAULT_TIMEOUT = 3600
+TEARDOWN_GRACE = 10
+
+SIGNAL_CODES = {
+    signal.SIGHUP: 129,
+    signal.SIGINT: 130,
+    signal.SIGQUIT: 131,
+    signal.SIGTERM: 143,
+}
 
 
-def lock_root():
+def lock_root(label):
     override = os.environ.get("FORGE_CHECK_LOCK_DIR")
     if override:
         return override
     home = os.environ.get("HOME")
     if not home:
-        print("[ERROR] check: no HOME to place the gate lock under", file=sys.stderr)
+        print(f"[ERROR] {label}: no HOME to place the gate lock under", file=sys.stderr)
         sys.exit(2)
     if sys.platform == "darwin":
         return os.path.join(home, "Library", "Application Support", "forge")
@@ -54,10 +66,10 @@ def config_failure(label, detail):
     sys.exit(2)
 
 
-def timeout_failure(label, timeout, holder, path):
+def timeout_failure(label, timeout, holder):
     print(
         f"[ERROR] {label}: gave up after {timeout}s waiting for the gate lock held by pid"
-        f" {holder}; remove {path} if that pid is not a gate run",
+        f" {holder}; the kernel releases it when that process exits",
         file=sys.stderr,
     )
     print(
@@ -97,8 +109,18 @@ def on_alarm(signum, frame):
 state = {"phase": "waiting", "proc": None, "pending": None, "signal": None}
 
 
+def hard_kill(signum, frame):
+    proc = state["proc"]
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def stop(signum, frame):
-    code = 130 if signum == signal.SIGINT else 143
+    code = SIGNAL_CODES.get(signum, 143)
     if state["phase"] == "launching":
         # The signal beat the pid assignment; the child it starts is stopped
         # after the assignment rather than left holding the terminal's pipes.
@@ -110,8 +132,12 @@ def stop(signum, frame):
         # propagates, so nothing is held to release.
         raise SystemExit(code)
     # Do not wait here: the main thread may be inside Popen.wait(), which
-    # holds a non-reentrant lock. The wait returns once the tree is gone.
+    # holds a non-reentrant lock. The wait returns once the tree is gone, and
+    # a tree that ignores TERM is SIGKILLed after the grace rather than
+    # holding the machine-wide lock until FORGE_CHECK_LOCK_TIMEOUT.
     state["signal"] = signum
+    signal.signal(signal.SIGALRM, hard_kill)
+    signal.alarm(TEARDOWN_GRACE)
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -123,8 +149,8 @@ def run(command, label):
     state["proc"] = None
     state["pending"] = None
     state["signal"] = None
-    signal.signal(signal.SIGINT, stop)
-    signal.signal(signal.SIGTERM, stop)
+    for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM):
+        signal.signal(signum, stop)
 
     raw_timeout = os.environ.get("FORGE_CHECK_LOCK_TIMEOUT", str(DEFAULT_TIMEOUT))
     if not raw_timeout.isdigit():
@@ -134,7 +160,7 @@ def run(command, label):
         )
     timeout = int(raw_timeout)
 
-    root = lock_root()
+    root = lock_root(label)
     try:
         os.makedirs(root, exist_ok=True)
     except OSError:
@@ -156,13 +182,13 @@ def run(command, label):
             flush=True,
         )
         if timeout <= 0:
-            timeout_failure(label, timeout, holder or "unknown", path)
+            timeout_failure(label, timeout, read_pid(fd) or "unknown")
         signal.signal(signal.SIGALRM, on_alarm)
         signal.alarm(timeout)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
         except (LockTimeout, InterruptedError):
-            timeout_failure(label, timeout, holder or "unknown", path)
+            timeout_failure(label, timeout, read_pid(fd) or "unknown")
         finally:
             signal.alarm(0)
 
@@ -175,9 +201,13 @@ def run(command, label):
     if state["pending"] is not None:
         stop(state["pending"], None)
 
-    status = proc.wait()
+    status = 0
+    try:
+        status = proc.wait()
+    finally:
+        signal.alarm(0)
     if state["signal"] is not None:
-        sys.exit(130 if state["signal"] == signal.SIGINT else 143)
+        sys.exit(SIGNAL_CODES.get(state["signal"], 143))
     sys.exit(status if status >= 0 else 128 - status)
 
 

@@ -6,7 +6,7 @@
 # Usage: check_delta.sh <just> <justfile> <packages>
 #
 # The machine-wide lock is not this script's: `check-delta` runs through
-# `check_lock.sh run`, because the browser live tests are not ignored and a
+# `check_lock.py run`, because the browser live tests are not ignored and a
 # slice that names forge-browser boots real CEF hosts.
 #
 # Ends on `[OK] check-delta: ...` or `[ERROR] check-delta: <step> failed` as

@@ -6,7 +6,7 @@
 # Usage: check_serial.sh <just> <justfile> <steps>
 #
 # The machine-wide lock is not this script's: `check` and `check-serial` both
-# run through `check_lock.sh run`, so one release trap covers both.
+# run through `check_lock.py run`, so the kernel holds one lock for either.
 #
 # Fail-fast and exit-code preserving: the failing step's own status is what
 # this script exits with, and the verdict names the failing step and the

@@ -196,6 +196,47 @@ class CheckLock(unittest.TestCase):
         self.assertTrue(self.lock_held(), "a waiter released the holder's lock")
         self.assertFalse(marker.exists(), "the command ran without the lock")
 
+    def test_the_wait_bound_expires_when_the_holder_stays(self):
+        # The nonzero path is the one that reaches signal.alarm; the `0` case
+        # short-circuits before it.
+        holder = self.hold_lock()
+        marker = self.root / "ran"
+
+        done = self.run_locked(
+            ["touch", str(marker)], FORGE_CHECK_LOCK_TIMEOUT="2"
+        )
+
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn(
+            f"[ERROR] check: gave up after 2s waiting for the gate lock held by pid {holder.pid}",
+            done.stderr,
+        )
+        self.assertIn(
+            f"[ERROR] check: the gate lock was not acquired (held by pid {holder.pid})",
+            done.stdout,
+        )
+        self.assertNotIn("remove", done.stderr.lower())
+        self.assertTrue(self.lock_held(), "a waiter released the holder's lock")
+        self.assertFalse(marker.exists(), "the command ran without the lock")
+
+    def test_a_term_ignoring_gate_is_killed_after_the_grace(self):
+        # A gate that traps TERM would otherwise hold the machine-wide lock
+        # until FORGE_CHECK_LOCK_TIMEOUT and fail every other gate.
+        run = subprocess.Popen(
+            [str(SCRIPT), "run", "--", "sh", "-c", 'trap "" TERM; sleep 60'],
+            env=self.env(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(self.stop, run)
+        self.wait_for_pid(run.pid)
+
+        run.send_signal(signal.SIGTERM)
+        run.wait(timeout=30)
+
+        self.assertEqual(run.returncode, 143)
+        self.assertFalse(self.lock_held(), "the lock survived a TERM-ignoring gate")
+
     def test_a_failed_command_returns_its_code(self):
         done = self.run_locked(["sh", "-c", "exit 7"])
 
