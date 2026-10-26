@@ -117,7 +117,7 @@ fn start_config_watch(workspace: Arc<Workspace>, fleet: InstalledFleet) {
                     #[cfg(target_os = "macos")]
                     refresh_browser(&workspace, &fleet);
                     #[cfg(not(target_os = "macos"))]
-                    refresh_browser(&workspace);
+                    refresh_browser(&workspace, fleet);
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -145,7 +145,7 @@ fn refresh_browser(workspace: &Workspace, fleet: &InstalledFleet) {
 
 /// A platform with no fleet has nothing to refresh.
 #[cfg(not(target_os = "macos"))]
-fn refresh_browser(_workspace: &Workspace) {}
+fn refresh_browser(_workspace: &Workspace, _fleet: InstalledFleet) {}
 
 /// Install the server's browser fleet: constructed here, one host and one
 /// driver per profile spawned on first use.
