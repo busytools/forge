@@ -159,6 +159,13 @@ class RustConnection implements Connection {
   private greeted: string | null = null;
   private asks = 0;
   /**
+   * The seat this client has on screen, re-sent on every reconnect.
+   *
+   * The server's showing is per connection, and a drop ends it; `null` is
+   * "nothing of mine is on screen" rather than "not attached".
+   */
+  private shown: SessionSlot | null = null;
+  /**
    * The bound on a subscription's first read: a subject still loading when
    * it runs out is asked again through `client_refresh`, so a snapshot lost
    * between the server and the page is not a wait with nothing behind it.
@@ -242,7 +249,12 @@ class RustConnection implements Connection {
     // A connection that opens after a bound fired owes its loading subjects a
     // fresh deadline: the subscribe went out when the socket opened, and a
     // lost first answer would otherwise leave them loading forever.
-    if (next === 'open') this.bounds.rearmLoading();
+    if (next === 'open') {
+      this.bounds.rearmLoading();
+      // **The reconnect re-sends the shown seat**, exactly as `socket.ts`'s
+      // own `onopen` does: the server's showing died with the old connection.
+      if (this.shown !== null) this.sendShowing(this.shown);
+    }
     for (const fn of this.statuses) fn(next);
   }
 
@@ -389,6 +401,43 @@ class RustConnection implements Connection {
     // transport: its news passes through rather than opening a hole over a
     // history nobody is reading.
     if (last && typeof what !== 'string') this.gate.releaseSeat(what.session);
+  }
+
+  /**
+   * Tell the server which seat is on screen.
+   *
+   * **Remembered and re-sent on every reconnect**: the server's showing is
+   * per connection, and a drop ends it. `null` is "nothing of mine is on
+   * screen", not "I am not attached".
+   */
+  showing(seat: SessionSlot | null): void {
+    this.shown = seat;
+    if (this.state === 'open') this.sendShowing(seat);
+  }
+
+  private sendShowing(seat: SessionSlot | null): void {
+    void invoke('client_showing', { seat }).catch((why: unknown) => {
+      report('a showing could not reach the shell', why);
+    });
+  }
+
+  /**
+   * Ask again for a subject whose store this client still holds.
+   *
+   * **A subscription's two halves die differently.** A socket drop takes the
+   * server's half and leaves the store here open; asking again through
+   * `subscribe` would count a second reader in the shell, and its count would
+   * drift away from the server's. This re-asks with the role the seat already
+   * declared.
+   */
+  relist(what: Subject, options?: { answering?: boolean; browser?: boolean }): void {
+    void invoke('client_relist', {
+      what,
+      answering: options?.answering ?? false,
+      browser: options?.browser ?? false,
+    }).catch((why: unknown) => {
+      report('a relist could not reach the shell', why);
+    });
   }
 
   /** `true` when the ask went, which is what a bound re-arms on. */

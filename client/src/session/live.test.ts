@@ -829,6 +829,83 @@ describe('the session page over a socket', () => {
   });
 
   /**
+   * **A resume re-attaches only the seat the reader is on.** A visited seat
+   * keeps its subscription for the connection's life, but a drop takes the
+   * server's half with it, and re-attaching every visited seat would pay a
+   * whole record each for seats nobody is looking at. The shown seat comes
+   * back live; the rest stay stale until their next click.
+   */
+  it('re-attaches only the shown seat after a reconnect', async () => {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    server = await stubServer(sessionFixture, {
+      [subjectKey({ session: LEAD })]: [{ key: 'lead-t1', messages: [say('the lead said this')] }],
+      [subjectKey({ session: W1 })]: [{ key: 'w1-t1', messages: [say('the worker said this')] }],
+    });
+    connection = connect(server.url);
+    const route = writable<Route>({ name: 'session', slot: LEAD });
+    app = mount(Routes, {
+      target: document.body,
+      props: { route, props: routerProps() },
+    });
+    await settle();
+
+    route.set({ name: 'session', slot: W1 });
+    await until(() => seatSubscribesOf(W1) === 1, 'the visit to subscribe w1');
+    route.set({ name: 'session', slot: LEAD });
+    await until(() => server?.shown.at(-1)?.label === 'lead', 'the return to show the lead again');
+
+    const lead = seatSubscribesOf(LEAD);
+    const worker = seatSubscribesOf(W1);
+    server.drop();
+    await until(() => seatSubscribesOf(LEAD) > lead, 'the reconnect to re-attach the shown seat');
+    expect(seatSubscribesOf(LEAD), 'the reconnect asked more than once').toBe(lead + 1);
+    expect(
+      seatSubscribesOf(W1),
+      'a seat away from the reader re-attached by itself on resume',
+    ).toBe(worker);
+    expect(server.shown.at(-1)?.label, 'the reconnect forgot which seat is shown').toBe('lead');
+  });
+
+  /**
+   * **A stale seat draws what it holds on its first click, then catches up.**
+   * The record a resume left behind is kept, so the click draws it at once
+   * with no server round trip - and the attach that makes it live again is
+   * exactly one subscribe.
+   */
+  it('draws a held seat on its first click after a reconnect, then attaches it', async () => {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    server = await stubServer(sessionFixture, {
+      [subjectKey({ session: LEAD })]: [{ key: 'lead-t1', messages: [say('the lead said this')] }],
+      [subjectKey({ session: W1 })]: [{ key: 'w1-t1', messages: [say('the worker said this')] }],
+    });
+    connection = connect(server.url);
+    const route = writable<Route>({ name: 'session', slot: LEAD });
+    app = mount(Routes, {
+      target: document.body,
+      props: { route, props: routerProps() },
+    });
+    await settle();
+    route.set({ name: 'session', slot: W1 });
+    await until(() => drawn().includes('the worker said this'), "w1's record to draw");
+    route.set({ name: 'session', slot: LEAD });
+    await until(() => server?.shown.at(-1)?.label === 'lead', 'the return to the lead');
+
+    const lead = seatSubscribesOf(LEAD);
+    const worker = seatSubscribesOf(W1);
+    server.drop();
+    await until(() => seatSubscribesOf(LEAD) > lead, 'the reconnect to re-attach the shown seat');
+
+    route.set({ name: 'session', slot: W1 });
+    flushSync();
+    expect(
+      drawn(),
+      'the click waited on the server instead of drawing the record it holds',
+    ).toContain('the worker said this');
+    await until(() => seatSubscribesOf(W1) > worker, 'the click to attach w1');
+    expect(seatSubscribesOf(W1), 'the click attached w1 more than once').toBe(worker + 1);
+  });
+
+  /**
    * **A frame that arrives while the page cannot paint still reaches the
    * column.** The publish waits for a painted frame, which is what turns a
    * burst into one draw of the latest - and a hidden page produces none at
@@ -1415,6 +1492,8 @@ function drivable(refusedAtFirst = false): Driveable {
       reads += 1;
       return true;
     },
+    showing: () => undefined,
+    relist: () => undefined,
     dispatch: () => {
       throw new Error('this page dispatched a command the case did not expect');
     },

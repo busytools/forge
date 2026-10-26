@@ -32,6 +32,8 @@ function untouched(): Connection {
     subscribe: refuse,
     unsubscribe: refuse,
     refresh: refuse,
+    showing: refuse,
+    relist: refuse,
     dispatch: refuse,
     more: refuse,
     commitDiff: refuse,

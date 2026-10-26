@@ -234,6 +234,14 @@ impl Bridge {
             let mut wanted = Vec::with_capacity(state.order.len());
             for key in &state.order {
                 if let Some(watch) = state.held.get(key) {
+                    // **A seat is the page's own to re-open.** Only the shown
+                    // seat re-attaches after a resume; the rest re-attach on
+                    // their next click, so re-asking every visited seat here
+                    // would pay a whole record each for seats nobody is
+                    // looking at.
+                    if !watch.what.is_string() {
+                        continue;
+                    }
                     wanted.push((
                         watch.what.clone(),
                         watch.answering,
@@ -309,6 +317,34 @@ impl Bridge {
         }
         if let Some(socket) = &state.socket {
             socket.unsubscribe(what.clone());
+        }
+    }
+
+    /// Say which seat the page has on screen, `None` for none.
+    ///
+    /// **A state assertion, not an event**: the page re-sends it on every
+    /// reconnect, and the server spends a seat's marks on it and never on a
+    /// subscription.
+    pub fn showing(&self, seat: Option<Value>) {
+        let state = self.lock();
+        if let Some(socket) = &state.socket {
+            socket.showing(seat);
+        }
+    }
+
+    /// Ask again for a subject the page still holds, **without counting a
+    /// reader**: the record and the page's store both survived the drop, and
+    /// only the server's subscription went with the socket.
+    pub fn relist(&self, what: Value, answering: bool, browser: bool) {
+        let state = self.lock();
+        let key = records::subject_key(&what);
+        let (held_answering, held_browser) = state
+            .held
+            .get(&key)
+            .map(|watch| (watch.answering, watch.browser))
+            .unwrap_or((false, false));
+        if let Some(socket) = &state.socket {
+            socket.relist(what, held_answering || answering, held_browser || browser);
         }
     }
 
@@ -1273,24 +1309,46 @@ mod tests {
 
     /// A subject two page readers hold is re-asked once per OPEN one on a
     /// reconnect from the connect screen: the count is the server's, and one
-    /// ask would leave the seat half-watched.
+    /// ask would leave the subject half-watched. **A seat is not among them**
+    /// - it is the page's own to re-open after a drop - so the count is
+    /// pinned on a subject the connection does carry across.
     #[tokio::test]
     async fn a_subject_two_readers_hold_is_re_asked_per_reader() {
         let mut server = stub().await;
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(seat(), true, true);
-        bridge.subscribe(seat(), true, true);
+        bridge.subscribe(json!("home"), true, true);
+        bridge.subscribe(json!("home"), true, true);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         bridge.connect(server.url.clone());
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         let second = server.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(second["what"], seat(), "the second ask is the same subject");
+        assert_eq!(second["what"], json!("home"), "the second ask is the same subject");
         assert!(
             tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
             "exactly two: one per open subscription"
+        );
+    }
+
+    /// **A page-driven reconnect re-attaches no seat by itself.** Only the
+    /// shown seat comes back live, through the page's own `relist`; every
+    /// other visited seat waits for its next click, so a reconnect does not
+    /// pay a whole record each for seats nobody is looking at.
+    #[tokio::test]
+    async fn a_reconnect_from_the_connect_screen_asks_for_no_seat() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), true, true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        bridge.connect(server.url.clone());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "a seat re-attached itself on resume instead of waiting for a click",
         );
     }
 

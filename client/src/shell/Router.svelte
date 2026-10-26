@@ -18,7 +18,7 @@
   import Models from '../models/Models.svelte';
   import { notePerfSurface, perfSurface } from '../perf';
   import Review from '../review/Review.svelte';
-  import { titleFor, type Route } from '../routes';
+  import { shownSeat, titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
   import type { ClientSettings } from '../wire/types';
@@ -83,6 +83,15 @@
     return watchBoard(open).subscribe(($next) => {
       board = $next;
     });
+  });
+
+  // **The shown seat is the route's, not the subscription's.** The server
+  // spends a seat's marks on this message, so a client that keeps every
+  // visited seat subscribed says which one the reader is actually on. A
+  // reconnect re-sends it from the connection's own memory.
+  $effect(() => {
+    if (connection === null) return;
+    connection.showing(shownSeat(route));
   });
 
   /**

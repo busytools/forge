@@ -690,22 +690,30 @@ function createSeat(
   }
 
   /**
-   * Open the seat's subscription, which its first holder is owed.
+   * Open the seat's subscription - the first store, or the socket's half
+   * again after a drop.
    *
-   * **One subscribe, and it opens with the first holder** - a page showing the
-   * seat, or a page that can answer arriving at one held as an observer. Two
-   * subscribes are two whole records encoded and sent to a client that keeps
-   * one copy (6.5 MB twice on a large seat, measured 2026-10-09), and the
-   * subscription goes with the LAST holder rather than with any one of them.
-   * Its answer is the first whole record, and it is an ask this seat made: the
-   * subscribe is what the server answers.
+   * **One subscribe, and it opens with the first reader** - a page showing
+   * the seat, or a page that can answer arriving at one held as an observer.
+   * Two subscribes are two whole records encoded and sent to a client that
+   * keeps one copy (6.5 MB twice on a large seat, measured 2026-10-09).
+   *
+   * **A resume must not open a second store.** The first visit opened one and
+   * the client still holds it; only the server's half died with the socket,
+   * so the resume asks again through `relist`. An escalation to a stronger
+   * role is a real second subscription and still goes through `subscribe`.
    */
   function open(): void {
-    seat.held = connection.subscribe(subject, {
-      answering: seat.answering,
-      browser: canHost(),
-    });
-    seat.opened += 1;
+    if (seat.held !== null && seat.opened === 0) {
+      connection.relist(subject, { answering: seat.answering, browser: canHost() });
+      seat.opened = 1;
+    } else {
+      seat.held = connection.subscribe(subject, {
+        answering: seat.answering,
+        browser: canHost(),
+      });
+      seat.opened += 1;
+    }
     seat.asking = true;
     seat.askedAt = seat.seen;
   }
@@ -1050,6 +1058,11 @@ function createSeat(
         // is from before it: the answer the reconnect brings is the whole
         // record, so one is wanted.
         seat.asking = false;
+        // **The drop took this seat's subscription with it, and the socket
+        // took the seat's entry out of its own list.** A page still holding
+        // this seat re-attaches below; every other seat stays stale and
+        // re-attaches on its next click, which is the resume rule.
+        seat.opened = 0;
         // The take goes with the socket: the core drops a take whose reader
         // went away, so the fold's own claim dies here - left standing, the
         // record draws a recording that is over (#1880).
@@ -1064,6 +1077,13 @@ function createSeat(
       // connection's own. The ask it sends is the one that answers - and a
       // refusal it meets arms the beat again.
       clearRetry();
+      // **Only the seat on screen comes back live.** The rest stay stale and
+      // re-attach on their next click, which is the resume rule; the shown
+      // seat's own answer is the whole record. `opened === 0` is the seat
+      // that HAD a subscription and lost it with the drop - one opened while
+      // the socket was down never sent its subscribe, and the connection's
+      // own re-ask on open is what carries it.
+      if (shown && seat.opened === 0) open();
     });
   }
 

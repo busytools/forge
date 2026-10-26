@@ -209,6 +209,24 @@ mod commands {
         bridge.refresh(&what);
     }
 
+    /// Which seat the page has on screen; null for none.
+    #[tauri::command]
+    pub fn client_showing(bridge: tauri::State<'_, Arc<Bridge>>, seat: Option<Value>) {
+        bridge.showing(seat);
+    }
+
+    /// Ask again for a subject the page still holds, adding no reader: the
+    /// page's half of a resume after a drop.
+    #[tauri::command]
+    pub fn client_relist(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        what: Value,
+        answering: bool,
+        browser: bool,
+    ) {
+        bridge.relist(what, answering, browser);
+    }
+
     /// Older turns of a conversation; false means no socket is open and no
     /// page is coming. The default width is the page's own `MORE_TURNS`.
     #[tauri::command]
@@ -483,6 +501,8 @@ pub fn run() {
             commands::client_subscribe,
             commands::client_unsubscribe,
             commands::client_refresh,
+            commands::client_showing,
+            commands::client_relist,
             commands::client_more,
             commands::client_seat_range,
             commands::client_dispatch,
@@ -536,6 +556,8 @@ pub fn run() {
             commands::client_subscribe,
             commands::client_unsubscribe,
             commands::client_refresh,
+            commands::client_showing,
+            commands::client_relist,
             commands::client_more,
             commands::client_seat_range,
             commands::client_dispatch,

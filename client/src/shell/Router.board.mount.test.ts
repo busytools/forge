@@ -45,6 +45,8 @@ function recording(sent: Record<string, unknown>[], board: BoardWire): { connect
     subscribe: (what: Subject) => stores.open(what),
     unsubscribe: (what: Subject) => stores.close(what),
     refresh: () => true,
+    showing: () => {},
+    relist: () => {},
     dispatch: (command: Record<string, unknown>) => {
       sent.push(command);
       return null;

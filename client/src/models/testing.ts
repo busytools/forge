@@ -268,6 +268,8 @@ export function fakeConnection() {
       refreshed.push(what);
       return true;
     },
+    showing() {},
+    relist() {},
     dispatch(command: Command) {
       dispatched.push(command);
       return null;

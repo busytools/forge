@@ -49,6 +49,8 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     subscribe: () => held(),
     unsubscribe: () => {},
     refresh: () => true,
+    showing: () => undefined,
+    relist: () => undefined,
     dispatch: (command) => {
       sent.push({ command });
       return null;

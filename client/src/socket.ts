@@ -77,6 +77,24 @@ export interface Connection {
    */
   refresh(what: Subject): boolean;
   /**
+   * Tell the server which seat is on screen.
+   *
+   * **Remembered and re-sent on every reconnect**: the server's showing is
+   * per connection, and a drop ends it. `null` is "nothing of mine is on
+   * screen", not "I am not attached".
+   */
+  showing(seat: SessionSlot | null): void;
+  /**
+   * Ask again for a subject whose store this client still holds.
+   *
+   * **A subscription's two halves die differently.** A socket drop takes the
+   * server's half and leaves the store here open; asking again through
+   * `subscribe` would open a second store, and its count would drift away
+   * from the server's. This re-asks with the role the subject already
+   * declared, and puts it back in the list a reconnect re-asks.
+   */
+  relist(what: Subject, options?: { answering?: boolean; browser?: boolean }): void;
+  /**
    * Send a core command.
    *
    * Answers with a promise for the five commands whose outcome rides a reply
@@ -419,6 +437,13 @@ export function connect(
   let protocolSkew: Skew | null = null;
   /** The greeting's own number, kept whether or not it skews. */
   let greetingProtocol: number | null = null;
+  /**
+   * The seat this client has on screen, re-sent on every reconnect.
+   *
+   * The server's showing is per connection, and a drop ends it; `null` is
+   * "nothing of mine is on screen" rather than "not attached".
+   */
+  let shown: SessionSlot | null = null;
   let nextReplyId = 1;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
@@ -497,10 +522,25 @@ export function connect(
     return subjectFromKey(key);
   }
 
+  /**
+   * Subscribe frames sent on the connection that is open, by key.
+   *
+   * **A reconnect asks each subscription exactly once**, and two things ask
+   * on an open: the connection's own loop for the subjects it holds, and the
+   * page's `relist` for the seat it has on screen - which puts that seat back
+   * in the held list as it asks. This count is how the loop knows what has
+   * already asked, so that seat is not asked twice.
+   */
+  const sent = new Map<string, number>();
+
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
   function askFor(what: Subject, answering: boolean, browser: boolean, declare = false): void {
     sendNow({ kind: 'subscribe', what, answering, browser, declare });
-    awaiting.push(subjectKey(what));
+    const key = subjectKey(what);
+    awaiting.push(key);
+    // A declare holds nothing on the server, so it is not a subscription this
+    // side counts either.
+    if (!declare) sent.set(key, (sent.get(key) ?? 0) + 1);
     // The read this ask owes is bounded from here: nothing else would ask
     // again for a snapshot that simply never came.
     bounds.arm(what);
@@ -708,18 +748,30 @@ export function connect(
 
     next.onopen = () => {
       if (next !== socket) return;
+      sent.clear();
       move('open');
       retryDelay = RETRY_MS;
-      for (const { subject, answering, browser } of held.values()) {
+      for (const { subject, answering, browser } of [...held.values()]) {
+        // **A seat here was opened while the socket was DOWN.** `onclose`
+        // takes the seats the old connection carried out of this list, so a
+        // visited seat is never re-asked by a resume - `session/live.ts`
+        // re-attaches the shown one on the status change, and the rest
+        // re-attach on their next click. What is left is a seat the reader
+        // opened during the drop, whose first answer is still owed.
+        //
         // Once per subscription, which is how many times the server was asked
         // before the drop: one unsubscribe drops one of its entries, so
         // re-asking once for a subject held twice would leave its count lower
         // than this side's, and a later unsubscribe would take the subject
-        // away from a caller still drawing it.
-        for (let remaining = stores.count(subject); remaining > 0; remaining -= 1) {
+        // away from a caller still drawing it. What this connection has
+        // already asked - the shown seat, re-attached above - is not asked
+        // again.
+        const already = sent.get(subjectKey(subject)) ?? 0;
+        for (let remaining = stores.count(subject) - already; remaining > 0; remaining -= 1) {
           askFor(subject, answering, browser);
         }
       }
+      if (shown !== null) sendNow({ kind: 'showing', seat: shown });
     };
 
     // **The ordering gate, and what it feeds.** Every consumer of this
@@ -815,6 +867,13 @@ export function connect(
       // server had already answered.
       failPending('the socket dropped before answering');
       awaiting.length = 0;
+      // **The drop took every server-side subscription with it.** The seat
+      // subjects are the client's own to re-open - `session/live.ts`
+      // re-attaches the shown one - so they leave this list here; the home
+      // and board are re-asked by `onopen` like any other subject.
+      for (const [key, entry] of [...held.entries()]) {
+        if (typeof entry.subject !== 'string') held.delete(key);
+      }
       scheduleRetry();
     };
 
@@ -866,15 +925,48 @@ export function connect(
   function unsubscribe(what: Subject): void {
     if (stores.get(what) === undefined) return;
     const last = stores.close(what);
-    if (isOpen()) sendNow({ kind: 'unsubscribe', what });
-    // Dropped only with the last one, so a reconnect re-asks for what is
-    // still being watched and not the seat one caller walked away from.
+    const key = subjectKey(what);
+    const listed = held.has(key);
+    if (last) held.delete(key);
+    // **Only a subject the server was actually asked for is given back.** A
+    // drop already took every server-side entry with it, so a seat released
+    // after a reconnect - before its click re-attached it - has nothing to
+    // stop and would decrement an entry another connection holds.
+    if (isOpen() && listed) sendNow({ kind: 'unsubscribe', what });
     if (last) {
-      held.delete(subjectKey(what));
       // And the gate stops sequencing it: a left seat's news passes through
       // rather than opening a hole over a history nobody is reading.
       if (typeof what !== 'string') gate?.releaseSeat(what.session);
     }
+  }
+
+  /**
+   * Open or close the seat on screen, as the route sees it.
+   *
+   * The server spends a seat's marks on this message and never on a
+   * subscription, so it is the only thing that says the reader is looking.
+   */
+  function showing(seat: SessionSlot | null): void {
+    shown = seat;
+    if (isOpen()) sendNow({ kind: 'showing', seat });
+  }
+
+  /**
+   * Ask again for a subject whose store this client still holds.
+   *
+   * **A subscription's two halves die differently.** A socket drop takes the
+   * server's half and leaves the store here open; asking again through
+   * `subscribe` would open a second store, and its count would drift away
+   * from the server's. This re-asks with the role the seat already declared,
+   * and puts the subject back in the list a reconnect re-asks.
+   */
+  function relist(what: Subject, options?: { answering?: boolean; browser?: boolean }): void {
+    const key = subjectKey(what);
+    const existing = held.get(key);
+    const answering = existing?.answering === true || options?.answering === true;
+    const browser = existing?.browser === true || options?.browser === true;
+    held.set(key, { subject: what, answering, browser });
+    if (isOpen()) askFor(what, answering, browser);
   }
 
   /** `true` when the pair went, which is what a bound re-arms on. */
@@ -946,6 +1038,8 @@ export function connect(
     subscribe,
     unsubscribe,
     refresh,
+    showing,
+    relist,
     dispatch,
     more(conversation, before = null, turns = MORE_TURNS) {
       if (!isOpen()) return false;

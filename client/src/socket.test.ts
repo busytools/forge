@@ -814,6 +814,67 @@ describe('the connection', () => {
   });
 
   /**
+   * **The shown seat is remembered and re-sent on every reconnect**, because
+   * the server's showing is per connection and a drop ends it. `null` is
+   * "nothing of mine is on screen", so it is re-sent as itself rather than
+   * treated as nothing to say.
+   */
+  it('sends the shown seat, and re-sends it after a reconnect', async () => {
+    const { server, conn } = await connected();
+    const seat: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+    const showings = (): Extract<ClientMessage, { kind: 'showing' }>[] =>
+      server.received.filter(
+        (message): message is Extract<ClientMessage, { kind: 'showing' }> =>
+          message.kind === 'showing',
+      );
+
+    conn.showing(seat);
+    await until(() => showings().length === 1, 'the showing to arrive');
+    conn.showing(null);
+    await until(() => showings().length === 2, 'the clearing showing to arrive');
+    conn.showing(seat);
+    await until(() => showings().length === 3, 'the seat to be shown again');
+
+    server.drop();
+    await untilStatus(conn, 'open', 'the reconnect');
+    await until(() => showings().length === 4, 'the reconnect to re-send the shown seat');
+    expect(showings().at(-1), 'the reconnect did not re-send the shown seat').toEqual({
+      kind: 'showing',
+      seat,
+    });
+  });
+
+  /**
+   * **A seat is the client's own to re-open.** A reconnect re-asks the
+   * subjects whose stores this client still holds, but a seat subject is left
+   * out: only the shown seat re-attaches (through `session/live.ts`), and the
+   * rest re-attach on their next click.
+   */
+  it('re-asks the subjects it holds on a reconnect, but never a seat', async () => {
+    const { server, conn } = await connected();
+    const seat: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+    conn.subscribe(HOME);
+    conn.subscribe({ session: seat });
+    await until(() => server.received.length === 2, 'both subscribes to arrive');
+
+    const before = server.received.length;
+    server.drop();
+    await untilStatus(conn, 'open', 'the reconnect');
+    await until(() => server.received.length > before, 'the reconnect to re-ask');
+    const after = server.received.slice(before);
+    expect(
+      after.some((message) => message.kind === 'subscribe' && message.what === HOME),
+      'the reconnect stopped re-asking the home',
+    ).toBe(true);
+    // The loop is synchronous, so by the home's own ask a seat ask would be
+    // in the log already.
+    expect(
+      after.some((message) => message.kind === 'subscribe' && typeof message.what === 'object'),
+      'a seat re-attached itself on resume instead of waiting for a click',
+    ).toBe(false);
+  });
+
+  /**
    * A refusal names no subject, so it belongs to the oldest ask still waiting
    * on an answer - the order the server answers in. Taking the newest instead
    * would refuse the subscription the server just accepted, and the refused
@@ -899,29 +960,31 @@ describe('the connection', () => {
    */
   it('forgets the asks a drop killed, so a later refusal finds its own', async () => {
     const { server, conn } = await connected();
-    const lead: Subject = { session: LEAD };
-    const w1: Subject = { session: { org: 'TestOrg', project: 'proj', label: 'w1' } };
-    const w2: Subject = { session: { org: 'TestOrg', project: 'proj', label: 'w2' } };
+    // The subjects a resume re-asks: a seat is the page's own to re-open, and
+    // a visited one is not re-asked by the connection at all.
+    const first: Subject = 'home';
+    const second: Subject = 'usage';
+    const third: Subject = 'extensions';
 
-    const first = conn.subscribe(lead);
-    const second = conn.subscribe(w1);
+    const home = conn.subscribe(first);
+    const usage = conn.subscribe(second);
     await until(() => server.received.length === 2, 'both subscribes');
-    server.send({ kind: 'snapshot', subject: lead, data: { who: 'lead' } });
-    await until(() => first.state().kind === 'ready', 'lead to be answered');
+    server.send({ kind: 'snapshot', subject: first, data: { who: 'home' } });
+    await until(() => home.state().kind === 'ready', 'the home to be answered');
 
-    // `w1` is still outstanding when the socket goes.
+    // `usage` is still outstanding when the socket goes.
     server.drop();
     await until(() => server.received.length >= 4, 'both re-asks');
-    server.send({ kind: 'snapshot', subject: lead, data: { who: 'lead' } });
-    server.send({ kind: 'snapshot', subject: w1, data: { who: 'w1' } });
-    await until(() => second.state().kind === 'ready', 'w1 to be answered');
+    server.send({ kind: 'snapshot', subject: first, data: { who: 'home' } });
+    server.send({ kind: 'snapshot', subject: second, data: { who: 'usage' } });
+    await until(() => usage.state().kind === 'ready', 'usage to be answered');
 
-    const third = conn.subscribe(w2);
+    const extensions = conn.subscribe(third);
     await until(() => server.received.length >= 5, 'the third subscribe');
-    server.send({ kind: 'error', what: 'subscribe', why: 'forge holds no session for that seat' });
+    server.send({ kind: 'error', what: 'subscribe', why: 'no plugin catalogue here' });
 
-    await until(() => third.state().kind === 'refused', 'the refusal to land on w2');
-    expect(second.state(), 'the refusal went to a subscription already answered').toEqual({
+    await until(() => extensions.state().kind === 'refused', 'the refusal to land on extensions');
+    expect(usage.state(), 'the refusal went to a subscription already answered').toEqual({
       kind: 'ready',
     });
   });
