@@ -1016,13 +1016,12 @@ where
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
             let queued_at = Instant::now();
-            let queued =
-                forward_queued(
-                    state,
-                    open_stream(state, updates, answering),
-                    &watching.subjects,
-                    caller.id,
-                );
+            let queued = forward_queued(
+                state,
+                open_stream(state, updates, answering),
+                &watching.subjects,
+                caller.id,
+            );
             // **A seat is held BEFORE its snapshot is encoded.** The hold
             // starts the seat's watch, whose first pass reads the tree, the
             // processes and the file index and announces each; the encode
@@ -1749,11 +1748,8 @@ where
     if spent && watching.subjects.iter().any(|held| matches!(held, Subject::Home)) {
         match encode_subject(state, &Subject::Home).await {
             Ok(home) => {
-                send(
-                    socket,
-                    ServerMessage::Snapshot { subject: Subject::Home, data: home },
-                )
-                .await?;
+                send(socket, ServerMessage::Snapshot { subject: Subject::Home, data: home })
+                    .await?;
             }
             Err(error) => tracing::debug!(
                 event_name = "home_refresh_failed",
@@ -4517,10 +4513,7 @@ mod tests {
         ) -> std::task::Poll<Result<(), Self::Error>> {
             std::task::Poll::Ready(Ok(()))
         }
-        fn start_send(
-            self: std::pin::Pin<&mut Self>,
-            item: Message,
-        ) -> Result<(), Self::Error> {
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
             let _ = self.outbound.send(item);
             Ok(())
         }
@@ -4582,9 +4575,7 @@ mod tests {
             .lock()
             .expect("the frame log")
             .iter()
-            .filter(|frame| {
-                matches!(frame, ServerMessage::Snapshot { subject: Subject::Home, .. })
-            })
+            .filter(|frame| matches!(frame, ServerMessage::Snapshot { subject: Subject::Home, .. }))
             .count()
     }
 
@@ -4648,18 +4639,10 @@ mod tests {
         );
 
         showing(&to_server, Some(slot.clone()));
-        until(
-            || Live::lock(&state.live).is_attached(&slot),
-            "showing the seat to attach it",
-        )
-        .await;
+        until(|| Live::lock(&state.live).is_attached(&slot), "showing the seat to attach it").await;
 
         showing(&to_server, None);
-        until(
-            || !Live::lock(&state.live).is_attached(&slot),
-            "showing nothing to detach it",
-        )
-        .await;
+        until(|| !Live::lock(&state.live).is_attached(&slot), "showing nothing to detach it").await;
 
         drop(to_server);
         let _ = driven.await;
@@ -4714,6 +4697,57 @@ mod tests {
             !Live::lock(&state.live).is_attached(&slot),
             "the showing connection's close did not let the seat go",
         );
+    }
+
+    /// **A connection that switched seats lets each go once.** Two
+    /// connections show one seat, one switches away and then closes: the
+    /// seat is still the other's, so the switch's detach must not be
+    /// repeated at teardown.
+    #[tokio::test]
+    async fn a_connection_that_switched_seats_does_not_detach_the_old_one_twice() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(
+            &fleet.workspace(),
+            forge_primitives::ClientConfig::default(),
+        ));
+        let first = lead();
+        let second = SessionSlot::lead("TestOrg", "other");
+
+        let Driven { to_server, driven, .. } = connection(&state);
+        let Driven { to_server: other, driven: other_driven, .. } = connection(&state);
+        showing(&to_server, Some(first.clone()));
+        showing(&other, Some(first.clone()));
+        until(
+            || Live::lock(&state.live).is_attached(&first),
+            "both connections to show the first seat",
+        )
+        .await;
+
+        showing(&to_server, Some(second.clone()));
+        until(
+            || Live::lock(&state.live).is_attached(&second),
+            "the switch to show the second seat",
+        )
+        .await;
+        assert!(
+            Live::lock(&state.live).is_attached(&first),
+            "the switch detached the seat the other connection still shows",
+        );
+
+        drop(to_server);
+        let _ = driven.await;
+        assert!(
+            Live::lock(&state.live).is_attached(&first),
+            "the close detached the seat the connection had already left",
+        );
+        assert!(
+            !Live::lock(&state.live).is_attached(&second),
+            "the close did not let go of the seat the connection showed",
+        );
+
+        drop(other);
+        let _ = other_driven.await;
     }
 
     /// The home a connection holds is re-encoded when a showing spends a mark
