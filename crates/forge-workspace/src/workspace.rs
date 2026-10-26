@@ -6523,11 +6523,6 @@ impl Workspace {
     /// reaches Running. `live_workers` is the authoritative
     /// "this session is a child agent" registry.
     pub fn release_session_with_cascade(self: &Arc<Self>, session_key: &SessionSlot) {
-        // Announced before anything is torn down, so the seat's row starts
-        // saying where it is going at the gesture rather than after the
-        // workers this cascade takes with it (#1930). A viewer's mark is a
-        // set, so a second announcement would be spent.
-        self.announce_release(session_key);
         // The cascade is the lead's, and a lead's slot is the one whose
         // label says so: a worker's slot carries its own label, so a
         // closed worker cannot be misidentified as its lead however far
@@ -6537,13 +6532,34 @@ impl Workspace {
                 .into_iter()
                 .find(|view| view.org == session_key.org() && view.name == session_key.project())
         });
-        let cascade_project = cascade_project.flatten().map(|view| view.key);
-        if let Some(project_key) = cascade_project {
-            for entry in self.drain_live_workers(&project_key) {
+        let cascade_project = cascade_project.flatten();
+        // **Every record this close dismisses is cleared before the first
+        // frame that makes a view re-read.** The lead's announcement below is
+        // one; each live worker's removal is another. A stranded worker - a
+        // record with no live entry left to carry it - is the project's too,
+        // so every persisted label is cleared here rather than only what
+        // `live_workers` still holds.
+        if let Some(view) = cascade_project.as_ref() {
+            for row in self.worker_rows_for_project(&view.key) {
+                let slot = SessionSlot::worker(&row.org, &row.project, &row.label);
+                self.clear_spawn_failure(&slot);
+                self.spend_death(&slot);
+            }
+        }
+        // Announced before anything is torn down, so the seat's row starts
+        // saying where it is going at the gesture rather than after the
+        // workers this cascade takes with it (#1930). A viewer's mark is a
+        // set, so a second announcement would be spent.
+        self.announce_release(session_key);
+        if let Some(view) = cascade_project.as_ref() {
+            for entry in self.drain_live_workers(&view.key) {
+                // An entry whose label has no persisted row is only here.
+                self.clear_spawn_failure(&entry.slot);
+                self.spend_death(&entry.slot);
                 let worktree =
                     crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
-                    project_key: project_key.clone(),
+                    project_key: view.key.clone(),
                     action: crate::protocol::WorkerStatusAction::Removed,
                     status: entry.to_status(),
                     worktree,
@@ -6564,7 +6580,14 @@ impl Workspace {
     /// has not started: a lead before its cascade, a worker before its own
     /// kill - where a despawn's removal frame only follows the worktree
     /// cleanup, minutes later (#1930).
+    ///
+    /// The seat's failure record and any standing death go with the
+    /// announcement, before the frame that makes a view re-read: a close is
+    /// the reader acting on the row, and a trace that outlived the seat kept
+    /// it in the needs-you group with nothing left to act on.
     pub(crate) fn announce_release(self: &Arc<Self>, key: &SessionSlot) {
+        self.clear_spawn_failure(key);
+        self.spend_death(key);
         let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
@@ -8575,6 +8598,9 @@ impl Workspace {
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
             self.remove_worker_by_session_key(&entry.slot);
+            // The failure record goes with the row this arm deletes, or the
+            // slot reads Failed with nothing left to clear it.
+            self.clear_spawn_failure(session_key);
             // Same release the tag-rollback arm runs: without it the
             // pool entry + command sender + domain handle + SessionTask
             // leak per failed fresh spawn, unbounded across retries.
@@ -19849,9 +19875,13 @@ mod async_worker_spawn_failure_tests {
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         let lead_key = install_lead_in_pool(&workspace, lead_id);
+        // The ConnectionFailed arm records the failure before this handler
+        // runs, and the rollback deletes the row it would have drawn.
+        let worker_slot = SessionSlot::from_str_for_test(worker_key);
+        workspace.record_spawn_failure_for_test(&worker_slot, "the subprocess exited");
 
         let handled = workspace.handle_async_worker_spawn_failure(
-            &SessionSlot::from_str_for_test(worker_key),
+            &worker_slot,
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
             SpawnFailureKind::Unclassified,
         );
@@ -19887,6 +19917,11 @@ mod async_worker_spawn_failure_tests {
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
             "WorkerEntry removed on async failure",
+        );
+        assert_eq!(
+            workspace.spawn_failure(&worker_slot),
+            None,
+            "the failure record goes with the row the rollback deletes",
         );
     }
 
