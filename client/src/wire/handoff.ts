@@ -56,9 +56,24 @@ export function handoffKey(handoff: HandoffRecord): string {
   return `handoff:${handoff.from}:${handoff.to}`;
 }
 
-/** The frame a conversation turn carries for one handoff. */
+/** The frame a conversation turn carries for one handoff.
+ *
+ * The record is already narrowed, and the fold reads a frame the way the wire
+ * sends one, so the halves go back under `brief` here. */
 export function handoffFrame(handoff: HandoffRecord): Record<string, unknown> {
-  return { type: 'forge_handoff', handoff };
+  return {
+    type: 'forge_handoff',
+    handoff: {
+      from: handoff.from,
+      to: handoff.to,
+      reason: handoff.reason,
+      fill_percent: handoff.fill_percent,
+      total_tokens: handoff.total_tokens,
+      max_tokens: handoff.max_tokens,
+      at_percent: handoff.at_percent,
+      brief: { ground_truth: handoff.ground_truth, judgment: handoff.judgment },
+    },
+  };
 }
 
 function sectionsOf(value: unknown): HandoffSection[] {
