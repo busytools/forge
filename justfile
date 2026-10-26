@@ -24,6 +24,12 @@ fmt-check:
 unicode-punct-check:
     ./scripts/check_no_unicode_punctuation.sh
 
+# The book's client pages against their recorded prose counts. A page may
+# shrink freely; growing, adding or removing one edits
+# docs/book/ui-word-count.baseline in the same pull request.
+ui-word-count:
+    ./docs/book/ui-word-count.sh
+
 # The scripts' own tests. `update_manifest.py` writes the one file every
 # installed client reads for updates, and nothing else in the gate exercises
 # it: a hash taken from the wrong archive, or a block dropped outright, would
@@ -36,6 +42,7 @@ script-tests:
     python3 scripts/test_update_manifest.py
     python3 scripts/test_client_deps.py
     python3 scripts/test_check_groups.py
+    python3 scripts/test_ui_word_count.py
     python3 scripts/test_check_client_wasm.py
     python3 scripts/test_browser_stack_patch.py
 
@@ -946,8 +953,8 @@ check-feature-configs:
 # The gate's steps, in the order a verdict reports them, and the four
 # independent groups `check` runs concurrently. Every step belongs to
 # exactly one group; `check` refuses to start if the two disagree.
-check_steps := "fmt-check unicode-punct-check script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-tauri-clippy client-tauri-test client-android-warnings clippy test-all doctest doc"
-check_groups := "fast|fmt-check unicode-punct-check script-tests;rust|clippy test-all doctest doc;client|client-format client-lint client-typecheck client-test;shell|client-tauri-fmt client-tauri-clippy client-tauri-test client-android-warnings"
+check_steps := "fmt-check unicode-punct-check ui-word-count script-tests client-tauri-fmt client-format client-lint client-typecheck client-test client-tauri-clippy client-tauri-test client-android-warnings clippy test-all doctest doc"
+check_groups := "fast|fmt-check unicode-punct-check ui-word-count script-tests;rust|clippy test-all doctest doc;client|client-format client-lint client-typecheck client-test;shell|client-tauri-fmt client-tauri-clippy client-tauri-test client-android-warnings"
 
 # Full pre-commit / pre-PR verification loop, in four independent groups run
 # concurrently: the fast checks, the Rust workspace, the client web steps
