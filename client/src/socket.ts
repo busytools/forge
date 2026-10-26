@@ -276,6 +276,15 @@ const ANSWERS_THROUGH_A_REPLY = new Set([
  */
 const REPLY_BOUND_MS = 10_000;
 
+/**
+ * The bound on a browser attach, which is longer than a command's.
+ *
+ * **A cold profile starts a host and a driver before it can answer**, and a
+ * measured cold start is about 14 s - so the command bound would report every
+ * first attach as failed and then log the answer nobody waited for.
+ */
+const ATTACH_BOUND_MS = 30_000;
+
 /** The bound this command gets, or `null` for a despawn. */
 function replyBoundFor(variant: string, bound: number): number | null {
   return variant === 'despawn_worker' ? null : bound;
@@ -1084,7 +1093,7 @@ export function connect(
     dispatch,
     browserView(seat, tab) {
       if (!isOpen()) return Promise.reject(new Error('the socket is not open'));
-      const { replyTo, answer } = asked(replyBoundMs, 'browser attach');
+      const { replyTo, answer } = asked(ATTACH_BOUND_MS, 'browser attach');
       sendNow({ kind: 'browser_view', seat, tab, reply_to: replyTo });
       return answer.then(attachOf);
     },

@@ -172,7 +172,9 @@
       x,
       y,
       button: 0,
-      clicks: 1,
+      // **A double click is the count the DOM already decided**, so the page
+      // gets the second click as one rather than two singles.
+      clicks: event.detail > 0 ? event.detail : 1,
       modifiers: modifiers(event),
     };
     connection.browserInput(gesture);
@@ -252,7 +254,10 @@
       }
       return;
     }
-    if (event.buttons !== 0) send('move', event);
+    // **A hover is the page's too**: CSS `:hover`, menus and tooltips all
+    // follow a pointer with no button held, so every move crosses rather
+    // than only a drag.
+    send('move', event);
   }
 
   function release(event: PointerEvent): void {
@@ -394,11 +399,18 @@
   }
 
   // **A watcher never keeps the keyboard.** A surface that loses control
-  // gives the field up; taking control alone does not focus it - a tap on the
-  // page is what raises the keyboard, so a swipe is never interrupted by it.
+  // gives the field up. **A mouse that takes control can type at once**; a
+  // finger's keyboard stays a tap away, because raising it on the role would
+  // interrupt the swipe that came with it.
   $effect(() => {
     if (!painting) return;
-    if (!holdsControl()) imeEl?.blur();
+    if (!holdsControl()) {
+      imeEl?.blur();
+      return;
+    }
+    if (typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches) {
+      imeEl?.focus({ preventScroll: true });
+    }
   });
 
   function wheel(event: WheelEvent): void {

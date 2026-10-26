@@ -13,10 +13,12 @@ import {
   navigateBrowser,
   onTabs,
   onView,
+  reattachesOnReconnect,
   resizeBrowser,
   showBrowser,
   sizesAsWatcher,
   takeControl,
+  usesPageHistory,
 } from './link';
 
 /** A connection that speaks only the browser's own messages. */
@@ -139,10 +141,13 @@ describe('the wire link', () => {
   });
 
   /// **A page with no shell is the client that sizes its own view**, without
-  /// taking the controller role.
-  it('sizes the page as a watcher, unlike the shell', () => {
+  /// taking the controller role, and re-attaches its own surface when the
+  /// socket comes back - a shell's bridge does both for it.
+  it('sizes and re-attaches as a page, unlike the shell', () => {
     install();
     expect(sizesAsWatcher(), 'the page lays itself out').toBe(true);
+    expect(reattachesOnReconnect(), 'and asks for its attach again').toBe(true);
+    expect(usesPageHistory(), 'and its Back lowers the takeover').toBe(true);
   });
 
   /// **A size the page already has is not a request**: a re-measure that lands

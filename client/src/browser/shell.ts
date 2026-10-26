@@ -39,6 +39,10 @@ function shellLink(): BrowserLink {
     paintsCanvas: typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent),
     /** The shell's watcher window never moves the page under the driver. */
     sizesAsWatcher: false,
+    /** The bridge re-attaches the viewer on its own socket. */
+    reattachesOnReconnect: false,
+    /** The shell's own hardware Back lowers the takeover. */
+    usesPageHistory: false,
 
     async show(profile, seat, tab): Promise<OpenAnswer> {
       try {

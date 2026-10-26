@@ -18,11 +18,13 @@ vi.mock('./link', () => ({
   onRemeasure: vi.fn(() => null),
   onTabs: vi.fn(() => Promise.resolve(() => {})),
   onView: vi.fn(() => Promise.resolve(() => {})),
+  reattachesOnReconnect: vi.fn(() => false),
   reportSurfaceRect: vi.fn(),
   resizeBrowser: vi.fn(() => Promise.resolve()),
   showBrowser: vi.fn(),
   sizesAsWatcher: vi.fn(() => false),
   takeControl: vi.fn(() => Promise.resolve()),
+  usesPageHistory: vi.fn(() => false),
 }));
 
 import type { BrowserTabList } from '../protocol';
@@ -31,6 +33,8 @@ import {
   drawsSurface,
   hideBrowser,
   listTabs,
+  onConnection,
+  reattachesOnReconnect,
   resizeBrowser,
   showBrowser,
   sizesAsWatcher,
@@ -80,6 +84,27 @@ beforeEach(() => {
 });
 
 describe('the browser surface', () => {
+  /// **A page's attach died with its socket**, so a page reconnecting asks
+  /// for it again rather than keeping a picture no gesture can reach. First
+  /// in this file so its listener is the install's own registration.
+  it('re-attaches the surface when the connection comes back', async () => {
+    const seen: { notice: (() => void) | null } = { notice: null };
+    vi.mocked(onConnection).mockImplementation((fn) => {
+      seen.notice = fn;
+      return Promise.resolve(() => {});
+    });
+    vi.mocked(reattachesOnReconnect).mockReturnValue(true);
+    const { installSurfaceEvents } = await import('./surface.svelte');
+    await installSurfaceEvents();
+    if (seen.notice === null) throw new Error('the page follows the connection');
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValue({ profile: 'hunt', tab: 2 });
+    await openSurface('hunt', seat, 2);
+    show.mockClear();
+    seen.notice();
+    await vi.waitFor(() => expect(show).toHaveBeenCalledWith('hunt', seat, 2));
+  });
+
   /// **The page is laid out to the controller's surface, and only to it.**
   /// A watcher's window must not move the page under the person driving it.
   it('sizes the page to the controller surface, never a watcher', () => {

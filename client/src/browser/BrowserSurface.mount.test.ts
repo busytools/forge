@@ -29,10 +29,12 @@ vi.mock('./link', () => ({
   onRemeasure: vi.fn(() => null),
   onTabs: vi.fn(() => Promise.resolve(() => {})),
   onView: vi.fn(() => Promise.resolve(() => {})),
+  reattachesOnReconnect: vi.fn(() => false),
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
   resizeBrowser: vi.fn(() => Promise.resolve()),
   sizesAsWatcher: vi.fn(() => false),
   takeControl: vi.fn(() => Promise.resolve()),
+  usesPageHistory: vi.fn(() => false),
 }));
 
 import { hideBrowser, reportSurfaceRect } from './link';

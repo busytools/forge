@@ -980,6 +980,9 @@
     };
     const onKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented) return;
+      // **A live takeover owns the keyboard**: its keys belong to the page
+      // under the bar, not to a composer drawn behind it.
+      if (surface.phase !== 'closed') return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const active = document.activeElement;
       const typing =

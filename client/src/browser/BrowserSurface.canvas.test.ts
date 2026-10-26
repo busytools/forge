@@ -34,10 +34,12 @@ vi.mock('./link', () => ({
   onRemeasure: vi.fn(() => null),
   onTabs: vi.fn(() => Promise.resolve(() => {})),
   onView: vi.fn(() => Promise.resolve(() => {})),
+  reattachesOnReconnect: vi.fn(() => false),
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
   resizeBrowser: vi.fn(() => Promise.resolve()),
   sizesAsWatcher: vi.fn(() => false),
   takeControl: vi.fn(() => Promise.resolve()),
+  usesPageHistory: vi.fn(() => false),
 }));
 
 import BrowserSurface from './BrowserSurface.svelte';
@@ -442,6 +444,49 @@ describe('the canvas viewer', () => {
     canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ kind: 'mouse', action: 'press', button: 0 });
+  });
+
+  /// **A hover is the page's too**, and a double click is the count the DOM
+  /// already decided: a menu that opens on hover and a field that selects on
+  /// a double click both need what a drag-only, single-click stream loses.
+  it('sends a button-less move and a double click as itself', () => {
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+
+    canvas.dispatchEvent(
+      new MouseEvent('pointermove', { clientX: 10, clientY: 20, bubbles: true }),
+    );
+    expect(events.at(-1), 'a hover crosses with no button held').toMatchObject({
+      kind: 'mouse',
+      action: 'move',
+    });
+
+    canvas.dispatchEvent(
+      new MouseEvent('pointerdown', { clientX: 10, clientY: 20, detail: 2, bubbles: true }),
+    );
+    expect(events.at(-1), 'the second click is the second click').toMatchObject({
+      action: 'press',
+      clicks: 2,
+    });
+  });
+
+  /// **A mouse that takes control can type at once**, and a finger's keyboard
+  /// stays a tap away: raising it on the role would interrupt the swipe that
+  /// came with it.
+  it('gives the keyboard to a fine pointer that takes control', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: fine)' }));
+    const { connection } = stubConnection();
+    const target = open(connection);
+    surface.viewer = 7;
+    surface.controller = 7;
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (input === null) throw new Error('no keyboard field');
+    await vi.waitFor(() => expect(document.activeElement, 'the field takes the keyboard').toBe(input));
   });
 
   /** A pointer event of the kind a finger sends. */

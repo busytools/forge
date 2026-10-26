@@ -39,6 +39,10 @@ function wireLink(connection: Connection & BrowserWire): BrowserLink {
     paintsCanvas: true,
     /** **A page is the only client behind its own view**, so it sizes it. */
     sizesAsWatcher: true,
+    /** **The attach lived on the socket that dropped**, so the page re-asks. */
+    reattachesOnReconnect: true,
+    /** A tab's Back would leave the seat; it lowers the takeover instead. */
+    usesPageHistory: true,
 
     async show(profile, seat, tab): Promise<OpenAnswer> {
       if (seat === null) return 'this page has no seat to attach the browser to';
@@ -80,6 +84,10 @@ function wireLink(connection: Connection & BrowserWire): BrowserLink {
     },
 
     takeControl(take): Promise<void> {
+      // **Taking the role re-lays the page out.** Another client may have
+      // sized it while this page watched, and the server refuses a watcher's
+      // resize under a held role - so the cache cannot answer for this one.
+      if (take) asked = null;
       connection.browserControl(take);
       return Promise.resolve();
     },

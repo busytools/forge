@@ -35,11 +35,13 @@ import {
   onRemeasure,
   onTabs,
   onView,
+  reattachesOnReconnect,
   reportSurfaceRect,
   resizeBrowser,
   showBrowser,
   sizesAsWatcher,
   takeControl as sendControl,
+  usesPageHistory,
 } from './link';
 
 export type SurfacePhase = 'closed' | 'opening' | 'live' | 'failed';
@@ -152,6 +154,43 @@ if (typeof window !== 'undefined') {
   });
 }
 
+/**
+ * Whether this takeover pushed a page-history entry of its own.
+ *
+ * **A browser tab's Back lowers the takeover** - rule 22's hardware Back, for
+ * a tab: opening pushes an entry, and a Back while the surface is up lowers it
+ * instead of leaving the seat. The UI's own lower pops the entry, so a Back
+ * after Done does not land on a takeover that is already down.
+ */
+let pushed = false;
+
+function pushHistory(): void {
+  if (!usesPageHistory() || pushed) return;
+  pushed = true;
+  // The DOM types `history.state` as any; it is this page's own entry, and a
+  // non-object one is replaced by the takeover's alone.
+  const held: unknown = history.state;
+  const base = typeof held === 'object' && held !== null ? (held as Record<string, unknown>) : {};
+  history.pushState({ ...base, forgeTakeover: true }, '');
+}
+
+function popHistory(): void {
+  if (!pushed) return;
+  // Cleared first: the popstate that follows finds a closed surface and adds
+  // nothing, rather than lowering a second time.
+  pushed = false;
+  history.back();
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('popstate', () => {
+    if (!pushed) return;
+    pushed = false;
+    if (surface.phase === 'closed') return;
+    window.dispatchEvent(new CustomEvent('forge-takeover', { detail: 'lowered' }));
+  });
+}
+
 /** Whether this surface's input will reach the page: the controller role. */
 export function holdsControl(): boolean {
   return surface.viewer !== null && surface.controller === surface.viewer;
@@ -258,6 +297,7 @@ export async function openSurface(
   surface.tab = answer.tab;
   surface.phase = 'live';
   surface.reason = null;
+  pushHistory();
   // **The picker is an aid, not the open**: a slow read must not delay the
   // caller that is waiting to hear the raise landed.
   void readSurfaceTabs(seat);
@@ -270,7 +310,7 @@ export async function openSurface(
  * The frame stream switches with the attach, and `browser_view` pushes the
  * tab it landed on - so this only starts the move and reads its answer.
  */
-export async function selectTab(tab: number): Promise<string | null> {
+export async function selectTab(tab: number | null): Promise<string | null> {
   if (!canAttach()) return 'this page is not the client';
   // **A failed surface can still pick a live tab**: the page it was showing
   // may be gone while the profile's other tabs are not.
@@ -357,6 +397,7 @@ export async function closeSurface(
   surface.attachedProfile = null;
   surface.viewer = null;
   surface.controller = null;
+  popHistory();
   return null;
 }
 
@@ -576,7 +617,13 @@ function tabs(list: BrowserTabList): void {
  * list the dead socket pushed.
  */
 function reconnect(): void {
-  if (surface.phase === 'live') void readSurfaceTabs(surface.seat);
+  if (surface.phase === 'closed') return;
+  void readSurfaceTabs(surface.seat);
+  // **A page's attach died with the socket.** The server dropped this viewer
+  // with the connection it attached on, so the surface would keep a picture
+  // no gesture could reach; a re-attach either restores it or fails it. A
+  // shell's bridge does the same on the socket it owns.
+  if (reattachesOnReconnect() && surface.seat !== null) void selectTab(surface.tab);
 }
 
 /** The last page area measured, for the size the server lays the page out to. */

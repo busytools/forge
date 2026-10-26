@@ -489,6 +489,9 @@
   $effect(() => {
     const onkey = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      // **A live takeover owns the keyboard**: Cmd+K belongs to the page
+      // under the bar while the surface is up, not to this page's palette.
+      if (surface.phase !== 'closed') return;
       const target = event.target;
       const typing =
         target instanceof HTMLInputElement ||

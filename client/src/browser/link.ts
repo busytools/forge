@@ -38,6 +38,23 @@ export interface BrowserLink {
    * no other client behind it to size the view, so it does.
    */
   readonly sizesAsWatcher: boolean;
+  /**
+   * Whether this page re-attaches its surface itself when the connection
+   * comes back.
+   *
+   * **A shell has a bridge that does it** on the socket it owns; a page's
+   * attach lived on the socket that dropped, so the page asks again or the
+   * surface keeps a picture no gesture can reach.
+   */
+  readonly reattachesOnReconnect: boolean;
+  /**
+   * Whether the takeover pushes a page-history entry so the browser's Back
+   * lowers it.
+   *
+   * **A shell's Back is the shell's** - the window has its own hardware Back
+   * path - while a browser tab's Back would otherwise leave the seat.
+   */
+  readonly usesPageHistory: boolean;
   show(profile: string | null, seat: SessionSlot | null, tab: number | null): Promise<OpenAnswer>;
   hide(profile: string | null, seat: SessionSlot | null): Promise<HideAnswer>;
   /** The page area's box, for a shell to place its native layer in. */
@@ -75,6 +92,8 @@ const OFFLINE: BrowserLink = {
   drawsSurface: false,
   paintsCanvas: false,
   sizesAsWatcher: false,
+  reattachesOnReconnect: false,
+  usesPageHistory: false,
   show: () => Promise.resolve('this page is not connected'),
   hide: () => Promise.resolve('this page is not connected'),
   reportRect: () => Promise.resolve(),
@@ -135,6 +154,16 @@ export function drawsCanvas(): boolean {
 /** Whether this page sizes the viewed page while it is only watching. */
 export function sizesAsWatcher(): boolean {
   return browserLink().sizesAsWatcher;
+}
+
+/** Whether this page asks for its attach again when the socket comes back. */
+export function reattachesOnReconnect(): boolean {
+  return browserLink().reattachesOnReconnect;
+}
+
+/** Whether the takeover is lowered by the browser's own Back. */
+export function usesPageHistory(): boolean {
+  return browserLink().usesPageHistory;
 }
 
 export function showBrowser(
