@@ -172,21 +172,21 @@ pub(crate) fn assemble(
             }
         }
     }
-    GroundTruth {
-        sections: vec![
-            seat_section(seat, git),
-            role_section(&seat.role),
-            ask,
-            constraints,
-            files_section(messages, git),
-            actions_section(messages),
-            verify_section(messages),
-            board_section(seat.slot, board),
-            record_section(seat),
-        ],
-        cycle: cycle(messages, asks.len()),
-        reads: read_set(messages),
-    }
+    let mut sections = vec![
+        seat_section(seat, git),
+        role_section(&seat.role),
+        ask,
+        constraints,
+        files_section(messages, git),
+    ];
+    // **No action, no heading.** A brief with a blank "actions" label reads as
+    // a section the reader should have filled in rather than one that does not
+    // apply to this session.
+    sections.extend(actions_section(messages));
+    sections.push(verify_section(messages));
+    sections.push(board_section(seat.slot, board));
+    sections.push(record_section(seat));
+    GroundTruth { sections, cycle: cycle(messages, asks.len()), reads: read_set(messages) }
 }
 
 /// A section's lines from a brief, by label. An older record's brief is the
@@ -525,7 +525,7 @@ fn files_section(messages: &[Message], git: &HandoffGitState) -> HandoffSection 
 /// page driven are all work that would otherwise vanish with the handover.
 /// File and command families stay in their own sections above; the action's
 /// own most telling argument rides the line so the verb alone is not a riddle.
-fn actions_section(messages: &[Message]) -> HandoffSection {
+fn actions_section(messages: &[Message]) -> Option<HandoffSection> {
     let mut lines: Vec<String> = Vec::new();
     for (_, name, input) in tool_uses(messages) {
         let Some(action) = forge_action(name) else { continue };
@@ -537,12 +537,15 @@ fn actions_section(messages: &[Message]) -> HandoffSection {
             lines.push(line);
         }
     }
+    if lines.is_empty() {
+        return None;
+    }
     let (shown, omitted) = first_and_newest(&lines, ACTION_CAP);
     let mut out: Vec<String> = shown.into_iter().cloned().collect();
     if omitted > 0 {
         out.push(format!("... {omitted} more actions omitted"));
     }
-    HandoffSection { label: "actions".to_owned(), lines: out }
+    Some(HandoffSection { label: "actions".to_owned(), lines: out })
 }
 
 /// The forge tool families the brief carries as actions.
@@ -2039,6 +2042,13 @@ mod tests {
             !actions.lines.iter().any(|line| line.starts_with("Read") || line.starts_with("Bash")),
             "the file and command families stay in their own sections: {:?}",
             actions.lines,
+        );
+
+        let quiet = assemble(&seat(), &[], &HandoffGitState::default(), &[], None);
+        assert!(
+            quiet.sections.iter().all(|section| section.label != "actions"),
+            "a session with no forge-tool calls gets no blank heading: {:?}",
+            quiet.sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
         );
     }
 
