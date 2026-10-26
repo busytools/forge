@@ -160,18 +160,23 @@ impl TabRegistry {
         self.adopt(number, owner, id, target, title, url)
     }
 
-    /// Remove one tab and answer the session that owned it.
+    /// Remove one tab and answer the session that owned it. **The unresolved
+    /// flag goes even for a row already gone**: a close landing between a
+    /// listing and its mark must not leave the flag on a retired number.
     pub fn close(&mut self, tab: u16) -> Option<SessionSlot> {
+        self.unresolved.remove(&tab);
         let removed = self.tabs.remove(&tab)?;
         self.current.retain(|_, number| *number != tab);
-        self.unresolved.remove(&tab);
         Some(removed.owner)
     }
 
     /// Remember that a listing could not name this tab's page, so no page is
-    /// pruned as an orphan while the row is unresolved.
+    /// pruned as an orphan while the row is unresolved. **Only an open row is
+    /// marked**: a number with no row has no page to protect.
     pub fn mark_unresolved(&mut self, tab: u16) {
-        self.unresolved.insert(tab);
+        if self.tabs.contains_key(&tab) {
+            self.unresolved.insert(tab);
+        }
     }
 
     /// The tabs whose page a listing could not name.
@@ -259,9 +264,12 @@ impl TabRegistry {
     /// Re-pair every row the fresh listing names by its target, answering how
     /// many changed. A row whose target the listing does not carry is left
     /// alone: its page may be mid-navigation, and inventing a name for it is
-    /// how a tab comes to mean another page. **Rows sharing a target are left
-    /// alone too**: naming both after the one page would let either number
-    /// drive it, so the duplication is said and nothing is re-paired.
+    /// how a tab comes to mean another page. **Rows sharing a target are not
+    /// renamed here**: the repair refuses to write one guid onto two rows.
+    /// (The call and watch paths can still resolve such a target; this only
+    /// keeps the repair from choosing for them.) The pairing goes through
+    /// [`Self::reidentify`], so a re-paired row is no longer unresolved and
+    /// the orphan prune runs again.
     pub fn reidentify_from(&mut self, listing: &[DriverTab]) -> usize {
         let mut sharing: HashMap<&str, usize> = HashMap::new();
         for tab in self.tabs.values() {
@@ -278,11 +286,12 @@ impl TabRegistry {
             tracing::debug!(
                 event_name = "browser_tab_target_duplicated",
                 targets = ?duplicated,
-                "rows share a CDP target; none of them is re-paired"
+                "rows share a CDP target; the repair renames none of them"
             );
         }
         let mut changed = 0;
-        for tab in self.tabs.values_mut() {
+        for number in self.tabs.keys().copied().collect::<Vec<_>>() {
+            let Some(tab) = self.tabs.get(&number) else { continue };
             if tab.target.is_empty() || duplicated.contains(tab.target.as_str()) {
                 continue;
             }
@@ -290,7 +299,7 @@ impl TabRegistry {
                 continue;
             };
             if row.id != tab.id {
-                row.id.clone_into(&mut tab.id);
+                self.reidentify(number, &row.id);
                 changed += 1;
             }
         }
@@ -514,6 +523,25 @@ mod tests {
         );
         assert_eq!(shared.id(one), Some("s1"));
         assert_eq!(shared.id(two), Some("s2"));
+    }
+
+    /// **A close clears the unresolved flag, and a number with no row is
+    /// never marked**: a close landing between a listing and its mark must
+    /// not hold the prune on a retired number.
+    #[test]
+    fn an_unresolved_flag_goes_with_its_row() {
+        let seat = SessionSlot::lead("O", "p");
+        let mut registry = TabRegistry::default();
+        let one = registry.adopt(1, seat, "p1", "T1", "one", "u").expect("the tab");
+        registry.mark_unresolved(one);
+        assert_eq!(registry.unresolved_tabs(), vec![one]);
+        registry.close(one);
+        assert!(registry.unresolved_tabs().is_empty(), "a close clears the flag");
+
+        registry.mark_unresolved(9);
+        assert!(registry.unresolved_tabs().is_empty(), "a number with no row is not marked");
+        registry.mark_unresolved(one);
+        assert!(registry.unresolved_tabs().is_empty(), "a retired number is never marked");
     }
 
     fn tab_row(index: usize, id: &str, target: &str) -> DriverTab {
