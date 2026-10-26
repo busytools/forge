@@ -1081,7 +1081,7 @@ where
         // the tool behind it, wait for ever. Tagging a command frame as a
         // dispatch refusal is what draws the reason where the answer came
         // from instead.
-        let command = serde_json::from_str::<serde_json::Value>(&text).ok().is_some_and(|frame| {
+        let command = serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|frame| {
             frame.get("kind").and_then(serde_json::Value::as_str) == Some("command")
         });
         let (what, why) = if command {

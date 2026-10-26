@@ -137,12 +137,12 @@ pub mod wire;
 /// means, the door in the client that sent it and the connection that
 /// carried it, in place of the bare `done` flag. A v12 client's answer names
 /// only `done` and cannot be decoded, so **nothing refuses the connection**
-/// - the endings it draws are ignored safely - and its answer comes back as
+/// (the endings it draws are ignored safely), and its answer comes back as
 /// a dispatch refusal, which a client draws where the answer came from: the
 /// command frame is recognised by its kind even when its body no longer
 /// parses, so the person is told the prompt is still waiting instead of
-/// losing the answer to the console.
-/// `baselines/socket/12/` is the record a v12 server emitted.
+/// losing the answer to the console. `baselines/socket/12/` is the record a
+/// v12 server emitted.
 pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
