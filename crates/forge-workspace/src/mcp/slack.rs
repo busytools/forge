@@ -2355,6 +2355,29 @@ mod tests {
         assert!(mock.replies_calls.lock().is_empty(), "nothing reaches the facade");
     }
 
+    /// A limit the caller passes must be the one the facade is given: a tool
+    /// that always used the default would otherwise pass every other test.
+    #[tokio::test]
+    async fn slack_replies_forwards_the_callers_limit() {
+        let mock = Arc::new(MockSlackFacade::new());
+        let tool = Replies { facade: mock.clone() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "ts": "100.0",
+                "limit": 50,
+            })))
+            .await;
+
+        assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
+        assert_eq!(
+            mock.replies_calls.lock().as_slice(),
+            [(None, "C1".to_owned(), "100.0".to_owned(), 50)],
+            "the caller's limit reaches the facade",
+        );
+    }
+
     #[tokio::test]
     async fn slack_user_passes_the_id_through() {
         let mock = Arc::new(MockSlackFacade::new());
