@@ -430,6 +430,7 @@ impl BrowserService {
             recorded: watch::channel(None).0,
             recording: Mutex::new(None),
             surface: Mutex::new((VIEW_WIDTH, VIEW_HEIGHT, 1.0)),
+            resize: AsyncMutex::new(()),
             encoding: self.encoding(),
             launch: Arc::clone(&self.launch),
             stopped: Arc::clone(&self.stopped),
@@ -775,6 +776,7 @@ impl BrowserService {
         match tool {
             "browser_record_start" => return self.record_start(seat).await,
             "browser_record_stop" => return self.record_stop(seat).await,
+            "browser_resize" => return self.resize_window(seat, &args).await,
             _ => {}
         }
         // **An agent's upload is bounded before a browser is opened for it.**
@@ -2430,6 +2432,10 @@ impl BrowserService {
         else {
             return;
         };
+        // **The surface and the request are one step**: two resizes
+        // interleaving would leave the ring painting one size while the
+        // stored surface named the other, which is what a take restores.
+        let _serial = profile.resize.lock().await;
         // **A take owns the layout**: the controller's resize is remembered
         // and applied again when the recording ends.
         *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) = (width, height, scale);
@@ -2440,6 +2446,58 @@ impl BrowserService {
         if let Some(host) = state.host.as_ref() {
             host.ring.request(width, height, scale);
         }
+    }
+
+    /// Resize the browser's painted surface from a session's own tool call.
+    ///
+    /// **The tool means the window, not a viewport override.** Upstream's
+    /// `browser_resize` is Playwright's `page.setViewportSize`, which tells
+    /// the page one size while the host paints another and leaves the device
+    /// ratio at 1 for the rest of the host's life. Here the window is the
+    /// profile's ring, so the viewport, the ratio and the painted size all
+    /// follow it - the path a viewer's own `BrowserResize` already takes.
+    async fn resize_window(
+        &self,
+        seat: &SessionSlot,
+        args: &Value,
+    ) -> Result<Vec<BrowserPart>, String> {
+        let profile = self.open(seat).await?;
+        // **One critical section for the read, the request and the write**, so
+        // a viewer's resize cannot land between them and leave the stored
+        // surface naming a size the ring never painted.
+        let _serial = profile.resize.lock().await;
+        // **The take's size is the take's to promise**: a recording start
+        // takes this same lock before it lays its tab out, so no take can
+        // begin between this check and the request below.
+        let running = profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+        if running {
+            return Err(format!(
+                "a recording is running for '{}', so the page stays at {}x{} until \
+                 browser_record_stop",
+                profile.key,
+                crate::record::WIDTH,
+                crate::record::HEIGHT,
+            ));
+        }
+        let scale = profile.surface.lock().unwrap_or_else(PoisonError::into_inner).2;
+        let width = window_dimension(args, "width", scale, crate::osr::MAX_WIDTH)?;
+        let height = window_dimension(args, "height", scale, crate::osr::MAX_HEIGHT)?;
+        let (device_width, device_height) =
+            (device_pixels(width, scale), device_pixels(height, scale));
+        {
+            let state = profile.state.lock().await;
+            let host = state
+                .host
+                .as_ref()
+                .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
+            host.ring.request(device_width, device_height, scale);
+        }
+        // **The surface is written back, as a viewer's own resize writes
+        // it**: a take restores this size when it ends, and the next resize
+        // from either side replaces it.
+        *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) =
+            (device_width, device_height, scale);
+        Ok(vec![BrowserPart::Text { text: format!("The browser window is now {width}x{height}.") }])
     }
 
     /// Inject one input event into one tab, and only for the viewer that holds
@@ -2715,6 +2773,17 @@ impl BrowserService {
         prune_recordings(&dir, KEEP);
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
         let path = dir.join(format!("{stamp}.mp4"));
+        // **A take's layout is a resize's business**: the lock a resize holds
+        // across its request spans this start, so a window request cannot land
+        // after the take laid its tab out.
+        let serial = profile.resize.lock().await;
+        let running = profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+        if running {
+            return Err(format!(
+                "a recording is already running for '{}'; stop it first",
+                profile.key
+            ));
+        }
         profile.recorded.send_replace(None);
         let mut recorded = profile.recorded.subscribe();
         *profile.recording.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -2740,6 +2809,9 @@ impl BrowserService {
                 profile.key
             ));
         }
+        // **The lock spans the start, not the take**: a resize during it reads
+        // `recording` and refuses.
+        drop(serial);
         match recording_answer(&mut recorded, None, Duration::from_secs(10)).await {
             Some(state) if state.started => Ok(vec![BrowserPart::Text {
                 text: format!(
@@ -3161,6 +3233,11 @@ pub struct Profile {
     recording: Mutex<Option<(u16, PathBuf)>>,
     /// The controller's last requested view, restored when a take ends.
     surface: Mutex<(u32, u32, f64)>,
+    /// **A resize's request and the surface it stores are one step.** Two
+    /// resizes and a take's own layout all move the same page; this lock
+    /// spans each one's read, request and write, so the stored surface always
+    /// belongs to the request the ring holds last.
+    resize: AsyncMutex<()>,
     /// The tab this profile's tabs are, keyed by the host's own numbers.
     tabs: Mutex<TabRegistry>,
     /// The host's boot tab, until a session's first page call adopts it.
@@ -5137,15 +5214,48 @@ fn controller_size(
     Some((width.max(1), height.max(1), scale))
 }
 
+/// One window dimension in CSS pixels, bounded to what the ring can hold at
+/// `scale`. **Bounded here rather than left to the ring's silent clamp**, so
+/// the answer names the size the page will report.
+fn window_dimension(args: &Value, name: &str, scale: f64, device_max: u32) -> Result<u32, String> {
+    let asked = args
+        .get(name)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("browser_resize needs `{name}` as a number"))?;
+    if !asked.is_finite() || asked < 1.0 {
+        return Err(format!("browser_resize needs `{name}` as a positive number"));
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked finite and at least 1, then bounded by the ring's own device size"
+    )]
+    let css = asked.round().min(f64::from(device_max) / scale) as u32;
+    Ok(css.max(1))
+}
+
+/// The device pixels a CSS dimension paints at, rounded to the nearest. The
+/// caller has already bounded it by the ring's device size.
+fn device_pixels(css: u32, scale: f64) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounded by the ring's own device bound before the cast"
+    )]
+    let pixels = (f64::from(css) * scale).round() as u32;
+    pixels.max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome, DeadHost,
         DeadPageOutcome, Driven, Profile, State, UploadRequest, agent_upload_paths,
         agent_upload_refused, begin_upload, captured_generation, clear_if_dead, controller_size,
-        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, file_name,
-        installed_generation, note_agent_answered, note_surfaced_opened, note_upload_finished,
-        pair_tab_events, stage_agent_uploads, upload_request, write_uploads,
+        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
+        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        note_upload_finished, pair_tab_events, stage_agent_uploads, upload_request,
+        window_dimension, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::ProfileKey;
@@ -7743,6 +7853,98 @@ mod tests {
             "a nonsense ratio draws at 1"
         );
         assert_eq!(controller_size(Some(7), 7, 0, 0, 99.0), Some((1, 1, 8.0)), "bounded both ways");
+    }
+
+    /// **A window size is the page's own CSS pixels, and the answer names the
+    /// size the ring will paint.** A request past the ring's device bound is
+    /// cut here rather than left to the ring's silent clamp, and a size that
+    /// is not a positive number is refused rather than clamped to 1.
+    #[test]
+    fn a_window_size_is_css_pixels_bounded_by_the_ring() {
+        let width = |value: serde_json::Value| {
+            window_dimension(&json!({ "width": value }), "width", 2.0, crate::osr::MAX_WIDTH)
+        };
+        assert_eq!(width(json!(1120)), Ok(1120), "a CSS size passes through");
+        assert_eq!(width(json!(1120.6)), Ok(1121), "and rounds to the nearest pixel");
+        assert_eq!(
+            width(json!(3000)),
+            Ok(1920),
+            "3000 CSS pixels would paint past 3840 device pixels at 2x"
+        );
+        assert_eq!(
+            width(json!(0)),
+            Err("browser_resize needs `width` as a positive number".into())
+        );
+        assert_eq!(width(json!("wide")), Err("browser_resize needs `width` as a number".into()));
+        assert_eq!(device_pixels(1120, 2.0), 2240, "CSS pixels times the ratio it paints at");
+        assert_eq!(device_pixels(1920, 2.0), crate::osr::MAX_WIDTH, "the bound is reachable");
+    }
+
+    /// **A resize is one step: the ring is asked for the size and that size is
+    /// stored.** A take lays its tab out at its own size and restores the
+    /// profile's surface when it ends, so a resize that moved the ring and
+    /// left the stored surface alone would be undone by the next take. **Both
+    /// arms are the same step**: the tool's window and the viewer's own.
+    #[tokio::test]
+    async fn a_resize_stores_the_surface_it_asks_the_ring_for() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let ring_name = format!("/forge-resize-surface-{}", std::process::id());
+        let ring = Arc::new(
+            crate::osr::Ring::create(
+                &ring_name,
+                crate::service::VIEW_WIDTH,
+                crate::service::VIEW_HEIGHT,
+            )
+            .expect("a ring"),
+        );
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::clone(&ring),
+            profile: dir.path().join("host"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) = (2880, 2128, 2.0);
+
+        service
+            .call(&seat, "browser_resize", json!({ "width": 1120, "height": 760 }))
+            .await
+            .expect("the window resizes");
+
+        assert_eq!(
+            ring.requested(),
+            (2240, 1520, 2_000, 1),
+            "the ring is asked once, for the device size the page paints at",
+        );
+        assert_eq!(
+            *profile.surface.lock().unwrap_or_else(PoisonError::into_inner),
+            (2240, 1520, 2.0),
+            "the tool's window replaces the surface, at the ratio the surface paints at",
+        );
+
+        // **The viewer's arm is the same step**: its own surface report asks
+        // the ring and stores the surface together, so a take restores the
+        // window the viewer last asked for.
+        profile.controls.lock().unwrap_or_else(PoisonError::into_inner).insert(1, (7, 0));
+        service.resize("O/default", 1, 7, 2880, 2128, 2.0).await;
+        assert_eq!(
+            ring.requested(),
+            (2880, 2128, 2_000, 2),
+            "the viewer's window is the request the ring holds last",
+        );
+        assert_eq!(
+            *profile.surface.lock().unwrap_or_else(PoisonError::into_inner),
+            (2880, 2128, 2.0),
+            "and the surface a take restores is that same request",
+        );
+        crate::osr::Ring::unlink(&ring_name);
     }
 
     /// **Two orgs share nothing**: their wire ids differ (what a frame is

@@ -219,8 +219,9 @@ pub struct SlackSearchMatch {
     pub files: Vec<SlackFile>,
 }
 
-/// One user as `users.info` reports it. Every optional field is optional
-/// because Slack omits fields per user type rather than sending nulls.
+/// One user as `users.info` and `users.list` report them. Every optional
+/// field is optional because Slack omits fields per user type rather than
+/// sending nulls.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SlackUser {
     pub id: String,
@@ -230,6 +231,20 @@ pub struct SlackUser {
     pub real_name: Option<String>,
     #[serde(default)]
     pub tz: Option<String>,
+    /// A deactivated member keeps their row; they cannot be notified.
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default)]
+    pub profile: Option<SlackUserProfile>,
+}
+
+/// The part of a user's profile a name lookup needs. `display_name` is what
+/// people call themselves, which is often neither the handle nor the legal
+/// name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SlackUserProfile {
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// One pinned message as `pins.list` reports it. Pins are messages, and
