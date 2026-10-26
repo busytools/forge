@@ -129,6 +129,12 @@ fi
 # version bump changes the pinned listener it patches.
 node "$SCRIPT_DIR/patch_browser_stack.mjs" "$STACK"
 
+# **The patched listing is checked by running it, not by reading it**: a
+# re-vendor or an @playwright/mcp bump that restores upstream's page-creating
+# `ensureTab` arm fails here, before any driver can leak a renderer per tick
+# (#2581).
+node "$SCRIPT_DIR/check_browser_stack_list.mjs" "$STACK"
+
 printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nforge-file-chooser-patch 2\n' \
     "$NODE_VERSION" "$NODE_SHA256" "$PLAYWRIGHT_MCP_VERSION" \
     > "$STACK/manifest.txt"

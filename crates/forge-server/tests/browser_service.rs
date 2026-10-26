@@ -273,13 +273,13 @@ async fn a_closed_tab_leaves_no_page_behind() {
     let service = BrowserService::at(scratch.path().to_path_buf(), stack);
     let seat = SessionSlot::lead("TestOrg", "proj");
 
-    // A page that keeps moving, the way a live-data page does.
+    // One navigate, one evaluate, one close: the leak needs no polling page
+    // and no second call.
     service
         .call(
             &seat,
             "browser_navigate",
-            json!({ "url": "data:text/html,<title>polls</title><script>setInterval(() => { \
-                     document.title = String(Date.now()); }, 250)</script><h1>poll</h1>" }),
+            json!({ "url": "data:text/html,<title>probe</title><h1>probe</h1>" }),
         )
         .await
         .expect("the page opens");

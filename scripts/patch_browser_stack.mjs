@@ -153,18 +153,14 @@ const OLD_REPLACEMENT = [
 ].join("\n");
 
 // **A tab listing reads, it does not create.** Upstream's `list` arm calls
-// `ensureTab()`, which calls `context.newPage()` whenever the driver has no
-// current tab - so listing a profile whose tabs are all closed manufactures a
-// page, a target and a renderer per call. The page it makes never becomes the
-// driver's current tab on this host, so the next listing makes another: a
-// watch that lists on a retry clock grows the host without bound (#2581).
-// `ensureBrowserContext` keeps what the listing legitimately needs - the
-// context, the request interception and the per-tab listeners that arm the
-// file chooser - and creates nothing.
+// `ensureTab()`, which makes a page whenever the driver has no current tab;
+// on this host that page never becomes the current tab, so every listing
+// makes another (#2581). `ensureBrowserContext` keeps the chooser arming and
+// creates nothing; scripts/check_browser_stack_list.mjs checks the behaviour.
 const TABLIST_REPLACEMENT = [
   "        switch (params2.action) {",
   '          case "list": {',
-  "            // FORGE_TAB_LIST_READS 1: a listing reads, never creates a page.",
+  "            // FORGE_TAB_LIST_READS 1: differs from upstream - a listing reads, it never creates a page (#2581).",
   "            await context.ensureBrowserContext();",
   "            break;",
   "          }",
