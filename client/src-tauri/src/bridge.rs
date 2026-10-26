@@ -348,6 +348,27 @@ impl Bridge {
         }
     }
 
+    /// Give a subject back entirely: every page reader's subscription and
+    /// the server's entries for it.
+    ///
+    /// **The count released is the server's, not the page's.** After a
+    /// resume the bridge may hold two readers where the wire holds one, so
+    /// one unsubscribe call per reader would send a frame the server has
+    /// nothing for and leave the one it does hold standing; the socket's own
+    /// count is what caps the sends.
+    pub fn release(&self, what: &Value) {
+        let key = records::subject_key(what);
+        let mut state = self.lock();
+        let readers = state.held.remove(&key).map(|watch| watch.readers).unwrap_or(0);
+        state.order.retain(|held| *held != key);
+        state.records.release(&key);
+        if let Some(socket) = &state.socket {
+            for _ in 0..readers {
+                socket.unsubscribe(what.clone());
+            }
+        }
+    }
+
     /// Ask again for a subject the page already holds: the core answers with
     /// a snapshot, which replaces the record whole. **The declaration is the
     /// held one**: a refresh with flags of its own would escalate a seat
@@ -1346,9 +1367,59 @@ mod tests {
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
 
         bridge.connect(server.url.clone());
+        // **Wait for the new socket to be up**, or the absence proves nothing:
+        // an assertion 200 ms after a dial that never landed reads the same as
+        // a resume that stayed quiet.
+        connected(&bridge).await;
         assert!(
             tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
             "a seat re-attached itself on resume instead of waiting for a click",
+        );
+    }
+
+    /// **The showing crosses as the frame the server reads**, `null`
+    /// included: it is a state assertion, and "nothing of mine is on screen"
+    /// is one of its states.
+    #[tokio::test]
+    async fn a_showing_crosses_as_its_own_frame() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+
+        bridge.showing(Some(seat()["session"].clone()));
+        let shown = server.heard_until(|v| v["kind"] == "showing").await;
+        assert_eq!(shown["seat"], seat()["session"], "the seat rode the frame");
+
+        bridge.showing(None);
+        let cleared = server.heard_until(|v| v["kind"] == "showing").await;
+        assert_eq!(cleared["seat"], Value::Null, "nothing on screen crosses as null");
+    }
+
+    /// **A relist asks again without counting a reader.** The page's store
+    /// survived the drop, so only the wire's half went; counting a second
+    /// reader here would leave an unsubscribe one short for the life of the
+    /// connection.
+    #[tokio::test]
+    async fn a_relist_asks_without_counting_a_reader() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), true, true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+
+        bridge.relist(seat(), false, false);
+        let again = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], seat(), "the relist asked for the same subject");
+        assert_eq!(again["answering"], true, "with the declaration it was held under");
+        assert_eq!(again["browser"], true, "and the capability the page claimed");
+
+        let key = records::subject_key(&seat());
+        assert_eq!(
+            bridge.lock().held.get(&key).map(|watch| watch.readers),
+            Some(1),
+            "the relist counted a second reader",
         );
     }
 

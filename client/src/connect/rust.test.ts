@@ -48,7 +48,7 @@ import { browserInflight } from '../browser/inflight.svelte';
 import { subjectKey, type ServerMessage } from '../protocol';
 import { onRefusal, type Refusal } from '../refusals';
 import type { Connection } from '../socket';
-import type { SessionSlot } from '../wire/types';
+import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { connectRust } from './rust';
 
 const slot: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -103,6 +103,77 @@ describe('what the shell is told', () => {
     expect(invoke).toHaveBeenCalledWith('client_unsubscribe', { what: subject });
     connection.refresh(subject);
     expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject });
+  });
+
+  /**
+   * **The shown seat crosses as its own commands.** `showing` and `relist`
+   * are what separate the screen from the subscription, and `release` is the
+   * one door that gives a subject back entirely; a one-sided rename of any of
+   * them is silent at every layer.
+   */
+  it('a showing, a relist and a release each cross as their own command', async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    connection.showing(slot);
+    expect(invoke).toHaveBeenCalledWith('client_showing', { seat: slot });
+    connection.showing(null);
+    expect(invoke).toHaveBeenCalledWith('client_showing', { seat: null });
+    connection.relist(subject, { answering: true, browser: true });
+    expect(invoke).toHaveBeenCalledWith('client_relist', {
+      what: subject,
+      answering: true,
+      browser: true,
+    });
+
+    connection.subscribe(subject);
+    connection.release(subject);
+    expect(invoke, 'the release crossed').toHaveBeenCalledWith('client_release', {
+      what: subject,
+    });
+    expect(
+      connection.store(subject),
+      'the release left a store open on the page',
+    ).toBeUndefined();
+  });
+
+  /**
+   * **A greeting is one new socket.** A page suspended across a drop wakes to
+   * a connection the shell says is already `open`, so it never sees the
+   * `connecting` that a drop sends; without this it would never release what
+   * the dead socket held nor re-attach the seat on screen, and the frozen
+   * record would draw forever.
+   */
+  it('treats a second greeting as a reconnect and re-sends the shown seat', async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+
+    const greeting = {
+      kind: 'greeting',
+      version: 10,
+      forge_version: '1.1.28',
+      forge_version_short: '1.1.28',
+      settings: DEFAULT_SETTINGS,
+    } as unknown as ServerMessage;
+    // The socket the page is already on: its greeting arrives after the open
+    // this page watched, and is not a reconnect.
+    fire('client://inbound', greeting);
+    expect(seen, 'the first greeting ran a reconnect').toEqual([]);
+
+    connection.showing(slot);
+    invoke.mockClear();
+    // A second socket, whose open the page never saw.
+    fire('client://inbound', greeting);
+
+    expect(seen, 'a new socket did not run the drop-and-open path').toEqual([
+      'connecting',
+      'open',
+    ]);
+    expect(invoke, 'the reconnect forgot the shown seat').toHaveBeenCalledWith('client_showing', {
+      seat: slot,
+    });
   });
 
   /** A one-sided rename of a command name is exactly what this file catches. */

@@ -166,6 +166,22 @@ class RustConnection implements Connection {
    */
   private shown: SessionSlot | null = null;
   /**
+   * How many greetings this page has delivered, and the count as of the
+   * last real `open` transition.
+   *
+   * **A greeting is one new socket.** The Rust half keeps one logical
+   * connection across its own reconnects, so a page suspended across a
+   * drop and its reconnect wakes to a socket the shell says is already
+   * open: it never sees `connecting`, and nothing would release what the
+   * dead socket held or re-attach the seat on screen. The greeting is the
+   * one frame every socket sends and none repeats, so a greeting whose
+   * socket this page never opened is that reconnect - the pair below is
+   * what tells the two apart without keying on the greeting's value, which
+   * a reconnect to the same server repeats exactly.
+   */
+  private greetings = 0;
+  private openedAtGreeting = 0;
+  /**
    * The bound on a subscription's first read: a subject still loading when
    * it runs out is asked again through `client_refresh`, so a snapshot lost
    * between the server and the page is not a wait with nothing behind it.
@@ -251,11 +267,15 @@ class RustConnection implements Connection {
     // lost first answer would otherwise leave them loading forever.
     if (next === 'open') {
       this.bounds.rearmLoading();
-      // **The reconnect re-sends the shown seat**, exactly as `socket.ts`'s
-      // own `onopen` does: the server's showing died with the old connection.
-      if (this.shown !== null) this.sendShowing(this.shown);
+      // The socket whose open this page has now seen: its greeting has
+      // already been accounted for (or is the next one to arrive).
+      this.openedAtGreeting = this.greetings;
     }
+    // **Listeners first, then `Showing`.** The page's own re-attach runs on
+    // this status and issues its `relist`; the spec's order is re-subscribe,
+    // then `Showing`, and the web's `onopen` keeps the same one.
     for (const fn of this.statuses) fn(next);
+    if (next === 'open' && this.shown !== null) this.sendShowing(this.shown);
   }
 
   private roleMoved(hosting: boolean): void {
@@ -331,6 +351,20 @@ class RustConnection implements Connection {
   });
 
   private heard(message: ServerMessage): void {
+    if (message.kind === 'greeting') {
+      // **A greeting whose socket this page never opened is a missed
+      // reconnect**: the queued `client://connection` reads the CURRENT state,
+      // sees `open`, and `move('open')` no-ops, so this is the only place the
+      // drop can be noticed. Fire the pair a visible drop fires, so the page
+      // releases what the dead socket held and re-attaches the seat on screen
+      // exactly once.
+      const opened = this.openedAtGreeting === this.greetings;
+      this.greetings += 1;
+      if (this.state === 'open' && this.greetings > 1 && !opened) {
+        this.move('connecting');
+        this.move('open');
+      }
+    }
     for (const ordered of this.gate.inbound(message)) this.deliver(ordered);
   }
 
@@ -438,6 +472,23 @@ class RustConnection implements Connection {
     }).catch((why: unknown) => {
       report('a relist could not reach the shell', why);
     });
+  }
+
+  /**
+   * Give a subject back entirely: every store reader this page holds for it,
+   * and every subscription the shell holds for it.
+   *
+   * **The shell owns the count**: the page may hold two readers where the
+   * wire holds one, so the unsubscribe frames are the bridge's to send.
+   */
+  release(what: Subject): void {
+    while (this.stores.get(what) !== undefined) this.stores.close(what);
+    void invoke('client_release', { what }).catch((why: unknown) => {
+      report('a release could not reach the shell', why);
+    });
+    // The gate stops sequencing it: a released seat's news passes through
+    // rather than opening a hole over a history nobody is reading.
+    if (typeof what !== 'string') this.gate.releaseSeat(what.session);
   }
 
   /** `true` when the ask went, which is what a bound re-arms on. */

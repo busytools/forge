@@ -209,6 +209,12 @@ mod commands {
         bridge.refresh(&what);
     }
 
+    /// Give a subject back entirely: every reader and every server entry.
+    #[tauri::command]
+    pub fn client_release(bridge: tauri::State<'_, Arc<Bridge>>, what: Value) {
+        bridge.release(&what);
+    }
+
     /// Which seat the page has on screen; null for none.
     #[tauri::command]
     pub fn client_showing(bridge: tauri::State<'_, Arc<Bridge>>, seat: Option<Value>) {
@@ -503,6 +509,7 @@ pub fn run() {
             commands::client_refresh,
             commands::client_showing,
             commands::client_relist,
+            commands::client_release,
             commands::client_more,
             commands::client_seat_range,
             commands::client_dispatch,
@@ -558,6 +565,7 @@ pub fn run() {
             commands::client_refresh,
             commands::client_showing,
             commands::client_relist,
+            commands::client_release,
             commands::client_more,
             commands::client_seat_range,
             commands::client_dispatch,

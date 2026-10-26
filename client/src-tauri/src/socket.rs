@@ -16,7 +16,7 @@
 //! Tauri process behind it and keeps `socket.ts`; only the desktop selects
 //! this half.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -608,9 +608,13 @@ async fn run(
         say(&events, SocketEvent::Status(Status::Open));
         wait = RETRY_MS;
         let (mut writer, mut reader) = ws.split();
-        // What this connection has really asked for, so an unsubscribe for a
-        // subject the new socket never heard of is not sent.
-        let mut live: HashSet<String> = HashSet::new();
+        // **How many subscriptions the server holds for each subject on this
+        // connection**, so an unsubscribe for a subject the new socket never
+        // heard of is not sent and one the server holds twice is given back
+        // twice. A set under-counts the second case: an escalated seat (the
+        // review page first, then its session page) is two server
+        // subscriptions, and a session end sends two unsubscribes.
+        let mut live: HashMap<String, usize> = HashMap::new();
         // **The declaration is re-asked, once per OPEN subscription** - the
         // server counts, so a subject two callers hold is asked for twice -
         // with the flags it carried: this is how the role survives a drop.
@@ -621,7 +625,7 @@ async fn run(
         // opened during the drop, whose first answer is still owed.
         for h in &held {
             for _ in 0..h.count {
-                live.insert(h.key.clone());
+                *live.entry(h.key.clone()).or_default() += 1;
                 // Each frame's own wait, so the first one's send is not
                 // reported again as every later frame's (#2513).
                 let queued = tokio::time::Instant::now();
@@ -687,7 +691,7 @@ async fn run(
                                 if let Some(h) = held.iter().find(|h| h.key == key)
                                     && writer.send(h.subscribe_frame()).await.is_ok()
                                 {
-                                    live.insert(key.clone());
+                                    *live.entry(key.clone()).or_default() += 1;
                                     say(
                                         &events,
                                         SocketEvent::Written {
@@ -711,7 +715,7 @@ async fn run(
                             {
                                 let queued = tokio::time::Instant::now();
                                 if writer.send(h.subscribe_frame()).await.is_ok() {
-                                    live.insert(key.clone());
+                                    *live.entry(key.clone()).or_default() += 1;
                                     say(
                                         &events,
                                         SocketEvent::Written {
@@ -766,15 +770,26 @@ async fn run(
                         Outbound::Unsubscribe { what } => {
                             let key = subject_key(&what);
                             unhold(&mut held, &mut awaiting, &what);
-                            // **Only what this connection was asked for is
-                            // given back.** A drop took the server's entries
-                            // with it, so a seat released after a resume -
-                            // before its click re-attached it - has nothing
-                            // to stop.
-                            if live.remove(&key) {
-                                let _ = writer
-                                    .send(Message::Text(json!({ "kind": "unsubscribe", "what": what }).to_string().into()))
-                                    .await;
+                            // **Only what this connection is holding is
+                            // given back, one entry per call**: a drop took
+                            // the server's entries with it, so a seat
+                            // released after a resume - before its click
+                            // re-attached it - has nothing to stop, and a
+                            // seat the server holds twice needs both.
+                            match live.get_mut(&key) {
+                                Some(count) if *count > 1 => {
+                                    *count -= 1;
+                                    let _ = writer
+                                        .send(Message::Text(json!({ "kind": "unsubscribe", "what": what }).to_string().into()))
+                                        .await;
+                                }
+                                Some(_) => {
+                                    live.remove(&key);
+                                    let _ = writer
+                                        .send(Message::Text(json!({ "kind": "unsubscribe", "what": what }).to_string().into()))
+                                        .await;
+                                }
+                                None => {}
                             }
                         }
                         Outbound::More { conversation, before, turns } => {
@@ -1471,6 +1486,24 @@ pub(crate) mod tests {
         );
     }
 
+    /// **A showing crosses as its own frame**, `null` included: it is the
+    /// wire's state assertion for the seat on screen, and "nothing of mine"
+    /// is one of its states.
+    #[tokio::test]
+    async fn a_showing_crosses_as_its_own_frame() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let seat = json!({ "org": "TestOrg", "project": "proj", "label": "lead" });
+
+        socket.showing(Some(seat.clone()));
+        let shown = stub.heard_until(|v| v["kind"] == "showing").await;
+        assert_eq!(shown["seat"], seat, "the seat rode the frame");
+
+        socket.showing(None);
+        let cleared = stub.heard_until(|v| v["kind"] == "showing").await;
+        assert_eq!(cleared["seat"], Value::Null, "nothing on screen crosses as null");
+    }
+
     /// **A seat released after a resume has nothing on the wire to give back**
     /// until its click re-attached it: the drop took the server's entry, and
     /// the reconnect never asked for it again.
@@ -1541,6 +1574,30 @@ pub(crate) mod tests {
         assert_eq!(
             key, "session:a\u{0}b\u{0}lead",
             "the refusal lands on the ask that is really outstanding, not the answered one"
+        );
+    }
+
+    /// **A subscription the server holds twice is given back twice.** A role
+    /// escalation is the ordinary way a subject gets two entries, and a set
+    /// would send the first unsubscribe and swallow the second, leaving a dead
+    /// seat's subscription and its work-watch hold until the connection
+    /// closed.
+    #[tokio::test]
+    async fn an_unsubscribe_gives_back_every_entry_the_server_holds() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        socket.subscribe(json!("home"), false, false);
+        socket.subscribe(json!("home"), false, false);
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
+
+        socket.unsubscribe(json!("home"));
+        let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
+        socket.unsubscribe(json!("home"));
+        let _ = stub.heard_until(|v| v["kind"] == "unsubscribe").await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stub.heard.recv()).await.is_err(),
+            "a third unsubscribe went for a subject held twice",
         );
     }
 
