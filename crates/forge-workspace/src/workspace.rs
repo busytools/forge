@@ -6523,11 +6523,6 @@ impl Workspace {
     /// reaches Running. `live_workers` is the authoritative
     /// "this session is a child agent" registry.
     pub fn release_session_with_cascade(self: &Arc<Self>, session_key: &SessionSlot) {
-        // Announced before anything is torn down, so the seat's row starts
-        // saying where it is going at the gesture rather than after the
-        // workers this cascade takes with it (#1930). A viewer's mark is a
-        // set, so a second announcement would be spent.
-        self.announce_release(session_key);
         // The cascade is the lead's, and a lead's slot is the one whose
         // label says so: a worker's slot carries its own label, so a
         // closed worker cannot be misidentified as its lead however far
@@ -6537,16 +6532,34 @@ impl Workspace {
                 .into_iter()
                 .find(|view| view.org == session_key.org() && view.name == session_key.project())
         });
-        let cascade_project = cascade_project.flatten().map(|view| view.key);
-        if let Some(project_key) = cascade_project {
-            for entry in self.drain_live_workers(&project_key) {
-                // Cleared before the removal frame that makes a view re-read,
-                // for the same reason `announce_release` clears the lead's.
+        let cascade_project = cascade_project.flatten();
+        // **Every record this close dismisses is cleared before the first
+        // frame that makes a view re-read.** The lead's announcement below is
+        // one; each live worker's removal is another. A stranded worker - a
+        // record with no live entry left to carry it - is the project's too,
+        // so every persisted label is cleared here rather than only what
+        // `live_workers` still holds.
+        if let Some(view) = cascade_project.as_ref() {
+            for row in self.worker_rows_for_project(&view.key) {
+                if row.label == crate::store::sessions::LEAD_LABEL {
+                    continue;
+                }
+                self.clear_spawn_failure(&SessionSlot::worker(&row.org, &row.project, &row.label));
+            }
+        }
+        // Announced before anything is torn down, so the seat's row starts
+        // saying where it is going at the gesture rather than after the
+        // workers this cascade takes with it (#1930). A viewer's mark is a
+        // set, so a second announcement would be spent.
+        self.announce_release(session_key);
+        if let Some(view) = cascade_project.as_ref() {
+            for entry in self.drain_live_workers(&view.key) {
+                // An entry whose label has no persisted row is only here.
                 self.clear_spawn_failure(&entry.slot);
                 let worktree =
                     crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
-                    project_key: project_key.clone(),
+                    project_key: view.key.clone(),
                     action: crate::protocol::WorkerStatusAction::Removed,
                     status: entry.to_status(),
                     worktree,
@@ -6568,12 +6581,13 @@ impl Workspace {
     /// kill - where a despawn's removal frame only follows the worktree
     /// cleanup, minutes later (#1930).
     ///
-    /// The seat's failure record goes with the announcement, before the frame
-    /// that makes a view re-read: a close is the reader's answer to a failed
-    /// attempt, and a trace that outlived the seat kept its row in the
-    /// needs-you group with nothing left to act on.
+    /// The seat's failure record and any standing death go with the
+    /// announcement, before the frame that makes a view re-read: a close is
+    /// the reader acting on the row, and a trace that outlived the seat kept
+    /// it in the needs-you group with nothing left to act on.
     pub(crate) fn announce_release(self: &Arc<Self>, key: &SessionSlot) {
         self.clear_spawn_failure(key);
+        self.spend_death(key);
         let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
@@ -6591,10 +6605,6 @@ impl Workspace {
     /// Use `release_session_with_cascade` instead when the caller is
     /// the lead-row close gesture.
     pub(crate) fn release_session(self: &Arc<Self>, session_key: &SessionSlot) {
-        // The failure record exists to keep a failed attempt visible while a
-        // reader can act on it; a released seat is no longer that, and one
-        // left standing would keep its next start reading Failed.
-        self.clear_spawn_failure(session_key);
         // **A closed seat is gone now, not at the next sweep.** The fleet
         // hears the tombstone before the close work, so a hand-off resolved
         // after it does not keep the tab for a session that has ended; the
