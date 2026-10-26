@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import HandoffRow from './HandoffRow.svelte';
 import type { HandoffRecord } from '../wire/handoff';
+import { violationsOf } from '../testing/axe';
 
 /**
  * The row's own open, as MOUNTED DOM.
@@ -19,7 +20,6 @@ const a_handoff = (overrides: Partial<HandoffRecord> = {}): HandoffRecord => ({
   fill_percent: 85,
   total_tokens: 850_000,
   max_tokens: 1_000_000,
-  compaction_count: 0,
   at_percent: 85,
   ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
   judgment: [{ label: 'Next', lines: ['the client row'] }],
@@ -87,6 +87,33 @@ describe('the handoff row, mounted', () => {
       ).toBe(2);
     } finally {
       void unmount(app);
+      document.body.innerHTML = '';
+    }
+  });
+
+  /**
+   * The row's OPEN body under axe, which no server render reaches: axe walks
+   * nothing inside a closed `<details>`, so the brief's own markup is audited
+   * in the state a reader opens it into - and inside the landmark its page
+   * gives it, because rendered alone every row reports the page-level
+   * `region` rule rather than anything about itself.
+   */
+  it('draws the open brief with no violations', async () => {
+    const main = document.createElement('main');
+    document.body.append(main);
+    const app = mount(HandoffRow, { target: main, props: { handoff: a_handoff() } });
+    try {
+      flushSync();
+      const row = document.querySelector('details');
+      if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
+      row.open = true;
+      row.dispatchEvent(new Event('toggle'));
+      flushSync();
+      expect(main.textContent ?? '', 'the row drew, so axe saw it').toContain('PART 1');
+      expect(await violationsOf(`<main>${main.innerHTML}</main>`)).toEqual([]);
+    } finally {
+      void unmount(app);
+      main.remove();
       document.body.innerHTML = '';
     }
   });

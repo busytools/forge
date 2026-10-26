@@ -96,8 +96,6 @@ pub struct HandoffRecord {
     pub total_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
-    /// Compactions the handover had taken.
-    pub compaction_count: u32,
     /// The configured share of the window when this fired, so a later config
     /// change does not rewrite what the record means.
     pub at_percent: u8,
@@ -139,7 +137,6 @@ mod tests {
             fill_percent: Some(85),
             total_tokens: Some(867_000),
             max_tokens: Some(1_020_000),
-            compaction_count: 1,
             at_percent: 85,
             brief: HandoffBrief::default(),
             transcript_path: "/tmp/9cfe315c.jsonl".to_owned(),
@@ -174,7 +171,7 @@ mod tests {
         let json = serde_json::json!({
             "slot": {"org": "Busytools", "project": "forge", "label": "lead"},
             "from": "a", "to": "b", "reason": "manual",
-            "compaction_count": 0, "at_percent": 85,
+            "at_percent": 85,
             "brief": {"ground_truth": [], "judgment": []},
             "transcript_path": "/tmp/a.jsonl", "at": "now"
         });

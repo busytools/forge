@@ -1092,7 +1092,6 @@ pub(crate) struct SwapRequest {
     pub to: String,
     pub reason: HandoffReason,
     pub fill: Option<FillReading>,
-    pub compaction_count: u32,
     pub at_percent: u8,
     pub role: Role,
     pub account: Option<String>,
@@ -1372,7 +1371,6 @@ impl crate::Workspace {
             fill_percent: request.fill.map(|fill| fill.percent),
             total_tokens: request.fill.map(|fill| fill.total_tokens),
             max_tokens: request.fill.map(|fill| fill.max_tokens),
-            compaction_count: request.compaction_count,
             at_percent: request.at_percent,
             brief: HandoffBrief { ground_truth: truth.sections, judgment: request.judgment },
             transcript_path: transcript_path.display().to_string(),
@@ -1711,7 +1709,6 @@ mod tests {
             fill_percent: Some(85),
             total_tokens: Some(850_000),
             max_tokens: Some(1_000_000),
-            compaction_count: 0,
             at_percent: 85,
             brief: HandoffBrief {
                 ground_truth: vec![
@@ -2158,7 +2155,6 @@ mod tests {
             token,
             reason: forge_primitives::HandoffReason::Manual,
             fill: None,
-            compaction_count: 0,
             at_percent: 85,
             role: Role::Lead,
             account: None,

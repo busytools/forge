@@ -30,7 +30,6 @@ import {
   take,
   wire,
 } from './composer/testing';
-import HandoffRow from './chat/HandoffRow.svelte';
 import Turn from './chat/Turn.svelte';
 import Connect from './connect/Connect.svelte';
 import { boardWire, homeWire } from './dev/fixture.data';
@@ -233,34 +232,6 @@ describe('axe over the rendered pages', () => {
     }).body;
     expect(html, 'the fatal row was not rendered').toContain('forge stopped:');
     expect(await idsOf(html)).toEqual([]);
-  });
-
-  /**
-   * The handoff row, OPEN: axe walks nothing inside a closed `<details>`, so
-   * the brief's own markup is audited in the state a reader opens it into.
-   */
-  it('draws the handoff row, open, with no violations', async () => {
-    const html = render(HandoffRow, {
-      props: {
-        open: true,
-        handoff: {
-          from: '9cfe315c-1111-2222-3333-444444444444',
-          to: '4b21e0a7-5555-6666-7777-888888888888',
-          reason: 'fill',
-          fill_percent: 85,
-          total_tokens: 850_000,
-          max_tokens: 1_000_000,
-          compaction_count: 0,
-          at_percent: 85,
-          ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
-          judgment: [{ label: 'Next', lines: ['the client row'] }],
-        },
-      },
-    }).body;
-    expect(html, 'the row drew, so axe saw it').toContain('PART 1');
-    // Inside the landmark its page gives it: rendered alone, every row
-    // reports the page-level `region` rule rather than anything about itself.
-    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
   });
 
   it('draws the connect screen with no violations', async () => {
