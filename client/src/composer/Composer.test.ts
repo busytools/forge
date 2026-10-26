@@ -5684,6 +5684,10 @@ describe('the dock', () => {
     flushSync();
 
     expect(showBrowser).toHaveBeenCalledTimes(2);
+    expect(
+      showBrowser,
+      'the retry asks for the profile current tab, not the parked ask dead tab',
+    ).toHaveBeenLastCalledWith(null, SLOT, null);
     expect(surface.phase, 'the second ask landed').toBe('live');
   });
 

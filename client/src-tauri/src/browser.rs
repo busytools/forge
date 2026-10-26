@@ -420,9 +420,32 @@ pub fn lost(app: &tauri::AppHandle) {
     }
 }
 
+/// Lower the surface only when the failure names the pair it attached to.
+///
+/// **A late failure for a superseded attach is not the current surface's**:
+/// its tab is not the one on screen, so lowering the overlay would take down
+/// a page that is alive. A frame with no identity (a refused attach) is not
+/// filtered, and neither is one that arrives before an attach named a pair.
+pub fn lost_for(app: &tauri::AppHandle, id: Option<u16>, tab: Option<u16>) {
+    let viewed = *VIEWED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if names_viewed(id, tab, viewed) {
+        lost(app);
+    }
+}
+
+/// Whether a failure's identity is the pair this client attached to. **No
+/// identity is not a refusal**: a refused attach names none and still belongs
+/// to the surface that asked.
+fn names_viewed(id: Option<u16>, tab: Option<u16>, viewed: Option<(u16, u16)>) -> bool {
+    match (id, tab, viewed) {
+        (Some(id), Some(tab), Some((profile, viewed_tab))) => id == profile && tab == viewed_tab,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{keeps_kept, split_frame};
+    use super::{keeps_kept, names_viewed, split_frame};
 
     /// **The kept phone frame stays only for its own tab.** A canvas
     /// mounting before the new `browser_view` would otherwise paint the
@@ -437,6 +460,21 @@ mod tests {
         assert!(
             !keeps_kept(Some(&serde_json::json!({ "profile": "5", "tab": 2 })), 5, 2),
             "a value this half cannot read is not a match",
+        );
+    }
+
+    /// **A failure for another tab is not the current surface's.** The
+    /// shell lowers the overlay on a failure, so a late frame for a
+    /// superseded attach must not take down the page now up.
+    #[test]
+    fn a_failure_names_the_surface_it_is_for() {
+        assert!(names_viewed(Some(5), Some(2), Some((5, 2))), "the viewed pair");
+        assert!(!names_viewed(Some(5), Some(3), Some((5, 2))), "another tab is not this surface");
+        assert!(!names_viewed(Some(6), Some(2), Some((5, 2))), "another profile is not either");
+        assert!(names_viewed(None, None, Some((5, 2))), "no identity is a refused attach's");
+        assert!(
+            names_viewed(Some(5), Some(2), None),
+            "before an attach names a pair, nothing filters"
         );
     }
 

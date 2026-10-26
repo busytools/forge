@@ -37,6 +37,13 @@ function viewHandler(): (event: { payload: Record<string, unknown> }) => void {
   return call[1] as (event: { payload: Record<string, unknown> }) => void;
 }
 
+/** The handler the shell's failure event was registered with. */
+function failHandler(): (event: { payload: unknown }) => void {
+  const call = listen.mock.calls.find((entry) => entry[0] === 'browser_surface_failed');
+  if (call === undefined) throw new Error('the failure listener was never registered');
+  return call[1] as (event: { payload: unknown }) => void;
+}
+
 describe('the shell listeners', () => {
   /**
    * **The second listener is the one that matters.** The load-time attempt
@@ -97,6 +104,17 @@ describe('the shell listeners', () => {
       viewed({
         payload: { id: 7, profile: 'browser-stack-lead', tab: 3, viewer: 3, controller: 4 },
       });
+
+      // **A failure that names another surface is not this one's.** A late
+      // frame for a superseded attach must not fail the tab now viewed.
+      const failed = failHandler();
+      failed({ payload: { id: 7, tab: 4, reason: 'tab 4 was closed' } });
+      expect(surface.phase, 'another tab does not fail this surface').not.toBe('failed');
+      failed({ payload: { id: 8, tab: 3, reason: 'tab 3 was closed' } });
+      expect(surface.phase, 'another profile does not either').not.toBe('failed');
+      failed({ payload: { id: 7, tab: 3, reason: 'the browser host exited' } });
+      expect(surface.phase, 'its own failure lands').toBe('failed');
+      expect(surface.reason).toBe('the browser host exited');
       expect(
         [surface.id, surface.tab, surface.viewer, surface.controller],
         'the profile id, the tab, this viewer and the role holder',

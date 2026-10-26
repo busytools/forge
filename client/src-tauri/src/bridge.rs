@@ -1036,17 +1036,28 @@ impl Bridge {
             }
             // The browser stopped: the overlay comes down at once rather than
             // leaving the last frame standing over a dead page, and the
-            // page's own store draws the sentence.
+            // page's own store draws the sentence. **The frame's identity
+            // travels with it**, so a late failure for a superseded attach
+            // neither lowers nor fails the surface now up.
             "browser_surface_failed" => {
                 if let Some(app) = &self.app {
+                    let id = message
+                        .get("id")
+                        .and_then(Value::as_u64)
+                        .and_then(|id| u16::try_from(id).ok());
+                    let tab = message
+                        .get("tab")
+                        .and_then(Value::as_u64)
+                        .and_then(|tab| u16::try_from(tab).ok());
+                    let reason = message
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("the browser stopped answering");
                     let _ = app.emit(
                         "browser_surface_failed",
-                        message
-                            .get("reason")
-                            .and_then(Value::as_str)
-                            .unwrap_or("the browser stopped answering"),
+                        json!({ "id": id, "tab": tab, "reason": reason }),
                     );
-                    crate::browser::lost(app);
+                    crate::browser::lost_for(app, id, tab);
                 }
                 self.forward(&message, None);
             }

@@ -12,7 +12,14 @@
   import type { BrowserFrame, Connection } from '../socket';
   import { drawsCanvas, keptFrame } from './host';
   import { pagePoint } from './point';
-  import { closeSurface, holdsControl, pageArea, setRegion, surface } from './surface.svelte';
+  import {
+    closeSurface,
+    holdsControl,
+    pageArea,
+    setRegion,
+    surface,
+    surfaceGeneration,
+  } from './surface.svelte';
 
   let { connection }: { connection: Connection } = $props();
 
@@ -467,9 +474,12 @@
     }
     // **The shell's takeover is the store's**: the open and the lower both go
     // through it, so full screen and the viewer follow one door each. Leaving
-    // the page is the only case the store does not see, and this closes it.
+    // the page is the only case the store does not see, and this closes it -
+    // **unless a newer open has taken the surface since**, which this
+    // component's teardown must not close under it.
+    const mine = surfaceGeneration();
     return () => {
-      if (surface.phase !== 'closed') void closeSurface();
+      if (surfaceGeneration() === mine && surface.phase !== 'closed') void closeSurface();
     };
   });
 </script>

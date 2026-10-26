@@ -173,6 +173,12 @@ export function clearHandOff(id: string): void {
 /** The request that is current; a result from an older one is dropped. */
 let generation = 0;
 
+/** The open/close generation this page is on, so a component's teardown can
+ *  tell whether the surface it mounted is still the current one. */
+export function surfaceGeneration(): number {
+  return generation;
+}
+
 /**
  * Open the takeover for one of a seat's browser tabs.
  *
@@ -232,6 +238,7 @@ export async function openSurface(
   surface.profile = answer.profile;
   surface.tab = answer.tab;
   surface.phase = 'live';
+  surface.reason = null;
   // **The picker is an aid, not the open**: a slow read must not delay the
   // caller that is waiting to hear the raise landed.
   void readSurfaceTabs(seat);
@@ -251,12 +258,19 @@ export async function selectTab(tab: number): Promise<string | null> {
   if ((surface.phase !== 'live' && surface.phase !== 'failed') || surface.seat === null) {
     return 'no browser is open';
   }
+  // **A pick is a surface move like any other**, so it takes a generation:
+  // an answer that lands after a close, a newer open or a later pick is not
+  // this call's to apply.
+  const mine = ++generation;
   const answer = await showBrowser(surface.profile, surface.seat, tab);
   if (typeof answer === 'string') {
+    // A superseded refusal is not the current surface's to fail.
+    if (mine !== generation) return answer;
     surface.phase = 'failed';
     surface.reason = answer;
     return answer;
   }
+  if (mine !== generation) return null;
   surface.profile = answer.profile;
   surface.tab = answer.tab;
   // **A successful pick is a live surface again.** Attaching from the failed
@@ -268,12 +282,22 @@ export async function selectTab(tab: number): Promise<string | null> {
   return null;
 }
 
+/** The token of the newest picker read; an older answer must not overwrite it. */
+let tabsRead = 0;
+
 /** The profile's tabs, read for the bar's picker; a failed read leaves the last. */
 async function readSurfaceTabs(seat: SessionSlot | null): Promise<void> {
+  const token = (tabsRead += 1);
   try {
     const list = await listTabs(seat);
+    // **A slower read must not replace a newer one's rows**, and a list for
+    // another profile must never become this picker's: a pick from it would
+    // ask for a tab number that belongs to a browser the page is not on.
+    if (token !== tabsRead) return;
+    if (surface.attachedProfile !== null && list.profile !== surface.attachedProfile) return;
     if (surface.phase !== 'closed') surface.tabs = list;
   } catch (why) {
+    if (token !== tabsRead) return;
     // The picker is an aid, not the surface: a read that could not run is
     // said in the console and the last list stays drawn.
     console.warn(`the browser's tabs could not be read: ${whyText(why)}`);
@@ -368,11 +392,23 @@ async function installOnce(): Promise<void> {
       installed = 2;
     }
     if (installed < 3) {
-      await listen<string>('browser_surface_failed', (event) => {
-        const why =
-          typeof event.payload === 'string' && event.payload !== ''
-            ? event.payload
-            : 'the browser stopped answering';
+      await listen<unknown>('browser_surface_failed', (event) => {
+        const payload = event.payload;
+        let why = 'the browser stopped answering';
+        if (typeof payload === 'string' && payload !== '') {
+          why = payload;
+        } else if (typeof payload === 'object' && payload !== null) {
+          const fields = payload as Record<string, unknown>;
+          const id = typeof fields['id'] === 'number' ? fields['id'] : null;
+          const tab = typeof fields['tab'] === 'number' ? fields['tab'] : null;
+          // **A failure that names another surface is not this one's**: a
+          // late frame for a superseded attach must not fail the tab now up.
+          if (id !== null && surface.id !== null && id !== surface.id) return;
+          if (tab !== null && surface.tab !== null && tab !== surface.tab) return;
+          if (typeof fields['reason'] === 'string' && fields['reason'] !== '') {
+            why = fields['reason'];
+          }
+        }
         surface.phase = 'failed';
         surface.reason = why;
         // There is no page left to move: the arrows go back to disabled.
