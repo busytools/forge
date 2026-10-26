@@ -861,13 +861,17 @@ async fn fetch_replies(
 }
 
 /// Every reply in a thread, the parent first, for a caller reading the thread
-/// rather than advancing a cursor.
+/// rather than advancing a cursor. Slack repeats the parent at the top of
+/// every page, so the result is deduped by `ts`; the first occurrence wins,
+/// which keeps the parent where the contract puts it.
 pub async fn read_thread(
     api: &dyn SlackApi,
     channel: &str,
     ts: &str,
 ) -> Result<Vec<SlackHistoryMessage>, SlackError> {
-    fetch_replies(api, channel, ts, None).await
+    let messages = fetch_replies(api, channel, ts, None).await?;
+    let mut seen: HashSet<String> = HashSet::new();
+    Ok(messages.into_iter().filter(|message| seen.insert(message.ts.clone())).collect())
 }
 
 /// Which conversations one pass reads. The DM class covers every DM rather
@@ -5336,6 +5340,31 @@ mod tests {
             host.thread_cursor("acme", "C1", "99.0"),
             Some("150.0".to_owned()),
             "the cursor starts at the mention's ts, never the weeks-old parent",
+        );
+    }
+
+    /// A caller reading the thread, rather than advancing a cursor, gets the
+    /// parent once: Slack repeats it at the top of every page, and the tool's
+    /// contract says "parent first, then every reply oldest first".
+    #[tokio::test]
+    async fn read_thread_returns_the_parent_once_across_pages() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_replies("100.0", 2);
+        host.seed_replies_pages(
+            "C1",
+            "100.0",
+            vec![
+                vec![parent.clone(), history_message("110.0", "U1", "first reply")],
+                vec![parent, history_message("120.0", "U1", "second reply")],
+            ],
+        );
+
+        let thread = read_thread(&host, "C1", "100.0").await.expect("the thread is read");
+        let ts: Vec<&str> = thread.iter().map(|message| message.ts.as_str()).collect();
+        assert_eq!(
+            ts,
+            ["100.0", "110.0", "120.0"],
+            "the parent appears once and every reply follows it in order",
         );
     }
 
