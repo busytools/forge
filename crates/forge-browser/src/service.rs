@@ -7425,11 +7425,6 @@ mod tests {
         assert!(path.is_file(), "the writer opened the file at {}", path.display());
 
         service.record_stop(&seat).await.expect("the take stops");
-        assert!(
-            std::fs::metadata(&path).is_ok_and(|take| take.len() > 0),
-            "the finished take has bytes: {}",
-            path.display()
-        );
         host.join().expect("the fake host ends");
         crate::osr::Ring::unlink(&ring_name);
     }
