@@ -96,11 +96,21 @@ def main() -> None:
     if signed_version != version:
         fail(f"the signature is for version {signed_version or 'unknown'}, expected {version}")
 
-    # **The tarball must carry the engine, not just the app's own files.**
-    # It is built by the bundler from the app the CEF files were copied into;
-    # assembling it before that copy produced a signed, installable client
-    # with no browser, which only the next auto-update would reveal.
-    required = [
+    # **The tarball must carry the app and must NOT carry the client-side
+    # browser.** The browser moved to the server: a client bundle that still
+    # ships CEF and its helpers is the old 480 MiB shape, and an update that
+    # installs it would waste the space and shadow the server's own host.
+    try:
+        with tarfile.open(tarball, "r:gz") as archive:
+            names = set(archive.getnames())
+    except (OSError, tarfile.TarError) as err:
+        fail(f"the updater tarball could not be read: {err}")
+
+    app_binary = "forge.app/Contents/MacOS/forge-client"
+    if app_binary not in names:
+        fail(f"the update tarball carries no client binary ({app_binary} is missing)")
+
+    forbidden = [
         "forge.app/Contents/Frameworks/Chromium Embedded Framework.framework/"
         "Chromium Embedded Framework",
         "forge.app/Contents/Frameworks/forge-client Helper.app/Contents/MacOS/"
@@ -114,21 +124,16 @@ def main() -> None:
         "forge.app/Contents/Frameworks/forge-client Helper (Alerts).app/Contents/MacOS/"
         "forge-client Helper (Alerts)",
     ]
-    try:
-        with tarfile.open(tarball, "r:gz") as archive:
-            names = set(archive.getnames())
-    except (OSError, tarfile.TarError) as err:
-        fail(f"the updater tarball could not be read: {err}")
-    missing = [name for name in required if name not in names]
-    if missing:
+    present = [name for name in forbidden if name in names]
+    if present:
         fail(
-            "the update tarball carries no browser - every installed client would "
-            f"update to one that cannot open a page; missing: {', '.join(missing)}"
+            "the update tarball still carries the client-side browser, which runs "
+            f"on the server now; found: {', '.join(present)}"
         )
 
     print(
         f"[OK] the update tarball is signed by the pinned key, for version "
-        f"{signed_version}, and carries the engine"
+        f"{signed_version}, and carries the app without the client-side browser"
     )
 
 
