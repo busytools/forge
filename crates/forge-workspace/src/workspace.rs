@@ -56,6 +56,15 @@ const MODEL_SLOT_VARIABLES: [&str; 5] = [
 /// table's `auto_compact_window` is stamped here for the project's model.
 const AUTO_COMPACT_WINDOW_ENV: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 
+/// A project's walk blocked by a rotation cooldown, as the walk's own
+/// `BudgetExhausted` reports it.
+pub(crate) struct ProjectCooling {
+    pub(crate) org: String,
+    pub(crate) model: String,
+    pub(crate) tried: usize,
+    pub(crate) reset_in: Duration,
+}
+
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
 /// file lazily on the first user turn - workers with an `initial_prompt`
@@ -753,6 +762,11 @@ pub struct Workspace {
     /// is new again and warns at `WARN` again. A set that never cleared
     /// would silence a cron that is firing.
     unwakeable_crons: Mutex<std::collections::HashSet<forge_primitives::CronId>>,
+    /// The cron ids the last `fire_due_crons` pass found cooling, with the
+    /// time each last warned. Replaced wholesale each pass, like
+    /// `unwakeable_crons`, so an episode that clears drops its marker and a
+    /// later one warns again.
+    cooling_crons: Mutex<std::collections::HashMap<forge_primitives::CronId, SystemTime>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler - used by
@@ -1888,6 +1902,7 @@ impl Workspace {
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
+            cooling_crons: Mutex::new(std::collections::HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -2741,8 +2756,8 @@ impl Workspace {
         self.gateway.select_for(&project.org, model).is_ok()
     }
 
-    /// Whether a spawn in `project_key` would be refused because every
-    /// account serving its model is cooling.
+    /// The cooling that would refuse a spawn in `project_key`, or `None`
+    /// when a spawn would find an account.
     ///
     /// Matches the walk's budget failure alone, rather than taking any
     /// error, because that failure is the one carrying a reset to wait
@@ -2753,17 +2768,15 @@ impl Workspace {
     /// loaded config today. Keep the match narrow anyway: an empty walk
     /// with nothing to wait for must fail as before rather than retry
     /// forever, and this is the line that says so.
-    pub(crate) fn project_walk_is_cooling(&self, project_key: &ProjectKey) -> bool {
-        let Some(project) = self.project_for_key(project_key) else {
-            return false;
-        };
-        let Some(model) = project.model.as_deref() else {
-            return false;
-        };
-        matches!(
-            self.gateway.select_for(&project.org, model),
-            Err(forge_gateway::SelectFailure::BudgetExhausted { .. })
-        )
+    pub(crate) fn project_walk_cooling(&self, project_key: &ProjectKey) -> Option<ProjectCooling> {
+        let project = self.project_for_key(project_key)?;
+        let model = project.model.as_deref()?;
+        match self.gateway.select_for(&project.org, model) {
+            Err(forge_gateway::SelectFailure::BudgetExhausted { tried, org, model, reset_in }) => {
+                Some(ProjectCooling { org, model, tried, reset_in })
+            }
+            _ => None,
+        }
     }
 
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
@@ -6265,6 +6278,25 @@ impl Workspace {
         ids: std::collections::HashSet<forge_primitives::CronId>,
     ) {
         *self.unwakeable_crons.lock() = ids;
+    }
+
+    /// When the previous fire pass last warned about this cron's cooling,
+    /// or `None` when that pass did not find it cooling.
+    pub(crate) fn cron_cooling_warned_at(
+        &self,
+        id: &forge_primitives::CronId,
+    ) -> Option<SystemTime> {
+        self.cooling_crons.lock().get(id).copied()
+    }
+
+    /// Close a fire pass with the crons it still found cooling and the
+    /// time each last warned, replacing the previous pass's map wholesale
+    /// for the same reason [`Self::cron_unwakeable_commit`] does.
+    pub(crate) fn cron_cooling_commit(
+        &self,
+        warned_at: std::collections::HashMap<forge_primitives::CronId, SystemTime>,
+    ) {
+        *self.cooling_crons.lock() = warned_at;
     }
 
     /// The session a worker label resumes onto.

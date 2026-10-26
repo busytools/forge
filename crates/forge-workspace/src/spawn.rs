@@ -446,6 +446,10 @@ pub(crate) enum CronFireOutcome {
     /// one-shot stays due instead, because advancing removes a one-shot:
     /// dropping it would throw the prompt away with no later slot.
     TargetCannotBeWoken { directory: std::path::PathBuf },
+    /// Every account serving the project's model is cooling until the
+    /// carried reset: the caller leaves the entry due, because a refusal
+    /// right now would expire the parked prompt.
+    DeferredCooling { cooling: crate::workspace::ProjectCooling },
     /// The Command channel is closed (workspace shutting down). The caller
     /// leaves the cron due so the next boot catch-up re-fires it.
     DispatchFailed,
@@ -566,14 +570,8 @@ pub(crate) fn deliver_cron_prompt(
     // too. A walk empty because no account declares the model is the other
     // case, and that one is permanent - deferring it would retry a broken
     // cron forever, so it is left to fail as before.
-    if workspace.project_walk_is_cooling(&view.key) {
-        tracing::warn!(
-            target: "forge_workspace::spawn",
-            project = %project_name,
-            "cron fire deferred: every account serving this project's model is cooling, so the \
-             wake would be refused and its parked prompt expired",
-        );
-        return CronFireOutcome::DispatchFailed;
+    if let Some(cooling) = workspace.project_walk_cooling(&view.key) {
+        return CronFireOutcome::DeferredCooling { cooling };
     }
     // Buffer by owner, then wake via resume: SpawnProject resumes the lead,
     // whose reconnect re-spawns the persisted workers; each drains its own
