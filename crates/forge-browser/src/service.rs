@@ -4862,6 +4862,84 @@ mod tests {
         );
     }
 
+    /// **A late close from the old host leaves its successor's tab one
+    /// alone.** A host death clears the focus and restarts tab numbers, so a
+    /// close aimed at the old host must not unfocus the new one's tab.
+    #[tokio::test]
+    async fn a_close_from_the_old_host_leaves_the_successors_focus() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+        let old_host = profile.host_generation.load(Ordering::Acquire);
+        profile.host_generation.fetch_add(1, Ordering::AcqRel);
+
+        profile.unfocus(old_host, 1);
+
+        assert_eq!(
+            *profile.focused.lock().unwrap_or_else(PoisonError::into_inner),
+            Some(1),
+            "a close from the old host does not unfocus the successor's tab one",
+        );
+    }
+
+    /// **A finished watch is replaced by the next start.** The Gone path ends
+    /// its task and leaves the handle behind; a later driver start must not
+    /// read that handle as a watch still running.
+    #[tokio::test(start_paused = true)]
+    async fn a_finished_watch_is_replaced_by_the_next_start() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        let seen = fake.clone();
+        service.install_fake(&seat, fake).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+
+        // A host for watch_nav's port, and the finished handle the Gone path
+        // leaves in the slot.
+        let ring_name = format!("/forge-watch-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        let finished = tokio::spawn(async {});
+        while !finished.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        let mut state = profile.state.lock().await;
+        state.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: dir.path().join("profile"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        state.nav_watch = Some(finished);
+
+        let before = seen.listings();
+        profile.watch_nav(&mut state);
+        assert!(
+            state.nav_watch.as_ref().is_some_and(|watch| !watch.is_finished()),
+            "a finished watch is replaced by a fresh one",
+        );
+        drop(state);
+
+        let mut listed = false;
+        for _ in 0..20 {
+            if seen.listings() > before {
+                listed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(listed, "the fresh watch lists where the finished one stopped");
+        crate::osr::Ring::unlink(&ring_name);
+    }
+
     /// **Closing the focused tab lets the focus go.** A focus left on it
     /// would keep the history watch driving a page that no longer exists.
     #[tokio::test]
