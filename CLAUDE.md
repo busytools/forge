@@ -414,7 +414,8 @@ inspected.
    an item to `#[cfg(test)]` then meets `dead_code`, which is the gate
    being accurate rather than asking for a marker.
 8. **`cargo nextest run`, not `cargo test`.** `just check` runs fmt,
-   the unicode-punctuation gate, clippy, nextest and docs in one shot,
+   the unicode-punctuation gate, the book's word count, clippy, nextest
+   and docs in one shot,
    ending on a verdict line that names the first failing step. Its four
    independent groups run concurrently, capped by `FORGE_CHECK_JOBS`
    (default 4); `just check-serial` runs the same steps one at a time,

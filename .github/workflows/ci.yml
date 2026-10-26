@@ -142,6 +142,15 @@ jobs:
       - uses: actions/checkout@v7
       - run: ./scripts/check_no_unicode_punctuation.sh
 
+  ui-word-count:
+    name: ui word-count gate
+    # No path filter, like the punctuation gate: a docs-only pull request is
+    # exactly the one this exists for.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./docs/book/ui-word-count.sh
+
   script-tests:
     # The display name stays `release script tests` until the ruleset stops
     # requiring it: renaming it now leaves a pull request waiting for a
@@ -440,6 +449,7 @@ jobs:
       - changes
       - fmt
       - unicode-punct
+      - ui-word-count
       - script-tests
       - clippy
       - test
@@ -467,6 +477,7 @@ jobs:
           groups = {
               "fmt": ("rust", "client_tauri"),
               "unicode-punct": (),
+              "ui-word-count": (),
               "script-tests": ("scripts",),
               "clippy": ("rust",),
               "test": ("rust",),

@@ -17,8 +17,8 @@ we can agree the direction before you write it.
 just check
 ```
 
-That is `cargo fmt --check`, the Unicode punctuation gate, the scripts' own
-tests, the shell crate's
+That is `cargo fmt --check`, the Unicode punctuation gate, the book's
+client-page word-count gate, the scripts' own tests, the shell crate's
 rustfmt check (`client-tauri-fmt`), the
 client's Prettier check, ESLint, `svelte-check` and
 `tsc --noEmit` and then its vitest run, the shell crate's clippy and tests
