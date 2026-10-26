@@ -4830,9 +4830,17 @@ fn dead_driver_answer(outcome: DeadDriverOutcome<'_>) -> String {
         // **An attach timeout never reached the page**: the driver could not
         // finish its handshake, so the tool was not delivered and repeating
         // it cannot double. Every other timeout may have landed.
-        DeadDriverOutcome::NotRepeated { tool, why } if driver::attach_timed_out(why) => {
+        // **An attach timeout and a `browser_tabs` timeout never reached the
+        // page**: the first never finished its handshake and the second is a
+        // listing or a selection that never answered, so nothing was
+        // delivered however the outer tool is named. Repeating either cannot
+        // double.
+        DeadDriverOutcome::NotRepeated { tool, why }
+            if driver::attach_timed_out(why)
+                || why.contains("the driver did not answer browser_tabs") =>
+        {
             format!(
-                "{replaced}. The call never reached the page (the driver could not attach), so \
+                "{replaced}. The call never reached the page (the driver never answered it), so \
                  {tool} can be run again now."
             )
         }
@@ -5579,10 +5587,10 @@ mod tests {
 
     /// **A driver whose initialise times out is replaced on this call**, not
     /// left for a person or another agent to restart the browser. **A
-    /// navigate is not repeated after a timeout** - the browser keeps going
-    /// after our request is cancelled, so it may already have landed - and is
-    /// handed back with that warning. **A live wedge is not constructible in
-    /// CI**; the fake pins this path alone.
+    /// navigate is not repeated after the attach timeout** - though it was
+    /// never delivered, the rule is per tool - and is handed back saying the
+    /// call never reached the page and can be run again. **A live wedge is
+    /// not constructible in CI**; the fake pins this path alone.
     #[tokio::test]
     async fn an_initialise_timeout_replaces_the_driver_and_hands_a_navigate_back() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -5663,15 +5671,31 @@ mod tests {
         let seat = SessionSlot::lead("O", "p");
         let profile = service.entry(&seat).await.expect("a profile entry");
 
+        // **The host's own last words reach the agent**, not just the banner:
+        // a bare initializeServer timeout names nothing (#2534).
+        let empty = dead_host_answer(
+            &profile,
+            DeadHost::Ended { pid: 1234, port: 9411 },
+            "a listing timed out",
+        );
+        assert!(empty.contains("pid 1234"), "{empty}");
+        assert!(empty.contains("port 9411"), "{empty}");
+        assert!(empty.contains("/cef"), "{empty}");
+        assert!(empty.contains("The next call starts a fresh browser"), "{empty}");
+        assert!(empty.contains("its log is empty"), "{empty}");
+
+        std::fs::write(
+            profile.dir.join("cef-host.log"),
+            "cef host: live (pid 1234, port 9411)\nthe page never answered\n",
+        )
+        .expect("a host log");
         let ended = dead_host_answer(
             &profile,
             DeadHost::Ended { pid: 1234, port: 9411 },
             "a listing timed out",
         );
-        assert!(ended.contains("pid 1234"), "{ended}");
-        assert!(ended.contains("port 9411"), "{ended}");
-        assert!(ended.contains("/cef"), "{ended}");
-        assert!(ended.contains("The next call starts a fresh browser"), "{ended}");
+        assert!(ended.contains("the page never answered"), "{ended}");
+        assert!(!ended.contains("its log is empty"), "{ended}");
 
         let gone = dead_host_answer(&profile, DeadHost::AlreadyGone, "a listing timed out");
         assert!(gone.contains("The next call starts a fresh browser"), "{gone}");
@@ -5719,6 +5743,14 @@ mod tests {
             vec![1],
             "and its tab registry was not wiped",
         );
+
+        // **A successor usually reuses the freed port and differs only by
+        // pid**: the pid alone must be enough to refuse it.
+        let same_port =
+            super::HostIdentity { pid: successor.pid + 1, port: successor.port, generation: 0 };
+        let host = service.end_dead_host(&profile, same_port, "a delayed timeout").await;
+        assert!(matches!(host, DeadHost::NotOurs), "a same-port successor is not this call's");
+        assert!(profile.state.lock().await.host.is_some(), "and it is still serving");
         crate::osr::Ring::unlink(&ring_name);
     }
 
@@ -7306,6 +7338,15 @@ mod tests {
         });
         assert!(never.contains("never reached the page"), "{never}");
         assert!(never.contains("can be run again now"), "{never}");
+        // **A `browser_tabs` timeout delivered nothing either**, even when the
+        // outer tool is a click: its tab selection never answered, so the
+        // sentence is true for it too.
+        let tabs = dead_driver_answer(DeadDriverOutcome::NotRepeated {
+            tool: "browser_click",
+            why: "the driver did not answer browser_tabs within 149 s",
+        });
+        assert!(tabs.contains("never reached the page"), "{tabs}");
+        assert!(tabs.contains("can be run again now"), "{tabs}");
         let gone = dead_driver_answer(DeadDriverOutcome::TabGone);
         assert!(gone.contains("not in the fresh driver's list"), "{gone}");
         let unread = dead_driver_answer(DeadDriverOutcome::ListFailed {
