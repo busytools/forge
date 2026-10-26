@@ -912,6 +912,52 @@ describe('the session page over a socket', () => {
   });
 
   /**
+   * **A Home round trip draws the held conversation at once, with no read.**
+   * The seat's subscription outlives the page, so nothing comes back on the
+   * return to seed a fresh column: the conversation the frames folded has to
+   * survive the page unmounting, which is module state
+   * (`chat/conversations.ts`) rather than the column's own.
+   */
+  it('draws the held conversation after a Home round trip, with no read', async () => {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    server = await stubServer(sessionFixture, {
+      [subjectKey({ session: W1 })]: [{ key: 'w1-t1', messages: [say('the worker said this')] }],
+    });
+    connection = connect(server.url);
+    const route = writable<Route>({ name: 'session', slot: W1 });
+    app = mount(Routes, {
+      target: document.body,
+      props: { route, props: routerProps() },
+    });
+    await until(() => drawn().includes('the worker said this'), "w1's first draw");
+
+    route.set({ name: 'home' });
+    await until(() => document.querySelector('.conv') === null, 'the home route');
+    // A row lands while the reader is away: the seat is still subscribed, so
+    // the client folds it into the conversation it holds.
+    server.push(
+      updateOf({ chat_appended: { key: W1, msg: say('landed while away'), origin: null } }),
+    );
+    await quiet();
+
+    const subscribes = seatSubscribesOf(W1);
+    const reads = server.received.filter((message) => message.kind === 'more').length;
+    route.set({ name: 'session', slot: W1 });
+    flushSync();
+    expect(
+      drawn(),
+      'the return waited on the server instead of drawing the held conversation',
+    ).toContain('landed while away');
+    expect(drawn(), 'the return lost the held conversation').toContain('the worker said this');
+    await settle();
+    expect(seatSubscribesOf(W1), 'the return subscribed the seat again').toBe(subscribes);
+    expect(
+      server.received.filter((message) => message.kind === 'more').length,
+      'the return read the history from the server',
+    ).toBe(reads);
+  });
+
+  /**
    * **A frame that arrives while the page cannot paint still reaches the
    * column.** The publish waits for a painted frame, which is what turns a
    * burst into one draw of the latest - and a hidden page produces none at

@@ -4861,7 +4861,7 @@ mod tests {
     async fn subscribed_home_again(
         to_server: &mpsc::UnboundedSender<Message>,
         written: &Arc<Mutex<Vec<ServerMessage>>>,
-    ) {
+    ) -> serde_json::Value {
         let before = home_snapshots(written);
         to_server
             .send(Message::Text(
@@ -4874,6 +4874,18 @@ mod tests {
             ))
             .expect("the message goes");
         until(|| home_snapshots(written) == before + 1, "the barrier home read").await;
+        // **The barrier's own snapshot is the state to assert from**: the
+        // frame count can catch an intermediate read, the answer cannot.
+        written
+            .lock()
+            .expect("the frame log")
+            .iter()
+            .rev()
+            .find_map(|frame| match frame {
+                ServerMessage::Snapshot { subject: Subject::Home, data } => Some(data.clone()),
+                _ => None,
+            })
+            .expect("the barrier's home snapshot")
     }
 
     /// Whether a seat's snapshot has been written.
@@ -4994,13 +5006,18 @@ mod tests {
         )
         .await;
 
-        // **A failure armed BETWEEN the two showings is what makes this
-        // discriminating**: with the early return deleted, the repeat
-        // detaches and re-attaches, finds this mark and re-encodes the home -
-        // with only a diamond armed before the first, a second spend finds
-        // nothing and every assertion passes either way.
-        let domain = fleet.workspace().register_domain_session(slot.clone(), None);
-        domain.lock().failed_turn_at = Some(std::time::SystemTime::now());
+        // **A DEATH armed BETWEEN the two showings is what makes this
+        // discriminating.** `failed_turn_at` cannot: `detach` stamps
+        // `seen_failed` itself, wiping the failure a re-spend would read, so
+        // the repeat would find nothing either way. A death is spent only by
+        // `seat_shown`, which `detach` leaves alone - so with the early
+        // return deleted the repeat attaches, spends the death and re-encodes
+        // the home.
+        fleet.workspace().record_death_for_test(
+            &slot,
+            "dead-occupant",
+            "the claude subprocess closed its output stream",
+        );
 
         showing(&to_server, Some(slot.clone()));
         // A second home read is the barrier: one socket is handled in order,
@@ -5031,6 +5048,10 @@ mod tests {
             forge_primitives::ClientConfig::default(),
         ));
         let slot = lead();
+        // **A mark is drawn on a row**, so the seat needs an agent: the home
+        // lists a project's agents, and a seat nothing has started is not
+        // among them - its diamond would have nowhere to appear.
+        fleet.install_agent("TestOrg", "proj", "lead");
         let Driven { to_server, written, driven } = connection(&state);
         subscribed_home(&to_server, &written).await;
         arm_diamond(&state, &slot);
@@ -5038,16 +5059,18 @@ mod tests {
         showing(&to_server, Some(slot.clone()));
         // The barrier proves the showing spent nothing BEFORE the seat's own
         // subscribe completes the pair: a home frame it produced would be
-        // written ahead of this answer on the same socket.
-        subscribed_home_again(&to_server, &written).await;
+        // written ahead of this answer on the same socket, and the answer's
+        // own `unseen` says whether the diamond is still armed.
+        let barrier = subscribed_home_again(&to_server, &written).await;
         assert!(
             !Live::lock(&state.live).is_attached(&slot),
             "a showing for an unwatched seat attached it",
         );
-        assert_eq!(
-            home_snapshots(&written),
-            2,
-            "a showing with no read served spent the mark anyway",
+        assert!(
+            barrier["unseen"].as_array().is_some_and(|unseen| {
+                unseen.iter().any(|held| held["label"] == "lead" && held["project"] == "proj")
+            }),
+            "a showing with no read served spent the diamond: {barrier}",
         );
 
         subscribed(&to_server, &slot);

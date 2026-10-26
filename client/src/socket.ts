@@ -859,10 +859,11 @@ export function connect(
    */
   function release(what: Subject): void {
     const key = subjectKey(what);
-    // **The asks die with the subscription.** A refusal arriving after the
-    // release would otherwise splice onto the oldest key still outstanding,
-    // which is a different subject's ask.
-    forget(what);
+    // **The outstanding ask stays until its answer lands.** The server
+    // answers in order, so this subject's unanswered subscribe is the head of
+    // the queue; dropping it here would hand its refusal to the NEXT store.
+    // A refusal that lands after the release finds no store and is dropped,
+    // which is the right home for it.
     while (stores.get(what) !== undefined) stores.close(what);
     const open = subscribed.get(key) ?? 0;
     subscribed.delete(key);

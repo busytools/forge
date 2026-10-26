@@ -408,7 +408,7 @@ fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
     matches!(msg, Message::Result { .. }).then_some((key, Ask::AfterATurn))
 }
 
-/// Ask the core for a fresh context reading on a seat a page is holding.
+/// Ask the core for a fresh context reading on a seat a page shows.
 ///
 /// A turn finishing is when a reading stops being true: the transcript grew by
 /// the turn, and the number the seat holds was taken before it. A view
@@ -417,7 +417,7 @@ fn context_ask(update: &SessionUpdate) -> Option<(&SessionSlot, Ask)> {
 /// [`SessionUpdate::ContextUsageSnapshot`] on the stream that page is already
 /// reading.
 ///
-/// Only a seat a page holds, because the reading exists for the reader and the
+/// Only a seat a page shows, because the reading exists for the reader and the
 /// probe costs the CLI a walk over its whole transcript. Bounded by [`probe`],
 /// the same limits a view applies to its own ask - except for the
 /// post-compaction ask, which may not be refused by the reading it exists to
@@ -441,12 +441,12 @@ fn request_context_usage(
     let Some((key, why)) = context_ask(update) else {
         return;
     };
-    // A page has to be holding the seat for a turn's ask, because that one is
+    // A page has to be showing the seat for a turn's ask, because that one is
     // speculative: the reading may never be drawn.
     //
     // **A settled compaction is not speculative - it is corrective, and it
     // does not wait for a page.** The reading it invalidates is the core's,
-    // and every view reads that one, so a seat nobody is holding keeps a
+    // and every view reads that one, so a seat nobody is showing keeps a
     // number that is wrong rather than merely old - and a page opened on it
     // afterwards reads that number and is never asked, the read path guarding
     // on a reading being present. Nothing else asks for it either: a turn's
@@ -462,7 +462,7 @@ fn request_context_usage(
                     event_name = "context_usage_refresh_skipped",
                     ?declined,
                     slot = %key.display(),
-                    "a turn ended on a seat a client reads and its context reading was not asked \
+                    "a turn ended on a seat a client shows and its context reading was not asked \
                      for",
                 );
                 return;
@@ -475,7 +475,7 @@ fn request_context_usage(
             event_name = "context_usage_request_failed",
             %error,
             slot = %key.display(),
-            "a seat a client reads was due a context reading and its probe was not requested",
+            "a seat a client shows was due a context reading and its probe was not requested",
         );
     }
 }

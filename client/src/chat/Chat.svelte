@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack, type Snippet } from 'svelte';
-  import { SvelteMap } from 'svelte/reactivity';
   import { VList, type VListHandle } from 'virtua/svelte';
   import { heldReserve, sizes } from './row-sizes';
 
@@ -22,6 +21,7 @@
     type Conversation,
     type Turn as HeldTurn,
   } from './conversation';
+  import { conversationsFor } from './conversations';
   import Echo from './Echo.svelte';
   import { echoes, ownWords } from './echoes.svelte';
   import { pinnedRow } from './pinnedRow.svelte';
@@ -281,21 +281,19 @@
     }
   }
   /**
-   * Every seat's conversation, kept after the reader leaves it.
+   * Every seat's conversation, kept for the life of the connection.
    *
-   * A switch used to throw the current one away and ask the server again, so a
-   * seat already drawn came back as a blank column and a round trip. The record
-   * for every seat this client has visited is kept for the same reason
-   * (`session/live.ts`); this is the half that was missing.
+   * **Module state, not the column's** (`chat/conversations.ts`): the column
+   * unmounts when the reader leaves the session page, and a Home round trip
+   * must not lose what the frames kept current - the seat's subscription
+   * outlives the page, so no snapshot comes back to seed a fresh one.
    *
    * **Nothing draws from either map, and every read of them is untracked**: the
    * seat on screen is `held` above, and a tracked read here would make the
    * effect below depend on the entry the subscription writes on every frame,
    * re-running it per frame with nothing about the seat changed.
    */
-  const kept = new SvelteMap<string, Conversation>();
-  /** The seats whose conversation is still open here, so a switch back does not open a second. */
-  const live = new SvelteMap<string, { connection: Connection; chat: Chat; stop: () => void }>();
+  const conversations = () => conversationsFor(connection);
   /**
    * Pages of older turns asked for and not yet answered.
    *
@@ -620,6 +618,7 @@
   $effect(() => {
     const which = seat;
     const open = connection;
+    const { kept, live } = conversations();
     let entry = untrack(() => live.get(which));
     /** Whether this run carries a conversation the column did not already hold. */
     let fresh = false;
@@ -746,16 +745,8 @@
     const previous = shownFor;
     shownFor = which;
     if (previous !== null && previous !== which) {
-      untrack(() => live.get(previous))?.chat.leaving();
+      untrack(() => conversations().live.get(previous))?.chat.leaving();
     }
-  });
-
-  // The column's own teardown, which the effect above cannot do: it closes one
-  // conversation only to open the next in its place.
-  $effect(() => () => {
-    for (const entry of live.values()) entry.stop();
-    live.clear();
-    kept.clear();
   });
 
   /**

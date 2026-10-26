@@ -26,6 +26,7 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
+import { releaseConversation } from '../chat/conversations';
 import { cronNames } from '../chat/cron-names.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
@@ -588,6 +589,10 @@ function createSeat(
     stopStatus?.();
     stopMessages = null;
     stopStatus = null;
+    // **The seat's conversation goes with the seat**: its column's listeners
+    // stop, so a same-slot successor's frames are not folded into a
+    // conversation nothing draws. The rest of the connection's are kept.
+    releaseConversation(connection, key);
     pageReturns?.release();
     visited.delete(key);
   }

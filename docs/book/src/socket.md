@@ -47,7 +47,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 11,
+  "version": 12,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -226,8 +226,9 @@ driver's captured chooser (or CEF's own dialog when no driver is attached).
 **Only the controller may answer, and only the id the page's outstanding ask
 names**; anything else is refused before a byte is written.
 An empty list is a dismiss; past 16 files or 8 MiB the whole answer is a
-dismiss: base64 of anything larger would land past the 16 MiB inbound
-bound, and a cap that tears the connection off is worse than a dismiss.
+dismiss. The size is a chosen bound, not the wire's: 8 MiB of bytes encodes
+to about 10.7 MiB of base64, comfortably inside the 16 MiB inbound bound, so
+the cap is there to keep one answer from spending the socket.
 
 **`browser_tabs {seat, reply_to}`** - the strip's rows for one seat: the tabs
 of the profile its org and project resolve to. **The answer rides the
@@ -267,11 +268,12 @@ marks.** A client may keep a seat subscribed for a page it is not drawing,
 and that alone does not count as a visit as far as the rail is concerned.
 
 **`showing {seat}`** - which seat this connection has on screen; `null` when
-it shows none. The last one wins: repeating the same seat is a no-op, and it
-is the only thing that spends a seat's needs-you diamond, its failure mark and
-its death trace - once the seat is also watched, because the marks are what a
-read of the seat is owed. Subscribing a seat does not show it. Nothing answers
-it, but a `home` snapshot may follow unsolicited when it spent a mark and this
+it shows none. The last one wins: repeating the same seat is a no-op. Once the
+seat is also watched, it is what spends the needs-you diamond and the failure
+mark, and one of the two things that spend the death trace - the other is a
+prompt the reader themself sent, while a cron's, a peer's or forge's own does
+not count as looking. Subscribing a seat does not show it. Nothing answers it,
+but a `home` snapshot may follow unsolicited when it spent a mark and this
 connection holds the home.
 
 **`more {conversation, before, turns}`** - a page of a session's

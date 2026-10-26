@@ -304,11 +304,15 @@ class RustConnection implements Connection {
         // the same socket a no-op.
         const missed = !this.transition;
         this.generation = generation;
-        this.transition = false;
         if (missed) {
           this.move('connecting');
           this.move('open');
         }
+        // **Cleared AFTER the pair.** The synthesized `connecting` sets
+        // `transition` as a real one would, and leaving it set would make the
+        // NEXT missed reconnect read as watched: the page would record the
+        // new generation and never zero `opened`, relist or re-send Showing.
+        this.transition = false;
       }
     }
     this.move(state.status);

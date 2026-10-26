@@ -198,7 +198,9 @@ and computes none.
 has visited subscribed, so the seat's frames keep arriving after its page
 closes - but a subscription is not a showing: the client tells the server
 which seat is on screen, and that is what spends the seat's diamond and
-failure mark. A prompt sent to the seat spends its death trace too. A turn
+failure mark. The death trace is spent by the seat being shown, or by the
+reader's OWN prompt - a cron's, a peer's or forge's own does not count as
+looking. A turn
 that finishes on a visited seat nobody is drawing therefore arms its
 diamond, and opening the seat spends it; the subscription is what keeps
 the return instant, not what clears the mark.

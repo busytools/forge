@@ -615,11 +615,11 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         }
         // **A release while down is a local drop**: the reconnect asks for
         // nothing the page has given back, and there is no wire to give it
-        // to here.
+        // to here. The outstanding key stays: the server answers in order,
+        // and its refusal must land on the ask that earned it.
         Outbound::Release { what } => {
             let key = subject_key(&what);
             held.retain(|h| h.key != key);
-            awaiting.retain(|k| k != &key);
             false
         }
         Outbound::Dispatch { sent, .. } => {
@@ -902,9 +902,11 @@ async fn run(
                             // wire's count**: a relist raises it above the
                             // page's readers, and looping those would leave a
                             // subscription and its work-watch hold standing.
+                            // The awaiting key stays: the server answers in
+                            // order, so its refusal is this ask's, not the
+                            // next store's.
                             let key = subject_key(&what);
                             held.retain(|h| h.key != key);
-                            awaiting.retain(|k| k != &key);
                             for _ in 0..live.remove(&key).unwrap_or(0) {
                                 let _ = writer
                                     .send(Message::Text(json!({ "kind": "unsubscribe", "what": what.clone() }).to_string().into()))

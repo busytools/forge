@@ -1929,7 +1929,7 @@ async fn a_seat_that_already_reports_an_mcp_snapshot_is_not_asked_again() {
     assert!(command.is_none(), "a seat that reports a snapshot is not asked again: {command:?}");
 }
 
-/// A turn finishing on a seat a page is holding is the moment its reading
+/// A turn finishing on a seat a page shows is the moment its reading
 /// stops being true: the transcript grew by the turn, and the number the seat
 /// holds was taken before it.
 ///
@@ -1937,7 +1937,7 @@ async fn a_seat_that_already_reports_an_mcp_snapshot_is_not_asked_again() {
 /// probe per read, and this one keeps a reading from standing for the life of
 /// its occupant.
 #[tokio::test]
-async fn a_turn_finishing_on_a_seat_a_page_holds_asks_the_core_for_a_reading() {
+async fn a_turn_finishing_on_a_seat_a_page_shows_asks_the_core_for_a_reading() {
     let (url, fleet) = a_server().await;
     let mut asked = a_reporting_seat(&fleet, a_small_reading());
     let (_socket, data) = a_page_on(&url, Subject::Session(lead_seat())).await;
@@ -2373,9 +2373,16 @@ async fn a_dropped_connection_lets_go_of_the_seats_it_attached() {
         // The subscription alone spends nothing; the seat is attached by the
         // connection saying it has it on screen.
         send(&mut leaving, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
+        // **The answer must be the one this showing earned**: the diamond the
+        // completion armed is gone from the home it re-sends.
         assert!(
-            snapshot_until(&mut leaving, Subject::Home, |_| true).await,
-            "the showing's home answer: the seat was attached before the drop",
+            snapshot_until(&mut leaving, Subject::Home, |data| {
+                data.get("unseen")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|unseen| !unseen.iter().any(|held| held["label"] == "lead"))
+            })
+            .await,
+            "the showing's home answer: the seat was attached and its diamond spent before the drop",
         );
         // Counted WITH it attached, so the transport's own fold is in the
         // number either way.

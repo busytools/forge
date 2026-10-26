@@ -176,6 +176,34 @@ describe('what the shell is told', () => {
     expect(showing, 'Showing crossed before the seat was re-subscribed').toBeGreaterThan(relist);
   });
 
+  /**
+   * **A second missed reconnect is not read as watched.** The synthesized
+   * `connecting` sets the same flag a real drop does, so a pair that leaves it
+   * set makes the NEXT rise compute "watched" and go unfixed - the seat
+   * freezes behind an open status. It is cleared after the pair.
+   */
+  it('fires one pair for each of two consecutive missed reconnects', async () => {
+    const shell: State = { status: 'open', generation: 1, greeting: null };
+    const connection = await opened(shell);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+
+    shell.generation = 2;
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(seen).toEqual(['connecting', 'open']));
+
+    shell.generation = 3;
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(seen).toEqual(['connecting', 'open', 'connecting', 'open']));
+    expect(seen, 'a second missed reconnect did not run its own pair').toEqual([
+      'connecting',
+      'open',
+      'connecting',
+      'open',
+    ]);
+  });
+
   /** A drop the page watched fires its own pair; the generation must not add one. */
   it('does not fire a pair on a reconnect it watched', async () => {
     const shell: State = { status: 'open', generation: 1, greeting: null };

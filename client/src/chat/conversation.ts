@@ -1521,6 +1521,29 @@ export class Chat {
     return runningAt(this.connection, this.slot, this.turnRunning);
   }
 
+  /**
+   * Take the newest page the seat's store holds, for a column mounting where
+   * nothing answered: a visited seat keeps its subscription, so a return gets
+   * no snapshot and a fresh column draws what the frames have kept current.
+   */
+  private seedFromStore(): void {
+    if (this.held.loaded) return;
+    const snapshot = this.connection.store({ session: this.slot })?.snapshot();
+    if (snapshot === null || snapshot === undefined) return;
+    const data = snapshot as { conversation?: unknown };
+    const conversation = (data.conversation ?? {}) as {
+      turns?: unknown;
+      cursor?: unknown;
+      handoff?: unknown;
+    };
+    const record = handoffOf(conversation.handoff);
+    if (record !== null) this.seedHandoffTurn(record, 'ahead');
+    const rows = pageTurns(conversation.turns);
+    if (rows.length === 0) return;
+    const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
+    this.takePage(rows, cursor, 'newest');
+  }
+
   /** The newest row carries the running row while the core says a turn is running. */
   private answered(held: Conversation): Conversation {
     const last = held.turns.length - 1;
@@ -1573,6 +1596,12 @@ export class Chat {
     // Where the seat already is, for a seat a visit has answered before: a
     // return subscribes nothing, so nothing else would say.
     this.heard(this.heldRunning());
+    // **A column that mounts on a seat the client already holds seeds from
+    // the seat's own record.** A visited seat keeps its subscription (Ved,
+    // 2026-10-25), so no snapshot follows a return; the record the frames
+    // kept current carries the newest page, and taking it here is what makes
+    // a Home round trip draw at once with no read of the seat.
+    this.seedFromStore();
     const stopMessages = this.connection.onMessage((message: ServerMessage) =>
       this.receive(message),
     );
@@ -1726,12 +1755,13 @@ export class Chat {
   showing(): void {
     if (this.shown) return;
     this.shown = true;
-    // **The refresh is the guarded one** (#2420): it refuses over a
-    // conversation with no page yet - that load is the subscribe's to answer -
-    // so a return cannot ship a page beside the snapshot. A RETURN to a loaded
-    // conversation keeps the refresh, which is the reconcile for a read that
-    // failed or a stamp missed while away.
-    if (!this.refresh()) this.returnWanted = true;
+    // **A return reads nothing of its own.** The subscription outlives the
+    // page, so the frames never stopped and what is held is current; the
+    // read a return used to make was the old subscription's compensation.
+    // A DROP is the one case that lost frames, and `missed` is what records
+    // it - the status handler asks on the reconnect, and a return meeting
+    // the same in-flight ask holds its want.
+    if (this.missed && !this.refresh()) this.returnWanted = true;
   }
 
   /** A return whose refresh was swallowed: fire it now that the ask settled. */

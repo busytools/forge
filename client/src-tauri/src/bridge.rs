@@ -113,6 +113,10 @@ struct State {
     /// arbitrary and would re-ask a different subject per run.
     order: Vec<String>,
     socket: Option<Socket>,
+    /// Which socket is the CURRENT one, so a replaced socket's late events -
+    /// a `Status::Open` from a watcher still retrying behind a fresh
+    /// connection - are ignored rather than counted.
+    socket_id: u64,
     status: &'static str,
     /// How many sockets have OPENED on this bridge.
     ///
@@ -181,6 +185,16 @@ impl Drop for Picking<'_> {
     }
 }
 
+/// The next socket number for a bridge, unique for the process's life.
+///
+/// Process-wide rather than per bridge so two bridges in one process - a
+/// test's, a scratch instance beside the real one - cannot hand the same
+/// number to different sockets.
+fn mint_socket_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl Bridge {
     pub fn new(
         app: Option<tauri::AppHandle>,
@@ -192,6 +206,7 @@ impl Bridge {
                 held: HashMap::new(),
                 order: Vec::new(),
                 socket: None,
+                socket_id: 0,
                 status: "connecting",
                 generation: 0,
                 greeting: None,
@@ -488,6 +503,11 @@ impl Bridge {
             None => Arc::new(|_: &[u8]| {}),
         };
         let socket = Socket::open_with_frames(url, tx, frames, sound);
+        // **This socket's own identity.** The old socket is closed below, but
+        // its task can still deliver a queued event after the swap; the id is
+        // what keeps a stale `Status::Open` from bumping the page's
+        // generation or writing to the fresh connection's state.
+        let socket_id = mint_socket_id();
         let wanted: Vec<(Value, bool, usize)> = {
             let mut state = self.lock();
             // **The park outlives the connection it was kept across**: a
@@ -498,7 +518,14 @@ impl Bridge {
             while let Some(message) = state.parked.pop_front() {
                 self.emit(ClientEvent::Inbound(message));
             }
+            // **The old socket ends with the swap**, and its id goes with it:
+            // a watcher left retrying behind the new connection is a second
+            // socket writing into one bridge.
+            if let Some(previous) = state.socket.take() {
+                previous.close();
+            }
             state.socket = Some(socket.clone());
+            state.socket_id = socket_id;
             state.status = "connecting";
             state.greeting = None;
             state.last_beat = Some(Instant::now());
@@ -532,7 +559,7 @@ impl Bridge {
         let bridge = Arc::clone(self);
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                bridge.socket_event(event);
+                bridge.socket_event(socket_id, event);
             }
         });
     }
@@ -840,7 +867,14 @@ impl Bridge {
         }
     }
 
-    fn socket_event(self: &Arc<Self>, event: SocketEvent) {
+    fn socket_event(self: &Arc<Self>, socket_id: u64, event: SocketEvent) {
+        // **A replaced socket's late events are not this connection's.** A
+        // `Status::Open` from a watcher still retrying behind a fresh socket
+        // would otherwise bump the generation the page reads and synthesize a
+        // reconnect pair on a live wire.
+        if self.lock().socket_id != socket_id {
+            return;
+        }
         match event {
             SocketEvent::Status(status) => self.status_moved(status),
             SocketEvent::Message { value, bytes, parse_ms } => {
@@ -1472,7 +1506,8 @@ mod tests {
     /// here is about what the bridge does with a frame.
     fn sent(bridge: &Arc<Bridge>, message: Value) {
         let bytes = serde_json::to_string(&message).map_or(0, |text| text.len());
-        bridge.socket_event(SocketEvent::Message { value: message, bytes, parse_ms: 0.5 });
+        let id = bridge.lock().socket_id;
+        bridge.socket_event(id, SocketEvent::Message { value: message, bytes, parse_ms: 0.5 });
     }
 
     /// Park the page: nothing has heartbeated for longer than `FRESH_MS`.
@@ -1679,10 +1714,11 @@ mod tests {
     async fn a_refused_subscribe_reaches_the_page() {
         let (bridge, mut rx) = bridge();
         let key = "session:Busytools\u{0}forge\u{0}lead";
-        bridge.socket_event(SocketEvent::Refused {
-            key: key.to_owned(),
-            why: "no session there".to_owned(),
-        });
+        let id = bridge.lock().socket_id;
+        bridge.socket_event(
+            id,
+            SocketEvent::Refused { key: key.to_owned(), why: "no session there".to_owned() },
+        );
         let ClientEvent::Refused { key: seen, why } = event(&mut rx, |_| true).await else {
             unreachable!("the first event is the refusal");
         };
@@ -1764,6 +1800,33 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
             "exactly two: one per open subscription"
         );
+    }
+
+    /// **A replaced socket's late events are not the live connection's.** The
+    /// bridge closes the old socket at the swap, but its task can still
+    /// deliver a queued `Status::Open`; counting it would bump the generation
+    /// the page reads and synthesize a reconnect pair on a live wire - which
+    /// zeroes every visited seat's subscription count and clears a running
+    /// take. The socket's own id is what tells the two apart.
+    #[tokio::test]
+    async fn a_replaced_sockets_late_open_does_not_touch_the_live_connection() {
+        let server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        let first = bridge.lock().socket_id;
+        connected(&bridge).await;
+
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        let second = bridge.lock().socket_id;
+        assert_ne!(first, second, "precondition: the bridge swapped sockets");
+        let generation = bridge.lock().generation;
+
+        bridge.socket_event(first, SocketEvent::Status(Status::Open));
+        bridge.socket_event(first, SocketEvent::Status(Status::Connecting));
+        let state = bridge.lock();
+        assert_eq!(state.generation, generation, "a replaced socket's open bumped the generation");
+        assert_eq!(state.status, "open", "a replaced socket's drop moved the live connection");
     }
 
     /// **A page-driven reconnect re-attaches no seat by itself.** Only the
