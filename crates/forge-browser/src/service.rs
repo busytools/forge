@@ -43,6 +43,9 @@ struct Driven<'a> {
     port: u16,
     tab: u16,
     target: &'a str,
+    /// The call's remaining budget, so a replacement's own listing cannot
+    /// outlive it (an upload is deliberately bounded at 10 s).
+    bound: Duration,
 }
 
 /// One browser call's tool, budget and the host it drives.
@@ -51,7 +54,12 @@ struct Drive<'a> {
     args: Value,
     bound: Duration,
     port: u16,
+    generation: u64,
 }
+
+/// The driver a test's replacement installs, one-shot.
+#[cfg(test)]
+type Successor = Arc<dyn Fn() -> Arc<dyn TabDriver> + Send + Sync>;
 
 /// One profile's clock, as one idle pass reads it.
 struct Candidate {
@@ -299,7 +307,22 @@ impl BrowserService {
         let gate = self.gate(key.as_str());
         let _held = gate.lock().await;
         let profile = self.entry_locked(seat).await?;
+        let before = {
+            let state = profile.state.lock().await;
+            captured_generation(&state)
+        };
         profile.ensure(&self.root, self.stack()).await?;
+        let installed = {
+            let state = profile.state.lock().await;
+            (captured_generation(&state), state.driver.as_ref().map(Arc::clone))
+        };
+        if installed.0 != before
+            && let Some(driver) = installed.1
+        {
+            // **A driver installed on this path renames every page too**:
+            // re-pair the registry before the call resolves its tab.
+            self.repair_tab_identity(&profile, &driver, driver::CALL_TIMEOUT).await;
+        }
         // **A host this entry lost took its hand-offs with it.** The park was
         // a number in that host; the same number in the new one belongs to
         // whoever adopted it, and must not be closed by that old answer.
@@ -337,6 +360,27 @@ impl BrowserService {
         profile.ended.store(false, Ordering::Release);
         profile.touch.lock().unwrap_or_else(PoisonError::into_inner).touched();
         profile.up.store(true, Ordering::Release);
+    }
+
+    /// The same seam with the driver a replacement installs: **a call that
+    /// recovers must really replace the driver**, not retry the wedged one,
+    /// and only a successor makes that observable.
+    #[cfg(test)]
+    pub(crate) async fn install_fake_with_successor<D, F>(
+        &self,
+        seat: &SessionSlot,
+        driver: D,
+        successor: F,
+    ) where
+        D: TabDriver + 'static,
+        F: Fn() -> Arc<dyn TabDriver> + Send + Sync + 'static,
+    {
+        self.install_fake(seat, driver).await;
+        let key = self.profile_for(seat).expect("the key");
+        let profile =
+            self.profiles.lock().await.get(key.as_str()).cloned().expect("the profile entry");
+        *profile.successor.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(Arc::new(successor));
     }
 
     /// The same seam with the host's boot tab seeded, for the boot-adoption
@@ -408,6 +452,9 @@ impl BrowserService {
             up: AtomicBool::new(false),
             restarted: AtomicBool::new(false),
             host_generation: AtomicU64::new(0),
+            host_suspect: AtomicBool::new(false),
+            #[cfg(test)]
+            successor: Mutex::new(None),
             rows: self.rows_sender(key.as_str()),
         });
         profiles.insert(key.as_str().to_owned(), Arc::clone(&profile));
@@ -803,14 +850,24 @@ impl BrowserService {
         let bound = if upload.is_some() { Duration::from_secs(10) } else { driver::CALL_TIMEOUT };
         let (tab, created) = match tool {
             "browser_tabs" => {
-                return self.tabs_tool(&profile, seat, &mut driver, args).await;
+                return self.tabs_tool(&profile, seat, &mut driver, args, generation).await;
             }
             "browser_close" => return self.close_current_tab(&profile, seat).await,
-            _ => self.ensure_tab(&profile, seat, &mut driver, bound).await?,
+            _ => match self.ensure_tab(&profile, seat, &mut driver, bound, generation).await {
+                Ok(tab) => tab,
+                Err(why) => {
+                    // **A listing that found the host wedged marks it for
+                    // ending**; the decision is released first, so an upload
+                    // never waits on its own lock through this task.
+                    drop(decision);
+                    return Err(self.settle_suspect(&profile, why).await);
+                }
+            },
         };
         let retry_args = args.clone();
-        let (tab, outcome, target) =
-            self.drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port }).await;
+        let (tab, outcome, target) = self
+            .drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port, generation })
+            .await;
         // **The agent answered a chooser the driver had not reported yet.**
         // One event is owed to this answer, so it is consumed rather than
         // asking a person for a chooser that no longer exists.
@@ -825,7 +882,7 @@ impl BrowserService {
         let outcome = self
             .after_failure(
                 &profile,
-                Driven { generation, pid, port, tab, target: &target },
+                Driven { generation, pid, port, tab, target: &target, bound },
                 tool,
                 &retry_args,
                 outcome,
@@ -833,6 +890,8 @@ impl BrowserService {
             .await;
         match outcome {
             Ok(mut parts) => {
+                // **A host that answered is not suspect any more.**
+                profile.host_suspect.store(false, Ordering::Release);
                 if created {
                     parts.push(BrowserPart::Text { text: format!("tab {tab}") });
                 }
@@ -840,6 +899,19 @@ impl BrowserService {
             }
             Err(why) => Err(why),
         }
+    }
+
+    /// End a host a listing already found wedged, if this call marked one.
+    /// **Runs with no chooser decision held**: the marker exists so the end
+    /// can be reached from here rather than from inside the listing path,
+    /// where an upload's own decision lock would be waited on.
+    async fn settle_suspect(&self, profile: &Arc<Profile>, why: String) -> String {
+        if !profile.host_suspect.swap(false, Ordering::AcqRel) {
+            return why;
+        }
+        let generation = profile.state.lock().await.driver_generation;
+        let host = self.end_dead_host(profile, generation, &why).await;
+        dead_host_answer(profile, host, &why)
     }
 
     /// The session's tab for a page call: its current one, else the profile's
@@ -851,6 +923,7 @@ impl BrowserService {
         seat: &SessionSlot,
         driver: &mut Arc<dyn TabDriver>,
         bound: Duration,
+        generation: u64,
     ) -> Result<(u16, bool), String> {
         if let Some(tab) = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).current(seat)
         {
@@ -862,7 +935,7 @@ impl BrowserService {
             // The driver's listing is what a call selects by, so the adoption
             // takes its row rather than a target read before the driver
             // attached.
-            let listing = self.tabs_recovering(profile, driver, "boot", bound).await?;
+            let listing = self.tabs_recovering(profile, driver, "boot", bound, generation).await?;
             if let Some(first) = listing.first() {
                 let adopted = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).adopt(
                     number,
@@ -875,7 +948,7 @@ impl BrowserService {
                 return adopted.map(|number| (number, true));
             }
         }
-        let number = self.create_tab(profile, seat, driver, bound).await?;
+        let number = self.create_tab(profile, seat, driver, bound, generation).await?;
         Ok((number, true))
     }
 
@@ -888,6 +961,7 @@ impl BrowserService {
         seat: &SessionSlot,
         driver: &mut Arc<dyn TabDriver>,
         bound: Duration,
+        driver_generation: u64,
     ) -> Result<u16, String> {
         let deadline = tokio::time::Instant::now() + bound;
         if !driver.is_running() {
@@ -898,7 +972,9 @@ impl BrowserService {
         // calling.
         #[cfg(test)]
         if profile.state.lock().await.host.is_none() {
-            let tabs = self.tabs_recovering(profile, driver, "create", left(deadline)).await?;
+            let tabs = self
+                .tabs_recovering(profile, driver, "create", left(deadline), driver_generation)
+                .await?;
             let newest =
                 tabs.last().ok_or_else(|| "the fake driver has no tab to adopt".to_owned())?;
             // The fake's listing order is its creation order, so the newest
@@ -1032,7 +1108,7 @@ impl BrowserService {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        *driver = self.recover_driver(profile).await?;
+        *driver = self.recover_driver(profile, driver_generation, left(deadline)).await?;
         let listing = driver.tabs_within(left(deadline)).await?;
         let requested = {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1105,6 +1181,7 @@ impl BrowserService {
         seat: &SessionSlot,
         driver: &mut Arc<dyn TabDriver>,
         args: Value,
+        generation: u64,
     ) -> Result<Vec<BrowserPart>, String> {
         let action = args.get("action").and_then(Value::as_str).unwrap_or("list");
         // **The list is reconciled before it is drawn.** A popup the host
@@ -1120,7 +1197,9 @@ impl BrowserService {
         match action {
             "list" => {}
             "new" => {
-                let number = self.create_tab(profile, seat, driver, driver::CALL_TIMEOUT).await?;
+                let number = self
+                    .create_tab(profile, seat, driver, driver::CALL_TIMEOUT, generation)
+                    .await?;
                 if let Some(url) =
                     args.get("url").and_then(Value::as_str).filter(|url| !url.is_empty())
                 {
@@ -1227,56 +1306,51 @@ impl BrowserService {
     async fn drive(
         &self,
         profile: &Arc<Profile>,
-        seat: &SessionSlot,
+        _seat: &SessionSlot,
         driver: &Arc<dyn TabDriver>,
         tab: u16,
         call: Drive<'_>,
     ) -> (u16, Result<Vec<BrowserPart>, String>, String) {
-        let Drive { tool, args, bound, port, .. } = call;
+        let Drive { tool, args, bound, port, generation } = call;
         let deadline = tokio::time::Instant::now() + bound;
-        let mut tab = tab;
         let mut driver = Arc::clone(driver);
         // **Two names, two jobs.** The page guid survives a navigation and is
         // what the driver is asked for; the CDP target is where the page can
         // be driven right now and is refreshed from every listing.
-        let (mut page, mut target) = {
+        let (page, target) = {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             (
                 tabs.id(tab).map(str::to_owned).unwrap_or_default(),
                 tabs.target(tab).map(str::to_owned).unwrap_or_default(),
             )
         };
-        let mut index = match self.tabs_recovering(profile, &mut driver, tool, left(deadline)).await
+        let index = match self
+            .tabs_recovering(profile, &mut driver, tool, left(deadline), generation)
+            .await
         {
             Ok(listing) => Self::tab_index(profile, tab, &page, &listing),
             Err(why) => return (tab, Err(why), target),
         };
-        if index.is_none() {
-            // **The page vanished under the session** (it was closed outside
-            // the service): drop the dead tab and make a new one for this
-            // call, once.
-            self.orphan_tab(profile, tab).await;
-            let fresh = match self.create_tab(profile, seat, &mut driver, left(deadline)).await {
-                Ok(fresh) => fresh,
-                Err(why) => return (tab, Err(why), target),
-            };
-            tab = fresh;
-            (page, target) = {
-                let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-                (
-                    tabs.id(tab).map(str::to_owned).unwrap_or_default(),
-                    tabs.target(tab).map(str::to_owned).unwrap_or_default(),
-                )
-            };
-            index = match self.tabs_recovering(profile, &mut driver, tool, left(deadline)).await {
-                Ok(listing) => Self::tab_index(profile, tab, &page, &listing),
-                Err(why) => return (tab, Err(why), target),
-            };
-        }
         let Some(index) = index else {
+            // **A row that cannot be paired is not a closed tab.** Closing it
+            // is how a live document is lost: the page's target may predate a
+            // navigation, or a listing may not have read it. Log the row and
+            // refuse the call; the tab stays open, and the registry holds the
+            // orphan prune until it is paired or closed.
+            tracing::warn!(
+                event_name = "browser_tab_unmatched",
+                profile = %profile.key,
+                tab,
+                target = %target,
+                "a tab's page is not in the driver's list; the tab is left open"
+            );
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_unresolved(tab);
             return (
                 tab,
-                Err(format!("tab {tab}'s page is not in the driver's list any more")),
+                Err(format!(
+                    "tab {tab}'s page is not in the browser's list, so the tab was left open. \
+                     Call browser_tabs to see it, or open a new tab."
+                )),
                 target,
             );
         };
@@ -1329,6 +1403,7 @@ impl BrowserService {
         driver: &mut Arc<dyn TabDriver>,
         tool: &str,
         bound: Duration,
+        generation: u64,
     ) -> Result<Vec<crate::tabs::DriverTab>, String> {
         match driver.tabs_within(bound).await {
             Err(why) if driver::died(&why) => {
@@ -1339,19 +1414,63 @@ impl BrowserService {
                     stale = driver::stale_page(&why),
                     "the driver is dead; a fresh one is attached: {why}"
                 );
-                *driver = self.recover_driver(profile).await?;
-                driver.tabs_within(bound).await
+                *driver = self.recover_driver(profile, generation, bound).await?;
+                match driver.tabs_within(bound).await {
+                    Ok(listing) => Ok(listing),
+                    Err(again) if driver::died(&again) => {
+                        // **A fresh driver that still cannot list means the
+                        // host's pages are wedged.** It is marked ended here
+                        // rather than ended: an upload's call holds
+                        // `file_decision` across this listing, so taking it
+                        // now would wait on the task that is waiting on us.
+                        // The call's own failure path ends the host once the
+                        // decision is released.
+                        profile.host_suspect.store(true, Ordering::Release);
+                        // **The driver's own words go back unchanged**, so the
+                        // call's failure path can still classify them.
+                        Err(again)
+                    }
+                    other => other,
+                }
             }
             other => other,
         }
     }
 
     /// Drop the profile's driver and attach a fresh one to the same host.
-    async fn recover_driver(&self, profile: &Arc<Profile>) -> Result<Arc<dyn TabDriver>, String> {
-        // A test service has no host to start a driver against; the fake
-        // stays installed and the retried listing is the whole recovery.
+    ///
+    /// **The generation is checked under the rebuild lock**: a driver
+    /// installed since the caller's lookup is not this call's to clear, and
+    /// the newer one is handed back for the retry instead.
+    async fn recover_driver(
+        &self,
+        profile: &Arc<Profile>,
+        generation: u64,
+        bound: Duration,
+    ) -> Result<Arc<dyn TabDriver>, String> {
+        let _rebuilding = profile.rebuild.lock().await;
+        {
+            let state = profile.state.lock().await;
+            if state.driver_generation != generation {
+                return state.driver.as_ref().map(Arc::clone).ok_or_else(|| {
+                    format!("a newer browser driver for '{}' is not running", profile.key)
+                });
+            }
+        }
+        // A test service has no host to start a driver against; a successor
+        // stands in for the replacement, and without one the fake stays.
         #[cfg(test)]
         {
+            let successor = profile.successor.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(successor) = successor {
+                let fresh = successor();
+                let mut state = profile.state.lock().await;
+                state.driver_generation = installed_generation(&state);
+                state.driver = Some(Arc::clone(&fresh));
+                drop(state);
+                self.repair_tab_identity(profile, &fresh, bound).await;
+                return Ok(fresh);
+            }
             let state = profile.state.lock().await;
             if state.host.is_none()
                 && let Some(driver) = state.driver.as_ref()
@@ -1359,7 +1478,6 @@ impl BrowserService {
                 return Ok(Arc::clone(driver));
             }
         }
-        let _rebuilding = profile.rebuild.lock().await;
         {
             let mut state = profile.state.lock().await;
             state.driver = None;
@@ -1376,7 +1494,7 @@ impl BrowserService {
                 format!("the browser driver for '{}' did not come back", profile.key)
             })?
         };
-        self.repair_tab_identity(profile, &driver).await;
+        self.repair_tab_identity(profile, &driver, bound).await;
         Ok(driver)
     }
 
@@ -1384,9 +1502,16 @@ impl BrowserService {
     /// re-paired by the CDP targets the new driver lists, so a session's tab
     /// survives a driver replacement instead of being re-created as
     /// about:blank; a row the listing does not name keeps its old name and is
-    /// answered as gone by the next call.
-    async fn repair_tab_identity(&self, profile: &Arc<Profile>, driver: &Arc<dyn TabDriver>) {
-        let Ok(listing) = driver.tabs_within(driver::CALL_TIMEOUT).await else {
+    /// answered as gone by the next call. **The caller's bound is the
+    /// listing's**: a replacement made under an upload's 10 s budget does not
+    /// lend its driver 150 s.
+    async fn repair_tab_identity(
+        &self,
+        profile: &Arc<Profile>,
+        driver: &Arc<dyn TabDriver>,
+        bound: Duration,
+    ) {
+        let Ok(listing) = driver.tabs_within(bound).await else {
             tracing::debug!(
                 event_name = "browser_tab_identity_unlisted",
                 profile = %profile.key,
@@ -1474,7 +1599,9 @@ impl BrowserService {
             // not reported to that driver's context**, so a popup is only a
             // tab to a driver that attached after it existed. A fresh one
             // enumerates the context's pages.
-            if let Ok(fresh) = self.recover_driver(profile).await
+            let driver_generation = { profile.state.lock().await.driver_generation };
+            if let Ok(fresh) =
+                self.recover_driver(profile, driver_generation, driver::CALL_TIMEOUT).await
                 && let Ok(fresh_listing) = fresh.tabs_within(driver::CALL_TIMEOUT).await
             {
                 unmatched = {
@@ -1518,6 +1645,15 @@ impl BrowserService {
             // spares an unowned page.
             let boot_pending = tabs.numbers().is_empty()
                 && profile.boot.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+            let unresolved = tabs.unresolved_tabs();
+            if !unresolved.is_empty() {
+                tracing::debug!(
+                    event_name = "browser_reconcile_held",
+                    profile = %profile.key,
+                    tabs = ?unresolved,
+                    "a tab's page could not be named, so no page is closed as an orphan"
+                );
+            }
             closed_as_orphans(&tabs, &listing, boot_pending)
         };
         for target in orphaned {
@@ -1646,7 +1782,7 @@ impl BrowserService {
         args: &Value,
         outcome: Result<Vec<BrowserPart>, String>,
     ) -> Result<Vec<BrowserPart>, String> {
-        let Driven { generation, pid, port, tab, target } = driven;
+        let Driven { generation, pid, port, tab, target, bound } = driven;
         let why = match outcome {
             Ok(parts) => {
                 let mut state = profile.state.lock().await;
@@ -1657,16 +1793,24 @@ impl BrowserService {
             }
             Err(why) => why,
         };
+        // **A host a listing found wedged is ended here**, on the path that
+        // can take the chooser decision without waiting on this same call.
+        if profile.host_suspect.swap(false, Ordering::AcqRel) && driver::died(&why) {
+            let now = profile.state.lock().await.driver_generation;
+            let host = self.end_dead_host(profile, now, &why).await;
+            return Err(dead_host_answer(profile, host, &why));
+        }
         if driver::stale_page(&why) {
             return self
-                .rebuild_after_dead_page(profile, generation, tab, target, tool, args, &why)
+                .rebuild_after_dead_page(profile, generation, tab, target, tool, args, bound, &why)
                 .await;
         }
         if driver::died(&why) {
             // **A driver that never answered is dead, not a page.** It is
-            // replaced on this call rather than ending the host or waiting
-            // for a restart.
-            return self.replace_dead_driver(profile, generation, tab, tool, args, &why).await;
+            // replaced on this call rather than waiting for a restart.
+            return self
+                .replace_dead_driver(profile, generation, tab, tool, args, bound, &why)
+                .await;
         }
         // **A driver built against a browser that is gone is dropped.** The
         // probe is the browser's own liveness, not the driver's; a host that
@@ -1695,6 +1839,63 @@ impl BrowserService {
         Err(why)
     }
 
+    /// **End a host whose pages never answered a fresh driver.** A host kept
+    /// only on process liveness that no driver can list is the wedge that
+    /// used to cost an hour: the call that finds it, after replacing the
+    /// driver, ends it so the next call starts a fresh browser with the
+    /// profile's data intact.
+    async fn end_dead_host(&self, profile: &Arc<Profile>, generation: u64, why: &str) -> DeadHost {
+        let _decision = profile.file_decision.lock().await;
+        let host = {
+            let mut state = profile.state.lock().await;
+            // **A newer driver is not this call's to clear.**
+            if state.driver_generation != generation {
+                return DeadHost::NotOurs;
+            }
+            state.driver = None;
+            state.cdp.clear();
+            state.cdp_events.clear();
+            if let Some(watch) = state.nav_watch.take() {
+                watch.abort();
+            }
+            profile.clear_chooser_state();
+            let host = state.host.take();
+            if let Some(host) = host.as_ref() {
+                profile.up.store(false, Ordering::Release);
+                // **The sentence goes out before the tab senders close**, so
+                // a viewer reads why the browser went rather than "tab N was
+                // closed"; the identity is what a recurrence is diagnosed by.
+                let tail = spawn::log_tail(&profile.dir);
+                let words = if tail.is_empty() {
+                    "its log is empty".to_owned()
+                } else {
+                    format!("its log ends: {tail}")
+                };
+                profile.failures.send_replace(Some(format!(
+                    "the browser host (pid {}, port {}, profile {}) stopped answering and was \
+                     ended: {why}. {words}. The next call starts a fresh browser with the \
+                     profile's data intact.",
+                    host.pid,
+                    host.port,
+                    profile.dir.display(),
+                )));
+                // **A wedged host takes its numbers with it.**
+                profile.host_gone();
+                *profile.host_tab_events.lock().await = None;
+            }
+            host
+        };
+        let Some(host) = host else { return DeadHost::AlreadyGone };
+        if let Some(monitor) = host.monitor {
+            monitor.abort();
+        }
+        spawn::end_verified(host.pid, host.port, &profile.dir).await;
+        if let Some(reader) = host.reader {
+            reader.stop();
+        }
+        DeadHost::Ended { pid: host.pid, port: host.port }
+    }
+
     /// Rebuild a driver whose page context died, and repeat the call only
     /// where repeating it cannot land twice.
     async fn rebuild_after_dead_page(
@@ -1702,9 +1903,10 @@ impl BrowserService {
         profile: &Arc<Profile>,
         generation: u64,
         tab: u16,
-        target: &str,
+        _target: &str,
         tool: &str,
         args: &Value,
+        bound: Duration,
         why: &str,
     ) -> Result<Vec<BrowserPart>, String> {
         // **One rebuild at a time, and the cooldown lives inside it.** Two
@@ -1755,35 +1957,41 @@ impl BrowserService {
                 why: "the rebuilt driver did not come up",
             }));
         };
-        self.repair_tab_identity(profile, &fresh).await;
+        self.repair_tab_identity(profile, &fresh, bound).await;
         if repeatable(tool, args) {
-            // **The listing is matched by the page guid, not the CDP
-            // target**: CEF swapped the target on the navigation that killed
-            // the context, so a target lookup found nothing and the retry
-            // drove whatever page the fresh driver called current.
+            // **The page is found by the guid, with the target as the
+            // fallback a fresh driver's renaming needs.** A retry without a
+            // page would drive whatever the fresh driver calls current -
+            // another session's tab - so a miss makes no call at all.
             let page = profile
                 .tabs
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .id(tab)
                 .map(str::to_owned);
-            let index = match fresh.tabs_within(driver::CALL_TIMEOUT).await {
+            let index = match fresh.tabs_within(bound).await {
                 Ok(listing) => {
-                    page.as_deref().and_then(|page| crate::tabs::index_of(&listing, page))
+                    page.as_deref().and_then(|page| Self::tab_index(profile, tab, page, &listing))
+                }
+                Err(cannot) if driver::died(&cannot) => {
+                    // **A fresh driver that still cannot list means the
+                    // host's pages are wedged**: end it from this call.
+                    let fresh_generation = profile.state.lock().await.driver_generation;
+                    let host = self.end_dead_host(profile, fresh_generation, &cannot).await;
+                    return Err(dead_host_answer(profile, host, &cannot));
                 }
                 Err(_) => None,
             };
-            if index.is_none() {
-                log_rebuild(profile, tool, "rebuilt, the tab is not listed", target);
-            }
-            if let Some(index) = index
-                && let Err(cannot) = fresh.select(index, driver::CALL_TIMEOUT).await
-            {
+            let Some(index) = index else {
+                log_rebuild(profile, tool, "rebuilt, the tab is not listed", why);
+                return Err(dead_page_answer(DeadPageOutcome::TabGone { tab }));
+            };
+            if let Err(cannot) = fresh.select(index, bound).await {
                 profile.state.lock().await.stale_since = Some(Instant::now());
                 log_rebuild(profile, tool, "rebuilt, selection failed", why);
                 return Err(dead_page_answer(DeadPageOutcome::RetryFailed { why: &cannot }));
             }
-            return match fresh.call_within(tool, args.clone(), driver::CALL_TIMEOUT).await {
+            return match fresh.call_within(tool, args.clone(), bound).await {
                 Ok(parts) => {
                     profile.state.lock().await.stale_since = None;
                     log_rebuild(profile, tool, "rebuilt, call retried and answered", why);
@@ -1817,6 +2025,7 @@ impl BrowserService {
         tab: u16,
         tool: &str,
         args: &Value,
+        bound: Duration,
         why: &str,
     ) -> Result<Vec<BrowserPart>, String> {
         {
@@ -1833,28 +2042,41 @@ impl BrowserService {
             tool,
             "the call found its driver dead; a fresh one is attached: {why}"
         );
-        let fresh = match self.recover_driver(profile).await {
+        let fresh = match self.recover_driver(profile, generation, bound).await {
             Ok(fresh) => fresh,
             Err(cannot) => {
+                // **A replacement that cannot start leaves the host suspect**:
+                // end it, so the next call is not handed the same wedge.
+                let now = profile.state.lock().await.driver_generation;
+                self.end_dead_host(profile, now, &cannot).await;
                 return Err(dead_driver_answer(DeadDriverOutcome::ReplaceFailed { why: &cannot }));
             }
         };
-        if !repeatable(tool, args) {
+        if !repeatable_after_timeout(tool, args) {
             return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated { tool }));
         }
         let page =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
-        let index = match (page.as_deref(), fresh.tabs_within(driver::CALL_TIMEOUT).await) {
-            (Some(page), Ok(listing)) => Self::tab_index(profile, tab, page, &listing),
-            _ => None,
+        let index = match fresh.tabs_within(bound).await {
+            Ok(listing) => {
+                page.as_deref().and_then(|page| Self::tab_index(profile, tab, page, &listing))
+            }
+            Err(cannot) if driver::died(&cannot) => {
+                // **A fresh driver that still cannot list means the host's
+                // pages are wedged**: end it from this call.
+                let fresh_generation = profile.state.lock().await.driver_generation;
+                let host = self.end_dead_host(profile, fresh_generation, &cannot).await;
+                return Err(dead_host_answer(profile, host, &cannot));
+            }
+            Err(_) => None,
         };
         let Some(index) = index else {
             return Err(dead_driver_answer(DeadDriverOutcome::TabGone));
         };
-        if let Err(cannot) = fresh.select(index, driver::CALL_TIMEOUT).await {
+        if let Err(cannot) = fresh.select(index, bound).await {
             return Err(dead_driver_answer(DeadDriverOutcome::RetryFailed { why: &cannot }));
         }
-        match fresh.call_within(tool, args.clone(), driver::CALL_TIMEOUT).await {
+        match fresh.call_within(tool, args.clone(), bound).await {
             Ok(parts) => {
                 profile.state.lock().await.stale_since = None;
                 Ok(parts)
@@ -2857,6 +3079,14 @@ pub struct Profile {
     /// carries the host that reported it; an event from a receiver that was
     /// replaced is refused even when the tab numbers collide.
     host_generation: AtomicU64,
+    /// A fresh driver still could not list this profile's pages: the host is
+    /// wedged and is ended on the first path that can take `file_decision`
+    /// without waiting on the call that found it.
+    host_suspect: AtomicBool,
+    /// The driver a replacement installs under test, so a test can tell a
+    /// replacement from a retry of the same fake. One-shot.
+    #[cfg(test)]
+    successor: Mutex<Option<Successor>>,
     /// **The same rows channel the service publishes on**, so a host's death
     /// can say so at once instead of waiting for a sweep.
     rows: watch::Sender<BrowserTabList>,
@@ -3929,6 +4159,7 @@ impl Profile {
     /// left on one of those numbers must not survive to close its successor,
     /// which is why the service is told to forget this host's holds.
     fn host_gone(&self) {
+        self.host_suspect.store(false, Ordering::Release);
         *self.tabs.lock().unwrap_or_else(PoisonError::into_inner) = TabRegistry::default();
         *self.boot.lock().unwrap_or_else(PoisonError::into_inner) = None;
         *self.focused.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -4062,10 +4293,30 @@ async fn live_target(profile: &Arc<Profile>, tab: u16) -> LiveTarget {
     {
         let page =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
-        let row = page
+        let mut row = page
             .as_deref()
             .and_then(|page| crate::tabs::index_of(&listing, page))
             .and_then(|at| listing.get(at));
+        // **A fresh driver renames every page; the CDP target survives it.**
+        // The same fallback the call path has, so a person's arrows keep
+        // working after a driver transport crash.
+        if row.is_none() {
+            // **The lock is scoped to the read**: a let-chain's guard lives
+            // to the end of the `if`, and the body needs the same lock.
+            let stored = {
+                let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                tabs.target(tab).map(str::to_owned)
+            };
+            if let Some(target) = stored
+                && let Some(found) =
+                    crate::tabs::index_of_target(&listing, &target).and_then(|at| listing.get(at))
+            {
+                let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+                tabs.reidentify(tab, &found.id);
+                tabs.retarget(tab, &found.target);
+                row = Some(found);
+            }
+        }
         match row {
             Some(row) if !row.target.is_empty() => {
                 profile
@@ -4359,6 +4610,23 @@ fn repeatable(tool: &str, args: &Value) -> bool {
     }
 }
 
+/// Whether a call that was already in flight is safe to repeat after its
+/// driver stopped answering. **A timed-out call is not a call that did not
+/// run**: the browser keeps working after our request is cancelled, so a
+/// navigate, a click or a type may already have landed. Only reads and the
+/// tab selector are repeated; everything else is handed back with that
+/// warning. (A dead PAGE is different - its context died and took the action
+/// with it - so [`repeatable`] is the broader rule there.)
+fn repeatable_after_timeout(tool: &str, args: &Value) -> bool {
+    match tool {
+        "browser_snapshot" => true,
+        "browser_tabs" => {
+            matches!(args.get("action").and_then(Value::as_str), Some("list" | "select"))
+        }
+        _ => false,
+    }
+}
+
 /// What became of a call whose page context died, as the answer's own words.
 #[derive(Debug, Clone, Copy)]
 enum DeadPageOutcome<'a> {
@@ -4372,6 +4640,19 @@ enum DeadPageOutcome<'a> {
     RebuildFailed { why: &'a str },
     /// A rebuild failed inside the cooldown, so none was attempted.
     Cooling,
+    /// The fresh driver does not list the page, so no retry can land on it.
+    TabGone { tab: u16 },
+}
+
+/// What became of a host a call tried to end.
+#[derive(Debug, Clone, Copy)]
+enum DeadHost {
+    /// This call ended it, with the identity a recurrence is diagnosed by.
+    Ended { pid: u32, port: u16 },
+    /// The generation matched but no host was there any more.
+    AlreadyGone,
+    /// A newer driver owns the profile; this call ends nothing.
+    NotOurs,
 }
 
 /// **The answer never leads with the driver's `_page` TypeError**: it names
@@ -4381,8 +4662,8 @@ fn dead_page_answer(outcome: DeadPageOutcome<'_>) -> String {
     let died = "the browser's page context died (its renderer went away)";
     match outcome {
         DeadPageOutcome::NotRepeated { tool } => format!(
-            "{died} and the driver has been rebuilt. {tool} was not run again because repeating \
-             it could land twice; run it again now."
+            "{died} and the driver has been rebuilt. {tool} may already have landed, so it was \
+             not repeated; check the page before running it again."
         ),
         DeadPageOutcome::RetryFailed { why } => {
             format!("{died} and the driver was rebuilt, but the repeated call failed too: {why}")
@@ -4398,6 +4679,29 @@ fn dead_page_answer(outcome: DeadPageOutcome<'_>) -> String {
             "{died} again after a rebuild, and the driver has not been rebuilt a second time yet; \
              try again shortly."
         ),
+        DeadPageOutcome::TabGone { tab } => format!(
+            "{died} and the driver was rebuilt, but tab {tab}'s page is not in the fresh driver's \
+             list; the tab was left open. Call browser_tabs to see it, or open a new tab."
+        ),
+    }
+}
+
+/// **A host a fresh driver still could not list is named by its pid, port and
+/// profile**: a bare timeout is not a diagnosis, and the next call's state is
+/// what the session needs to act on.
+fn dead_host_answer(profile: &Profile, host: DeadHost, why: &str) -> String {
+    match host {
+        DeadHost::Ended { pid, port } => format!(
+            "the browser host (pid {pid}, port {port}, profile {}) stopped answering and was \
+             ended: {why}. The next call starts a fresh browser with the profile's data intact.",
+            profile.dir.display(),
+        ),
+        DeadHost::AlreadyGone => format!(
+            "the browser host (profile {}) stopped answering: {why}. The next call starts a fresh \
+             browser.",
+            profile.dir.display(),
+        ),
+        DeadHost::NotOurs => format!("the browser driver stopped answering: {why}"),
     }
 }
 
@@ -4420,8 +4724,8 @@ fn dead_driver_answer(outcome: DeadDriverOutcome<'_>) -> String {
     let replaced = "the browser driver stopped answering and was replaced on this call";
     match outcome {
         DeadDriverOutcome::NotRepeated { tool } => format!(
-            "{replaced}. {tool} was not run again because repeating it could land twice; run it \
-             again now."
+            "{replaced}. {tool} may already have landed, so it was not repeated; check the page \
+             before running it again."
         ),
         DeadDriverOutcome::RetryFailed { why } => {
             format!("{replaced}, but the repeated call failed too: {why}")
@@ -4449,14 +4753,6 @@ fn log_rebuild(profile: &Profile, tool: &str, outcome: &str, why: &str) {
     );
 }
 
-/// The answer for a driver that never attached.
-///
-/// **A bare `initializeServer` timeout names nothing**: not the browser, not
-/// the profile, not why. The host's pid, port and its own log's last words
-/// are what a recurrence is diagnosed by, and the outcome says what actually
-/// happened to the host so the next call is understood: a fresh browser when
-/// it was ended, or a host left alone because the record was not this
-/// server's to end (#2534).
 /// The agent's upload answered the oldest surfaced chooser: consume its
 /// surface, or owe one event when no chooser has surfaced yet.
 /// Called under `file_decision`.
@@ -4505,6 +4801,12 @@ fn closed_as_orphans(
     listing: &[crate::tabs::DriverTab],
     boot_pending: bool,
 ) -> Vec<String> {
+    // **A row whose page could not be named is not an orphan.** Nothing is
+    // pruned while one is unresolved: an unclaimed page may be that live
+    // document, and closing it is how a filled form is lost.
+    if !tabs.unresolved_tabs().is_empty() {
+        return Vec::new();
+    }
     let mut orphaned = crate::tabs::orphan_targets(tabs, listing);
     if boot_pending
         && let Some(boot) = listing.iter().find(|row| row.current).or_else(|| listing.first())
@@ -4656,11 +4958,12 @@ fn controller_size(
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadPageOutcome, Driven,
-        Profile, State, UploadRequest, agent_upload_paths, agent_upload_refused, begin_upload,
-        captured_generation, clear_if_dead, controller_size, dead_page_answer, death_cause,
-        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
-        note_upload_finished, pair_tab_events, stage_agent_uploads, upload_request, write_uploads,
+        BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome, DeadHost,
+        DeadPageOutcome, Driven, Profile, State, UploadRequest, agent_upload_paths,
+        agent_upload_refused, begin_upload, captured_generation, clear_if_dead, controller_size,
+        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, file_name,
+        installed_generation, note_agent_answered, note_surfaced_opened, note_upload_finished,
+        pair_tab_events, stage_agent_uploads, upload_request, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::ProfileKey;
@@ -4907,6 +5210,81 @@ mod tests {
         );
     }
 
+    /// **A renamed page is found by its target.** The person's arrows and the
+    /// history watch use the same fallback the call path has, so a driver
+    /// replacement does not freeze them on a page that is still there.
+    #[tokio::test]
+    async fn a_renamed_page_is_found_by_its_target() {
+        use super::{LiveTarget, live_target};
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        let seen = fake.clone();
+        service.install_fake(&seat, fake).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+
+        seen.reidentify("P2");
+
+        assert!(
+            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T1"),
+            "the target names the page a fresh driver renamed",
+        );
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(1),
+            Some("P2"),
+            "and the row follows the fresh driver's name",
+        );
+    }
+
+    /// **A fresh driver that still times out ends the host.** A host kept on
+    /// process liveness alone with pages no driver can list is the wedge that
+    /// used to cost an hour; the call that finds it takes it down so the next
+    /// call starts a fresh browser.
+    #[tokio::test]
+    async fn a_fresh_driver_that_still_times_out_ends_the_host() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let wedged = FakeDriver::with_blank("T1");
+        let successor = FakeDriver::with_blank("T1");
+        let replaced = successor.clone();
+        service
+            .install_fake_with_successor(&seat, wedged.clone(), move || {
+                Arc::new(replaced.clone()) as Arc<dyn crate::driver::TabDriver>
+            })
+            .await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        // Every listing times out from here, on the driver and on its
+        // replacement.
+        wedged.timeout_every_listing();
+        successor.timeout_every_listing();
+        let profile = service.find("O/default").await.expect("the profile");
+        let ring_name = format!("/forge-host-end-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: dir.path().join("host-end"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+
+        let refused = service
+            .call(&seat, "browser_snapshot", json!({}))
+            .await
+            .expect_err("a host no driver can list is ended, not retried for ever");
+        assert!(refused.contains("stopped answering"), "{refused}");
+        assert!(refused.contains("pid"), "the host's identity is named: {refused}");
+        assert!(profile.state.lock().await.host.is_none(), "the wedged host was taken down");
+        crate::osr::Ring::unlink(&ring_name);
+    }
+
     /// **A late close from the old host leaves its successor's tab one
     /// alone.** A host death clears the focus and restarts tab numbers, so a
     /// close aimed at the old host must not unfocus the new one's tab.
@@ -4985,12 +5363,13 @@ mod tests {
         crate::osr::Ring::unlink(&ring_name);
     }
 
-    /// **A replaced driver renames every page, and the session keeps its
-    /// tab.** A fresh Playwright backend gives every page a new guid; the tab
-    /// is re-paired by its CDP target rather than re-created as about:blank,
-    /// so the number a tool printed is the number a hand-off accepts.
+    /// **A renamed page keeps the session's tab.** A fresh Playwright backend
+    /// gives every page a new guid; the tab is re-paired by its CDP target
+    /// rather than re-created as about:blank, so the number a tool printed is
+    /// the number a hand-off accepts. (The fake's ids change; no driver is
+    /// replaced in this test.)
     #[tokio::test]
-    async fn a_replaced_driver_keeps_the_sessions_tab() {
+    async fn a_renamed_page_keeps_the_sessions_tab() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
@@ -5044,7 +5423,7 @@ mod tests {
         seen.reidentify("P2");
 
         let driver: Arc<dyn crate::driver::TabDriver> = Arc::new(seen);
-        service.repair_tab_identity(&profile, &driver).await;
+        service.repair_tab_identity(&profile, &driver, crate::driver::CALL_TIMEOUT).await;
 
         assert_eq!(
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(1),
@@ -5054,27 +5433,71 @@ mod tests {
     }
 
     /// **A listing that times out is a dead driver, replaced on this call.**
+    /// The first fake times out on EVERY listing, so a retry of it cannot
+    /// pass: only the successor answering proves the driver was replaced.
+    /// **A live wedge is not constructible in CI**; this path is pinned by
+    /// the fake alone.
     #[tokio::test]
     async fn a_listing_timeout_replaces_the_driver_on_the_call() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
-        seen.timeout_listing_once();
+        let wedged = FakeDriver::with_blank("T1");
+        let seen = wedged.clone();
+        seen.timeout_every_listing();
+        let successor = FakeDriver::with_blank("T1");
+        let fresh = successor.clone();
+        service
+            .install_fake_with_successor(&seat, wedged, move || {
+                Arc::new(successor.clone()) as Arc<dyn crate::driver::TabDriver>
+            })
+            .await;
 
         service
             .call(&seat, "browser_snapshot", json!({}))
             .await
             .expect("a timed-out listing is answered by a replacement driver on the same call");
-        assert!(seen.listings() >= 2, "the listing was asked again after the replacement");
+        assert!(fresh.listings() > 0, "the successor answered the listing");
     }
 
     /// **A driver whose initialise times out is replaced on this call**, not
-    /// left for a person or another agent to restart the browser.
+    /// left for a person or another agent to restart the browser. **A
+    /// navigate is not repeated after a timeout** - the browser keeps going
+    /// after our request is cancelled, so it may already have landed - and is
+    /// handed back with that warning. **A live wedge is not constructible in
+    /// CI**; the fake pins this path alone.
     #[tokio::test]
-    async fn an_initialise_timeout_replaces_the_driver_on_the_call() {
+    async fn an_initialise_timeout_replaces_the_driver_and_hands_a_navigate_back() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let wedged = FakeDriver::with_blank("T1");
+        let seen = wedged.clone();
+        let successor = FakeDriver::with_blank("T1");
+        let fresh = successor.clone();
+        service
+            .install_fake_with_successor(&seat, wedged, move || {
+                Arc::new(successor.clone()) as Arc<dyn crate::driver::TabDriver>
+            })
+            .await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        seen.timeout_every_call();
+
+        let handed = service
+            .call(&seat, "browser_navigate", json!({ "url": "http://a/" }))
+            .await
+            .expect_err("a timed-out navigate is handed back, not repeated");
+        assert!(handed.contains("may already have landed"), "{handed}");
+        assert!(handed.contains("check the page before running it again"), "{handed}");
+        assert!(fresh.listings() > 0, "the successor replaced the wedged driver");
+    }
+
+    /// **A row that cannot be paired is left open and the call refused.** A
+    /// page whose guid and target both moved under the registry is not a
+    /// closed tab; closing it is how a filled form is lost, and the orphan
+    /// prune is held while the row is unresolved.
+    #[tokio::test]
+    async fn an_unpairable_tab_is_left_open_and_the_call_refused() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
@@ -5082,12 +5505,89 @@ mod tests {
         let seen = fake.clone();
         service.install_fake(&seat, fake).await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
-        seen.attach_timeout_once();
+        let profile = service.find("O/default").await.expect("the profile");
+        // The page navigated and the driver was replaced: neither name the
+        // registry holds matches the listing.
+        seen.rename("P2", "T2");
+        let listing = seen.tabs.lock().expect("the tabs").clone();
+        let drives = seen.selected().len();
 
-        service
-            .call(&seat, "browser_navigate", json!({ "url": "http://a/" }))
+        let refused = service
+            .call(&seat, "browser_snapshot", json!({}))
             .await
-            .expect("a driver whose initialise timed out is replaced and the call retried");
+            .expect_err("the call is refused rather than driving another page");
+        assert!(refused.contains("left open"), "{refused}");
+        assert_eq!(seen.selected().len(), drives, "the refused call drove nothing");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(1),
+            Some("T1"),
+            "the tab is still open with its own row",
+        );
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).unresolved_tabs(),
+            vec![1],
+            "the row is marked unresolved",
+        );
+        let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            super::closed_as_orphans(&tabs, &listing, false).is_empty(),
+            "an unresolved row holds the orphan prune",
+        );
+    }
+
+    /// **A host a call ended is named by pid, port and profile**, and one a
+    /// newer driver owns is not claimed.
+    #[tokio::test]
+    async fn a_dead_host_answer_names_the_host_and_the_next_call() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let profile = service.entry(&seat).await.expect("a profile entry");
+
+        let ended = dead_host_answer(
+            &profile,
+            DeadHost::Ended { pid: 1234, port: 9411 },
+            "a listing timed out",
+        );
+        assert!(ended.contains("pid 1234"), "{ended}");
+        assert!(ended.contains("port 9411"), "{ended}");
+        assert!(ended.contains("/cef"), "{ended}");
+        assert!(ended.contains("The next call starts a fresh browser"), "{ended}");
+
+        let gone = dead_host_answer(&profile, DeadHost::AlreadyGone, "a listing timed out");
+        assert!(gone.contains("The next call starts a fresh browser"), "{gone}");
+        let ours = dead_host_answer(&profile, DeadHost::NotOurs, "a listing timed out");
+        assert!(ours.contains("stopped answering"), "{ours}");
+        assert!(!ours.contains("pid"), "a host this call does not own is not claimed: {ours}");
+    }
+
+    /// **A driver installed since this call's lookup is not this call's to
+    /// clear.** The guard is inside the rebuild lock, so the newer driver is
+    /// handed back untouched and its successor stands untouched too.
+    #[tokio::test]
+    async fn a_replacement_for_an_old_generation_keeps_the_newer_driver() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let current = FakeDriver::with_blank("T1");
+        let successor = FakeDriver::with_blank("P9");
+        let replacement = successor.clone();
+        service
+            .install_fake_with_successor(&seat, current, move || {
+                Arc::new(successor.clone()) as Arc<dyn crate::driver::TabDriver>
+            })
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        profile.state.lock().await.driver_generation = 5;
+
+        let kept = service
+            .recover_driver(&profile, 4, crate::driver::CALL_TIMEOUT)
+            .await
+            .expect("the current driver is handed back");
+
+        let rows = kept.tabs_within(Duration::from_secs(1)).await.expect("the fake lists");
+        assert_eq!(rows[0].id, "T1", "the current driver, not the successor");
+        assert_eq!(replacement.listings(), 0, "the successor was never installed");
     }
 
     /// **Closing the focused tab lets the focus go.** A focus left on it
@@ -5862,7 +6362,14 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
-                Driven { generation: 1, pid: 1, port: 9, tab: 1, target: "T1" },
+                Driven {
+                    generation: 1,
+                    pid: 1,
+                    port: 9,
+                    tab: 1,
+                    target: "T1",
+                    bound: Duration::from_secs(150),
+                },
                 "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
@@ -5883,7 +6390,14 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
-                Driven { generation: 2, pid: 1, port: 9, tab: 1, target: "T1" },
+                Driven {
+                    generation: 2,
+                    pid: 1,
+                    port: 9,
+                    tab: 1,
+                    target: "T1",
+                    bound: Duration::from_secs(150),
+                },
                 "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
@@ -5899,7 +6413,14 @@ mod tests {
         let again = service
             .after_failure(
                 &profile,
-                Driven { generation: 2, pid: 1, port: 9, tab: 1, target: "T1" },
+                Driven {
+                    generation: 2,
+                    pid: 1,
+                    port: 9,
+                    tab: 1,
+                    target: "T1",
+                    bound: Duration::from_secs(150),
+                },
                 "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
@@ -5941,7 +6462,14 @@ mod tests {
         let (outcome, ()) = tokio::join!(
             service.after_failure(
                 &profile,
-                Driven { generation: 1, pid: 1, port: 9, tab: 1, target: "T1" },
+                Driven {
+                    generation: 1,
+                    pid: 1,
+                    port: 9,
+                    tab: 1,
+                    target: "T1",
+                    bound: Duration::from_secs(150)
+                },
                 "browser_click",
                 &no_args,
                 Err(dead.to_owned()),
@@ -6463,6 +6991,7 @@ mod tests {
             dead_page_answer(DeadPageOutcome::StillDead),
             dead_page_answer(DeadPageOutcome::RebuildFailed { why: "the start timed out" }),
             dead_page_answer(DeadPageOutcome::Cooling),
+            dead_page_answer(DeadPageOutcome::TabGone { tab: 2 }),
         ];
         for answer in answers {
             assert!(answer.contains("the browser's page context died"), "{answer}");
@@ -6473,9 +7002,35 @@ mod tests {
                 "nor the driver's wrapper: {answer}",
             );
         }
+        // **A handed-back call says it may already have landed**: "run it
+        // again now" invites the doubling the refusal existed to prevent.
         let handed = dead_page_answer(DeadPageOutcome::NotRepeated { tool: "browser_tabs" });
-        assert!(handed.contains("browser_tabs was not run again"), "{handed}");
-        assert!(handed.contains("run it again now"), "{handed}");
+        assert!(handed.contains("browser_tabs may already have landed"), "{handed}");
+        assert!(handed.contains("check the page before running it again"), "{handed}");
+    }
+
+    /// **Every dead-driver outcome names the replacement and the next move**,
+    /// and a handed-back call is never invited to repeat blind.
+    #[test]
+    fn a_dead_driver_answer_names_the_replacement_and_the_next_move() {
+        let answers = [
+            dead_driver_answer(DeadDriverOutcome::NotRepeated { tool: "browser_click" }),
+            dead_driver_answer(DeadDriverOutcome::RetryFailed { why: "no element matches" }),
+            dead_driver_answer(DeadDriverOutcome::ReplaceFailed { why: "the start timed out" }),
+            dead_driver_answer(DeadDriverOutcome::TabGone),
+        ];
+        for answer in answers {
+            assert!(
+                answer.contains("stopped answering") || answer.contains("could not be replaced"),
+                "{answer}",
+            );
+            assert!(!answer.contains("_page"), "the internal reading never surfaces: {answer}");
+        }
+        let handed = dead_driver_answer(DeadDriverOutcome::NotRepeated { tool: "browser_click" });
+        assert!(handed.contains("browser_click may already have landed"), "{handed}");
+        assert!(handed.contains("check the page before running it again"), "{handed}");
+        let gone = dead_driver_answer(DeadDriverOutcome::TabGone);
+        assert!(gone.contains("not in the fresh driver's list"), "{gone}");
     }
 
     /// **A seat's entry is its org's profile**: two seats of one org share a
@@ -6960,13 +7515,15 @@ mod tests {
             self.stale_once.store(true, Ordering::Release);
         }
 
-        /// The fake's next listing answers the driver's own timeout once.
-        fn timeout_listing_once(&self) {
+        /// **Every** listing answers the driver's own timeout: a retry on
+        /// this same fake cannot pass, so only a real replacement can.
+        fn timeout_every_listing(&self) {
             self.slow_listing.store(true, Ordering::Release);
         }
 
-        /// The fake's next page call answers an initialise timeout once.
-        fn attach_timeout_once(&self) {
+        /// **Every** page call answers an initialise timeout, for the same
+        /// reason: a retry of this fake cannot pass either.
+        fn timeout_every_call(&self) {
             self.attach_timeout.store(true, Ordering::Release);
         }
 
@@ -6976,6 +7533,16 @@ mod tests {
             let mut tabs = self.tabs.lock().expect("the tabs");
             if let Some(tab) = tabs.first_mut() {
                 id.clone_into(&mut tab.id);
+            }
+        }
+
+        /// The page navigated and the driver was replaced: both names the
+        /// registry holds are gone.
+        fn rename(&self, id: &str, target: &str) {
+            let mut tabs = self.tabs.lock().expect("the tabs");
+            if let Some(tab) = tabs.first_mut() {
+                id.clone_into(&mut tab.id);
+                target.clone_into(&mut tab.target);
             }
         }
 
@@ -7159,7 +7726,7 @@ mod tests {
         ) -> Result<Vec<crate::tabs::DriverTab>, String> {
             self.listings.fetch_add(1, Ordering::AcqRel);
             self.changed.notify_one();
-            if self.slow_listing.swap(false, Ordering::AcqRel) {
+            if self.slow_listing.load(Ordering::Acquire) {
                 return Err(crate::driver::did_not_answer("browser_tabs", bound));
             }
             if self.stale_once.swap(false, Ordering::AcqRel) {
@@ -7184,7 +7751,7 @@ mod tests {
             if tool == "browser_file_upload" && self.fail_upload.load(Ordering::Acquire) {
                 return Err("the driver refused the upload".to_owned());
             }
-            if self.attach_timeout.swap(false, Ordering::AcqRel) {
+            if self.attach_timeout.load(Ordering::Acquire) {
                 return Err(
                     "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded."
                         .to_owned(),

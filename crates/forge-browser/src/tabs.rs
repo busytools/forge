@@ -47,8 +47,12 @@ pub fn strip_export(text: &str) -> String {
     listing
 }
 
-/// The Playwright index of the tab a page guid names.
+/// The Playwright index of the tab a page guid names. **An empty name names
+/// nothing**, the same refusal [`index_of_target`] makes for an empty target.
 pub fn index_of(tabs: &[DriverTab], page: &str) -> Option<usize> {
+    if page.is_empty() {
+        return None;
+    }
     tabs.iter().find(|tab| tab.id == page).map(|tab| tab.index)
 }
 
@@ -87,6 +91,10 @@ pub struct TabRegistry {
     /// never handed out again**, so a hand-off written against it can never
     /// come to mean another tab.
     retired: HashSet<u16>,
+    /// Tabs whose page a listing could not name. **Their pages are not
+    /// orphans**: the prune closes nothing while one is unresolved, or a live
+    /// document would be closed because its row could not be paired.
+    unresolved: HashSet<u16>,
 }
 
 pub(crate) struct Tab {
@@ -156,7 +164,19 @@ impl TabRegistry {
     pub fn close(&mut self, tab: u16) -> Option<SessionSlot> {
         let removed = self.tabs.remove(&tab)?;
         self.current.retain(|_, number| *number != tab);
+        self.unresolved.remove(&tab);
         Some(removed.owner)
+    }
+
+    /// Remember that a listing could not name this tab's page, so no page is
+    /// pruned as an orphan while the row is unresolved.
+    pub fn mark_unresolved(&mut self, tab: u16) {
+        self.unresolved.insert(tab);
+    }
+
+    /// The tabs whose page a listing could not name.
+    pub fn unresolved_tabs(&self) -> Vec<u16> {
+        self.unresolved.iter().copied().collect()
     }
 
     pub fn close_owned(
@@ -222,6 +242,7 @@ impl TabRegistry {
         if let Some(entry) = self.tabs.get_mut(&tab) {
             target.clone_into(&mut entry.target);
         }
+        self.unresolved.remove(&tab);
     }
 
     /// Re-pair one row with the name a fresh driver gives its page. **A
@@ -232,16 +253,37 @@ impl TabRegistry {
         if let Some(entry) = self.tabs.get_mut(&tab) {
             id.clone_into(&mut entry.id);
         }
+        self.unresolved.remove(&tab);
     }
 
     /// Re-pair every row the fresh listing names by its target, answering how
     /// many changed. A row whose target the listing does not carry is left
     /// alone: its page may be mid-navigation, and inventing a name for it is
-    /// how a tab comes to mean another page.
+    /// how a tab comes to mean another page. **Rows sharing a target are left
+    /// alone too**: naming both after the one page would let either number
+    /// drive it, so the duplication is said and nothing is re-paired.
     pub fn reidentify_from(&mut self, listing: &[DriverTab]) -> usize {
+        let mut sharing: HashMap<&str, usize> = HashMap::new();
+        for tab in self.tabs.values() {
+            if !tab.target.is_empty() {
+                *sharing.entry(tab.target.as_str()).or_default() += 1;
+            }
+        }
+        let duplicated: HashSet<String> = sharing
+            .into_iter()
+            .filter(|(_, count)| *count > 1)
+            .map(|(target, _)| target.to_owned())
+            .collect();
+        if !duplicated.is_empty() {
+            tracing::debug!(
+                event_name = "browser_tab_target_duplicated",
+                targets = ?duplicated,
+                "rows share a CDP target; none of them is re-paired"
+            );
+        }
         let mut changed = 0;
         for tab in self.tabs.values_mut() {
-            if tab.target.is_empty() {
+            if tab.target.is_empty() || duplicated.contains(tab.target.as_str()) {
                 continue;
             }
             let Some(row) = listing.iter().find(|row| row.target == tab.target) else {
@@ -451,6 +493,27 @@ mod tests {
         let missing = [tab_row(0, "new-1", "T1")];
         assert_eq!(registry.reidentify_from(&missing), 0);
         assert_eq!(registry.id(two), Some("new-2"), "the unnamed row keeps its name");
+
+        // **An empty guid names nothing**, the same refusal an empty target
+        // makes; a page that names nothing must not select the first row.
+        assert_eq!(super::index_of(&listing, ""), None, "an empty guid names no page");
+
+        // Two rows sharing a target are left alone: naming both after one
+        // page would let either number drive it.
+        let mut shared = TabRegistry::default();
+        let one = shared
+            .adopt(1, seat.clone(), "s1", "TS", "one", "http://a/")
+            .expect("the first shared row");
+        let two = shared
+            .adopt(2, seat.clone(), "s2", "TS", "two", "http://b/")
+            .expect("the second shared row");
+        assert_eq!(
+            shared.reidentify_from(&[tab_row(0, "fresh", "TS")]),
+            0,
+            "a target two rows share re-pairs nothing",
+        );
+        assert_eq!(shared.id(one), Some("s1"));
+        assert_eq!(shared.id(two), Some("s2"));
     }
 
     fn tab_row(index: usize, id: &str, target: &str) -> DriverTab {
