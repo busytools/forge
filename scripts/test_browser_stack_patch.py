@@ -186,6 +186,21 @@ class BrowserStackPatchTest(unittest.TestCase):
         self.assertIn("already applied", second.stdout)
         self.assertEqual(bundle.read_text(), patched, "a second run rewrites nothing")
 
+    def test_a_bundle_without_the_pinned_list_arm_fails_loudly(self) -> None:
+        body = f"// before\n{needle()}\n{tabs_needle()}\n// after\n"
+        bundle = self.bundle(body)
+
+        result = run_patcher("--bundle", str(bundle))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not carry the tab list arm", result.stderr)
+        self.assertNotIn(
+            "[OK]",
+            result.stdout,
+            "a patch the file never got is not reported as applied",
+        )
+        self.assertEqual(bundle.read_text(), body, "nothing is written when a needle is missing")
+
     def test_a_bundle_without_the_pinned_tab_listing_fails_loudly(self) -> None:
         body = f"// before\n{needle()}\n// after\n"
         bundle = self.bundle(body)

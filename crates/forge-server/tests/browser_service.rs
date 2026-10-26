@@ -254,10 +254,13 @@ async fn a_killed_host_publishes_no_tabs_and_its_successor_starts_empty() {
     service.close(&seat).await.expect("the profile closes");
 }
 
-/// **A closed tab leaves no page behind.** The driver's tab listing creates a
-/// page when it has no current tab, and the history watch used to keep asking
-/// after its tab was closed: on 2026-10-26 that made one page and one CEF
-/// renderer a second until the host was killed with 821 targets (#2581).
+/// **An end-to-end smoke check that a closed tab leaves no page behind.** On
+/// the patched stack it cannot fail on a one-half revert, so the real
+/// discriminators are `a_nav_watch_whose_focused_page_is_gone_stops_listing`
+/// (the watch stops) and `a_tab_listing_never_creates_a_page` with the python
+/// patch cases (a listing is a read). This one proves the two together on a
+/// live host: on 2026-10-26 the released build made one page and CEF renderer
+/// a second here until the host was killed with 821 targets (#2581).
 #[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_closed_tab_leaves_no_page_behind() {
@@ -273,8 +276,8 @@ async fn a_closed_tab_leaves_no_page_behind() {
     let service = BrowserService::at(scratch.path().to_path_buf(), stack);
     let seat = SessionSlot::lead("TestOrg", "proj");
 
-    // One navigate, one evaluate, one close: the leak needs no polling page
-    // and no second call.
+    // One navigate, one evaluate: the leak needs no polling page and no
+    // second call.
     service
         .call(
             &seat,
@@ -287,11 +290,20 @@ async fn a_closed_tab_leaves_no_page_behind() {
         .call(&seat, "browser_evaluate", json!({ "function": "() => 1 + 1" }))
         .await
         .expect("the page is driven");
-    service.call(&seat, "browser_close", json!({})).await.expect("the tab closes");
 
     let key = service.profile_for(&seat).expect("the profile key");
     let dir = service.profile_dir(&key);
     let record = forge_browser::spawn::read_record(&dir).expect("the host's record");
+    // **The guard goes on before the close**: a failed assertion must not
+    // leave the host running.
+    let _guard = HostGuard { pid: record.pid, ring: record.ring.clone() };
+
+    // **The baseline proves the endpoint answers.** `page_targets` returns an
+    // empty vec on every failure path, so a zero after the close means
+    // nothing unless the same read saw the page before it.
+    let before = forge_browser::spawn::page_targets(record.port).await;
+    assert_eq!(before.len(), 1, "the tab's page is there before the close: {before:?}");
+    service.call(&seat, "browser_close", json!({})).await.expect("the tab closes");
 
     // The history watch retries every 500 ms, so five seconds is many ticks.
     tokio::time::sleep(Duration::from_secs(5)).await;

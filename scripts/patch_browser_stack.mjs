@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Give the vendored @playwright/mcp the two things forge needs and upstream
-// does not provide.
+// Give the vendored @playwright/mcp the three things forge needs and
+// upstream does not provide.
 //
 // **A file chooser surface.** Playwright owns the page's file chooser: its
 // tab attaches a `filechooser` listener, which enables
@@ -19,18 +19,21 @@
 // one machine line to the tab listing with each tab's target id; the service
 // strips that line before the agent sees the listing.
 //
+// **A listing that reads.** See the tab-list patch below: the list arm must
+// not make a page, because forge lists from a history watch.
+//
 // **Pinned and exact**: each needle is the pinned @playwright/mcp 0.0.83
 // bundle's own excerpt, checked in beside this file. A version bump that
-// changes either fails here, at install time, rather than silently shipping a
-// driver that never surfaces a chooser or never names a tab. The borrowed
-// private field is named by the tab patch's marker, so a bump's failure
-// points at it.
+// changes any of them fails here, at install time, rather than silently
+// shipping a driver that never surfaces a chooser, never names a tab or
+// creates one on every listing. The borrowed private field is named by the
+// tab patch's marker, so a bump's failure points at it.
 //
 // Usage: patch_browser_stack.mjs <stack dir>
 //        patch_browser_stack.mjs --bundle <coreBundle.js>
 //        patch_browser_stack.mjs --print-needle
 //        patch_browser_stack.mjs --print-tabs-needle
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Each needle is the checked-in excerpt for the pinned @playwright/mcp
@@ -153,10 +156,12 @@ const OLD_REPLACEMENT = [
 ].join("\n");
 
 // **A tab listing reads, it does not create.** Upstream's `list` arm calls
-// `ensureTab()`, which makes a page whenever the driver has no current tab;
-// on this host that page never becomes the current tab, so every listing
-// makes another (#2581). `ensureBrowserContext` keeps the chooser arming and
-// creates nothing; scripts/check_browser_stack_list.mjs checks the behaviour.
+// `ensureTab()`, which calls `context.newPage()` whenever the driver has no
+// current tab. Measured on this host with every page closed: `newPage()`
+// throws after CEF has already made the browser, so the driver gets no tab
+// at all, the target and its renderer stay, and every listing makes another
+// (#2581). `ensureBrowserContext` keeps the chooser arming and creates
+// nothing; scripts/check_browser_stack_list.mjs checks the behaviour.
 const TABLIST_REPLACEMENT = [
   "        switch (params2.action) {",
   '          case "list": {',
@@ -243,9 +248,10 @@ if (!existsSync(bundle)) {
 
 const source = readFileSync(bundle, "utf8");
 let patched = source;
-// **Both patches or neither**: a bundle is written once, after every needle
-// has been found, so a version bump cannot leave a half-patched stack that
-// reads as installed.
+const pending = [];
+// **Every patch or none**: a bundle is written once, after every needle has
+// been found, and each success is printed only once that write has landed -
+// a missing needle must not leave a log claiming patches a file never got.
 for (const patch of PATCHES) {
   if (patched.includes(patch.marker)) {
     console.log(`[..] the ${patch.label} patch is already applied (${bundle})`);
@@ -253,7 +259,7 @@ for (const patch of PATCHES) {
   }
   if (patch.old !== undefined && patched.includes(patch.old)) {
     patched = patched.replace(patch.old, patch.replacement);
-    console.log(`[OK] the ${patch.label} patch is updated (${bundle})`);
+    pending.push(`[OK] the ${patch.label} patch is updated (${bundle})`);
     continue;
   }
   const at = patched.indexOf(patch.needle);
@@ -266,6 +272,21 @@ for (const patch of PATCHES) {
     process.exit(1);
   }
   patched = patched.replace(patch.needle, patch.replacement);
-  console.log(`[OK] the ${patch.label} patch is applied (${bundle})`);
+  pending.push(`[OK] the ${patch.label} patch is applied (${bundle})`);
 }
-if (patched !== source) writeFileSync(bundle, patched);
+// **Written beside the bundle and renamed**, so a torn write cannot leave
+// marker-bearing bytes that every later run reads as already applied.
+if (patched !== source) {
+  const temporary = `${bundle}.forge-patch-${process.pid}`;
+  try {
+    writeFileSync(temporary, patched);
+    renameSync(temporary, bundle);
+  } catch (why) {
+    try {
+      unlinkSync(temporary);
+    } catch {}
+    console.error(`[ERROR] the patched bundle could not be written: ${why}`);
+    process.exit(1);
+  }
+}
+for (const line of pending) console.log(line);
