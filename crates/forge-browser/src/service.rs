@@ -2464,14 +2464,21 @@ impl BrowserService {
         let scale = profile.surface.lock().unwrap_or_else(PoisonError::into_inner).2;
         let width = window_dimension(args, "width", scale, crate::osr::MAX_WIDTH)?;
         let height = window_dimension(args, "height", scale, crate::osr::MAX_HEIGHT)?;
+        let (device_width, device_height) =
+            (device_pixels(width, scale), device_pixels(height, scale));
         {
             let state = profile.state.lock().await;
             let host = state
                 .host
                 .as_ref()
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
-            host.ring.request(device_pixels(width, scale), device_pixels(height, scale), scale);
+            host.ring.request(device_width, device_height, scale);
         }
+        // **The surface is written back, as a viewer's own resize writes
+        // it**: a take restores this size when it ends, and the next resize
+        // from either side replaces it.
+        *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) =
+            (device_width, device_height, scale);
         Ok(vec![BrowserPart::Text { text: format!("The browser window is now {width}x{height}.") }])
     }
 
@@ -7703,7 +7710,7 @@ mod tests {
             window_dimension(&json!({ "width": value }), "width", 2.0, crate::osr::MAX_WIDTH)
         };
         assert_eq!(width(json!(1120)), Ok(1120), "a CSS size passes through");
-        assert_eq!(width(json!(1120.4)), Ok(1120), "and rounds to the nearest pixel");
+        assert_eq!(width(json!(1120.6)), Ok(1121), "and rounds to the nearest pixel");
         assert_eq!(
             width(json!(3000)),
             Ok(1920),
@@ -7716,6 +7723,49 @@ mod tests {
         assert_eq!(width(json!("wide")), Err("browser_resize needs `width` as a number".into()));
         assert_eq!(device_pixels(1120, 2.0), 2240, "CSS pixels times the ratio it paints at");
         assert_eq!(device_pixels(1920, 2.0), crate::osr::MAX_WIDTH, "the bound is reachable");
+    }
+
+    /// **The tool's window is the surface's own.** A take lays its tab out at
+    /// its own size and restores the profile's surface when it ends, so a
+    /// resize that moved the ring and left the stored surface alone would be
+    /// undone by the next take.
+    #[tokio::test]
+    async fn an_agent_resize_stores_the_surface_a_take_restores() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let ring_name = format!("/forge-resize-surface-{}", std::process::id());
+        let ring = crate::osr::Ring::create(
+            &ring_name,
+            crate::service::VIEW_WIDTH,
+            crate::service::VIEW_HEIGHT,
+        )
+        .expect("a ring");
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: dir.path().join("host"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) = (2880, 2128, 2.0);
+
+        service
+            .call(&seat, "browser_resize", json!({ "width": 1120, "height": 760 }))
+            .await
+            .expect("the window resizes");
+
+        assert_eq!(
+            *profile.surface.lock().unwrap_or_else(PoisonError::into_inner),
+            (2240, 1520, 2.0),
+            "the tool's window replaces the surface, at the ratio the surface paints at",
+        );
+        crate::osr::Ring::unlink(&ring_name);
     }
 
     /// **Two orgs share nothing**: their wire ids differ (what a frame is
