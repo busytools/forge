@@ -36,6 +36,7 @@ script-tests:
     python3 scripts/test_update_manifest.py
     python3 scripts/test_client_deps.py
     python3 scripts/test_check_groups.py
+    python3 scripts/test_check_lock.py
     python3 scripts/test_check_client_wasm.py
     python3 scripts/test_browser_stack_patch.py
 
@@ -987,6 +988,12 @@ check_groups := "fast|fmt-check unicode-punct-check script-tests;rust|clippy tes
 # `just`, which a caller who invoked it by absolute path does not have on
 # PATH.
 #
+# The recipe holds a machine-wide lock for its whole duration, through
+# `scripts/check_lock.sh`: two gates on one machine queue rather than booting
+# CEF hosts into each other, which is the collision `.config/nextest.toml`
+# documents (one run serialises only its own hosts). The wait prints one line
+# naming the holder and is bounded; a lock whose holder is gone is reclaimed.
+#
 # The full gate, four groups at once; `FORGE_CHECK_JOBS` caps how many.
 [no-exit-message]
 check:
@@ -995,13 +1002,18 @@ check:
 
     root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
     export CHECK_LOG_ROOT="$root/target/check-logs"
-    exec "$root/scripts/check_groups.sh" \
+    exec "$root/scripts/check_lock.sh" run -- "$root/scripts/check_groups.sh" \
         "{{just_executable()}}" "{{justfile()}}" \
         "{{check_steps}}" "{{check_groups}}"
 
 # The same gate one step at a time, in `check_steps` order. `check` runs the
 # four groups concurrently; this is the recipe for debugging a step or
 # running on a machine that should not carry them together.
+#
+# It holds the same machine-wide lock `check` does, through the same
+# `check_lock.sh run`, so the two queue against each other rather than
+# collide and one release trap covers both. The step loop is
+# `scripts/check_serial.sh`.
 #
 # Fail-fast and exit-code preserving: the failing step's own status is what
 # this recipe exits with, and the verdict names the failing step and the
@@ -1011,37 +1023,11 @@ check:
 [no-exit-message]
 check-serial:
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -uo pipefail
 
-    read -ra steps <<< "{{check_steps}}"
-    verdict=""
-
-    on_exit() {
-        if [ -z "$verdict" ]; then
-            echo "[ERROR] check: no verdict, the run ended early"
-        fi
-    }
-    trap on_exit EXIT
-
-    for i in "${!steps[@]}"; do
-        step="${steps[$i]}"
-        echo "[..] check: $step"
-        status=0
-        "{{just_executable()}}" --justfile "{{justfile()}}" "$step" || status=$?
-        if [ "$status" -ne 0 ]; then
-            later="${steps[*]:i+1}"
-            if [ -n "$later" ]; then
-                verdict="[ERROR] check: $step failed; not run: $later"
-            else
-                verdict="[ERROR] check: $step failed"
-            fi
-            echo "$verdict"
-            exit "$status"
-        fi
-    done
-
-    verdict="[OK] check: all green (${steps[*]})"
-    echo "$verdict"
+    root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
+    exec "$root/scripts/check_lock.sh" run -- "$root/scripts/check_serial.sh" \
+        "{{just_executable()}}" "{{justfile()}}" "{{check_steps}}"
 
 # A fast slice of the gate for one review round, on the packages a change
 # touches. Each named workspace crate gets its rustfmt check, both clippy
