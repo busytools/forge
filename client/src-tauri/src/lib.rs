@@ -96,8 +96,8 @@ mod commands {
     /// tasks the connection spawns would panic at birth. Under `async` the
     /// body runs on the runtime instead.
     #[tauri::command(async)]
-    pub fn client_connect(bridge: tauri::State<'_, Arc<Bridge>>, url: String) {
-        bridge.connect(url);
+    pub fn client_connect(bridge: tauri::State<'_, Arc<Bridge>>, url: String) -> u64 {
+        bridge.connect(url)
     }
 
     #[tauri::command]
@@ -398,10 +398,13 @@ mod commands {
         bridge.heartbeat();
     }
 
-    /// End the connection for good; no retry follows.
+    /// End one connection for good; no retry follows.
+    ///
+    /// `id` is the connection `client_connect` answered with, so a page
+    /// connection the bridge has already replaced cannot shut the live one.
     #[tauri::command]
-    pub fn client_close(bridge: tauri::State<'_, Arc<Bridge>>) {
-        bridge.close();
+    pub fn client_close(bridge: tauri::State<'_, Arc<Bridge>>, id: u64) {
+        bridge.close(id);
     }
 }
 

@@ -42,9 +42,11 @@ script-tests:
     python3 scripts/test_update_manifest.py
     python3 scripts/test_client_deps.py
     python3 scripts/test_check_groups.py
+    python3 scripts/test_check_lock.py
     python3 scripts/test_ui_word_count.py
     python3 scripts/test_check_client_wasm.py
     python3 scripts/test_browser_stack_patch.py
+    python3 scripts/test_browser_host_focus.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -943,6 +945,10 @@ client-preview:
 # `--all-features` covers neither: it turns every feature on regardless,
 # so it never exercises which configuration enables what - the install
 # build leaving `test-helpers` off, or `testing` having to forward it.
+#
+# Neither this recipe nor `check-release` takes the gate lock: both only
+# compile, and boot no CEF host, so they cannot collide with a gate's live
+# suite.
 check-feature-configs:
     RUSTFLAGS="-D warnings" cargo check --locked --release -p forge-server --bin forge
     # The host executable `install.sh` builds on its own, in the configuration
@@ -994,6 +1000,13 @@ check_groups := "fast|fmt-check unicode-punct-check ui-word-count script-tests;r
 # `just`, which a caller who invoked it by absolute path does not have on
 # PATH.
 #
+# The recipe holds a machine-wide `flock` for its whole duration, through
+# `scripts/check_lock.py`: two gates on one machine queue rather than booting
+# CEF hosts into each other, which is the collision `.config/nextest.toml`
+# documents (one run serialises only its own hosts). The wait prints one line
+# naming the holder and is bounded; the kernel releases the lock when the
+# holder dies, so there is no stale lock to reclaim.
+#
 # The full gate, four groups at once; `FORGE_CHECK_JOBS` caps how many.
 [no-exit-message]
 check:
@@ -1002,13 +1015,17 @@ check:
 
     root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
     export CHECK_LOG_ROOT="$root/target/check-logs"
-    exec "$root/scripts/check_groups.sh" \
+    exec "$root/scripts/check_lock.py" run -- "$root/scripts/check_groups.sh" \
         "{{just_executable()}}" "{{justfile()}}" \
         "{{check_steps}}" "{{check_groups}}"
 
 # The same gate one step at a time, in `check_steps` order. `check` runs the
 # four groups concurrently; this is the recipe for debugging a step or
 # running on a machine that should not carry them together.
+#
+# It holds the same machine-wide lock `check` does, through the same
+# `check_lock.py run`, so the two queue against each other rather than
+# collide. The step loop is `scripts/check_serial.sh`.
 #
 # Fail-fast and exit-code preserving: the failing step's own status is what
 # this recipe exits with, and the verdict names the failing step and the
@@ -1018,37 +1035,11 @@ check:
 [no-exit-message]
 check-serial:
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -uo pipefail
 
-    read -ra steps <<< "{{check_steps}}"
-    verdict=""
-
-    on_exit() {
-        if [ -z "$verdict" ]; then
-            echo "[ERROR] check: no verdict, the run ended early"
-        fi
-    }
-    trap on_exit EXIT
-
-    for i in "${!steps[@]}"; do
-        step="${steps[$i]}"
-        echo "[..] check: $step"
-        status=0
-        "{{just_executable()}}" --justfile "{{justfile()}}" "$step" || status=$?
-        if [ "$status" -ne 0 ]; then
-            later="${steps[*]:i+1}"
-            if [ -n "$later" ]; then
-                verdict="[ERROR] check: $step failed; not run: $later"
-            else
-                verdict="[ERROR] check: $step failed"
-            fi
-            echo "$verdict"
-            exit "$status"
-        fi
-    done
-
-    verdict="[OK] check: all green (${steps[*]})"
-    echo "$verdict"
+    root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
+    exec "$root/scripts/check_lock.py" run --label check-serial -- "$root/scripts/check_serial.sh" \
+        "{{just_executable()}}" "{{justfile()}}" "{{check_steps}}" "check-serial"
 
 # A fast slice of the gate for one review round, on the packages a change
 # touches. Each named workspace crate gets its rustfmt check, both clippy
@@ -1066,8 +1057,15 @@ check-serial:
 #   just check-delta client
 #   just check-delta client-tauri
 #
-# Ends on `[OK] check-delta: ...` or `[ERROR] check-delta: <step> failed` as
-# its last line.
+# It holds the same machine-wide lock `check` does: most of the browser live
+# tests are not ignored (`reap_live` is), so a slice naming forge-browser can
+# boot real CEF hosts beside an in-flight `just check`. The recipe is only the
+# wrapper; the slice is `scripts/check_delta.sh`.
+#
+# Ends on `[OK] check-delta: ...`, `[ERROR] check-delta: <step> failed`, or
+# `[ERROR] check-delta: the gate lock was not acquired` when the lock itself
+# cannot be taken, `(held by pid N)` when another gate holds it past the wait
+# bound, as its last line.
 #
 # Delta gate for one review round; the final head runs the full `just check`.
 [no-exit-message]
@@ -1075,83 +1073,9 @@ check-delta *packages:
     #!/usr/bin/env bash
     set -uo pipefail
 
-    # just does not hand a shebang recipe's arguments to the script, so the
-    # variadic parameter is substituted here instead of read from `$@`.
-    read -ra packages <<< "{{packages}}" || true
-    if [ "${#packages[@]}" -eq 0 ]; then
-        echo "[ERROR] check-delta: name at least one crate, client or client-tauri" >&2
-        exit 1
-    fi
-
-    verdict=""
-
-    on_exit() {
-        if [ -z "$verdict" ]; then
-            echo "[ERROR] check-delta: no verdict, the run ended early"
-        fi
-    }
-    trap on_exit EXIT
-
-    run_just() {
-        "{{just_executable()}}" --justfile "{{justfile()}}" "$@"
-    }
-
-    # One failing step stops the run and its name lands on the last line, so
-    # a caller piping this through `tail` reads the verdict, not tail's
-    # status.
-    run_step() {
-        local label="$1"
-        shift
-        echo "[..] check-delta: $label"
-        local status=0
-        "$@" || status=$?
-        if [ "$status" -ne 0 ]; then
-            verdict="[ERROR] check-delta: $label failed"
-            echo "$verdict"
-            exit "$status"
-        fi
-    }
-
-    for package in "${packages[@]}"; do
-        case "$package" in
-            client) echo "[..] check-delta: client/ (format, lint, typecheck, test)" ;;
-            client-tauri) echo "[..] check-delta: client/src-tauri/ (fmt, clippy, test)" ;;
-            *) echo "[..] check-delta: $package (fmt, clippy, nextest)" ;;
-        esac
-    done
-
-    for package in "${packages[@]}"; do
-        case "$package" in
-            client) ;;
-            client-tauri) run_step "client-tauri-fmt" run_just client-tauri-fmt ;;
-            *) run_step "fmt $package" cargo fmt -p "$package" --check ;;
-        esac
-    done
-
-    run_step "unicode-punct-check" run_just unicode-punct-check
-
-    for package in "${packages[@]}"; do
-        case "$package" in
-            client)
-                run_step "client-format" run_just client-format
-                run_step "client-lint" run_just client-lint
-                run_step "client-typecheck" run_just client-typecheck
-                run_step "client-test" run_just client-test
-                ;;
-            client-tauri)
-                run_step "client-tauri-clippy" run_just client-tauri-clippy
-                run_step "client-tauri-test" run_just client-tauri-test
-                ;;
-            *)
-                run_step "clippy $package" env RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets -- -D warnings
-                run_step "clippy $package (all features)" env RUSTFLAGS="-D warnings" cargo clippy -p "$package" --all-targets --all-features -- -D warnings
-                run_step "nextest $package" env RUSTFLAGS="-D warnings" cargo nextest run -p "$package" --all-features
-                ;;
-        esac
-    done
-
-    verdict="[OK] check-delta: all green (${packages[*]})"
-    echo "$verdict"
+    root="$(cd "$(dirname "{{justfile()}}")" && pwd)"
+    exec "$root/scripts/check_lock.py" run --label check-delta -- "$root/scripts/check_delta.sh" \
+        "{{just_executable()}}" "{{justfile()}}" "{{packages}}" "check-delta"
 
 # Deliberately not a bare `gh run watch`. Piping it masks the exit code
 # AND truncates the log, losing both signals to one pipe - the failure

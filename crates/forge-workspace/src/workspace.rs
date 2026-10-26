@@ -56,6 +56,15 @@ const MODEL_SLOT_VARIABLES: [&str; 5] = [
 /// table's `auto_compact_window` is stamped here for the project's model.
 const AUTO_COMPACT_WINDOW_ENV: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 
+/// A project's walk blocked by a rotation cooldown, as the walk's own
+/// `BudgetExhausted` reports it.
+pub(crate) struct ProjectCooling {
+    pub(crate) org: String,
+    pub(crate) model: String,
+    pub(crate) tried: usize,
+    pub(crate) reset_in: Duration,
+}
+
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
 /// file lazily on the first user turn - workers with an `initial_prompt`
@@ -758,6 +767,11 @@ pub struct Workspace {
     /// is new again and warns at `WARN` again. A set that never cleared
     /// would silence a cron that is firing.
     unwakeable_crons: Mutex<std::collections::HashSet<forge_primitives::CronId>>,
+    /// The cron ids the last `fire_due_crons` pass found cooling, with the
+    /// time each last warned. Replaced wholesale each pass, like
+    /// `unwakeable_crons`, so an episode that clears drops its marker and a
+    /// later one warns again.
+    cooling_crons: Mutex<std::collections::HashMap<forge_primitives::CronId, SystemTime>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler - used by
@@ -1893,6 +1907,7 @@ impl Workspace {
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
+            cooling_crons: Mutex::new(std::collections::HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -2746,8 +2761,8 @@ impl Workspace {
         self.gateway.select_for(&project.org, model).is_ok()
     }
 
-    /// Whether a spawn in `project_key` would be refused because every
-    /// account serving its model is cooling.
+    /// The cooling that would refuse a spawn in `project_key`, or `None`
+    /// when a spawn would find an account.
     ///
     /// Matches the walk's budget failure alone, rather than taking any
     /// error, because that failure is the one carrying a reset to wait
@@ -2758,17 +2773,15 @@ impl Workspace {
     /// loaded config today. Keep the match narrow anyway: an empty walk
     /// with nothing to wait for must fail as before rather than retry
     /// forever, and this is the line that says so.
-    pub(crate) fn project_walk_is_cooling(&self, project_key: &ProjectKey) -> bool {
-        let Some(project) = self.project_for_key(project_key) else {
-            return false;
-        };
-        let Some(model) = project.model.as_deref() else {
-            return false;
-        };
-        matches!(
-            self.gateway.select_for(&project.org, model),
-            Err(forge_gateway::SelectFailure::BudgetExhausted { .. })
-        )
+    pub(crate) fn project_walk_cooling(&self, project_key: &ProjectKey) -> Option<ProjectCooling> {
+        let project = self.project_for_key(project_key)?;
+        let model = project.model.as_deref()?;
+        match self.gateway.select_for(&project.org, model) {
+            Err(forge_gateway::SelectFailure::BudgetExhausted { tried, org, model, reset_in }) => {
+                Some(ProjectCooling { org, model, tried, reset_in })
+            }
+            _ => None,
+        }
     }
 
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
@@ -6293,6 +6306,25 @@ impl Workspace {
         *self.unwakeable_crons.lock() = ids;
     }
 
+    /// When the previous fire pass last warned about this cron's cooling,
+    /// or `None` when that pass did not find it cooling.
+    pub(crate) fn cron_cooling_warned_at(
+        &self,
+        id: &forge_primitives::CronId,
+    ) -> Option<SystemTime> {
+        self.cooling_crons.lock().get(id).copied()
+    }
+
+    /// Close a fire pass with the crons it still found cooling and the
+    /// time each last warned, replacing the previous pass's map wholesale
+    /// for the same reason [`Self::cron_unwakeable_commit`] does.
+    pub(crate) fn cron_cooling_commit(
+        &self,
+        warned_at: std::collections::HashMap<forge_primitives::CronId, SystemTime>,
+    ) {
+        *self.cooling_crons.lock() = warned_at;
+    }
+
     /// The session a worker label resumes onto.
     ///
     /// The row the label is registered under is authoritative while it is
@@ -6549,11 +6581,6 @@ impl Workspace {
     /// reaches Running. `live_workers` is the authoritative
     /// "this session is a child agent" registry.
     pub fn release_session_with_cascade(self: &Arc<Self>, session_key: &SessionSlot) {
-        // Announced before anything is torn down, so the seat's row starts
-        // saying where it is going at the gesture rather than after the
-        // workers this cascade takes with it (#1930). A viewer's mark is a
-        // set, so a second announcement would be spent.
-        self.announce_release(session_key);
         // The cascade is the lead's, and a lead's slot is the one whose
         // label says so: a worker's slot carries its own label, so a
         // closed worker cannot be misidentified as its lead however far
@@ -6563,13 +6590,34 @@ impl Workspace {
                 .into_iter()
                 .find(|view| view.org == session_key.org() && view.name == session_key.project())
         });
-        let cascade_project = cascade_project.flatten().map(|view| view.key);
-        if let Some(project_key) = cascade_project {
-            for entry in self.drain_live_workers(&project_key) {
+        let cascade_project = cascade_project.flatten();
+        // **Every record this close dismisses is cleared before the first
+        // frame that makes a view re-read.** The lead's announcement below is
+        // one; each live worker's removal is another. A stranded worker - a
+        // record with no live entry left to carry it - is the project's too,
+        // so every persisted label is cleared here rather than only what
+        // `live_workers` still holds.
+        if let Some(view) = cascade_project.as_ref() {
+            for row in self.worker_rows_for_project(&view.key) {
+                let slot = SessionSlot::worker(&row.org, &row.project, &row.label);
+                self.clear_spawn_failure(&slot);
+                self.spend_death(&slot);
+            }
+        }
+        // Announced before anything is torn down, so the seat's row starts
+        // saying where it is going at the gesture rather than after the
+        // workers this cascade takes with it (#1930). A viewer's mark is a
+        // set, so a second announcement would be spent.
+        self.announce_release(session_key);
+        if let Some(view) = cascade_project.as_ref() {
+            for entry in self.drain_live_workers(&view.key) {
+                // An entry whose label has no persisted row is only here.
+                self.clear_spawn_failure(&entry.slot);
+                self.spend_death(&entry.slot);
                 let worktree =
                     crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
-                    project_key: project_key.clone(),
+                    project_key: view.key.clone(),
                     action: crate::protocol::WorkerStatusAction::Removed,
                     status: entry.to_status(),
                     worktree,
@@ -6590,7 +6638,14 @@ impl Workspace {
     /// has not started: a lead before its cascade, a worker before its own
     /// kill - where a despawn's removal frame only follows the worktree
     /// cleanup, minutes later (#1930).
+    ///
+    /// The seat's failure record and any standing death go with the
+    /// announcement, before the frame that makes a view re-read: a close is
+    /// the reader acting on the row, and a trace that outlived the seat kept
+    /// it in the needs-you group with nothing left to act on.
     pub(crate) fn announce_release(self: &Arc<Self>, key: &SessionSlot) {
+        self.clear_spawn_failure(key);
+        self.spend_death(key);
         let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
@@ -8601,6 +8656,9 @@ impl Workspace {
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
             self.remove_worker_by_session_key(&entry.slot);
+            // The failure record goes with the row this arm deletes, or the
+            // slot reads Failed with nothing left to clear it.
+            self.clear_spawn_failure(session_key);
             // Same release the tag-rollback arm runs: without it the
             // pool entry + command sender + domain handle + SessionTask
             // leak per failed fresh spawn, unbounded across retries.
@@ -19879,9 +19937,13 @@ mod async_worker_spawn_failure_tests {
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         let lead_key = install_lead_in_pool(&workspace, lead_id);
+        // The ConnectionFailed arm records the failure before this handler
+        // runs, and the rollback deletes the row it would have drawn.
+        let worker_slot = SessionSlot::from_str_for_test(worker_key);
+        workspace.record_spawn_failure_for_test(&worker_slot, "the subprocess exited");
 
         let handled = workspace.handle_async_worker_spawn_failure(
-            &SessionSlot::from_str_for_test(worker_key),
+            &worker_slot,
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
             SpawnFailureKind::Unclassified,
         );
@@ -19917,6 +19979,11 @@ mod async_worker_spawn_failure_tests {
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
             "WorkerEntry removed on async failure",
+        );
+        assert_eq!(
+            workspace.spawn_failure(&worker_slot),
+            None,
+            "the failure record goes with the row the rollback deletes",
         );
     }
 

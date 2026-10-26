@@ -185,10 +185,12 @@ impl Gateway {
             // The walk emptied. When cooling accounts were filtered out,
             // the real cause is exhaustion: they DO serve the model,
             // they are cooling until a knowable time, and the budget
-            // failure says so. A walk empty without cooling is a
-            // declared-model miss.
+            // failure carries the soonest of THEIR resets. Another org's
+            // account clearing sooner is not a time this walk recovers
+            // at. A walk empty without cooling is a declared-model miss.
             Err(crate::selection::SelectionError::NoEligibleAccount { model, org }) => {
-                if let Some(reset) = rotation.soonest_reset(now).filter(|_| !cooled.is_empty()) {
+                let cooled: Vec<AccountKey> = cooled.into_iter().map(AccountKey).collect();
+                if let Some(reset) = rotation.soonest_reset_among(&cooled, now) {
                     return Err(SelectFailure::BudgetExhausted {
                         tried: cooled.len(),
                         org,
@@ -1526,6 +1528,55 @@ mod tests {
         assert!(
             body.contains("soonest reset in "),
             "the failure names the soonest reset, got: {body}",
+        );
+    }
+
+    /// **The reset a budget failure names is the one this org is waiting
+    /// on.** The walk emptied because the caller's own accounts are
+    /// cooling, so another org's account clearing sooner is not a time
+    /// its retry can land - and a cron deferral prints this value as a
+    /// wall clock, which is what turns a global minimum into a wrong
+    /// time rather than only an imprecise one.
+    #[tokio::test]
+    async fn the_budget_failure_names_this_orgs_soonest_reset_not_another_orgs() {
+        let harness = harness(Duration::ZERO).await;
+        harness.gateway.set_org_pins([
+            (
+                "Busytools".to_owned(),
+                crate::selection::OrgPin {
+                    accounts: vec!["OpenRouter".to_owned()],
+                    fallback_accounts: Vec::new(),
+                },
+            ),
+            (
+                "Other".to_owned(),
+                crate::selection::OrgPin {
+                    accounts: vec!["Anthropic".to_owned()],
+                    fallback_accounts: Vec::new(),
+                },
+            ),
+        ]);
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs();
+        harness
+            .gateway
+            .report_probe_limit(&AccountKey("OpenRouter".to_owned()), Some(now_secs + 600));
+        harness
+            .gateway
+            .report_probe_limit(&AccountKey("Anthropic".to_owned()), Some(now_secs + 30));
+
+        let Err(failure) = harness.gateway.select_for("Busytools", "glm-5.3-flash") else {
+            panic!("the org's only account is cooling");
+        };
+        let SelectFailure::BudgetExhausted { tried, org, model, reset_in } = failure else {
+            panic!("a cooling walk is budget exhaustion, got {failure:?}");
+        };
+        assert_eq!((tried, org.as_str(), model.as_str()), (1, "Busytools", "glm-5.3-flash"));
+        assert!(
+            reset_in >= Duration::from_secs(590) && reset_in <= Duration::from_secs(600),
+            "the reset is this org's account, not Other's sooner one: {reset_in:?}",
         );
     }
 
