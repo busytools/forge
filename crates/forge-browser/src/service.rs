@@ -875,11 +875,14 @@ impl BrowserService {
         };
         // **The challenge probe is one fixed page script**, so it reaches the
         // driver as the evaluate it is; upstream has no tool that answers it.
-        let challenge = tool == "browser_challenge_state";
+        // The caller's own name rides beside it, because a failure reported as
+        // `browser_evaluate` would name a tool the session never called.
+        let reported = tool;
+        let challenge = reported == "browser_challenge_state";
         let (tool, args) = if challenge {
             ("browser_evaluate", json!({ "function": crate::challenge::state_js() }))
         } else {
-            (tool, args)
+            (reported, args)
         };
         let retry_args = args.clone();
         let (tab, outcome, target) = self
@@ -901,6 +904,7 @@ impl BrowserService {
                 &profile,
                 Driven { generation, pid, port, tab, target: &target, bound },
                 tool,
+                reported,
                 &retry_args,
                 outcome,
             )
@@ -1864,6 +1868,7 @@ impl BrowserService {
         profile: &Arc<Profile>,
         driven: Driven<'_>,
         tool: &str,
+        reported: &str,
         args: &Value,
         outcome: Result<Vec<BrowserPart>, String>,
     ) -> Result<Vec<BrowserPart>, String> {
@@ -1894,7 +1899,7 @@ impl BrowserService {
         if driver::stale_page(&why) {
             return self
                 .rebuild_after_dead_page(
-                    profile, generation, drove, tab, target, tool, args, bound, &why,
+                    profile, generation, drove, tab, target, tool, reported, args, bound, &why,
                 )
                 .await;
         }
@@ -1902,7 +1907,9 @@ impl BrowserService {
             // **A driver that never answered is dead, not a page.** It is
             // replaced on this call rather than waiting for a restart.
             return self
-                .replace_dead_driver(profile, generation, drove, tab, tool, args, bound, &why)
+                .replace_dead_driver(
+                    profile, generation, drove, tab, tool, reported, args, bound, &why,
+                )
                 .await;
         }
         // **A driver built against a browser that is gone is dropped.** The
@@ -2030,6 +2037,7 @@ impl BrowserService {
         tab: u16,
         _target: &str,
         tool: &str,
+        reported: &str,
         args: &Value,
         bound: Duration,
         why: &str,
@@ -2050,13 +2058,13 @@ impl BrowserService {
             // the generation it captured at its lookup; a driver installed
             // since then is serving the profile now.
             if state.driver_generation != generation {
-                log_rebuild(profile, tool, "not this call's generation", why);
+                log_rebuild(profile, reported, "not this call's generation", why);
                 return Err(why.to_owned());
             }
             if let Some(at) = state.stale_since
                 && at.elapsed() < REBUILD_COOLDOWN
             {
-                log_rebuild(profile, tool, "not rebuilt again yet", why);
+                log_rebuild(profile, reported, "not rebuilt again yet", why);
                 return Err(dead_page_answer(DeadPageOutcome::Cooling));
             }
             // **The stale driver's ask and handle go with it**, and the slot
@@ -2068,7 +2076,7 @@ impl BrowserService {
         }
         if let Err(cannot) = profile.ensure(&self.root, self.stack()).await {
             profile.state.lock().await.stale_since = Some(Instant::now());
-            log_rebuild(profile, tool, "rebuild failed", why);
+            log_rebuild(profile, reported, "rebuild failed", why);
             return Err(dead_page_answer(DeadPageOutcome::RebuildFailed { why: &cannot }));
         }
         let (fresh, fresh_generation) = {
@@ -2077,7 +2085,7 @@ impl BrowserService {
         };
         let Some(fresh) = fresh else {
             profile.state.lock().await.stale_since = Some(Instant::now());
-            log_rebuild(profile, tool, "rebuild left no driver", why);
+            log_rebuild(profile, reported, "rebuild left no driver", why);
             return Err(dead_page_answer(DeadPageOutcome::RebuildFailed {
                 why: "the rebuilt driver did not come up",
             }));
@@ -2107,28 +2115,28 @@ impl BrowserService {
                 // read**: nothing is known about the page, so it is not
                 // gone.
                 Err(cannot) => {
-                    log_rebuild(profile, tool, "rebuilt, the listing failed", why);
+                    log_rebuild(profile, reported, "rebuilt, the listing failed", why);
                     return Err(dead_page_answer(DeadPageOutcome::ListFailed { why: &cannot }));
                 }
             };
             let Some(index) = index else {
-                log_rebuild(profile, tool, "rebuilt, the tab is not listed", why);
+                log_rebuild(profile, reported, "rebuilt, the tab is not listed", why);
                 return Err(dead_page_answer(DeadPageOutcome::TabGone { tab }));
             };
             if let Err(cannot) = fresh.select(index, bound).await {
                 profile.state.lock().await.stale_since = Some(Instant::now());
-                log_rebuild(profile, tool, "rebuilt, selection failed", why);
+                log_rebuild(profile, reported, "rebuilt, selection failed", why);
                 return Err(dead_page_answer(DeadPageOutcome::RetryFailed { why: &cannot }));
             }
             return match fresh.call_within(tool, args.clone(), bound).await {
                 Ok(parts) => {
                     profile.state.lock().await.stale_since = None;
-                    log_rebuild(profile, tool, "rebuilt, call retried and answered", why);
+                    log_rebuild(profile, reported, "rebuilt, call retried and answered", why);
                     Ok(parts)
                 }
                 Err(retry_why) => {
                     profile.state.lock().await.stale_since = Some(Instant::now());
-                    log_rebuild(profile, tool, "rebuilt, retried call failed", why);
+                    log_rebuild(profile, reported, "rebuilt, retried call failed", why);
                     // **No second rebuild in this call**: the repeated
                     // failure is handed back, not met with another driver
                     // start.
@@ -2140,8 +2148,8 @@ impl BrowserService {
                 }
             };
         }
-        log_rebuild(profile, tool, "rebuilt, call handed back", why);
-        Err(dead_page_answer(DeadPageOutcome::NotRepeated { tool }))
+        log_rebuild(profile, reported, "rebuilt, call handed back", why);
+        Err(dead_page_answer(DeadPageOutcome::NotRepeated { tool: reported }))
     }
 
     /// **A driver that stopped answering is replaced on this call.** The
@@ -2154,6 +2162,7 @@ impl BrowserService {
         drove: HostIdentity,
         tab: u16,
         tool: &str,
+        reported: &str,
         args: &Value,
         bound: Duration,
         why: &str,
@@ -2169,7 +2178,7 @@ impl BrowserService {
         tracing::warn!(
             event_name = "browser_driver_replaced",
             profile = %profile.key,
-            tool,
+            tool = reported,
             "the call found its driver dead; a fresh one is attached: {why}"
         );
         let (fresh, fresh_generation) = match self.recover_driver(profile, generation, bound).await
@@ -2183,7 +2192,7 @@ impl BrowserService {
             }
         };
         if !repeatable_after_timeout(tool, args) {
-            return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated { tool, why }));
+            return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated { tool: reported, why }));
         }
         let page =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
@@ -5541,6 +5550,7 @@ mod tests {
                 drove,
                 1,
                 "browser_snapshot",
+                "browser_snapshot",
                 &json!({}),
                 Duration::from_secs(1),
                 "the driver did not answer browser_tabs within 9 s",
@@ -6913,6 +6923,7 @@ mod tests {
                     bound: Duration::from_secs(150),
                 },
                 "browser_click",
+                "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
             )
@@ -6941,6 +6952,7 @@ mod tests {
                     bound: Duration::from_secs(150),
                 },
                 "browser_click",
+                "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
             )
@@ -6963,6 +6975,7 @@ mod tests {
                     target: "T1",
                     bound: Duration::from_secs(150),
                 },
+                "browser_click",
                 "browser_click",
                 &json!({}),
                 Err(dead.to_owned()),
@@ -7012,6 +7025,7 @@ mod tests {
                     target: "T1",
                     bound: Duration::from_secs(150)
                 },
+                "browser_click",
                 "browser_click",
                 &no_args,
                 Err(dead.to_owned()),

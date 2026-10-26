@@ -729,7 +729,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_challenge_state",
-            description: "Report each CAPTCHA challenge frame in the current page: its vendor, whether it is present, visible by computed style, on screen, and hit-testable at its centre, with its rect, so a session can tell a live widget from one the page has hidden.\n\nPresence is not liveness: Google's EXPIRED overlay is a reCAPTCHA iframe parked off screen and hidden, and it is still present with a real rect.",
+            description: "Report each CAPTCHA challenge iframe in the top-level document: its vendor, presence, visibility (its own and its ancestors' computed opacity and filter included), whether it is on screen, whether a click at its centre would reach it, and its rect. `live` is true only when the frame is present, visible, on screen and hit-testable, and `challengePresent` says whether any challenge iframe was found at all.\n\nThis probe reads the top-level document only, so a challenge inside a shadow root or a nested document is not classified: `unseen` names every region it did not read (each unmatched iframe, every open shadow root) and `complete` is false whenever that list is non-empty, so an empty challenge list beside unseen entries is not 'no CAPTCHA here'. Presence is not liveness: Google's EXPIRED overlay is a reCAPTCHA iframe parked off screen and hidden, and it is still present with a real rect. When a challenge is present but none is live, reload the page and probe again; if it stays hidden, hand off to the person rather than clicking blind.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
