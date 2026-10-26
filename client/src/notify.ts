@@ -159,15 +159,26 @@ function arm(): void {
     armed = false;
     const held = waiting.splice(0);
     if (held.length === 0) return;
+    /** Put the asks back, and hold the next gesture that can ask for them. */
+    const requeue = (): void => {
+      waiting.unshift(...held);
+      if (waiting.length > 8) waiting.splice(0, waiting.length - 8);
+      arm();
+    };
     Notification.requestPermission().then(
       (answer) => {
         // **Only an answer latches.** A browser that refuses without asking
-        // reports `default`, and the next gesture may ask again.
-        if (answer !== 'granted') return;
+        // reports `default`, so the asks go back and the next gesture may
+        // carry them rather than the queue being silently emptied.
+        if (answer !== 'granted') {
+          requeue();
+          return;
+        }
         for (const { notice, words } of held) show(notice, words);
       },
       () => {
-        // A refused request is no answer; nothing is shown and nothing nags.
+        // A refused request is no answer; the asks wait for the next gesture.
+        requeue();
       },
     );
   };

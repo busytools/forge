@@ -239,25 +239,36 @@ describe('delivering an ask', () => {
     expect(requestPermission, 'and never nags').not.toHaveBeenCalled();
   });
 
-  /// **A request that was no answer latches nothing**: a later gesture may ask
-  /// again rather than the page being mute for life.
-  it('asks again after a request that settled on no answer', async () => {
+  /// **A request that was no answer latches nothing, and keeps the ask**: the
+  /// next gesture may ask again and still has something to show. A queue
+  /// emptied before the answer arrives loses the ask a denial never refused.
+  it('keeps a held ask for the next gesture that can ask', async () => {
     vi.resetModules();
-    const requestPermission = vi.fn(() => Promise.resolve('default' as const));
+    const requestPermission = vi
+      .fn()
+      .mockResolvedValueOnce('default' as const)
+      .mockResolvedValueOnce('granted' as const);
+    const shown = vi.fn();
     class Note {
       static permission: NotificationPermission = 'default';
       static requestPermission = requestPermission;
       onclick: (() => void) | null = null;
+      constructor() {
+        shown();
+      }
       close(): void {}
     }
     vi.stubGlobal('Notification', Note);
     const fresh = await import('./notify');
     fresh.deliverAsk({ slot: OTHER, kind: 'question' });
+
     window.dispatchEvent(new Event('pointerdown'));
-    await Promise.resolve();
-    fresh.deliverAsk({ slot: OTHER, kind: 'question' });
+    await vi.waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(1));
+    expect(shown, 'no answer shows nothing').not.toHaveBeenCalled();
+
     window.dispatchEvent(new Event('keydown'));
-    await vi.waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(shown, 'the held ask is still there').toHaveBeenCalledTimes(1));
+    expect(requestPermission, 'the next gesture asks again').toHaveBeenCalledTimes(2);
   });
 
   /// **The words name the seat and the ask**, and a lead's title is the
