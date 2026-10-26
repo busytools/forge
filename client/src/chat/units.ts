@@ -533,6 +533,7 @@ const SYSTEM_DRAWN_ELSEWHERE: ReadonlySet<string> = new Set([
   'commands_changed',
   'init',
   'status',
+  'thinking_tokens',
   'hook_started',
   'hook_progress',
   'hook_response',
@@ -2297,7 +2298,11 @@ export function fold(
       }
       if (frame.subtype === 'api_error') {
         const error = obj(frame.error);
-        const said = str(error, 'message') ?? str(error, 'formatted') ?? 'API request failed';
+        // **`formatted` first.** The CLI's `message` is the raw provider body
+        // serialised into a string on real rows (a wall of JSON on the
+        // commonest error there is), while `formatted` is the line written
+        // for a reader.
+        const said = str(error, 'formatted') ?? str(error, 'message') ?? 'API request failed';
         const status = typeof error.status === 'number' ? ` HTTP ${error.status}` : '';
         const attempt = typeof frame.retryAttempt === 'number' ? frame.retryAttempt : null;
         const cap = typeof frame.maxRetries === 'number' ? frame.maxRetries : null;
@@ -2795,8 +2800,11 @@ export function fold(
           // opens on the omission rather than the row vanishing (#2374).
           // **Anything else is a question nobody answered**, and its call row
           // is the only trace of it - the card never drew, so dropping the
-          // call too would lose the question entirely (rule 25).
-          unanswered = omittedRecord(record) === null;
+          // call too would lose the question entirely (rule 25). **Only
+          // once the turn has closed**: a question still waiting is the
+          // dock's row, and marking that unanswered would state as a verdict
+          // what is only the wait.
+          unanswered = abandoned && omittedRecord(record) === null;
         }
         const leaf = leafOf(
           id,

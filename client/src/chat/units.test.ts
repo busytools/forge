@@ -1724,10 +1724,10 @@ describe('one turn folded into the units a view draws', () => {
     // drew the same prompt twice. It appears the moment an answer lands, which
     // the answer's own frame brings.
     //
-    // **The call row still draws, marked unanswered**: the card never did, and
-    // dropping the call too left a question nobody answered with no trace in
-    // the conversation at all - the dock clears, and nothing remains to say
-    // one was ever asked (rule 25).
+    // **The call row still draws**: the card never did, so dropping the call
+    // too would leave a question with no row while the dock still shows it.
+    // The `unanswered` mark waits for the turn to close - while it waits, the
+    // dock is the row, and the mark would call a wait a verdict.
     const asked = said([
       use('toolu_q', 'AskUserQuestion', {
         questions: [{ question: 'Which colour?', options: [{ label: 'Red' }] }],
@@ -1736,7 +1736,10 @@ describe('one turn folded into the units a view draws', () => {
 
     const units = fold([asked]);
     expect(kinds(units), 'a waiting question draws no card').not.toContain('question');
-    expect(callsOf(units[0])[0]?.leaf.unanswered, 'and its call row wears the mark').toBe(true);
+    expect(
+      callsOf(units[0])[0]?.leaf.unanswered,
+      'and a still-waiting question is not marked unanswered',
+    ).toBe(false);
   });
 
   it('draws the turn hooks after the run they followed, and nothing when none fired', () => {
@@ -3979,7 +3982,13 @@ describe('the frames the fold had no row for', () => {
         type: 'system',
         subtype: 'api_error',
         level: 'error',
-        error: { message: '502 upstream request failed', status: 502 },
+        // The real row's shape: `message` is the provider body serialised
+        // into a string, `formatted` the line written for a reader.
+        error: {
+          message: '{"type":"error","error":{"type":"overloaded_error"}}',
+          formatted: '502 Durable Object is overloaded, retrying',
+          status: 502,
+        },
         retryInMs: 610,
         retryAttempt: 1,
         maxRetries: 300,
@@ -3998,7 +4007,10 @@ describe('the frames the fold had no row for', () => {
     const failed = noticeOf(units[0]);
     expect(failed?.severity, 'the api error reads at its level').toBe('error');
     expect(failed?.mark).toBe('api_error');
-    expect(failed?.text, 'the message').toContain('502 upstream request failed');
+    expect(failed?.text, 'the reader-facing line wins over the raw body').toContain(
+      '502 Durable Object is overloaded, retrying',
+    );
+    expect(failed?.text, 'and never draws the provider JSON').not.toContain('overloaded_error');
     expect(failed?.text, 'the status').toContain('502');
     expect(failed?.sub, 'and the retry delay').toContain('610ms');
     const info = noticeOf(units[1]);
@@ -4039,19 +4051,26 @@ describe('the frames the fold had no row for', () => {
     expect(kinds(elsewhere), 'a list another surface draws, and the handshake').toEqual([]);
   });
 
-  it('draws an unanswered question as a call row marked unanswered', () => {
-    const units = fold([
-      said([
-        use('toolu_q', 'AskUserQuestion', {
-          questions: [{ question: 'which way?', options: [{ label: 'a' }, { label: 'b' }] }],
-        }),
-      ]),
+  it('marks a question unanswered only once its turn has closed', () => {
+    const asked = said([
+      use('toolu_q', 'AskUserQuestion', {
+        questions: [{ question: 'which way?', options: [{ label: 'a' }, { label: 'b' }] }],
+      }),
     ]);
 
+    // The closed form: the turn ended with the question still unanswered.
+    const units = fold([asked], null, false, true);
     expect(kinds(units), 'the call row draws rather than being dropped').toEqual(['leaves']);
     const leaf = callsOf(units[0])[0]?.leaf;
-    expect(leaf?.unanswered, 'the row carries the mark').toBe(true);
-    expect(leaf?.status, 'and stays out, because nobody answered it').toBe('pending');
+    expect(leaf?.unanswered, 'the closed row carries the mark').toBe(true);
+    expect(leaf?.status, 'and is settled failed by the closed-turn sweep').toBe('failed');
     expect(leaf?.title, 'it still names what it asked').toContain('AskUserQuestion');
+
+    // The waiting form: the dock is its row, so the call wears no verdict.
+    const waiting = fold([asked]);
+    expect(
+      callsOf(waiting[0])[0]?.leaf.unanswered,
+      'a question still waiting in the dock is not marked unanswered',
+    ).toBe(false);
   });
 });
