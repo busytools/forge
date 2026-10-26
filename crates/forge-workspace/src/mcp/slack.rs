@@ -2284,7 +2284,7 @@ mod tests {
         let out =
             tool.call(input(serde_json::json!({ "conversation": "C1", "limit": 1000 }))).await;
         assert!(out.is_error, "a page past Slack's ceiling cannot be served");
-        assert!(text_of(&out).contains("999"), "the error names the ceiling: {}", text_of(&out),);
+        assert!(text_of(&out).contains("999"), "the error names the ceiling: {}", text_of(&out));
         assert!(mock.history_calls.lock().is_empty(), "nothing reaches the facade");
     }
 
