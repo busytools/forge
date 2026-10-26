@@ -24,9 +24,9 @@ use uuid::Uuid;
 use crate::SessionSlot;
 use crate::mcp::slack::facade::{
     SlackAttachmentError, SlackChannelWatch, SlackEditError, SlackEditRequest, SlackFacade,
-    SlackFetchRequest, SlackListError, SlackPostError, SlackPostRequest, SlackReactError,
-    SlackReactRequest, SlackReadError, SlackSubscribeError, SlackSubscribeRequest,
-    SlackUnsubscribeError, SlackUploadRequest,
+    SlackFetchRequest, SlackPostError, SlackPostRequest, SlackReactError, SlackReactRequest,
+    SlackReadError, SlackSubscribeError, SlackSubscribeRequest, SlackUnsubscribeError,
+    SlackUploadRequest, format_workspace_error,
 };
 
 /// Attach the Slack tools to an existing [`McpServerBuilder`]. Called for
@@ -180,24 +180,6 @@ fn passes_filter(conversation: &SlackConversation, name: Option<&str>, kind: Opt
         .any(|haystack| haystack.contains(&needle))
 }
 
-fn format_list_error(err: &SlackListError) -> String {
-    match err {
-        SlackListError::NotConfigured => {
-            "no Slack workspace configured in forge.toml [[slack]]".to_owned()
-        }
-        SlackListError::UnknownWorkspace { requested, known } => {
-            format!("no Slack workspace named '{requested}'; configured: {}", known.join(", "))
-        }
-        SlackListError::WorkspaceRequired { known } => {
-            format!(
-                "several Slack workspaces are configured; pass `workspace`: {}",
-                known.join(", ")
-            )
-        }
-        SlackListError::Fetch(message) => format!("Slack request failed: {message}"),
-    }
-}
-
 struct List {
     facade: Arc<dyn SlackFacade>,
     slot: SessionSlot,
@@ -295,7 +277,7 @@ impl Tool for List {
                     }
                 }
             }
-            Err(err) => tool_error(format_list_error(&err)),
+            Err(err) => tool_error(format_read_error(&err)),
         }
     }
 }
@@ -363,16 +345,9 @@ struct ChannelWatchArg {
     mode: WatchModeArg,
 }
 
-fn format_subscribe_error(err: &SlackSubscribeError, requested: Option<&str>) -> String {
+fn format_subscribe_error(err: &SlackSubscribeError) -> String {
     match err {
-        SlackSubscribeError::UnknownWorkspace => match requested {
-            Some(label) => {
-                format!("no Slack workspace named '{label}' is configured in forge.toml [[slack]]")
-            }
-            None => {
-                "several Slack workspaces are configured; pass `workspace` naming one".to_owned()
-            }
-        },
+        SlackSubscribeError::Workspace(err) => format_workspace_error(err),
         SlackSubscribeError::UnknownCallerProject => {
             "couldn't resolve your project; is this session attached to a forge.toml project?"
                 .to_owned()
@@ -494,7 +469,7 @@ impl Tool for Subscribe {
             match self.facade.subscribe(&self.slot, args.workspace.as_deref(), request) {
                 Ok(created) => rows.extend(created.iter().map(sub_to_row)),
                 Err(err) => {
-                    return tool_error(format_subscribe_error(&err, args.workspace.as_deref()));
+                    return tool_error(format_subscribe_error(&err));
                 }
             }
         }
@@ -575,9 +550,7 @@ fn format_post_error(err: &SlackPostError) -> String {
              decide"
                 .to_owned()
         }
-        SlackPostError::UnknownWorkspace => {
-            "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
-        }
+        SlackPostError::Workspace(err) => format_workspace_error(err),
         SlackPostError::Partial { posted, total, source } => {
             format!("posted part {posted} of {total}; the rest were NOT sent ({source})")
         }
@@ -598,9 +571,7 @@ fn format_edit_error(err: &SlackEditError) -> String {
              can decide"
                 .to_owned()
         }
-        SlackEditError::UnknownWorkspace => {
-            "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
-        }
+        SlackEditError::Workspace(err) => format_workspace_error(err),
         SlackEditError::Fetch(message) => format!("Slack request failed: {message}"),
     }
 }
@@ -615,9 +586,7 @@ fn format_react_error(err: &SlackReactError) -> String {
              user can decide"
                 .to_owned()
         }
-        SlackReactError::UnknownWorkspace => {
-            "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
-        }
+        SlackReactError::Workspace(err) => format_workspace_error(err),
         SlackReactError::Fetch(message) => format!("Slack request failed: {message}"),
     }
 }
@@ -872,9 +841,7 @@ fn format_attachment_error(err: &SlackAttachmentError) -> String {
              decide"
                 .to_owned()
         }
-        SlackAttachmentError::UnknownWorkspace => {
-            "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
-        }
+        SlackAttachmentError::Workspace(err) => format_workspace_error(err),
         SlackAttachmentError::Fetch(message) => format!("Slack request failed: {message}"),
         SlackAttachmentError::NotADirectory(path) => {
             format!("`dir` is a file, not a directory: {}", path.display())
@@ -1004,9 +971,7 @@ impl Tool for Attachment {
 
 fn format_read_error(err: &SlackReadError) -> String {
     match err {
-        SlackReadError::UnknownWorkspace => {
-            "no Slack workspace by that name is configured in forge.toml [[slack]]".to_owned()
-        }
+        SlackReadError::Workspace(err) => format_workspace_error(err),
         SlackReadError::Fetch(message) => format!("Slack request failed: {message}"),
     }
 }
@@ -1306,7 +1271,7 @@ impl Tool for Bookmarks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::slack::facade::{MockSlackFacade, SlackPostOutcome};
+    use crate::mcp::slack::facade::{MockSlackFacade, SlackPostOutcome, SlackWorkspaceError};
     use crate::mcp::test_support::text_of;
     use forge_primitives::slack::{
         SlackBookmark, SlackConversation, SlackConversationText, SlackPin, SlackPinMessage,
@@ -1598,24 +1563,46 @@ mod tests {
     }
 
     #[test]
-    fn each_list_error_names_its_cause() {
-        let not_configured = format_list_error(&SlackListError::NotConfigured);
+    fn each_workspace_refusal_names_its_cause() {
+        let not_configured = format_workspace_error(&SlackWorkspaceError::NotConfigured);
         assert!(not_configured.contains("[[slack]]"), "got: {not_configured}");
 
-        let unknown = format_list_error(&SlackListError::UnknownWorkspace {
+        let unknown = format_workspace_error(&SlackWorkspaceError::UnknownWorkspace {
             requested: "nope".to_owned(),
             known: vec!["acme".to_owned(), "beta".to_owned()],
         });
         assert!(unknown.contains("nope"), "names what was asked for: {unknown}");
         assert!(unknown.contains("acme") && unknown.contains("beta"), "lists the known: {unknown}");
 
-        let ambiguous = format_list_error(&SlackListError::WorkspaceRequired {
+        let ambiguous = format_workspace_error(&SlackWorkspaceError::WorkspaceRequired {
             known: vec!["acme".to_owned(), "beta".to_owned()],
         });
         assert!(ambiguous.contains("acme") && ambiguous.contains("beta"), "got: {ambiguous}");
 
-        let fetch = format_list_error(&SlackListError::Fetch("boom".to_owned()));
+        let fetch = format_read_error(&SlackReadError::Fetch("boom".to_owned()));
         assert!(fetch.contains("boom"), "carries the cause: {fetch}");
+    }
+
+    /// The omitted-`workspace` case has one answer whichever tool was called:
+    /// a tool that reworded it would send the caller looking for a config key
+    /// that is already set.
+    #[test]
+    fn every_tool_words_a_workspace_refusal_the_same_way() {
+        let ambiguous = SlackWorkspaceError::WorkspaceRequired {
+            known: vec!["acme".to_owned(), "beta".to_owned()],
+        };
+        let expected = "several Slack workspaces are configured; pass `workspace`: acme, beta";
+        let answers = [
+            format_read_error(&SlackReadError::Workspace(ambiguous.clone())),
+            format_post_error(&SlackPostError::Workspace(ambiguous.clone())),
+            format_edit_error(&SlackEditError::Workspace(ambiguous.clone())),
+            format_react_error(&SlackReactError::Workspace(ambiguous.clone())),
+            format_attachment_error(&SlackAttachmentError::Workspace(ambiguous.clone())),
+            format_subscribe_error(&SlackSubscribeError::Workspace(ambiguous)),
+        ];
+        for answer in answers {
+            assert_eq!(answer, expected, "every tool shares the one wording");
+        }
     }
 
     #[tokio::test]
@@ -1688,7 +1675,11 @@ mod tests {
     #[tokio::test]
     async fn slack_subscribe_names_the_workspace_that_was_refused() {
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.subscribe_result.lock() = Some(Err(SlackSubscribeError::UnknownWorkspace));
+        *mock.subscribe_result.lock() =
+            Some(Err(SlackSubscribeError::Workspace(SlackWorkspaceError::UnknownWorkspace {
+                requested: "nope".to_owned(),
+                known: vec!["acme".to_owned()],
+            })));
         let tool = Subscribe { facade: mock, slot: caller_slot() };
 
         let out = tool
@@ -2018,7 +2009,7 @@ mod tests {
     #[tokio::test]
     async fn slack_list_surfaces_a_facade_error() {
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.conversations_result.lock() = Some(Err(SlackListError::Fetch("boom".to_owned())));
+        *mock.conversations_result.lock() = Some(Err(SlackReadError::Fetch("boom".to_owned())));
         let tool = List { facade: mock, slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({}))).await;

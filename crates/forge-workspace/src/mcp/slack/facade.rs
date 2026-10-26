@@ -20,26 +20,47 @@ use crate::mcp::gotify::facade::resolve_identity;
 use crate::slack::SlackWorkspaces;
 use crate::workspace::Workspace;
 
-/// Why `slack__list` failed.
+/// Why resolving a tool's `workspace` argument failed. One shape for every
+/// Slack tool, so the wording - and the labels a caller can choose from - is
+/// the same whichever tool was called. Omitting `workspace` with several
+/// configured is its own case: reported as a missing workspace it sends a
+/// caller hunting for a config key that is already set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SlackListError {
+pub(crate) enum SlackWorkspaceError {
     /// No `[[slack]]` entry in forge.toml.
     NotConfigured,
-    /// The caller named a workspace that is not configured. Carries the
-    /// labels that are, so the error can list them.
+    /// The caller named a label that is not configured. Carries the labels
+    /// that are, so the error can list them.
     UnknownWorkspace { requested: String, known: Vec<String> },
     /// Several workspaces are configured and the caller named none.
     WorkspaceRequired { known: Vec<String> },
-    /// The Web API call failed. Carries the formatted error for the LLM.
-    Fetch(String),
+}
+
+/// The one wording for a refused workspace argument, so every Slack tool
+/// answers this case the way `slack__list` does.
+pub(crate) fn format_workspace_error(err: &SlackWorkspaceError) -> String {
+    match err {
+        SlackWorkspaceError::NotConfigured => {
+            "no Slack workspace configured in forge.toml [[slack]]".to_owned()
+        }
+        SlackWorkspaceError::UnknownWorkspace { requested, known } => {
+            format!("no Slack workspace named '{requested}'; configured: {}", known.join(", "))
+        }
+        SlackWorkspaceError::WorkspaceRequired { known } => {
+            format!(
+                "several Slack workspaces are configured; pass `workspace`: {}",
+                known.join(", ")
+            )
+        }
+    }
 }
 
 /// Why `slack__subscribe` failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SlackSubscribeError {
-    /// The label named no configured workspace, or none was named and
-    /// there is not exactly one.
-    UnknownWorkspace,
+    /// The `workspace` argument named no configured workspace, or named
+    /// none while several are configured.
+    Workspace(SlackWorkspaceError),
     /// The caller couldn't be mapped to a project.
     UnknownCallerProject,
 }
@@ -80,8 +101,9 @@ pub(crate) enum SlackPostError {
     /// Some parts of a split draft are live and the rest is not. Carries
     /// how many landed so a retry resumes instead of duplicating.
     Partial { posted: usize, total: usize, source: String },
-    /// The named workspace is not configured.
-    UnknownWorkspace,
+    /// The `workspace` argument named no configured workspace, or named
+    /// none while several are configured.
+    Workspace(SlackWorkspaceError),
     /// The Web API call failed. Carries the formatted error for the LLM.
     Fetch(String),
 }
@@ -119,7 +141,7 @@ pub(crate) enum SlackEditError {
     /// The draft waited out its approval window unanswered. The message
     /// is untouched.
     Expired,
-    UnknownWorkspace,
+    Workspace(SlackWorkspaceError),
     Fetch(String),
 }
 
@@ -142,17 +164,17 @@ pub(crate) enum SlackReactError {
     /// The draft waited out its approval window unanswered. Nothing was
     /// added or removed.
     Expired,
-    UnknownWorkspace,
+    Workspace(SlackWorkspaceError),
     Fetch(String),
 }
 
-/// Why a read-only lookup failed. Shared by the search and the user
-/// lookup because their failure sets are identical; the per-operation
-/// error convention exists where the sets differ (post, edit and react
-/// each fail differently), and two names for one set would be duplication.
+/// Why a read-only lookup failed. Shared by every read tool because their
+/// failure sets are identical; the per-operation error convention exists
+/// where the sets differ (post, edit and react each fail differently), and
+/// two names for one set would be duplication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SlackReadError {
-    UnknownWorkspace,
+    Workspace(SlackWorkspaceError),
     Fetch(String),
 }
 
@@ -188,7 +210,7 @@ pub(crate) enum SlackAttachmentError {
     /// The draft waited out its approval window unanswered. Nothing was
     /// sent.
     Expired,
-    UnknownWorkspace,
+    Workspace(SlackWorkspaceError),
     /// The Web API or the transfer failed.
     Fetch(String),
     /// The `dir` a fetch should land in exists but is not a directory.
@@ -238,17 +260,34 @@ fn slack_ts_now() -> String {
     format!("{}.{:06}", now.as_secs(), now.subsec_micros())
 }
 
-/// The workspace to act on: the caller's choice when it names a
-/// configured one, else the only configured one.
-fn resolve_label(workspaces: &SlackWorkspaces, requested: Option<&str>) -> Option<String> {
-    if let Some(label) = requested {
-        return workspaces.client(label).map(|_| label.to_owned());
+/// The workspace to act on and the client for it: the caller's choice when
+/// it names a configured one, else the only configured one. A refusal says
+/// which case it is, so an omitted `workspace` never reads as a missing
+/// configuration.
+fn resolve_workspace(
+    workspaces: &SlackWorkspaces,
+    requested: Option<&str>,
+) -> Result<(String, Arc<dyn SlackApi>), SlackWorkspaceError> {
+    if workspaces.is_empty() {
+        return Err(SlackWorkspaceError::NotConfigured);
     }
-    let labels = workspaces.labels();
-    if labels.len() == 1 {
-        return labels.into_iter().next();
+    match requested {
+        Some(label) => workspaces
+            .client(label)
+            .map(|api| (label.to_owned(), api))
+            .ok_or_else(|| SlackWorkspaceError::UnknownWorkspace {
+                requested: label.to_owned(),
+                known: workspaces.labels(),
+            }),
+        None => {
+            let labels = workspaces.labels();
+            let [only] = labels.as_slice() else {
+                return Err(SlackWorkspaceError::WorkspaceRequired { known: labels });
+            };
+            let api = workspaces.client(only).ok_or(SlackWorkspaceError::NotConfigured)?;
+            Ok((only.clone(), api))
+        }
     }
-    None
 }
 
 /// The Slack tools' view of the workspace.
@@ -259,7 +298,7 @@ pub(crate) trait SlackFacade: Send + Sync {
     async fn conversations(
         &self,
         workspace: Option<&str>,
-    ) -> Result<Vec<SlackConversation>, SlackListError>;
+    ) -> Result<Vec<SlackConversation>, SlackReadError>;
 
     /// The caller's OWN subscriptions in `workspace` - a lead's the
     /// lead's, a worker's its own, never another owner's. What
@@ -407,6 +446,16 @@ impl ProdSlackFacade {
         Arc::new(Self { workspace: Arc::downgrade(workspace) })
     }
 
+    /// The workspace a tool call acts on, with the refusal shape every Slack
+    /// tool shares.
+    fn resolve(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<(String, Arc<dyn SlackApi>), SlackWorkspaceError> {
+        let ws = self.workspace.upgrade().ok_or(SlackWorkspaceError::NotConfigured)?;
+        resolve_workspace(&ws.slack, workspace)
+    }
+
     /// The conversation's display name for the approval prompt, falling
     /// back to the id: a DM is named after its partner, and Slack's own
     /// name for it is empty. A failed lookup is not a reason to refuse the
@@ -479,25 +528,9 @@ impl SlackFacade for ProdSlackFacade {
     async fn conversations(
         &self,
         workspace: Option<&str>,
-    ) -> Result<Vec<SlackConversation>, SlackListError> {
-        let ws = self.workspace.upgrade().ok_or(SlackListError::NotConfigured)?;
-        if ws.slack.is_empty() {
-            return Err(SlackListError::NotConfigured);
-        }
-        let Some(label) = resolve_label(&ws.slack, workspace) else {
-            return Err(match workspace {
-                Some(requested) => SlackListError::UnknownWorkspace {
-                    requested: requested.to_owned(),
-                    known: ws.slack.labels(),
-                },
-                None => SlackListError::WorkspaceRequired { known: ws.slack.labels() },
-            });
-        };
-        let client = ws.slack.client(&label).ok_or_else(|| SlackListError::UnknownWorkspace {
-            requested: label.clone(),
-            known: ws.slack.labels(),
-        })?;
-        client.list_conversations().await.map_err(|err| SlackListError::Fetch(err.to_string()))
+    ) -> Result<Vec<SlackConversation>, SlackReadError> {
+        let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
+        api.list_conversations().await.map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
 
     async fn post(
@@ -505,10 +538,12 @@ impl SlackFacade for ProdSlackFacade {
         caller: &SessionSlot,
         request: SlackPostRequest,
     ) -> Result<SlackPostOutcome, SlackPostError> {
-        let ws = self.workspace.upgrade().ok_or(SlackPostError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, request.workspace.as_deref())
-            .ok_or(SlackPostError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackPostError::UnknownWorkspace)?;
+        let ws = self
+            .workspace
+            .upgrade()
+            .ok_or(SlackPostError::Workspace(SlackWorkspaceError::NotConfigured))?;
+        let (label, api) = resolve_workspace(&ws.slack, request.workspace.as_deref())
+            .map_err(SlackPostError::Workspace)?;
         let conversation_label =
             Self::conversation_label(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
@@ -555,10 +590,12 @@ impl SlackFacade for ProdSlackFacade {
         caller: &SessionSlot,
         request: SlackEditRequest,
     ) -> Result<(), SlackEditError> {
-        let ws = self.workspace.upgrade().ok_or(SlackEditError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, request.workspace.as_deref())
-            .ok_or(SlackEditError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackEditError::UnknownWorkspace)?;
+        let ws = self
+            .workspace
+            .upgrade()
+            .ok_or(SlackEditError::Workspace(SlackWorkspaceError::NotConfigured))?;
+        let (label, api) = resolve_workspace(&ws.slack, request.workspace.as_deref())
+            .map_err(SlackEditError::Workspace)?;
 
         // A replacement puts new words in front of people as the user, and
         // a deletion changes what they see on a message attributed to him -
@@ -607,10 +644,12 @@ impl SlackFacade for ProdSlackFacade {
         caller: &SessionSlot,
         request: SlackReactRequest,
     ) -> Result<(), SlackReactError> {
-        let ws = self.workspace.upgrade().ok_or(SlackReactError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, request.workspace.as_deref())
-            .ok_or(SlackReactError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackReactError::UnknownWorkspace)?;
+        let ws = self
+            .workspace
+            .upgrade()
+            .ok_or(SlackReactError::Workspace(SlackWorkspaceError::NotConfigured))?;
+        let (label, api) = resolve_workspace(&ws.slack, request.workspace.as_deref())
+            .map_err(SlackReactError::Workspace)?;
 
         // A reaction is authored content in the user's name, so it goes
         // through the same gate a post does.
@@ -643,9 +682,7 @@ impl SlackFacade for ProdSlackFacade {
         query: &str,
         count: u32,
     ) -> Result<Vec<SlackSearchMatch>, SlackReadError> {
-        let ws = self.workspace.upgrade().ok_or(SlackReadError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, workspace).ok_or(SlackReadError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackReadError::UnknownWorkspace)?;
+        let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
         api.search_messages(query, count, None)
             .await
             .map(|page| page.matches)
@@ -653,9 +690,7 @@ impl SlackFacade for ProdSlackFacade {
     }
 
     async fn user(&self, workspace: Option<&str>, user: &str) -> Result<SlackUser, SlackReadError> {
-        let ws = self.workspace.upgrade().ok_or(SlackReadError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, workspace).ok_or(SlackReadError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackReadError::UnknownWorkspace)?;
+        let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
         api.user_info(user).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
 
@@ -664,9 +699,7 @@ impl SlackFacade for ProdSlackFacade {
         workspace: Option<&str>,
         conversation: &str,
     ) -> Result<Vec<SlackPin>, SlackReadError> {
-        let ws = self.workspace.upgrade().ok_or(SlackReadError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, workspace).ok_or(SlackReadError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackReadError::UnknownWorkspace)?;
+        let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
         api.pins(conversation).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
 
@@ -675,9 +708,7 @@ impl SlackFacade for ProdSlackFacade {
         workspace: Option<&str>,
         conversation: &str,
     ) -> Result<Vec<SlackBookmark>, SlackReadError> {
-        let ws = self.workspace.upgrade().ok_or(SlackReadError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, workspace).ok_or(SlackReadError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackReadError::UnknownWorkspace)?;
+        let (_, api) = self.resolve(workspace).map_err(SlackReadError::Workspace)?;
         api.bookmarks(conversation).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
     }
 
@@ -685,10 +716,7 @@ impl SlackFacade for ProdSlackFacade {
         &self,
         request: SlackFetchRequest,
     ) -> Result<std::path::PathBuf, SlackAttachmentError> {
-        let ws = self.workspace.upgrade().ok_or(SlackAttachmentError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, request.workspace.as_deref())
-            .ok_or(SlackAttachmentError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackAttachmentError::UnknownWorkspace)?;
+        let (_, api) = self.resolve(request.workspace.as_deref()).map_err(SlackAttachmentError::Workspace)?;
 
         // The directory is checked and created before Slack is contacted,
         // so a bad `dir` costs no round trips.
@@ -728,10 +756,12 @@ impl SlackFacade for ProdSlackFacade {
         caller: &SessionSlot,
         request: SlackUploadRequest,
     ) -> Result<(), SlackAttachmentError> {
-        let ws = self.workspace.upgrade().ok_or(SlackAttachmentError::UnknownWorkspace)?;
-        let label = resolve_label(&ws.slack, request.workspace.as_deref())
-            .ok_or(SlackAttachmentError::UnknownWorkspace)?;
-        let api = ws.slack.client(&label).ok_or(SlackAttachmentError::UnknownWorkspace)?;
+        let ws = self
+            .workspace
+            .upgrade()
+            .ok_or(SlackAttachmentError::Workspace(SlackWorkspaceError::NotConfigured))?;
+        let (label, api) = resolve_workspace(&ws.slack, request.workspace.as_deref())
+            .map_err(SlackAttachmentError::Workspace)?;
 
         let bytes = std::fs::read(&request.path)
             .map_err(|err| SlackAttachmentError::Io(err.to_string()))?;
@@ -779,7 +809,9 @@ impl SlackFacade for ProdSlackFacade {
         workspace: Option<&str>,
     ) -> Vec<SlackSubscription> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
-        let Some(label) = resolve_label(&ws.slack, workspace) else { return Vec::new() };
+        let Ok((label, _)) = resolve_workspace(&ws.slack, workspace) else {
+            return Vec::new();
+        };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
         ws.slack_subscriptions_for_project(&cx.project_name)
             .into_iter()
@@ -794,8 +826,8 @@ impl SlackFacade for ProdSlackFacade {
         request: SlackSubscribeRequest,
     ) -> Result<Vec<SlackSubscription>, SlackSubscribeError> {
         let ws = self.workspace.upgrade().ok_or(SlackSubscribeError::UnknownCallerProject)?;
-        let label =
-            resolve_label(&ws.slack, workspace).ok_or(SlackSubscribeError::UnknownWorkspace)?;
+        let (label, _) = resolve_workspace(&ws.slack, workspace)
+            .map_err(SlackSubscribeError::Workspace)?;
         let (project, team_role, durable) =
             resolve_identity(&ws, caller).ok_or(SlackSubscribeError::UnknownCallerProject)?;
         let targets = match request {
@@ -904,7 +936,7 @@ impl SlackFacade for ProdSlackFacade {
 pub(crate) struct MockSlackFacade {
     pub conversations_calls: parking_lot::Mutex<Vec<Option<String>>>,
     pub conversations_result:
-        parking_lot::Mutex<Option<Result<Vec<SlackConversation>, SlackListError>>>,
+        parking_lot::Mutex<Option<Result<Vec<SlackConversation>, SlackReadError>>>,
     pub subscribed_targets_calls: parking_lot::Mutex<Vec<Option<String>>>,
     pub subscribed_targets: parking_lot::Mutex<Vec<SlackSubscription>>,
     pub search_calls: parking_lot::Mutex<Vec<(Option<String>, String, u32)>>,
@@ -949,7 +981,7 @@ impl SlackFacade for MockSlackFacade {
     async fn conversations(
         &self,
         workspace: Option<&str>,
-    ) -> Result<Vec<SlackConversation>, SlackListError> {
+    ) -> Result<Vec<SlackConversation>, SlackReadError> {
         self.conversations_calls.lock().push(workspace.map(str::to_owned));
         self.conversations_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
     }
@@ -1990,11 +2022,6 @@ mod tests {
         }
     }
 
-    fn workspace_with_no_slack() -> Arc<Workspace> {
-        let (ws, _rx) = Workspace::testing_stub();
-        ws
-    }
-
     /// A workspace whose `[[slack]]` holds exactly `label`, with a lead
     /// session recorded so the caller resolves to a project.
     fn workspace_with_one_slack_workspace(label: &str) -> (Arc<Workspace>, Arc<dyn SlackFacade>) {
@@ -2249,16 +2276,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribing_to_an_unknown_workspace_is_refused() {
-        // Bound, not inline: the facade holds a Weak, so a temporary Arc
-        // would drop before the call and every error would come back as
-        // UnknownCallerProject instead of the one under test.
-        let ws = workspace_with_no_slack();
-        let facade = ProdSlackFacade::from_arc(&ws);
+    async fn subscribing_to_an_unknown_workspace_is_refused_with_the_known_labels() {
+        let (ws, facade) = workspace_with_one_slack_workspace("acme");
         let err = facade
             .subscribe(&caller(), Some("nope"), SlackSubscribeRequest::DirectMessages)
             .expect_err("a workspace that is not configured cannot be watched");
-        assert_eq!(err, SlackSubscribeError::UnknownWorkspace);
+        assert_eq!(
+            err,
+            SlackSubscribeError::Workspace(SlackWorkspaceError::UnknownWorkspace {
+                requested: "nope".to_owned(),
+                known: vec!["acme".to_owned()],
+            }),
+            "the refusal names the label asked for and the ones that exist",
+        );
+        drop(ws);
+    }
+
+    /// Omitting `workspace` with several configured is its own case, not a
+    /// missing configuration: every tool reports it with the labels to pick
+    /// from.
+    #[tokio::test]
+    async fn omitting_the_workspace_with_several_configured_names_the_labels() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = LoadedConfig::empty_for_test();
+        config.slack = vec![cfg("acme"), cfg("beta")];
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
+        let facade = ProdSlackFacade::from_arc(&ws);
+
+        assert_eq!(
+            facade.search(None, "deploy", 5).await.expect_err("no label was named"),
+            SlackReadError::Workspace(SlackWorkspaceError::WorkspaceRequired {
+                known: vec!["acme".to_owned(), "beta".to_owned()],
+            }),
+            "the search names the case and the labels",
+        );
+        assert_eq!(
+            facade.pins(None, "C1").await.expect_err("no label was named"),
+            SlackReadError::Workspace(SlackWorkspaceError::WorkspaceRequired {
+                known: vec!["acme".to_owned(), "beta".to_owned()],
+            }),
+            "and so does every other read",
+        );
     }
 
     #[tokio::test]
