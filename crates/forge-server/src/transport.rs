@@ -132,7 +132,7 @@ pub mod wire;
 /// no seat is ever attached and no mark is ever spent - the rail keeps
 /// diamonds the reader has already looked at. `baselines/socket/11/` is the
 /// record a v11 server emitted.
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

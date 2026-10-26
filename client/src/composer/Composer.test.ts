@@ -5538,7 +5538,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: true,
+          answer: { ending: { type: 'done' }, source: 'takeover' },
         },
       },
     ]);
@@ -5637,7 +5637,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });
@@ -5659,7 +5659,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: false,
+          answer: { ending: { type: 'not_now' }, source: 'takeover' },
         },
       },
     ]);
@@ -5691,7 +5691,13 @@ describe('the dock', () => {
     expect(surface.phase, 'the second ask landed').toBe('live');
   });
 
-  it("sends the bar's feedback to the agent, then declines the hand-off", () => {
+  /** **A person reporting a problem is not a person declining.** The feedback
+   *  line sends their words as a prompt and then ends the park, and the ending
+   *  it sends must say they spoke - `not_now` here told the session "the person
+   *  declined, decide what to do instead" while they were still working the
+   *  page (live, 2026-10-26: two parks ended that way with the person's own
+   *  words describing the page). */
+  it('sends the bar feedback to the agent and ends the park as spoken, not declined', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
@@ -5718,9 +5724,30 @@ describe('the dock', () => {
       respond_browser_hand_off: {
         key: { org: 'Busytools', project: 'forge', label: 'lead' },
         id: '0192e1c0-0000-7000-8000-0000000000aa',
-        done: false,
+        answer: { ending: { type: 'feedback' }, source: 'feedback' },
       },
     });
+  });
+
+  /** **A key inside the raised takeover is the page's, not the dock's.** The
+   *  native overlay holds the keyboard while the surface is up, and a key the
+   *  bar itself receives must not reach the dock's refusal - Escape in a
+   *  raised takeover declining the hand-off was the first suspect in the live
+   *  incident, and this is the property that rules it out. */
+  it('does not answer the hand-off on Escape inside the raised takeover', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.focus();
+    press('Escape');
+
+    expect(commands(harness), 'the hand-off is still parked, nothing answered it').toEqual([]);
   });
 
   it('declines the hand-off on Escape, which the dock row promises', () => {
@@ -5738,7 +5765,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: false,
+          answer: { ending: { type: 'not_now' }, source: 'dock_escape' },
         },
       },
     ]);
@@ -5756,7 +5783,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });
@@ -5765,6 +5792,30 @@ describe('the dock', () => {
 
     expect(document.querySelector('.dock'), 'the dock stands down').toBeNull();
     expect(drawn(), 'and the row says which ending took it').toContain('settled in another view');
+  });
+
+  /** The feedback ending is a new word on the wire, and a client that does
+   *  not know it falls through to "no longer waiting" - which would tell a
+   *  reader nothing about a hand-off the person settled with a message. */
+  it('says a hand-off another view settled with a message', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    harness.say({
+      kind: 'update',
+      update: {
+        browser_hand_off_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          answer: { ending: { type: 'feedback' }, source: 'feedback', client: 1 },
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+
+    expect(drawn(), 'the news is the message, not a silence').toContain(
+      'settled with a message in another view',
+    );
   });
 
   it("does not narrate the reader's own answer to a hand-off", () => {
@@ -5785,7 +5836,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });

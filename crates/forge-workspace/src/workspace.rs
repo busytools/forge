@@ -5492,26 +5492,24 @@ impl Workspace {
                         return Err(DispatchError::NoDraftWaiting { key: key.clone(), id });
                     }
                 }
-                Command::RespondBrowserHandOff { key, id, done } => {
+                Command::RespondBrowserHandOff { key, id, answer } => {
                     // Same shape as the Slack arm above: the guard already
                     // refused one that is not waiting, so a `false` here is a
                     // resolve that landed between the two.
-                    // **Who answered is the log's business**: hand-offs were
-                    // seen resolving by themselves in a live round
-                    // (2026-10-07), and nothing named the hand that sent it.
+                    // **The answer names its own hand**: the ending, the door
+                    // that sent it and the connection it came over, so a
+                    // hand-off never resolves with nothing attributable
+                    // behind it (2026-10-07, 2026-10-26).
                     tracing::debug!(
                         event_name = "browser_hand_off_answered",
                         key = ?key,
                         id = %id,
-                        done,
+                        ending = ?answer.ending,
+                        source = ?answer.source,
+                        client = answer.client,
                         "a client answered a parked browser hand-off"
                     );
-                    let ending = if done {
-                        forge_primitives::browser::HandOffEnding::Done
-                    } else {
-                        forge_primitives::browser::HandOffEnding::NotNow
-                    };
-                    let answered = self.resolve_browser_hand_off(id, &key, ending);
+                    let answered = self.resolve_browser_hand_off(id, &key, answer);
                     if !answered {
                         return Err(DispatchError::NoBrowserHandOffWaiting {
                             key: key.clone(),

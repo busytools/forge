@@ -496,7 +496,7 @@
       // core reads as the session carrying on without the browser. Without
       // this arm the parked call - which has no timeout - waits forever on a
       // key the dock's own row advertises.
-      handOff(false);
+      handOff('not_now', 'dock_escape');
       return;
     }
     if (ask.kind === 'document_hand_off') {
@@ -616,12 +616,17 @@
    *  **Answering also lowers the takeover**: Open covers the chat, Done or
    *  Not now gives it back, and the browser keeps running with its page and
    *  tabs intact (Ved, 2026-10-07: "I said done, but the browser is still
-   *  open" - he stops seeing it, and the next call drives it). */
-  function handOff(done: boolean): void {
+   *  open" - he stops seeing it, and the next call drives it).
+   *
+   *  **The source rides the answer** so the core's log names the door the
+   *  ending came through, not just its meaning. */
+  function handOff(ending: 'done' | 'not_now', source: 'dock' | 'dock_escape'): void {
     if (answered || ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
     onanswer(id);
-    answer({ respond_browser_hand_off: { key: slot, id, done } });
+    answer({
+      respond_browser_hand_off: { key: slot, id, answer: { ending: { type: ending }, source } },
+    });
     // The lower names no profile: the shell lowers the attach this page
     // actually holds, which is the one the hand-off's Open raised.
     void closeSurface(null, slot);
@@ -1140,8 +1145,8 @@
                Done and Not now before the takeover; inside it the bar adds
                the feedback line and back to chat. -->
           <button class="btn p" onclick={open}>Open browser</button>
-          <button class="btn" onclick={() => handOff(true)}>Done</button>
-          <button class="btn d" onclick={() => handOff(false)}>Not now</button>
+          <button class="btn" onclick={() => handOff('done', 'dock')}>Done</button>
+          <button class="btn d" onclick={() => handOff('not_now', 'dock')}>Not now</button>
         {/if}
       </div>
     {/if}

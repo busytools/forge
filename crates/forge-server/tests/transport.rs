@@ -2871,7 +2871,11 @@ async fn a_refused_hand_off_answer_names_its_own_operation() {
             command: Box::new(Command::RespondBrowserHandOff {
                 key: lead_seat(),
                 id: uuid::Uuid::new_v4(),
-                done: true,
+                answer: forge_primitives::browser::HandOffAnswer {
+                    ending: forge_primitives::browser::HandOffEnding::Done,
+                    source: forge_primitives::browser::HandOffSource::Takeover,
+                    client: None,
+                },
             }),
             reply_to: None,
         },

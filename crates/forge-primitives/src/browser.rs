@@ -295,8 +295,49 @@ pub enum HandOffEnding {
     Done,
     /// The person declined; the session knows what to do instead.
     NotNow,
+    /// The person sent the session a message about the page and carried on:
+    /// nothing is declined, and the session reads what they said.
+    Feedback,
     /// The asking session went away before anyone answered.
     Abandoned,
+}
+
+/// Which door in a client produced a hand-off's answer.
+///
+/// **The ending says what it means; this says who said it.** A hand-off that
+/// ends with nobody named is the defect two live rounds were spent on
+/// (2026-10-07, 2026-10-26): the answer has to carry the hand that sent it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandOffSource {
+    /// The dock's Done or Not now, before the takeover opened.
+    Dock,
+    /// The dock's own Escape, which is its refusal.
+    DockEscape,
+    /// The takeover bar's Done or Not now.
+    Takeover,
+    /// The takeover bar's feedback line: the person's words go to the session
+    /// as a prompt, and the ending says they spoke.
+    Feedback,
+    /// The asking session's waiter went away; the core's own ending.
+    Abandoned,
+    /// A client that did not say which door it used.
+    #[default]
+    Unstated,
+}
+
+/// One answer to a parked browser hand-off: what it means, which door sent it,
+/// and the connection that carried it.
+///
+/// `client` is stamped by the server at dispatch - a client cannot know its own
+/// connection number - so every ending names the hand that sent it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandOffAnswer {
+    pub ending: HandOffEnding,
+    #[serde(default)]
+    pub source: HandOffSource,
+    #[serde(default)]
+    pub client: Option<u64>,
 }
 
 #[cfg(test)]
@@ -382,6 +423,43 @@ mod tests {
         assert_eq!(
             serde_json::to_value(HandOffEnding::Abandoned).expect("an ending encodes"),
             serde_json::json!({ "type": "abandoned" }),
+        );
+    }
+
+    /// An answer crosses as the ending, the door that sent it and the
+    /// connection that carried it, so a reader of the wire can name the hand
+    /// rather than only the outcome.
+    #[test]
+    fn an_answer_crosses_with_its_source_and_client() {
+        let answer = HandOffAnswer {
+            ending: HandOffEnding::Feedback,
+            source: HandOffSource::Feedback,
+            client: Some(7),
+        };
+        let encoded = serde_json::to_value(answer).expect("an answer encodes");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "ending": { "type": "feedback" },
+                "source": "feedback",
+                "client": 7,
+            }),
+        );
+        assert_eq!(serde_json::from_value::<HandOffAnswer>(encoded).expect("decodes"), answer);
+        // A client cannot know its own connection number, so the field is
+        // absent on the way in rather than a zero that would name a stranger -
+        // and an answer that names no door still resolves the park, recorded
+        // as unattributed rather than lost.
+        assert_eq!(
+            serde_json::from_value::<HandOffAnswer>(serde_json::json!({
+                "ending": { "type": "done" },
+            }))
+            .expect("decodes without a source or a client"),
+            HandOffAnswer {
+                ending: HandOffEnding::Done,
+                source: HandOffSource::Unstated,
+                client: None,
+            },
         );
     }
 

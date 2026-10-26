@@ -1279,10 +1279,12 @@ where
             }
         }
         ClientMessage::Command { command, reply_to } => {
-            // This connection's own stamp on the two commands that carry
-            // one: the take a start begins and the stop that ends it are
-            // this connection's alone, and the stamp riding back on the
-            // take's updates is what routes them home. A client cannot
+            // This connection's own stamp on the commands that carry one:
+            // the take a start begins and the stop that ends it are this
+            // connection's alone, and the stamp riding back on the take's
+            // updates is what routes them home. A hand-off's answer carries
+            // the same stamp, so an ending names the connection that sent it
+            // rather than only the seat it was addressed to. A client cannot
             // claim another's - the field never crosses the wire.
             let command = match *command {
                 Command::DictateStream { key, options, surface, .. } => {
@@ -1296,6 +1298,10 @@ where
                 }
                 Command::DictateReadAloudStop { keep, .. } => {
                     Command::DictateReadAloudStop { keep, initiator: Some(me) }
+                }
+                Command::RespondBrowserHandOff { key, id, mut answer } => {
+                    answer.client = Some(me);
+                    Command::RespondBrowserHandOff { key, id, answer }
                 }
                 other => other,
             };
