@@ -26,7 +26,7 @@ const { WebSocketServer, WebSocket: ClientSocket } = createRequire(import.meta.u
  */
 (globalThis as { WebSocket?: unknown }).WebSocket = ClientSocket;
 
-import { get, writable } from 'svelte/store';
+import { get, writable, type Writable } from 'svelte/store';
 
 import { cronNames } from '../chat/cron-names.svelte';
 import { git } from '../chat/git.svelte';
@@ -93,6 +93,8 @@ async function stubServer(
 
   const received: Subscribe[] = [];
   const gone: Subscribe[] = [];
+  /** Every history read the client sent, which is what a walk above the page is. */
+  const reads: Subscribe[] = [];
   const shown: (SessionSlot | null)[] = [];
   const held: { socket: import('ws').WebSocket; before: string }[] = [];
   const sockets = new Set<import('ws').WebSocket>();
@@ -119,6 +121,7 @@ async function stubServer(
       // answers holds it in its loading state and nothing under the header
       // draws - the strip and the queue included.
       if (message.kind === 'more') {
+        reads.push(message);
         const asked = (message as { conversation?: SessionSlot }).conversation ?? LEAD;
         const key = subjectKey({ session: asked });
         // An older ask can be held open, so a test can read the page in its
@@ -196,6 +199,8 @@ async function stubServer(
     received,
     /** Every unsubscribe the client sent: the other half of the count. */
     gone,
+    /** Every `more` the client sent: a history read, newest page or older. */
+    reads,
     /** The shown seat after every `showing` frame, in order. */
     shown,
     /**
@@ -941,7 +946,7 @@ describe('the session page over a socket', () => {
     await quiet();
 
     const subscribes = seatSubscribesOf(W1);
-    const reads = server.received.filter((message) => message.kind === 'more').length;
+    const reads = server.reads.length;
     route.set({ name: 'session', slot: W1 });
     flushSync();
     expect(
@@ -951,10 +956,269 @@ describe('the session page over a socket', () => {
     expect(drawn(), 'the return lost the held conversation').toContain('the worker said this');
     await settle();
     expect(seatSubscribesOf(W1), 'the return subscribed the seat again').toBe(subscribes);
+    expect(server.reads.length, 'the return read the history from the server').toBe(reads);
+  });
+
+  /**
+   * **A return draws what it holds before it walks the history above it.**
+   *
+   * The column's paging rides the list's first measurements, and a browser
+   * delivers those after layout and BEFORE the paint - so a return could send
+   * a history read for a frame the reader had not seen yet, and a page slow
+   * enough to fetch then prepended into the window the return is meant to be
+   * instant in. The entry holds the walk until the frame it drew has painted;
+   * the walk above is still owed and runs after it.
+   */
+  /**
+   * A Home round trip to a seat the client already holds, with the returned
+   * window the caller gives (a fitting one by default) and every history read
+   * counted at the client's own send.
+   *
+   * **The send, not the socket**: a hop lands after the frame that would have
+   * asked, so the server's count cannot say WHEN the walk left, only that it
+   * did.
+   */
+  async function roundTripToFittingSeat(
+    window: [total: number, room: number] = [400, 800],
+  ): Promise<{ asked: (string | null)[] }> {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    // Two turns, so the first landing is not a fresh open's one-pull fill and
+    // the read under test can only be the return's.
+    server = await stubServer(
+      sessionFixture,
+      {
+        [subjectKey({ session: W1 })]: [
+          { key: 'w1-t1', messages: [say('the first turn')] },
+          { key: 'w1-t2', messages: [say('the second turn')] },
+        ],
+      },
+      homeWire,
+      { holdOlder: true },
+    );
+    connection = connect(server.url);
+    const asked: (string | null)[] = [];
+    const send = connection.more.bind(connection);
+    connection.more = (slot: SessionSlot, before: string | null = null, turns?: number) => {
+      asked.push(before);
+      return send(slot, before, turns);
+    };
+    const route = writable<Route>({ name: 'session', slot: W1 });
+    app = mount(Routes, {
+      target: document.body,
+      props: { route, props: routerProps() },
+    });
+    await until(() => drawn().includes('the second turn'), "w1's page to draw");
+    // The first visit's window is too short for its history, so nothing asks
+    // above the page it holds; the rows report so the return has their sizes.
+    setMeasured(1200, 500);
+    resized(200);
+    flushSync();
+    expect(asked, 'precondition: the first visit walked the history').toEqual([]);
+
+    route.set({ name: 'home' });
+    await until(() => document.querySelector('.conv') === null, 'the home route');
+    server.push(
+      updateOf({ chat_appended: { key: W1, msg: say('landed while away'), origin: null } }),
+    );
+    await quiet();
+
+    setMeasured(...window);
+    route.set({ name: 'session', slot: W1 });
+    flushSync();
+    expect(drawn(), 'the return did not draw the row it held').toContain('landed while away');
+    return { asked };
+  }
+
+  /**
+   * Two seats the client already holds, each with history above the page it
+   * holds, and every read counted with the seat it asked for.
+   */
+  async function twoHeldSeats(): Promise<{
+    asked: { seat: SessionSlot; before: string | null }[];
+    route: Writable<Route>;
+    W1: SessionSlot;
+    W2: SessionSlot;
+  }> {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    const W2: SessionSlot = { ...LEAD, label: 'w2' };
+    // Two turns each, so no first landing is a fresh open's one-pull fill.
+    server = await stubServer(
+      sessionFixture,
+      {
+        [subjectKey({ session: W1 })]: [
+          { key: 'w1-t1', messages: [say('w1 first')] },
+          { key: 'w1-t2', messages: [say('w1 second')] },
+        ],
+        [subjectKey({ session: W2 })]: [
+          { key: 'w2-t1', messages: [say('w2 first')] },
+          { key: 'w2-t2', messages: [say('w2 second')] },
+        ],
+      },
+      homeWire,
+      { holdOlder: true },
+    );
+    connection = connect(server.url);
+    const asked: { seat: SessionSlot; before: string | null }[] = [];
+    const send = connection.more.bind(connection);
+    connection.more = (slot: SessionSlot, before: string | null = null, turns?: number) => {
+      asked.push({ seat: slot, before });
+      return send(slot, before, turns);
+    };
+    const route = writable<Route>({ name: 'session', slot: W1 });
+    app = mount(Routes, {
+      target: document.body,
+      props: { route, props: routerProps() },
+    });
+    await until(() => drawn().includes('w1 second'), 'the first visit to w1');
+    route.set({ name: 'session', slot: W2 });
+    await until(() => drawn().includes('w2 second'), 'the first visit to w2');
+    expect(asked, 'precondition: a first visit walked the history').toEqual([]);
+    return { asked, route, W1, W2 };
+  }
+
+  it('holds the history walk until the seat a return entered has drawn', async () => {
+    const { asked } = await roundTripToFittingSeat();
+
+    // A browser's row measurements land after layout and before the paint,
+    // which is the moment the walk used to leave.
+    resized(200);
+    flushSync();
+    expect(asked, 'the return walked the history for a frame the reader had not seen').toEqual([]);
+
+    // The entry's frame paints, and the walk above is still owed and still
+    // runs - on the frame after the one it drew in.
+    paint();
+    flushSync();
+    expect(asked, 'the hold lifted on the frame the entry drew in').toEqual([]);
+    paint();
+    flushSync();
+    expect(asked, 'the walk died with the entry it was held behind').toEqual(['c1']);
+    expect(drawn(), 'the walk took the held row away').toContain('landed while away');
+  });
+
+  /**
+   * **The hold is the fit's, not the reader's.** A person pulling at the top
+   * is asking for the page above, and their read goes at once, on the frame
+   * the automatic one is still held back from.
+   *
+   * **A guard against a broader hold, not a revert's killer**: nothing this
+   * cut ships gates the reach ask, so it turns red only when a later change
+   * extends the entry's hold over the reader's own pull.
+   */
+  it("sends a reader's own pull during a return's hold", async () => {
+    const { asked } = await roundTripToFittingSeat();
+    resized(200);
+    flushSync();
+    expect(asked, 'precondition: the fit walked the history').toEqual([]);
+
+    list()?.scrolledTo(0, 400, 800);
+    flushSync();
+    expect(asked, "the reader's pull waited on the entry").toEqual(['c1']);
+  });
+
+  /**
+   * **The entry's own pin echo is not a reader's pull.** The pin that places a
+   * returned seat writes the foot, and the event it comes back as carries the
+   * reach ask when that foot is inside REACH. A window that overflows by a
+   * little is serviced only by that ask - the fit has nothing to ask - so it
+   * must wait for the entry's paint like the fit does, and run after it.
+   */
+  it("holds the pin echo's reach ask until the return has drawn", async () => {
+    // 500 into 320: overflows, so no fit, and its foot (180) is inside REACH.
+    const { asked } = await roundTripToFittingSeat([500, 320]);
+    // The pin's write comes back as a scroll event a microtask later.
+    await Promise.resolve();
+    flushSync();
+    expect(asked, "the entry's own pin echo walked the history before the paint").toEqual([]);
+
+    paint();
+    paint();
+    flushSync();
+    expect(asked, 'the reach ask the entry refused never ran').toEqual(['c1']);
+  });
+
+  /**
+   * **A hold belongs to the entry that took it.** A switch into another held
+   * seat while a return's hold is pending must not let the old hold run: it
+   * would lift the new entry's hold and read its history before that seat's
+   * own first paint.
+   */
+  it("does not let one seat's hold lift the seat switched into", async () => {
+    const { asked, route, W1, W2 } = await twoHeldSeats();
+    setMeasured(400, 800);
+    route.set({ name: 'session', slot: W1 });
+    flushSync();
+    // One frame of W1's hold, then the switch: the stale lift lands a frame
+    // before the new entry's own.
+    paint();
+    flushSync();
+    route.set({ name: 'session', slot: W2 });
+    flushSync();
+    paint();
+    flushSync();
+    expect(asked, 'the hold taken for one seat asked for the seat switched into').toEqual([]);
+    paint();
+    flushSync();
     expect(
-      server.received.filter((message) => message.kind === 'more').length,
-      'the return read the history from the server',
-    ).toBe(reads);
+      asked.map((read) => read.seat.label),
+      'the seat switched into lost the walk its own entry owed',
+    ).toEqual(['w2']);
+  });
+
+  /**
+   * **A hold does not outlive the page that took it.** Leaving the session
+   * page during a return's hold and opening a different seat must not let the
+   * old column's lift read the seat it left.
+   */
+  it('does not let a hold outlive the page that took it', async () => {
+    const { asked, route, W1, W2 } = await twoHeldSeats();
+    setMeasured(400, 800);
+    route.set({ name: 'session', slot: W1 });
+    flushSync();
+    // The page goes before the hold lifts, and the next page is another seat.
+    route.set({ name: 'home' });
+    await until(() => document.querySelector('.conv') === null, 'the home route');
+    route.set({ name: 'session', slot: W2 });
+    flushSync();
+    paint();
+    flushSync();
+    expect(asked, 'a lift ran before its entry painted').toEqual([]);
+    paint();
+    flushSync();
+    expect(
+      asked.map((read) => read.seat.label),
+      'the hold of the page that went asked for the seat it left',
+    ).toEqual(['w2']);
+  });
+
+  /**
+   * **A page that cannot paint holds nothing.** A hidden window produces no
+   * frames, so a return on one must not leave the fit waiting for a paint
+   * that is not coming.
+   */
+  it('lets the fit run at once when the page cannot paint', async () => {
+    hidePage();
+    const { asked } = await roundTripToFittingSeat();
+
+    resized(200);
+    flushSync();
+    expect(asked, 'the fit waited for a paint a hidden page cannot produce').toEqual(['c1']);
+  });
+
+  /**
+   * **A hold whose paint never comes lifts on its own deadline.** A window
+   * that becomes throttled mid-hold produces no frames at all, and the fit
+   * the entry refused must still run.
+   */
+  it('lifts a hold whose paint never comes', async () => {
+    const { asked } = await roundTripToFittingSeat();
+    resized(200);
+    flushSync();
+    expect(asked, 'precondition: the fit walked the history').toEqual([]);
+
+    // Nothing paints this column: the deadline is the only way it lifts.
+    await until(() => asked.length > 0, 'the hold to lift on its deadline');
+    expect(asked, 'the hold waited on a paint that never came').toEqual(['c1']);
   });
 
   /**
