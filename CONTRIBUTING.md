@@ -185,6 +185,12 @@ Keep the diff to what was discussed. A pull request that is correct but
 three times larger than the problem is harder to review than one that
 is smaller and slightly incomplete.
 
+A pull request that deletes a subsystem sweeps the open issues for its
+subject in the same cut - `gh issue list --state open --search
+'<subject>'` - closing a defect that died with the removal, re-pointing
+one whose subject outlives it, and leaving the rest alone (CLAUDE.md,
+hard rule 27).
+
 ## Where code goes
 
 The workspace is twelve crates with a strictly acyclic dependency graph,
