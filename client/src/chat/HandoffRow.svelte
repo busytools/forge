@@ -46,6 +46,35 @@
     handoff.reason === 'fill' && handoff.fill_percent !== null ? `${handoff.fill_percent}%` : why,
   );
 
+  /**
+   * The record's own tuning numbers, as label/value facts under the meta.
+   *
+   * `at` is the record's stamp and always says when; the cycle draws only
+   * when it counted something, because a record written before the field
+   * existed narrows to zeros that would read as a handover that did nothing;
+   * and the successor draws only when it was measured - absent is the honest
+   * state until its first turns are read.
+   */
+  const facts = $derived.by(() => {
+    const rows: [string, string][] = [];
+    if (handoff.at !== null) rows.push(['at', handoff.at]);
+    const cycle = handoff.cycle;
+    if (cycle.requests > 0 || cycle.turns > 0 || cycle.prompt_tokens > 0) {
+      rows.push([
+        'cycle',
+        `${grouped(cycle.requests)} requests \u{b7} ${grouped(cycle.turns)} turns \u{b7} ${grouped(cycle.prompt_tokens)} prompt tokens`,
+      ]);
+    }
+    const next = handoff.successor;
+    if (next !== null) {
+      rows.push([
+        'successor',
+        `${next.turns} turns \u{b7} ${next.reread_files} rereads \u{b7} ${next.questions} ${next.questions === 1 ? 'question' : 'questions'} \u{b7} ${next.corrections} corrections`,
+      ]);
+    }
+    return rows;
+  });
+
   function reasonText(record: HandoffRecord): string {
     switch (record.reason) {
       case 'fill':
@@ -76,6 +105,11 @@
   {#if opened}
     <div class="hbody">
       <div class="meta">{meta}</div>
+      <!-- The record's own numbers, in the brief's own label/value shape:
+           what the cycle counted and how the successor went. -->
+      {#each facts as [label, value] (label)}
+        <div class="fact"><span class="k">{label}</span><span class="v">{value}</span></div>
+      {/each}
       <!-- **The recovery's own door.** `/resume` needs the whole id, and
            the closed row names both sessions short, so the open row carries
            each full id with the control that copies it. -->

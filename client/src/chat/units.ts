@@ -165,6 +165,18 @@ export interface Notice {
   chip?: string;
   /** A quieter tail under the line, which the retry line's delay rides in. */
   sub?: string;
+  /**
+   * The visible mark a PROVISIONAL row wears: the wire's own type, so a
+   * frame with no designed face is told apart from an integrated one on
+   * sight rather than by colour (Ved, 2026-10-26).
+   */
+  mark?: string;
+  /**
+   * The frame or block exactly as it arrived, behind the row's open. Set
+   * only on a provisional row, whose whole point is that the payload is
+   * reachable for the decision about what its real face should be.
+   */
+  raw?: string;
 }
 
 /**
@@ -493,6 +505,17 @@ function obj(value: unknown): Record<string, unknown> {
 }
 
 /**
+ * A row for a frame or block this build draws but has no face for.
+ *
+ * **Visible on purpose** (rule 25, Ved 2026-10-26): the mark names the
+ * wire's own type and the payload sits behind the row's open, so the gap
+ * draws itself rather than reading as a frame that never arrived.
+ */
+function provisional(mark: string, severity: NoticeSeverity, text: string, raw: unknown): Notice {
+  return { severity, text, mark, raw: JSON.stringify(raw) ?? '' };
+}
+
+/**
  * The frame a page carries, as the fields this fold reads.
  *
  * Every read is tolerant on purpose: a frame is the CLI's own message and a
@@ -533,6 +556,18 @@ interface Frame {
   max_retries?: unknown;
   retry_delay_ms?: unknown;
   error_status?: unknown;
+  /** `system/api_error`'s own attempt and wait, in the CLI's spelling. */
+  retryAttempt?: unknown;
+  maxRetries?: unknown;
+  retryInMs?: unknown;
+  /** `system/informational`'s body and level. */
+  level?: unknown;
+  content?: unknown;
+  /** `system/notification`'s body, kind and delivery priority. */
+  text?: unknown;
+  priority?: unknown;
+  /** `system/permission_denied`'s refused tool. */
+  tool_name?: unknown;
   /** The snapshot a `rate_limit_event` carries: status, window type, reset, overage. */
   rate_limit_info?: unknown;
   duration_ms?: unknown;
@@ -1727,6 +1762,14 @@ export function fold(
   let resultAt: number | null = null;
   /** What the wire reported about each backgrounded call, by call. */
   const tasks = new Map<string, TaskFact>();
+  /**
+   * The calls the CLI refused on permission grounds.
+   *
+   * **A refusal is not a result**, so no frame will ever settle the call:
+   * the mark has to be taken here, in the pass that runs before the row is
+   * built, or the refused row spins forever.
+   */
+  const denied = new Set<string>();
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
   /**
@@ -1755,6 +1798,9 @@ export function fold(
     if (frame.type === 'system') {
       const task = str(frame, 'task_id');
       const call = str(frame, 'tool_use_id');
+      if (frame.subtype === 'permission_denied' && call !== null) {
+        denied.add(call);
+      }
       if (frame.subtype === 'task_started' && call !== null) {
         if (task !== null) owners.set(task, call);
         // What the wire says about the task living past its turn, which is the
@@ -1880,6 +1926,14 @@ export function fold(
   let lastCompaction: number | null = null;
   /** The stage each notice key sits at, so a walk-back cannot soften a line. */
   const noticeStages = new Map<string, number>();
+  /**
+   * The refusal notices already drawn, by the call they name.
+   *
+   * **Keyed by the call, not by the frame.** A refusal is one fact about one
+   * call, and two frames for it would otherwise draw two rows - then two
+   * units sharing a key, which stops the whole turn from mounting.
+   */
+  const drawnDenials = new Set<string>();
 
   /**
    * Hang a skill's body on the call that loaded it.
@@ -2194,6 +2248,78 @@ export function fold(
         drawHook(key, hookRun(frame));
         continue;
       }
+      // **The system subtypes the fold had no arm for**, each a line the
+      // session was told and the reader was not. They draw provisional - the
+      // subtype as the mark, the whole frame behind the open - so the shape
+      // is visible and can be decided later rather than dropped (rule 25).
+      if (frame.subtype === 'permission_denied') {
+        const id = str(frame, 'tool_use_id');
+        const key = id === null ? keyOf(at, frame, 'permission_denied') : `denied-${id}`;
+        if (!drawnDenials.has(key)) {
+          drawnDenials.add(key);
+          const tool = str(frame, 'tool_name') ?? 'a tool';
+          const reason = str(frame, 'message') ?? str(frame, 'decision_reason') ?? '';
+          push({
+            kind: 'notice',
+            key,
+            notice: provisional(
+              'permission_denied',
+              'error',
+              `${tool} refused${reason === '' ? '' : `: ${reason}`}`,
+              frame,
+            ),
+          });
+        }
+        continue;
+      }
+      if (frame.subtype === 'api_error') {
+        const error = obj(frame.error);
+        const said = str(error, 'message') ?? str(error, 'formatted') ?? 'API request failed';
+        const status = typeof error.status === 'number' ? ` HTTP ${error.status}` : '';
+        const attempt = typeof frame.retryAttempt === 'number' ? frame.retryAttempt : null;
+        const cap = typeof frame.maxRetries === 'number' ? frame.maxRetries : null;
+        const delay = typeof frame.retryInMs === 'number' ? frame.retryInMs : null;
+        // One row per run, the way the CLI's retry line is: a storm of
+        // attempts is one incident, not a column of identical lines.
+        upsertNotice('api-error', NOTICE_STAGE.warning, {
+          ...provisional(
+            'api_error',
+            str(frame, 'level') === 'error' ? 'error' : 'warning',
+            `${said}${status}`,
+            frame,
+          ),
+          ...(attempt === null || cap === null ? {} : { chip: `attempt ${attempt} / ${cap}` }),
+          ...(delay === null ? {} : { sub: `retrying in ${retryDelay(delay)}` }),
+        });
+        continue;
+      }
+      if (frame.subtype === 'informational') {
+        const level = str(frame, 'level');
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'informational'),
+          notice: provisional(
+            'informational',
+            level === 'error' ? 'error' : level === 'warning' ? 'warning' : 'info',
+            str(frame, 'content') ?? '',
+            frame,
+          ),
+        });
+        continue;
+      }
+      if (frame.subtype === 'notification') {
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'notification'),
+          notice: provisional(
+            'notification',
+            str(frame, 'priority') === 'immediate' ? 'warning' : 'info',
+            str(frame, 'text') ?? '',
+            frame,
+          ),
+        });
+        continue;
+      }
       continue;
     }
 
@@ -2293,7 +2419,24 @@ export function fold(
       continue;
     }
 
-    if (frame.type !== 'assistant' && frame.type !== 'user') continue;
+    // **A frame type this build has no row for draws as itself** rather than
+    // vanishing: its own type is the mark and the payload is behind the open,
+    // so a frame the CLI adds is seen on the day it arrives (rule 25).
+    if (frame.type !== 'assistant' && frame.type !== 'user') {
+      const kind = typeof frame.type === 'string' && frame.type !== '' ? frame.type : 'untyped';
+      const subtype = str(frame, 'subtype');
+      push({
+        kind: 'notice',
+        key: keyOf(at, frame, 'frame'),
+        notice: provisional(
+          kind,
+          'info',
+          `unhandled frame: ${subtype === null ? kind : `${kind}/${subtype}`}`,
+          frame,
+        ),
+      });
+      continue;
+    }
 
     // What the frame attached, read before its blocks are walked: the wire
     // puts the thing AFTER the words it came with, and they are one row - so
@@ -2594,6 +2737,8 @@ export function fold(
           pending.push({ tag: 'card', card });
           continue;
         }
+        /** Whether this call is a question the CLI left unanswered. */
+        let unanswered = false;
         if (isQuestion(name)) {
           const record = records.get(id);
           const card = questionCard(
@@ -2608,7 +2753,10 @@ export function fold(
           // An omitted record is not a question nobody answered: the card has
           // no answers to read, so the call falls through to its leaf, which
           // opens on the omission rather than the row vanishing (#2374).
-          if (omittedRecord(record) === null) continue;
+          // **Anything else is a question nobody answered**, and its call row
+          // is the only trace of it - the card never drew, so dropping the
+          // call too would lose the question entirely (rule 25).
+          unanswered = omittedRecord(record) === null;
         }
         const leaf = leafOf(
           id,
@@ -2617,9 +2765,12 @@ export function fold(
           results.get(id),
           records.get(id),
           tasks.get(id),
-          abandoned,
+          // A call the CLI refused on permission grounds is settled by that
+          // refusal: no result frame follows it.
+          abandoned || denied.has(id),
           stops.settled.get(id) ?? null,
         );
+        leaf.unanswered = unanswered;
         if (name.toLowerCase() === 'skill') {
           // A skill's body follows its call as a user frame; the claim is
           // recorded here, and the body attaches to this row when it arrives.
@@ -2639,6 +2790,17 @@ export function fold(
         // turn the words above it opened, not a row of its own.
         continue;
       }
+      // A result is drawn on the call's own row, so drawing it here would be
+      // the same content twice. **Any other block type draws as itself**
+      // rather than falling out of the loop unread (rule 25).
+      if (block.type === 'tool_result') continue;
+      const kind =
+        typeof block.type === 'string' && block.type !== '' ? block.type : 'untyped block';
+      push({
+        kind: 'notice',
+        key: keyOf(at, frame, blockAt),
+        notice: provisional(kind, 'info', `unhandled content block: ${kind}`, block),
+      });
     }
 
     // A frame that attached something and said nothing is still a turn the
