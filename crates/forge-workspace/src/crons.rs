@@ -392,7 +392,7 @@ impl Workspace {
                             label = cron.team_role.as_deref().unwrap_or("lead"),
                             org = %cooling.org,
                             model = %cooling.model,
-                            tried = cooling.tried,
+                            cooling_accounts = cooling.tried,
                             reset_in_secs = cooling.reset_in.as_secs(),
                             resets_at = %reset,
                             "cron fire deferred: every account serving this project's model is \
@@ -402,8 +402,8 @@ impl Workspace {
                             severity:
                                 forge_primitives::cloud::service_status::ServiceSeverity::Warning,
                             message: format!(
-                                "Cron in '{}' deferred: {} in {} is cooling ({} account(s) \
-                                 tried); resets at {reset}",
+                                "Cron in '{}' deferred: no account serving {} in {} is free \
+                                 ({} account(s) cooling in the org); resets at {reset}",
                                 cron.project_name, cooling.model, cooling.org, cooling.tried,
                             ),
                         });
@@ -416,7 +416,7 @@ impl Workspace {
                             label = cron.team_role.as_deref().unwrap_or("lead"),
                             org = %cooling.org,
                             model = %cooling.model,
-                            tried = cooling.tried,
+                            cooling_accounts = cooling.tried,
                             reset_in_secs = cooling.reset_in.as_secs(),
                             resets_at = %reset,
                             "cron fire still deferred by the same cooling; the warning for this \
@@ -501,7 +501,7 @@ fn cooling_reset_text(reset_in: Duration, now: std::time::SystemTime) -> String 
                 since_epoch.subsec_nanos(),
             )
         })
-        .map(|at| at + chrono::TimeDelta::minutes(IST_OFFSET_MINUTES));
+        .and_then(|at| at.checked_add_signed(chrono::TimeDelta::minutes(IST_OFFSET_MINUTES)));
     match ist {
         Some(at) => format!("{} IST (in {})", at.format("%H:%M"), wait_text(reset_in)),
         None => format!("in {}", wait_text(reset_in)),
@@ -1365,10 +1365,32 @@ mod tests {
     /// Hold the fixture's one account out of the walk for `wait`, the
     /// write the usage probe's cap makes.
     fn cool_for(ws: &Workspace, wait: std::time::Duration) {
-        ws.gateway.report_probe_limit(
-            &AccountKey("acct-a".to_owned()),
-            Some(unix_now() + wait.as_secs()),
+        cool_until(ws, unix_now() + wait.as_secs());
+    }
+
+    /// Hold the fixture's one account out of the walk until `reset_epoch`.
+    fn cool_until(ws: &Workspace, reset_epoch: u64) {
+        ws.gateway.report_probe_limit(&AccountKey("acct-a".to_owned()), Some(reset_epoch));
+    }
+
+    /// `wait` from `now`, nudged to sit half a minute into a minute, so a
+    /// wall clock read for it cannot straddle a minute boundary between
+    /// the test's clock and the scheduler's own read.
+    fn reset_mid_minute(now: std::time::SystemTime, wait: std::time::Duration) -> u64 {
+        let target = now
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs()
+            + wait.as_secs();
+        target - target % 60 + 30
+    }
+
+    /// The IST wall clock a notice prints for `unix_seconds`.
+    fn ist_clock(unix_seconds: u64) -> String {
+        let at = chrono::DateTime::<chrono::Utc>::from(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(unix_seconds),
         );
+        (at + chrono::TimeDelta::minutes(5 * 60 + 30)).format("%H:%M").to_string()
     }
 
     /// End the account's cooldown, so the walk finds it again.
@@ -1382,7 +1404,10 @@ mod tests {
     ///
     /// Mutants: warn on every tick (the second fire emits another record
     /// and notice); drop the cooling detail from either line (it names no
-    /// model, org or reset); silence the repeat instead of recording it.
+    /// model, org or reset); silence the repeat instead of recording it;
+    /// print the tick's own clock instead of the reset's; reset the
+    /// re-warn marker on every pass, where the floor counts from the
+    /// repeat rather than from the warning.
     #[tokio::test]
     async fn a_cooling_walk_defers_the_cron_and_warns_once_per_episode() {
         use tracing_subscriber::layer::SubscriberExt as _;
@@ -1392,7 +1417,8 @@ mod tests {
         let mut rx = ws.subscribe();
         ws.seed_test_cron(schedule("cool", "proj", "stand-up", None));
         let now = std::time::SystemTime::now();
-        cool_for(&ws, std::time::Duration::from_secs(2 * 60 * 60));
+        let reset_epoch = reset_mid_minute(now, std::time::Duration::from_secs(2 * 60 * 60));
+        cool_until(&ws, reset_epoch);
 
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
@@ -1402,18 +1428,30 @@ mod tests {
         let warned = cooling_records(&caught, tracing::Level::WARN);
         assert_eq!(warned.len(), 1, "the first cooling tick warns once");
         let fields = &warned[0];
+        let clock = ist_clock(reset_epoch);
         assert!(fields.contains("org=TestOrg"), "the warning names the org: {fields}");
         assert!(fields.contains("model=claude-sonnet-5"), "the warning names the model: {fields}");
         assert!(
-            fields.contains("resets_at=") && fields.contains("IST"),
+            fields.contains(&format!("resets_at={clock} IST")),
             "the warning names when the reset lands: {fields}",
+        );
+        assert!(
+            fields.contains("cooling_accounts=1"),
+            "the warning counts the org's cooling accounts: {fields}",
         );
         let notices = service_notices(&mut rx);
         assert_eq!(notices.len(), 1, "and sends the client one notice: {notices:?}");
         let notice = &notices[0];
         assert!(notice.contains("claude-sonnet-5"), "the notice names the model: {notice}");
         assert!(notice.contains("TestOrg"), "the notice names the org: {notice}");
-        assert!(notice.contains("IST"), "the notice names when the reset lands: {notice}");
+        assert!(
+            notice.contains(&format!("{clock} IST")),
+            "the notice names when the reset lands: {notice}",
+        );
+        assert!(
+            notice.contains("1 account(s) cooling in the org"),
+            "and counts the accounts the walk skipped: {notice}",
+        );
 
         ws.fire_due_crons(now + std::time::Duration::from_secs(61));
         assert_eq!(
@@ -1428,7 +1466,9 @@ mod tests {
         );
         assert!(service_notices(&mut rx).is_empty(), "and sends the client nothing");
 
-        ws.fire_due_crons(now + std::time::Duration::from_secs(30 * 60 + 61));
+        // 1860 s after the warning and 1799 s after the repeat: a floor
+        // counted from the repeat would stay silent here.
+        ws.fire_due_crons(now + std::time::Duration::from_secs(30 * 60 + 60));
         assert_eq!(
             cooling_records(&caught, tracing::Level::WARN).len(),
             2,
@@ -1492,12 +1532,23 @@ mod tests {
     }
 
     /// A reset no clock can spell still names the wait, rather than
-    /// panicking the scheduler that prints it.
+    /// panicking the scheduler that prints it: one past the end of
+    /// `SystemTime`, and one whose IST offset runs past the last instant
+    /// chrono can hold.
     #[test]
     fn an_unformattable_reset_falls_back_to_the_wait() {
-        let text = cooling_reset_text(Duration::MAX, std::time::SystemTime::now());
-        assert!(text.starts_with("in "), "the wait survives without a clock: {text}");
-        assert!(!text.contains("IST"), "and no wall clock is claimed: {text}");
+        let last_second = chrono::DateTime::<chrono::Utc>::MAX_UTC.timestamp();
+        let near_the_end = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(
+                u64::try_from(last_second - 60).expect("a positive second count"),
+            );
+        for (reset_in, now) in
+            [(Duration::MAX, std::time::SystemTime::now()), (Duration::from_secs(60), near_the_end)]
+        {
+            let text = cooling_reset_text(reset_in, now);
+            assert!(text.starts_with("in "), "the wait survives without a clock: {text}");
+            assert!(!text.contains("IST"), "and no wall clock is claimed: {text}");
+        }
     }
 
     #[test]
