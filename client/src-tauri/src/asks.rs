@@ -19,7 +19,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use forge_primitives::SessionSlot;
-use serde::Deserialize;
 use serde_json::Value;
 
 /// Whether the app is in front, as the platform reports it.
@@ -44,8 +43,7 @@ pub(crate) fn foreground() -> bool {
 }
 
 /// The kind of ask a roster row reports, on the wire's own names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AskKind {
     Question,
     Permission,
