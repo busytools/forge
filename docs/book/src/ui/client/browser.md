@@ -45,7 +45,7 @@ in-process node any more.
 | The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's and the web page's canvas |
 | The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide**. **The row is drawn only while the profile has a tab**: a browser nothing has invoked is no row at all | the `browser_tabs` ask and its pushed frame |
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
-| The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on both platforms, or `nothing to run a page` | the tab list |
+| The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on every client, or `nothing to run a page` | the tab list |
 | The states | `opening the browser…`, the server's sentence when it failed, the host's own death sentence - `the browser host exited (signal 9; pid 1234); the next call brings it back` - when a host dies under the surface (the cause is a signal or an exit code), and the page's own error page when a load fails | the page's surface state, and the server's failure frame |
 | A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, or a page area that could not be placed | the attach's answer and the surface's failure frame |
 
@@ -113,10 +113,11 @@ tab, which replaces what this connection was watching.
 **The picture is the server's own frame.** The host paints windowless and
 encodes a WebP still; the server relays the newest frame for the viewed tab
 to each viewer, and the client decodes it - into a layer at the page area's
-rect on the desktop, onto a canvas on the phone and on the web. **Both keep the picture's
-shape**: a frame laid out for another viewer's surface is fitted with bars
-rather than stretched, and taking control lays the page out at this surface's
-shape so the bars fall away. There is no screen capture anywhere, so the
+rect on the desktop, onto a canvas on the phone and on the web. **Every client
+keeps the picture's shape**: a frame laid out for another viewer's surface is
+fitted with bars rather than stretched, and taking control (or, on the web, a
+watcher with nobody driving) lays the page out at this surface's shape so the
+bars fall away. There is no screen capture anywhere, so the
 Screen Recording grant, the picker and its monthly re-approval are not part
 of this surface.
 
