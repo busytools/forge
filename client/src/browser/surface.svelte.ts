@@ -327,6 +327,12 @@ export async function selectTab(tab: number | null): Promise<string | null> {
     if (mine !== generation) return answer;
     surface.phase = 'failed';
     surface.reason = answer;
+    // **A pick that failed left the dead connection's role and arrows
+    // behind**: nothing is attached to be driven, and no page is there to
+    // move through, so the bar draws neither.
+    surface.viewer = null;
+    surface.controller = null;
+    surface.nav = { can_back: false, can_forward: false };
     return answer;
   }
   if (mine !== generation) return null;

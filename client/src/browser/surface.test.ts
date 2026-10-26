@@ -180,6 +180,26 @@ describe('the browser surface', () => {
     expect(surface.tab).toBe(4);
   });
 
+  /// **A pick that failed leaves no role behind**: the attach died with its
+  /// connection, so the bar must draw neither a viewer, a controller, nor
+  /// arrows for a page that is not there.
+  it('clears the dead connection role and arrows when a pick fails', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', seat, 1);
+    surface.viewer = 7;
+    surface.controller = 7;
+    surface.nav = { can_back: true, can_forward: true };
+    show.mockResolvedValueOnce('the browser host exited');
+    expect(await selectTab(2)).toBe('the browser host exited');
+    expect(surface.viewer, 'no viewer survives a failed pick').toBeNull();
+    expect(surface.controller, 'no controller survives a failed pick').toBeNull();
+    expect(surface.nav, 'no arrows survive a failed pick').toEqual({
+      can_back: false,
+      can_forward: false,
+    });
+  });
+
   /// **A pick superseded by a newer open is not the surface's to change.**
   /// Neither its refusal nor its success may revive or move what the open
   /// put up.
