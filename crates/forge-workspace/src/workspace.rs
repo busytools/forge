@@ -4790,7 +4790,18 @@ impl Workspace {
     fn release_browser_seat(&self, seat: &SessionSlot) {
         let Some(host) = self.browser_host() else { return };
         host.session_ended(seat);
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            // **The tombstone landed; the tab close did not.** A close
+            // called off a runtime thread leaves the seat's tabs to the next
+            // sweep, and says so rather than returning silently.
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                seat = %seat.display(),
+                "a seat ended but its browser tab replacement could not be spawned \
+                 (event_name browser_seat_end_without_replacement)"
+            );
+            return;
+        };
         let seat = seat.clone();
         runtime.spawn(async move { host.replace_seat(&seat).await });
     }
@@ -15751,23 +15762,32 @@ provider = "anthropic"
         );
         // **Every closed seat is ended and takes its tabs with it**, the
         // cascaded workers' included: the fleet hears the session-ended fact
-        // for the lead and each worker, and a replacement for each.
-        let mut replaced = Vec::new();
-        let mut ended = Vec::new();
+        // for the lead and each worker, and a replacement for each. **The
+        // order is part of the contract**: a seat's end is told before its
+        // replacement is asked for.
+        let mut calls: Vec<(String, serde_json::Value)> = Vec::new();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while (replaced.len() < 3 || ended.len() < 3) && tokio::time::Instant::now() < deadline {
+        while tokio::time::Instant::now() < deadline {
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
             let Ok(Some((what, args))) = tokio::time::timeout(left, heard.recv()).await else {
                 break;
             };
             match what.as_str() {
-                "replace_seat" => replaced.push(args),
-                "session_ended" => ended.push(args),
+                "replace_seat" | "session_ended" => calls.push((what, args)),
                 other => panic!("unexpected fleet call {other}"),
             }
+            let count = |name: &str| calls.iter().filter(|(what, _)| what == name).count();
+            if count("replace_seat") >= 3 && count("session_ended") >= 3 {
+                break;
+            }
         }
+        let named = |name: &str| -> Vec<serde_json::Value> {
+            calls.iter().filter(|(what, _)| what == name).map(|(_, args)| args.clone()).collect()
+        };
+        let replaced = named("replace_seat");
+        let ended = named("session_ended");
         assert_eq!(replaced.len(), 3, "every closed seat is replaced: {replaced:?}");
-        assert_eq!(ended.len(), 3, "and every one is ended first: {ended:?}");
+        assert_eq!(ended.len(), 3, "and every one is ended: {ended:?}");
         assert!(
             replaced.contains(&serde_json::json!(lead_key)),
             "the lead's seat is replaced: {replaced:?}",
@@ -15776,6 +15796,17 @@ provider = "anthropic"
             ended.contains(&serde_json::json!(lead_key)),
             "the lead's end is told, not inferred: {ended:?}",
         );
+        for (at, (what, seat)) in calls.iter().enumerate() {
+            if what != "session_ended" {
+                continue;
+            }
+            let replaced_at =
+                calls.iter().position(|(other, args)| other == "replace_seat" && args == seat);
+            assert!(
+                replaced_at.is_some_and(|replaced_at| replaced_at > at),
+                "seat {seat} is ended before its replacement is asked for",
+            );
+        }
 
         // Drain the channel and confirm we saw a Removed
         // WorkerStatusChanged for each worker.

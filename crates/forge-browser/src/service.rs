@@ -570,7 +570,15 @@ impl BrowserService {
     }
 
     pub async fn sweep_sessions(&self, seats: &[SessionSlot]) {
-        let ended = self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let ended = {
+            let mut ended = self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner);
+            // **A seat the sweep did not see is gone for good** (a worker's
+            // label is unique per spawn), so its tombstone is dropped. A
+            // configured seat the sweep still lists keeps its tombstone:
+            // that is what stops a closed lead coming back.
+            ended.retain(|seat| seats.contains(seat));
+            ended.clone()
+        };
         *self.live.lock().unwrap_or_else(PoisonError::into_inner) =
             seats.iter().filter(|seat| !ended.contains(*seat)).cloned().collect();
         let held = self.holds.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -582,7 +590,10 @@ impl BrowserService {
                     .into_iter()
                     .filter(|tab| {
                         tabs.owner(*tab).is_some_and(|owner| {
-                            !seats.contains(owner) && !held.contains(&(owner.clone(), *tab))
+                            // **A tombstoned owner is gone even when the
+                            // configured seat is still listed.**
+                            (!seats.contains(owner) || ended.contains(owner))
+                                && !held.contains(&(owner.clone(), *tab))
                         })
                     })
                     .collect()
@@ -668,8 +679,15 @@ impl BrowserService {
         if !owned {
             return;
         }
-        let gone = self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner).contains(seat)
-            || !self.live.lock().unwrap_or_else(PoisonError::into_inner).contains(seat);
+        let ended = {
+            let ended = self.ended_slots.lock().unwrap_or_else(PoisonError::into_inner);
+            ended.contains(seat)
+        };
+        let live = {
+            let live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+            live.contains(seat)
+        };
+        let gone = ended || !live;
         if gone {
             self.orphan_tab(&profile, tab).await;
         }
@@ -897,11 +915,12 @@ impl BrowserService {
                 .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
             (host.port, host.input.clone())
         };
-        // **A birth queued before this request is not this request's.** A
-        // popup the host reported earlier can still be sitting in the queue;
-        // draining it first means only births AFTER the send can occupy a
-        // new-page slot, which is what the snapshot below counts. Rule 25:
-        // the drained events go to the deferred list, not away.
+        // **A birth already in this queue is not this request's.** A popup
+        // the host reported earlier can still be sitting here; draining it
+        // first keeps it out of the new-page slots the snapshot below
+        // counts. A birth still in the reader thread can land after the
+        // snapshot and produce a spurious pairing error, never a wrong
+        // pairing. Rule 25: the drained events go to the deferred list.
         let generation = profile.host_generation.load(Ordering::Acquire);
         {
             let mut queue = profile.host_tab_events.lock().await;
@@ -1560,7 +1579,7 @@ impl BrowserService {
         let why = match outcome {
             Ok(parts) => {
                 let mut state = profile.state.lock().await;
-                if state.chooser_generation == generation {
+                if state.driver_generation == generation {
                     state.stale_since = None;
                 }
                 return Ok(parts);
@@ -1627,7 +1646,7 @@ impl BrowserService {
         let _decision = profile.file_decision.lock().await;
         let host = {
             let mut state = profile.state.lock().await;
-            if state.chooser_generation != generation {
+            if state.driver_generation != generation {
                 // A newer driver is installed: this call's failure says
                 // nothing about the browser now serving the profile, and no
                 // host was ended for it.
@@ -1640,6 +1659,17 @@ impl BrowserService {
                 watch.abort();
             }
             profile.clear_chooser_state();
+            // **The sentence goes out before the tab senders close**, so a
+            // viewer reads why the browser went rather than "tab N was
+            // closed".
+            profile.failures.send_replace(Some(format!(
+                "the browser host (pid {pid}, port {port}) stopped answering and was ended; the \
+                 next call brings it back"
+            )));
+            // **A wedged host takes its numbers with it**: its tab registry,
+            // boot marker and deferred births must not survive into a
+            // successor that restarts tab numbering from one.
+            profile.host_gone();
             state.host.take()
         };
         profile.up.store(false, Ordering::Release);
@@ -1651,10 +1681,6 @@ impl BrowserService {
         if let Some(reader) = host.reader {
             reader.stop();
         }
-        profile.failures.send_replace(Some(format!(
-            "the browser host (pid {pid}, port {port}) stopped answering and was ended; the next \
-             call brings it back"
-        )));
         ended
     }
 
@@ -1685,7 +1711,7 @@ impl BrowserService {
             // **A newer driver is not this call's to clear.** The call drove
             // the generation it captured at its lookup; a driver installed
             // since then is serving the profile now.
-            if state.chooser_generation != generation {
+            if state.driver_generation != generation {
                 log_rebuild(profile, tool, "not this call's generation", why);
                 return Err(why.to_owned());
             }
@@ -3210,7 +3236,7 @@ impl Profile {
         // **A chooser from a replaced driver is not published.** Its ask's id
         // belongs to a driver that no longer exists, and answering it would
         // cancel the next real chooser as that stale id.
-        if self.state.lock().await.chooser_generation != generation {
+        if self.state.lock().await.driver_generation != generation {
             tracing::debug!(
                 "a chooser from a replaced driver is dropped (event_name \
                  browser_file_chooser_stale, profile {})",
@@ -3446,7 +3472,7 @@ impl Profile {
         let mut choosers = driver.file_choosers();
         let this = Arc::clone(self);
         let generation = installed_generation(state);
-        state.chooser_generation = generation;
+        state.driver_generation = generation;
         tokio::spawn(async move {
             loop {
                 match choosers.recv().await {
@@ -4102,7 +4128,7 @@ struct State {
     driver: Option<Arc<dyn TabDriver>>,
     /// Bumped whenever a driver is installed, so a call's dead-driver clear
     /// cannot wipe a newer driver's handle started in between.
-    chooser_generation: u64,
+    driver_generation: u64,
     /// When this profile last rebuilt its driver after a dead page context;
     /// the cooldown stops a browser that stays dead costing a driver start
     /// on every call.
@@ -4161,7 +4187,7 @@ fn note_upload_finished(profile: &Profile, _upload: &UploadRequest, ok: bool) {
 /// The generation is bumped on every install, so a clear aimed at a dead
 /// driver cannot wipe a newer driver's handle started in between.
 fn clear_if_dead(state: &mut State, generation: u64, alive: bool, profile: &Profile) -> bool {
-    if alive || state.chooser_generation != generation {
+    if alive || state.driver_generation != generation {
         return false;
     }
     state.driver = None;
@@ -4173,13 +4199,13 @@ fn clear_if_dead(state: &mut State, generation: u64, alive: bool, profile: &Prof
 /// up. A driver installed after this is not the one the call saw, so a clear
 /// or rebuild aimed at this call must not touch it.
 fn captured_generation(state: &State) -> u64 {
-    state.chooser_generation
+    state.driver_generation
 }
 
 /// The generation a fresh install takes: one past the current, so a clear
 /// aimed at the old one can never match the new driver.
 fn installed_generation(state: &State) -> u64 {
-    state.chooser_generation.wrapping_add(1)
+    state.driver_generation.wrapping_add(1)
 }
 
 /// Whether repeating a tool call cannot land twice on the page.
@@ -4397,16 +4423,22 @@ fn pair_tab_events(
 ) -> Vec<(u64, HostEvent)> {
     let mut unmatched = Vec::new();
     for (event_generation, event) in events {
-        // **A receiver that was replaced speaks for a dead host.** Its tab
-        // numbers belong to a registry this profile no longer holds, so an
-        // event from another generation is refused rather than paired.
-        if event_generation != generation {
+        // **An older receiver speaks for a dead host.** Its tab numbers
+        // belong to a registry this profile no longer holds, so it is
+        // dropped. **A newer one is the successor's**: this pass pairs with
+        // the old listing and must not touch it, so it goes back for the
+        // next pass, which will carry its generation.
+        if event_generation < generation {
             tracing::debug!(
                 event_name = "browser_tab_event_stale_generation",
                 event_generation,
                 generation,
                 "a tab event from a replaced host is dropped"
             );
+            continue;
+        }
+        if event_generation > generation {
+            unmatched.push((event_generation, event));
             continue;
         }
         match event {
@@ -4771,7 +4803,7 @@ mod tests {
         service.take_control("TestOrg/default", tab, 7).await.expect("the role");
         // The profile's installed driver is generation 2; the chooser below
         // was read from the driver generation 1 replaced.
-        profile.state.lock().await.chooser_generation = 2;
+        profile.state.lock().await.driver_generation = 2;
 
         let chooser =
             || FileChooser { multiple: false, current: true, url: "http://x/".to_owned() };
@@ -5333,7 +5365,7 @@ mod tests {
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
 
         // A newer driver installed after the call's lookup: generation 2.
-        let mut state = State { chooser_generation: 2, ..Default::default() };
+        let mut state = State { driver_generation: 2, ..Default::default() };
         assert!(
             !clear_if_dead(&mut state, 1, false, &profile),
             "a newer generation is not the dead one",
@@ -5345,7 +5377,7 @@ mod tests {
         );
 
         // The same generation, dead: cleared. A live driver is left alone.
-        let mut state = State { chooser_generation: 1, ..Default::default() };
+        let mut state = State { driver_generation: 1, ..Default::default() };
         assert!(clear_if_dead(&mut state, 1, false, &profile), "the dead generation is cleared");
         assert!(profile.files.borrow().is_none());
         assert!(profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner).is_none());
@@ -5357,10 +5389,10 @@ mod tests {
     /// generation can never match the driver that replaced it.
     #[test]
     fn a_capture_and_an_install_are_adjacent_generations() {
-        let mut state = State { chooser_generation: 7, ..Default::default() };
+        let mut state = State { driver_generation: 7, ..Default::default() };
         assert_eq!(captured_generation(&state), 7, "a call carries the installed generation");
         assert_eq!(installed_generation(&state), 8, "an install moves one past it");
-        state.chooser_generation = u64::MAX;
+        state.driver_generation = u64::MAX;
         assert_eq!(installed_generation(&state), 0, "the counter wraps rather than panicking");
     }
 
@@ -5385,7 +5417,7 @@ mod tests {
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
         // A newer driver is installed: generation 2.
-        profile.state.lock().await.chooser_generation = 2;
+        profile.state.lock().await.driver_generation = 2;
 
         let why = service
             .after_failure(
@@ -5455,14 +5487,14 @@ mod tests {
         *profile.playwright_ask.lock().unwrap_or_else(PoisonError::into_inner) = Some(5);
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        profile.state.lock().await.chooser_generation = 1;
+        profile.state.lock().await.driver_generation = 1;
 
         // The rebuild parks on the file decision this test holds; while it
         // waits, a newer driver installs.
         let held = profile.file_decision.lock().await;
         let bump = async {
             tokio::task::yield_now().await;
-            profile.state.lock().await.chooser_generation = 2;
+            profile.state.lock().await.driver_generation = 2;
             drop(held);
         };
         let no_args = json!({});
@@ -5498,7 +5530,7 @@ mod tests {
         profile.files.send_replace(Some(BrowserFileAsk { id: 5, tab: 1, multiple: false }));
         let calls: Arc<dyn ChooserAnswer> = Arc::new(InstantAnswer);
         *profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        profile.state.lock().await.chooser_generation = 2;
+        profile.state.lock().await.driver_generation = 2;
 
         assert!(
             !service.end_wedged_host(&profile, 1, 1, 9).await,
@@ -6632,13 +6664,25 @@ mod tests {
         assert_eq!(tabs.number_of("p2"), Some(2));
         assert_eq!(tabs.owner(2), Some(&seat), "the opener's owner");
 
-        // **A replaced receiver's close cannot close the successor's tab.**
-        // Tab 1 is live on generation 1; a close from generation 0 names a
-        // tab the registry no longer holds and is refused by generation.
-        let stale = crate::control::HostEvent::TabClosed { tab: 1 };
+        // **An older receiver's close cannot close a live tab.** The close
+        // names tab 2, which generation 1 holds; a generation-0 close is
+        // refused, so the guard is what keeps it.
+        let stale = crate::control::HostEvent::TabClosed { tab: 2 };
         let waiting = pair_tab_events(&mut tabs, &listing, vec![(0, stale)], 1);
         assert!(waiting.is_empty(), "a stale close is dropped, not re-deferred");
-        assert_eq!(tabs.number_of("p2"), Some(2), "and the live tab survives it");
+        assert_eq!(tabs.number_of("p2"), Some(2), "the live tab survives the stale close");
+
+        // **A NEWER receiver is the successor's**, not a stale one: its
+        // events go back for the next pass, which will carry its generation,
+        // rather than being dropped here or paired with this pass's listing.
+        let successor = crate::control::HostEvent::TabClosed { tab: 2 };
+        let waiting = pair_tab_events(&mut tabs, &listing, vec![(2, successor.clone())], 1);
+        assert_eq!(
+            waiting,
+            vec![(2, successor)],
+            "a newer generation is re-deferred, not paired or dropped"
+        );
+        assert_eq!(tabs.number_of("p2"), Some(2), "and this pass leaves the tab alone");
     }
 
     /// **A stale listing is a stale driver.** The `_page` error drops the
