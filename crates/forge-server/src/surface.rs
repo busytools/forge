@@ -287,6 +287,14 @@ impl ViewSurface {
         self.workspace.note_client_detached();
     }
 
+    /// Watch the `[client]` settings a connection greets with, so a reload
+    /// re-sends the greeting to every live connection.
+    pub fn client_settings_watch(
+        &self,
+    ) -> tokio::sync::watch::Receiver<forge_primitives::ClientConfig> {
+        self.workspace.client_settings_watch()
+    }
+
     /// One document, read out of the seat's own tree for a viewer's route.
     ///
     /// `path` resolves against the session's working directory and

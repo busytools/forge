@@ -1,10 +1,11 @@
 # forge.toml reference
 
 `forge.toml` is the only file forge reads for configuration. It is
-hand-authored, forge never writes to it, and it is read once, at
-startup. An edit therefore needs a forge restart to take effect: a
-session spawned later in the same run still sees the value forge loaded
-at boot.
+hand-authored, and forge never writes to it. A change is picked up while
+forge runs: the server watches this one file, re-reads it whole, and
+applies what can take effect without a restart. A running session keeps
+the account, model, mode, cwd and environment it spawned with; new
+sessions and each subsystem's next use read the new values.
 
 ## Where it lives
 
@@ -838,6 +839,44 @@ theme = "dark"
 max_size_mib = 10
 ```
 
+## Reloading an edit
+
+forge watches `<config_dir>/forge/forge.toml` itself, never the directory:
+nothing else in that tree can trigger a reload. An atomic save (a temporary
+file renamed over the path) and a sync tool's incoming change both count,
+because the watch is re-armed on the path after every event. About half a
+second after a burst of writes the server reads the whole file and validates
+it.
+
+A file that does not parse is rejected whole: one warning names the path and
+the error, and the last good config stays live. No partial application. Once
+a file is accepted, what forge holds equals what a restart on that file would
+load.
+
+| Table or key | Takes effect |
+| --- | --- |
+| `[[orgs]]`, `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile` | Live. The roster, pins and next spawn read the new values. An added project with `auto_start = true` starts. A removed project leaves the roster; sessions already running keep running. |
+| `[[accounts]]` - `display_name`, `provider`, `token`, `base_url`, `models`, `model_slugs`, `model_aliases`, `env` | Live. The pool gains, changes or drops accounts. New sessions use the new tokens, running sessions keep theirs, and usage probes follow the new set. |
+| `[env]` | Live. Folded into each account's env at load, so the next spawn carries it. |
+| `[models."<name>"]` | Live. The next spawn stamps the new parameters. |
+| `[handoff]` | Live. The next handoff reads it. |
+| `[dictate]` | Live. The next model load or path resolution uses it. |
+| `[systemone]` | Live. The client is rebuilt, so the next tool call uses it. |
+| `[plugins] auto_update` | Live for the pane's display; the auto-update run itself is a boot-time act, so a change takes effect at the next boot. |
+| `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. The rotation numbers are replaced. |
+| `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
+| `[server] tool_record_cap_kb`, `first_frame_cap_kb` | Live. The next page, `more` or live frame is bounded by the new value. |
+| `[server] enabled`, `bind`, `port` | Restart-only. Stored and named in the log; forge never rebinds a live socket. |
+| `[browser] fps`, `quality`, `idle_minutes` | Live. The running service reads the new encoding and idle clock. |
+| `[client] mark`, `theme`, `font` | Live. Every connected client is re-sent its greeting with the new sets. |
+| `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
+| `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |
+| `[gotify]`, `[[slack]]` | Restart-only. Their connections were captured when the subsystem started; the log names them. |
+
+**A running session is never reconfigured.** Its account, model, permission
+mode, cwd and environment stay what they spawned with. To pick up a changed
+variable, close that session and start it again.
+
 ## What forge does at startup
 
 `forge <PROJECT>` opens the named project. The name must match a
@@ -879,7 +918,8 @@ The socket comes up on `[server] bind:port` during the same boot, unless
 ## Config versus state
 
 `forge.toml` is the config half. It is read-only from forge's point of
-view, which makes it safe to sync between machines.
+view - forge re-reads it on a change but never writes it - which makes it
+safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack

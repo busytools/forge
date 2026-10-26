@@ -506,7 +506,7 @@ impl Workspace {
     /// `[[slack]]` entry: the followed set is per workspace, so its window
     /// is too. A workspace whose entry is gone keeps the default.
     fn slack_thread_idle_days(&self, workspace: &str) -> u64 {
-        self.config
+        self.config_arc()
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -517,7 +517,7 @@ impl Workspace {
     /// `[[slack]]` entry. A workspace whose entry is gone keeps the default.
     pub(crate) fn slack_stale_after(&self, workspace: &str) -> Duration {
         let hours = self
-            .config
+            .config_arc()
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -1078,8 +1078,9 @@ impl Workspace {
             guard.insert(label.clone(), shutdown_tx);
             drop(guard);
 
+            let config = self.config_arc();
             let entry =
-                self.config.slack.iter().find(|config| config.workspace.trim() == label.as_str());
+                config.slack.iter().find(|config| config.workspace.trim() == label.as_str());
             let poll_seconds = entry.map_or(DEFAULT_POLL_SECONDS, |config| config.poll_seconds);
             // Clamped because the two clocks share one token's allowance: a
             // value below the floor is the overrun the key exists to prevent.
@@ -1144,8 +1145,8 @@ impl SlackSubsystemHost {
 impl SlackHost for SlackSubsystemHost {
     fn client(&self, workspace: &str, timeout: Duration) -> Result<Arc<dyn SlackApi>, String> {
         let ws = self.0.upgrade().ok_or("the workspace is gone")?;
-        let config = ws
-            .config
+        let config = ws.config_arc();
+        let entry = config
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -1154,7 +1155,7 @@ impl SlackHost for SlackSubsystemHost {
             forge_agent::http_trust::with_extra_roots(reqwest::Client::builder().timeout(timeout))
                 .build()
                 .map_err(|error| error.to_string())?;
-        Ok(Arc::new(SlackClient::new(http, config.token.clone())))
+        Ok(Arc::new(SlackClient::new(http, entry.token.clone())))
     }
 
     fn user_id(&self, workspace: &str) -> Option<String> {

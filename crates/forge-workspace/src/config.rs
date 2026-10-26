@@ -749,6 +749,131 @@ impl std::fmt::Debug for LoadedConfig {
     }
 }
 
+/// What one `forge.toml` reload changed, in the terms the boot's log line
+/// reads: the tables whose new values are live from their next use, and the
+/// keys whose values are stored but need a restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigReload {
+    pub changed: Vec<&'static str>,
+    pub restart_only: Vec<&'static str>,
+}
+
+impl LoadedConfig {
+    /// The reload summary between this load and `next`.
+    pub(crate) fn diff(&self, next: &Self) -> ConfigReload {
+        fn mark(list: &mut Vec<&'static str>, name: &'static str, differs: bool) {
+            if differs {
+                list.push(name);
+            }
+        }
+
+        let mut reload = ConfigReload::default();
+        mark(&mut reload.changed, "accounts", !same_accounts(&self.accounts, &next.accounts));
+        mark(
+            &mut reload.changed,
+            "orgs",
+            !same_projects(&self.projects, &next.projects)
+                || self.org_browser_profiles != next.org_browser_profiles
+                || self.default_index != next.default_index,
+        );
+        mark(&mut reload.changed, "models", !same_models(&self.models, &next.models));
+        mark(&mut reload.changed, "handoff", self.handoff != next.handoff);
+        mark(&mut reload.changed, "dictate", self.dictate != next.dictate);
+        mark(&mut reload.changed, "systemone", self.systemone != next.systemone);
+        mark(&mut reload.changed, "plugins", self.plugins.auto_update != next.plugins.auto_update);
+        mark(
+            &mut reload.changed,
+            "server",
+            self.server.tool_record_cap_kb != next.server.tool_record_cap_kb
+                || self.server.first_frame_cap_kb != next.server.first_frame_cap_kb,
+        );
+        mark(&mut reload.changed, "client", !same_client(&self.client, &next.client));
+        mark(&mut reload.changed, "browser", self.browser != next.browser);
+        mark(&mut reload.changed, "documents", self.document_max_bytes != next.document_max_bytes);
+        mark(&mut reload.changed, "usage", self.usage_poll_interval != next.usage_poll_interval);
+        mark(&mut reload.changed, "gateway", self.gateway_rotation != next.gateway_rotation);
+
+        mark(
+            &mut reload.restart_only,
+            "server.enabled",
+            self.server.enabled != next.server.enabled,
+        );
+        mark(&mut reload.restart_only, "server.bind", self.server.bind != next.server.bind);
+        mark(&mut reload.restart_only, "server.port", self.server.port != next.server.port);
+        mark(&mut reload.restart_only, "gateway.port", self.gateway_port != next.gateway_port);
+        mark(&mut reload.restart_only, "gotify", self.gotify != next.gotify);
+        mark(&mut reload.restart_only, "slack", !same_slack(&self.slack, &next.slack));
+        reload
+    }
+}
+
+/// Accounts in declaration order. The env map is compared whole because the
+/// token is folded into it at load, so a re-minted credential reads as a
+/// change here.
+fn same_accounts(previous: &[LoadedAccount], next: &[LoadedAccount]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(old, new)| {
+            old.display_name == new.display_name
+                && old.provider == new.provider
+                && old.base_url == new.base_url
+                && old.models == new.models
+                && old.model_slugs == new.model_slugs
+                && old.model_aliases == new.model_aliases
+                && old.env == new.env
+        })
+}
+
+fn same_projects(previous: &[LoadedProject], next: &[LoadedProject]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(old, new)| {
+            old.name == new.name
+                && old.path == new.path
+                && old.display_path == new.display_path
+                && old.org == new.org
+                && old.accounts == new.accounts
+                && old.fallback_accounts == new.fallback_accounts
+                && old.auto_start == new.auto_start
+                && old.model == new.model
+                && old.env == new.env
+                && old.max_workers == new.max_workers
+                && old.permission_mode == new.permission_mode
+                && old.vault_roots == new.vault_roots
+                && old.handoff == new.handoff
+                && old.browser_profile == new.browser_profile
+        })
+}
+
+fn same_models(
+    previous: &HashMap<String, ModelSettings>,
+    next: &HashMap<String, ModelSettings>,
+) -> bool {
+    previous.len() == next.len()
+        && previous.iter().all(|(name, settings)| {
+            next.get(name)
+                .is_some_and(|other| other.auto_compact_window == settings.auto_compact_window)
+        })
+}
+
+fn same_client(previous: &ClientConfig, next: &ClientConfig) -> bool {
+    previous.mark == next.mark
+        && previous.theme == next.theme
+        && previous.font == next.font
+        && previous.browser_idle_minutes == next.browser_idle_minutes
+        && previous.browser_grace_minutes == next.browser_grace_minutes
+}
+
+fn same_slack(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(old, new)| {
+            old.workspace == new.workspace
+                && old.token == new.token
+                && old.poll_seconds == new.poll_seconds
+                && old.dm_poll_seconds == new.dm_poll_seconds
+                && old.thread_idle_days == new.thread_idle_days
+                && old.stale_after_hours == new.stale_after_hours
+        })
+}
+
 /// The port the gateway's listener binds when `[gateway] port` is
 /// absent. Fixed, not OS-assigned: every session's base URL names it,
 /// so a drift would point children at an address nothing serves.

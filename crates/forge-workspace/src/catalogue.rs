@@ -453,7 +453,8 @@ impl Default for CatalogueState {
 impl crate::Workspace {
     /// Everything the models page draws.
     pub fn dictate_models(&self) -> DictateModelsSnapshot {
-        let settings = &self.config.dictate;
+        let config = self.config_arc();
+        let settings = &config.dictate;
         let active = self.active_models();
         let specs: Vec<(DictateRole, ModelSpec)> =
             active.iter().map(|(role, model)| (*role, model.spec.clone())).collect();
@@ -490,7 +491,7 @@ impl crate::Workspace {
     /// and the fetch never is: it is what the state's [`CatalogueCheck`]
     /// reports on.
     pub fn start_dictate_catalogue(self: &std::sync::Arc<Self>) {
-        if !self.config.dictate.enabled {
+        if !self.config_arc().dictate.enabled {
             return;
         }
         match self.catalogue_dir() {
@@ -540,7 +541,7 @@ impl crate::Workspace {
     pub(crate) fn check_dictate_catalogue(
         self: &std::sync::Arc<Self>,
     ) -> Result<(), crate::DispatchError> {
-        if !self.config.dictate.enabled {
+        if !self.config_arc().dictate.enabled {
             return Err(crate::DispatchError::DictateOff);
         }
         if !self.spawn_catalogue_refresh() {

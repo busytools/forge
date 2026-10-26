@@ -1666,7 +1666,7 @@ pub(crate) fn handle_spawn_worker(
         charter: Some(spawn_prompt_charter(
             &charter,
             families.as_deref(),
-            workspace.systemone.is_some(),
+            workspace.systemone.read().is_some(),
         )),
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()

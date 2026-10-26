@@ -145,10 +145,13 @@ pub use forge_agent::transcript_rows;
 // re-exports from `forge_primitives`; the modules also surface a
 // handful of helper functions / network fetchers that genuinely live
 // in `forge-agent`.
-pub use config::{BrowserSettings, PluginSettings};
+pub use config::{BrowserSettings, ConfigReload, PluginSettings};
 pub mod env {
     pub mod cli_version {
         pub use forge_agent::env::cli_version::*;
+    }
+    pub mod config_watch {
+        pub use forge_agent::env::config_watch::*;
     }
     pub mod documents {
         pub use forge_agent::env::documents::*;

@@ -3501,7 +3501,6 @@ mod tests {
             work,
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3618,7 +3617,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3651,7 +3649,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3699,7 +3696,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3735,7 +3731,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3778,7 +3773,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3821,7 +3815,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3870,7 +3863,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3923,7 +3915,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3990,7 +3981,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4029,7 +4019,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4079,7 +4068,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4204,7 +4192,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4358,7 +4345,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4442,7 +4428,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4789,7 +4774,6 @@ mod tests {
             work,
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4834,7 +4818,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4940,7 +4923,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4975,7 +4957,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5266,7 +5247,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5315,7 +5295,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5476,7 +5455,6 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5509,7 +5487,6 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5591,7 +5568,6 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5618,7 +5594,6 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5647,7 +5622,6 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5727,7 +5701,6 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5792,7 +5765,6 @@ mode = \"toggle\"
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };

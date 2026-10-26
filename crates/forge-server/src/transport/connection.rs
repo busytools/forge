@@ -404,12 +404,51 @@ pub async fn upgrade(
         .on_upgrade(move |socket| greet(socket, state, peer))
 }
 
+/// The frame that tells a client it is speaking to a forge and carries the
+/// `[client]` sets it draws with. Built from whichever settings are current,
+/// so a reload can re-send it to a connection that is already open.
+fn greeting_for(client: &forge_primitives::ClientConfig, state: &TransportState) -> ServerMessage {
+    ServerMessage::Greeting {
+        version: PROTOCOL_VERSION,
+        forge_version: crate::FORGE_VERSION.to_owned(),
+        forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
+        settings: ClientSettings::new(client, state.surface.dictate_axes()),
+    }
+}
+
+/// Wait for a `[client]` settings change on a connection's own watch. A
+/// receiver whose sender is gone parks rather than spinning; the sender
+/// lives with the workspace, so that is a shutdown rather than a reload.
+async fn next_client_settings(
+    settings: &mut Option<tokio::sync::watch::Receiver<forge_primitives::ClientConfig>>,
+) -> Option<forge_primitives::ClientConfig> {
+    let changed = {
+        let Some(receiver) = settings.as_mut() else {
+            std::future::pending::<()>().await;
+            return None;
+        };
+        receiver.changed().await.is_ok().then(|| receiver.borrow().clone())
+    };
+    if changed.is_none() {
+        *settings = None;
+    }
+    changed
+}
+
 /// This connection as the log names it: the number its takes are told apart
 /// by, and the address it is attached from.
 #[derive(Clone, Copy)]
 struct Caller {
     id: u64,
     peer: std::net::SocketAddr,
+}
+
+/// What a connection carries into its read loop besides the socket: the
+/// caller the log names it by, and the `[client]` watch a reload re-greets
+/// through.
+struct ConnectionContext {
+    caller: Caller,
+    client_settings: Option<tokio::sync::watch::Receiver<forge_primitives::ClientConfig>>,
 }
 
 /// Greet, then serve the client until it goes.
@@ -425,12 +464,11 @@ where
         + Unpin
         + Send,
 {
-    let greeting = ServerMessage::Greeting {
-        version: PROTOCOL_VERSION,
-        forge_version: crate::FORGE_VERSION.to_owned(),
-        forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
-        settings: ClientSettings::new(&state.client, state.surface.dictate_axes()),
-    };
+    // Subscribe before the greeting goes out: a reload that lands while the
+    // client is reading it must still reach this connection.
+    let client_settings = state.surface.client_settings_watch();
+    let client = client_settings.borrow().clone();
+    let greeting = greeting_for(&client, &state);
     let Ok(text) = serde_json::to_string(&greeting) else {
         tracing::error!(
             target: "forge_server::transport",
@@ -447,7 +485,7 @@ where
     {
         return;
     }
-    if let Err(error) = drive(&mut socket, &state, peer).await {
+    if let Err(error) = drive(&mut socket, &state, peer, Some(client_settings)).await {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_ended",
@@ -466,6 +504,7 @@ async fn drive<S>(
     socket: &mut S,
     state: &Arc<TransportState>,
     peer: std::net::SocketAddr,
+    client_settings: Option<tokio::sync::watch::Receiver<forge_primitives::ClientConfig>>,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -522,7 +561,7 @@ where
         &mut browser,
         &reply_tx,
         &mut answers,
-        caller,
+        ConnectionContext { caller, client_settings },
     )
     .await;
     // **A viewer's count comes off however the connection ends.** A socket
@@ -666,7 +705,7 @@ async fn run_connection<S>(
     browser: &mut BrowserViewing,
     reply_tx: &mpsc::UnboundedSender<ServerMessage>,
     answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
-    caller: Caller,
+    context: ConnectionContext,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -674,6 +713,8 @@ where
         + Unpin
         + Send,
 {
+    let caller = context.caller;
+    let mut client_settings = context.client_settings;
     let me = caller.id;
     let mut held = Batch::default();
     // The served-record bound every frame to a client takes (#2374), read once
@@ -721,6 +762,16 @@ where
                 let Some(reply) = reply else { break };
                 batch::flush(socket, held.take()).await?;
                 send(socket, reply).await?;
+            }
+            // **A `[client]` change is a new greeting for this connection.**
+            // The greeting is what configures the client's drawn sets, so a
+            // reload re-sends it rather than leaving them stale until the
+            // next reconnect.
+            client = next_client_settings(&mut client_settings) => {
+                if let Some(client) = client {
+                    batch::flush(socket, held.take()).await?;
+                    send(socket, greeting_for(&client, state)).await?;
+                }
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
@@ -3288,17 +3339,22 @@ mod tests {
     async fn a_peer_that_stops_reading_is_cut_at_the_write_bound() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
 
         let (inbound, peer_in) = mpsc::unbounded_channel();
         let (writing, stuck) = oneshot::channel();
         let mut peer = StoppedReading { inbound: peer_in, writing: Some(writing) };
         let driven = tokio::spawn({
             let state = Arc::clone(&state);
-            async move { drive(&mut peer, &state, attached_from()).await }
+            async move {
+                drive(
+                    &mut peer,
+                    &state,
+                    attached_from(),
+                    Some(state.surface.client_settings_watch()),
+                )
+                .await
+            }
         });
 
         // The snapshot answering the subscribe is the frame whose write
@@ -3367,10 +3423,7 @@ mod tests {
     async fn a_greeting_that_cannot_be_written_ends_at_the_write_bound() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let (_keep, inbound) = mpsc::unbounded_channel();
         let mut peer = StoppedReading { inbound, writing: None };
 
@@ -3455,7 +3508,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3525,7 +3577,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3561,7 +3612,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3610,7 +3660,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4128,7 +4177,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4237,7 +4285,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4328,7 +4375,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4479,7 +4525,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(conversations),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4653,7 +4698,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };

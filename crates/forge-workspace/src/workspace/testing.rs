@@ -330,8 +330,8 @@ impl Workspace {
 
     /// Like `testing_stub_with_config_dir` but injects a caller-built
     /// `LoadedConfig` so tests can drive the project-resolution paths
-    /// (`project_for_target` / `default_project`) that read
-    /// `self.config.projects`, which the `test_extra_projects` overlay
+    /// (`project_for_target` / `default_project`) that read the live
+    /// config's `projects`, which the `test_extra_projects` overlay
     /// does not populate. Build the config via
     /// `crate::config::load_from_dir` on a tempdir `forge.toml` fixture;
     /// `db` stays `None`, so nothing touches the real machine store.
@@ -392,10 +392,12 @@ impl Workspace {
         // `new_for_test`'s convention: the stub's whole app-support base
         // sits under the test's own config dir.
         let app_support = Some(config_dir.join("app-support"));
+        let client_settings = tokio::sync::watch::channel(config.client.clone()).0;
         let workspace = Self {
             config_dir,
-            config,
-            systemone,
+            config: parking_lot::RwLock::new(Arc::new(config)),
+            client_settings,
+            systemone: parking_lot::RwLock::new(systemone),
             catalog: Arc::new(Mutex::new(HashMap::new())),
             app_support,
             pool: Mutex::new(HashMap::new()),
@@ -1014,7 +1016,10 @@ mod tests {
         let (workspace, _rx) =
             Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
                 .expect("a valid systemone section builds");
-        assert!(workspace.systemone.is_some(), "a configured section must reach the workspace");
+        assert!(
+            workspace.systemone.read().is_some(),
+            "a configured section must reach the workspace"
+        );
     }
 
     #[test]
@@ -1025,6 +1030,6 @@ mod tests {
             LoadedConfig::empty_for_test(),
         )
         .expect("an empty config builds");
-        assert!(workspace.systemone.is_none(), "an absent section must not build a client");
+        assert!(workspace.systemone.read().is_none(), "an absent section must not build a client");
     }
 }

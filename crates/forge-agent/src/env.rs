@@ -6,6 +6,7 @@
 //! state about the project the user is working on right now.
 
 pub mod cli_version;
+pub mod config_watch;
 pub mod documents;
 pub mod file_index;
 pub mod git_command;

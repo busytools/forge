@@ -30,7 +30,7 @@ impl Workspace {
     /// dormant and makes `gotify__subscribe` error. Read-only - forge
     /// never writes forge.toml.
     pub fn gotify_config(&self) -> Option<forge_primitives::GotifyConfig> {
-        self.config.gotify.clone()
+        self.config_arc().gotify.clone()
     }
 
     /// Register a Gotify subscription in the active set. Durable ones

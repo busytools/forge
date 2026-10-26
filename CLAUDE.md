@@ -109,9 +109,11 @@ and let a second instance start. `single_instance.rs` has the full
 reasoning.
 
 **Config vs state.** `forge.toml` (under `<config_dir>/forge/`) is the
-only file forge reads for config: read-only, hand-authored, safe to
-sync. All runtime state (durable crons, Gotify subs, Slack subs and
-sweep watermarks, dynamic workers, session ids, usage cache)
+only file forge reads for config: hand-authored, never written by forge,
+and safe to sync. A running forge watches this one file and re-reads it on
+a change, applying what can take effect without a restart and naming the
+keys that need one. All runtime state (durable crons, Gotify subs, Slack
+subs and sweep watermarks, dynamic workers, session ids, usage cache)
 lives in one machine-local redb DB beside the lock. None of it belongs
 in a synced config dir: the DB churns roughly once a minute, redb's
 binary file cannot be merged, and the lock's inode must stay put.

@@ -105,8 +105,7 @@ impl Gateway {
     }
 
     /// Publish each org's walk order (primary pin then fallbacks).
-    /// Called once at construction from the loaded config; the config
-    /// is boot-frozen, so the table never changes mid-run.
+    /// Called at construction and again by a config reload.
     pub fn set_org_pins(&self, pins: impl IntoIterator<Item = (String, crate::selection::OrgPin)>) {
         *self.org_pins.lock() = pins.into_iter().collect();
     }

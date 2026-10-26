@@ -21,7 +21,7 @@ use tracing::Instrument;
 use forge_gateway::AccountKey;
 use forge_gateway::ProviderHost as _;
 
-use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
+use crate::config::{ConfigReload, LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
 use crate::protocol::{
@@ -315,13 +315,17 @@ pub struct Workspace {
     /// config-dir binding can re-resolve from here.
     config_dir: PathBuf,
     /// `pub(crate)` so the impl block in [`crate::gotify`] can read the
-    /// `[gotify]` section.
-    pub(crate) config: LoadedConfig,
+    /// `[gotify]` section. Swapped whole by [`Workspace::reload_config`],
+    /// which is why readers take an owned snapshot rather than a reference.
+    pub(crate) config: parking_lot::RwLock<Arc<LoadedConfig>>,
+    /// The `[client]` settings every connected view draws with. A reload
+    /// sends the new value, and each live connection re-greets from it.
+    client_settings: tokio::sync::watch::Sender<forge_primitives::ClientConfig>,
     /// The `[systemone]` decision client, built at boot when the section
     /// is present and enabled; the session MCP servers are handed a
     /// facade over it. `None` keeps the systemone tools out of every
-    /// session.
-    pub(crate) systemone: Option<Arc<forge_system_one::SystemOneClient>>,
+    /// session. Rebuilt by [`Workspace::reload_config`].
+    pub(crate) systemone: parking_lot::RwLock<Option<Arc<forge_system_one::SystemOneClient>>>,
     /// Catalog of sessions per project. Populated by the background
     /// catalog scan once [`Workspace::start_catalog_scan`] runs;
     /// mutated in-place by [`Workspace::record_connected_session`]
@@ -1255,6 +1259,22 @@ fn project_identities(config: &LoadedConfig) -> Vec<crate::store::sessions::Proj
         .collect()
 }
 
+/// The gateway's per-org walk order. Orgs are load-validated to share one
+/// pin, so the first project of an org states it.
+fn org_pins(config: &LoadedConfig) -> HashMap<String, forge_gateway::selection::OrgPin> {
+    let mut pins: HashMap<String, forge_gateway::selection::OrgPin> = HashMap::new();
+    for project in &config.projects {
+        let pin =
+            pins.entry(project.org.clone()).or_insert_with(|| forge_gateway::selection::OrgPin {
+                accounts: project.accounts.clone(),
+                fallback_accounts: project.fallback_accounts.clone(),
+            });
+        debug_assert_eq!(pin.accounts, project.accounts, "org pin drifted");
+        debug_assert_eq!(pin.fallback_accounts, project.fallback_accounts, "org pin drifted");
+    }
+    pins
+}
+
 /// The scan root for one config dir: the canonical parent of its
 /// resolved `projects` dir, or the canonical config dir itself when
 /// the resolved tree is not named `projects` (the walk descends into
@@ -1715,27 +1735,8 @@ impl Workspace {
             Arc::new(forge_gateway::forward::Gateway::new(Arc::clone(&accounts), forward_http));
         // Hand the gateway each org's walk order so an unbound session
         // can select an account from its path alone - the restart case,
-        // where the bindings are gone but the config is boot-frozen.
-        {
-            let mut pins: HashMap<String, forge_gateway::selection::OrgPin> = HashMap::new();
-            for project in &config.projects {
-                let pin = pins.entry(project.org.clone()).or_insert_with(|| {
-                    forge_gateway::selection::OrgPin {
-                        accounts: project.accounts.clone(),
-                        fallback_accounts: project.fallback_accounts.clone(),
-                    }
-                });
-                // Orgs are load-validated to share one pin; differing
-                // copies would mean a config bug, so the first wins and
-                // the rest are ignored the way duplicates elsewhere are.
-                debug_assert_eq!(pin.accounts, project.accounts, "org pin drifted");
-                debug_assert_eq!(
-                    pin.fallback_accounts, project.fallback_accounts,
-                    "org pin drifted"
-                );
-            }
-            gateway.set_org_pins(pins);
-        }
+        // where the bindings are gone but the config is loaded.
+        gateway.set_org_pins(org_pins(&config));
         gateway.set_rotation_numbers(config.gateway_rotation);
 
         // Seed account usage from the machine-local store so usage
@@ -1775,10 +1776,12 @@ impl Workspace {
         // The statuspage answer is the same for every viewer too, and it
         // has to outlive the view that used to fetch it.
         let service_status: Arc<Mutex<Option<ServiceIssue>>> = Arc::new(Mutex::new(None));
+        let client_settings = tokio::sync::watch::channel(config.client.clone()).0;
         let workspace = Self {
             config_dir,
-            config,
-            systemone,
+            config: parking_lot::RwLock::new(Arc::new(config)),
+            client_settings,
+            systemone: parking_lot::RwLock::new(systemone),
             catalog,
             app_support,
             pool: Mutex::new(HashMap::new()),
@@ -1903,21 +1906,109 @@ impl Workspace {
     /// and where it binds. Read by the binary entry point, which serves the
     /// socket - the workspace never does.
     pub fn server_config(&self) -> forge_primitives::ServerConfig {
-        self.config.server.clone()
+        self.config_arc().server.clone()
+    }
+
+    /// The live config as one owned snapshot. A reload swaps the whole
+    /// value, so every reader takes the snapshot it will use rather than a
+    /// reference that a reload could pull out from under it.
+    pub(crate) fn config_arc(&self) -> Arc<LoadedConfig> {
+        Arc::clone(&self.config.read())
+    }
+
+    /// Re-read `<config_dir>/forge.toml` and apply what can change without
+    /// a restart. A reload is a whole-config replacement: the parsed value
+    /// goes through the same loader a boot uses, and only a valid file
+    /// replaces the live config. An invalid file returns its error and
+    /// leaves the previous config untouched, so a half-written save never
+    /// loses a good config.
+    ///
+    /// What a reader sees after this returns equals what a boot on the same
+    /// file would load. Running sessions keep what they spawned with; only
+    /// their next use reads the new values.
+    ///
+    /// # Errors
+    ///
+    /// The file could not be read, parsed or validated, or the systemone
+    /// client could not be built. Nothing was applied.
+    pub fn reload_config(self: &Arc<Self>) -> Result<ConfigReload, WorkspaceError> {
+        let next = crate::config::load_from_dir(&self.config_dir)?;
+        let forge_toml = crate::config::forge_data_dir(&self.config_dir).join("forge.toml");
+        let systemone =
+            crate::systemone::client_for(next.systemone.as_ref(), &forge_toml)?.map(Arc::new);
+
+        let previous = self.config.read().clone();
+        let reload = previous.diff(&next);
+
+        self.accounts.replace_accounts(&next.accounts);
+        self.gateway.set_org_pins(org_pins(&next));
+        self.gateway.set_rotation_numbers(next.gateway_rotation);
+        *self.systemone.write() = systemone;
+        *self.config.write() = Arc::new(next);
+
+        if reload.changed.iter().any(|table| *table == "accounts" || *table == "orgs") {
+            self.announce_accounts_changed();
+        }
+        if reload.changed.contains(&"client") {
+            // `send_replace` keeps the value for a connection that attaches
+            // between this reload and the next reconnect.
+            let _ = self.client_settings.send_replace(self.config_arc().client.clone());
+        }
+
+        // A project the edit added starts as it would at boot; one already
+        // declared keeps whatever it is running, and a removed one is left
+        // alone.
+        let added: Vec<String> = self
+            .config_arc()
+            .projects
+            .iter()
+            .filter(|project| {
+                project.auto_start
+                    && !previous
+                        .projects
+                        .iter()
+                        .any(|old| old.org == project.org && old.name == project.name)
+            })
+            .map(|project| project.name.clone())
+            .collect();
+        for project_name in added {
+            if let Err(error) = self.dispatch(Command::SpawnProject {
+                project_name: project_name.clone(),
+                launch_settings: SessionLaunchSettings::default(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    event_name = "config_reload_autostart_failed",
+                    project = %project_name,
+                    error = %error,
+                    "an auto_start project the reload added did not start",
+                );
+            }
+        }
+        Ok(reload)
     }
 
     /// Effective `[client]` settings: which of the sets forge ships a
     /// client draws with. Carried by the greeting, so a client never reads
     /// `forge.toml` itself.
     pub fn client_config(&self) -> forge_primitives::ClientConfig {
-        self.config.client.clone()
+        self.config_arc().client.clone()
+    }
+
+    /// Watch the `[client]` settings a connection greets with. A reload
+    /// sends the new value, so every live connection re-sends its greeting
+    /// with the sets the client should now draw.
+    pub fn client_settings_watch(
+        &self,
+    ) -> tokio::sync::watch::Receiver<forge_primitives::ClientConfig> {
+        self.client_settings.subscribe()
     }
 
     /// The server browser's own knobs: `[browser]`'s encoding rate and
     /// quality, and its idle release's two bounds. Absent section keeps the
     /// defaults the struct carries.
     pub fn browser_settings(&self) -> crate::BrowserSettings {
-        self.config.browser
+        self.config_arc().browser
     }
 
     /// The profile names `forge.toml` resolved: each org's, and each
@@ -1930,9 +2021,9 @@ impl Workspace {
         std::collections::HashMap<String, String>,
         std::collections::HashMap<(String, String), String>,
     ) {
-        let orgs = self.config.org_browser_profiles.clone();
-        let projects = self
-            .config
+        let config = self.config_arc();
+        let orgs = config.org_browser_profiles.clone();
+        let projects = config
             .projects
             .iter()
             .map(|project| {
@@ -1949,7 +2040,7 @@ impl Workspace {
     /// max_size_mib` over the crate's own default. Read by the document
     /// read, which refuses a document over it.
     pub fn document_max_bytes(&self) -> u64 {
-        self.config.document_max_bytes
+        self.config_arc().document_max_bytes
     }
 
     /// Note a client connection attached, and give it back when it goes.
@@ -1982,17 +2073,17 @@ impl Workspace {
     }
 
     /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
-    /// a view's key handler per event; config is boot-frozen so the
-    /// value never changes mid-run.
+    /// a view's key handler per event, so a reload is picked up on the
+    /// next event.
     pub fn dictate_bind(&self) -> crate::dictate::DictateBind {
-        self.config.dictate.bind
+        self.config_arc().dictate.bind
     }
 
     /// How press/release maps onto starting and stopping a take, from
     /// forge.toml `[dictate] mode`. Read by a view's key handler per
-    /// event; config is boot-frozen so the value never changes mid-run.
+    /// event, so a reload is picked up on the next event.
     pub fn dictate_mode(&self) -> crate::dictate::DictateMode {
-        self.config.dictate.mode
+        self.config_arc().dictate.mode
     }
 
     /// Whether dictation is on at all. The key handler reads this so a
@@ -2000,14 +2091,14 @@ impl Workspace {
     /// the box doc's S0 is "nothing at all", and with the section
     /// absent every Cmd chord would otherwise pop an error.
     pub fn dictate_enabled(&self) -> bool {
-        self.config.dictate.enabled
+        self.config_arc().dictate.enabled
     }
 
     /// The `[plugins]` auto-update policy from forge.toml. Read by the
     /// plugins pane for the boot auto-update gate and the pane's
     /// auto-update state display.
-    pub fn plugin_settings(&self) -> &crate::config::PluginSettings {
-        &self.config.plugins
+    pub fn plugin_settings(&self) -> crate::config::PluginSettings {
+        self.config_arc().plugins.clone()
     }
 
     /// Remember plugin updates applied by a pane run or by boot
@@ -2058,7 +2149,7 @@ impl Workspace {
     /// forge.toml - the launchpad picker uses its own row sort, so
     /// no further ordering is imposed here.
     pub fn auto_start_project_names(&self) -> Vec<String> {
-        self.config.auto_start_projects().map(|p| p.name.clone()).collect()
+        self.config_arc().auto_start_projects().map(|p| p.name.clone()).collect()
     }
 
     /// Every project listed in `forge.toml`, each carrying its catalog
@@ -2086,17 +2177,18 @@ impl Workspace {
         // pattern).
         #[cfg(any(test, feature = "testing"))]
         let extra = self.test_extra_projects.lock();
+        let config = self.config_arc();
         let project_iter: Box<dyn Iterator<Item = &LoadedProject>> = {
             #[cfg(any(test, feature = "testing"))]
             {
-                Box::new(self.config.projects.iter().chain(extra.iter()))
+                Box::new(config.projects.iter().chain(extra.iter()))
             }
             #[cfg(not(any(test, feature = "testing")))]
             {
-                Box::new(self.config.projects.iter())
+                Box::new(config.projects.iter())
             }
         };
-        let mut views = Vec::with_capacity(self.config.projects.len());
+        let mut views = Vec::with_capacity(config.projects.len());
         for project in project_iter {
             let key =
                 ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
@@ -2139,7 +2231,8 @@ impl Workspace {
     /// top-level one, with the defaults under both.
     pub(crate) fn handoff_policy_for(&self, slot: &SessionSlot) -> crate::config::HandoffPolicy {
         let project = self.project_for_slot(slot).and_then(|project| project.handoff);
-        crate::config::HandoffPolicy::resolve(&self.config.handoff, project.as_ref())
+        let config = self.config_arc();
+        crate::config::HandoffPolicy::resolve(&config.handoff, project.as_ref())
     }
 
     /// Validate that `name` matches a project in `forge.toml`. Used
@@ -2387,8 +2480,9 @@ impl Workspace {
             // for the same reason the slots do: they describe this model,
             // so they follow the project's pin. An env layer that already
             // names the key is the user's own word on it and wins.
+            let config = self.config_arc();
             if let Some(window) =
-                self.config.models.get(model).and_then(|parameters| parameters.auto_compact_window)
+                config.models.get(model).and_then(|parameters| parameters.auto_compact_window)
                 && !session_env.contains_key(AUTO_COMPACT_WINDOW_ENV)
             {
                 session_env.insert(AUTO_COMPACT_WINDOW_ENV.to_owned(), window.to_string());
@@ -2468,7 +2562,7 @@ impl Workspace {
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
             let tasks_facade = crate::mcp::tasks::facade::ProdTasksFacade::from_arc(self);
-            let systemone_facade = self.systemone.as_ref().map(|client| {
+            let systemone_facade = self.systemone.read().as_ref().map(|client| {
                 crate::mcp::systemone::facade::ProdSystemOneFacade::new(Arc::clone(client))
                     .into_arc()
             });
@@ -2843,7 +2937,7 @@ impl Workspace {
     /// Where the dictation models land. `None` when the platform has no
     /// usable cache directory and none was configured.
     pub fn dictate_models_dir(&self) -> Option<PathBuf> {
-        self.config.dictate.models_dir()
+        self.config_arc().dictate.models_dir()
     }
 
     /// The connection that was streaming a take for `key` has gone: the
@@ -2890,7 +2984,7 @@ impl Workspace {
     /// The dictate axes in force: `forge.toml` over the crate's own
     /// defaults. What a capturing client starts on and resets to.
     pub fn dictate_axes(&self) -> crate::dictate::DictateAxes {
-        self.config.dictate.axes()
+        self.config_arc().dictate.axes()
     }
 
     /// Push one frame of client-captured audio into the seat's live take,
@@ -2939,7 +3033,7 @@ impl Workspace {
         if self.dictate_preflight_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return;
         }
-        let settings = self.config.dictate.clone();
+        let settings = self.config_arc().dictate.clone();
         if !settings.enabled {
             return;
         }
@@ -3250,7 +3344,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
-        let poll_interval = self.config.usage_poll_interval;
+        let poll_interval = self.config_arc().usage_poll_interval;
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
@@ -3270,6 +3364,16 @@ impl Workspace {
                     let Some(workspace) = weak.upgrade() else {
                         return; // Workspace dropped; exit cleanly.
                     };
+                    // A reload's `[usage] poll_seconds` lands on the tick
+                    // after it, so the loop never holds a stale interval.
+                    let configured = workspace.config_arc().usage_poll_interval;
+                    if configured != interval.period() {
+                        interval = tokio::time::interval_at(
+                            tokio::time::Instant::now() + configured,
+                            configured,
+                        );
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    }
                     workspace.refresh_account_usage_once().await;
                 }
             }
@@ -3584,7 +3688,8 @@ impl Workspace {
     ) -> Result<SessionSlot, WorkspaceError> {
         match target {
             SessionTarget::Default => {
-                let project = self.config.default_project();
+                let config = self.config_arc();
+                let project = config.default_project();
                 Ok(SessionSlot::lead(&project.org, &project.name))
             }
             SessionTarget::Named(name) => {
@@ -3602,10 +3707,13 @@ impl Workspace {
     /// org and name.
     fn project_for_target(&self, target: &SessionTarget) -> Option<LoadedProject> {
         match target {
-            SessionTarget::Default => Some(self.config.default_project().clone()),
+            SessionTarget::Default => {
+                let config = self.config_arc();
+                Some(config.default_project().clone())
+            }
             SessionTarget::Named(name) => self.find_project_view_by_name(name),
             SessionTarget::Session(slot) | SessionTarget::FreshInProject { slot, .. } => self
-                .config
+                .config_arc()
                 .projects
                 .iter()
                 .find(|project| project.org == slot.org() && project.name == slot.project())
@@ -3615,7 +3723,7 @@ impl Workspace {
 
     /// The project `slot` names, if `forge.toml` still declares it.
     pub(crate) fn project_for_slot(&self, slot: &SessionSlot) -> Option<LoadedProject> {
-        self.config
+        self.config_arc()
             .projects
             .iter()
             .find(|project| project.org == slot.org() && project.name == slot.project())
@@ -3625,13 +3733,13 @@ impl Workspace {
     /// Look up a project by `name` from `forge.toml`. Returns
     /// [`WorkspaceError::ProjectNotFound`] when no project carries
     /// that name.
-    fn find_project_by_name(&self, name: &str) -> Result<&LoadedProject, WorkspaceError> {
-        self.config.projects.iter().find(|project| project.name == name).ok_or_else(|| {
-            WorkspaceError::ProjectNotFound {
+    fn find_project_by_name(&self, name: &str) -> Result<LoadedProject, WorkspaceError> {
+        self.config_arc().projects.iter().find(|project| project.name == name).cloned().ok_or_else(
+            || WorkspaceError::ProjectNotFound {
                 name: name.to_owned(),
                 path: crate::config::forge_data_dir(&self.config_dir).join("forge.toml"),
-            }
-        })
+            },
+        )
     }
 
     /// The charter the store holds for `slot`, if any. A worker's mission
@@ -4011,7 +4119,7 @@ impl Workspace {
         {
             return Some(found);
         }
-        self.config.projects.iter().find(|p| p.name == name).cloned()
+        self.config_arc().projects.iter().find(|p| p.name == name).cloned()
     }
 
     /// The seat a project-scoped section update routes on: the project's
@@ -5157,8 +5265,9 @@ impl Workspace {
                     Some((mode, registration, account)) => {
                         // The respawned CLI runs the project's model too:
                         // this path bypasses the spawn-time stamp.
+                        let config = self.config_arc();
                         let project = registration.as_ref().and_then(|registration| {
-                            self.config
+                            config
                                 .projects
                                 .iter()
                                 .find(|project| project.name == registration.project)
@@ -5944,7 +6053,8 @@ impl Workspace {
                     // A project this forge does not carry has no seat to name
                     // and no row to hold: an assignment to it is refused
                     // rather than written against an invented empty-org slot.
-                    if let Some(row) = self.config.projects.iter().find(|p| p.name == project) {
+                    let config = self.config_arc();
+                    if let Some(row) = config.projects.iter().find(|p| p.name == project) {
                         let owner_slot =
                             owner.map(|label| SessionSlot::new(&row.org, &project, label.clone()));
                         match self.assign_task(&project, &TaskId::from(id.as_str()), owner_slot) {
@@ -7707,7 +7817,7 @@ impl Workspace {
             .get(key)
             .and_then(|entry| entry.registration.as_ref())
             .map(|registration| registration.project.clone())?;
-        self.config
+        self.config_arc()
             .projects
             .iter()
             .find(|project| project.name == project_name)
@@ -7732,14 +7842,15 @@ impl Workspace {
         // The org's account walk order, from any of its projects
         // (the pin is shared across the org).
         let mut order: Vec<String> = Vec::new();
-        if let Some(project) = self.config.projects.iter().find(|p| p.org == org) {
+        let config = self.config_arc();
+        if let Some(project) = config.projects.iter().find(|p| p.org == org) {
             order.extend(project.accounts.iter().cloned());
             order.extend(project.fallback_accounts.iter().cloned());
         }
         let mut seen = std::collections::HashSet::new();
         let mut rows = Vec::new();
         for name in order {
-            let Some(account) = self.config.accounts.iter().find(|a| a.display_name == name) else {
+            let Some(account) = config.accounts.iter().find(|a| a.display_name == name) else {
                 continue;
             };
             for model in &account.models {
@@ -8387,7 +8498,8 @@ impl Workspace {
         // symlinks, so one repo declared under two org scopes collides.
         // Picking either would hand one project's env to the other's
         // sessions; no project env is the failure that cannot leak.
-        let mut matches = self.config.projects.iter().filter(|p| &derive_key(p) == target);
+        let config = self.config_arc();
+        let mut matches = config.projects.iter().filter(|p| &derive_key(p) == target);
         let first = matches.next()?;
         if matches.next().is_some() {
             tracing::warn!(
@@ -9166,9 +9278,10 @@ impl Workspace {
 }
 
 /// The repair line the usage poller logs under an auth-classified
-/// failure, keyed on how the account authenticates. Credentials are
-/// boot-frozen, so both classes point at the flat-key edit on the
-/// account block, never a re-authentication of the shared config dir.
+/// failure, keyed on how the account authenticates. A session's
+/// credentials are fixed at its spawn, so both classes point at the
+/// flat-key edit on the account block, never a re-authentication of the
+/// shared config dir.
 ///
 /// The base-url test must stay first: a global `[env]` setup token
 /// reaches base-url accounts too, and the re-mint advice is for a
@@ -12738,6 +12851,211 @@ base_url = "https://openrouter.ai/api"
         dir
     }
 
+    /// A valid reload replaces the whole config, and the live value equals
+    /// what a boot on the same file would load.
+    #[tokio::test]
+    async fn a_valid_reload_applies_the_file_and_equals_a_fresh_load() {
+        let dir = make_workspace_dir_declaring_model();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        assert_eq!(
+            workspace.config_arc().projects[0].model.as_deref(),
+            Some("deepseek-v4.1-flash"),
+            "the fixture starts on its own model, or this test proves nothing",
+        );
+
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Personal"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-opus-5"
+env = { RELOADED = "yes" }
+
+[[accounts]]
+display_name = "Personal"
+token = "t2"
+models = ["claude-opus-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write the new config");
+
+        let reload = workspace.reload_config().expect("the new file is valid");
+        assert!(reload.changed.contains(&"accounts"), "the account set moved: {reload:?}");
+        assert!(reload.changed.contains(&"orgs"), "the project set moved: {reload:?}");
+
+        let live = workspace.config_arc();
+        assert_eq!(live.projects[0].model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(
+            live.projects[0].env.get("RELOADED").map(String::as_str),
+            Some("yes"),
+            "the project's env is live for the next spawn",
+        );
+        assert_eq!(live.accounts[0].display_name, "Personal");
+
+        let fresh = crate::config::load_from_dir(dir.path()).expect("a fresh boot load");
+        assert_eq!(live.projects.len(), fresh.projects.len());
+        assert_eq!(live.projects[0].name, fresh.projects[0].name);
+        assert_eq!(live.projects[0].model, fresh.projects[0].model);
+        assert_eq!(live.projects[0].env, fresh.projects[0].env);
+        assert_eq!(live.accounts.len(), fresh.accounts.len());
+        assert_eq!(live.accounts[0].display_name, fresh.accounts[0].display_name);
+        assert_eq!(
+            live.accounts[0].env, fresh.accounts[0].env,
+            "the live config equals what a restart on the same file loads",
+        );
+    }
+
+    /// An invalid file is rejected whole; the last good config stays live.
+    #[tokio::test]
+    async fn an_invalid_reload_keeps_the_last_good_config() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        fs::write(forge_toml_path(dir.path()), "this is not toml = [").expect("write invalid");
+
+        let error = workspace.reload_config().expect_err("an invalid file is rejected");
+
+        assert!(
+            matches!(error, WorkspaceError::ConfigParse { .. }),
+            "the parse failure is reported: {error}",
+        );
+        assert_eq!(
+            workspace.config_arc().projects[0].name,
+            "forge",
+            "the previous config is still live after a rejected file",
+        );
+    }
+
+    /// A bound port is stored but named restart-only; the socket is never
+    /// rebound on a reload.
+    #[tokio::test]
+    async fn a_changed_port_is_reported_restart_only_and_stored() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw.push_str("\n[server]\nport = 49321\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write with the new port");
+
+        let reload = workspace.reload_config().expect("the new file is valid");
+
+        assert!(
+            reload.restart_only.contains(&"server.port"),
+            "the new port needs a restart: {reload:?}",
+        );
+        assert!(
+            !reload.changed.contains(&"server"),
+            "a port change is not a live server change: {reload:?}",
+        );
+        assert_eq!(
+            workspace.server_config().port,
+            49321,
+            "the value is stored even though the bound socket keeps the old one",
+        );
+    }
+
+    /// A snapshot a reader took before the reload keeps the values it read;
+    /// the next reader sees the new config.
+    #[tokio::test]
+    async fn a_config_snapshot_taken_before_a_reload_keeps_its_values() {
+        let dir = make_workspace_dir_declaring_model();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let before = workspace.config_arc();
+
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Personal"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-opus-5"
+
+[[accounts]]
+display_name = "Personal"
+token = "t"
+models = ["claude-opus-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write the new config");
+
+        workspace.reload_config().expect("the new file is valid");
+
+        assert_eq!(
+            before.projects[0].model.as_deref(),
+            Some("deepseek-v4.1-flash"),
+            "a spawn already reading the old config keeps what it read",
+        );
+        assert_eq!(
+            workspace.config_arc().projects[0].model.as_deref(),
+            Some("claude-opus-5"),
+            "the next reader gets the new value",
+        );
+    }
+
+    /// A project the edit adds with `auto_start` starts as it would at boot;
+    /// a project already declared is not restarted by the reload.
+    #[tokio::test]
+    async fn a_reload_starts_only_a_newly_added_auto_start_project() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.enable_test_dispatch_intercept();
+
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[orgs.projects]]
+name = "fresh"
+path = "~/Projects/fresh"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write the new config");
+
+        workspace.reload_config().expect("the new file is valid");
+
+        let spawned: Vec<String> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::SpawnProject { project_name, .. } => Some(project_name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            spawned,
+            vec!["fresh".to_owned()],
+            "only the project the edit added starts; the running one is left alone",
+        );
+    }
+
     #[tokio::test]
     async fn new_for_test_opens_redb_under_the_tempdir() {
         let dir = make_workspace_dir();
@@ -13321,7 +13639,7 @@ provider = "anthropic"
         };
 
         let restarted = Workspace::new_for_test(dir.path().to_owned()).expect("second boot");
-        let project = restarted.config.default_project().clone();
+        let project = restarted.config_arc().default_project().clone();
         assert_eq!(
             restarted
                 .stored_resume_id(&SessionSlot::lead(&project.org, &project.name), false)
@@ -13341,7 +13659,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
         workspace.seed_test_ready_account("Stargate");
-        let project = workspace.config.default_project().clone();
+        let project = workspace.config_arc().default_project().clone();
         workspace.record_session_id(
             &project.org,
             &project.name,
@@ -13406,7 +13724,7 @@ provider = "anthropic"
     async fn a_lead_row_with_no_id_starts_fresh() {
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let project = workspace.config.default_project().clone();
+        let project = workspace.config_arc().default_project().clone();
         workspace.catalog.lock().insert(
             project_key_for(&project),
             vec![forge_primitives::SDKSessionInfo {
@@ -13441,7 +13759,7 @@ provider = "anthropic"
     async fn an_unreadable_session_row_refuses_the_spawn_rather_than_forking() {
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let project = workspace.config.default_project().clone();
+        let project = workspace.config_arc().default_project().clone();
         {
             let db = workspace.db.lock();
             crate::store::sessions::put_raw_for_test(
@@ -16735,7 +17053,7 @@ mod worker_respawn_tests {
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
                 tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
-                systemone: workspace.systemone.as_ref().map(|client| {
+                systemone: workspace.systemone.read().as_ref().map(|client| {
                     crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
                         client,
                     ))
@@ -21618,7 +21936,7 @@ base_url = "https://openrouter.ai/api"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         assert!(
             workspace.session_chip_for(&project_key).is_none(),
@@ -21653,7 +21971,7 @@ base_url = "https://openrouter.ai/api"
         );
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Normal);
@@ -21687,7 +22005,7 @@ base_url = "https://openrouter.ai/api"
         );
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::AtCap);
@@ -21721,7 +22039,7 @@ base_url = "https://openrouter.ai/api"
         );
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::AtCap);
@@ -21758,7 +22076,7 @@ base_url = "https://openrouter.ai/api"
         );
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Bailed);
@@ -21790,7 +22108,7 @@ base_url = "https://openrouter.ai/api"
             .set_loading(&AccountKey("Stargate".to_owned()), forge_gateway::LoadingState::Bailed);
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Degraded);

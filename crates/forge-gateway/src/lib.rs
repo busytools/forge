@@ -139,7 +139,8 @@ pub trait ProviderBackend: Send + Sync {
 
     /// What this backend allows after a failed probe. The shared
     /// default: the auth classes are terminal (an env credential is
-    /// boot-frozen and there is no local credential repair to fire) and
+    /// fixed when the session spawns and there is no local credential
+    /// repair to fire) and
     /// everything else retries. Backends whose provider repairs
     /// differently override this.
     fn repair(&self, _account: &AccountEnv<'_>, err: &ProbeError) -> RepairAction {

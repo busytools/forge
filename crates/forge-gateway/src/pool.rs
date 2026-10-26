@@ -208,4 +208,89 @@ impl AccountPool {
     pub fn replace_state_for_test(&self, map: AccountStateMap) {
         *self.accounts.lock() = map;
     }
+
+    /// Replace the account set with one a config reload produced.
+    ///
+    /// Health for an account present in both sets is carried across: a
+    /// reload is not a reason to blank the usage bars, and resetting a
+    /// terminal `LoadingState` would make a ready account unspawnable until
+    /// its next probe. An account new to the set starts `Loading`.
+    pub fn replace_accounts(&self, specs: &[forge_primitives::account::LoadedAccount]) {
+        let mut current = self.accounts.lock();
+        let mut next = AccountStateMap::new(specs);
+        for key in &next.ordered_keys {
+            let Some(previous) = current.by_key.get(key) else { continue };
+            let Some(state) = next.by_key.get_mut(key) else { continue };
+            state.usage.clone_from(&previous.usage);
+            state.last_error.clone_from(&previous.last_error);
+            state.next_probe_at = previous.next_probe_at;
+            state.consecutive_failures = previous.consecutive_failures;
+            state.override_armed = previous.override_armed;
+            state.loading = previous.loading;
+        }
+        *current = next;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::time::SystemTime;
+
+    use forge_primitives::account::{LoadedAccount, Provider};
+    use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
+
+    use super::AccountPool;
+    use crate::account::AccountKey;
+
+    fn account(name: &str) -> LoadedAccount {
+        LoadedAccount {
+            display_name: name.to_owned(),
+            provider: Provider::Anthropic,
+            base_url: None,
+            models: vec!["test-model".to_owned()],
+            model_slugs: HashMap::new(),
+            model_aliases: HashMap::new(),
+            env: HashMap::new(),
+        }
+    }
+
+    fn snapshot() -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::UNIX_EPOCH,
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend: None,
+            balance: None,
+        }
+    }
+
+    /// A reload rebuilds the map; an account in both sets keeps its reading
+    /// and its terminal loading state, so the edit does not blank the bars
+    /// or refuse spawns until the next probe.
+    #[test]
+    fn a_reload_carries_surviving_accounts_health_across() {
+        let pool = AccountPool::new(&[account("Kept")]);
+        let kept = AccountKey("Kept".to_owned());
+        pool.set_usage(&kept, snapshot());
+        pool.set_loading(&kept, crate::LoadingState::Ready);
+
+        pool.replace_accounts(&[account("Kept"), account("Added")]);
+
+        assert!(pool.usage("Kept").is_some(), "the surviving account keeps its usage reading");
+        assert_eq!(
+            pool.loading_state(&kept),
+            crate::LoadingState::Ready,
+            "the surviving account stays ready, so a spawn is not refused after an edit",
+        );
+        assert_eq!(
+            pool.loading_state(&AccountKey("Added".to_owned())),
+            crate::LoadingState::Loading,
+            "an account the reload added waits for its first probe",
+        );
+    }
 }

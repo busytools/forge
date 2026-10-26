@@ -658,7 +658,7 @@ impl Workspace {
     /// A name no project has declares none, so `gh` falls back to its
     /// own login.
     fn project_env(&self, project: &str) -> std::collections::HashMap<String, String> {
-        self.config
+        self.config_arc()
             .projects
             .iter()
             .find(|candidate| candidate.name == project)
