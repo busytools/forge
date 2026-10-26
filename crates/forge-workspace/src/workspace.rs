@@ -15794,7 +15794,7 @@ mod worker_activity_tests {
             Some(crate::workspace::PendingInteractionKind::HandOff),
             "and the roster says what the seat is waiting on",
         );
-        assert_eq!(ws.pending_interaction_depth(&seat), 1, "with the ask it holds",);
+        assert_eq!(ws.pending_interaction_depth(&seat), 1, "with the ask it holds");
         assert_eq!(ws.pending_request_seq(&seat), 1, "and the ask has its own identity");
 
         let bystander = SessionSlot::from_str_for_test("w-bystander2");

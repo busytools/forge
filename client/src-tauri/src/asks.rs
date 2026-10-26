@@ -252,7 +252,7 @@ mod tests {
     fn an_answer_that_shrinks_the_batch_is_not_news() {
         let mut asks = Asks::default();
         asks.rising(&roster(&[]), None, true);
-        assert_eq!(asks.rising(&roster(&[("w1", Some("permission"), 4)]), None, true).len(), 1,);
+        assert_eq!(asks.rising(&roster(&[("w1", Some("permission"), 4)]), None, true).len(), 1);
         assert!(
             asks.rising(&roster(&[("w1", Some("permission"), 4)]), None, true).is_empty(),
             "the same ask again",
