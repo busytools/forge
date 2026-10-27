@@ -360,14 +360,20 @@ export function draftEndingLine(ending: unknown): { tone: string; text: string }
  * What one browser hand-off ending says, drawn where the dock stood - the
  * draft line's own twin, and the same subject: this view did not answer it,
  * or its dock would be gone by its own doing.
+ *
+ * `answer` is the core's own answer shape: the ending under its tag, and the
+ * source and client that produced it beside it.
  */
-export function handOffEndingLine(ending: unknown): { tone: string; text: string } {
-  const kind = enumField(ending, 'type');
+export function handOffEndingLine(answer: unknown): { tone: string; text: string } {
+  const kind = enumField(enumField(answer, 'ending'), 'type');
   if (kind === 'done') {
     return { tone: 'q', text: 'The browser hand-off was settled in another view.' };
   }
   if (kind === 'not_now') {
     return { tone: 'q', text: 'The browser hand-off was declined in another view.' };
+  }
+  if (kind === 'feedback') {
+    return { tone: 'q', text: 'The browser hand-off was settled with a message in another view.' };
   }
   if (kind === 'abandoned') {
     return { tone: 'q', text: "The browser hand-off's asking session went away." };

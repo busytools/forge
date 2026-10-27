@@ -1007,6 +1007,12 @@ interface AccountWindow {
    */
   text: string;
   reset: string;
+  /**
+   * Whether this is the window spending the plan: at or past its cap, or
+   * rejected by the provider below it (a request-count limit rather than a
+   * token one). The bar says so in words as well as colour.
+   */
+  atLimit: boolean;
 }
 
 /** The account this seat's project binds to, and what the poller knows of it. */
@@ -1014,6 +1020,11 @@ interface AccountView {
   name: string;
   /** The class the health dot carries: `ok` / `wait` / `bad`. */
   tone: string;
+  /**
+   * The state word beside the name, when the chip names one worth saying
+   * (`rate limited`). `null` for a chip with nothing extra to state.
+   */
+  state: string | null;
   windows: AccountWindow[];
   spend: { daily: string; weekly: string; monthly: string } | null;
   balance: string | null;
@@ -1034,10 +1045,23 @@ interface AccountView {
  * The name comes from the project's chip rather than from a second walk of the
  * pool: `chip_for` is the roster's answer to exactly this question, and two
  * answers would disagree the first time an account was pinned.
+ *
+ * **A cooling account resolves too**, naming the one a spawn would land on
+ * first, so the footer states which window is spent instead of falling back to
+ * `usage / not reported`. **The chip's own state drives the dot and the word**:
+ * a cooling account's loading row is still `ready` (or `bailed` at boot), so
+ * the pool's loading state cannot say it is rate-limited.
  */
-export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | null {
-  const name = projectOf(home, slot)?.chip?.account_name ?? null;
+export function accountChip(
+  home: HomeWire,
+  slot: SessionSlot,
+  /** The page's clock, for a reset stated as a time rather than a duration. */
+  now: number = Date.now(),
+): AccountView | null {
+  const chip = projectOf(home, slot)?.chip ?? null;
+  const name = chip?.account_name ?? null;
   if (name === null) return null;
+  const rateLimited = chip?.state === 'rate_limited';
 
   const row = home.accounts.loading.find((entry) => entry.display_name === name);
   const usage = home.accounts.usage.find((entry) => entry.display_name === name);
@@ -1052,20 +1076,31 @@ export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | nu
     const window = held;
     const utilization = typeof window['utilization'] === 'number' ? window['utilization'] : null;
     if (utilization === null) continue;
+    const resets = resetsAtOf(window);
+    const ahead = resets !== null && resets > now;
     windows.push({
       label,
       percent: Math.min(100, Math.max(0, utilization)),
       text: `${Math.round(utilization)}%`,
-      reset: typeof window['reset_description'] === 'string' ? window['reset_description'] : '',
+      reset: resetOf(window, now),
+      // A rejected window is spent until a stated reset passes; a cap needs a
+      // stated reset still ahead, the pair the walk saturates on. A reset the
+      // clock has passed has rolled, so a cached reading stops claiming a
+      // window that is already gone.
+      atLimit:
+        (window['status'] === 'rejected' && (resets === null || ahead)) ||
+        (utilization >= 100 && ahead),
     });
   }
 
   const billed = snapshot?.['spend'];
   const spend = isRecord(billed) ? billed : null;
   const balance = snapshot?.['balance'];
+  const tone = rateLimited || row === undefined ? 'wait' : stateTone(row.state);
   return {
     name,
-    tone: row === undefined ? 'wait' : stateTone(row.state),
+    tone,
+    state: rateLimited ? 'rate limited' : null,
     windows,
     spend:
       spend === null
@@ -1079,6 +1114,39 @@ export function accountChip(home: HomeWire, slot: SessionSlot): AccountView | nu
     cap: spend !== null && typeof spend['limit'] === 'number' ? money(spend['limit']) : null,
     spendBilled: snapshot?.['source'] === 'OpenRouterKey',
   };
+}
+
+/** The weekday a reset more than a day out lands on. */
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/** A window's reset instant in milliseconds, or `null` when it states none. */
+function resetsAtOf(window: Record<string, unknown>): number | null {
+  const held = window['resets_at'];
+  if (!isRecord(held)) return null;
+  const secs = held['secs_since_epoch'];
+  if (typeof secs !== 'number') return null;
+  const when = new Date(secs * 1000).getTime();
+  return Number.isNaN(when) ? null : when;
+}
+
+/**
+ * A window's next reset as the footer states it: the clock time when it lands
+ * inside the day, the weekday too when it is further out. Formatted in the
+ * reader's own zone, so the digits are the ones their clock will show.
+ */
+function resetOf(window: Record<string, unknown>, now: number): string {
+  const when = resetsAtOf(window);
+  // A reset the clock has passed has rolled: the window is no longer the one
+  // it described, so the footer states neither the time nor a stale word.
+  if (when !== null && when <= now) return '';
+  const description = window['reset_description'];
+  if (typeof description === 'string' && description !== '') return description;
+  if (when === null) return '';
+  const at = new Date(when);
+  const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  if (when - now <= 86_400_000) return `resets ${clock}`;
+  const day = WEEKDAYS[at.getDay()];
+  return day === undefined ? `resets ${clock}` : `resets ${day} ${clock}`;
 }
 
 /** One figure on the rail's footer: what it is called and what it reads. */
@@ -1102,9 +1170,10 @@ interface FooterWindow extends AccountWindow {
 interface RailFooter {
   /**
    * The account this project binds to: the chip's own name, or the project's
-   * declared one while no chip resolves.
+   * declared one while no chip resolves, with the chip's state word when it
+   * names one.
    */
-  account: { name: string; tone: string };
+  account: { name: string; tone: string; state: string | null };
   /**
    * The figures a spend-billed account reports; the one `usage / not reported`
    * row while no chip resolves; empty for a window-billed one.
@@ -1149,7 +1218,7 @@ function footerWindows(windows: AccountWindow[]): FooterWindow[] {
   return (['5h', '7d'] as const).map((label) => {
     const reading = windows.find((window) => window.label === label);
     return reading === undefined
-      ? { label, percent: 0, text: UNPROBED_WINDOW, reset: '', dim: true }
+      ? { label, percent: 0, text: UNPROBED_WINDOW, reset: '', atLimit: false, dim: true }
       : { ...reading, dim: false };
   });
 }
@@ -1180,6 +1249,8 @@ export function railFooter(
   /** The greeting's protocol, or `null` before one lands. The rail always
    *  passes the live number; a test that does not care may leave it out. */
   serverProtocol: number | null = null,
+  /** The page's clock, for a reset stated as a time rather than a duration. */
+  now: number = Date.now(),
 ): RailFooter {
   const versions = {
     serverForge: home.forge_version_short,
@@ -1193,20 +1264,20 @@ export function railFooter(
     claude: home.cli_version?.installed ?? null,
     update: availableVersion(home.cli_version?.installed ?? null, home.cli_version?.latest ?? null),
   };
-  const account = accountChip(home, slot);
+  const account = accountChip(home, slot, now);
   if (account === null) {
     // The billing kind is unknown while no chip resolves, so the account is
     // named with one row stating the usage rather than a guessed window shape.
     const project = projectOf(home, slot)?.project;
     const name = project?.accounts[0] ?? project?.fallback_accounts[0] ?? 'account';
     return {
-      account: { name, tone: 'wait' },
+      account: { name, tone: 'wait', state: null },
       figures: [{ label: 'usage', value: 'not reported', dim: true }],
       windows: [],
       versions,
     };
   }
-  const head = { name: account.name, tone: account.tone };
+  const head = { name: account.name, tone: account.tone, state: account.state };
   if (!account.spendBilled) {
     return { account: head, figures: [], windows: footerWindows(account.windows), versions };
   }

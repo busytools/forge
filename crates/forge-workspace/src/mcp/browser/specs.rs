@@ -2,15 +2,18 @@
 //! `@playwright/mcp` 0.0.83's own `tools/list` - the capture preserved with
 //! the V1 spec.
 //!
-//! **Names, descriptions and argument schemas are upstream's, exactly.**
-//! A prompt written against a Playwright MCP server names `browser_navigate`
+//! **Names and argument schemas are upstream's, exactly**, and so are the
+//! descriptions except the two named below. A prompt written against a
+//! Playwright MCP server names `browser_navigate`
 //! and passes a snapshot's `target` ref, so a renamed tool or a moved
 //! argument is a prompt that resolves to something else. The additions this
 //! family carries beyond upstream are marked as such, and each names an
 //! argument upstream does not have - `force`, `expression`, the hand-off's
-//! `tab` - or stands as a tool of its own built from the same driver.
-//! `browser_close`'s description is this family's own: it names the session's
-//! current tab, which is what a close means here.
+//! `tab` - or stands as a tool of its own built from the same driver. Two
+//! descriptions differ too: `browser_snapshot` gains the sentences on a ref's
+//! lifetime and the route that fits a page still changing, neither of which
+//! upstream states, and `browser_close`'s is this family's own, naming the
+//! session's current tab because that is what a close means here.
 //!
 //! Kept apart from the tools themselves so the surface a model reads is one
 //! table rather than a struct apiece: a shape is edited here and nowhere
@@ -483,7 +486,21 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_snapshot",
-            description: "Capture accessibility snapshot of the current page, this is better than screenshot",
+            // Beyond upstream: the sentences after its own. A ref's lifetime
+            // and the route that fits a page still changing are what a caller
+            // writing a prompt against this tool needs, and upstream's
+            // description never says either (measured on @playwright/mcp
+            // 0.0.83, 2026-10-27).
+            description: "Capture accessibility snapshot of the current page, this is better than \
+                          screenshot. A ref belongs to the snapshot that minted it, and only to \
+                          an element that was visible and pointer-interactive at that moment. A \
+                          page that keeps replacing its elements retires refs before the next \
+                          call, so drive it with a unique role/name selector such as \
+                          role=button[name=\"Save\"], scoped when names repeat, which resolves at \
+                          call time; once the page has settled, take a full-page snapshot with no \
+                          target and its refs hold. A target-scoped snapshot answers with that \
+                          subtree alone, so refs outside it do not resolve until a full-page \
+                          snapshot.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -728,8 +745,18 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "browser_challenge_state",
+            description: "Report each CAPTCHA challenge iframe in the top-level document: its vendor, presence, visibility (its own and its ancestors' computed display, opacity and filter included), whether it is on screen, whether a click at its centre would reach it, and its rect. `live` is true only when the frame is present, visible, on screen and hit-testable, and `challengePresent` says whether any challenge iframe was found at all.\n\nThis probe reads the top-level document, not inside it: a challenge in an iframe, frame, object or embed document, or in a shadow root, is not classified, and a closed shadow root cannot be seen at all. `unseen` names every region it did not read (each unmatched iframe, every frame, object and embed, every open shadow root) and `complete` is false whenever that list is non-empty, so an empty challenge list beside unseen entries is not 'no CAPTCHA here'. Presence is not liveness: Google's EXPIRED overlay is a reCAPTCHA iframe parked off screen and hidden, and it is still present with a real rect. When a challenge is present but none is live, reload the page and probe again; if it stays hidden, hand off to the person rather than clicking blind.",
+            schema: json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        ToolSpec {
             name: "browser_hand_off",
-            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. The prompt sits with no timeout, like any other ask; it returns once they are done or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared.",
+            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -811,13 +838,13 @@ mod tests {
         );
     }
 
-    /// The surface is thirty tools: the 25 upstream published and the five
-    /// this family adds. A count is the cheap half; the shape of each is
+    /// The surface is thirty-one tools: the 25 upstream published and the
+    /// six this family adds. A count is the cheap half; the shape of each is
     /// pinned below.
     #[test]
     fn the_surface_is_the_captures_tools_and_the_additions() {
         let names: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
-        assert_eq!(names.len(), 30, "25 upstream tools and five additions: {names:?}");
+        assert_eq!(names.len(), 31, "25 upstream tools and six additions: {names:?}");
         for upstream in [
             "browser_close",
             "browser_resize",
@@ -850,10 +877,11 @@ mod tests {
         assert!(
             names.contains(&"browser_click_and_capture")
                 && names.contains(&"browser_form_state")
+                && names.contains(&"browser_challenge_state")
                 && names.contains(&"browser_hand_off")
                 && names.contains(&"browser_record_start")
                 && names.contains(&"browser_record_stop"),
-            "the five beyond-upstream tools are on the surface: {names:?}",
+            "the six beyond-upstream tools are on the surface: {names:?}",
         );
     }
 
@@ -877,6 +905,52 @@ mod tests {
                 spec.name,
             );
         }
+    }
+
+    /// **The snapshot's description states a ref's lifetime**, which is the
+    /// one description sentence beyond upstream's: a caller writing a prompt
+    /// against this tool reads it there, and the measured behaviour is that a
+    /// ref survives an ordinary re-render and dies when its element is
+    /// replaced or removed, or the page navigates.
+    #[test]
+    fn the_snapshot_description_states_a_refs_lifetime() {
+        let snapshot = specs()
+            .into_iter()
+            .find(|spec| spec.name == "browser_snapshot")
+            .expect("browser_snapshot");
+        assert!(
+            snapshot.description.starts_with("Capture accessibility snapshot"),
+            "upstream's first sentence is kept: {}",
+            snapshot.description,
+        );
+        for phrase in [
+            "A ref belongs to the snapshot that minted it",
+            "only to an element that was visible and pointer-interactive",
+            "drive it with a unique role/name selector",
+            "scoped when names repeat",
+            "take a full-page snapshot with no target and its refs hold",
+            "A target-scoped snapshot answers with that subtree alone",
+            "refs outside it do not resolve until a full-page snapshot",
+        ] {
+            assert!(
+                snapshot.description.contains(phrase),
+                "the description says {phrase:?}: {}",
+                snapshot.description,
+            );
+        }
+        let selector = snapshot
+            .description
+            .find("drive it with a unique role/name selector")
+            .expect("the selector route is stated");
+        let settled = snapshot
+            .description
+            .find("take a full-page snapshot with no target and its refs hold")
+            .expect("the settled route");
+        assert!(
+            selector < settled,
+            "the route for a still-changing page comes first: {}",
+            snapshot.description,
+        );
     }
 
     /// The two arguments this family adds sit beside upstream's rather than

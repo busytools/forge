@@ -158,12 +158,14 @@ pub struct AccountGatewayView {
     pub bind_error: Option<String>,
 }
 
-/// One account's cached usage snapshot.
+/// One account's latest usage reading.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AccountUsageView {
     pub display_name: String,
-    /// `None` until the poller first succeeds.
+    /// The newest reading the poller holds, a rate-limited response's
+    /// windows included, so a cooling account still states its plan.
+    /// `None` until the account reports anything.
     pub snapshot: Option<forge_primitives::usage::UsageSnapshot>,
 }
 

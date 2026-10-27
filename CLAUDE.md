@@ -114,9 +114,11 @@ and let a second instance start. `single_instance.rs` has the full
 reasoning.
 
 **Config vs state.** `forge.toml` (under `<config_dir>/forge/`) is the
-only file forge reads for config: read-only, hand-authored, safe to
-sync. All runtime state (durable crons, Gotify subs, Slack subs and
-sweep watermarks, dynamic workers, session ids, usage cache)
+only file forge reads for config: hand-authored, never written by forge,
+and safe to sync. A running forge watches this one file and re-reads it on
+a change, applying what can take effect without a restart and naming the
+keys that need one. All runtime state (durable crons, Gotify subs, Slack
+subs and sweep watermarks, dynamic workers, session ids, usage cache)
 lives in one machine-local redb DB beside the lock. None of it belongs
 in a synced config dir: the DB churns roughly once a minute, redb's
 binary file cannot be merged, and the lock's inode must stay put.
@@ -414,7 +416,8 @@ inspected.
    an item to `#[cfg(test)]` then meets `dead_code`, which is the gate
    being accurate rather than asking for a marker.
 8. **`cargo nextest run`, not `cargo test`.** `just check` runs fmt,
-   the unicode-punctuation gate, clippy, nextest and docs in one shot,
+   the unicode-punctuation gate, the book's word count, clippy, nextest
+   and docs in one shot,
    ending on a verdict line that names the first failing step. Its four
    independent groups run concurrently, capped by `FORGE_CHECK_JOBS`
    (default 4); `just check-serial` runs the same steps one at a time,
@@ -927,6 +930,16 @@ inspected.
     lands whole, without a stack. Rule 11's same-PR book obligation
     rides the whole cut too: the page lands with the thing it
     describes, not with the first slice of it.
+
+27. **A PR that deletes a subsystem carries its orphan sweep.** Grep the
+    open issues for the subject before the removal lands -
+    `gh issue list --state open --search '<subject>'` - and read every
+    hit. An issue whose defect died with the deleted machinery closes in
+    the same cut, naming the removal. One whose defect outlives the
+    subject is re-pointed in the same cut, at the surface that now
+    carries it. One whose subject survives is left alone. The 2026-10-14
+    sweep found a dozen issues whose subject had died with the terminal
+    removal and stayed open because no closer named them.
 
 ## Claude Code worktree interop
 

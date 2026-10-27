@@ -486,7 +486,12 @@ impl Bridge {
     /// Dial the server, replacing any connection this bridge had. Whatever
     /// the page already watches is re-asked on the new socket, so a
     /// reconnect from the connect screen lands the subscriptions it had.
-    pub fn connect(self: &Arc<Self>, url: String) {
+    ///
+    /// **Answers this connection's own id**, which the page hands back to
+    /// [`Bridge::close`]: the page dials an address before it gives the
+    /// connection it replaced back, so a close must name the connection it
+    /// opened rather than "whatever the bridge holds".
+    pub fn connect(self: &Arc<Self>, url: String) -> u64 {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let frames: crate::socket::FrameSink = match &self.app {
             Some(app) => {
@@ -562,6 +567,7 @@ impl Bridge {
                 bridge.socket_event(socket_id, event);
             }
         });
+        socket_id
     }
 
     /// Watch one subject, as one page reader more. The wire frame is passed
@@ -1239,8 +1245,16 @@ impl Bridge {
 
     /// End the connection for good, as the page's `close` does: no retry
     /// follows.
-    pub fn close(&self) {
+    ///
+    /// **Only the connection the caller opened.** A page dials the next
+    /// address before it gives the connection it replaced back, so by the
+    /// time that close lands the bridge holds the new socket; closing it
+    /// there would leave the new page subscribed on a dead wire.
+    pub fn close(&self, socket_id: u64) {
         let state = self.lock();
+        if state.socket_id != socket_id {
+            return;
+        }
         if let Some(socket) = &state.socket {
             socket.close();
         }
@@ -1827,6 +1841,91 @@ mod tests {
         let state = bridge.lock();
         assert_eq!(state.generation, generation, "a replaced socket's open bumped the generation");
         assert_eq!(state.status, "open", "a replaced socket's drop moved the live connection");
+    }
+
+    /// **A page connection that has been replaced cannot close the one that
+    /// replaced it.**
+    ///
+    /// The page dials the next address before it gives the old connection
+    /// back: `Shell.take` closes the connection it replaced only after the
+    /// new attempt has greeted, and the greeting is proof the new socket is
+    /// the bridge's current one. So the old `client_close` lands on a
+    /// connection that is not its own - and closing it there leaves the new
+    /// page subscribed on a dead wire, its fleet read never answered. That is
+    /// the stall an address change leaves behind until the app restarts.
+    #[tokio::test]
+    async fn a_replaced_page_connections_close_leaves_the_new_socket_alone() {
+        let mut first = stub().await;
+        let (bridge, mut rx) = bridge();
+        let old = bridge.connect(first.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true);
+        let _ = first.heard_until(|v| v["kind"] == "subscribe").await;
+        first
+            .say
+            .send(json!({
+                "kind": "snapshot",
+                "subject": "home",
+                "data": { "fleet": ["alpha"] },
+            }))
+            .expect("the first stub still feeding");
+        let ClientEvent::Inbound(snapshot) = event(&mut rx, is_inbound_kind("snapshot")).await
+        else {
+            unreachable!("filtered to snapshot");
+        };
+        assert_eq!(snapshot["data"]["fleet"], json!(["alpha"]), "precondition: A's fleet drew");
+
+        // **The address change, in the page's own order.** The new attempt
+        // connects and greets first; only then does the shell close the
+        // connection it replaced, and only then does the new page subscribe
+        // the home it draws.
+        let mut second = stub().await;
+        bridge.connect(second.url.clone());
+        connected(&bridge).await;
+        bridge.close(old);
+        bridge.subscribe(json!("home"), true);
+
+        let mut subscribed = 0;
+        let read_by = tokio::time::Instant::now() + Duration::from_secs(2);
+        while subscribed < 2 {
+            let left = read_by.saturating_duration_since(tokio::time::Instant::now());
+            let Ok(heard) = tokio::time::timeout(left, second.heard.recv()).await else {
+                panic!(
+                    "the new socket never heard the fresh page's subscribe (the old page's close killed it)"
+                );
+            };
+            let Some(heard) = heard else { break };
+            if heard["kind"] == json!("subscribe") && heard["what"] == json!("home") {
+                subscribed += 1;
+            }
+        }
+        assert_eq!(subscribed, 2, "the new page's subscribe never reached the new server");
+        assert_eq!(
+            bridge.lock().status,
+            "open",
+            "the replaced connection's close shut the live socket"
+        );
+    }
+
+    /// **The close that does name the live connection still ends it.** The
+    /// id guards against a replaced connection's close; it is not a way to
+    /// ignore one. A shell that goes takes its socket with it.
+    #[tokio::test]
+    async fn a_close_naming_the_live_connection_ends_it() {
+        let server = stub().await;
+        let (bridge, _rx) = bridge();
+        let live = bridge.connect(server.url.clone());
+        connected(&bridge).await;
+
+        bridge.close(live);
+        let by = tokio::time::Instant::now() + Duration::from_secs(5);
+        while bridge.lock().status != "closed" {
+            assert!(
+                tokio::time::Instant::now() < by,
+                "the live connection's own close left it open",
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// **A page-driven reconnect re-attaches no seat by itself.** Only the

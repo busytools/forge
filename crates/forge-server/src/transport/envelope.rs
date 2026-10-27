@@ -1366,4 +1366,43 @@ mod tests {
         assert_eq!(settings.font.as_deref(), Some("system"));
         assert_eq!(settings.dictate, axes, "and the axes a capturing client starts on");
     }
+
+    /// **The page's own JSON answers a hand-off.** The client sends its answer
+    /// as `{ ending: { type }, source }`, and a shape serde accepts from Rust
+    /// but not from the page would answer nothing on a live socket - which is
+    /// a decline the person never gave, or worse, a park that never ends.
+    #[test]
+    fn a_hand_off_answer_decodes_from_the_clients_own_json() {
+        let sent = serde_json::json!({
+            "kind": "command",
+            "command": {
+                "respond_browser_hand_off": {
+                    "key": { "org": "TestOrg", "project": "proj", "label": "lead" },
+                    "id": "0192e1c0-0000-7000-8000-0000000000aa",
+                    "answer": { "ending": { "type": "feedback" }, "source": "feedback" },
+                },
+            },
+            "reply_to": null,
+        });
+
+        let ClientMessage::Command { command, .. } =
+            serde_json::from_value::<ClientMessage>(sent).expect("the client's own shape decodes")
+        else {
+            panic!("a command frame is a command");
+        };
+        let Command::RespondBrowserHandOff { answer, .. } = *command else {
+            panic!("the answer is the hand-off's");
+        };
+        assert_eq!(
+            answer.ending,
+            forge_primitives::browser::HandOffEnding::Feedback,
+            "the person spoke",
+        );
+        assert_eq!(
+            answer.source,
+            forge_primitives::browser::HandOffSource::Feedback,
+            "and the door that sent it is named",
+        );
+        assert_eq!(answer.client, None, "a client cannot know its own connection");
+    }
 }

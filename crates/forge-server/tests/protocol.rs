@@ -66,7 +66,6 @@ async fn serve_over(fleet: &Fleet) -> String {
         work: Arc::new(WorkCache::new()),
         conversations: Arc::new(forge_server::transport::conversation::Conversations::new()),
         live: Mutex::new(Live::new()),
-        client: forge_primitives::ClientConfig::default(),
         browser_host: None,
         heartbeat: Heartbeat::default(),
     });

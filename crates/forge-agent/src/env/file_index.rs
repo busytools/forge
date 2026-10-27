@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
+use super::is_content_change;
+
 const SCAN_BATCH_SIZE: usize = 256;
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Upper bound on events coalesced into one pass, so a sustained
@@ -412,21 +414,6 @@ impl WatchFilter {
         let rebased = self.canonical_root.join(rel);
         matcher.matched_path_or_any_parents(&rebased, rebased.is_dir()).is_ignore()
     }
-}
-
-/// Whether an event kind can actually change what the ignore rules
-/// mean. A read cannot, and it matters: building the matcher reads
-/// `.gitignore` from inside the watched tree, and on inotify a read is
-/// itself a watchable event. Treating one as a rebuild trigger makes
-/// the rebuild feed itself.
-fn is_content_change(kind: notify::EventKind) -> bool {
-    use notify::event::{EventKind, ModifyKind};
-    matches!(
-        kind,
-        EventKind::Create(_)
-            | EventKind::Remove(_)
-            | EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(_))
-    )
 }
 
 fn classify_watch_event(

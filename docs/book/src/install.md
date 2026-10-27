@@ -74,9 +74,12 @@ just check
 ```
 
 That runs four independent groups concurrently: the fast checks
-(`cargo fmt --check`, the Unicode punctuation gate, and the scripts' own
-tests, `script-tests`: the release manifest's, the client-dependency
-bootstrap's and the browser-stack patch's), the Rust workspace
+(`cargo fmt --check`, the Unicode punctuation gate, the book's client-page
+word-count gate, and the scripts' own tests, `script-tests`: the release
+manifest's, the client-dependency bootstrap's, the check-group orchestrator's,
+the gate lock's, the book's client-page word-count test's, the client-wasm
+check's, the browser-stack patch's and the browser-host focus test's), the
+Rust workspace
 (`cargo clippy --all-targets --workspace -- -D warnings`
 once per feature set, with and without `--all-features`,
 `cargo nextest run --workspace --all-features`,
@@ -98,7 +101,10 @@ defaults to 4, so a machine with fewer cores sets it lower
 (`FORGE_CHECK_JOBS=2 just check`). Every group runs to its own first
 failure, each failing group's log tail is printed, and the verdict names
 the first failing step in the gate's order, so a concurrent group cannot
-hide one. Each run's per-step logs stay in their own
+hide one. The one verdict with no step behind it is the gate lock's:
+`[ERROR] check: the gate lock was not acquired (held by pid N)`, printed
+when another gate on the machine held the lock past the wait bound,
+before any step runs. Each run's per-step logs stay in their own
 `target/check-logs/run.XXXXXX/` directory, printed as `logs: ...` before
 the verdict.
 `just check-serial` is the same gate one step at a time, for debugging a
@@ -165,12 +171,16 @@ answer the no-host refusal by name. **No browser needs installing**: a
 client built where the server has no engine answers the browser doors with
 the server's own sentence rather than a timeout.
 
-The run ends on a verdict line naming its own result, `[OK] check: ...`
-or `[ERROR] check: <step> failed`, or `[ERROR] check: group reported
-nothing (<group>)` when a group died without a report. A failing group
-stops at its own first failure; the other groups still run; every failing
-group's log tail is printed before the verdict; and the verdict names the
-first failing step and the later steps in that group that did not run. That
+The run ends on a verdict line naming its own result: `[OK] check: ...`,
+`[ERROR] check: <step> failed`, `[ERROR] check: group reported nothing
+(<group>)` when a group died without a report, or
+`[ERROR] check: the gate lock was not acquired (held by pid N)` when
+another gate on the machine held the lock past the wait bound. A failing
+group stops at its own first failure; the other groups still run; every
+failing group's log tail is printed before the verdict; and when a step
+fails, the verdict names it and the later steps in that group that did not
+run. The lock verdict is the one with no step behind it: it arrives before
+any step runs. That
 line is deliberately the last one written: piping the output through
 `tail` reports tail's exit status rather than the recipe's, so a red gate
 reads green to whoever ran it unless the result travels in the text.

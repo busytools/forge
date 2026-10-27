@@ -186,6 +186,16 @@ class RustConnection implements Connection {
   private stops: UnlistenFn[] = [];
   private beat: ReturnType<typeof setInterval> | null = null;
   private state: ConnectionStatus = 'connecting';
+  /**
+   * The shell's own id for this connection, from `client_connect`.
+   *
+   * **`close` names it**, because this page dials the next address before it
+   * gives the connection it replaced back: by then the shell holds the new
+   * socket, and a close that named no connection would shut that one.
+   */
+  private socket: number | null = null;
+  /** The page gave this connection up before its dial answered. */
+  private closing = false;
   private heldSettings: ClientSettings | null = null;
   private heldSkew: Skew | null = null;
   private heldProtocol: number | null = null;
@@ -268,7 +278,17 @@ class RustConnection implements Connection {
         playPacket(packet.samples, packet.rate, packet.channels);
       }),
     );
-    await invoke('client_connect', { url });
+    // **Narrowed once at the invoke boundary**, as every wire value is: a
+    // shell that answered something else leaves this connection with no id,
+    // and a close with no id is not sent.
+    const opened: unknown = await invoke('client_connect', { url });
+    this.socket = typeof opened === 'number' ? opened : null;
+    if (this.closing) {
+      // A connection given up before its dial answered: it was never drawn,
+      // so it is closed here rather than left retrying behind the page.
+      this.end();
+      return;
+    }
     this.beat = setInterval(() => {
       void invoke('client_heartbeat').catch((why: unknown) => {
         // The shell is gone or restarting; the next tick tries again, and the
@@ -654,6 +674,7 @@ class RustConnection implements Connection {
   }
 
   close(): void {
+    this.closing = true;
     this.move('closed');
     // A closed connection has nothing to ask on.
     this.bounds.stop();
@@ -661,7 +682,20 @@ class RustConnection implements Connection {
     this.beat = null;
     for (const stop of this.stops) stop();
     this.stops = [];
-    void invoke('client_close').catch(() => {
+    this.end();
+  }
+
+  /**
+   * Shut the shell's socket this page opened, and only that one.
+   *
+   * **Nothing before the dial answers**: the id does not exist yet, and the
+   * dial's own continuation closes the socket the moment it arrives.
+   */
+  private end(): void {
+    const opened = this.socket;
+    this.socket = null;
+    if (opened === null) return;
+    void invoke('client_close', { id: opened }).catch(() => {
       // The shell is gone; the connection is closed here either way.
     });
   }

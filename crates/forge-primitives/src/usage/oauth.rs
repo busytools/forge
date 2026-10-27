@@ -80,8 +80,14 @@ pub enum OauthUsageError {
     /// header value (in seconds) when present - Anthropic returns
     /// per-account hold-down durations that the caller should honour
     /// to avoid hammering the endpoint and keeping the limit hot.
+    /// `snapshot` is the plan windows the response still carried: the
+    /// one answer that most needs them is the one saying which window
+    /// is spent.
     #[error("Claude OAuth usage request was rate-limited (retry_after={retry_after:?})")]
-    RateLimited { retry_after: Option<std::time::Duration> },
+    RateLimited {
+        retry_after: Option<std::time::Duration>,
+        snapshot: Option<Box<super::UsageSnapshot>>,
+    },
     /// API returned an unexpected non-success status (anything other
     /// than 200 / 401 / 403 / 429).
     #[error("Claude OAuth usage request failed with HTTP {0}{1}")]

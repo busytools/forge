@@ -207,6 +207,8 @@ export interface Wire {
   frames: Uint8Array[];
   /** Whether the socket takes frames: `false` holds them, as a socket that is down does. */
   takes: boolean;
+  /** Whether the socket takes commands: `false` throws, as a closed socket does. */
+  down: boolean;
   connection: Pick<
     Connection,
     | 'dispatch'
@@ -247,8 +249,12 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
     sent,
     frames,
     takes: true,
+    down: false,
     connection: {
       dispatch(command: Record<string, Record<string, unknown>>) {
+        // **A closed socket throws rather than answering**, which is what the
+        // composer's send paths guard against.
+        if (held.down) throw new Error('the socket is closed');
         sent.push({ command });
         return null;
       },

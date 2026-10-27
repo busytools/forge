@@ -330,8 +330,8 @@ impl Workspace {
 
     /// Like `testing_stub_with_config_dir` but injects a caller-built
     /// `LoadedConfig` so tests can drive the project-resolution paths
-    /// (`project_for_target` / `default_project`) that read
-    /// `self.config.projects`, which the `test_extra_projects` overlay
+    /// (`project_for_target` / `default_project`) that read the live
+    /// config's `projects`, which the `test_extra_projects` overlay
     /// does not populate. Build the config via
     /// `crate::config::load_from_dir` on a tempdir `forge.toml` fixture;
     /// `db` stays `None`, so nothing touches the real machine store.
@@ -394,8 +394,9 @@ impl Workspace {
         let app_support = Some(config_dir.join("app-support"));
         let workspace = Self {
             config_dir,
-            config,
-            systemone,
+            config: parking_lot::RwLock::new(Arc::new(config)),
+            reload_generation: std::sync::atomic::AtomicU64::new(0),
+            systemone: parking_lot::RwLock::new(systemone),
             catalog: Arc::new(Mutex::new(HashMap::new())),
             app_support,
             pool: Mutex::new(HashMap::new()),
@@ -420,6 +421,9 @@ impl Workspace {
             dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
             dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
             browser_host: std::sync::OnceLock::new(),
+            live_seats_lock: std::sync::Mutex::new(()),
+            live_seats_generation: std::sync::atomic::AtomicU64::new(0),
+            live_seats_gate: Mutex::new(None),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs: parking_lot::Mutex::new(HashMap::new()),
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
@@ -493,6 +497,7 @@ impl Workspace {
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
+            cooling_crons: Mutex::new(std::collections::HashMap::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
             test_user_preferences: Mutex::new(None),
@@ -523,6 +528,30 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_scan_gate(&self, gate: Arc<tokio::sync::Semaphore>) {
         *self.test_scan_gate.lock() = Some(gate);
+    }
+
+    /// Hold the next [`Self::live_seats`] capture between its mint and its
+    /// reads: the returned receiver fires once it is held, and a message on
+    /// the returned sender releases it. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn pause_next_live_seats_capture(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        *self.live_seats_gate.lock() = Some((reached_tx, resume_rx));
+        (reached_rx, resume_tx)
+    }
+
+    /// Hold this capture where a test armed [`Self::pause_next_live_seats_capture`].
+    /// Test-only: a production capture never meets a gate.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn pass_live_seats_gate(&self) {
+        let gate = self.live_seats_gate.lock().take();
+        if let Some((reached, resume)) = gate {
+            let _ = reached.send(());
+            let _ = resume.recv();
+        }
     }
 }
 
@@ -1014,7 +1043,10 @@ mod tests {
         let (workspace, _rx) =
             Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
                 .expect("a valid systemone section builds");
-        assert!(workspace.systemone.is_some(), "a configured section must reach the workspace");
+        assert!(
+            workspace.systemone.read().is_some(),
+            "a configured section must reach the workspace"
+        );
     }
 
     #[test]
@@ -1025,6 +1057,6 @@ mod tests {
             LoadedConfig::empty_for_test(),
         )
         .expect("an empty config builds");
-        assert!(workspace.systemone.is_none(), "an absent section must not build a client");
+        assert!(workspace.systemone.read().is_none(), "an absent section must not build a client");
     }
 }

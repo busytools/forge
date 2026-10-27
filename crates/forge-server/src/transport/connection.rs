@@ -404,6 +404,18 @@ pub async fn upgrade(
         .on_upgrade(move |socket| greet(socket, state, peer))
 }
 
+/// The frame that tells a client it is speaking to a forge and carries the
+/// `[client]` sets it draws with. Built when the connection opens, so a
+/// reload applies to the next connection.
+fn greeting_for(client: &forge_primitives::ClientConfig, state: &TransportState) -> ServerMessage {
+    ServerMessage::Greeting {
+        version: PROTOCOL_VERSION,
+        forge_version: crate::FORGE_VERSION.to_owned(),
+        forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
+        settings: ClientSettings::new(client, state.surface.dictate_axes()),
+    }
+}
+
 /// This connection as the log names it: the number its takes are told apart
 /// by, and the address it is attached from.
 #[derive(Clone, Copy)]
@@ -425,12 +437,8 @@ where
         + Unpin
         + Send,
 {
-    let greeting = ServerMessage::Greeting {
-        version: PROTOCOL_VERSION,
-        forge_version: crate::FORGE_VERSION.to_owned(),
-        forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
-        settings: ClientSettings::new(&state.client, state.surface.dictate_axes()),
-    };
+    let client = state.surface.client_config();
+    let greeting = greeting_for(&client, &state);
     let Ok(text) = serde_json::to_string(&greeting) else {
         tracing::error!(
             target: "forge_server::transport",
@@ -1039,6 +1047,36 @@ async fn next_update(
     }
 }
 
+/// This connection's own stamp on the commands that carry one.
+///
+/// The take a start begins and the stop that ends it are this connection's
+/// alone, and the stamp riding back on the take's updates is what routes them
+/// home. A hand-off's answer carries the same stamp, so an ending names the
+/// connection that sent it rather than only the seat it was addressed to. **A
+/// client cannot claim another's**: a stamp the client put on the frame is
+/// overwritten here, because the field never crosses the wire.
+fn stamp(command: Command, me: u64) -> Command {
+    match command {
+        Command::DictateStream { key, options, surface, .. } => {
+            Command::DictateStream { key, options, surface, initiator: Some(me) }
+        }
+        Command::DictateStop { key, submit, .. } => {
+            Command::DictateStop { key, submit, initiator: Some(me) }
+        }
+        Command::DictateReadAloudStart { .. } => {
+            Command::DictateReadAloudStart { initiator: Some(me) }
+        }
+        Command::DictateReadAloudStop { keep, .. } => {
+            Command::DictateReadAloudStop { keep, initiator: Some(me) }
+        }
+        Command::RespondBrowserHandOff { key, id, mut answer } => {
+            answer.client = Some(me);
+            Command::RespondBrowserHandOff { key, id, answer }
+        }
+        other => other,
+    }
+}
+
 /// Answer one client message.
 async fn handle_client<S>(
     socket: &mut S,
@@ -1073,11 +1111,32 @@ where
         _ => return Ok(()),
     };
     let Ok(client) = serde_json::from_str::<ClientMessage>(&text) else {
+        // **A command this server cannot read is an answer somebody gave.**
+        // A client older than the server sends its commands in the shape it
+        // knows; the decode fails here, and a `client_message` refusal is one
+        // a client reports only to its console - its dock has already stood
+        // down, so the person believes the answer left while the park, and
+        // the tool behind it, wait for ever. Tagging a command frame as a
+        // dispatch refusal is what draws the reason where the answer came
+        // from instead.
+        let command = serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|frame| {
+            frame.get("kind").and_then(serde_json::Value::as_str) == Some("command")
+        });
+        let (what, why) = if command {
+            (
+                "dispatch",
+                "this server could not read that command; if this client's build is older than \
+                 the server's, restart the client so both speak the same protocol - the prompt \
+                 it answered is still waiting",
+            )
+        } else {
+            ("client_message", "that is not a message this server knows")
+        };
         return send(
             socket,
             ServerMessage::Error {
-                what: "client_message".to_owned(),
-                why: "that is not a message this server knows".to_owned(),
+                what: what.to_owned(),
+                why: why.to_owned(),
                 seat: None,
                 dispatch_id: None,
             },
@@ -1279,26 +1338,7 @@ where
             }
         }
         ClientMessage::Command { command, reply_to } => {
-            // This connection's own stamp on the two commands that carry
-            // one: the take a start begins and the stop that ends it are
-            // this connection's alone, and the stamp riding back on the
-            // take's updates is what routes them home. A client cannot
-            // claim another's - the field never crosses the wire.
-            let command = match *command {
-                Command::DictateStream { key, options, surface, .. } => {
-                    Command::DictateStream { key, options, surface, initiator: Some(me) }
-                }
-                Command::DictateStop { key, submit, .. } => {
-                    Command::DictateStop { key, submit, initiator: Some(me) }
-                }
-                Command::DictateReadAloudStart { .. } => {
-                    Command::DictateReadAloudStart { initiator: Some(me) }
-                }
-                Command::DictateReadAloudStop { keep, .. } => {
-                    Command::DictateReadAloudStop { keep, initiator: Some(me) }
-                }
-                other => other,
-            };
+            let command = stamp(*command, me);
             // The seat a stream start names is this connection's to
             // remember: the dictation frames that follow carry no seat of
             // their own, and this is the one message that says which take
@@ -3288,10 +3328,7 @@ mod tests {
     async fn a_peer_that_stops_reading_is_cut_at_the_write_bound() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
 
         let (inbound, peer_in) = mpsc::unbounded_channel();
         let (writing, stuck) = oneshot::channel();
@@ -3367,10 +3404,7 @@ mod tests {
     async fn a_greeting_that_cannot_be_written_ends_at_the_write_bound() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let (_keep, inbound) = mpsc::unbounded_channel();
         let mut peer = StoppedReading { inbound, writing: None };
 
@@ -3455,7 +3489,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3525,7 +3558,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3561,7 +3593,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3610,7 +3641,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3625,6 +3655,36 @@ mod tests {
             matches!(updates, Some((_, true))),
             "and the client is still counted as one that can answer",
         );
+    }
+
+    /// **A hand-off's answer is stamped with the connection that sent it, and
+    /// a client cannot claim another's.** The stamp is the only place
+    /// `answer.client` is ever set, so a helper that stopped stamping would
+    /// leave every ending naming nobody while each suite stayed green.
+    #[test]
+    fn an_answer_is_stamped_with_the_connection_that_sent_it() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let id = uuid::Uuid::from_u128(7);
+        let answer = |client| forge_primitives::browser::HandOffAnswer {
+            ending: forge_primitives::browser::HandOffEnding::Feedback,
+            source: forge_primitives::browser::HandOffSource::Feedback,
+            client,
+        };
+
+        let Command::RespondBrowserHandOff { answer: stamped, .. } = stamp(
+            Command::RespondBrowserHandOff { key: seat.clone(), id, answer: answer(None) },
+            7,
+        ) else {
+            panic!("the command is a hand-off answer");
+        };
+        assert_eq!(stamped.client, Some(7), "the connection that carried it is named");
+
+        let Command::RespondBrowserHandOff { answer: claimed, .. } =
+            stamp(Command::RespondBrowserHandOff { key: seat, id, answer: answer(Some(99)) }, 7)
+        else {
+            panic!("the command is a hand-off answer");
+        };
+        assert_eq!(claimed.client, Some(7), "and a client cannot claim another's");
     }
 
     /// A connection hears its own take's updates and no other's: another
@@ -4128,7 +4188,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4237,7 +4296,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4328,7 +4386,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4479,7 +4536,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(conversations),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4653,7 +4709,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4948,10 +5003,7 @@ mod tests {
     async fn subscribing_a_seat_does_not_attach_it_and_showing_it_does() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
 
@@ -4989,10 +5041,7 @@ mod tests {
     async fn showing_the_same_seat_twice_is_a_no_op() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
         subscribed_home(&to_server, &written).await;
@@ -5043,10 +5092,7 @@ mod tests {
     async fn a_showing_before_its_subscribe_spends_when_the_subscribe_lands() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         // **A mark is drawn on a row**, so the seat needs an agent: the home
         // lists a project's agents, and a seat nothing has started is not
@@ -5093,10 +5139,7 @@ mod tests {
     async fn a_close_detaches_only_the_seat_that_connection_showed() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
 
         let Driven { to_server: first, written: first_written, driven: first_driven } =
@@ -5169,10 +5212,7 @@ mod tests {
         fleet.install_agent("TestOrg", "proj", "lead");
         fleet.add_worker("TestOrg", "proj", "w1").expect("the worker row");
         fleet.install_agent("TestOrg", "proj", "w1");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
 
         let Driven { to_server, written, driven } = connection(&state);
         let Driven { to_server: other, written: other_written, driven: other_driven } =
@@ -5233,10 +5273,7 @@ mod tests {
     async fn showing_a_spent_seat_refreshes_the_home_and_subscribing_does_not() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
 

@@ -17,8 +17,8 @@ we can agree the direction before you write it.
 just check
 ```
 
-That is `cargo fmt --check`, the Unicode punctuation gate, the scripts' own
-tests, the shell crate's
+That is `cargo fmt --check`, the Unicode punctuation gate, the book's
+client-page word-count gate, the scripts' own tests, the shell crate's
 rustfmt check (`client-tauri-fmt`), the
 client's Prettier check, ESLint, `svelte-check` and
 `tsc --noEmit` and then its vitest run, the shell crate's clippy and tests
@@ -90,12 +90,18 @@ configuration needs `just client-tauri-check` (which runs the tests too)
 or `just client-tauri-bundle` (plus the bundles), and the first is the one
 to run before handing over a change there.
 
-The last line it prints is its verdict, `[OK] check: ...` or
-`[ERROR] check: <step> failed`, or `[ERROR] check: group reported nothing
-(<group>)` when a group died without a report. A failing group stops at
-its own first failure; the other groups still run; every failing group's
-log tail is printed before the verdict; and the verdict names the first
-failing step and the later steps in that group that did not run. Read that line rather
+The last line it prints is its verdict: `[OK] check: ...`,
+`[ERROR] check: <step> failed`, `[ERROR] check: group reported nothing
+(<group>)` when a group died without a report, or
+`[ERROR] check: the gate lock was not acquired`, with `(held by pid N)`
+when a gate on the machine held the lock past the wait bound and no pid
+when the lock itself could not be taken. The prefix names the recipe:
+`check:`, `check-serial:` or `check-delta:`. A failing
+group stops at its own first failure; the other groups still run; every
+failing group's log tail is printed before the verdict; and when a step
+fails, the verdict names it and the later steps in its group that did not
+run. The lock verdict is the one with no step behind it: it arrives before
+any step runs. Read that line rather
 than a pipeline's exit status: piping `just check` through `tail` reports
 tail's status, not the recipe's.
 
@@ -184,6 +190,12 @@ needs. Link the issue it closes. CI has to be green.
 Keep the diff to what was discussed. A pull request that is correct but
 three times larger than the problem is harder to review than one that
 is smaller and slightly incomplete.
+
+A pull request that deletes a subsystem sweeps the open issues for its
+subject in the same cut - `gh issue list --state open --search
+'<subject>'` - closing a defect that died with the removal, re-pointing
+one whose subject outlives it, and leaving the rest alone (CLAUDE.md,
+hard rule 27).
 
 ## Where code goes
 

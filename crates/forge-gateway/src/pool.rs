@@ -41,6 +41,13 @@ impl AccountPool {
         self.accounts.lock().usage(&AccountKey(display_name.to_owned())).cloned()
     }
 
+    /// The newest reading a view draws: a rate-limited response's windows
+    /// when one landed after the last successful probe, else that probe's
+    /// snapshot.
+    pub fn latest_reading(&self, display_name: &str) -> Option<UsageSnapshot> {
+        self.accounts.lock().latest_reading(&AccountKey(display_name.to_owned())).cloned()
+    }
+
     pub fn usage_error(&self, display_name: &str) -> Option<UsageFetchStatus> {
         self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
     }
@@ -83,6 +90,10 @@ impl AccountPool {
 
     pub fn set_loading(&self, key: &AccountKey, loading: LoadingState) {
         self.accounts.lock().set_loading(key, loading);
+    }
+
+    pub fn set_limit_reading(&self, key: &AccountKey, snapshot: UsageSnapshot) {
+        self.accounts.lock().set_limit_reading(key, snapshot);
     }
 
     pub fn set_last_error(
@@ -207,5 +218,135 @@ impl AccountPool {
     #[cfg(any(test, feature = "testing"))]
     pub fn replace_state_for_test(&self, map: AccountStateMap) {
         *self.accounts.lock() = map;
+    }
+
+    /// Replace the account set with one a config reload produced.
+    ///
+    /// Health for an account present in both sets is carried across: a
+    /// reload is not a reason to blank the usage bars, and resetting a
+    /// terminal `LoadingState` would make a ready account unspawnable until
+    /// its next probe. An account new to the set starts `Loading`.
+    pub fn replace_accounts(&self, specs: &[forge_primitives::account::LoadedAccount]) {
+        let mut current = self.accounts.lock();
+        let mut next = AccountStateMap::new(specs);
+        for key in &next.ordered_keys {
+            let Some(previous) = current.by_key.get(key) else { continue };
+            let Some(state) = next.by_key.get_mut(key) else { continue };
+            state.usage.clone_from(&previous.usage);
+            state.last_error.clone_from(&previous.last_error);
+            state.next_probe_at = previous.next_probe_at;
+            state.consecutive_failures = previous.consecutive_failures;
+            state.override_armed = previous.override_armed;
+            state.loading = previous.loading;
+        }
+        // An account the edit removed is retired rather than dropped: a
+        // session already bound to it keeps resolving its provider and env,
+        // while `select_account` skips a retired entry so no new selection
+        // can pick it.
+        for (key, previous) in &current.by_key {
+            if next.by_key.contains_key(key) {
+                continue;
+            }
+            let mut retired = previous.clone();
+            retired.retired = true;
+            next.by_key.insert(key.clone(), retired);
+        }
+        *current = next;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::time::SystemTime;
+
+    use forge_primitives::account::{LoadedAccount, Provider};
+    use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
+
+    use super::AccountPool;
+    use crate::account::AccountKey;
+
+    fn account(name: &str) -> LoadedAccount {
+        LoadedAccount {
+            display_name: name.to_owned(),
+            provider: Provider::Anthropic,
+            base_url: None,
+            models: vec!["test-model".to_owned()],
+            model_slugs: HashMap::new(),
+            model_aliases: HashMap::new(),
+            env: HashMap::new(),
+        }
+    }
+
+    fn snapshot() -> UsageSnapshot {
+        UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: SystemTime::UNIX_EPOCH,
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+            spend: None,
+            balance: None,
+        }
+    }
+
+    /// A reload rebuilds the map; an account in both sets keeps its reading
+    /// and its terminal loading state, so the edit does not blank the bars
+    /// or refuse spawns until the next probe.
+    #[test]
+    fn a_reload_carries_surviving_accounts_health_across() {
+        let pool = AccountPool::new(&[account("Kept"), account("Gone")]);
+        let kept = AccountKey("Kept".to_owned());
+        let gone = AccountKey("Gone".to_owned());
+        pool.set_usage(&kept, snapshot());
+        pool.set_loading(&kept, crate::LoadingState::Ready);
+
+        pool.replace_accounts(&[account("Kept"), account("Added")]);
+
+        assert!(pool.usage("Kept").is_some(), "the surviving account keeps its usage reading");
+        assert_eq!(
+            pool.loading_state(&kept),
+            crate::LoadingState::Ready,
+            "the surviving account stays ready, so a spawn is not refused after an edit",
+        );
+        assert_eq!(
+            pool.loading_state(&AccountKey("Added".to_owned())),
+            crate::LoadingState::Loading,
+            "an account the reload added waits for its first probe",
+        );
+        assert!(
+            pool.provider_and_env(&gone).is_some(),
+            "a bound session still resolves a removed account's provider and env",
+        );
+    }
+
+    /// The reload window a guard cannot close: a caller holding the old pin
+    /// (which still names the account) selects against the new pool. The
+    /// retired entry must not answer, or a brand-new session binds to an
+    /// account the edit removed.
+    #[test]
+    fn a_retired_account_is_never_selected() {
+        let pool = AccountPool::new(&[account("Kept"), account("Gone")]);
+        let gone = AccountKey("Gone".to_owned());
+        pool.set_loading(&gone, crate::LoadingState::Ready);
+        pool.replace_accounts(&[account("Kept")]);
+
+        let pin = crate::selection::OrgPin {
+            accounts: vec!["Gone".to_owned()],
+            fallback_accounts: Vec::new(),
+        };
+        let picked =
+            crate::selection::select_account(&pool.accounts.lock(), &pin, "Org", "test-model");
+
+        assert_eq!(
+            picked,
+            Err(crate::selection::SelectionError::NoEligibleAccount {
+                model: "test-model".to_owned(),
+                org: "Org".to_owned(),
+            }),
+            "a retired account is not offered to a new selection",
+        );
     }
 }
