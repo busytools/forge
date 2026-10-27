@@ -4096,6 +4096,147 @@ describe('the conversation the chat draws', () => {
     ).toEqual(['turn-u-alpha', 'turn-u-bravo', 'turn-u-charlie']);
   });
 
+  /**
+   * **The live fold and the page's fold can cut one turn at different rows.**
+   * A delivered prompt's result ends a CLI turn where the transcript fold keeps
+   * one - the delivery was pressed into the running turn - so the client holds
+   * two rows where the page has one. The page's first row then carries the
+   * frames between the two cuts itself, and the page row that opens at the
+   * later cut matches the held row whose own leading frames are those same
+   * ones. A merge that read each row's copy alone drew that stretch in both
+   * rows: one section of the conversation, twice.
+   */
+  it('draws the stretch between two different cuts once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.update({ chat_appended: { key: LEAD, msg: typed('ask') } });
+      server.update({ chat_appended: { key: LEAD, msg: said('one') } });
+      // The CLI ends the first delivered prompt's turn here, and the frames
+      // after it open a row of their own.
+      server.update({ chat_appended: { key: LEAD, msg: ended() } });
+      for (const frame of [
+        typed('midfirst'),
+        said('a'),
+        typed('midsecond'),
+        said('b'),
+        typed('midthird'),
+        said('c'),
+      ]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+
+      // The page keeps one turn across the live cut, and cuts at the last row.
+      server.send(
+        page(
+          [
+            {
+              key: 't1',
+              messages: [
+                typed('ask'),
+                said('one'),
+                typed('midfirst'),
+                said('a'),
+                typed('midsecond'),
+                said('b'),
+              ],
+            },
+            { key: 't2', messages: [typed('midthird'), said('c')] },
+          ],
+          null,
+        ),
+      );
+
+      const held = JSON.stringify(get(chat.value).turns);
+      // Every frame of the stretch, user and assistant alike: a dedupe that
+      // only knew the prompt rows would leave the answers behind.
+      for (const id of ['u-midfirst', 'a-a', 'u-midsecond', 'a-b', 'u-midthird', 'a-c']) {
+        expect(held.split(`"${id}"`).length - 1, `${id} is drawn once`).toBe(1);
+      }
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **A frame the page moved between its rows belongs to the row it moved to.**
+   * The first matching here is by NAME - the page repeats the turn it held
+   * under the same key - and a merged row that read only its own copy put a
+   * frame the page had left out of this row back into it, beside the row the
+   * page moved it to.
+   */
+  it('leaves a frame the page moved to another row out of a repeated row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(
+        page(
+          [
+            { key: 't1', messages: [typed('turn-one'), said('one-a')] },
+            { key: 't2', messages: [typed('turn-two'), said('two-a')] },
+          ],
+          '1',
+        ),
+      );
+      // The re-read cut the turns differently: the frame that closed t2 now
+      // closes t1's repetition, and t2's row no longer carries it.
+      server.send(
+        page(
+          [
+            { key: 't1', messages: [typed('turn-one'), said('one-a'), said('two-a')] },
+            { key: 't2', messages: [typed('turn-two')] },
+          ],
+          '2',
+        ),
+      );
+
+      const held = JSON.stringify(get(chat.value).turns);
+      expect(held.split('"a-two-a"').length - 1, 'the frame the page moved draws once').toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **The same, where the page's rows carry no names.** The merge then finds
+   * each held turn by the frame the two copies share, which is the other arm
+   * that reconciles a row - and a held frame the page carries in another row
+   * must be left there just the same.
+   */
+  it('leaves a frame the page moved to another row out of an unnamed row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(
+        page(
+          [
+            { key: 't1', messages: [typed('turn-one'), said('one-a')] },
+            { key: 't2', messages: [typed('turn-two'), said('two-a')] },
+          ],
+          '1',
+        ),
+      );
+      // No names on either row, so neither matches by key.
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('turn-one'), said('one-a'), said('two-a')] },
+            { key: null, messages: [typed('turn-two')] },
+          ],
+          '2',
+        ),
+      );
+
+      const held = JSON.stringify(get(chat.value).turns);
+      expect(held.split('"a-two-a"').length - 1, 'the frame the page moved draws once').toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
   it('replaces a turn whose opening frame carries no id', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
