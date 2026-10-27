@@ -1,22 +1,47 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 
-const { listen, listTabs } = vi.hoisted(() => ({
+const { listen, asked } = vi.hoisted(() => ({
   listen: vi.fn(),
-  listTabs: vi.fn(),
+  /** Every shell command the page asked for, in order. */
+  asked: [] as { command: string; args?: unknown }[],
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
-vi.mock('./host', () => ({
-  canHost: () => true,
-  drawsSurface: () => true,
-  showBrowser: () => Promise.resolve({ profile: 'hunt', tab: 2 }),
-  hideBrowser: () => Promise.resolve(true),
-  listTabs,
-  tabListOf: (value: unknown) => value,
-  reportSurfaceRect: () => Promise.resolve(),
-  resizeBrowser: () => Promise.resolve(),
-}));
+
+import type { Connection } from '../socket';
+
+/**
+ * The shell's own side, as the Tauri API calls it: `invoke` goes straight to
+ * `window.__TAURI_INTERNALS__.invoke`, so this is the honest seam a page runs
+ * against rather than a mock of the package.
+ */
+function installShellInternals(): void {
+  Object.defineProperty(window, '__TAURI_INTERNALS__', {
+    configurable: true,
+    value: {
+      invoke: (command: string, args?: unknown) => {
+        asked.push({ command, args });
+        if (command === 'client_browser_view') {
+          return Promise.resolve({ profile: 'hunt', tab: 2 });
+        }
+        if (command === 'client_browser_tabs') {
+          return Promise.resolve({
+            tabs: {
+              profile: 'hunt',
+              id: 7,
+              up: true,
+              connected: true,
+              closing_at_ms: null,
+              rows: [],
+            },
+          });
+        }
+        return Promise.resolve(null);
+      },
+    },
+  });
+}
 
 /** The events the shell listeners were registered for, in order. */
 function registered(): string[] {
@@ -57,21 +82,16 @@ describe('the shell listeners', () => {
     async () => {
       vi.resetModules();
       listen.mockReset();
-      listTabs.mockReset();
-      listTabs.mockResolvedValue({
-        profile: 'hunt',
-        id: 7,
-        up: true,
-        connected: true,
-        closing_at_ms: null,
-        rows: [],
-      });
+      installShellInternals();
+      asked.length = 0;
       listen.mockResolvedValueOnce(undefined);
       listen.mockRejectedValueOnce(new Error('the event plugin was not ready'));
 
       // Imported here, not at the top: the module-level install runs inside
       // this test's registry, against the sequence above, deterministically.
-      const { closeSurface, openSurface, surface } = await import('./surface.svelte');
+      const { closeSurface, installBrowser, openSurface, surface } =
+        await import('./surface.svelte');
+      installBrowser({} as Connection);
 
       await openSurface(null);
       // A loaded machine can take a moment to run the resumed install; the
@@ -147,16 +167,16 @@ describe('the shell listeners', () => {
       const remeasure = listen.mock.calls
         .filter((entry) => entry[0] === 'browser_surface_remeasure')
         .at(-1)?.[1] as (() => void) | undefined;
-      let asked = 0;
+      let remeasured = 0;
       window.addEventListener(
         'forge-surface-remeasure',
         () => {
-          asked += 1;
+          remeasured += 1;
         },
         { once: true },
       );
       remeasure?.();
-      expect(asked, "the shell's remeasure is relayed to the page").toBe(1);
+      expect(remeasured, "the shell's remeasure is relayed to the page").toBe(1);
 
       await openSurface(null);
       expect(surface.nav, 'a fresh open starts disabled until the shell answers').toEqual({
@@ -171,9 +191,14 @@ describe('the shell listeners', () => {
       const connection = listen.mock.calls.find(
         (entry) => entry[0] === 'client://connection',
       )?.[1] as (() => void) | undefined;
-      listTabs.mockClear();
+      asked.length = 0;
       connection?.();
-      await vi.waitFor(() => expect(listTabs).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(
+          asked.some((call) => call.command === 'client_browser_tabs'),
+          'the reconnect re-reads the tabs',
+        ).toBe(true),
+      );
 
       await closeSurface();
       expect(surface.nav, 'a closed surface has nowhere to go').toEqual({

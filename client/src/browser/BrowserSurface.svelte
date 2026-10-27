@@ -10,7 +10,7 @@
 
   import type { BrowserInputEvent, InputModifiers } from '../protocol';
   import type { BrowserFrame, Connection } from '../socket';
-  import { drawsCanvas, keptFrame } from './host';
+  import { drawsCanvas, keptFrame } from './link';
   import { pagePoint } from './point';
   import {
     claimSurfaceMount,
@@ -172,7 +172,9 @@
       x,
       y,
       button: 0,
-      clicks: 1,
+      // **A double click is the count the DOM already decided**, so the page
+      // gets the second click as one rather than two singles.
+      clicks: event.detail > 0 ? event.detail : 1,
       modifiers: modifiers(event),
     };
     connection.browserInput(gesture);
@@ -201,6 +203,24 @@
    */
   let composedText: string | null = null;
 
+  /**
+   * **The keyboard belongs to the page while this surface holds the role.**
+   * The canvas is not focusable, so a click on it moves focus to the body and
+   * every key is lost until the role changes - measured on the web.
+   */
+  function takeKeyboard(): void {
+    imeEl?.focus({ preventScroll: true });
+    // **The browser clears the focus its own gesture handling did not set**;
+    // the next frame puts it back (measured on the dev stack).
+    const refocus = (): void => {
+      if (holdsControl() && document.activeElement !== imeEl) {
+        imeEl?.focus({ preventScroll: true });
+      }
+    };
+    if (typeof requestAnimationFrame === 'undefined') refocus();
+    else requestAnimationFrame(refocus);
+  }
+
   function press(event: PointerEvent): void {
     if (event.pointerType === 'touch') {
       if (!holdsControl()) return;
@@ -218,6 +238,10 @@
       return;
     }
     canvasEl?.setPointerCapture?.(event.pointerId);
+    // **A mouse's press keeps the keyboard on the page**: the click moves
+    // focus to the body, and a page with no shell has no native view holding
+    // the keyboard for it.
+    if (holdsControl()) takeKeyboard();
     send('press', event);
   }
 
@@ -252,7 +276,10 @@
       }
       return;
     }
-    if (event.buttons !== 0) send('move', event);
+    // **A hover is the page's too**: CSS `:hover`, menus and tooltips all
+    // follow a pointer with no button held, so every move crosses rather
+    // than only a drag.
+    send('move', event);
   }
 
   function release(event: PointerEvent): void {
@@ -265,18 +292,7 @@
         // its keyboard on a real control's focus, and the canvas is not one.
         // A swipe does not focus it - the keyboard's resize would cancel the
         // swipe it interrupted.
-        imeEl?.focus({ preventScroll: true });
-        // **The WebView clears the focus its own tap handling did not set.**
-        // A canvas is not focusable, so Chromium takes the keyboard back to
-        // the body right after the gesture; the next frame puts it on the
-        // field that types into the page (measured on the dev stack).
-        const refocus = (): void => {
-          if (holdsControl() && document.activeElement !== imeEl) {
-            imeEl?.focus({ preventScroll: true });
-          }
-        };
-        if (typeof requestAnimationFrame === 'undefined') refocus();
-        else requestAnimationFrame(refocus);
+        takeKeyboard();
         // A tap is the page's click: one press and its release at the point.
         const { x, y } = point(event);
         const gesture: BrowserInputEvent = {
@@ -394,11 +410,18 @@
   }
 
   // **A watcher never keeps the keyboard.** A surface that loses control
-  // gives the field up; taking control alone does not focus it - a tap on the
-  // page is what raises the keyboard, so a swipe is never interrupted by it.
+  // gives the field up. **A mouse that takes control can type at once**; a
+  // finger's keyboard stays a tap away, because raising it on the role would
+  // interrupt the swipe that came with it.
   $effect(() => {
     if (!painting) return;
-    if (!holdsControl()) imeEl?.blur();
+    if (!holdsControl()) {
+      imeEl?.blur();
+      return;
+    }
+    if (typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches) {
+      imeEl?.focus({ preventScroll: true });
+    }
   });
 
   function wheel(event: WheelEvent): void {

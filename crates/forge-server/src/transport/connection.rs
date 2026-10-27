@@ -2020,15 +2020,40 @@ where
             }
         }
         ClientMessage::BrowserResize { width, height, scale } => {
-            // **Only the controller's surface sizes the page**, and the
-            // service is what knows the role: a watcher's window is dropped
-            // rather than moving the page under the person driving it.
+            // **The role owns the page's layout, or the tab's longest watcher
+            // while nobody holds it**, and the service is what knows whose it
+            // is: another viewer's window is dropped rather than moving the
+            // page under the one driving it.
             let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
             else {
                 return Ok(());
             };
             let (key, tab) = (viewing.key.clone(), viewing.tab);
             host.resize(&key, tab, me, width, height, scale).await;
+            Ok(())
+        }
+        ClientMessage::ClientPerf { records } => {
+            // **A page's own instrument, not forge's health**: a batch that
+            // could not be written is one client's lost diagnostic, so it is
+            // read at `debug` and names where it went. The write runs on the
+            // blocking pool - a file append has no business on a socket's
+            // async task.
+            let count = records.len();
+            match tokio::task::spawn_blocking(move || crate::perf_log::append(&records)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(why)) => tracing::debug!(
+                    event_name = "client_perf_write_failed",
+                    records = count,
+                    %why,
+                    "a client's perf batch could not be written",
+                ),
+                Err(why) => tracing::debug!(
+                    event_name = "client_perf_write_failed",
+                    records = count,
+                    %why,
+                    "a client's perf batch could not be written",
+                ),
+            }
             Ok(())
         }
         ClientMessage::Unsubscribe { what } => {

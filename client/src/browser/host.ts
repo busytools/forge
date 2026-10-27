@@ -1,46 +1,26 @@
 /**
- * The shell as the browser's viewer: the page's window onto a browser the
- * SERVER owns.
+ * The browser's data, as every client reads it: the tab rows a strip draws and
+ * the narrowing every wire shape goes through.
  *
- * **The browser is not this process's any more.** A surface attaches to a
- * profile over the socket; the shell paints the server's frames in a native
- * layer and sends the person's gestures back. What is left here is the page's
- * side of that: open, lower, measure, take control, move through history.
- *
- * **A page outside the shell draws nothing.** The dev server in a plain
- * browser has no shell to paint into, so the surface code answers its own
- * refusal rather than invoking a command that is not there.
+ * **What draws the browser is `link.ts`.** The shell paints the server's
+ * frames in a native overlay and a page with no shell paints them on its own
+ * canvas; both talk to the same server, and the tab list, the tab rows and the
+ * refusal sentences are the same on both.
  */
 
-import type { InvokeArgs } from '@tauri-apps/api/core';
-
 import type { BrowserTabList } from '../protocol';
-import type { BrowserFrame } from '../socket';
 import type { SessionSlot } from '../wire/types';
 
 /**
  * Whether this page runs inside the client shell: the Tauri marker is the one
- * gate. The web build draws its browser in the page, not here.
+ * gate.
+ *
+ * **The one platform check in the browser code**, and it is read only where a
+ * link is chosen. What the surface, the strip and the dock talk to is the
+ * link, never this.
  */
 export function canHost(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
-
-/**
- * Whether this page draws the takeover: the shell's bar and states, over a
- * native layer on the desktop and over the page's own canvas on the phone.
- */
-export function drawsSurface(): boolean {
-  return canHost();
-}
-
-/**
- * Whether this page paints the frames itself, on a canvas. **The phone
- * does**: its shell has no native overlay, so the frames the Rust half
- * relays arrive in the page (the desktop's overlay draws them instead).
- */
-export function drawsCanvas(): boolean {
-  return typeof navigator !== 'undefined' && canHost() && /Android/i.test(navigator.userAgent);
 }
 
 /**
@@ -52,6 +32,9 @@ export function drawsCanvas(): boolean {
  */
 export function whyText(why: unknown): string {
   if (typeof why === 'string' && why !== '') return why;
+  // A socket refusal rejects with an Error carrying the server's sentence;
+  // the shell's invoke rejects with the sentence itself.
+  if (why instanceof Error && why.message !== '') return why.message;
   return `the client's browser viewer failed: ${String(why)}`;
 }
 
@@ -65,175 +48,14 @@ export function bytesOf(base64: string): Uint8Array {
   return bytes;
 }
 
-/** The shell's `invoke`, loaded lazily so this module reads outside Tauri. */
-async function invokeShell<T>(command: string, args?: InvokeArgs): Promise<T> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return await invoke<T>(command, args);
-}
-
-/**
- * Attach to a seat's browser tab and put the takeover up: what a hand-off's
- * Open and the strip's Show ask for.
- *
- * `tab` is the tab to view, and `null` is the seat's current tab (else the
- * profile's first), which is what the profile's own row opens. **Answers the
- * profile and tab the server actually attached**, or the shell's reason it
- * could not: the resolved pair is what the page lowers and filters frames by,
- * and the server's own sentence is carried through, so a dock that claimed
- * the browser was up over an open that never happened cannot have the person
- * press Done and tell the session they acted.
- */
+/** The profile and tab an attach actually took, or the shell's reason. */
 export type OpenAnswer = { profile: string; tab: number } | string;
-
-/** The attach the shell answered, or `null` for a shape this page cannot read. */
-function attachedFrom(value: unknown): { profile: string; tab: number } | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const held = value as Record<string, unknown>;
-  if (typeof held['profile'] !== 'string' || held['profile'] === '') return null;
-  if (typeof held['tab'] !== 'number' || !Number.isInteger(held['tab'])) return null;
-  return { profile: held['profile'], tab: held['tab'] };
-}
-
-export async function showBrowser(
-  profile: string | null,
-  seat: SessionSlot | null,
-  tab: number | null,
-): Promise<OpenAnswer> {
-  if (!canHost()) return 'this page is not the client';
-  try {
-    const answer: unknown = await invokeShell('client_browser_view', { seat, tab });
-    await invokeShell('browser_takeover', { on: true });
-    void profile;
-    const attached = attachedFrom(answer);
-    if (attached === null) {
-      return 'the shell attached without naming the profile and tab';
-    }
-    return attached;
-  } catch (why) {
-    return whyText(why);
-  }
-}
-
-/**
- * Take the takeover down: the server's browser keeps running, with its tabs
- * and its page, and the next agent call drives that same browser. **`seat` is
- * the asking hand-off's when `profile` is null**: the raise resolved it to
- * that seat's own profile, and Done must lower the same browser.
- */
-export async function hideBrowser(
-  profile: string | null = null,
-  seat: SessionSlot | null = null,
-): Promise<HideAnswer> {
-  if (!canHost()) return 'this page is not the client';
-  try {
-    await invokeShell('browser_takeover', { on: false });
-    void profile;
-    void seat;
-    return true;
-  } catch (why) {
-    return whyText(why);
-  }
-}
 
 /**
  * What a lower answered: `true` when the page the person sees is down, or
  * the shell's own sentence for why it is not.
  */
 export type HideAnswer = true | string;
-
-/**
- * Where the takeover's page area is, for the shell to place the native layer:
- * CSS pixels from the viewport's top-left and the device pixel ratio. The
- * page is the measurer, so the bar's own height is in the rect rather than a
- * number the shell would have to guess.
- *
- * **The page's viewport goes with it.** A titled window's page is shorter
- * than the view the shell lays the picture in (the chrome above it), and the
- * shell needs that inset to keep the top of the picture off the bar.
- */
-export async function reportSurfaceRect(
-  rect: { x: number; y: number; width: number; height: number },
-  viewport: { width: number; height: number },
-  scale: number,
-): Promise<void> {
-  if (!canHost()) return;
-  await invokeShell('browser_surface_rect', { rect: { ...rect, scale }, viewport });
-}
-
-/**
- * Lay the page out to this surface: device pixels and the ratio they draw at.
- *
- * **Only the controller's size is honoured**, so this goes out while this
- * page holds the role and at the moment it takes it.
- */
-export async function resizeBrowser(width: number, height: number, scale: number): Promise<void> {
-  if (!canHost()) return;
-  try {
-    await invokeShell('client_browser_resize', { width, height, scale });
-  } catch (why) {
-    console.warn('the page was not laid out to this surface', why);
-  }
-}
-
-/**
- * Move the takeover's page through its own history: the bar's arrows.
- *
- * **The arrows' state is not read back from here** - the server pushes it as
- * `browser_nav_state` - so a refused move is logged rather than drawn.
- */
-export async function navigateBrowser(direction: 'back' | 'forward'): Promise<void> {
-  if (!canHost()) return;
-  try {
-    await invokeShell('client_browser_nav', { back: direction === 'back' });
-  } catch (why) {
-    console.warn('the page did not move through its history', why);
-  }
-}
-
-/**
- * Take the controller role for the surface, or give it back. **Exactly one
- * viewer holds it**: a take moves the role, and the server tells every viewer
- * who holds it now.
- */
-export async function takeControl(take: boolean): Promise<void> {
-  if (!canHost()) return;
-  await invokeShell('client_browser_control', { take });
-}
-
-/**
- * The newest relayed frame, for a canvas that mounts after it arrived.
- *
- * **An attach's key frame can land before the surface subscribes**, and a
- * still page never repaints; the shell keeps the newest one for this.
- */
-export async function keptFrame(): Promise<BrowserFrame | null> {
-  if (!canHost()) return null;
-  try {
-    const raw = await invokeShell<Record<string, unknown> | null>('browser_kept_frame');
-    if (raw === null || typeof raw !== 'object') return null;
-    const { profile, tab, seq, width, height, bytes } = raw;
-    if (
-      typeof profile !== 'number' ||
-      typeof tab !== 'number' ||
-      typeof width !== 'number' ||
-      typeof height !== 'number' ||
-      typeof bytes !== 'string'
-    ) {
-      return null;
-    }
-    return {
-      profile,
-      tab,
-      seq: typeof seq === 'number' ? seq : 0,
-      width,
-      height,
-      key: raw.key === true,
-      bytes: bytesOf(bytes),
-    };
-  } catch {
-    return null;
-  }
-}
 
 /**
  * One tab as the strip draws it.
@@ -287,13 +109,6 @@ export function tabRows(list: BrowserTabList): TabRow[] {
       stateText: (Object.hasOwn(STATE_TEXT, state) ? STATE_TEXT[state] : undefined) ?? state,
     };
   });
-}
-
-/** The tabs of this seat's profile, as the strip and the bar draw them. */
-export async function listTabs(seat: SessionSlot | null = null): Promise<BrowserTabList> {
-  if (!canHost()) throw new Error('this page is not the client');
-  const body = await invokeShell<Record<string, unknown>>('client_browser_tabs', { seat });
-  return tabListOf(body['tabs']);
 }
 
 /** One tab list from the wire, narrowed once here; a bad envelope throws. */
@@ -371,35 +186,6 @@ function tabRowOf(value: unknown): BrowserTabList['rows'][number] {
   };
 }
 
-/**
- * Follow the tab list the shell pushes, as the strip and the bar do.
- *
- * The ask (`listTabs`) subscribes the connection; this is the same stream
- * after it. Answers a function that stops listening.
- */
-export async function onTabs(fn: (list: BrowserTabList) => void): Promise<() => void> {
-  if (!canHost()) return () => {};
-  const { listen } = await import('@tauri-apps/api/event');
-  return await listen<unknown>('browser_tabs', (event) => {
-    try {
-      fn(tabListOf(event.payload));
-    } catch (why) {
-      console.warn('a pushed tab list could not be read', why);
-    }
-  });
-}
-
-/**
- * The shell's connection notice. **A subscribe lives with its socket**: a
- * reconnect starts a new one, so the strip re-reads the tabs it was
- * following rather than freezing on the last list the old socket pushed.
- */
-export async function onConnection(fn: () => void): Promise<() => void> {
-  if (!canHost()) return () => {};
-  const { listen } = await import('@tauri-apps/api/event');
-  return await listen('client://connection', () => fn());
-}
-
 /** A slot as the strip's own line reads it, or `''` when none came. */
 function slotLabel(owner: unknown): string {
   if (typeof owner !== 'object' || owner === null) return '';
@@ -407,3 +193,6 @@ function slotLabel(owner: unknown): string {
   const parts = [slot.org, slot.project, slot.label];
   return parts.every((part) => typeof part === 'string') ? parts.join('/') : '';
 }
+
+/** The seat a browser call names, or `null` for the page's own. */
+export type BrowserSeat = SessionSlot | null;

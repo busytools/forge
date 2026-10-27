@@ -5,7 +5,7 @@
   import Pinned from '../chat/Pinned.svelte';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
-  import { drawsSurface, navigateBrowser } from '../browser/host';
+  import { drawsSurface, navigateBrowser } from '../browser/link';
   import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
@@ -980,6 +980,9 @@
     };
     const onKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented) return;
+      // **A live takeover owns the keyboard**: its keys belong to the page
+      // under the bar, not to a composer drawn behind it.
+      if (surface.phase !== 'closed') return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const active = document.activeElement;
       const typing =

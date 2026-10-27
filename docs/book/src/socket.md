@@ -47,7 +47,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 13,
+  "version": 14,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -190,10 +190,15 @@ its viewer up rather than keeping the profile warm, and a connection that
 switches tabs detaches from the old one first.
 
 **`browser_resize {width, height, scale}`** - lay the viewed tab's page out
-to the controller's surface: device pixels and the ratio they draw at. **Only
-the controller's size applies**; a watcher's window never moves the page
-under the person driving it. The host adopts the size on its next pump and
-the next frame is a key frame at it.
+to one viewer's surface: device pixels and the ratio they draw at. **A held
+role owns the layout**: while a controller holds the tab only its size
+applies, so a watcher's window never moves the page under the person driving
+it. With nobody holding the role the layout belongs to the tab's
+longest-watching viewer, never to whoever asks - which is what lets a client
+with no shell lay out its view without taking control, while a second
+watcher cannot move the page under the first. A size the page already has
+asks nothing, so a re-attach or a re-measure does not move it. The host
+adopts the size on its next pump and the next frame is a key frame at it.
 
 **`browser_input {seq, event}`** - one input event from the controlling
 viewer. **The wire carries the person's gesture, not CDP**: a press, a
@@ -229,6 +234,13 @@ An empty list is a dismiss; past 16 files or 8 MiB the whole answer is a
 dismiss. The size is a chosen bound, not the wire's: 8 MiB of bytes encodes
 to about 10.7 MiB of base64, comfortably inside the 16 MiB inbound bound, so
 the cap is there to keep one answer from spending the socket.
+
+**`client_perf {records}`** - one page's own perf records, for a client with
+no shell to write them. The records cross as the page serialised them and
+are written to `forge-perf-web.log` beside the server's own `forge.log`,
+with one rolled copy; nothing answers the batch. A page with a shell writes
+the same records through its own invoke instead, so this is the web build's
+path only.
 
 **`browser_tabs {seat, reply_to}`** - the strip's rows for one seat: the tabs
 of the profile its org and project resolve to. **The answer rides the

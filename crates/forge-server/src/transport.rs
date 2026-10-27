@@ -143,7 +143,17 @@ pub mod wire;
 /// parses, so the person is told the prompt is still waiting instead of
 /// losing the answer to the console. `baselines/socket/12/` is the record a
 /// v12 server emitted.
-pub const PROTOCOL_VERSION: u32 = 13;
+///
+/// **v14 is a bump for a web client's perf batch.** `client_perf` carries the
+/// records a page measures, so a client with no shell to write them still
+/// produces its own diagnostics. It shares a number with nothing: v13 was
+/// already the hand-off answer's, and two schemas cannot answer to one
+/// protocol. A v13 server reads the batch as a message it does not know and
+/// answers an `error` naming `client_message`, which the page's own error
+/// path takes as a refused subscribe: an in-flight read can be marked
+/// refused while the connection stays up. `baselines/socket/13/` is the
+/// record a v13 server emitted.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
