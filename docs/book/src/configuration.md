@@ -411,6 +411,11 @@ through its host (a system banner, a dock badge, whatever the platform
 does), and there is no `forge.toml` key for any of it. The server
 raises nothing itself - it has no window to put a banner on.
 
+On macOS the first alert after install raises the system's notification
+permission prompt, and the OS drops that notification while the prompt
+is up. So the first ask from a fresh install is silent, and every later
+alert arrives normally.
+
 There is no `[ui]` section either: the spinner and repaint keys the
 terminal drew with retired with the terminal crate, and no key replaced
 them. A `forge.toml` still carrying the
