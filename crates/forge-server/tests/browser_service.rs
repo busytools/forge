@@ -1004,19 +1004,21 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
         "the popup is the session's current tab: {text}",
     );
 
-    // **The popup is driven like any other page.** The fix's premise is that
-    // a document the host started is one the driver's paused session can
-    // drive; an about:blank document answers trivially and still proves it.
-    let evaluated = tokio::time::timeout(
+    // **The popup is driven like any other page, through the driver's own
+    // page**. That is the claim the book makes, and a snapshot is the call
+    // that proves it: CEF re-reports the target as a page once its document
+    // starts, and the driver's backend answers for it as one of its tabs.
+    let snapshot = tokio::time::timeout(
         Duration::from_secs(30),
-        service.call(&seat, "browser_evaluate", json!({ "function": "() => document.readyState" })),
+        service.call(&seat, "browser_snapshot", json!({})),
     )
     .await
     .expect("a call against the popup answers within its bound")
     .expect("the popup answers a page call");
+    let snapshot = text_of(&snapshot);
     assert!(
-        text_of(&evaluated).contains("complete"),
-        "the popup is driven like any other page: {evaluated:?}",
+        snapshot.contains("about:blank"),
+        "the popup is driven like any other page: {snapshot}",
     );
 
     service
