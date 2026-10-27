@@ -2020,6 +2020,36 @@ mod tests {
         assert_eq!(again["answering"], true, "with the declaration the home is held under");
     }
 
+    /// **A screen holding no home reads nothing for an ask.** The connect
+    /// screen has no roster behind it, so an ask frame there must put no
+    /// read on the wire - dropping the held-home guard would subscribe a
+    /// subject the view never asked for.
+    #[tokio::test]
+    async fn an_asks_frame_on_a_screen_holding_no_home_reads_nothing() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": {
+                    "permission_request": {
+                        "key": seat()["session"],
+                        "tool_id": "tu-1",
+                        "request": {},
+                    }
+                },
+            }),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "a screen holding no home asks for no read",
+        );
+    }
+
     /// **A home read raises the ask it carries.** Deleting the home arm's
     /// raise would leave the roster current and the banner unsent.
     #[tokio::test]
@@ -2101,6 +2131,31 @@ mod tests {
             recorded.take(),
             vec![(SessionSlot::lead("Busytools", "forge"), crate::asks::AskKind::Question)],
             "the focus event is what raises the glance",
+        );
+    }
+
+    /// **A fresh bridge treats the person as looking.** The window is what
+    /// activated the app, so the seed is `true` and no event has to arrive
+    /// before the first judged roster read. Seeding `false` would announce
+    /// every ask on the shown seat as if the person had looked away.
+    #[tokio::test]
+    async fn a_fresh_bridge_treats_the_person_as_looking() {
+        let (bridge, _rx, recorded) = bridge_recording();
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true);
+        let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
+        bridge.showing(Some(json!({ "org": "Busytools", "project": "forge", "label": "lead" })));
+
+        sent(&bridge, home_snapshot(json!({ "boot_id": "run-1", "agents": [] })));
+        sent(
+            &bridge,
+            home_snapshot(json!({ "boot_id": "run-1", "agents": [asking_row("lead", 1)] })),
+        );
+        assert!(
+            recorded.take().is_empty(),
+            "no review_asks reached this bridge, so the seed alone keeps the looked-at seat silent",
         );
     }
 
