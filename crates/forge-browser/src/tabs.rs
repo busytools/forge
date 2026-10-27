@@ -99,6 +99,9 @@ pub struct TabRegistry {
 
 pub(crate) struct Tab {
     pub(crate) owner: SessionSlot,
+    /// The tab whose page opened this one; `None` for a tab a session owns
+    /// outright. A popup closing hands its session back here.
+    opener: Option<u16>,
     /// The page guid the driver names the tab by; stable across navigation.
     pub(crate) id: String,
     /// The page's current CDP target id; CEF swaps it on navigation.
@@ -133,6 +136,7 @@ impl TabRegistry {
             number,
             Tab {
                 owner,
+                opener: None,
                 id: id.to_owned(),
                 target: target.to_owned(),
                 title: title.to_owned(),
@@ -157,16 +161,35 @@ impl TabRegistry {
             .owner(opener)
             .cloned()
             .ok_or_else(|| format!("the popup's opener tab {opener} is not open"))?;
-        self.adopt(number, owner, id, target, title, url)
+        let adopted = self.adopt(number, owner, id, target, title, url)?;
+        if let Some(tab) = self.tabs.get_mut(&adopted) {
+            tab.opener = Some(opener);
+        }
+        Ok(adopted)
     }
 
     /// Remove one tab and answer the session that owned it. **The unresolved
     /// flag goes even for a row already gone**: a close landing between a
     /// listing and its mark must not leave the flag on a retired number.
+    ///
+    /// **A popup closing hands its session back to the opener.** An OAuth
+    /// popup closes itself the moment it is done, and a session left with no
+    /// tab would open a fresh blank page on its next call instead of the page
+    /// the sign-in started from.
     pub fn close(&mut self, tab: u16) -> Option<SessionSlot> {
         self.unresolved.remove(&tab);
         let removed = self.tabs.remove(&tab)?;
-        self.current.retain(|_, number| *number != tab);
+        let opener = removed.opener.filter(|opener| self.tabs.contains_key(opener));
+        match opener {
+            Some(opener) => {
+                for number in self.current.values_mut() {
+                    if *number == tab {
+                        *number = opener;
+                    }
+                }
+            }
+            None => self.current.retain(|_, number| *number != tab),
+        }
         Some(removed.owner)
     }
 
@@ -572,6 +595,29 @@ mod tests {
             registry.create_under(99, 3, "p3", "t3", "three", "http://c/").is_err(),
             "an unknown opener is refused",
         );
+    }
+
+    /// **A popup closing hands the session back to its opener**, and a popup
+    /// outlives the opener that closed while it was open. An OAuth popup
+    /// closes itself the moment it is done, and the next call must land on
+    /// the page the sign-in started from rather than a fresh blank tab.
+    #[test]
+    fn a_popup_closing_returns_the_session_to_its_opener() {
+        let worker = SessionSlot::worker("O", "p", "w");
+        let mut registry = TabRegistry::default();
+        let opener = registry.adopt(1, worker.clone(), "p1", "t1", "one", "u").expect("the opener");
+        let popup =
+            registry.create_under(opener, 2, "p2", "t2", "two", "http://b/").expect("the popup");
+        assert_eq!(registry.current(&worker), Some(popup), "the popup is where the session is");
+        registry.close(popup);
+        assert_eq!(registry.current(&worker), Some(opener), "the session is back on the opener");
+
+        let popup = registry
+            .create_under(opener, 3, "p3", "t3", "three", "http://c/")
+            .expect("a second popup");
+        registry.close(opener);
+        assert_eq!(registry.current(&worker), Some(popup), "the popup keeps its place");
+        assert_eq!(registry.owner(popup), Some(&worker), "and its owner");
     }
 
     /// **The export is Playwright's own line plus one machine line.** The

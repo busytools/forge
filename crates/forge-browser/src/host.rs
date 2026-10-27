@@ -322,6 +322,8 @@ type Pending = (Mutex<VecDeque<Job>>, Condvar);
 /// paints. The tab's number is the server's stable name for it.
 struct Tab {
     browser: Browser,
+    /// The tab whose page opened this one; `None` for a tab the host made.
+    opener: Option<u16>,
     pending: Arc<Pending>,
     /// Ends the tab's frame worker when the tab goes.
     stop: Arc<AtomicBool>,
@@ -350,20 +352,30 @@ impl Tabs {
     fn commit(&mut self, tab: u16) {
         self.next = tab;
     }
+
+    /// The number a popup takes. **Reserved before CEF creates its browser**,
+    /// because that happens inside CEF's own callback and the tab is
+    /// registered a pass later; a tab made in between cannot take the number.
+    fn reserve(&mut self) -> u16 {
+        let tab = self.peek();
+        self.commit(tab);
+        tab
+    }
+
+    /// Take one tab out and end its frame worker. The page itself may be what
+    /// closed it - an OAuth popup calls `window.close()` when it is done - so
+    /// the row goes here as surely as when the host closed it.
+    fn end(&mut self, tab: u16) -> Option<Tab> {
+        let removed = self.open.remove(&tab)?;
+        removed.stop.store(true, Ordering::Release);
+        removed.pending.1.notify_all();
+        Some(removed)
+    }
 }
 
-/// A tab a page asked for. **Created on the pump thread**, never inside the
-/// CEF callback that asked; CEF does not tolerate a browser created under
-/// its own popup callback.
-struct CreateRequest {
-    url: String,
-    opener: u16,
-    /// A server command's own id, echoed on the birth; a popup carries none.
-    request: Option<u64>,
-}
-
-/// The most popup tabs a page may queue before the pump has made room.
-const MAX_TAB_REQUESTS: usize = 16;
+/// The most popups one page may hold open at once. **A page cannot grow this
+/// without end**: every popup is a browser of its own.
+const MAX_POPUP_TABS: usize = 16;
 
 /// The host's recording, shared by the paint callback and the input pump.
 ///
@@ -475,32 +487,68 @@ impl Recording {
 /// the client hears a gap rather than the whole stream sliding behind.
 const MAX_PENDING: usize = 512;
 
-/// What every tab's callbacks and the pump share: the profile's one ring,
-/// its one frame socket, and the tab map.
-struct HostRuntime {
-    profile: u16,
+/// One tab's frame queue and the sinks that fill it. **Every tab owns its
+/// own**, whether the host made it or CEF made it for a page's popup, so a
+/// popup's paints never reach the page that opened it.
+struct TabParts {
+    pending: Arc<Pending>,
+    stop: Arc<AtomicBool>,
+    key: Arc<AtomicBool>,
+    size: Arc<crate::osr::ViewSize>,
+    paint: crate::osr::PaintSink,
+    render: RenderHandler,
+    page_audio: AudioHandler,
+    downloads: DownloadHandler,
+}
+
+/// One popup the gate admitted, before CEF has created its browser: the tab
+/// it takes, and the frame stream it owns from the moment it paints.
+#[derive(Clone)]
+struct AdmittedPopup {
+    tab: u16,
+    opener: u16,
+    url: String,
+    pending: Arc<Pending>,
+    stop: Arc<AtomicBool>,
+    key: Arc<AtomicBool>,
+    size: Arc<crate::osr::ViewSize>,
+}
+
+impl AdmittedPopup {
+    /// **The popup is a tab, not a window.** Left alone, CEF creates the
+    /// popup as a native window, which a host with no screen cannot show; the
+    /// popup lays out at the profile's size like every other tab.
+    fn window_info(&self, info: &mut WindowInfo) {
+        info.windowless_rendering_enabled = 1;
+        info.external_begin_frame_enabled = 1;
+        let (width, height) = self.size.dip();
+        info.bounds = Rect { x: 0, y: 0, width, height };
+    }
+}
+
+/// What turns a page's `window.open` into a tab of this profile.
+///
+/// **CEF creates the popup's browser itself.** A host that cancels the popup
+/// and opens a tab in its place leaves `window.open` answering null, and every
+/// sign-in flow reads null as "the pop-up was blocked" - the tab it substituted
+/// never helps, because the page has already failed. The gate admits the popup,
+/// hands CEF a client of its own so it paints and takes input like any other
+/// tab, and registers the browser as a tab the moment CEF reports it created.
+struct PopupGate {
     ring: Arc<Ring>,
-    tabs: Arc<Mutex<Tabs>>,
-    inputs: Arc<Mutex<VecDeque<crate::input::HostInput>>>,
-    creates: Arc<Mutex<VecDeque<CreateRequest>>>,
-    recording: Arc<Recording>,
-    /// Whether any viewer is attached; **the profile's**, not one tab's.
     paused: Arc<AtomicBool>,
+    recording: Arc<Recording>,
+    profile: u16,
     frames: PathBuf,
     fps: u16,
     quality: u8,
-    /// The profile whose `downloads/` a page's files land in; each tab's
-    /// handler is built with its own number.
     downloads_dir: PathBuf,
+    tabs: Arc<Mutex<Tabs>>,
 }
 
-impl HostRuntime {
-    /// Open one tab at `url`. **The one place a browser is created**: the
-    /// first tab, a server command and a page's popup all come through here.
-    fn create_tab(&self, tab: u16, url: &str, opener: Option<u16>, request: Option<u64>) -> bool {
-        if self.tabs.lock().unwrap_or_else(PoisonError::into_inner).open.contains_key(&tab) {
-            return false;
-        }
+impl PopupGate {
+    /// One tab's own frame queue and sinks.
+    fn parts(&self, tab: u16) -> TabParts {
         let pending: Arc<Pending> = Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let key = Arc::new(AtomicBool::new(false));
@@ -529,16 +577,142 @@ impl HostRuntime {
             Some(Arc::clone(&paint)),
             Arc::clone(&size),
         );
-        let page_audio = crate::audio::handler(self.profile, tab, Arc::clone(&audio));
-        let mut client = HostClient::new(
+        let page_audio = crate::audio::handler(self.profile, tab, audio);
+        let downloads = crate::download::handler(&self.downloads_dir, tab);
+        TabParts { pending, stop, key, size, paint, render, page_audio, downloads }
+    }
+
+    /// The client one tab runs on; a popup's carries its own admission so CEF's
+    /// `on_after_created` can hand the browser back to the pump.
+    fn client(
+        self: &Arc<Self>,
+        tab: u16,
+        parts: &TabParts,
+        popup: Option<AdmittedPopup>,
+    ) -> Client {
+        HostClient::new(
             tab,
             Arc::clone(&self.ring),
-            paint,
-            render,
-            page_audio,
-            crate::download::handler(&self.downloads_dir, tab),
-            Arc::clone(&self.creates),
+            Arc::clone(&parts.paint),
+            parts.render.clone(),
+            parts.page_audio.clone(),
+            parts.downloads.clone(),
+            Arc::clone(self),
+            popup,
+        )
+    }
+
+    /// Admit one popup: the number its tab takes and the client CEF creates
+    /// the popup's browser with, or `None` to cancel it.
+    fn admit(self: &Arc<Self>, opener: u16, url: &str) -> Option<(Client, AdmittedPopup)> {
+        let tab = {
+            let mut tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            let popups = tabs.open.values().filter(|tab| tab.opener.is_some()).count();
+            if popups >= MAX_POPUP_TABS {
+                return None;
+            }
+            tabs.reserve()
+        };
+        let parts = self.parts(tab);
+        let admitted = AdmittedPopup {
+            tab,
+            opener,
+            url: url.to_owned(),
+            pending: Arc::clone(&parts.pending),
+            stop: Arc::clone(&parts.stop),
+            key: Arc::clone(&parts.key),
+            size: Arc::clone(&parts.size),
+        };
+        let client = self.client(tab, &parts, Some(admitted.clone()));
+        Some((client, admitted))
+    }
+
+    /// Register a popup browser CEF created as a tab: **the browser is CEF's,
+    /// the tab and its frame stream are this host's.** CEF reports the browser
+    /// safe to drive here, so the tab is made now rather than queued for a
+    /// later pass; a popup that closes itself at once is then a row that ends
+    /// instead of one that never existed.
+    fn adopt(&self, browser: Browser, admitted: AdmittedPopup) {
+        let AdmittedPopup { tab, opener, url, pending, stop, key, size } = admitted;
+        // **The number was reserved at admission**, so an open row here is a
+        // pairing bug; the browser is closed rather than left as a tab
+        // nothing paints.
+        if self.tabs.lock().unwrap_or_else(PoisonError::into_inner).open.contains_key(&tab) {
+            if let Some(host) = browser.host() {
+                host.close_browser(1);
+            }
+            return;
+        }
+        if let Some(host) = browser.host() {
+            // The same calls a created tab makes, plus the resize: CEF sized
+            // the popup to what `window.open` asked for, and it lays out at
+            // this profile's view like every other tab.
+            host.was_hidden(0);
+            host.set_focus(1);
+            host.set_windowless_frame_rate(60);
+            host.notify_screen_info_changed();
+            host.was_resized();
+        }
+        {
+            let mut tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.open.insert(
+                tab,
+                Tab {
+                    browser,
+                    opener: Some(opener),
+                    pending: Arc::clone(&pending),
+                    stop: Arc::clone(&stop),
+                    key: Arc::clone(&key),
+                    size: Arc::clone(&size),
+                },
+            );
+        }
+        start_tab_encoder(
+            pending,
+            stop,
+            crate::frame::Sink::new(self.profile, tab, self.frames.clone(), self.fps, self.quality),
+            Arc::clone(&self.paused),
+            key,
         );
+        crate::control::emit(&crate::control::HostEvent::TabCreated {
+            tab,
+            opener: Some(opener),
+            url,
+            request: None,
+        });
+    }
+
+    /// Drop one tab whose browser CEF is destroying.
+    fn forget(&self, tab: u16) {
+        let ended = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).end(tab);
+        if ended.is_some() {
+            crate::control::emit(&crate::control::HostEvent::TabClosed { tab });
+        }
+    }
+}
+
+/// What every tab's callbacks and the pump share: the profile's one ring,
+/// its one frame socket, and the tab map.
+struct HostRuntime {
+    profile: u16,
+    tabs: Arc<Mutex<Tabs>>,
+    inputs: Arc<Mutex<VecDeque<crate::input::HostInput>>>,
+    popups: Arc<PopupGate>,
+    recording: Arc<Recording>,
+    /// Whether any viewer is attached; **the profile's**, not one tab's.
+    paused: Arc<AtomicBool>,
+}
+
+impl HostRuntime {
+    /// Open one tab at `url`. **The one place the host creates a browser**: the
+    /// first tab and a server command both come through here. A page's popup
+    /// is CEF's to create, and joins as a tab through `adopt_popup`.
+    fn create_tab(&self, tab: u16, url: &str, request: Option<u64>) -> bool {
+        if self.tabs.lock().unwrap_or_else(PoisonError::into_inner).open.contains_key(&tab) {
+            return false;
+        }
+        let parts = self.popups.parts(tab);
+        let mut client = self.popups.client(tab, &parts, None);
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
             // **The frame source is ours.** With CEF's own scheduling under
@@ -575,23 +749,30 @@ impl HostRuntime {
                 tab,
                 Tab {
                     browser,
-                    pending: Arc::clone(&pending),
-                    stop: Arc::clone(&stop),
-                    key: Arc::clone(&key),
-                    size: Arc::clone(&size),
+                    opener: None,
+                    pending: Arc::clone(&parts.pending),
+                    stop: Arc::clone(&parts.stop),
+                    key: Arc::clone(&parts.key),
+                    size: Arc::clone(&parts.size),
                 },
             );
         }
         start_tab_encoder(
-            pending,
-            stop,
-            crate::frame::Sink::new(self.profile, tab, self.frames.clone(), self.fps, self.quality),
+            parts.pending,
+            parts.stop,
+            crate::frame::Sink::new(
+                self.profile,
+                tab,
+                self.popups.frames.clone(),
+                self.popups.fps,
+                self.popups.quality,
+            ),
             Arc::clone(&self.paused),
-            key,
+            parts.key,
         );
         crate::control::emit(&crate::control::HostEvent::TabCreated {
             tab,
-            opener,
+            opener: None,
             url: url.to_owned(),
             request,
         });
@@ -601,13 +782,8 @@ impl HostRuntime {
     /// Close one tab and end its frame worker; a page target CEF has already
     /// lost is a no-op.
     fn close_tab(&self, tab: u16) {
-        let removed = {
-            let mut tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            tabs.open.remove(&tab)
-        };
+        let removed = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).end(tab);
         let Some(removed) = removed else { return };
-        removed.stop.store(true, Ordering::Release);
-        removed.pending.1.notify_all();
         if let Some(host) = removed.browser.host() {
             host.close_browser(1);
         }
@@ -684,26 +860,6 @@ impl HostRuntime {
         }
     }
 
-    /// Create the tabs pages asked for. **The pump thread does this**, after
-    /// CEF's callback that asked has returned.
-    fn drain_creates(&self) {
-        loop {
-            let request = {
-                let mut creates = self.creates.lock().unwrap_or_else(PoisonError::into_inner);
-                creates.pop_front()
-            };
-            let Some(request) = request else { return };
-            let tab = self.next_tab();
-            if !self.create_tab(tab, &request.url, Some(request.opener), request.request) {
-                eprintln!(
-                    "cef host: a page's popup tab was not created (event_name \
-                     cef_tab_create_failed, opener {}, url {})",
-                    request.opener, request.url,
-                );
-            }
-        }
-    }
-
     /// Hand the queued gestures to CEF, in the order they arrived, and run
     /// the tab commands beside them.
     ///
@@ -754,7 +910,7 @@ impl HostRuntime {
                 crate::input::HostInput::TabNew { url, request } => {
                     let tab = self.next_tab();
                     let url = url.as_deref().unwrap_or("about:blank");
-                    if !self.create_tab(tab, url, None, request) {
+                    if !self.create_tab(tab, url, request) {
                         eprintln!(
                             "cef host: a requested tab was not created (event_name \
                              cef_tab_create_failed, tab {tab}, url {url})"
@@ -940,18 +1096,26 @@ pub fn run(args: &Args) -> ExitCode {
     // write for as long as the bound allows. The callback copies the newest
     // paint into that tab's slot - replacing what was not taken - and the
     // tab's worker encodes and writes it.
+    let tabs: Arc<Mutex<Tabs>> = Arc::new(Mutex::new(Tabs::default()));
+    let paused = Arc::new(AtomicBool::new(true));
+    let recording = Recording::new();
     let runtime = HostRuntime {
         profile: args.profile_id,
-        ring: Arc::clone(&ring),
-        tabs: Arc::new(Mutex::new(Tabs::default())),
+        tabs: Arc::clone(&tabs),
         inputs: Arc::new(Mutex::new(VecDeque::new())),
-        creates: Arc::new(Mutex::new(VecDeque::new())),
-        recording: Recording::new(),
-        paused: Arc::new(AtomicBool::new(true)),
-        frames: args.frames.clone(),
-        fps: args.fps,
-        quality: args.quality,
-        downloads_dir: args.profile.clone(),
+        popups: Arc::new(PopupGate {
+            ring: Arc::clone(&ring),
+            paused: Arc::clone(&paused),
+            recording: Arc::clone(&recording),
+            profile: args.profile_id,
+            frames: args.frames.clone(),
+            fps: args.fps,
+            quality: args.quality,
+            downloads_dir: args.profile.clone(),
+            tabs,
+        }),
+        recording,
+        paused,
     };
     // **The host opens one blank boot tab.** It is the page the driver
     // attaches to, and a call navigates it once the veto is registered.
@@ -959,7 +1123,7 @@ pub fn run(args: &Args) -> ExitCode {
     // **A browser with no host is not a live host**: the state and the log
     // below are what the server reads to say this profile is up, so a
     // browser that cannot be driven fails here rather than reporting live.
-    if !runtime.create_tab(runtime.next_tab(), "about:blank", None, None) {
+    if !runtime.create_tab(runtime.next_tab(), "about:blank", None) {
         ring.set_state(STATE_FAILED);
         return fail("the windowless browser was not created");
     }
@@ -1068,7 +1232,6 @@ pub fn run(args: &Args) -> ExitCode {
         }
         // **The pointer gestures go before the frame cue**, so a click is in
         // CEF before the frame it causes is asked for.
-        runtime.drain_creates();
         runtime.apply_inputs();
         // **8 ms, not 16.** A BeginFrame every screen refresh is the paint
         // rate, but a click landing just after one waited out the whole
@@ -1146,21 +1309,36 @@ cef::wrap_load_handler! {
 cef::wrap_life_span_handler! {
     struct HostLifeSpanHandler {
         tab: u16,
-        creates: Arc<Mutex<VecDeque<CreateRequest>>>,
+        popups: Arc<PopupGate>,
+        // Set on a popup's own handler: the tab CEF is creating for it.
+        popup: Option<AdmittedPopup>,
     }
 
     impl LifeSpanHandler {
+        /// **A popup's browser is CEF's to create; its tab is this host's.**
+        /// The number and the client were settled when the popup was
+        /// admitted, so this is where the created browser becomes a tab.
+        fn on_after_created(&self, browser: Option<&mut Browser>) {
+            let Some(browser) = browser else { return };
+            let Some(popup) = self.popup.clone() else { return };
+            self.popups.adopt(browser.clone(), popup);
+        }
+
         fn do_close(&self, _browser: Option<&mut Browser>) -> i32 {
-            // The browser outlives every surface: a close request proceeds
-            // only on the host's own terms.
+            // **Windowless: 0 destroys the browser.** That is what a page's
+            // own close means - an OAuth popup calls `window.close()` when it
+            // is done - and `on_before_close` is where the tab goes with it.
             0
         }
 
-        /// **A popup is a tab of this host, not a second window.** CEF's own
-        /// popup is cancelled; a web address it asked for is queued as a tab
-        /// under this one, and the pump creates it once this callback has
-        /// returned. Anything but a web page stays refused: a tab for one
-        /// would be a blank the person never asked to see.
+        /// **A page's popup is allowed, never cancelled.** Cancelling it and
+        /// opening a tab in its place leaves `window.open` answering null, and
+        /// every sign-in flow reads null as "the pop-up was blocked" - the tab
+        /// substituted for it never helps, because the page has already
+        /// failed. The popup is given a client of its own and joins the
+        /// profile's tabs once CEF has created it. **A blank start is not
+        /// special**: a popup opened at `about:blank` and navigated afterwards
+        /// is the shape half the OAuth libraries use.
         fn on_before_popup(
             &self,
             _browser: Option<&mut Browser>,
@@ -1171,36 +1349,33 @@ cef::wrap_life_span_handler! {
             _target_disposition: WindowOpenDisposition,
             _user_gesture: i32,
             _popup_features: Option<&PopupFeatures>,
-            _window_info: Option<&mut WindowInfo>,
-            _client: Option<&mut Option<Client>>,
+            window_info: Option<&mut WindowInfo>,
+            client: Option<&mut Option<Client>>,
             _settings: Option<&mut BrowserSettings>,
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut i32>,
         ) -> i32 {
             let url = target_url.map(ToString::to_string).unwrap_or_default();
-            if let Some(url) = popup_url(&url) {
-                let mut creates = self.creates.lock().unwrap_or_else(PoisonError::into_inner);
-                // **A page cannot grow this without end**: a scripted popup
-                // loop floods the pump faster than it drains.
-                if creates.len() < MAX_TAB_REQUESTS {
-                    creates.push_back(CreateRequest {
-                        url: url.to_owned(),
-                        opener: self.tab,
-                        request: None,
-                    });
-                }
+            let Some((popup_client, admitted)) = self.popups.admit(self.tab, &url) else {
+                return 1;
+            };
+            if let Some(info) = window_info {
+                admitted.window_info(info);
             }
-            1
+            if let Some(out) = client {
+                *out = Some(popup_client);
+            }
+            0
+        }
+
+        /// **The browser going is the tab going**, whichever side asked for
+        /// it: the page's own `window.close()`, a crashed renderer, or the
+        /// host's close. A tab the host already ended is a no-op here, so the
+        /// server sees one `TabClosed` either way.
+        fn on_before_close(&self, _browser: Option<&mut Browser>) {
+            self.popups.forget(self.tab);
         }
     }
-}
-
-/// The address a popup asked for, when it is a web page a tab can open.
-///
-/// **Anything but a web page is blocked outright**: `about:blank` and a
-/// `javascript:` popup have no page of their own to show.
-fn popup_url(url: &str) -> Option<&str> {
-    (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
 }
 
 cef::wrap_client! {
@@ -1220,8 +1395,10 @@ cef::wrap_client! {
         // The page's downloads land beside the profile before they are the
         // controlling client's to save.
         downloads: DownloadHandler,
-        // Where a page's popup asks for a tab, for the pump to create.
-        creates: Arc<Mutex<VecDeque<CreateRequest>>>,
+        // A page's `window.open` becomes a tab of this profile here.
+        popups: Arc<PopupGate>,
+        // Set on a popup's own client: the tab CEF is creating for it.
+        popup: Option<AdmittedPopup>,
     }
 
     impl Client {
@@ -1246,14 +1423,17 @@ cef::wrap_client! {
         }
 
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
-            Some(HostLifeSpanHandler::new(self.tab, Arc::clone(&self.creates)))
+            Some(HostLifeSpanHandler::new(
+                self.tab,
+                Arc::clone(&self.popups),
+                self.popup.clone(),
+            ))
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::popup_url;
 
     /// **A pid the signal cannot name is refused.** `0` probes the caller's
     /// own group and a value past `i32::MAX` casts negative; either reads as
@@ -1349,6 +1529,17 @@ mod tests {
         let ring = Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
         let paint: crate::osr::PaintSink = Arc::new(|_, _, _, _| {});
         let audio: crate::audio::AudioSink = Arc::new(|_| {});
+        let popups = Arc::new(super::PopupGate {
+            ring: Arc::clone(&ring),
+            paused: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            recording: super::Recording::new(),
+            profile: 1,
+            frames: std::path::PathBuf::from("/tmp/frames.sock"),
+            fps: 30,
+            quality: 75,
+            downloads_dir: std::path::PathBuf::from("/tmp"),
+            tabs: Arc::new(std::sync::Mutex::new(super::Tabs::default())),
+        });
         let client = super::HostClient::new(
             1,
             Arc::clone(&ring),
@@ -1356,7 +1547,8 @@ mod tests {
             crate::osr::handler(Arc::clone(&ring), None),
             crate::audio::handler(1, 1, audio),
             crate::download::handler(std::path::Path::new("/tmp"), 1),
-            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            popups,
+            None,
         );
         let view = client.render_handler().expect("a handler for the page");
         let popup = client.render_handler().expect("a handler for the popup");
@@ -1449,17 +1641,17 @@ mod tests {
         assert!(next.distinct);
     }
 
-    /// **A web page's popup becomes a tab, and anything else is refused.**
-    /// The first is what a job site's "open in a new tab" link means; the
-    /// second keeps a blank or scripted popup from becoming a tab nobody
-    /// asked to see.
+    /// **A popup's number is reserved before CEF creates its browser.** The
+    /// browser is made inside CEF's own callback and the tab is registered a
+    /// pass later, so a peek that waited for the registration would let a tab
+    /// the host makes in between take the same number.
     #[test]
-    fn a_web_popup_opens_a_tab_and_anything_else_is_blocked() {
-        assert_eq!(popup_url("https://example.com/job"), Some("https://example.com/job"));
-        assert_eq!(popup_url("http://example.com/"), Some("http://example.com/"));
-        assert_eq!(popup_url("about:blank"), None);
-        assert_eq!(popup_url("javascript:window.close()"), None);
-        assert_eq!(popup_url(""), None);
+    fn a_reserved_popup_number_is_not_handed_out_twice() {
+        use super::Tabs;
+        let mut tabs = Tabs::default();
+        let first = tabs.reserve();
+        assert_eq!(tabs.reserve(), first + 1, "each reservation takes the next number");
+        assert_eq!(tabs.peek(), first + 2, "a reservation is committed, not peeked");
     }
 
     /// **A cue is acknowledged only when there is a host to show.** The

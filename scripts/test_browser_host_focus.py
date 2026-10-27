@@ -66,11 +66,17 @@ def claims_accessory(application: str) -> bool:
 
 
 def commented_out(source: str, needle: str, marker: str) -> str:
-    """`source` with the line carrying `needle` prefixed by `marker`."""
-    for line in source.splitlines(keepends=True):
-        if needle in line:
-            return source.replace(line, f"{marker}{line}", 1)
-    raise AssertionError(f"no line carrying {needle!r} to comment out")
+    """`source` with every line carrying `needle` prefixed by `marker`.
+
+    **Every line, not the first**: a flag the code sets in more than one place
+    is still one pin, and a control that silenced only one of them would pass
+    while a commented-out line kept the pin alive.
+    """
+    lines = source.splitlines(keepends=True)
+    marked = [f"{marker}{line}" if needle in line else line for line in lines]
+    if marked == lines:
+        raise AssertionError(f"no line carrying {needle!r} to comment out")
+    return "".join(marked)
 
 
 class BrowserHostFocusTest(unittest.TestCase):
