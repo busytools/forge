@@ -103,7 +103,7 @@ function withAccount(): HomeWire {
         },
       ],
     },
-    projects: [{ ...project, chip: { account_name: 'Acct', state: 'ready' } }],
+    projects: [{ ...project, chip: { account_name: 'Acct', state: 'normal' } }],
   };
 }
 

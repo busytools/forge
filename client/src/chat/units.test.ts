@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { handoffFrame } from '../wire/handoff';
 import { cronNames } from './cron-names.svelte';
 import { familyOf } from './families';
 import { runningMs } from './report';
@@ -3876,23 +3877,24 @@ describe('a page seam that re-serves a result', () => {
   it('folds a handoff frame into the row that joins two sessions', () => {
     const units = fold([
       said([{ type: 'text', text: 'the work so far' }]),
-      {
-        type: 'forge_handoff',
-        handoff: {
-          from: 'old-session-id',
-          to: 'new-session-id',
-          reason: 'fill',
-          fill_percent: 85,
-          brief: { ground_truth: [], judgment: [] },
-        },
-      },
+      handoffFrame({
+        from: 'old-session-id',
+        to: 'new-session-id',
+        reason: 'fill',
+        fill_percent: 85,
+        total_tokens: null,
+        max_tokens: null,
+        at_percent: 85,
+        ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
+        judgment: [{ label: 'Next', lines: ['the client row'] }],
+      }),
       said([{ type: 'text', text: 'picked up' }]),
     ]);
     expect(kinds(units), 'prose, the row, then the successor').toEqual(['text', 'handoff', 'text']);
     const row = units.find((unit) => unit.kind === 'handoff');
-    expect(
-      row?.kind === 'handoff' ? row.handoff.to : null,
-      'the row names the session that continues',
-    ).toBe('new-session-id');
+    const handed = row?.kind === 'handoff' ? row.handoff : null;
+    expect(handed?.to, 'the row names the session that continues').toBe('new-session-id');
+    expect(handed?.ground_truth[0]?.label, 'the ground truth rides the row').toBe('seat');
+    expect(handed?.judgment[0]?.label, 'and the judgment with it').toBe('Next');
   });
 });

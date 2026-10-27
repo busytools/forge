@@ -164,7 +164,10 @@ crossed, or the compaction that forced it (a manual ask says so). Opened, it
 carries both full session ids, each with the control that copies it - the
 recovery `/resume <old-id>` needs is on the row itself - and the brief the
 successor was given: the ground truth forge read off the transcript, git and
-the board, then the judgment the handing-over session wrote. The previous
+the board, then the judgment the handing-over session wrote. **The brief is one
+table.** Each section takes its own labelled row, and the judgment's five
+headings sit on the same label column; the value takes the width the pane has
+and wraps inside its own row. The previous
 conversation stays above it, so a swap reads as a seam in the page rather
 than a seat that emptied, and the old session is one `/resume` away. A
 client that attaches after the swap draws the row from the seat's record:
@@ -220,7 +223,8 @@ used to hold.
 [browser.md](./browser.md)): its panel lists the tabs of the profile this
 seat's project resolves to, show raises one of them as the full-window
 takeover, hide lowers it, and the sessions keep driving the same tabs
-underneath while it is closed.
+underneath while it is closed. **It draws only while that profile has a
+tab**, so a page that has never used the browser carries no browser row.
 
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every
 seat has a tree - a worker's own worktree, the lead's checkout - so it
@@ -249,7 +253,10 @@ directory for a lead, and a worker a lead pointed at a tree of its own is
 named by that tree - `~/Projects/nazar` beside its project's siblings -
 rather than described. A tree that could not be read says so rather than
 drawing a blank. The account a row chips is on the rail's footer
-beside what it is costing, not on the strip.
+beside what it is costing, not on the strip: a spend-billed key shows its day,
+week, month, balance and cap, and a window-billed account shows its 5h and 7d
+rows, each with its percent, the reset that lifts it, and `at limit` on the
+window spending the plan.
 
 **The review row's panel is the review sets.** The filed rounds draw
 oldest first with the latest at the bottom - the conversation's own
@@ -290,6 +297,20 @@ where it has moved on) beside the whole thread, its turns in order.
   project whose account chip has not resolved draws the account it declares -
   or `account` - with `usage not reported`. The footer never vanishes, so an
   absent snapshot cannot read as forge having no account.
+- **An account at its limit**: the footer still names it and states both
+  windows, because a rate-limited response is a reading rather than an
+  absence. The account line says `rate limited` beside the name - the dot's
+  colour alone cannot, and neither can the loading state, which reads ready
+  (or bailed at boot) while the rotation holds the account out. The spent
+  window says `at limit` beside its
+  percent, in words as well as the amber, and each window states its own reset
+  in the reader's clock - `resets 23:10`, or `resets Tue 09:00` when it is
+  more than a day out; a reset the clock has passed states nothing, and its
+  window stops claiming to be spent. A window the provider rejects below its
+  cap is marked too: the count can be a request limit, not only a token one.
+  The reading lives in memory only, so a relaunch falls back to the last
+  successful probe - or `-` where there is none - until the account answers
+  again.
 
 ## The two widths
 

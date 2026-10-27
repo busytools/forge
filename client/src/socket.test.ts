@@ -777,6 +777,95 @@ describe('the connection', () => {
   });
 
   /**
+   * **The browser's own messages are client messages, not core commands.**
+   * An attach answers through its own reply with the profile and tab the
+   * server actually took, which is what the page's Done lowers.
+   */
+  it('attaches to a browser tab and answers the profile and tab it took', async () => {
+    const { server, conn } = await connected();
+    const answer = conn.browserView(LEAD, 3);
+    await until(() => server.received.length === 1, 'the attach');
+    const [sent] = server.received;
+    if (sent?.kind !== 'browser_view' || typeof sent.reply_to !== 'number') {
+      throw new Error('an attach is its own client message with a reply channel');
+    }
+    expect(sent.seat).toEqual(LEAD);
+    expect(sent.tab).toBe(3);
+    server.send({
+      kind: 'reply',
+      reply_to: sent.reply_to,
+      body: { ok: true, profile: 'Busytools/proj', tab: 3 },
+    });
+    await expect(answer).resolves.toEqual({ profile: 'Busytools/proj', tab: 3 });
+  });
+
+  /// **A refused attach is the server's own sentence**, not a made-up one.
+  it('answers a refused attach with the reason the server sent', async () => {
+    const { server, conn } = await connected();
+    const answer = conn.browserView(LEAD, null);
+    await until(() => server.received.length === 1, 'the attach');
+    const [sent] = server.received;
+    if (sent?.kind !== 'browser_view' || typeof sent.reply_to !== 'number') {
+      throw new Error('an attach is its own client message with a reply channel');
+    }
+    server.send({ kind: 'reply', reply_to: sent.reply_to, body: { ok: false, why: 'no tab 9' } });
+    await expect(answer).rejects.toThrow('no tab 9');
+  });
+
+  /// **The ask is the subscription**: one read of a profile's tabs, answered
+  /// on the ask's reply, and every change pushed afterwards.
+  it('reads a profile tabs through the reply its ask is answered with', async () => {
+    const { server, conn } = await connected();
+    const answer = conn.browserTabs(LEAD);
+    await until(() => server.received.length === 1, 'the tabs ask');
+    const [sent] = server.received;
+    if (sent?.kind !== 'browser_tabs' || typeof sent.reply_to !== 'number') {
+      throw new Error('a tabs ask is its own client message with a reply channel');
+    }
+    const tabs = {
+      profile: 'Busytools/proj',
+      id: 2,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [],
+    };
+    server.send({ kind: 'reply', reply_to: sent.reply_to, body: { ok: true, tabs } });
+    await expect(answer).resolves.toEqual(tabs);
+  });
+
+  /// **Every browser gesture rides its own client message**, with no reply:
+  /// a detach, the role, a history move and a layout.
+  it('sends the browser gestures as their own client messages', async () => {
+    const { server, conn } = await connected();
+    conn.browserDetach();
+    conn.browserControl(true);
+    conn.browserNav(false);
+    conn.browserResize(800, 600, 2);
+    await until(() => server.received.length === 4, 'all four messages');
+    expect(server.received).toEqual([
+      { kind: 'browser_detach' },
+      { kind: 'browser_control', take: true },
+      { kind: 'browser_nav', back: false },
+      { kind: 'browser_resize', width: 800, height: 600, scale: 2 },
+    ]);
+  });
+
+  /// **The page's perf records ride its own socket**, and a socket that is
+  /// down answers `false` so its sink drops the batch rather than queueing it.
+  it('carries a perf batch over the socket', async () => {
+    const { server, conn } = await connected();
+    const mark = { schema: 'forge-perf/v1', kind: 'frame' as const, run_id: 'r', ts_ms: 3 };
+    const perf = conn.clientPerf?.bind(conn);
+    if (perf === undefined) throw new Error('a socket connection carries the perf batch');
+    expect(perf([mark])).toBe(true);
+    await until(() => server.received.length === 1, 'the perf batch');
+    expect(server.received[0]).toEqual({ kind: 'client_perf', records: [mark] });
+    conn.close();
+    expect(perf([mark]), 'a batch with no socket is dropped, not queued').toBe(false);
+  });
+
+  /**
    * The socket carries no history, so a reconnect re-asks. The store keeps
    * what it had until the fresh snapshot arrives, or the reader watches the
    * page empty and refill.

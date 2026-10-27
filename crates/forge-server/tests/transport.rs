@@ -62,13 +62,8 @@ async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
 /// the reap's wants, and that one shortens it so a silent peer can be watched
 /// being reaped rather than waiting the minute out.
 async fn serve_fleet(fleet: &Fleet, heartbeat: Heartbeat) -> (String, Arc<TransportState>) {
-    let state = Arc::new(
-        TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        )
-        .with_heartbeat(heartbeat),
-    );
+    let state =
+        Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(heartbeat));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -1603,6 +1598,41 @@ async fn the_greeting_carries_the_dictate_axes_the_config_set() {
     );
 }
 
+/// A `[client]` edit reaches the NEXT connection, not one already open: the
+/// client snapshots its settings at the handshake, so this cut has no live
+/// redraw.
+#[tokio::test]
+async fn a_client_setting_reload_applies_to_the_next_connection() {
+    let (url, fleet) = a_server().await;
+    let mut first = connect(&url).await;
+
+    let path = fleet.workspace().config_path();
+    let mut raw = std::fs::read_to_string(&path).expect("read");
+    raw.push_str("\n[client]\nmark = \"klin\"\n");
+    std::fs::write(&path, raw).expect("write");
+    let reload = fleet.workspace().reload_config().expect("the new file is valid");
+    assert!(reload.changed.contains(&"client"), "the client table moved: {reload:?}");
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(500), first.next()).await.is_err(),
+        "an open connection keeps the settings it greeted with",
+    );
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
+    let msg = socket.next().await.expect("a greeting").expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::Greeting { settings, .. } =
+        serde_json::from_str(text).expect("the greeting decodes")
+    else {
+        panic!("the next connection's first frame is its greeting, not {text}")
+    };
+    assert_eq!(
+        settings.mark.as_deref(),
+        Some("klin"),
+        "a connection opened after the reload greets with its sets",
+    );
+}
+
 /// **A large text frame crosses whole.** The inbound cap is the socket's
 /// guard against abuse, not a ceiling on a prompt: a command carrying a
 /// ~100 KiB prompt used to exceed a 16 KiB message cap and tear the
@@ -2871,7 +2901,11 @@ async fn a_refused_hand_off_answer_names_its_own_operation() {
             command: Box::new(Command::RespondBrowserHandOff {
                 key: lead_seat(),
                 id: uuid::Uuid::new_v4(),
-                done: true,
+                answer: forge_primitives::browser::HandOffAnswer {
+                    ending: forge_primitives::browser::HandOffEnding::Done,
+                    source: forge_primitives::browser::HandOffSource::Takeover,
+                    client: None,
+                },
             }),
             reply_to: None,
         },
@@ -2888,6 +2922,41 @@ async fn a_refused_hand_off_answer_names_its_own_operation() {
     assert!(
         why.contains("no longer waiting") && why.contains("asking session"),
         "and carries the hand-off's own sentence, endings included: {why}",
+    );
+}
+
+/// **A command the server cannot read is answered where a refusal is drawn.**
+/// A client older than the server sends a command in the shape it knows; the
+/// decode fails, and a `client_message` refusal is one a client reports only
+/// to its console - its dock has already stood down, so the person believes
+/// the answer left while the prompt, and the tool behind it, wait for ever.
+/// The frame's kind is readable even when its body is not, and that is what
+/// the reply routes by.
+#[tokio::test]
+async fn an_unreadable_command_is_answered_as_a_dispatch_refusal() {
+    let mut socket = connected().await;
+    // The v12 answer: `done` in place of this build's `answer`.
+    let sent = serde_json::json!({
+        "kind": "command",
+        "command": {
+            "respond_browser_hand_off": {
+                "key": lead_seat(),
+                "id": "0192e1c0-0000-7000-8000-0000000000aa",
+                "done": false,
+            },
+        },
+        "reply_to": null,
+    });
+    socket.send(Message::Text(sent.to_string().into())).await.expect("send");
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("an unreadable command is answered, not dropped");
+    };
+    assert_eq!(what, "dispatch", "the refusal a client draws where the answer came from: {why}");
+    assert!(why.contains("older"), "and the likely cause is named: {why}");
+    assert!(
+        why.contains("still waiting"),
+        "with the fact that the prompt survives the failed answer: {why}",
     );
 }
 
@@ -5367,10 +5436,7 @@ async fn a_repo_server() -> (String, Fleet, Arc<TransportState>, tempfile::TempD
     std::fs::create_dir_all(&repo).expect("the project directory");
     a_repo(&repo);
 
-    let state = Arc::new(TransportState::for_workspace(
-        &fleet.workspace(),
-        forge_primitives::ClientConfig::default(),
-    ));
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -5504,10 +5570,7 @@ async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
     std::fs::create_dir_all(&repo).expect("the project directory");
     let tip = a_repo_with_a_pushed_branch(&repo);
 
-    let state = Arc::new(TransportState::for_workspace(
-        &fleet.workspace(),
-        forge_primitives::ClientConfig::default(),
-    ));
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);

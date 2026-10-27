@@ -264,7 +264,7 @@ pub async fn anthropic_windowed_probe(
         }),
         403 if is_scope_refusal(&body) => Err(OauthUsageError::ScopeInsufficient),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        429 => Err(OauthUsageError::RateLimited { retry_after }),
+        429 => Err(OauthUsageError::RateLimited { retry_after, snapshot: None }),
         _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, access_token))),
     }
 }
@@ -445,6 +445,7 @@ pub(crate) fn map_window(payload: Option<OauthUsageWindow>) -> Option<UsageWindo
         utilization: utilization.clamp(0.0, 100.0),
         resets_at: payload.resets_at.as_ref().and_then(parse_timestamp_value),
         reset_description: None,
+        status: None,
     })
 }
 

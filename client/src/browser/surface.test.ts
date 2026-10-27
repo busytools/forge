@@ -1,20 +1,44 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./host', () => ({
-  canHost: vi.fn(() => true),
+vi.mock('./link', () => ({
+  canAttach: vi.fn(() => true),
+  clearBrowserLink: vi.fn(),
+  drawsCanvas: vi.fn(() => false),
   drawsSurface: vi.fn(() => true),
-  showBrowser: vi.fn(),
   hideBrowser: vi.fn(),
+  installBrowserLink: vi.fn(),
+  keptFrame: vi.fn(() => Promise.resolve(null)),
   listTabs: vi.fn(),
-  tabListOf: (value: unknown) => value,
+  navigateBrowser: vi.fn(() => Promise.resolve()),
+  onConnection: vi.fn(() => Promise.resolve(() => {})),
+  onFailed: vi.fn(() => Promise.resolve(() => {})),
+  onLower: vi.fn(() => null),
+  onNav: vi.fn(() => Promise.resolve(() => {})),
+  onRemeasure: vi.fn(() => null),
+  onTabs: vi.fn(() => Promise.resolve(() => {})),
+  onView: vi.fn(() => Promise.resolve(() => {})),
+  reattachesOnReconnect: vi.fn(() => false),
   reportSurfaceRect: vi.fn(),
   resizeBrowser: vi.fn(() => Promise.resolve()),
+  showBrowser: vi.fn(),
+  sizesAsWatcher: vi.fn(() => false),
   takeControl: vi.fn(() => Promise.resolve()),
+  usesPageHistory: vi.fn(() => false),
 }));
 
 import type { BrowserTabList } from '../protocol';
-import { canHost, drawsSurface, hideBrowser, listTabs, resizeBrowser, showBrowser } from './host';
+import {
+  canAttach,
+  drawsSurface,
+  hideBrowser,
+  listTabs,
+  onConnection,
+  reattachesOnReconnect,
+  resizeBrowser,
+  showBrowser,
+  sizesAsWatcher,
+} from './link';
 import {
   closeSurface,
   openSurface,
@@ -28,7 +52,7 @@ const show = vi.mocked(showBrowser);
 const hide = vi.mocked(hideBrowser);
 const tabs = vi.mocked(listTabs);
 const here = vi.mocked(drawsSurface);
-const hostable = vi.mocked(canHost);
+const hostable = vi.mocked(canAttach);
 const resize = vi.mocked(resizeBrowser);
 
 beforeEach(() => {
@@ -48,6 +72,7 @@ beforeEach(() => {
   hostable.mockReset();
   hostable.mockReturnValue(true);
   resize.mockClear();
+  vi.mocked(sizesAsWatcher).mockReturnValue(false);
   surface.viewer = null;
   surface.controller = null;
   surface.phase = 'closed';
@@ -59,6 +84,27 @@ beforeEach(() => {
 });
 
 describe('the browser surface', () => {
+  /// **A page's attach died with its socket**, so a page reconnecting asks
+  /// for it again rather than keeping a picture no gesture can reach. First
+  /// in this file so its listener is the install's own registration.
+  it('re-attaches the surface when the connection comes back', async () => {
+    const seen: { notice: (() => void) | null } = { notice: null };
+    vi.mocked(onConnection).mockImplementation((fn) => {
+      seen.notice = fn;
+      return Promise.resolve(() => {});
+    });
+    vi.mocked(reattachesOnReconnect).mockReturnValue(true);
+    const { installSurfaceEvents } = await import('./surface.svelte');
+    await installSurfaceEvents();
+    if (seen.notice === null) throw new Error('the page follows the connection');
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValue({ profile: 'hunt', tab: 2 });
+    await openSurface('hunt', seat, 2);
+    show.mockClear();
+    seen.notice();
+    await vi.waitFor(() => expect(show).toHaveBeenCalledWith('hunt', seat, 2));
+  });
+
   /// **The page is laid out to the controller's surface, and only to it.**
   /// A watcher's window must not move the page under the person driving it.
   it('sizes the page to the controller surface, never a watcher', () => {
@@ -70,6 +116,20 @@ describe('the browser surface', () => {
     surface.controller = 8;
     setRegion({ x: 0, y: 40, width: 800, height: 600 }, { width: 800, height: 640 }, 2);
     expect(resize, "a watcher's window sends nothing").not.toHaveBeenCalled();
+  });
+
+  /// **A page with no shell sizes its own view while watching.** No other
+  /// client is behind it, so the layout must not wait for the role.
+  it('sizes the page while watching where the link says the page is alone', () => {
+    vi.mocked(sizesAsWatcher).mockReturnValue(true);
+    surface.viewer = 7;
+    surface.controller = 8;
+    setRegion({ x: 0, y: 40, width: 800, height: 600 }, { width: 800, height: 640 }, 2);
+    expect(resize, 'the page lays itself out without taking the role').toHaveBeenCalledWith(
+      1600,
+      1200,
+      2,
+    );
   });
 
   /// **Taking the role sends the size the surface already has**: the page
@@ -118,6 +178,26 @@ describe('the browser surface', () => {
     expect(surface.phase).toBe('live');
     expect(surface.reason).toBeNull();
     expect(surface.tab).toBe(4);
+  });
+
+  /// **A pick that failed leaves no role behind**: the attach died with its
+  /// connection, so the bar must draw neither a viewer, a controller, nor
+  /// arrows for a page that is not there.
+  it('clears the dead connection role and arrows when a pick fails', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 1 });
+    await openSurface('hunt', seat, 1);
+    surface.viewer = 7;
+    surface.controller = 7;
+    surface.nav = { can_back: true, can_forward: true };
+    show.mockResolvedValueOnce('the browser host exited');
+    expect(await selectTab(2)).toBe('the browser host exited');
+    expect(surface.viewer, 'no viewer survives a failed pick').toBeNull();
+    expect(surface.controller, 'no controller survives a failed pick').toBeNull();
+    expect(surface.nav, 'no arrows survive a failed pick').toEqual({
+      can_back: false,
+      can_forward: false,
+    });
   });
 
   /// **A pick superseded by a newer open is not the surface's to change.**

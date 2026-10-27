@@ -295,9 +295,90 @@ pub enum HandOffEnding {
     Done,
     /// The person declined; the session knows what to do instead.
     NotNow,
+    /// The person sent the session a message about the page and carried on:
+    /// nothing is declined, and the session reads what they said.
+    Feedback,
     /// The asking session went away before anyone answered.
     Abandoned,
 }
+
+/// Which door in a client produced a hand-off's answer.
+///
+/// **The ending says what it means; this says who said it.** A hand-off that
+/// ends with nobody named is the defect two live rounds were spent on
+/// (2026-10-07, 2026-10-26): the answer has to carry the hand that sent it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandOffSource {
+    /// The dock's Done or Not now, before the takeover opened.
+    Dock,
+    /// The dock's own Escape, which is its refusal.
+    DockEscape,
+    /// The takeover bar's Done or Not now.
+    Takeover,
+    /// The takeover bar's feedback line: the person's words go to the session
+    /// as a prompt, and the ending says they spoke.
+    Feedback,
+    /// The asking session's waiter went away; the core's own ending.
+    Abandoned,
+    /// A client that did not say which door it used.
+    #[default]
+    Unstated,
+}
+
+/// One answer to a parked browser hand-off: what it means, which door sent it,
+/// and the connection that carried it.
+///
+/// `client` is stamped by the server at dispatch - a client cannot know its own
+/// connection number - so every ending names the hand that sent it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandOffAnswer {
+    pub ending: HandOffEnding,
+    #[serde(default)]
+    pub source: HandOffSource,
+    #[serde(default)]
+    pub client: Option<u64>,
+}
+
+/// Every browser tool the spec table advertises, by name.
+///
+/// The table itself lives in `forge-workspace`'s `mcp::browser::specs`, which
+/// this crate may not depend on: a unit test there asserts the two lists
+/// agree, and the live check in `forge-server`'s `surface_parity_live` test
+/// asserts every name is answered by the pinned driver or by a host arm.
+pub const ADVERTISED_TOOLS: [&str; 31] = [
+    "browser_close",
+    "browser_resize",
+    "browser_console_messages",
+    "browser_handle_dialog",
+    "browser_emulate_media",
+    "browser_evaluate",
+    "browser_file_upload",
+    "browser_drop",
+    "browser_find",
+    "browser_fill_form",
+    "browser_press_key",
+    "browser_type",
+    "browser_navigate",
+    "browser_navigate_back",
+    "browser_network_requests",
+    "browser_network_request",
+    "browser_run_code_unsafe",
+    "browser_take_screenshot",
+    "browser_snapshot",
+    "browser_click",
+    "browser_drag",
+    "browser_hover",
+    "browser_select_option",
+    "browser_tabs",
+    "browser_wait_for",
+    "browser_click_and_capture",
+    "browser_form_state",
+    "browser_challenge_state",
+    "browser_hand_off",
+    "browser_record_start",
+    "browser_record_stop",
+];
 
 #[cfg(test)]
 mod tests {
@@ -383,6 +464,72 @@ mod tests {
             serde_json::to_value(HandOffEnding::Abandoned).expect("an ending encodes"),
             serde_json::json!({ "type": "abandoned" }),
         );
+    }
+
+    /// An answer crosses as the ending, the door that sent it and the
+    /// connection that carried it, so a reader of the wire can name the hand
+    /// rather than only the outcome.
+    #[test]
+    fn an_answer_crosses_with_its_source_and_client() {
+        let answer = HandOffAnswer {
+            ending: HandOffEnding::Feedback,
+            source: HandOffSource::Feedback,
+            client: Some(7),
+        };
+        let encoded = serde_json::to_value(answer).expect("an answer encodes");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "ending": { "type": "feedback" },
+                "source": "feedback",
+                "client": 7,
+            }),
+        );
+        assert_eq!(serde_json::from_value::<HandOffAnswer>(encoded).expect("decodes"), answer);
+        // A client cannot know its own connection number, so the field is
+        // absent on the way in rather than a zero that would name a stranger -
+        // and an answer that names no door still resolves the park, recorded
+        // as unattributed rather than lost.
+        assert_eq!(
+            serde_json::from_value::<HandOffAnswer>(serde_json::json!({
+                "ending": { "type": "done" },
+            }))
+            .expect("decodes without a source or a client"),
+            HandOffAnswer {
+                ending: HandOffEnding::Done,
+                source: HandOffSource::Unstated,
+                client: None,
+            },
+        );
+    }
+
+    /// **Every door crosses as the word the server writes, and the client's
+    /// own tests assert the same four literals it writes.** The page builds
+    /// them by hand: `dock` and `dock_escape` in `Dock.svelte`, `takeover`
+    /// and `feedback` in `Composer.svelte`. The socket record walks keys and
+    /// never values, so it cannot catch a rename on either side; this test
+    /// and the client tests that click each door are what do, and a rename
+    /// here without one there would leave the answer undecodable.
+    #[test]
+    fn every_client_door_crosses_as_the_word_the_client_writes() {
+        for (source, word) in [
+            (HandOffSource::Dock, "dock"),
+            (HandOffSource::DockEscape, "dock_escape"),
+            (HandOffSource::Takeover, "takeover"),
+            (HandOffSource::Feedback, "feedback"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(source).expect("a source encodes"),
+                serde_json::json!(word),
+                "the client writes {word} for {source:?}",
+            );
+            assert_eq!(
+                serde_json::from_value::<HandOffSource>(serde_json::json!(word))
+                    .expect("the word decodes"),
+                source,
+                "{word} is the door it names",
+            );
+        }
     }
 
     /// The bytes are the part's, not its JSON form: a carrier that base64'd

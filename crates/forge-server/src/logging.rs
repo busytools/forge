@@ -98,16 +98,25 @@ impl LoggingRuntime {
 /// which reaches tracing through the llama-cpp-2 crate under both its
 /// hyphenated target and its module path. What it reports is the model
 /// loading itself, not forge, so it is not forge's warning to raise.
+///
+/// `forge_workspace::mcp` and `forge_agent::mcp` carry the two halves of
+/// one record: the surface a spawn hands its child and the surface the
+/// CLI's boot init frame says it received. The list is fixed once the child
+/// starts, so the pair is the only way a "tool not found" is traced to the
+/// side that actually lacked the name.
 const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.input=debug,\
     app.lifecycle=debug,\
     bridge.lifecycle=debug,\
     agent.env_git=debug,\
+    forge_agent::env::config_watch=debug,\
     forge_server=debug,\
     forge_agent::userdata::catalog::scan=debug,\
     forge_workspace::output_tail=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
+    forge_workspace::mcp=debug,\
+    forge_agent::mcp=debug,\
     forge_workspace::dictate=debug,\
     forge_dictate=debug,\
     llama_cpp_2=error,\
@@ -207,7 +216,8 @@ fn default_log_path() -> anyhow::Result<PathBuf> {
     Ok(base_dir.join(DEFAULT_LOG_FILE_NAME))
 }
 
-fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
+/// The directory forge's own logs live in, which a client's perf log shares.
+pub(crate) fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
     if let Some(dir) = dirs::data_local_dir() {
         return Ok(dir.join(DEFAULT_LOG_DIR).join("logs"));
     }
@@ -458,6 +468,14 @@ mod tests {
         // call is the session's own work. Without the directive the call
         // record lands nowhere at all.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::browser=debug"));
+        // `forge_workspace::mcp` records the tool surface a spawn hands its
+        // child and `forge_agent::mcp` records the surface the CLI's boot
+        // init frame reports. The list is fixed once the child starts, so
+        // the pair is the only artifact that says which side lacked a name
+        // when a tool answers "not found"; without the directives both
+        // lines land nowhere at all.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::mcp=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_agent::mcp=debug"));
         // Dictation's own records were demoted out of WARN for the same
         // reason: a take reaching its capture cap, a normalizer hitting
         // its token budget and a take whose recognition failed are one

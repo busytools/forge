@@ -67,7 +67,7 @@
    * The account and the two builds, which sit under the list rather than in it:
    * the projects scroll behind them.
    */
-  const foot = $derived(railFooter(home, current, connection.serverProtocol()));
+  const foot = $derived(railFooter(home, current, connection.serverProtocol(), now));
 
   /**
    * Close one row's seat. The command the row sends and where the reader
@@ -204,6 +204,7 @@
     <div class="who">
       <span class="led {foot.account.tone}"></span>
       <span class="an">{foot.account.name}</span>
+      {#if foot.account.state !== null}<span class="st">{foot.account.state}</span>{/if}
     </div>
     {#if foot.figures.length > 0}
       <div class="frs">
@@ -218,10 +219,17 @@
     {#if foot.windows.length > 0}
       <div class="frs">
         {#each foot.windows as window (window.label)}
-          <div class="bar">
-            <span class="lb">{window.label}</span>
-            <span class="tk"><span class="fl" style={`width:${window.percent}%`}></span></span>
-            <span class="pc" class:none={window.dim}>{window.text}</span>
+          <!-- Two lines per window: the rail is too narrow for the label,
+               bar, percent, mark and reset on one line. The mark's slot is
+               reserved on every row so the percents line up whether or not
+               a window is spent. -->
+          <div class="win">
+            <div class="bar">
+              <span class="lb">{window.label}</span>
+              <span class="tk"><span class="fl" style={`width:${window.percent}%`}></span></span>
+              <span class="pc" class:none={window.dim}>{window.text}</span>
+              <span class="lim">{window.atLimit ? 'at limit' : ''}</span>
+            </div>
             {#if window.reset !== ''}<span class="eta">{window.reset}</span>{/if}
           </div>
         {/each}

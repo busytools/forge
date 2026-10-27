@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 14;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -376,7 +376,22 @@ export type ClientMessage =
   /** Take the controller role for the viewed surface, or give it back. */
   | { kind: 'browser_control'; take: boolean }
   /** Move the viewed page through its own history: the bar's arrows. */
-  | { kind: 'browser_nav'; back: boolean };
+  | { kind: 'browser_nav'; back: boolean }
+  /**
+   * The controller's surface changed size: the page is laid out to it.
+   *
+   * `width` and `height` are the surface's DEVICE pixels - the client
+   * multiplies its CSS box by the ratio it draws at - and `scale` is that
+   * ratio, which the host gives the engine.
+   */
+  | { kind: 'browser_resize'; width: number; height: number; scale: number }
+  /**
+   * One page's own perf records, for a client with no shell to write them.
+   *
+   * **The records stay as the page serialised them**: the server's part is
+   * the file, written beside `forge.log`, and nothing answers the batch.
+   */
+  | { kind: 'client_perf'; records: unknown[] };
 
 /** What the server sends. */
 export type ServerMessage =

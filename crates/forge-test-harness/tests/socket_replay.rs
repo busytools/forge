@@ -350,6 +350,7 @@ census!(ClientMessage,
         BrowserTabs struct,
         DocumentRead struct,
         FileContent struct,
+        ClientPerf struct,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
@@ -887,6 +888,14 @@ fn frames_record() -> Value {
             path: "src/lib.rs".to_owned(),
             sha: None,
         },
+        ClientMessage::ClientPerf {
+            records: vec![json!({
+                "schema": "forge-perf/v1",
+                "kind": "frame",
+                "run_id": "r",
+                "ts_ms": 3,
+            })],
+        },
     ];
     for sample in &client_messages {
         let encoded = serde_json::to_value(sample).expect("a client message encodes");
@@ -1005,6 +1014,29 @@ fn frames_record() -> Value {
             id: 1,
             tab: 2,
             reason: "the browser host exited (pid 42); the next call brings it back".to_owned(),
+        }),
+    );
+    // **A hand-off's answer, where the door and the connection ARE the
+    // provenance.** The resolved update used to carry a bare `ending`; the
+    // ending, the door that sent it and the connection that carried it now
+    // cross together, and a rename inside this payload would leave a dock
+    // saying nothing about the hand that answered it. `ChatAppended` and
+    // `SeatFrames` sample the update's own frame; this is the payload a
+    // resolved hand-off is read from.
+    payload_sampled.insert(
+        "BrowserHandOffResolved".to_owned(),
+        shape_of(&ServerMessage::Update {
+            update: Box::new(forge_server::surface::SessionUpdate::BrowserHandOffResolved {
+                key: seat.clone(),
+                id: uuid::Uuid::from_u128(7),
+                answer: forge_primitives::browser::HandOffAnswer {
+                    ending: forge_primitives::browser::HandOffEnding::Feedback,
+                    source: forge_primitives::browser::HandOffSource::Feedback,
+                    client: Some(3),
+                },
+            }),
+            seq: Some(9),
+            span: 0,
         }),
     );
     // **The strip's whole read**: the host's health, the idle deadline and
@@ -1734,6 +1766,15 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
             session: SessionSlot::lead("TestOrg", "proj"),
             path: "src/a.rs".to_owned(),
             sha: None,
+        }),
+    );
+    // **The page's own perf batch.** The page writes `records` by hand, so a
+    // rename here leaves a batch nothing on the server reads, with both
+    // suites green.
+    sampled.insert(
+        "ClientPerf".to_owned(),
+        sample(ClientMessage::ClientPerf {
+            records: vec![json!({"schema": "forge-perf/v1", "kind": "frame", "ts_ms": 3})],
         }),
     );
     sampled

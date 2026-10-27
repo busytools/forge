@@ -8,7 +8,7 @@
 //! view; its browser tools answer [`NO_BROWSER_HOST`].
 
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::{HandOff, HandOffEnding};
+use forge_primitives::browser::{HandOff, HandOffAnswer, HandOffEnding};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
@@ -257,7 +257,7 @@ impl Workspace {
         &self,
         id: uuid::Uuid,
         caller: &SessionSlot,
-        ending: HandOffEnding,
+        answer: HandOffAnswer,
     ) -> bool {
         let mut parked = self.browser_handoffs.lock();
         if !parked.get(&id).is_some_and(|(owner, _, _)| owner == caller) {
@@ -268,20 +268,25 @@ impl Workspace {
         // **The tab is released with the answer**, whichever ending it
         // carried: a resolved hand-off holds nothing.
         self.tell_browser_hand_off_finished(&owner, handoff.tab);
-        // **The ending is what tells an answer from an abandonment**, and
-        // hand-offs were seen resolving by themselves in a live round
-        // (2026-10-07) with nothing naming the hand that sent it.
+        // **Every ending names the hand that sent it**: an answer with
+        // nothing attributable behind it is what two live rounds were spent
+        // on (2026-10-07, 2026-10-26), so the door, the connection and the
+        // seat and tab the hand-off held are all here.
         tracing::debug!(
             event_name = "browser_hand_off_resolved",
             id = %id,
-            ending = ?ending,
+            ending = ?answer.ending,
+            source = ?answer.source,
+            client = answer.client,
+            seat = %owner.display(),
+            tab = handoff.tab,
             "a parked browser hand-off left the registry"
         );
-        let _ = sender.send(ending);
+        let _ = sender.send(answer.ending);
         let _ = self.update_sender().send(crate::protocol::SessionUpdate::BrowserHandOffResolved {
             key: owner,
             id,
-            ending,
+            answer,
         });
         true
     }
@@ -443,9 +448,15 @@ pub(crate) mod testing {
 mod tests {
     use super::*;
     use crate::browser::testing::StubHost;
+    use forge_primitives::browser::HandOffSource;
 
     fn handoff(reason: &str) -> HandOff {
         HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab: 2 }
+    }
+
+    /// One answer from the given door, with a connection behind it.
+    fn answer(ending: HandOffEnding, source: HandOffSource) -> HandOffAnswer {
+        HandOffAnswer { ending, source, client: Some(4) }
     }
 
     /// A workspace with a fleet installed and the calls it is told.
@@ -514,7 +525,11 @@ mod tests {
         let started = heard.recv().await.map(|(what, _)| what);
         assert_eq!(started, Some("hand_off_started".to_owned()));
 
-        assert!(ws.resolve_browser_hand_off(id, &caller, HandOffEnding::Done));
+        assert!(ws.resolve_browser_hand_off(
+            id,
+            &caller,
+            answer(HandOffEnding::Done, HandOffSource::Takeover),
+        ));
 
         let (what, args) = heard.recv().await.expect("the fleet hears the release");
         assert_eq!(what, "hand_off_finished", "the ending releases the tab it held");
@@ -558,7 +573,11 @@ mod tests {
         let (ws, _rx) = Workspace::testing_stub();
         let caller = SessionSlot::from_str_for_test("caller-uuid");
         assert!(
-            !ws.resolve_browser_hand_off(uuid::Uuid::new_v4(), &caller, HandOffEnding::NotNow),
+            !ws.resolve_browser_hand_off(
+                uuid::Uuid::new_v4(),
+                &caller,
+                answer(HandOffEnding::NotNow, HandOffSource::Takeover),
+            ),
             "a hand-off that is not parked cannot be resolved",
         );
     }
@@ -594,25 +613,79 @@ mod tests {
         let caller = SessionSlot::from_str_for_test("caller-uuid");
         let handoff = handoff("solve the CAPTCHA");
         let id = handoff.id;
-        let (_id, answer) = ws.register_browser_hand_off(&caller, handoff).await.expect("parks");
+        let (_id, waiter) = ws.register_browser_hand_off(&caller, handoff).await.expect("parks");
         while rx.try_recv().is_ok() {}
 
-        assert!(ws.resolve_browser_hand_off(id, &caller, HandOffEnding::Done));
+        let taken = answer(HandOffEnding::Done, HandOffSource::Takeover);
+        assert!(ws.resolve_browser_hand_off(id, &caller, taken));
 
         assert_eq!(
-            answer.await.expect("the waiter is answered"),
+            waiter.await.expect("the waiter is answered"),
             HandOffEnding::Done,
             "the ending the resolve carried is what the blocked handler gets",
         );
         let resolved = rx.try_recv().expect("the views hear it left the registry");
-        let crate::protocol::SessionUpdate::BrowserHandOffResolved { key, id: seen, ending } =
+        let crate::protocol::SessionUpdate::BrowserHandOffResolved { key, id: seen, answer: heard } =
             resolved.update
         else {
             panic!("the update is the resolved one");
         };
         assert_eq!(key, caller);
         assert_eq!(seen, id);
-        assert_eq!(ending, HandOffEnding::Done);
+        // **The whole answer crosses, not just its meaning**: a view that did
+        // not answer reads the ending, and the log names the door and the
+        // connection that did.
+        assert_eq!(heard, taken, "the door and the client ride the resolved update");
+    }
+
+    /// **A connection going away is not an answer.** The park lives in the
+    /// workspace's registry, not in a subscription: a client whose socket
+    /// drops under a parked ask must leave it waiting, never end it as a
+    /// decline on the person's behalf.
+    #[tokio::test]
+    async fn a_subscriber_going_away_does_not_answer_a_parked_hand_off() {
+        let (ws, rx) = Workspace::testing_stub();
+        let _heard = with_host(&ws);
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let handoff = handoff("solve the CAPTCHA");
+        let id = handoff.id;
+        let (_id, mut waiter) =
+            ws.register_browser_hand_off(&caller, handoff).await.expect("parks");
+
+        drop(rx);
+
+        assert!(ws.browser_handoff_waiting(id, &caller), "the park is still the core's");
+        assert!(
+            matches!(waiter.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)),
+            "and the blocked call is still waiting for the person",
+        );
+    }
+
+    /// **A person who spoke is not a person who declined.** The feedback line
+    /// sends the session their words and ends the park, and the ending it
+    /// sends must say so: `NotNow` there told the session "the person
+    /// declined, decide what to do instead" while they were still working the
+    /// page (live, 2026-10-26, twice on one CAPTCHA).
+    #[tokio::test]
+    async fn a_feedback_answer_reaches_the_waiter_as_feedback() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let _heard = with_host(&ws);
+        let caller = SessionSlot::from_str_for_test("caller-uuid");
+        let handoff = handoff("solve the CAPTCHA");
+        let id = handoff.id;
+        let (_id, waiter) = ws.register_browser_hand_off(&caller, handoff).await.expect("parks");
+
+        assert!(ws.resolve_browser_hand_off(
+            id,
+            &caller,
+            answer(HandOffEnding::Feedback, HandOffSource::Feedback),
+        ));
+
+        assert_eq!(
+            waiter.await.expect("the waiter is answered"),
+            HandOffEnding::Feedback,
+            "the person spoke: the ending says feedback, never a decline",
+        );
     }
 
     /// Only the session that asked may resolve it: an answer from another
@@ -628,7 +701,11 @@ mod tests {
         let (_id, _answer) = ws.register_browser_hand_off(&owner, handoff).await.expect("parks");
 
         assert!(
-            !ws.resolve_browser_hand_off(id, &other, HandOffEnding::Done),
+            !ws.resolve_browser_hand_off(
+                id,
+                &other,
+                answer(HandOffEnding::Done, HandOffSource::Takeover),
+            ),
             "another seat's answer is refused",
         );
         assert!(ws.browser_handoff_waiting(id, &owner), "and the hand-off stays pending");

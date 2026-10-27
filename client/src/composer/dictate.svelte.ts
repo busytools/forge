@@ -15,6 +15,7 @@
 import { isTauri } from '@tauri-apps/api/core';
 import { untrack } from 'svelte';
 
+import { surface } from '../browser/surface.svelte';
 import type { DictateAxes } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 import { boxKey } from './box.svelte';
@@ -49,7 +50,7 @@ export function openCapture(device: string | null): Promise<MicSource> {
 }
 
 /** What registering the push-to-talk key needs of one surface. */
-interface PushToTalk {
+export interface PushToTalk {
   /** The take the key begins and ends, read where it is used: a surface's
    *  driver arrives as a prop, and a value taken once would be the one the
    *  page first drew with. */
@@ -79,42 +80,66 @@ interface PushToTalk {
  * surface goes.
  */
 export function bindPushToTalk(wiring: PushToTalk): void {
+  // **The handlers outlive the effect's re-runs**, so the press in flight
+  // survives an `offered` that moves while the key is held: a new closure per
+  // run would forget the press and its release would end nothing.
+  const handlers = pushToTalkHandlers(wiring);
+
+  $effect(() => {
+    if (!wiring.offered()) return;
+    window.addEventListener('keydown', handlers.down, true);
+    window.addEventListener('keyup', handlers.up);
+    return () => {
+      window.removeEventListener('keydown', handlers.down, true);
+      window.removeEventListener('keyup', handlers.up);
+    };
+  });
+}
+
+/**
+ * The key's two listeners, over one surface's wiring.
+ *
+ * **Split from the registration so the stand-down is testable**: the press is
+ * a rule of the page it types into, not of the window it is heard on.
+ */
+export function pushToTalkHandlers(wiring: PushToTalk): {
+  down: (event: KeyboardEvent) => void;
+  up: (event: KeyboardEvent) => void;
+} {
   /** Whether this platform delivers Cmd, which is what a binding names. */
   const mac = navigator.platform.toLowerCase().includes('mac');
   /** The key's press in flight, from its press to its release. */
   let pressed: Held | null = null;
 
-  $effect(() => {
-    if (!wiring.offered()) return;
-    const onDown = (event: KeyboardEvent): void => {
-      // A held key repeats, and a repeat carries no instruction - without
-      // this a toggle take stops once per repeat.
-      if (event.repeat) return;
-      if (event.code !== boundCode(wiring.bind(), mac)) {
-        // Any other KEY while the press is down makes it a chord, and the
-        // chord's release discards what the press began. A bare modifier is
-        // not a key: those go through unchorded.
-        if (!isBareModifier(event.key)) pressed = markChorded(pressed);
-        return;
-      }
-      const step = down(pressed, wiring.dictate().held, Date.now(), wiring.mode());
-      pressed = step.held;
-      if (step.action === 'begin') wiring.onBegin();
-      if (step.action !== null) wiring.dictate().act(step.action);
-    };
-    const onUp = (event: KeyboardEvent): void => {
-      if (event.code !== boundCode(wiring.bind(), mac)) return;
-      const step = up(pressed, Date.now(), wiring.mode());
-      pressed = step.held;
-      if (step.action !== null) wiring.dictate().act(step.action);
-    };
-    window.addEventListener('keydown', onDown, true);
-    window.addEventListener('keyup', onUp);
-    return () => {
-      window.removeEventListener('keydown', onDown, true);
-      window.removeEventListener('keyup', onUp);
-    };
-  });
+  const onDown = (event: KeyboardEvent): void => {
+    // **A live takeover owns the keyboard**: its keys belong to the page
+    // under the bar, so a press of the binding must not start a take behind
+    // it - on the web that is a microphone opened under a page being driven.
+    if (surface.phase !== 'closed') return;
+    // A held key repeats, and a repeat carries no instruction - without
+    // this a toggle take stops once per repeat.
+    if (event.repeat) return;
+    if (event.code !== boundCode(wiring.bind(), mac)) {
+      // Any other KEY while the press is down makes it a chord, and the
+      // chord's release discards what the press began. A bare modifier is
+      // not a key: those go through unchorded.
+      if (!isBareModifier(event.key)) pressed = markChorded(pressed);
+      return;
+    }
+    const step = down(pressed, wiring.dictate().held, Date.now(), wiring.mode());
+    pressed = step.held;
+    if (step.action === 'begin') wiring.onBegin();
+    if (step.action !== null) wiring.dictate().act(step.action);
+  };
+  const onUp = (event: KeyboardEvent): void => {
+    // **A release still lands while a takeover is up**: a press that began
+    // before it opened has a capture waiting for this release.
+    if (event.code !== boundCode(wiring.bind(), mac)) return;
+    const step = up(pressed, Date.now(), wiring.mode());
+    pressed = step.held;
+    if (step.action !== null) wiring.dictate().act(step.action);
+  };
+  return { down: onDown, up: onUp };
 }
 
 /**

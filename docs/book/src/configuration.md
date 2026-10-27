@@ -1,10 +1,13 @@
 # forge.toml reference
 
 `forge.toml` is the only file forge reads for configuration. It is
-hand-authored, forge never writes to it, and it is read once, at
-startup. An edit therefore needs a forge restart to take effect: a
-session spawned later in the same run still sees the value forge loaded
-at boot.
+hand-authored, and forge never writes to it. A change is picked up while
+forge runs: the server watches this one file, re-reads it whole, and
+applies what can take effect without a restart. A running session keeps
+the account it spawned on, its model, mode, cwd and child environment;
+its credential is resolved per request, so a re-minted token reaches it.
+Everything a subsystem reads per use takes the new value, and the table
+below says what waits for a restart.
 
 ## Where it lives
 
@@ -81,7 +84,8 @@ the account the session started on. The live example is
 leaves it unset, both declare `glm-5.3-flash`, and OpenRouter rejects
 the beta shape the flag suppresses. A project declaring `glm-5.3-flash`
 in an org holding both would spawn on Zai and then fail every rotation
-onto OpenRouter, with a restart the only way out.
+onto OpenRouter; the way out is to change one of the two declarations
+and start that session again.
 
 ## `[[orgs.projects]]`
 
@@ -394,8 +398,8 @@ token is probed with a minimal billed messages call instead - its
 response headers carry the 5-hour and 7-day usage windows
 at roughly nine tokens per account per
 usage poll; a rejected token renders as an auth failure whose repair
-is a re-mint. Like every key, it is read once at boot, so
-replacing the token needs a restart.
+is a re-mint. A replaced token is read by the next probe and reaches a
+running session on its next request.
 
 Only key names, never values, are recorded in forge's per-spawn log
 line. These tables hold tokens.
@@ -406,6 +410,11 @@ Notifications are the client's own: a windowed client raises them
 through its host (a system banner, a dock badge, whatever the platform
 does), and there is no `forge.toml` key for any of it. The server
 raises nothing itself - it has no window to put a banner on.
+
+On macOS the first alert after install raises the system's notification
+permission prompt, and the OS drops that notification while the prompt
+is up. So the first ask from a fresh install is silent, and every later
+alert arrives normally.
 
 There is no `[ui]` section either: the spinner and repaint keys the
 terminal drew with retired with the terminal crate, and no key replaced
@@ -838,6 +847,52 @@ theme = "dark"
 max_size_mib = 10
 ```
 
+## Reloading an edit
+
+forge watches `<config_dir>/forge/forge.toml` itself, never the directory:
+nothing else in that tree can trigger a reload. An atomic save (a temporary
+file renamed over the path) and a sync tool's incoming change both count,
+because the watch is re-armed on the path after every event. About half a
+second after a burst of writes the server reads the whole file and validates
+it.
+
+A file that does not parse is rejected whole: one warning names the path and
+the error, and the last good config stays live. No partial application. Once
+a file is accepted, the config forge holds is the file; the table below says
+which parts a running forge adopts and which wait for a restart.
+
+| Table or key | Takes effect |
+| --- | --- |
+| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile` | Live. The server's roster, pins and next spawn read the new values. An added project with `auto_start = true` starts; toggling `auto_start` on a project that already exists applies the next time it starts. A removed project leaves the server's roster; sessions already running keep running. An open client sees the new roster on its next home read. |
+| `[[accounts]]` - `display_name`, `provider`, `token`, `base_url`, `models`, `model_slugs`, `model_aliases`, `env` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
+| `[env]` | Live. Folded into each account's env at load, so the next spawn carries it. |
+| `[models."<name>"]` | Live. The next spawn stamps the new parameters. |
+| `[handoff]` | Live. The next handoff reads it. |
+| `[systemone]` | Live for new sessions. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
+| `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. A reload that moved these replaces the rotation numbers; one that did not leaves the live cooldowns and streaks alone. |
+| `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
+| `[server] tool_record_cap_kb`, `first_frame_cap_kb` | Live for pages and `more`; a connection already open keeps the cap it read when it opened. |
+| `[server] enabled`, `bind`, `port` | Restart-only. Stored and named in the log; forge never rebinds a live socket. |
+| `[browser]` `idle_minutes` | Live. The service reads the idle clock on every pass. |
+| `[browser]` `fps`, `quality` | Applies to the next browser host. A host already running keeps the encoding it was created with. |
+| `[client] mark`, `theme`, `font` | Applies to the next connection. A client snapshots these at its handshake and keeps them until it reconnects. |
+| `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
+| `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |
+| `[dictate]` `bind`, `mode` | Applies to the next seat read. The server reads them live, but a client's key handler holds the composer record it last read, so a reconnect or a new occupant refreshes it. |
+| `[dictate]` `styling`, `structure`, `context` | Applies to the next connection, which is when a client takes its capture axes. |
+| `[dictate]` `enabled`, `models_dir`, `language`, `normalizer`, `max_capture_minutes`, `transcribe_model`, `cleanup_model` | Restart-only. The preflight and the engine's own configuration are built once at boot; the log names it. |
+| `[[slack]]` `workspace`, `token`, `poll_seconds`, `dm_poll_seconds` | Restart-only. The client and its pump captured these when the subsystem started; the log names them. |
+| `[[slack]]` `thread_idle_days`, `stale_after_hours` | Live. `thread_idle_days` is read by each sweep and `stale_after_hours` when a block is drawn. |
+| `[gotify]` | Partly live. The `gotify__*` tools read the section on every call, and a section added while forge runs starts its pump when you subscribe. A stream already running keeps the connection it captured until it restarts. |
+| `[plugins]` `auto_update` | No reader yet. The edit is accepted and applies nothing. |
+
+**A running session is never reconfigured.** Its account (except when the
+gateway's own rotation moves it off an exhausted one), model, permission mode,
+cwd and child environment stay what they spawned with; the credential itself
+is resolved per request, so a re-minted token for that same account applies at
+once. To pick up a changed variable or account, close that session and start
+it again.
+
 ## What forge does at startup
 
 `forge <PROJECT>` opens the named project. The name must match a
@@ -863,8 +918,9 @@ picks a session's account reads each one's state.
 the failure and the pollers keep re-probing it. The walk still keeps a
 bailed account as a last resort, and picks one when nothing else in the
 pin declares the project's model - which is why the project row stays
-clickable. Fix that account's auth, or remove its `[[accounts]]` block,
-then restart forge to pick the edit up. The screen names both.
+clickable. Fix that account's auth, or remove its `[[accounts]]` block; the
+edit applies to new work, and an auth repair reaches a running session on its
+next request. The screen names both.
 
 Every project carrying `auto_start = true` still spawns its lead session
 in the background, but none of them is focused: you pick one from the
@@ -879,7 +935,8 @@ The socket comes up on `[server] bind:port` during the same boot, unless
 ## Config versus state
 
 `forge.toml` is the config half. It is read-only from forge's point of
-view, which makes it safe to sync between machines.
+view - forge re-reads it on a change but never writes it - which makes it
+safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack

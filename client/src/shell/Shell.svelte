@@ -18,7 +18,7 @@
     rising,
     watchNotificationClicks,
   } from '../notify';
-  import { noteSeatClick } from '../perf';
+  import { noteSeatClick, setPerfSocket } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
@@ -27,6 +27,7 @@
   import { applySettings } from '../theme';
   import { watchUpdate } from '../update/state';
   import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
+  import { installBrowser, uninstallBrowser } from '../browser/surface.svelte';
   import Router from './Router.svelte';
 
   // The connect screen is the front door: it is the first thing a person
@@ -97,6 +98,8 @@
   let destroyed = false;
   onDestroy(() => {
     destroyed = true;
+    uninstallBrowser();
+    setPerfSocket(null);
     connection?.close();
   });
 
@@ -371,6 +374,13 @@
     const search = movedParameter(location.search, connected.address);
     if (search !== null) history.replaceState(null, '', `${location.pathname}${search}`);
     connection = connected.connection;
+    // **The browser follows the connection it draws through**: a shell hands
+    // its overlay to this connection, and a page drives the server's browser
+    // over this socket.
+    installBrowser(connected.connection);
+    // **The web build's perf records ride this socket.** The shell writes its
+    // own through `client_perf`; a page has no file, so the server holds it.
+    setPerfSocket((records) => connected.connection.clientPerf?.(records) ?? false);
     // The reason belonged to the launch that produced it. Left standing, the
     // door a Back lands on accuses a forge that has just answered.
     failure = null;
