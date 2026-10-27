@@ -4107,6 +4107,98 @@ describe('the dock', () => {
   });
 
   /**
+   * **A link inside the region is the link's.** The region draws rendered
+   * markdown, which can carry a link, and a reader tabbed onto one presses
+   * Enter to follow it - the dock's own Enter would answer the marked row
+   * instead. jsdom runs no native activation, so what these assertions pin is
+   * the half this component owns: the dock must not swallow the key on its
+   * way to the link. The region itself keeps the key, so the exemption is the
+   * link rather than the panel: a guard on the panel would take Enter from
+   * the reader who tabbed into it to answer.
+   */
+  it('gives Enter on a link inside a preview to the link, and keeps it for the region', () => {
+    const harness = open({
+      record: record({
+        pending_asks: [
+          questionAsk('tu-q', {
+            options: [
+              {
+                option_id: 'q-link',
+                label: 'The runbook',
+                description: null,
+                preview: 'Read [the runbook](https://example.com/runbook) first.',
+              },
+              { option_id: 'q-prod', label: 'Production', description: null, preview: null },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const preview = document.querySelector('.dock .preview');
+    if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    const link = preview.querySelector('a');
+    if (!(link instanceof HTMLAnchorElement)) throw new Error('the preview drew no link');
+
+    const onLink = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    link.dispatchEvent(onLink);
+    flushSync();
+
+    expect(onLink.defaultPrevented, "the link's Enter was not swallowed").toBe(false);
+    expect(
+      commands(harness),
+      "and the dock answered nothing under it: following the link is the link's",
+    ).toEqual([]);
+
+    const onRegion = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    preview.dispatchEvent(onRegion);
+    flushSync();
+
+    expect(onRegion.defaultPrevented, 'the region still answers its own Enter').toBe(true);
+    expect(commands(harness), 'and answers the marked row').toEqual([
+      {
+        respond_question: {
+          key: SLOT,
+          tool_id: 'tu-q',
+          outcome: { outcome: 'answered', selected_option_ids: ['q-link'], annotation: null },
+        },
+      },
+    ]);
+  });
+
+  /**
+   * **The held post's half of the link rule.** On a held post the old path
+   * answered nothing either way, so a commands-only assertion would call the
+   * broken dock fixed: what tells them apart is whether Enter was swallowed
+   * on its way to the post's link.
+   */
+  it("does not swallow Enter on a held post's link", () => {
+    const harness = open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            text: 'Deploy finished. See [the runbook](https://example.com/runbook).',
+          }),
+        ],
+      }),
+    });
+
+    const link = document.querySelector('.dock .preview a');
+    if (!(link instanceof HTMLAnchorElement)) throw new Error('the held post drew no link');
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    link.dispatchEvent(event);
+    flushSync();
+
+    expect(event.defaultPrevented, "the post's link kept its Enter").toBe(false);
+    expect(commands(harness), 'and nothing was answered on its way').toEqual([]);
+  });
+
+  /**
    * **The held post is the same document, so it is the same region.** A long
    * Slack post grew the composer lane exactly as a long option preview did,
    * and `.session-page` clips its grid - the words the reader is asked to

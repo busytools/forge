@@ -828,6 +828,9 @@
       return;
     }
     if (event.key === 'Enter') {
+      // A link inside a preview is the link's: tabbed onto it, Enter must
+      // follow the link rather than answer the row the dock has marked.
+      if (event.target instanceof Element && event.target.closest('a') !== null) return;
       event.preventDefault();
       submit(false);
       return;
