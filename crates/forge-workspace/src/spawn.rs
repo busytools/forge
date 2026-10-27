@@ -9563,22 +9563,20 @@ mod lead_charter_tests {
         );
     }
 
-    /// A message the user sends while a turn is running arrives inside that
-    /// turn, beside a tool result, where nothing forces a reply - and a lead's
-    /// turns are long, so a direct question can end the turn unanswered. Every
-    /// other inbound channel has a written duty in this charter; this one had
-    /// none.
+    /// Mid-turn delivery had no written duty of its own in this charter, so the
+    /// bullet that adds one is pinned sentence by sentence.
     #[test]
     fn the_charter_answers_a_mid_turn_message() {
         assert!(
-            DEFAULT_LEAD_CHARTER
-                .contains("A message from the user that arrives mid-turn is still owed an answer"),
-            "the duty names its subject, so folding it into another bullet fails here",
+            DEFAULT_LEAD_CHARTER.contains(
+                "- **A message from the user that arrives mid-turn is still owed an answer.**"
+            ),
+            "the bullet's own lead-in, so folding it into another bullet fails here",
         );
         assert!(
             DEFAULT_LEAD_CHARTER
                 .contains("Answer it in that same turn, before you start the next piece of work"),
-            "and when it falls due",
+            "the duty falls due in the same turn, before the next piece of work",
         );
         assert!(
             DEFAULT_LEAD_CHARTER
