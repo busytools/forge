@@ -918,7 +918,7 @@ impl BrowserService {
         let DriverCall { tool, reported, args } = driver_call(tool, args);
         let challenge = reported == "browser_challenge_state";
         let retry_args = args.clone();
-        let (tab, outcome, _) = self
+        let (tab, outcome) = self
             .drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port, generation })
             .await;
         // **The agent answered a chooser the driver had not reported yet.**
@@ -952,7 +952,7 @@ impl BrowserService {
                 }
                 Ok(parts)
             }
-            Err(why) => Err(why),
+            Err(why) => Err(reported_error(why, tool, reported)),
         }
     }
 
@@ -1399,7 +1399,7 @@ impl BrowserService {
         driver: &Arc<dyn TabDriver>,
         tab: u16,
         call: Drive<'_>,
-    ) -> (u16, Result<Vec<BrowserPart>, String>, String) {
+    ) -> (u16, Result<Vec<BrowserPart>, String>) {
         let Drive { tool, args, bound, port, generation } = call;
         let deadline = tokio::time::Instant::now() + bound;
         let mut driver = Arc::clone(driver);
@@ -1418,7 +1418,7 @@ impl BrowserService {
             .await
         {
             Ok(listing) => Self::tab_index(profile, tab, &page, &listing),
-            Err(why) => return (tab, Err(why), target),
+            Err(why) => return (tab, Err(why)),
         };
         let Some(index) = index else {
             // **A row that cannot be paired is not a closed tab.** Closing it
@@ -1440,11 +1440,10 @@ impl BrowserService {
                     "tab {tab}'s page is not in the browser's list, so the tab was left open. \
                      Call browser_tabs to see it, or open a new tab."
                 )),
-                target,
             );
         };
         if let Err(why) = driver.select(index, left(deadline)).await {
-            return (tab, Err(why), target);
+            return (tab, Err(why));
         }
         self.focus(profile, tab).await;
         profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, true);
@@ -1456,7 +1455,7 @@ impl BrowserService {
         if profile.state.lock().await.host.is_none() {
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
             self.publish_rows(&profile.key).await;
-            return (tab, outcome, target);
+            return (tab, outcome);
         }
         // **The driver's row is the target of record after the call.** A
         // navigation swaps CEF's page target id while the driver's Tab
@@ -1477,7 +1476,7 @@ impl BrowserService {
         // over.** Its paths take `file_decision` to clear a dead driver's
         // chooser; an upload holds that lock across this call, and a second
         // acquisition here would deadlock the profile.
-        (tab, outcome, target)
+        (tab, outcome)
     }
 
     /// The driver's tabs, replacing a driver that is dead. **The backend
@@ -2084,7 +2083,10 @@ impl BrowserService {
             // since then is serving the profile now.
             if state.driver_generation != generation {
                 log_rebuild(profile, reported, "not this call's generation", why);
-                return Err(why.to_owned());
+                return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated {
+                    tool: reported,
+                    why,
+                }));
             }
             if let Some(at) = state.stale_since
                 && at.elapsed() < REBUILD_COOLDOWN
@@ -2116,7 +2118,7 @@ impl BrowserService {
             }));
         };
         self.repair_tab_identity(profile, &fresh, bound).await;
-        if repeatable(tool, args) {
+        if repeatable(tool, reported, args) {
             // **The page is found by the guid, with the target as the
             // fallback a fresh driver's renaming needs.** A retry without a
             // page would drive whatever the fresh driver calls current -
@@ -2215,7 +2217,7 @@ impl BrowserService {
                 return Err(dead_driver_answer(DeadDriverOutcome::ReplaceFailed { why: &cannot }));
             }
         };
-        if !repeatable_after_timeout(tool, args) {
+        if !repeatable_after_timeout(tool, reported, args) {
             return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated { tool: reported, why }));
         }
         let page =
@@ -4850,11 +4852,22 @@ fn challenge_result(parts: Vec<BrowserPart>) -> Vec<BrowserPart> {
         .collect()
 }
 
+/// A failure's text names the tool the session called, not the evaluate a
+/// composed call runs as. **Only the composed call differs**, so a plain
+/// tool's own words ride through untouched.
+fn reported_error(why: String, driver_tool: &str, reported: &str) -> String {
+    if driver_tool == reported { why } else { why.replace(driver_tool, reported) }
+}
+
 /// Whether repeating a tool call cannot land twice on the page.
 ///
 /// A dead page context is rebuilt and the call repeated only here; a click,
 /// a submit or a type is handed back with the rebuild named instead.
-fn repeatable(tool: &str, args: &Value) -> bool {
+fn repeatable(tool: &str, reported: &str, args: &Value) -> bool {
+    // The challenge probe is a read: repeating it cannot land twice.
+    if reported == "browser_challenge_state" {
+        return true;
+    }
     match tool {
         "browser_navigate" => {
             args.get("url").and_then(Value::as_str).is_some_and(|url| !url.is_empty())
@@ -4871,8 +4884,8 @@ fn repeatable(tool: &str, args: &Value) -> bool {
 /// repeated; everything else is handed back with that warning. (A dead PAGE
 /// is different - its context died and took the action with it - so
 /// [`repeatable`] is the broader rule there.)
-fn repeatable_after_timeout(tool: &str, _args: &Value) -> bool {
-    matches!(tool, "browser_snapshot")
+fn repeatable_after_timeout(tool: &str, reported: &str, _args: &Value) -> bool {
+    reported == "browser_challenge_state" || matches!(tool, "browser_snapshot")
 }
 
 /// What became of a call whose page context died, as the answer's own words.
@@ -7046,12 +7059,19 @@ mod tests {
             .after_failure(
                 &profile,
                 Driven { generation: 1, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
-                Call { tool: "browser_click", reported: "browser_click", args: &json!({}) },
+                Call {
+                    tool: "browser_evaluate",
+                    reported: "browser_challenge_state",
+                    args: &json!({}),
+                },
                 Err(dead.to_owned()),
             )
             .await
             .expect_err("a stale failure is not this call's to rebuild");
-        assert_eq!(why, dead, "the call's own failure is handed back unchanged");
+        assert!(
+            why.contains("browser_challenge_state") && !why.contains("browser_evaluate"),
+            "a stale call is handed back as not repeated, under the caller's name: {why}",
+        );
         assert!(profile.files.borrow().is_some(), "the newer driver's ask survives");
         assert!(
             profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner).is_some(),
@@ -7114,6 +7134,27 @@ mod tests {
             json!({ "target": "e1" }),
             "a plain call's arguments ride untouched"
         );
+
+        // A read is safe to repeat after a dead page and after a timeout.
+        assert!(super::repeatable("browser_evaluate", "browser_challenge_state", &json!({})));
+        assert!(super::repeatable_after_timeout(
+            "browser_evaluate",
+            "browser_challenge_state",
+            &json!({})
+        ));
+        assert!(
+            !super::repeatable("browser_evaluate", "browser_evaluate", &json!({})),
+            "an evaluate a session sent is not assumed repeatable",
+        );
+
+        // The driver's own words name the caller's tool in what the session reads.
+        let scrubbed = super::reported_error(
+            "the driver did not answer browser_evaluate within 150 s".to_owned(),
+            "browser_evaluate",
+            "browser_challenge_state",
+        );
+        assert!(scrubbed.contains("browser_challenge_state"), "{scrubbed}");
+        assert!(!scrubbed.contains("browser_evaluate"), "{scrubbed}");
     }
 
     /// **The rebuild reads the generation after both locks**, so a driver
@@ -7155,7 +7196,10 @@ mod tests {
             bump,
         );
         let why = outcome.expect_err("the rebuild waited and then saw the newer generation");
-        assert_eq!(why, dead, "the call's own failure is handed back");
+        assert!(
+            why.contains("browser_click") && why.contains("not repeated"),
+            "the newer generation hands the call back as not repeated: {why}",
+        );
         assert!(profile.files.borrow().is_some(), "the newer driver's ask survives");
         assert!(
             profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner).is_some(),

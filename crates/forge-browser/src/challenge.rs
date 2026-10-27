@@ -41,12 +41,13 @@ const STATE_JS: &str = r#"() => {
     const cls = typeof el.className === "string" && el.className.trim() ? `.${el.className.trim().split(/\s+/)[0]}` : "";
     return `${el.tagName.toLowerCase()}${id}${cls}`;
   };
-  // Ancestor opacity multiplies and a filter's opacity(0) hides the subtree;
-  // the frame's own computed opacity reports neither.
+  // An ancestor's display: none, opacity and filter hide the subtree; the
+  // frame's own computed values report none of them.
   const paintHidden = (el) => {
     let opacity = 1;
     for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
       const style = getComputedStyle(node);
+      if (style.display === "none") return { hidden: true, opacity: 0 };
       opacity *= Number(style.opacity);
       if (opacity <= 0) return { hidden: true, opacity: 0 };
       const filter = style.filter || "none";
@@ -85,6 +86,15 @@ const STATE_JS: &str = r#"() => {
       live: visible && onScreen && hitTestable,
       rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
       style: { display: style.display, visibility: style.visibility, opacity: style.opacity, filter: style.filter }
+    });
+  }
+  // The other elements that own a nested document hold a challenge just as
+  // well as an iframe does, and a frameset page carries no iframe at all.
+  for (const el of document.querySelectorAll("frame, object, embed")) {
+    unseen.push({
+      kind: el.tagName.toLowerCase(),
+      title: el.getAttribute("title") || "",
+      src: (el.getAttribute("src") || el.getAttribute("data") || "").slice(0, 300)
     });
   }
   for (const el of document.querySelectorAll("*")) {

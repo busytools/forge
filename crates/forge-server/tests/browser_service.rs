@@ -411,10 +411,11 @@ async fn a_tab_listing_never_creates_a_page() {
 /// The frames here are the states the signals have to separate: a widget the
 /// page is showing, the expired one, one covered by another element (the hit
 /// test), one hidden by an ancestor's opacity, one hidden by an ancestor's
-/// `filter: opacity(0)`, Turnstile's own frame, a Cloudflare-branded frame
-/// that is neither Turnstile's host nor its name, an unrelated ad frame that
-/// must not be classified, and a challenge inside a shadow root the top-level
-/// query cannot see.
+/// `filter: opacity(0)`, one inside an ancestor's `display: none`,
+/// Turnstile's own frame, a Cloudflare-branded frame that is neither
+/// Turnstile's host nor its name, an unrelated ad frame that must not be
+/// classified, an object and an embed whose documents are not read, and a
+/// challenge inside a shadow root the top-level query cannot see.
 #[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
@@ -458,11 +459,20 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
             <iframe src='about:blank' title='reCAPTCHA filtered' \
                 style='width:200px;height:100px;border:0'></iframe>\
         </div>\
+        <div style='position:absolute;left:1100px;top:500px;width:200px;height:100px;\
+            display:none'>\
+            <iframe src='about:blank' title='reCAPTCHA displayless' \
+                style='width:200px;height:100px;border:0'></iframe>\
+        </div>\
         <iframe src='about:blank' title='Sponsored placement' style='position:absolute;\
             left:1100px;top:300px;width:200px;height:100px;border:0'></iframe>\
         <iframe src='about:blank' title='Cloudflare analytics beacon' \
             style='position:absolute;left:400px;top:500px;width:200px;height:100px;\
             border:0'></iframe>\
+        <object data='about:blank' type='text/html' title='Plugin surface' \
+            style='position:absolute;left:100px;top:600px;width:200px;height:100px'></object>\
+        <embed src='about:blank' type='text/html' title='Embedded surface' \
+            style='position:absolute;left:400px;top:600px;width:200px;height:100px'>\
         <div id='shadow-host' style='position:absolute;left:1100px;top:100px;\
             width:200px;height:100px'></div>";
     // **The fixture is installed into a blank page** rather than navigated
@@ -506,20 +516,27 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
         .unwrap_or_else(|why| panic!("the answer is the report and nothing else ({why}): {text}"));
 
     assert_eq!(state["challengePresent"], json!(true), "{state}");
-    assert_eq!(state["complete"], json!(false), "three regions went unread: {state}");
+    assert_eq!(state["complete"], json!(false), "five regions went unread: {state}");
     let unseen = state["unseen"].as_array().expect("the answer lists unseen regions");
-    assert_eq!(unseen.len(), 3, "an ad frame, a Cloudflare bead and a shadow root: {state}");
-    for (title, why) in [
-        ("Sponsored placement", "an ad frame is not a challenge"),
+    assert_eq!(
+        unseen.len(),
+        5,
+        "an ad frame, a Cloudflare bead, an object, an embed and a shadow root: {state}",
+    );
+    for (kind, title, why) in [
+        ("iframe", "Sponsored placement", "an ad frame is not a challenge"),
         (
+            "iframe",
             "Cloudflare analytics beacon",
             "a Cloudflare-branded frame that is not the challenge host is not a challenge",
         ),
+        ("object", "Plugin surface", "an object document is not read either"),
+        ("embed", "Embedded surface", "an embed document is not read either"),
     ] {
         assert!(
             unseen
                 .iter()
-                .any(|region| region["kind"] == json!("iframe") && region["title"] == json!(title)),
+                .any(|region| region["kind"] == json!(kind) && region["title"] == json!(title)),
             "{why}, and it is named as unread: {state}",
         );
     }
@@ -530,7 +547,7 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
     );
 
     let challenges = state["challenges"].as_array().expect("the answer lists challenges");
-    assert_eq!(challenges.len(), 6, "only the vendor frames are classified: {state}");
+    assert_eq!(challenges.len(), 7, "only the vendor frames are classified: {state}");
     for title in ["Sponsored placement", "Cloudflare analytics beacon"] {
         assert!(
             challenges.iter().all(|challenge| challenge["title"] != json!(title)),
@@ -590,6 +607,16 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
     assert_eq!(faded["onScreen"], json!(true), "the frame is on screen: {faded}");
     assert_eq!(faded["hitTestable"], json!(true), "a click would reach it: {faded}");
     assert_eq!(faded["live"], json!(false), "an invisible widget is not live: {faded}");
+
+    let displayless = frame("reCAPTCHA displayless");
+    assert_eq!(
+        displayless["visible"],
+        json!(false),
+        "an ancestor's display: none hides the frame: {displayless}",
+    );
+    assert_eq!(displayless["onScreen"], json!(false), "a hidden frame has no rect: {displayless}");
+    assert_eq!(displayless["hitTestable"], json!(false), "{displayless}");
+    assert_eq!(displayless["live"], json!(false), "{displayless}");
 
     let filtered = frame("reCAPTCHA filtered");
     assert_eq!(
