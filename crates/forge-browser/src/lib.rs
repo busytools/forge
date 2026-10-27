@@ -9,7 +9,6 @@
 #[cfg(unix)]
 pub mod channel;
 pub mod control;
-pub mod custom;
 pub mod frame;
 pub mod host_bundle;
 pub mod idle;
@@ -23,6 +22,8 @@ pub mod audio;
 pub(crate) mod challenge;
 #[cfg(target_os = "macos")]
 pub mod client_application;
+#[cfg(target_os = "macos")]
+pub mod custom;
 #[cfg(target_os = "macos")]
 pub mod dialog;
 #[cfg(target_os = "macos")]
