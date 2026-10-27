@@ -115,11 +115,9 @@
   async function open() {
     // **A notification tap that launched the app named its seat before this
     // page existed**, so it is asked for rather than waited on as an event.
-    // A launch that cannot read it is still a launch, so this is a miss.
-    const seat = await launchSeat().catch((why: unknown) => {
-      console.warn('the launch seat could not be read', why);
-      return null;
-    });
+    // A launch that cannot read it is still a launch: the ask answers `None`
+    // for that, and for every launch no tap opened.
+    const seat = await launchSeat();
     // What a connection taken while this is in flight is measured against.
     const held = connection;
     // The parameter first, then the memory: both are this launch's target.

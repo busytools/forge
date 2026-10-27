@@ -223,6 +223,19 @@ describe('a cold start from a notification', () => {
     expect(await fresh.launchSeat()).toBeNull();
   });
 
+  /// **A shell that cannot answer is still a launch**: the page carries on as
+  /// if no tap opened it, rather than holding the launch on the command.
+  it('answers nothing when the shell refuses the ask', async () => {
+    vi.resetModules();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    const invoke = vi.fn(() => Promise.reject(new Error('the command is not there')));
+    vi.doMock('@tauri-apps/api/core', () => ({ invoke }));
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fresh = await import('./notify');
+    expect(await fresh.launchSeat(), 'a refused ask names no seat').toBeNull();
+    expect(warned, 'and the refusal is not silent').toHaveBeenCalled();
+  });
+
   /// A page with no shell has no launch intent to be woken by.
   it('names nothing on a page with no shell', async () => {
     vi.resetModules();

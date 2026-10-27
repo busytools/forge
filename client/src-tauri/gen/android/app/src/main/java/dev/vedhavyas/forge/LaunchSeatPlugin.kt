@@ -25,8 +25,15 @@ import app.tauri.plugin.Plugin
 class LaunchSeatPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun tapped(invoke: Invoke) {
-    val id = tapId(activity.intent)
-    if (id == null) invoke.resolve() else invoke.resolveObject(id)
+    val intent = MainActivity.newest ?: activity.intent
+    val id = tapSeatId(intent?.action, notificationId(intent), pressAction(intent))
+    if (id == null) {
+      invoke.resolve()
+      return
+    }
+    // **The activity launch goes with the id**: a page reload in the same
+    // activity is not a launch, but a re-created activity asks again.
+    invoke.resolveObject(JSObject().put("id", id).put("launch", MainActivity.launches))
   }
 
   /**
@@ -37,21 +44,29 @@ class LaunchSeatPlugin(private val activity: Activity) : Plugin(activity) {
    */
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
-    val id = tapId(intent) ?: return
+    val id = tapSeatId(intent.action, notificationId(intent), pressAction(intent)) ?: return
     trigger("tap", JSObject().put("id", id))
   }
 
-  /** The notification a tap opened, when this intent is that tap. */
-  private fun tapId(intent: Intent?): Int? {
-    val id = intent?.getIntExtra(NOTIFICATION_INTENT_KEY, Int.MIN_VALUE) ?: Int.MIN_VALUE
-    // Only the notification plugin's own tap intent counts: a launcher start
-    // carries neither, and a stale id must not open an old seat.
-    if (intent?.action != Intent.ACTION_MAIN ||
-      id == Int.MIN_VALUE ||
-      intent.getStringExtra(ACTION_INTENT_KEY) != DEFAULT_PRESS_ACTION
-    ) {
-      return null
+  private fun notificationId(intent: Intent?): Int =
+    intent?.getIntExtra(NOTIFICATION_INTENT_KEY, Int.MIN_VALUE) ?: Int.MIN_VALUE
+
+  private fun pressAction(intent: Intent?): String? = intent?.getStringExtra(ACTION_INTENT_KEY)
+
+  companion object {
+    /**
+     * The notification a tap opened, when this intent is that tap.
+     *
+     * **Pure on purpose**, so the predicate deciding what counts as a tap is
+     * pinned by a JVM test rather than only exercised on a device: only the
+     * notification plugin's own press action does, and a launcher start
+     * carries neither an id nor that action.
+     */
+    internal fun tapSeatId(action: String?, id: Int, press: String?): Int? {
+      if (action != Intent.ACTION_MAIN || id == Int.MIN_VALUE || press != DEFAULT_PRESS_ACTION) {
+        return null
+      }
+      return id
     }
-    return id
   }
 }

@@ -11,21 +11,22 @@
 
 use std::path::PathBuf;
 #[cfg(any(target_os = "android", test))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 #[cfg(any(target_os = "android", test))]
 use std::time::{Duration, SystemTime};
 
 use forge_primitives::SessionSlot;
 use tauri::Manager as _;
 
-/// Whether this process has already answered the page's one ask.
+/// The activity launch this process last answered.
 ///
-/// **The launch's seat belongs to the process's first page load**: a later
-/// mount is a reload, not a launch. Without this, a tap the app was too late
-/// to report (a warm tap on Android) would pull the next reload to the seat it
-/// could not open.
+/// **The launch's seat belongs to one activity launch**: a later page load in
+/// the same activity is a reload, but an activity the platform re-creates is a
+/// new launch and asks again. Without the first half, a tap the app was too
+/// late to report (a warm tap on Android) would pull the next reload to the
+/// seat it could not open.
 #[cfg(any(target_os = "android", test))]
-static ASKED: AtomicBool = AtomicBool::new(false);
+static ANSWERED: AtomicI32 = AtomicI32::new(0);
 
 /// How long a remembered seat outlives its notification.
 ///
@@ -132,21 +133,30 @@ impl Seats {
 /// Every launch that no notification opened answers `None`, which is every
 /// launch on the desktop as well.
 pub(crate) async fn take(app: &tauri::AppHandle) -> Option<SessionSlot> {
-    if !first_ask() {
-        return None;
-    }
-    let id = tapped(app).await?;
-    Seats::open(app)?.take(id)
+    let ask = tapped(app).await?;
+    answered(first_for(ask.launch), Seats::open(app).as_ref(), ask.id)
 }
 
-/// Whether this process still owes the page its launch's seat.
+/// What one ask answers, and what it leaves behind.
+///
+/// **The guard runs before the store is read**: a reload answers nothing and
+/// must not take the seat either, or the activity launch that follows would
+/// find it gone.
+fn answered(first: bool, seats: Option<&Seats>, id: i32) -> Option<SessionSlot> {
+    if !first {
+        return None;
+    }
+    seats?.take(id)
+}
+
+/// Whether this activity launch still owes the page its seat.
 #[cfg(any(target_os = "android", test))]
-fn first_ask() -> bool {
-    !ASKED.swap(true, Ordering::SeqCst)
+fn first_for(launch: i32) -> bool {
+    ANSWERED.swap(launch, Ordering::SeqCst) != launch
 }
 
 #[cfg(not(any(target_os = "android", test)))]
-fn first_ask() -> bool {
+fn first_for(_launch: i32) -> bool {
     true
 }
 
@@ -160,13 +170,22 @@ pub(crate) fn seat(app: &tauri::AppHandle, id: i32) -> Option<SessionSlot> {
     Seats::open(app)?.peek(id)
 }
 
-/// The id of the notification the activity was launched from, when a tap
-/// launched it.
+/// What the activity says a launch names: the notification, and which
+/// activity launch is asking.
+#[derive(serde::Deserialize)]
+struct Ask {
+    id: i32,
+    /// The activity launch count, which tells a reload from a re-created
+    /// activity.
+    launch: i32,
+}
+
+/// The notification the activity was launched from, when a tap launched it.
 #[cfg(target_os = "android")]
-async fn tapped(app: &tauri::AppHandle) -> Option<i32> {
+async fn tapped(app: &tauri::AppHandle) -> Option<Ask> {
     let reader = app.try_state::<std::sync::Arc<Reader>>()?;
     match reader.tapped().await {
-        Ok(id) => id,
+        Ok(ask) => ask,
         Err(why) => {
             // A launch that cannot be read opens where it always did, so this
             // is a line rather than a failed boot.
@@ -179,7 +198,7 @@ async fn tapped(app: &tauri::AppHandle) -> Option<i32> {
 }
 
 #[cfg(not(target_os = "android"))]
-async fn tapped(_app: &tauri::AppHandle) -> Option<i32> {
+async fn tapped(_app: &tauri::AppHandle) -> Option<Ask> {
     None
 }
 
@@ -226,7 +245,7 @@ pub struct Reader(tauri::plugin::PluginHandle<tauri::Wry>);
 
 #[cfg(target_os = "android")]
 impl Reader {
-    async fn tapped(&self) -> Result<Option<i32>, String> {
+    async fn tapped(&self) -> Result<Option<Ask>, String> {
         self.0.run_mobile_plugin_async("tapped", ()).await.map_err(|why| why.to_string())
     }
 }
@@ -305,6 +324,17 @@ mod tests {
         assert_eq!(seats.take(9), None);
     }
 
+    /// **An entry that cannot be read names nothing and goes**: a corrupt file
+    /// must not sit in the store for its life.
+    #[test]
+    fn a_corrupt_entry_is_taken_and_names_nothing() {
+        let (_dir, seats) = store();
+        seats.record(7, &lead());
+        std::fs::write(seats.file(7), b"not a seat").expect("this test's own file");
+        assert_eq!(seats.take(7), None);
+        assert!(!seats.file(7).exists(), "the unreadable entry was left behind");
+    }
+
     /// **A seat is left for the next reader**: one tap can reach both doors -
     /// the warm report and the page's ask - so a read must not take it.
     #[test]
@@ -351,13 +381,29 @@ mod tests {
         assert_eq!(seats.take(2), Some(lead()), "the raise dropped its own entry");
     }
 
-    /// **The launch's seat is answered to the process's first ask only**: a
-    /// page reload is not a launch, and a tap the app was too late to report
-    /// must not pull the reload to its seat.
+    /// **One activity launch answers once**: a page reload is not a launch,
+    /// but an activity the platform re-creates is, and it asks again.
     #[test]
-    fn only_the_first_ask_belongs_to_the_launch() {
-        assert!(first_ask(), "the launch's own ask is answered");
-        assert!(!first_ask(), "a reload is not the launch");
+    fn one_activity_launch_answers_once() {
+        assert!(first_for(1), "the launch's own ask is answered");
+        assert!(!first_for(1), "a reload in the same activity is not");
+        assert!(first_for(2), "a re-created activity is a new launch");
+    }
+
+    /// **A reload answers nothing and takes nothing**: the guard runs before
+    /// the store is read, so the seat is still there for the activity launch
+    /// that follows.
+    #[test]
+    fn a_reload_answers_nothing_and_leaves_the_seat() {
+        let (_dir, seats) = store();
+        seats.record(7, &lead());
+        assert_eq!(answered(false, Some(&seats), 7), None, "a reload is not the launch");
+        assert_eq!(seats.peek(7), Some(lead()), "and a reload does not take the seat");
+        assert_eq!(
+            answered(true, Some(&seats), 7),
+            Some(lead()),
+            "the launch's own ask still answers it",
+        );
     }
 
     /// **Two notifications of one run never share an id**, or the second

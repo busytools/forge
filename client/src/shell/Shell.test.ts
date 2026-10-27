@@ -45,7 +45,7 @@ const mockSeatClick = vi.mocked(noteSeatClick);
 /**
  * The shell's commands, answered by the test.
  *
- * **The launch asks which seat a notification tap named** (#4a449486), and
+ * **The launch asks which seat a notification tap named**, and
  * every other command answers nothing - which is what a shell-less page would
  * have got anyway.
  */
@@ -365,8 +365,8 @@ describe('the shell at launch', () => {
   });
 
   /**
-   * **A notification tap that cold-starts the app opens the seat it named**
-   * (#4a449486). The platform reads the launch intent before this page
+   * **A notification tap that cold-starts the app opens the seat it named.**
+   * The platform reads the launch intent before this page
    * exists, so the seat is the shell's answer rather than an event, and it
    * outranks the home the launch would otherwise land on.
    */

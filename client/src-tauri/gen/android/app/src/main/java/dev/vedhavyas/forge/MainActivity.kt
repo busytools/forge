@@ -37,6 +37,26 @@ class MainActivity : TauriActivity() {
     private const val MIC_REQUEST = 1
 
     /**
+     * How many activity launches this process has seen.
+     *
+     * **A page reload and an activity the platform re-creates are different**:
+     * the launch seat belongs to one activity launch, so the shell needs to
+     * tell them apart. Starts at one, since [onCreate] counts the first.
+     */
+    internal var launches = 0
+
+    /**
+     * The newest intent this process's activity was given.
+     *
+     * **The plugin's own activity reference is the one it was built with**, so
+     * after the platform re-creates the activity the plugin would read the
+     * gone one's intent. This is written by every delivery instead, and is
+     * what the launch-intent reader answers from.
+     */
+    @Volatile
+    internal var newest: Intent? = null
+
+    /**
      * The page's own hook, as the string the document runs: the four lengths
      * in CSS pixels, which is the unit the sheet's properties are in.
      *
@@ -87,6 +107,8 @@ class MainActivity : TauriActivity() {
       navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
     )
     super.onCreate(savedInstanceState)
+    launches += 1
+    newest = intent
     // Android grants the microphone at runtime; the manifest's declaration
     // only makes it askable. Both capture legs need it - the shell's own
     // device, and the webview's stream behind getUserMedia - and neither can
@@ -108,13 +130,15 @@ class MainActivity : TauriActivity() {
   }
 
   /**
-   * **A notification tap into a task whose process has gone arrives here**, after
-   * `onCreate` has already read the intent the task was first launched with.
-   * Keeping the newest intent is what lets the shell name the seat the tap
-   * opened; without it `intent` answers the launcher's own.
+   * **A tap that re-enters a task this process had let go arrives here**: the
+   * activity is created with the intent the task was first launched with, and
+   * the tap is delivered as the new intent afterwards. Keeping the newest
+   * intent is what lets the shell name the seat the tap opened; without it
+   * `intent` keeps answering the older one.
    */
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
+    newest = intent
     setIntent(intent)
   }
 

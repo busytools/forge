@@ -214,8 +214,15 @@ export async function watchNotificationClicks(): Promise<() => void> {
  */
 export async function launchSeat(): Promise<SessionSlot | null> {
   if (!canHost()) return null;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return slotFrom(await invoke<unknown>('client_tap_seat'));
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return slotFrom(await invoke<unknown>('client_tap_seat'));
+  } catch (why) {
+    // **A seat the shell cannot answer is still a launch**: the page routes as
+    // if no tap opened it, rather than holding the launch on the command.
+    console.warn('the launch seat could not be read', why);
+    return null;
+  }
 }
 
 /** A seat as the shell's event carries it, or `null` when it is not one. */
