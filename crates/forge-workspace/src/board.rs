@@ -245,7 +245,7 @@ impl Workspace {
                 let tasks = self.tasks_for_project(&name);
                 let live_workers = self.list_live_workers(&view.key).len();
                 let slots = self
-                    .config
+                    .config_arc()
                     .projects
                     .iter()
                     .find(|p| p.name == name)

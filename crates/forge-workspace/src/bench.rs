@@ -247,7 +247,7 @@ impl Workspace {
     /// live, and while a recording is already running - the refusal names
     /// whatever holds it.
     pub(crate) fn start_read_aloud(&self, initiator: Option<u64>) -> Result<(), DispatchError> {
-        if !self.config.dictate.enabled {
+        if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
         let mut runtime = self.dictate_runtime.lock();
@@ -273,7 +273,7 @@ impl Workspace {
         if recording.initiator != initiator {
             return false;
         }
-        let cap = usize::try_from(self.config.dictate.max_capture_minutes)
+        let cap = usize::try_from(self.config_arc().dictate.max_capture_minutes)
             .unwrap_or(usize::MAX)
             .saturating_mul(60)
             .saturating_mul(usize::try_from(forge_dictate::SAMPLE_RATE).unwrap_or(16_000));
@@ -362,7 +362,7 @@ impl Workspace {
         target: BenchTarget,
         tier: forge_dictate::bench::Tier,
     ) -> Result<(), DispatchError> {
-        if !self.config.dictate.enabled {
+        if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
         if matches!(*self.dictate_bench.lock(), BenchState::Running { .. }) {
@@ -423,7 +423,7 @@ impl Workspace {
 
     /// Gather the corpus, build the target's config, and run it.
     async fn run_bench(self: Arc<Self>, target: BenchTarget, tier: forge_dictate::bench::Tier) {
-        let settings = self.config.dictate.clone();
+        let settings = self.config_arc().dictate.clone();
         let active = self.active_models();
         let cfg = crate::dictate::preflight_config(&settings, &active);
         let Some(models_dir) = settings.models_dir() else {

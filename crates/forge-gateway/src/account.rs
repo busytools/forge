@@ -155,6 +155,10 @@ pub struct AccountState {
     /// across every account; the selection walk only considers
     /// accounts whose state is `Ready` (or a saturated `Ready`).
     pub loading: LoadingState,
+    /// A config reload removed this account from the file. It is not in the
+    /// selection walk any more, but a session already bound to it keeps
+    /// working until the session ends.
+    pub retired: bool,
 }
 
 /// Hand-written because the env map carries the account's credential
@@ -175,6 +179,7 @@ impl std::fmt::Debug for AccountState {
             .field("consecutive_failures", &self.consecutive_failures)
             .field("override_armed", &self.override_armed)
             .field("loading", &self.loading)
+            .field("retired", &self.retired)
             .finish()
     }
 }
@@ -237,6 +242,7 @@ impl AccountStateMap {
                     consecutive_failures: 0,
                     override_armed: false,
                     loading: LoadingState::Loading,
+                    retired: false,
                 },
             );
         }
@@ -377,8 +383,8 @@ impl AccountStateMap {
             // Transition `loading` to `Bailed` and drop the
             // cached `usage` so no stale bar is drawn and the account
             // reads bailed. The account recovers via the
-            // 60 s usage poller after the edited env is re-read at a
-            // restart. Other statuses leave
+            // 60 s usage poller, which reads the env the config now
+            // holds. Other statuses leave
             // `loading` alone (a transient `RateLimited` or
             // `NetworkFailed` is not auth-related; the cache stays
             // and the account remains Ready for the walk).

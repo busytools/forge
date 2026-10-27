@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::routing::get;
-use forge_primitives::{ClientConfig, Message, SessionSlot};
+use forge_primitives::{Message, SessionSlot};
 use tokio::net::TcpListener;
 
 use crate::SessionUpdate;
@@ -229,7 +229,6 @@ pub struct TransportState {
     pub work: Arc<WorkCache>,
     pub conversations: Arc<conversation::Conversations>,
     pub live: Mutex<Live>,
-    pub client: ClientConfig,
     /// The server's browser fleet, when one is installed: the connection
     /// attaches viewers, routes input and takes the controller role through
     /// it. `None` is a transport with no fleet (tests, a platform with no
@@ -247,10 +246,7 @@ impl TransportState {
     /// **One place, so the pieces cannot drift apart.** Every field here is
     /// something the socket needs that the workspace owns or that is the
     /// transport's own.
-    pub fn for_workspace(
-        workspace: &Arc<forge_workspace::Workspace>,
-        client: ClientConfig,
-    ) -> Self {
+    pub fn for_workspace(workspace: &Arc<forge_workspace::Workspace>) -> Self {
         Self {
             surface: Arc::new(ViewSurface::new(Arc::clone(workspace))),
             work: Arc::new(WorkCache::new()),
@@ -259,7 +255,6 @@ impl TransportState {
             // attachment count has to see it: a turn finishing on a seat this
             // process shows is one the reader watched.
             live: Mutex::new(Live::new()),
-            client,
             browser_host: workspace.browser_host(),
             heartbeat: Heartbeat::default(),
         }

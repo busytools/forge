@@ -404,6 +404,18 @@ pub async fn upgrade(
         .on_upgrade(move |socket| greet(socket, state, peer))
 }
 
+/// The frame that tells a client it is speaking to a forge and carries the
+/// `[client]` sets it draws with. Built when the connection opens, so a
+/// reload applies to the next connection.
+fn greeting_for(client: &forge_primitives::ClientConfig, state: &TransportState) -> ServerMessage {
+    ServerMessage::Greeting {
+        version: PROTOCOL_VERSION,
+        forge_version: crate::FORGE_VERSION.to_owned(),
+        forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
+        settings: ClientSettings::new(client, state.surface.dictate_axes()),
+    }
+}
+
 /// This connection as the log names it: the number its takes are told apart
 /// by, and the address it is attached from.
 #[derive(Clone, Copy)]
@@ -425,12 +437,8 @@ where
         + Unpin
         + Send,
 {
-    let greeting = ServerMessage::Greeting {
-        version: PROTOCOL_VERSION,
-        forge_version: crate::FORGE_VERSION.to_owned(),
-        forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
-        settings: ClientSettings::new(&state.client, state.surface.dictate_axes()),
-    };
+    let client = state.surface.client_config();
+    let greeting = greeting_for(&client, &state);
     let Ok(text) = serde_json::to_string(&greeting) else {
         tracing::error!(
             target: "forge_server::transport",
@@ -3320,10 +3328,7 @@ mod tests {
     async fn a_peer_that_stops_reading_is_cut_at_the_write_bound() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
 
         let (inbound, peer_in) = mpsc::unbounded_channel();
         let (writing, stuck) = oneshot::channel();
@@ -3399,10 +3404,7 @@ mod tests {
     async fn a_greeting_that_cannot_be_written_ends_at_the_write_bound() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let (_keep, inbound) = mpsc::unbounded_channel();
         let mut peer = StoppedReading { inbound, writing: None };
 
@@ -3487,7 +3489,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3557,7 +3558,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3593,7 +3593,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -3642,7 +3641,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4190,7 +4188,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4299,7 +4296,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4390,7 +4386,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4541,7 +4536,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(conversations),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4715,7 +4709,6 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
-            client: forge_primitives::ClientConfig::default(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5010,10 +5003,7 @@ mod tests {
     async fn subscribing_a_seat_does_not_attach_it_and_showing_it_does() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
 
@@ -5051,10 +5041,7 @@ mod tests {
     async fn showing_the_same_seat_twice_is_a_no_op() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
         subscribed_home(&to_server, &written).await;
@@ -5105,10 +5092,7 @@ mod tests {
     async fn a_showing_before_its_subscribe_spends_when_the_subscribe_lands() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         // **A mark is drawn on a row**, so the seat needs an agent: the home
         // lists a project's agents, and a seat nothing has started is not
@@ -5155,10 +5139,7 @@ mod tests {
     async fn a_close_detaches_only_the_seat_that_connection_showed() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
 
         let Driven { to_server: first, written: first_written, driven: first_driven } =
@@ -5231,10 +5212,7 @@ mod tests {
         fleet.install_agent("TestOrg", "proj", "lead");
         fleet.add_worker("TestOrg", "proj", "w1").expect("the worker row");
         fleet.install_agent("TestOrg", "proj", "w1");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
 
         let Driven { to_server, written, driven } = connection(&state);
         let Driven { to_server: other, written: other_written, driven: other_driven } =
@@ -5295,10 +5273,7 @@ mod tests {
     async fn showing_a_spent_seat_refreshes_the_home_and_subscribing_does_not() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        ));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
         let Driven { to_server, written, driven } = connection(&state);
 
