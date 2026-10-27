@@ -57,6 +57,28 @@ struct Call<'a> {
     args: &'a Value,
 }
 
+/// A call as the driver sees it, beside the name the session is told about.
+struct DriverCall<'a> {
+    tool: &'a str,
+    reported: &'a str,
+    args: Value,
+}
+
+/// The driver tool a call runs as, and the name a failure reports. **They
+/// differ only for a tool forge composes**, whose caller never called the
+/// evaluate underneath.
+fn driver_call(tool: &str, args: Value) -> DriverCall<'_> {
+    if tool == "browser_challenge_state" {
+        DriverCall {
+            tool: "browser_evaluate",
+            reported: tool,
+            args: json!({ "function": crate::challenge::state_js() }),
+        }
+    } else {
+        DriverCall { tool, reported: tool, args }
+    }
+}
+
 /// One browser call's tool, budget and the host it drives.
 struct Drive<'a> {
     tool: &'a str,
@@ -893,13 +915,8 @@ impl BrowserService {
         // driver as the evaluate it is; upstream has no tool that answers it.
         // The caller's own name rides beside it, because a failure reported as
         // `browser_evaluate` would name a tool the session never called.
-        let reported = tool;
+        let DriverCall { tool, reported, args } = driver_call(tool, args);
         let challenge = reported == "browser_challenge_state";
-        let (tool, args) = if challenge {
-            ("browser_evaluate", json!({ "function": crate::challenge::state_js() }))
-        } else {
-            (reported, args)
-        };
         let retry_args = args.clone();
         let (tab, outcome, _) = self
             .drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port, generation })
@@ -7070,6 +7087,33 @@ mod tests {
             .await
             .expect_err("the cooldown refuses a second rebuild");
         assert!(again.contains("not been rebuilt a second time yet"), "{again}");
+    }
+
+    /// **A composed tool drives as the evaluate the driver has, and its
+    /// failures still name what the session called.** A report reading
+    /// "browser_evaluate may already have landed" would name a tool the
+    /// session never used, so the two names are pinned here.
+    #[test]
+    fn a_composed_tool_drives_as_an_evaluate_and_reports_its_caller() {
+        let composed = super::driver_call("browser_challenge_state", json!({}));
+        assert_eq!(composed.tool, "browser_evaluate");
+        assert_eq!(composed.reported, "browser_challenge_state");
+        assert!(
+            composed.args["function"]
+                .as_str()
+                .is_some_and(|script| script.contains("challengePresent")),
+            "the driver is handed the challenge script: {}",
+            composed.args,
+        );
+
+        let plain = super::driver_call("browser_click", json!({ "target": "e1" }));
+        assert_eq!(plain.tool, "browser_click");
+        assert_eq!(plain.reported, "browser_click");
+        assert_eq!(
+            plain.args,
+            json!({ "target": "e1" }),
+            "a plain call's arguments ride untouched"
+        );
     }
 
     /// **The rebuild reads the generation after both locks**, so a driver

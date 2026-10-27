@@ -83,7 +83,6 @@ const STATE_JS: &str = r#"() => {
       onScreen,
       hitTestable,
       live: visible && onScreen && hitTestable,
-      effectiveOpacity: Math.round(paint.opacity * 1000) / 1000,
       rect: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
       style: { display: style.display, visibility: style.visibility, opacity: style.opacity, filter: style.filter }
     });

@@ -411,7 +411,8 @@ async fn a_tab_listing_never_creates_a_page() {
 /// The frames here are the states the signals have to separate: a widget the
 /// page is showing, the expired one, one covered by another element (the hit
 /// test), one hidden by an ancestor's opacity, one hidden by an ancestor's
-/// `filter: opacity(0)`, Turnstile's own frame, an unrelated ad frame that
+/// `filter: opacity(0)`, Turnstile's own frame, a Cloudflare-branded frame
+/// that is neither Turnstile's host nor its name, an unrelated ad frame that
 /// must not be classified, and a challenge inside a shadow root the top-level
 /// query cannot see.
 #[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
@@ -430,8 +431,9 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
     let seat = SessionSlot::lead("TestOrg", "proj");
 
     // The expired frame carries the vendor in its SRC, the way the measured
-    // one did; the others carry it in the title, which is how each vendor
-    // titles its frame.
+    // one did, and Turnstile's carries the challenge host with no "turnstile"
+    // in it, so the host marker is the one that has to match; the rest carry
+    // it in the title, which is how each vendor titles its frame.
     let fixture = "<iframe src='about:blank' title='reCAPTCHA live' style='position:absolute;\
             left:100px;top:100px;width:200px;height:100px;border:0'></iframe>\
         <iframe src='about:blank#recaptcha' title='expired overlay' \
@@ -441,7 +443,8 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
             left:100px;top:300px;width:200px;height:100px;border:0'></iframe>\
         <div style='position:absolute;left:100px;top:300px;width:200px;height:100px;\
             background:rgb(238,238,238)'></div>\
-        <iframe src='about:blank#turnstile' \
+        <iframe src='about:blank#https://challenges.cloudflare.com/cdn-cgi/\
+            challenge-platform/h/b/orchestrate/chl_page/v1' \
             title='Widget containing a Cloudflare security challenge' \
             style='position:absolute;left:700px;top:100px;width:200px;height:100px;\
             border:0'></iframe>\
@@ -457,6 +460,9 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
         </div>\
         <iframe src='about:blank' title='Sponsored placement' style='position:absolute;\
             left:1100px;top:300px;width:200px;height:100px;border:0'></iframe>\
+        <iframe src='about:blank' title='Cloudflare analytics beacon' \
+            style='position:absolute;left:400px;top:500px;width:200px;height:100px;\
+            border:0'></iframe>\
         <div id='shadow-host' style='position:absolute;left:1100px;top:100px;\
             width:200px;height:100px'></div>";
     // **The fixture is installed into a blank page** rather than navigated
@@ -477,8 +483,7 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
          const host = document.getElementById('shadow-host'); \
          host.attachShadow({{ mode: 'open' }}).innerHTML = \
          \"<iframe src='about:blank' title='reCAPTCHA in shadow' \
-         style='width:200px;height:100px;border:0'></iframe>\"; \
-         return document.querySelectorAll('iframe').length; }}",
+         style='width:200px;height:100px;border:0'></iframe>\"; }}",
         serde_json::to_string(&fixture).expect("the fixture is a JSON string"),
     );
     service
@@ -501,14 +506,23 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
         .unwrap_or_else(|why| panic!("the answer is the report and nothing else ({why}): {text}"));
 
     assert_eq!(state["challengePresent"], json!(true), "{state}");
-    assert_eq!(state["complete"], json!(false), "an unread ad frame and a shadow root: {state}");
+    assert_eq!(state["complete"], json!(false), "three regions went unread: {state}");
     let unseen = state["unseen"].as_array().expect("the answer lists unseen regions");
-    assert_eq!(unseen.len(), 2, "one ad frame and one shadow root: {state}");
-    assert!(
-        unseen.iter().any(|region| region["kind"] == json!("iframe")
-            && region["title"] == json!("Sponsored placement")),
-        "the ad frame is named as unread: {state}",
-    );
+    assert_eq!(unseen.len(), 3, "an ad frame, a Cloudflare bead and a shadow root: {state}");
+    for (title, why) in [
+        ("Sponsored placement", "an ad frame is not a challenge"),
+        (
+            "Cloudflare analytics beacon",
+            "a Cloudflare-branded frame that is not the challenge host is not a challenge",
+        ),
+    ] {
+        assert!(
+            unseen
+                .iter()
+                .any(|region| region["kind"] == json!("iframe") && region["title"] == json!(title)),
+            "{why}, and it is named as unread: {state}",
+        );
+    }
     assert!(
         unseen.iter().any(|region| region["kind"] == json!("shadow-root")
             && region["host"].as_str().unwrap_or_default().contains("shadow-host")),
@@ -517,10 +531,12 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
 
     let challenges = state["challenges"].as_array().expect("the answer lists challenges");
     assert_eq!(challenges.len(), 6, "only the vendor frames are classified: {state}");
-    assert!(
-        challenges.iter().all(|challenge| challenge["title"] != json!("Sponsored placement")),
-        "the ad frame is not a challenge: {state}",
-    );
+    for title in ["Sponsored placement", "Cloudflare analytics beacon"] {
+        assert!(
+            challenges.iter().all(|challenge| challenge["title"] != json!(title)),
+            "{title} is not a challenge: {state}",
+        );
+    }
     let frame = |title: &str| {
         challenges
             .iter()
@@ -565,21 +581,25 @@ async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
 
     // The frame's own computed opacity is 1; only the ancestor walk sees it.
     let faded = frame("reCAPTCHA faded");
-    assert_eq!(faded["visible"], json!(false), "an ancestor's opacity: 0 hides it: {faded}");
-    assert_eq!(faded["onScreen"], json!(true), "{faded}");
-    assert_eq!(faded["hitTestable"], json!(true), "{faded}");
-    assert_eq!(faded["live"], json!(false), "invisible, so not live: {faded}");
     assert_eq!(
-        faded["effectiveOpacity"].as_f64(),
-        Some(0.0),
-        "the ancestor opacity multiplies down: {faded}",
+        faded["visible"],
+        json!(false),
+        "an ancestor's opacity: 0 leaves the frame on screen and hit-testable but invisible: \
+         {faded}",
     );
+    assert_eq!(faded["onScreen"], json!(true), "the frame is on screen: {faded}");
+    assert_eq!(faded["hitTestable"], json!(true), "a click would reach it: {faded}");
+    assert_eq!(faded["live"], json!(false), "an invisible widget is not live: {faded}");
 
     let filtered = frame("reCAPTCHA filtered");
-    assert_eq!(filtered["visible"], json!(false), "filter: opacity(0) hides it: {filtered}");
-    assert_eq!(filtered["onScreen"], json!(true), "{filtered}");
-    assert_eq!(filtered["hitTestable"], json!(true), "{filtered}");
-    assert_eq!(filtered["live"], json!(false), "invisible, so not live: {filtered}");
+    assert_eq!(
+        filtered["visible"],
+        json!(false),
+        "filter: opacity(0) on an ancestor hides the frame too: {filtered}",
+    );
+    assert_eq!(filtered["onScreen"], json!(true), "the frame is on screen: {filtered}");
+    assert_eq!(filtered["hitTestable"], json!(true), "a click would reach it: {filtered}");
+    assert_eq!(filtered["live"], json!(false), "an invisible widget is not live: {filtered}");
 
     let turnstile = frame("Widget containing a Cloudflare security challenge");
     assert_eq!(turnstile["vendor"], json!("Turnstile"), "{turnstile}");
