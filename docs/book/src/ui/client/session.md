@@ -165,7 +165,7 @@ carries both full session ids, each with the control that copies it - the
 recovery `/resume <old-id>` needs is on the row itself - and the brief the
 successor was given: the ground truth forge read off the transcript, git and
 the board, then the judgment the handing-over session wrote. **The brief is one
-table.** Every fact takes its own labelled row, and the judgment's five
+table.** Each section takes its own labelled row, and the judgment's five
 headings sit on the same label column; the value takes the width the pane has
 and wraps inside its own row. The previous
 conversation stays above it, so a swap reads as a seam in the page rather

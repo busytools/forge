@@ -2408,7 +2408,7 @@ details.handoff[open] > summary .arw { color: var(--accent); }
 .handoff .lbl { color: var(--accent); font-size: 11px; letter-spacing: .08em;
   margin: 10px 0 6px 0; }
 .handoff .fact { font-size: 12px; color: var(--text); }
-.handoff .k { color: var(--muted); }
+.handoff .k { color: var(--muted); overflow-wrap: anywhere; }
 .handoff .fact .v { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Touch: the summary is the row's only control, so it takes a finger's
    target. Keyed on the pointer, not the width - a tablet is wide and still
