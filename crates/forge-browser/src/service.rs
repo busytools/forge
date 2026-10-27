@@ -66,16 +66,26 @@ struct DriverCall<'a> {
 
 /// The driver tool a call runs as, and the name a failure reports. **They
 /// differ only for a tool forge composes**, whose caller never called the
-/// evaluate underneath.
-fn driver_call(tool: &str, args: Value) -> DriverCall<'_> {
+/// evaluate or the snippet underneath.
+///
+/// `Err` is the call's own shape fault - a forced click with no target, a
+/// wait carrying both a time and an expression - decided here, before any
+/// page is consulted.
+fn driver_call(tool: &str, args: Value) -> Result<DriverCall<'_>, String> {
     if tool == "browser_challenge_state" {
-        DriverCall {
+        return Ok(DriverCall {
             tool: "browser_evaluate",
             reported: tool,
             args: json!({ "function": crate::challenge::state_js() }),
-        }
-    } else {
-        DriverCall { tool, reported: tool, args }
+        });
+    }
+    match crate::custom::route(tool, args)? {
+        crate::custom::Routed::Upstream { args } => Ok(DriverCall { tool, reported: tool, args }),
+        crate::custom::Routed::Snippet(code) => Ok(DriverCall {
+            tool: "browser_run_code_unsafe",
+            reported: tool,
+            args: json!({ "code": code }),
+        }),
     }
 }
 
@@ -848,6 +858,19 @@ impl BrowserService {
             }
             Some(UploadRequest::Cancel) | None => args,
         };
+        // **The call's own shape is decided before any page is consulted**: a
+        // malformed call is its argument error, not a tab's, and the family's
+        // composed tools are built here so the refusal comes first. The
+        // driver's name rides beside the caller's, because a failure reported
+        // as the evaluate or the snippet underneath would name a tool the
+        // session never called.
+        let DriverCall { tool: driver_tool, reported, args } = match driver_call(tool, args) {
+            Ok(call) => call,
+            Err(why) => {
+                drop(decision);
+                return Err(why);
+            }
+        };
         // **The state lock is only for the lookup.** A call drives a page for
         // seconds, and holding it across that would block an attach, a
         // teardown or the idle sweep for the whole of it. **The call names
@@ -915,11 +938,16 @@ impl BrowserService {
         // driver as the evaluate it is; upstream has no tool that answers it.
         // The caller's own name rides beside it, because a failure reported as
         // `browser_evaluate` would name a tool the session never called.
-        let DriverCall { tool, reported, args } = driver_call(tool, args);
         let challenge = reported == "browser_challenge_state";
         let retry_args = args.clone();
         let (tab, outcome) = self
-            .drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port, generation })
+            .drive(
+                &profile,
+                seat,
+                &driver,
+                tab,
+                Drive { tool: driver_tool, args, bound, port, generation },
+            )
             .await;
         // **The agent answered a chooser the driver had not reported yet.**
         // One event is owed to this answer, so it is consumed rather than
@@ -936,7 +964,7 @@ impl BrowserService {
             .after_failure(
                 &profile,
                 Driven { generation, pid, port, tab, bound },
-                Call { tool, reported, args: &retry_args },
+                Call { tool: driver_tool, reported, args: &retry_args },
                 outcome,
             )
             .await;
@@ -952,7 +980,7 @@ impl BrowserService {
                 }
                 Ok(parts)
             }
-            Err(why) => Err(reported_error(why, tool, reported)),
+            Err(why) => Err(reported_error(why, driver_tool, reported)),
         }
     }
 
@@ -7115,7 +7143,8 @@ mod tests {
     /// session never used, so the two names are pinned here.
     #[test]
     fn a_composed_tool_drives_as_an_evaluate_and_reports_its_caller() {
-        let composed = super::driver_call("browser_challenge_state", json!({}));
+        let composed = super::driver_call("browser_challenge_state", json!({}))
+            .expect("the challenge probe composes");
         assert_eq!(composed.tool, "browser_evaluate");
         assert_eq!(composed.reported, "browser_challenge_state");
         assert!(
@@ -7126,13 +7155,33 @@ mod tests {
             composed.args,
         );
 
-        let plain = super::driver_call("browser_click", json!({ "target": "e1" }));
+        let plain = super::driver_call("browser_click", json!({ "target": "e1" }))
+            .expect("a plain call composes");
         assert_eq!(plain.tool, "browser_click");
         assert_eq!(plain.reported, "browser_click");
         assert_eq!(
             plain.args,
             json!({ "target": "e1" }),
             "a plain call's arguments ride untouched"
+        );
+
+        // **A host-answered tool is a snippet over the driver's own run_code**,
+        // and the caller's name rides beside it so a failure names the tool a
+        // session called rather than the one underneath.
+        let snippet = super::driver_call("browser_form_state", json!({}))
+            .expect("a host-answered tool composes");
+        assert_eq!(snippet.tool, "browser_run_code_unsafe");
+        assert_eq!(snippet.reported, "browser_form_state");
+        assert!(
+            snippet.args["code"].as_str().is_some_and(|code| code.contains("elementHandles")),
+            "the driver is handed the form snippet: {}",
+            snippet.args,
+        );
+
+        // The call's own shape fault is decided here, before any page.
+        assert!(
+            super::driver_call("browser_click", json!({ "force": true })).is_err(),
+            "a forced click with no target is refused before a tab is consulted",
         );
 
         // A read is safe to repeat after a dead page and after a timeout.

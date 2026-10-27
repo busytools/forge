@@ -340,6 +340,46 @@ pub struct HandOffAnswer {
     pub client: Option<u64>,
 }
 
+/// Every browser tool the spec table advertises, by name.
+///
+/// The table itself lives in `forge-workspace`'s `mcp::browser::specs`, which
+/// this crate may not depend on: a unit test there asserts the two lists
+/// agree, and the live parity check in `forge-browser` asserts every name is
+/// answered by the pinned driver or by a host arm.
+pub const ADVERTISED_TOOLS: [&str; 31] = [
+    "browser_close",
+    "browser_resize",
+    "browser_console_messages",
+    "browser_handle_dialog",
+    "browser_emulate_media",
+    "browser_evaluate",
+    "browser_file_upload",
+    "browser_drop",
+    "browser_find",
+    "browser_fill_form",
+    "browser_press_key",
+    "browser_type",
+    "browser_navigate",
+    "browser_navigate_back",
+    "browser_network_requests",
+    "browser_network_request",
+    "browser_run_code_unsafe",
+    "browser_take_screenshot",
+    "browser_snapshot",
+    "browser_click",
+    "browser_drag",
+    "browser_hover",
+    "browser_select_option",
+    "browser_tabs",
+    "browser_wait_for",
+    "browser_click_and_capture",
+    "browser_form_state",
+    "browser_challenge_state",
+    "browser_hand_off",
+    "browser_record_start",
+    "browser_record_stop",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

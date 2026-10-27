@@ -838,6 +838,19 @@ mod tests {
         );
     }
 
+    /// **The advertised names and the live tables agree.** The parity check
+    /// runs in `forge-browser`, which may not depend on this crate, so it
+    /// reads `forge_primitives::browser::ADVERTISED_TOOLS`; a spec added here
+    /// without the const would be a tool the check never looks at.
+    #[test]
+    fn the_advertised_const_is_the_spec_tables_names() {
+        let mut table: Vec<&str> = specs().iter().map(|spec| spec.name).collect();
+        let mut advertised = forge_primitives::browser::ADVERTISED_TOOLS.to_vec();
+        table.sort_unstable();
+        advertised.sort_unstable();
+        assert_eq!(table, advertised, "the const carries every advertised name and nothing else");
+    }
+
     /// The surface is thirty-one tools: the 25 upstream published and the
     /// six this family adds. A count is the cheap half; the shape of each is
     /// pinned below.

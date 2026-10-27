@@ -35,5 +35,5 @@ success-output = "immediate"
 cef-live = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary(veto_live) or binary(input_live) or binary(frame_roundtrip) or binary(record_live) or binary(audio_live) or binary(download_live) or binary(file_live) or binary(host_bundle) or binary(reap_live) or binary(tabs_live) or binary(browser_service)'
+filter = 'binary(veto_live) or binary(input_live) or binary(frame_roundtrip) or binary(record_live) or binary(audio_live) or binary(download_live) or binary(file_live) or binary(host_bundle) or binary(reap_live) or binary(tabs_live) or binary(browser_service) or binary(browser_custom_live) or binary(surface_parity_live)'
 test-group = 'cef-live'

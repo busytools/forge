@@ -9,6 +9,7 @@
 #[cfg(unix)]
 pub mod channel;
 pub mod control;
+pub mod custom;
 pub mod frame;
 pub mod host_bundle;
 pub mod idle;
