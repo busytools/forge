@@ -230,6 +230,8 @@
   .rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
   .rfoot .who { display: flex; align-items: center; gap: 8px; padding: 0 1px 4px; }
   .rfoot .led { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--ok); }
+  .rfoot .led.wait { background: var(--warn); }
+  .rfoot .led.bad { background: var(--bad); }
   .rfoot .an { color: var(--text); font-size: var(--fs-base); }
   .rfoot .frs { display: flex; flex-direction: column; gap: 1px; }
   .rfoot .fr { display: flex; font-family: var(--mono); font-size: var(--fs-data); }
@@ -469,7 +471,14 @@
      scoped to the track because `.fl` names a file in a chat search hit too. */
   .tk > .fl { display: block; height: 100%; background: var(--accent); }
   .bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px; text-align: right; }
-  .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px; text-align: right; }
+  .rfoot .win { padding: 3px 0; }
+  .rfoot .win .bar { padding: 0; }
+  .bar .lim { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
+    flex: 0 1 60px; width: 60px; min-width: 0; overflow: hidden; white-space: nowrap;
+    text-overflow: ellipsis; }
+  .rfoot .win .eta { display: block; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); text-align: right; white-space: nowrap; }
+  .rfoot .who .st { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
 
   /* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
      book page; a terminal draws one row per line at 1.231em of its own text
@@ -1684,18 +1693,33 @@
 
     <!-- The rail's own footer: the account, what it is costing and the two
          builds. Below the list, so the projects scroll behind it. Drawn here
-         for a spend-billed key; a window-billed account draws its 5h/7d bars
-         in the same block with `-` for a window it has no reading for, and an
-         account whose billing kind nothing has resolved reads `usage not
-         reported` rather than a guessed window shape. -->
+         for a window-billed account: the two plan windows, the spent one
+         marked in words as well as colour, each one's own reset, and `-` for
+         a window it has no reading for. A spend-billed key draws its five
+         money rows in the same block, and an account whose billing kind
+         nothing has resolved reads `usage not reported` rather than a guessed
+         window shape. -->
     <div class="rfoot">
-      <div class="who"><span class="led"></span><span class="an">OpenRouter</span></div>
+      <div class="who"><span class="led wait"></span><span class="an">Subspace</span><span class="st">rate limited</span></div>
       <div class="frs">
-        <div class="fr"><span class="k">day</span><span class="v">$69.43</span></div>
-        <div class="fr"><span class="k">week</span><span class="v">$584.42</span></div>
-        <div class="fr"><span class="k">month</span><span class="v">$69.43</span></div>
-        <div class="fr"><span class="k">balance</span><span class="v">$202.29</span></div>
-        <div class="fr"><span class="k">cap</span><span class="v none">not set</span></div>
+        <div class="win">
+          <div class="bar">
+            <span class="lb">5h</span>
+            <span class="tk"><span class="fl" style="width:100%"></span></span>
+            <span class="pc">100%</span>
+            <span class="lim">at limit</span>
+          </div>
+          <span class="eta">resets 23:10</span>
+        </div>
+        <div class="win">
+          <div class="bar">
+            <span class="lb">7d</span>
+            <span class="tk"><span class="fl" style="width:42%"></span></span>
+            <span class="pc">42%</span>
+            <span class="lim"></span>
+          </div>
+          <span class="eta">resets Tue 09:00</span>
+        </div>
       </div>
       <div class="vers">
         <!-- The socket protocol the client and server must agree on, shown

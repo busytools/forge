@@ -84,7 +84,7 @@ const POOL_HOME = {
       },
       work: { branch: 'main', changed: 0, gate: 'in_repo' },
       would_bind: true,
-      chip: { account_name: POOL_ACCOUNT, state: 'ready' },
+      chip: { account_name: POOL_ACCOUNT, state: 'normal' },
     },
   ],
   unseen: [],

@@ -148,7 +148,7 @@ async fn monitor_probe(
     match status {
         200 => quota_from_body(&body, key),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        429 => Err(OauthUsageError::RateLimited { retry_after: None }),
+        429 => Err(OauthUsageError::RateLimited { retry_after: None, snapshot: None }),
         _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, key))),
     }
 }
@@ -253,6 +253,7 @@ fn window_from_entry(entry: &QuotaLimitEntry) -> Option<UsageWindow> {
         utilization,
         resets_at: entry.next_reset_time.and_then(system_time_from_epoch),
         reset_description: None,
+        status: None,
     })
 }
 

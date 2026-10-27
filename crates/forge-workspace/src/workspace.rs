@@ -207,6 +207,11 @@ pub enum SessionChipState {
     /// endpoint, malformed response). Warning yellow, no glyph - the
     /// same split the account rows render; the pollers heal it.
     Degraded,
+    /// Every account serving the project is inside a rotation cooldown, so
+    /// a spawn is refused until the soonest reset. Unlike `AtCap` the walk
+    /// will not take this account now; the window that is spent and when
+    /// it lifts come from the account's own reading.
+    RateLimited,
 }
 
 /// What a session is waiting on a person for. The kind a needs-you row
@@ -3343,11 +3348,25 @@ impl Workspace {
     /// - `Ready` + any usage window at the cap (the same
     ///   `is_saturated` signal the walk demotes an account for) ->
     ///   `AtCap` (yellow; the session still spawns but will throttle).
+    /// - Every account serving the model inside a rotation cooldown ->
+    ///   `RateLimited`, naming the account whose cooldown lifts first:
+    ///   the one the first spawn after the thaw lands on. The walk still
+    ///   refuses a spawn; only this read looks past the cooldown.
     /// - Otherwise -> `Normal` (DIM; default chip).
     pub fn session_chip_for(&self, project_key: &ProjectKey) -> Option<SessionChipInfo> {
         let project = self.project_for_key(project_key)?;
         let model = project.model.as_deref()?;
-        let account_key = self.gateway.select_for(&project.org, model).ok()?;
+        let account_key = match self.gateway.select_for(&project.org, model) {
+            Ok(key) => key,
+            Err(forge_gateway::SelectFailure::BudgetExhausted { .. }) => {
+                let key = self.gateway.cooling_account_serving(&project.org, model)?;
+                return Some(SessionChipInfo {
+                    account_name: key.0,
+                    state: SessionChipState::RateLimited,
+                });
+            }
+            Err(_) => return None,
+        };
 
         let loading = self.accounts.loading_state(&account_key);
         let saturated = self.accounts.is_saturated(&account_key);
@@ -3674,11 +3693,17 @@ impl Workspace {
                         forge_gateway::ProbeError::Fetch(
                             forge_primitives::usage::oauth::OauthUsageError::RateLimited {
                                 retry_after,
+                                ..
                             },
                         ) => *retry_after,
                         _ => None,
                     };
                     self.accounts.set_last_error(&key, status, retry_after);
+                    // A 429 is a reading even though it heals nothing: keep
+                    // its windows so the rail can say which one is spent.
+                    if let Some(snapshot) = err.rate_limited_snapshot() {
+                        self.accounts.set_limit_reading(&key, snapshot.clone());
+                    }
                     self.announce_accounts_changed();
                     // Branch the log message by error class so anyone
                     // reading triage logs gets the right framing.
@@ -3808,12 +3833,13 @@ impl Workspace {
         }
     }
 
-    /// Read the cached usage snapshot for an account by display
-    /// name. `None` when the poller hasn't yet succeeded (cold
-    /// cache, no credentials, network blip). A view renders the
-    /// 5h / 7d bars from this snapshot.
+    /// The newest usage reading the pool holds for an account, by display
+    /// name: a rate-limited response's windows when one landed after the
+    /// last successful probe, else that probe's snapshot. `None` while the
+    /// account has reported nothing. A view renders the 5h / 7d bars from
+    /// this reading.
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
-        self.accounts.usage(display_name)
+        self.accounts.latest_reading(display_name)
     }
 
     /// The account the gateway is serving `key`'s session with right
@@ -15253,12 +15279,16 @@ provider = "anthropic"
         assert_eq!(
             classify_oauth_usage_error(&fetch(OauthUsageError::RateLimited {
                 retry_after: Some(std::time::Duration::from_secs(60)),
+                snapshot: None,
             })),
             UsageFetchStatus::RateLimited,
             "new dedicated 429 variant also maps to RateLimited",
         );
         assert_eq!(
-            classify_oauth_usage_error(&fetch(OauthUsageError::RateLimited { retry_after: None })),
+            classify_oauth_usage_error(&fetch(OauthUsageError::RateLimited {
+                retry_after: None,
+                snapshot: None,
+            })),
             UsageFetchStatus::RateLimited,
         );
         assert_eq!(
@@ -21768,6 +21798,38 @@ provider = "anthropic"
         dir
     }
 
+    /// Two accounts serving one project's model, in pin order.
+    fn make_two_account_workspace_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["First", "Second"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "First"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Second"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
     /// A project `model` fills the CLI's model slots: all five slot
     /// variables carry that one model on the spawned child.
     #[tokio::test]
@@ -22364,6 +22426,7 @@ base_url = "https://openrouter.ai/api"
                     std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
                 ),
                 reset_description: None,
+                status: None,
             }),
             seven_day: None,
             seven_day_opus: None,
@@ -22404,6 +22467,7 @@ base_url = "https://openrouter.ai/api"
                         std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
                     ),
                     reset_description: None,
+                    status: None,
                 }),
                 seven_day: None,
                 seven_day_opus: None,
@@ -22438,6 +22502,7 @@ base_url = "https://openrouter.ai/api"
                         std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
                     ),
                     reset_description: None,
+                    status: None,
                 }),
                 seven_day: None,
                 seven_day_opus: None,
@@ -22473,6 +22538,7 @@ base_url = "https://openrouter.ai/api"
                         std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
                     ),
                     reset_description: None,
+                    status: None,
                 }),
                 seven_day_opus: None,
                 seven_day_sonnet: None,
@@ -22487,6 +22553,75 @@ base_url = "https://openrouter.ai/api"
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::AtCap);
+    }
+
+    /// **A chip resolves while the walk refuses.** A cooling account is the
+    /// one a spawn would land on once its window lifts, so the read names
+    /// it and says it is rate-limited; the walk and the spawn refusal are
+    /// untouched.
+    #[tokio::test]
+    async fn session_chip_for_names_the_cooling_account() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let key = AccountKey("Stargate".to_owned());
+        workspace.account_pool().set_usage(&key, usage_at(100.0));
+        let reset_at = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the test clock is past the epoch")
+            .as_secs()
+            + 3600;
+        workspace.gateway.report_probe_limit(&key, Some(reset_at));
+
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace
+            .session_chip_for(&project_key)
+            .expect("the read names the account a spawn would land on");
+        assert_eq!(chip.account_name, "Stargate");
+        assert_eq!(chip.state, SessionChipState::RateLimited);
+
+        assert!(
+            matches!(
+                workspace.gateway.select_for("Default", "claude-sonnet-5"),
+                Err(forge_gateway::SelectFailure::BudgetExhausted { .. }),
+            ),
+            "the read surface must not have made the cooling account selectable",
+        );
+    }
+
+    /// **With two cooling accounts the chip follows the thaw, not pin
+    /// order.** The first spawn after the cooldowns lift lands on the
+    /// account whose reset is soonest, so that is the one whose windows and
+    /// reset the footer must state.
+    #[tokio::test]
+    async fn session_chip_for_names_the_cooling_account_that_thaws_first() {
+        let dir = make_two_account_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let first = AccountKey("First".to_owned());
+        let second = AccountKey("Second".to_owned());
+        workspace.account_pool().set_usage(&first, usage_at(42.0));
+        workspace.account_pool().set_usage(&second, usage_at(100.0));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the test clock is past the epoch")
+            .as_secs();
+        workspace.gateway.report_probe_limit(&first, Some(now + 2 * 3600));
+        workspace.gateway.report_probe_limit(&second, Some(now + 10 * 60));
+
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace
+            .session_chip_for(&project_key)
+            .expect("the read names the account a spawn would land on");
+        assert_eq!(
+            chip.account_name, "Second",
+            "the chip named the first-pinned account instead of the one that thaws first",
+        );
+        assert_eq!(chip.state, SessionChipState::RateLimited);
     }
 
     #[tokio::test]

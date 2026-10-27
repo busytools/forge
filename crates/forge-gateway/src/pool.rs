@@ -41,6 +41,13 @@ impl AccountPool {
         self.accounts.lock().usage(&AccountKey(display_name.to_owned())).cloned()
     }
 
+    /// The newest reading a view draws: a rate-limited response's windows
+    /// when one landed after the last successful probe, else that probe's
+    /// snapshot.
+    pub fn latest_reading(&self, display_name: &str) -> Option<UsageSnapshot> {
+        self.accounts.lock().latest_reading(&AccountKey(display_name.to_owned())).cloned()
+    }
+
     pub fn usage_error(&self, display_name: &str) -> Option<UsageFetchStatus> {
         self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
     }
@@ -83,6 +90,10 @@ impl AccountPool {
 
     pub fn set_loading(&self, key: &AccountKey, loading: LoadingState) {
         self.accounts.lock().set_loading(key, loading);
+    }
+
+    pub fn set_limit_reading(&self, key: &AccountKey, snapshot: UsageSnapshot) {
+        self.accounts.lock().set_limit_reading(key, snapshot);
     }
 
     pub fn set_last_error(
