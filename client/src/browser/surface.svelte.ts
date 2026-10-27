@@ -429,7 +429,7 @@ const STEPS: Step[] = [
         // **The keyboard's way out.** The overlay holds first responder while
         // the surface is up; Cmd+W arrives here, and the page lowers the
         // surface the same way back-to-chat does - the hand-off stays parked
-        // for the bar's Done or Not now.
+        // for the next answer.
         void closeSurface();
       }),
   },
