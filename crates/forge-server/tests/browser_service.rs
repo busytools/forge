@@ -906,13 +906,21 @@ async fn an_agent_resize_is_the_window_until_the_next_resize() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
     // **A page whose button keeps the handle `window.open` answered**, the way
-    // a sign-in library does; the title says which way it went. Served over
-    // loopback, the origin a sign-in flow really arrives from.
-    const PAGE: &str = "<!doctype html><meta charset=utf-8>\
-        <style>html,body{margin:0;padding:0}\
-        #b{position:absolute;left:0;top:0;width:300px;height:120px;font-size:20px}</style>\
-        <button id=b onclick=\"window.__popup=window.open('about:blank','signin');\
-        document.title=window.__popup?'popup-open':'popup-blocked'\">sign in</button>";
+    // a sign-in library does, and opens its popup **straight at an address** -
+    // the shape a sign-in flow really arrives in, and the one navigation this
+    // engine commits for a popup an auto-attached client holds. The popup's
+    // own page says what it is, so the row and the call are both checked.
+    const POPUP: &str = "<!doctype html><meta charset=utf-8>\
+        <title>popup-target</title><h1>sign-in page</h1>";
+    let popup_port = serve_page(POPUP);
+    let page = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <style>html,body{{margin:0;padding:0}}\
+         #b{{position:absolute;left:0;top:0;width:300px;height:120px;font-size:20px}}</style>\
+         <button id=b onclick=\"window.__popup=window.open(\
+         'http://127.0.0.1:{popup_port}/','signin');\
+         document.title=window.__popup?'popup-open':'popup-blocked'\">sign in</button>"
+    );
 
     let stack = stack();
     assert!(
@@ -923,13 +931,13 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
         stack.display()
     );
     let scratch = tempfile::tempdir().expect("a scratch root");
-    let service = std::sync::Arc::new(BrowserService::at(scratch.path().to_path_buf(), stack));
-    // **The boot's own pairing pass.** A popup has no call behind it, so this
-    // is what turns its birth into a row; without it this test would be the
-    // only thing reconciling, and the person would see nothing.
-    service.start_pairing();
+    // **No pairing call here.** A popup has no call behind it, so the pass
+    // that turns its birth into a row must be the one the service starts for
+    // itself; asking for it in the test would let a service that never starts
+    // one pass.
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
     let seat = SessionSlot::lead("TestOrg", "proj");
-    let url = format!("http://127.0.0.1:{}/", serve_page(PAGE));
+    let url = format!("http://127.0.0.1:{}/", serve_page(Box::leak(page.into_boxed_str())));
 
     service
         .call(&seat, "browser_snapshot", json!({}))
@@ -940,6 +948,10 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
     let opener = attachment.tab;
     let mut frames = attachment.frames;
     let first = next_frame(&mut frames, opener, None).await;
+    // **The strip's half of the row is the pushed list.** A viewer holds this
+    // stream open, and a popup's row has to arrive on it with no read behind
+    // it; `tabs()` would be the pull a person never makes.
+    let mut strip = service.tab_stream(&seat).await.expect("the strip's list");
 
     service
         .call(&seat, "browser_navigate", json!({ "url": url }))
@@ -971,22 +983,29 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
 
     // **Nobody calls: the row appears on its own.** A person clicking a sign-in
     // button makes no request of the service, so the birth's own pairing pass
-    // is what has to produce it.
+    // is what has to produce it - and it has to reach the strip's stream.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let rows = loop {
-        let rows = service.tabs(&seat).await.expect("rows").rows;
+        let rows = strip.borrow_and_update().rows.clone();
         if rows.len() == 2 {
             break rows;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the popup's row never appeared without a call: {rows:?}"
+            "the popup's row never reached the strip without a call: {rows:?}"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _ = tokio::time::timeout(Duration::from_millis(100), strip.changed()).await;
     };
     let popup = rows.iter().map(|row| row.number).max().expect("two rows");
     assert_ne!(popup, opener, "the popup has a number of its own");
     assert!(rows.iter().all(|row| row.owner == seat), "both tabs are the opener's session's");
+    // **The popup's row names the address it asked for**, which is the page a
+    // person sees after clicking sign in - not a blank the host left behind.
+    let popup_url = format!("http://127.0.0.1:{popup_port}/");
+    assert!(
+        rows.iter().any(|row| row.number == popup && row.url == popup_url),
+        "the popup's row is the page it opened: {rows:?}",
+    );
 
     // **The list is bounded like a call.** A listing that never returns is the
     // wedge a stuck popup target used to cause; a future one names it here
@@ -1017,7 +1036,7 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
     .expect("the popup answers a page call");
     let snapshot = text_of(&snapshot);
     assert!(
-        snapshot.contains("about:blank"),
+        snapshot.contains("sign-in page"),
         "the popup is driven like any other page: {snapshot}",
     );
 

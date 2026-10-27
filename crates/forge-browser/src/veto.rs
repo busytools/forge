@@ -14,10 +14,16 @@
 //! **This engine answers no page-domain command while a target waits**, so a
 //! document that starts with its tab can run before the script is
 //! registered. The paths that open documents avoid that: the host creates
-//! every tab blank, the service waits for its target to be armed, and only
-//! then is a URL navigated. A tab some other client creates directly at a URL
-//! still runs that first document unpatched; its world is patched in place as
-//! soon as the context is reported.
+//! every tab blank, the service waits for the target to be armed, and only
+//! then is a URL navigated.
+//!
+//! **A page's popup cannot be one of those paths.** Measured: a popup whose
+//! target an auto-attached client holds refuses every page-domain command
+//! while it has no document, so no arm can arrive before its first one; and
+//! it commits exactly one navigation, so the address it asks for cannot be
+//! preceded by a blank. Its first document therefore runs unpatched and is
+//! patched in place, as any target some other client creates directly at a
+//! URL is.
 //!
 //! **The event loop waits on no page-domain reply except the arm's.** A
 //! target that starts while one is pending - a service worker above all - is

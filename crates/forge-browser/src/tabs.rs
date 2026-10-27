@@ -95,6 +95,11 @@ pub struct TabRegistry {
     /// orphans**: the prune closes nothing while one is unresolved, or a live
     /// document would be closed because its row could not be paired.
     unresolved: HashSet<u16>,
+    /// Numbers the host has reported ended, including ones no row ever
+    /// took. **A birth for one of these is not waiting for a page**: a popup
+    /// the host gave up closed before its page existed, and a birth kept for
+    /// it would be re-deferred for ever - a driver recovery on every pass.
+    closed: HashSet<u16>,
 }
 
 pub(crate) struct Tab {
@@ -178,6 +183,9 @@ impl TabRegistry {
     /// the sign-in started from.
     pub fn close(&mut self, tab: u16) -> Option<SessionSlot> {
         self.unresolved.remove(&tab);
+        // **The number is ended whether or not a row took it**, so a birth
+        // still waiting for this tab's page is dropped rather than deferred.
+        self.closed.insert(tab);
         let removed = self.tabs.remove(&tab)?;
         // **A popup opened by a popup keeps its chain.** The row that named
         // this tab as its opener takes this tab's own opener, so a middle
@@ -214,6 +222,12 @@ impl TabRegistry {
     /// The tabs whose page a listing could not name.
     pub fn unresolved_tabs(&self) -> Vec<u16> {
         self.unresolved.iter().copied().collect()
+    }
+
+    /// Whether the host has reported this number ended. **A birth for one is
+    /// answered rather than kept**: nothing will ever list its page.
+    pub fn was_closed(&self, tab: u16) -> bool {
+        self.closed.contains(&tab)
     }
 
     pub fn close_owned(

@@ -147,18 +147,11 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
     wait_for_frame(&painted, 1, BOUND).await;
 
     // **The gesture is the server's own**: a press and release written on the
-    // host's input pipe, which is the path a person's click takes.
-    for action in [MouseAction::Press, MouseAction::Release] {
-        host.input(&host_line(&HostInput::Mouse {
-            tab: 1,
-            action,
-            x: 60,
-            y: 60,
-            button: 0,
-            clicks: 1,
-            modifiers: InputModifiers::default(),
-        }));
-    }
+    // host's input pipe, which is the path a person's click takes. A gesture
+    // sent the instant a document finishes loading can be dropped by the
+    // fresh renderer, so it is retried until the host reports the popup.
+    let tab = click_until_popup(&mut host, BOUND).await;
+    println!("the popup is tab {tab}");
 
     let deadline = Instant::now() + BOUND;
     let title = loop {
@@ -187,8 +180,6 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
         host.log()
     );
 
-    let tab = wait_for_created(&host, 1, &[], BOUND).await;
-    println!("the popup is tab {tab}");
     let blank = wait_for_frame(&painted, tab, BOUND).await;
     assert_eq!(
         (blank.width, blank.height),
@@ -296,16 +287,16 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
     Ring::unlink(&ring_name);
 }
 
-/// **A popup the opener moves is left to finish.** `window.open('about:blank')`
-/// then `w.location = authUrl` is how half the OAuth libraries start, and the
-/// popup has no committed URL while that navigation is in flight: a host that
-/// judged by the committed URL would load `about:blank` over the sign-in leg.
-/// The gate is CEF's own load start, and the proof is the page that answered -
-/// once, with its own URL committed.
+/// **A popup opened straight at an address is loaded once, and that address
+/// is loaded.** `window.open(authUrl)` is a shape sign-in flows use, and the
+/// document it asks for is slow enough that a navigation in flight and a
+/// navigation not started look the same from a committed URL. The host must
+/// wait it out rather than loading over it, and the proof is the page that
+/// answered - once, with its own URL committed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_popup_navigated_by_its_opener_is_left_to_finish() {
     const SLOW: &str = "<!doctype html><meta charset=utf-8><title>slow-done</title><h1>slow</h1>";
-    let (slow_port, hits) = serve_page(SLOW, Duration::from_millis(600));
+    let (slow_port, hits) = serve_page(SLOW, Duration::from_millis(1_000));
     let opener = format!(
         "<!doctype html><meta charset=utf-8>\
          <style>html,body{{margin:0;padding:0}}\
@@ -356,7 +347,8 @@ async fn a_popup_navigated_by_its_opener_is_left_to_finish() {
         assert!(
             Instant::now() < deadline,
             "the popup never committed the page its opener named; it says {seen:?} \
-             (tab {tab}, log: {})",
+             (tab {tab}, requests {}, log: {})",
+            hits.load(std::sync::atomic::Ordering::Acquire),
             host.log()
         );
         tokio::time::sleep(POLL).await;

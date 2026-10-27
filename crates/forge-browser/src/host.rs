@@ -326,6 +326,8 @@ struct Tab {
     opener: Option<u16>,
     /// Whether this tab's main frame has started a load; see `TabParts`.
     loaded: Arc<AtomicBool>,
+    /// This popup's place in its opener's count, given back when it ends.
+    place: Option<Arc<Place>>,
     pending: Arc<Pending>,
     /// Ends the tab's frame worker when the tab goes.
     stop: Arc<AtomicBool>,
@@ -372,15 +374,21 @@ impl Tabs {
 const MAX_POPUP_TABS: usize = 16;
 
 /// How long a popup is given to start its own first document before the host
-/// starts it. **Long enough to lose a race with nothing**: a popup that
+/// starts one. **Long enough to lose a race with nothing**: a popup that
 /// commits on its own does so within a frame or two, and one still empty at
 /// this point never will.
 const POPUP_BOOT_GRACE_MS: u64 = 250;
 
-/// How many times the host offers a popup its navigation. **Not one**: a load
-/// the engine drops on the first offer is still started by the second, and a
+/// How many navigations the host offers one popup. **Not one**: a load the
+/// engine drops on the first offer is still started by the second, and a
 /// popup that never starts at all must not be retried for ever.
 const POPUP_BOOT_TRIES: u8 = 8;
+
+/// How long a popup is given to start the document it asked for. **A bound on
+/// the whole start, not on one navigation**: a popup that never gets there
+/// holds its birth forever, and every reconcile then pays a driver recovery
+/// for a tab that will never pair.
+const POPUP_BOOT_GIVE_UP_MS: u64 = 10_000;
 
 /// The host's recording, shared by the paint callback and the input pump.
 ///
@@ -510,12 +518,84 @@ struct TabParts {
     downloads: DownloadHandler,
 }
 
+/// One popup's place in its opener's count.
+///
+/// **A place is released once.** A popup CEF aborted, one whose browser
+/// closed and one the host gave up are different reports of the same place,
+/// and a second release would free a place another popup still holds.
+struct Place {
+    opener: u16,
+    released: AtomicBool,
+}
+
+/// One popup whose first document the host has not finished starting: the
+/// tab, the address it asked for, when to look again, how many navigations
+/// are left, and the point at which the tab is given up.
+struct PopupBoot {
+    tab: u16,
+    url: String,
+    due: u64,
+    tries: u8,
+    give_up_at: u64,
+}
+
+/// What one popup's boot tick does.
+#[derive(Debug, PartialEq, Eq)]
+enum BootStep {
+    /// Start the address the popup asked for.
+    Address,
+    /// Look again after the grace.
+    Wait,
+    /// The popup is where it was asked to be, or a document of its own is up.
+    Done,
+    /// The popup never got there; give the tab up.
+    GiveUp,
+}
+
+/// Everything one boot tick decides on, as the tab reports it.
+struct BootNow<'a> {
+    committed: &'a str,
+    /// A document or a load has started: `loaded` or a committed URL.
+    started: bool,
+    /// A navigation is in flight.
+    loading: bool,
+    tries: u8,
+    now: u64,
+    give_up_at: u64,
+    target: &'a str,
+}
+
+/// **The popup's own start, as one decision.** The address is the one
+/// navigation this engine commits for a popup an auto-attached client holds,
+/// so it is offered while nothing is in flight and never over a load; a unit
+/// test pins that, and the give-up, rather than only a live host.
+fn boot_step(state: &BootNow<'_>) -> BootStep {
+    if state.now >= state.give_up_at {
+        return BootStep::GiveUp;
+    }
+    // **Where it was asked to be, or a document of its own.** A redirect
+    // leaves the committed URL different from the one the host issued, so any
+    // real document is a finish, never a reason to navigate back.
+    if state.started
+        && (state.committed == state.target
+            || (!state.committed.is_empty() && state.committed != "about:blank"))
+    {
+        return BootStep::Done;
+    }
+    if state.loading {
+        return BootStep::Wait;
+    }
+    if state.tries > 0 { BootStep::Address } else { BootStep::GiveUp }
+}
+
 /// One popup the gate admitted, before CEF has created its browser: the tab
 /// it takes, and the frame stream it owns from the moment it paints.
 #[derive(Clone)]
 struct AdmittedPopup {
     tab: u16,
     opener: u16,
+    popup_id: i32,
+    place: Arc<Place>,
     url: String,
     pending: Arc<Pending>,
     stop: Arc<AtomicBool>,
@@ -559,10 +639,11 @@ struct PopupGate {
     /// created, so one renderer turn could admit any number of them before
     /// the first row exists.
     live: Mutex<HashMap<u16, usize>>,
-    /// Popups whose own first document has not started: their tab, the
-    /// navigation they asked for, when to look again, and how many attempts
-    /// are left.
-    boot: Mutex<Vec<(u16, String, u64, u8)>>,
+    /// The places handed out and not yet released, by the opener and the id
+    /// CEF gave the popup, so an abort frees exactly the place it names.
+    places: Mutex<HashMap<(u16, i32), Arc<Place>>>,
+    /// Popups whose first document is still the host's to start.
+    boot: Mutex<Vec<PopupBoot>>,
 }
 
 impl PopupGate {
@@ -625,7 +706,12 @@ impl PopupGate {
 
     /// Admit one popup: the number its tab takes and the client CEF creates
     /// the popup's browser with, or `None` to cancel it.
-    fn admit(self: &Arc<Self>, opener: u16, url: &str) -> Option<(Client, AdmittedPopup)> {
+    fn admit(
+        self: &Arc<Self>,
+        opener: u16,
+        popup_id: i32,
+        url: &str,
+    ) -> Option<(Client, AdmittedPopup)> {
         {
             // **The page's own count, from the reservation.** Another tab's
             // popups never refuse this one's sign-in, and a burst of
@@ -636,17 +722,24 @@ impl PopupGate {
             if *held >= MAX_POPUP_TABS {
                 eprintln!(
                     "cef host: a page's popup was refused (event_name cef_popup_refused, \
-                     opener {opener}, url {url})"
+                     opener {opener}, popup {popup_id}, url {url})"
                 );
                 return None;
             }
             *held += 1;
         }
+        let place = Arc::new(Place { opener, released: AtomicBool::new(false) });
+        self.places
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((opener, popup_id), Arc::clone(&place));
         let tab = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).reserve();
         let parts = self.parts(tab);
         let admitted = AdmittedPopup {
             tab,
             opener,
+            popup_id,
+            place,
             url: url.to_owned(),
             pending: Arc::clone(&parts.pending),
             stop: Arc::clone(&parts.stop),
@@ -664,7 +757,10 @@ impl PopupGate {
     /// later pass; a popup that closes itself at once is then a row that ends
     /// instead of one that never existed.
     fn adopt(&self, browser: Browser, admitted: AdmittedPopup) {
-        let AdmittedPopup { tab, opener, url, pending, stop, key, size, loaded } = admitted;
+        let AdmittedPopup { tab, opener, popup_id, place, url, pending, stop, key, size, loaded } =
+            admitted;
+        // **The popup exists, so its place is the tab's now.**
+        self.places.lock().unwrap_or_else(PoisonError::into_inner).remove(&(opener, popup_id));
         // **The number was reserved at admission**, so an open row here is a
         // pairing bug; the browser is closed rather than left as a tab
         // nothing paints.
@@ -673,7 +769,7 @@ impl PopupGate {
                 "cef host: a page's popup was not registered (event_name \
                  cef_popup_not_registered, tab {tab}, opener {opener}, url {url})"
             );
-            self.release(opener);
+            self.release(&place);
             if let Some(host) = browser.host() {
                 host.close_browser(1);
             }
@@ -690,18 +786,19 @@ impl PopupGate {
             host.was_resized();
         }
         // **A popup a DevTools client is auto-attached to never starts its
-        // own first document.** Measured: the target appears as `other`,
-        // its URL stays empty and every page-domain command times out, while
-        // the same popup in a host with no attached client runs. The
-        // navigation it asked for is kept here for the pump, which issues it
-        // only while no load has started; issuing it now would race CEF's
-        // own commit and wipe a page that filled itself in.
-        self.boot.lock().unwrap_or_else(PoisonError::into_inner).push((
+        // own first document.** Measured: the target appears as `other`, its
+        // URL stays empty and every page-domain command times out, while the
+        // same popup in a host with no attached client runs. The pump starts
+        // the address the popup asked for, and that is the one navigation
+        // this engine commits for such a popup; see `bootstrap`.
+        let now = elapsed_ms();
+        self.boot.lock().unwrap_or_else(PoisonError::into_inner).push(PopupBoot {
             tab,
-            url.clone(),
-            elapsed_ms().saturating_add(POPUP_BOOT_GRACE_MS),
-            POPUP_BOOT_TRIES,
-        ));
+            url: url.clone(),
+            due: now.saturating_add(POPUP_BOOT_GRACE_MS),
+            tries: POPUP_BOOT_TRIES,
+            give_up_at: now.saturating_add(POPUP_BOOT_GIVE_UP_MS),
+        });
         {
             let mut tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             tabs.open.insert(
@@ -710,6 +807,7 @@ impl PopupGate {
                     browser,
                     opener: Some(opener),
                     loaded: Arc::clone(&loaded),
+                    place: Some(place),
                     pending: Arc::clone(&pending),
                     stop: Arc::clone(&stop),
                     key: Arc::clone(&key),
@@ -732,80 +830,123 @@ impl PopupGate {
         });
     }
 
-    /// Start a popup's first document when CEF has not. **A started load is
-    /// the signal, never a committed URL**: a popup at `about:blank` that the
-    /// page then moves with `location = authUrl` keeps its old URL while the
-    /// sign-in leg is in flight, and navigating it there would throw that
-    /// away. A popup CEF started on its own is dropped here; one that never
-    /// started is navigated again on the next tick, until [`POPUP_BOOT_TRIES`]
-    /// runs out.
+    /// Start a popup's own document when CEF has not.
+    ///
+    /// **The address is the one navigation this engine commits** for a popup
+    /// an auto-attached DevTools client holds. Measured: a second navigation
+    /// of such a popup - the host's own `load_url`, a driver's `Page.navigate`
+    /// or the page's own `location` - never commits (CEF times out waiting
+    /// for a browser info response), so the address cannot be preceded by a
+    /// blank document either. It is offered while nothing is in flight and
+    /// never over a load; a popup that cannot get that far is given up rather
+    /// than left blank for ever.
     fn bootstrap(&self, now: u64) {
         let mut due = Vec::new();
         {
             let mut boot = self.boot.lock().unwrap_or_else(PoisonError::into_inner);
             let mut at = 0;
             while at < boot.len() {
-                if boot[at].2 <= now {
+                if boot[at].due <= now {
                     due.push(boot.remove(at));
                 } else {
                     at += 1;
                 }
             }
         }
-        for (tab, url, _, tries) in due {
-            let (browser, loaded) = {
+        for mut entry in due {
+            let state = {
                 let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-                match tabs.open.get(&tab) {
-                    Some(entry) => (Some(entry.browser.clone()), Some(Arc::clone(&entry.loaded))),
-                    None => (None, None),
-                }
+                tabs.open.get(&entry.tab).map(|tab| (tab.browser.clone(), Arc::clone(&tab.loaded)))
             };
-            let (Some(browser), Some(loaded)) = (browser, loaded) else { continue };
-            // **A navigation in flight is not the host's to replace**, and CEF
-            // reports one two ways: `is_loading` as soon as it has accepted
-            // the navigation (measured on a popup opened straight at a URL,
-            // where the load start callback had not fired yet), and the load
-            // start callback once it runs.
-            if loaded.load(Ordering::Acquire) || browser.is_loading() != 0 {
-                continue;
+            // **A tab that is gone has no birth left to pair.**
+            let Some((browser, loaded)) = state else { continue };
+            let frame = browser.main_frame();
+            let committed = frame
+                .as_ref()
+                .map(|frame| CefStringUtf16::from(&frame.url()).to_string())
+                .unwrap_or_default();
+            let target = if entry.url.is_empty() { "about:blank" } else { entry.url.as_str() };
+            let step = boot_step(&BootNow {
+                committed: &committed,
+                started: loaded.load(Ordering::Acquire) || !committed.is_empty(),
+                loading: browser.is_loading() != 0,
+                tries: entry.tries,
+                now,
+                give_up_at: entry.give_up_at,
+                target,
+            });
+            match step {
+                BootStep::Done => continue,
+                BootStep::GiveUp => {
+                    self.give_up(&entry);
+                    continue;
+                }
+                BootStep::Wait => {}
+                BootStep::Address => {
+                    if let Some(frame) = &frame {
+                        frame.load_url(Some(&CefString::from(target)));
+                        entry.tries -= 1;
+                    }
+                }
             }
-            let Some(frame) = browser.main_frame() else { continue };
-            // **A document already there is not this call's to replace**, even
-            // with no load seen for it.
-            if !CefStringUtf16::from(&frame.url()).to_string().is_empty() {
-                continue;
-            }
-            let target = if url.is_empty() { "about:blank" } else { url.as_str() };
-            frame.load_url(Some(&CefString::from(target)));
-            if tries > 1 {
-                self.boot.lock().unwrap_or_else(PoisonError::into_inner).push((
-                    tab,
-                    url,
-                    now.saturating_add(POPUP_BOOT_GRACE_MS),
-                    tries - 1,
-                ));
+            entry.due = now.saturating_add(POPUP_BOOT_GRACE_MS);
+            self.boot.lock().unwrap_or_else(PoisonError::into_inner).push(entry);
+        }
+    }
+
+    /// **One popup, one place.** Whatever path reports the popup gone, the
+    /// first release is the one that counts: a second would free a place a
+    /// different popup still holds.
+    fn release(&self, place: &Place) {
+        if place.released.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(held) = live.get_mut(&place.opener) {
+            *held = held.saturating_sub(1);
+            if *held == 0 {
+                live.remove(&place.opener);
             }
         }
     }
 
-    /// Give one opener's popup reservation back: its popup's browser ended, or
-    /// CEF never created it.
-    fn release(&self, opener: u16) {
-        let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(held) = live.get_mut(&opener) {
-            *held = held.saturating_sub(1);
-            if *held == 0 {
-                live.remove(&opener);
-            }
+    /// **A popup CEF never created gives its place back**, or a page that
+    /// opened one that failed would hold a count against itself for the life
+    /// of the host. The place is the one CEF's own popup id names.
+    fn aborted(&self, opener: u16, popup_id: i32) {
+        let place =
+            self.places.lock().unwrap_or_else(PoisonError::into_inner).remove(&(opener, popup_id));
+        if let Some(place) = place {
+            self.release(&place);
         }
+    }
+
+    /// Give one popup up: **one line naming what the person lost**, then the
+    /// tab goes so the service stops waiting on a page that will never exist.
+    fn give_up(&self, entry: &PopupBoot) {
+        let ended = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).end(entry.tab);
+        let Some(ended) = ended else { return };
+        let opener = ended.opener.unwrap_or_default();
+        eprintln!(
+            "cef host: a popup was given up (event_name cef_popup_given_up, profile {}, tab {}, \
+             opener {opener}, url {})",
+            self.profile, entry.tab, entry.url,
+        );
+        if let Some(place) = &ended.place {
+            self.release(place);
+        }
+        if let Some(host) = ended.browser.host() {
+            host.close_browser(1);
+        }
+        crate::control::emit(&crate::control::HostEvent::TabClosed { tab: entry.tab });
     }
 
     /// Drop one tab whose browser CEF is destroying.
     fn forget(&self, tab: u16) {
         let ended = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).end(tab);
         let Some(ended) = ended else { return };
-        if let Some(opener) = ended.opener {
-            self.release(opener);
+        if let Some(place) = &ended.place {
+            self.release(place);
         }
         crate::control::emit(&crate::control::HostEvent::TabClosed { tab });
     }
@@ -879,6 +1020,7 @@ impl HostRuntime {
                     browser,
                     opener: None,
                     loaded: Arc::clone(&parts.loaded),
+                    place: None,
                     pending: Arc::clone(&parts.pending),
                     stop: Arc::clone(&parts.stop),
                     key: Arc::clone(&parts.key),
@@ -913,10 +1055,10 @@ impl HostRuntime {
     fn close_tab(&self, tab: u16) {
         let removed = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).end(tab);
         let Some(removed) = removed else { return };
-        // **A popup's reservation goes back here too**, or a page that closes
-        // its own popups through the host would keep counting them.
-        if let Some(opener) = removed.opener {
-            self.popups.release(opener);
+        // **A popup's place goes back here too**, or a page that closes its
+        // own popups through the host would keep counting them.
+        if let Some(place) = &removed.place {
+            self.popups.release(place);
         }
         if let Some(host) = removed.browser.host() {
             host.close_browser(1);
@@ -1237,6 +1379,7 @@ pub fn run(args: &Args) -> ExitCode {
             downloads_dir: args.profile.clone(),
             tabs,
             live: Mutex::new(HashMap::new()),
+            places: Mutex::new(HashMap::new()),
             boot: Mutex::new(Vec::new()),
         }),
         recording,
@@ -1467,12 +1610,12 @@ cef::wrap_life_span_handler! {
             self.popups.adopt(browser.clone(), popup);
         }
 
-        /// **A popup CEF could not create gives its reservation back**, or a
-        /// page that opened one that failed would hold a count against itself
-        /// for the life of the host. The count is per opener, so which of the
-        /// opener's popups went does not matter here.
-        fn on_before_popup_aborted(&self, _browser: Option<&mut Browser>, _popup_id: i32) {
-            self.popups.release(self.tab);
+        /// **A popup CEF could not create gives its place back**, or a page
+        /// that opened one that failed would hold a count against itself for
+        /// the life of the host. **The place is the one CEF's own id names**,
+        /// so a report arriving twice cannot free a second place.
+        fn on_before_popup_aborted(&self, _browser: Option<&mut Browser>, popup_id: i32) {
+            self.popups.aborted(self.tab, popup_id);
         }
 
         fn do_close(&self, _browser: Option<&mut Browser>) -> i32 {
@@ -1487,14 +1630,14 @@ cef::wrap_life_span_handler! {
         /// every sign-in flow reads null as "the pop-up was blocked" - the tab
         /// substituted for it never helps, because the page has already
         /// failed. The popup is given a client of its own and joins the
-        /// profile's tabs once CEF has created it. **A blank start is not
-        /// special**: a popup opened at `about:blank` and navigated afterwards
-        /// is the shape half the OAuth libraries use.
+        /// profile's tabs once CEF has created it; its own document is the
+        /// host's to start, blank first and the address it asked for only
+        /// once the service has released it. See `PopupGate::bootstrap`.
         fn on_before_popup(
             &self,
             _browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
-            _popup_id: i32,
+            popup_id: i32,
             target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
             _target_disposition: WindowOpenDisposition,
@@ -1507,7 +1650,8 @@ cef::wrap_life_span_handler! {
             _no_javascript_access: Option<&mut i32>,
         ) -> i32 {
             let url = target_url.map(ToString::to_string).unwrap_or_default();
-            let Some((popup_client, admitted)) = self.popups.admit(self.tab, &url) else {
+            let Some((popup_client, admitted)) = self.popups.admit(self.tab, popup_id, &url)
+            else {
                 return 1;
             };
             if let Some(info) = window_info {
@@ -1608,6 +1752,7 @@ mod tests {
             downloads_dir: std::path::PathBuf::from("/tmp"),
             tabs: std::sync::Arc::new(std::sync::Mutex::new(super::Tabs::default())),
             live: std::sync::Mutex::new(std::collections::HashMap::new()),
+            places: std::sync::Mutex::new(std::collections::HashMap::new()),
             boot: std::sync::Mutex::new(Vec::new()),
         })
     }
@@ -1617,25 +1762,143 @@ mod tests {
     /// life once it had opened sixteen popups; a double release would let the
     /// cap be walked past.
     #[test]
-    fn the_popup_cap_counts_reservations_and_gives_them_back() {
+    fn the_popup_cap_counts_places_and_gives_them_back() {
         let name = format!("/forge-cef-test-cap-{}", std::process::id());
         let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
         let popups = gate(&ring);
         let mut held = Vec::new();
-        for _ in 0..super::MAX_POPUP_TABS {
-            held.push(popups.admit(1, "about:blank").expect("a popup within the cap"));
+        for id in 0..super::MAX_POPUP_TABS {
+            held.push(
+                popups
+                    .admit(1, i32::try_from(id).expect("a popup id"), "about:blank")
+                    .expect("a popup within the cap"),
+            );
         }
-        assert!(popups.admit(1, "about:blank").is_none(), "the cap refuses the next popup");
+        assert!(popups.admit(1, 99, "about:blank").is_none(), "the cap refuses the next popup");
         assert!(
-            popups.admit(2, "about:blank").is_some(),
+            popups.admit(2, 0, "about:blank").is_some(),
             "another page's sign-in is not refused by this page's popups",
         );
-        popups.release(1);
-        assert!(popups.admit(1, "about:blank").is_some(), "a released place is usable again");
-        popups.release(2);
-        popups.release(1);
+        popups.aborted(1, 7);
+        assert!(
+            popups.admit(1, 100, "about:blank").is_some(),
+            "an aborted popup's place is usable again"
+        );
         drop(held);
         crate::osr::Ring::unlink(&name);
+    }
+
+    /// **A second release of one popup frees no place.** CEF's abort, the
+    /// browser's close and the host's own give-up are different reports of
+    /// one popup, and giving the place back twice would free a place another
+    /// popup is still using - the cap walked past from the inside.
+    #[test]
+    fn a_second_release_of_one_popup_frees_no_place() {
+        let name = format!("/forge-cef-test-release-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        let mut held = Vec::new();
+        for id in 0..super::MAX_POPUP_TABS {
+            held.push(
+                popups
+                    .admit(1, i32::try_from(id).expect("a popup id"), "about:blank")
+                    .expect("a popup within the cap"),
+            );
+        }
+        // One popup's place, reported twice.
+        let (_, one) = &held[0];
+        popups.release(&one.place);
+        popups.release(&one.place);
+        assert!(
+            popups.admit(1, 100, "about:blank").is_some(),
+            "the popup's place is the one that comes back"
+        );
+        assert!(
+            popups.admit(1, 101, "about:blank").is_none(),
+            "the second release of the same popup freed nothing"
+        );
+        // **An abort frees exactly the place its popup id names.** A report
+        // for an id no place holds is answered, not counted against the page.
+        popups.aborted(1, 424_242);
+        assert!(
+            popups.admit(1, 102, "about:blank").is_none(),
+            "an abort for a popup that holds no place frees nothing"
+        );
+        drop(held);
+        crate::osr::Ring::unlink(&name);
+    }
+
+    /// **A popup's address is offered while nothing is in flight, and never
+    /// without end.** It is the one navigation this engine commits for a
+    /// popup an auto-attached client holds, so a load in flight is given its
+    /// time rather than navigated over, and a popup that never gets there is
+    /// given up instead of sitting blank for ever.
+    #[test]
+    fn a_popups_address_is_offered_once_its_load_is_clear() {
+        use super::{BootNow, BootStep, boot_step};
+        let state = |committed: &'static str, started: bool, loading: bool, tries: u8| BootNow {
+            committed,
+            started,
+            loading,
+            tries,
+            now: 100,
+            give_up_at: 1_000,
+            target: "https://auth/",
+        };
+        assert_eq!(
+            boot_step(&state("", false, true, 8)),
+            BootStep::Wait,
+            "a navigation in flight is given its time, never navigated over",
+        );
+        assert_eq!(
+            boot_step(&state("", false, false, 8)),
+            BootStep::Address,
+            "a popup that has not started gets its address",
+        );
+        assert_eq!(
+            boot_step(&state("", false, false, 0)),
+            BootStep::GiveUp,
+            "an address that never starts with no offers left gives the tab up",
+        );
+        assert_eq!(
+            boot_step(&state("about:blank", true, true, 8)),
+            BootStep::Wait,
+            "a popup does not navigate over a load in flight",
+        );
+        assert_eq!(
+            boot_step(&state("about:blank", true, false, 8)),
+            BootStep::Address,
+            "the address is offered while nothing is in flight",
+        );
+        assert_eq!(
+            boot_step(&state("https://auth/", true, false, 8)),
+            BootStep::Done,
+            "the address is up",
+        );
+        assert_eq!(
+            boot_step(&state("https://auth/redirect", true, false, 8)),
+            BootStep::Done,
+            "a redirect is a finish, never a reason to navigate back",
+        );
+        assert_eq!(
+            boot_step(&state("about:blank", true, false, 0)),
+            BootStep::GiveUp,
+            "an address that never starts with no offers left gives the tab up",
+        );
+        let mut blank = state("about:blank", true, false, 8);
+        blank.target = "about:blank";
+        assert_eq!(
+            boot_step(&blank),
+            BootStep::Done,
+            "a popup asked for about:blank is already where it was asked to be",
+        );
+        let mut late = state("about:blank", true, false, 8);
+        late.now = 1_000;
+        assert_eq!(
+            boot_step(&late),
+            BootStep::GiveUp,
+            "a popup that never gets there is given up at its deadline",
+        );
     }
 
     /// **A pid the signal cannot name is refused.** `0` probes the caller's

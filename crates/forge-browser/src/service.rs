@@ -203,10 +203,10 @@ pub struct BrowserService {
     /// stale seat set cannot rebuild `live` over a newer one. The generations
     /// are an order because the workspace serialises its captures.
     sweep_lock: AsyncMutex<u64>,
-    /// The profile keys a popup's birth asked to pair, for [`Self::start_pairing`].
-    pairing: mpsc::UnboundedSender<String>,
+    /// The popup births that asked for a pairing pass, for [`Self::start_pairing`].
+    pairing: mpsc::UnboundedSender<PairingRequest>,
     /// The pairing queue, until `start_pairing` takes it.
-    pairing_queue: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    pairing_queue: Mutex<Option<mpsc::UnboundedReceiver<PairingRequest>>>,
     /// Whether `start_pairing` has already spawned its consumer.
     pairing_started: AtomicBool,
 }
@@ -226,9 +226,13 @@ struct ProfilesConfig {
 
 impl BrowserService {
     /// A service at `root`, with the vendored driver stack read from `stack`.
-    pub fn at(root: PathBuf, stack: PathBuf) -> Self {
+    ///
+    /// **A popup's pairing pass starts here**, not at a boot call that a later
+    /// edit can drop: a birth that nothing pairs is a row the person never
+    /// sees, and nothing else in the service is guaranteed to run.
+    pub fn at(root: PathBuf, stack: PathBuf) -> Arc<Self> {
         let (pairing, pairing_queue) = mpsc::unbounded_channel();
-        Self {
+        let service = Arc::new(Self {
             store: Store::at(&root),
             root,
             stack,
@@ -249,7 +253,9 @@ impl BrowserService {
             pairing,
             pairing_queue: Mutex::new(Some(pairing_queue)),
             pairing_started: AtomicBool::new(false),
-        }
+        });
+        service.start_pairing();
+        service
     }
 
     /// Set the `[browser]` encoding pair every host spawned from here reads.
@@ -297,11 +303,22 @@ impl BrowserService {
         if self.pairing_started.swap(true, Ordering::AcqRel) {
             return;
         }
+        // **A service built outside a runtime cannot spawn its pass**, and
+        // leaving the flag down lets the first one inside a runtime start it.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            self.pairing_started.store(false, Ordering::Release);
+            return;
+        };
         let taken = self.pairing_queue.lock().unwrap_or_else(PoisonError::into_inner).take();
         let Some(mut queue) = taken else { return };
-        let service = Arc::clone(self);
-        tokio::spawn(async move {
-            while let Some(key) = queue.recv().await {
+        // **The task holds a Weak, not the service.** A test builds many
+        // services; a pass that owns one would keep every one of them, and
+        // its channel, alive for the process's life.
+        let weak = Arc::downgrade(self);
+        handle.spawn(async move {
+            while let Some(request) = queue.recv().await {
+                let Some(service) = weak.upgrade() else { break };
+                let key = request.key.clone();
                 let profile = service.profiles.lock().await.get(&key).cloned();
                 let Some(profile) = profile else { continue };
                 let (driver, port) = {
@@ -314,16 +331,37 @@ impl BrowserService {
                 let (Some(driver), Some(port)) = (driver, port) else { continue };
                 // **One turn per profile, like a call's**: a pairing pass and
                 // a call never pair against each other's listing.
-                let _turn = profile.call_lock.lock().await;
-                let outcome =
+                let outcome = {
+                    let _turn = profile.call_lock.lock().await;
                     tokio::time::timeout(PAIR_BOUND, service.reconcile(&profile, &driver, port))
-                        .await;
+                        .await
+                };
                 if outcome.is_err() {
                     tracing::debug!(
                         event_name = "browser_pair_slow",
                         profile = %key,
+                        tab = request.tab,
+                        opener = request.opener,
+                        url = %request.url,
                         "a popup's pairing pass outlasted its bound"
                     );
+                }
+                // **A popup's page appears only once its first document has
+                // started.** The birth that asked for this pass may have
+                // arrived before the driver could list its page, so a birth
+                // still waiting is tried again rather than left for a call
+                // that a person clicking a sign-in button never makes.
+                let waiting = profile
+                    .deferred_tab_events
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .iter()
+                    .any(|(_, event)| {
+                        matches!(event, HostEvent::TabCreated { opener: Some(_), .. })
+                    });
+                if waiting && tokio::time::Instant::now() < request.until {
+                    tokio::time::sleep(POPUP_PAIR_EVERY).await;
+                    let _ = service.pairing.send(request);
                 }
             }
         });
@@ -331,7 +369,7 @@ impl BrowserService {
 
     /// The service the server runs: profiles under forge's app-support tree
     /// and the vendored stack installed beside them.
-    pub fn installed() -> Result<Self, String> {
+    pub fn installed() -> Result<Arc<Self>, String> {
         let root = crate::host_bundle::app_support()?.join("browser");
         let store = Store::at(&root);
         // **The deletion can be gigabytes, so it does not hold up boot.** It
@@ -1776,22 +1814,31 @@ impl BrowserService {
             self.publish_rows(&profile.key).await;
             return;
         };
-        let mut events: Vec<(u64, HostEvent)> = {
+        // **The events this pass takes are held, not owned.** The pairing pass
+        // that runs here is bounded by a timeout, and a listing that never
+        // returns cancels the future with the births in hand; dropping them
+        // loses a popup for good, and the next pass then prunes its page as an
+        // orphan.
+        let taken: Vec<(u64, HostEvent)> = {
             let mut deferred =
                 profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner);
             std::mem::take(&mut *deferred)
         };
+        let mut held = TakenEvents { profile, events: Some(taken) };
         {
             let mut queue = profile.host_tab_events.lock().await;
             if let Some(receiver) = queue.as_mut() {
                 while let Ok(event) = receiver.try_recv() {
-                    events.push(event);
+                    if let Some(events) = held.events.as_mut() {
+                        events.push(event);
+                    }
                 }
             }
         }
+        let events = held.events.clone().unwrap_or_default();
         let mut unmatched = {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            pair_tab_events(&mut tabs, &listing, events, generation)
+            pair_tab_events(&mut tabs, &listing, events.clone(), generation)
         };
         if unmatched.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { .. })) {
             // **A CEF browser the host created after the driver attached is
@@ -1824,6 +1871,9 @@ impl BrowserService {
         } else {
             *profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner) = unmatched;
         }
+        // **The taken events are the deferred list's now**, so a cancellation
+        // from here on has nothing to put back.
+        held.events = None;
         let orphaned: Vec<String> = {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             // **A fresh host's current page is its boot tab, not an
@@ -3399,7 +3449,7 @@ pub struct Profile {
     /// Where a page's popup asks for a pairing pass. **A birth nothing asked
     /// for must still become a row**: a person clicking "Continue with
     /// Google" makes no tool call, so the service cannot wait for one.
-    pairing: mpsc::UnboundedSender<String>,
+    pairing: mpsc::UnboundedSender<PairingRequest>,
     state: AsyncMutex<State>,
     /// When a seat last used this profile.
     touch: Mutex<Touch>,
@@ -4425,13 +4475,19 @@ impl Profile {
                         );
                         let _ = tab_sender.send((
                             generation,
-                            HostEvent::TabCreated { tab, opener, url, request },
+                            HostEvent::TabCreated { tab, opener, url: url.clone(), request },
                         ));
                         // **A popup is nobody's call**: its row has to appear
                         // on its own, or the person who opened it sees the
                         // screen unchanged.
-                        if opener.is_some() {
-                            let _ = pairing.send(key.clone());
+                        if let Some(opener) = opener {
+                            let _ = pairing.send(PairingRequest {
+                                key: key.clone(),
+                                tab,
+                                opener,
+                                url: url.clone(),
+                                until: tokio::time::Instant::now() + POPUP_PAIR_UNTIL,
+                            });
                         }
                     }
                     HostEvent::TabClosed { tab } => {
@@ -4697,6 +4753,26 @@ const NAV_RETRY: Duration = Duration::from_millis(500);
 /// on a popup's row, and a listing that never returns is the wedge a stuck
 /// popup target used to cause.
 const PAIR_BOUND: Duration = Duration::from_secs(30);
+
+/// How often a pairing pass is retried while a popup's birth still waits for
+/// its page, and how long the retries last. **The page appears only after
+/// the popup's own first document starts**, so the birth is older than the
+/// listing that can name it.
+const POPUP_PAIR_EVERY: Duration = Duration::from_millis(250);
+/// A little past the host's own give-up, so a final pass reads the close that
+/// answers the birth instead of leaving it deferred until someone calls.
+const POPUP_PAIR_UNTIL: Duration = Duration::from_secs(12);
+
+/// One popup birth's pairing pass was asked for: the profile to pass over,
+/// and what the slow-pass line names.
+#[derive(Clone)]
+struct PairingRequest {
+    key: String,
+    tab: u16,
+    opener: u16,
+    url: String,
+    until: tokio::time::Instant,
+}
 
 /// Watch the focused tab's own navigations and publish the bar's arrows.
 ///
@@ -5298,6 +5374,30 @@ fn defer_events(profile: &Profile, events: &mut Vec<(u64, HostEvent)>, skip: Opt
     profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).extend(kept);
 }
 
+/// **The events one reconcile took, put back if that pass is cancelled.**
+/// The pairing pass is bounded by a timeout, and a listing that never returns
+/// cancels the future where it stands; without this the births held in the
+/// pass's own vector go with it, the popup never pairs, and the next pass
+/// prunes its page as an orphan.
+struct TakenEvents<'a> {
+    profile: &'a Profile,
+    events: Option<Vec<(u64, HostEvent)>>,
+}
+
+impl Drop for TakenEvents<'_> {
+    fn drop(&mut self) {
+        let Some(events) = self.events.take() else { return };
+        if events.is_empty() {
+            return;
+        }
+        self.profile
+            .deferred_tab_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(events);
+    }
+}
+
 /// Pair host tab events with the driver's pages: a `TabClosed` removes the
 /// tab, and a `TabCreated` takes the first page no tab claims. **A popup's
 /// page can appear in the driver's list a moment after the host reports it**,
@@ -5367,6 +5467,13 @@ fn pair_tab_events(
             other => unmatched.push((event_generation, other)),
         }
     }
+    // **A close and a birth can arrive in one pass**, the birth first. The
+    // close answers the birth, so it is dropped here rather than kept for a
+    // page the tab will never have.
+    unmatched.retain(|(event_generation, event)| {
+        !(*event_generation == generation
+            && matches!(event, HostEvent::TabCreated { tab, .. } if tabs.was_closed(*tab)))
+    });
     unmatched
 }
 
@@ -6811,8 +6918,7 @@ mod tests {
         use crate::driver::FileChooser;
 
         let dir = tempfile::tempdir().expect("a temp dir");
-        let service =
-            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
         let tab = seed_tab(&profile, &seat);
@@ -8369,7 +8475,7 @@ mod tests {
     /// A service whose idle bound has already passed: a profile an idle pass
     /// reads is one the clock says closes.
     fn idle_service(root: &std::path::Path) -> Arc<BrowserService> {
-        let service = Arc::new(BrowserService::at(root.to_owned(), root.join("stack")));
+        let service = BrowserService::at(root.to_owned(), root.join("stack"));
         service.configure_idle(0);
         service
     }
@@ -8486,7 +8592,7 @@ mod tests {
     async fn another_profile_is_served_while_one_is_torn_down() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
-        let service = Arc::new(BrowserService::at(root.clone(), root.join("stack")));
+        let service = BrowserService::at(root.clone(), root.join("stack"));
         let one = SessionSlot::lead("TestOrg", "proj");
         let two = SessionSlot::lead("OtherOrg", "proj");
         let a = service.entry(&one).await.expect("the first profile");
@@ -8610,7 +8716,7 @@ mod tests {
     /// A driver the call path can be tested against: it records the indices
     /// it selects and answers every tool with one text part.
     #[derive(Clone, Default)]
-    struct FakeDriver {
+    pub(crate) struct FakeDriver {
         tabs: Arc<Mutex<Vec<crate::tabs::DriverTab>>>,
         selected: Arc<Mutex<Vec<usize>>>,
         /// One listing that fails like a driver whose page outlived its
@@ -8634,7 +8740,7 @@ mod tests {
     }
 
     impl FakeDriver {
-        fn with_blank(target: &str) -> Self {
+        pub(crate) fn with_blank(target: &str) -> Self {
             let fake = Self::default();
             fake.tabs.lock().expect("the tabs").push(crate::tabs::DriverTab {
                 index: 0,
@@ -8690,7 +8796,7 @@ mod tests {
 
         /// **Every** listing answers the driver's own timeout: a retry on
         /// this same fake cannot pass, so only a real replacement can.
-        fn timeout_every_listing(&self) {
+        pub(crate) fn timeout_every_listing(&self) {
             self.slow_listing.store(true, Ordering::Release);
         }
 
@@ -9600,7 +9706,8 @@ mod tests {
 /// re-read spares the same pages, so the branch was redundant.
 #[cfg(test)]
 mod server_guards {
-    use super::{BrowserService, Profile};
+    use super::tests::FakeDriver;
+    use super::{BrowserService, Profile, pair_tab_events};
     use crate::control::HostEvent;
     use crate::driver::TabDriver;
     use crate::tabs::DriverTab;
@@ -9723,8 +9830,7 @@ mod server_guards {
     #[tokio::test]
     async fn a_reconcile_that_lost_its_host_keeps_an_event_deferred_under_it() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let service =
-            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
         let generation = profile.host_generation.load(Ordering::Acquire);
         let queue = profile.host_tab_events.lock().await;
@@ -9761,8 +9867,7 @@ mod server_guards {
     #[tokio::test]
     async fn a_reconcile_on_one_host_replaces_the_events_deferred_under_it() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let service =
-            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
         let generation = profile.host_generation.load(Ordering::Acquire);
         let queue = profile.host_tab_events.lock().await;
@@ -9787,6 +9892,92 @@ mod server_guards {
             !deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
             "a stable pass kept an event it did not pair: {deferred:?}"
         );
+    }
+
+    /// **A pairing pass that runs out of time puts its births back.** The
+    /// pass is bounded by a timeout, and a driver recovery that never answers
+    /// cancels the future where it stands; a birth taken and dropped with it
+    /// is a popup that never pairs, and the next pass prunes its page as an
+    /// orphan.
+    #[tokio::test]
+    async fn a_cancelled_pairing_pass_puts_its_births_back() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let installed = FakeDriver::with_blank("T1");
+        service.install_fake(&seat, installed).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        let (births, taken) = tokio::sync::mpsc::unbounded_channel();
+        *profile.host_tab_events.lock().await = Some(taken);
+        births
+            .send((
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "u".to_owned(),
+                    request: None,
+                },
+            ))
+            .expect("the birth is queued");
+
+        // **The driver recovery is the pass's slow step**, and it takes this
+        // lock first: holding it parks the pass where a slow recovery would,
+        // with the births already taken.
+        let rebuilding = profile.rebuild.lock().await;
+        let listing = driver(Vec::new(), None);
+        let pass = tokio::time::timeout(
+            Duration::from_millis(250),
+            service.reconcile(&profile, &listing, 9),
+        )
+        .await;
+        drop(rebuilding);
+        assert!(pass.is_err(), "the pass was not the cancelled one the test means to pin");
+
+        let deferred =
+            profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert!(
+            deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { tab: 2, .. })),
+            "a cancelled pass ate the popup's birth: {deferred:?}"
+        );
+    }
+
+    /// **A birth for a tab the host has ended is answered, not kept.** A popup
+    /// the host gave up closed before its page existed, and a birth kept for
+    /// it would be re-deferred on every pass - a driver recovery each time,
+    /// for a page that will never be listed.
+    #[test]
+    fn a_birth_for_a_closed_tab_is_dropped() {
+        let mut tabs = crate::tabs::TabRegistry::default();
+        tabs.close(9);
+        let birth =
+            HostEvent::TabCreated { tab: 9, opener: Some(1), url: "u".to_owned(), request: None };
+        let waiting = pair_tab_events(&mut tabs, &[], vec![(1, birth)], 1);
+        assert!(waiting.is_empty(), "a birth for a closed tab is dropped: {waiting:?}");
+
+        // The control: the same birth for a tab nobody closed waits.
+        let live =
+            HostEvent::TabCreated { tab: 10, opener: Some(1), url: "u".to_owned(), request: None };
+        let waiting = pair_tab_events(&mut tabs, &[], vec![(1, live.clone())], 1);
+        assert_eq!(waiting, vec![(1, live)], "a birth with no page and no close waits");
+    }
+
+    /// **The service starts its own pairing pass.** A birth with no call
+    /// behind it has to become a row on its own, and a pass started only by
+    /// the boot's one call is a line a later edit can drop without a test
+    /// going red.
+    #[tokio::test]
+    async fn the_pairing_pass_starts_with_the_service() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while service.pairing_queue.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the service's construction starts the pairing pass");
     }
 
     /// **The host can move again between closes**, and a successor normally
@@ -9862,8 +10053,7 @@ mod server_guards {
     #[tokio::test]
     async fn a_sweep_waits_for_the_one_in_front_of_it() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let service =
-            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let _profile = profile_for_test(&service).await;
         let seat = SessionSlot::lead("O", "p");
 
