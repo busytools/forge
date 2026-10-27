@@ -5514,6 +5514,7 @@ provider = "anthropic"
             id: "F1".to_owned(),
             name: "notes.txt".to_owned(),
             url_private: "https://files.slack.com/x".to_owned(),
+            shares: Default::default(),
         }];
 
         let prose = fresh_prose(&[message]);

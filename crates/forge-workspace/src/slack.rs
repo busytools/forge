@@ -356,6 +356,50 @@ impl Workspace {
         }
     }
 
+    /// Record a message forge posted, so the sweep refuses it by identity
+    /// rather than by author. forge posts as the user, so this is the only
+    /// thing that tells its own words from the ones Ved typed.
+    pub(crate) fn record_slack_own_post(&self, workspace: &str, conversation: &str, ts: &str) {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|now| now.as_secs())
+            .unwrap_or_default();
+        if let Err(error) =
+            crate::store::slack::record_own_post(db, workspace, conversation, ts, now)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                workspace,
+                conversation = %conversation,
+                %error,
+                "writing a Slack own-post ledger row failed",
+            );
+        }
+    }
+
+    /// Whether forge posted this message itself. A ledger that cannot be
+    /// read answers `false`: a self-post delivered once costs what a lost
+    /// ledger costs, while refusing would drop what the user wrote.
+    pub(crate) fn slack_own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return false };
+        match crate::store::slack::own_post(db, workspace, conversation, ts) {
+            Ok(own) => own,
+            Err(error) => {
+                tracing::debug!(
+                    target: "forge_workspace::slack",
+                    workspace,
+                    conversation = %conversation,
+                    %error,
+                    "reading the Slack own-post ledger failed; the message is treated as not ours",
+                );
+                false
+            }
+        }
+    }
+
     /// Fill in the display name on this workspace's conversation
     /// subscriptions that have none. A durable record is written through
     /// the store; an ephemeral one is named in memory only. Only unnamed
@@ -1273,6 +1317,10 @@ impl SlackHost for SlackSubsystemHost {
             &message.ts,
             Some(&message.conversation_label),
         )
+    }
+
+    fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
+        self.0.upgrade().is_some_and(|ws| ws.slack_own_post(workspace, conversation, ts))
     }
 
     fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool {

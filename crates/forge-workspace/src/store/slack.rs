@@ -267,6 +267,82 @@ pub fn remove_thread(
     Ok(existed)
 }
 
+/// The newest messages forge posted itself, keyed
+/// `workspace\0conversation\0ts` and stamped with the seconds it was
+/// recorded. The sweep refuses a message whose ts is here, because forge
+/// posts as the user and the author can no longer tell them apart.
+const OWN_POSTS: TableDefinition<&str, u64> = TableDefinition::new("slack_own_posts");
+
+/// A conversation's newest own posts kept, and how long one is kept at
+/// all. Both bounds only have to outlive the sweeps that could re-offer a
+/// post; a pruned row costs at most one self-delivery, the same cost as a
+/// lost ledger.
+const OWN_POST_KEEP: usize = 200;
+const OWN_POST_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
+
+fn own_post_prefix(workspace: &str, conversation: &str) -> String {
+    format!("{workspace}\u{0}{conversation}\u{0}")
+}
+
+fn own_post_key(workspace: &str, conversation: &str, ts: &str) -> String {
+    format!("{workspace}\u{0}{conversation}\u{0}{ts}")
+}
+
+/// Whether forge posted this message.
+pub fn own_post(db: &Db, workspace: &str, conversation: &str, ts: &str) -> anyhow::Result<bool> {
+    let key = own_post_key(workspace, conversation, ts);
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(OWN_POSTS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(table.get(key.as_str())?.is_some())
+}
+
+/// Record a message forge posted at `now`, pruning the conversation's
+/// rows past either bound.
+pub fn record_own_post(
+    db: &Db,
+    workspace: &str,
+    conversation: &str,
+    ts: &str,
+    now: u64,
+) -> anyhow::Result<()> {
+    let prefix = own_post_prefix(workspace, conversation);
+    let key = own_post_key(workspace, conversation, ts);
+    let cutoff = now.saturating_sub(OWN_POST_MAX_AGE_SECS);
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(OWN_POSTS)?;
+        let mut kept: Vec<String> = Vec::new();
+        let mut expired: Vec<String> = Vec::new();
+        for entry in table.iter()? {
+            let (stored, recorded) = entry?;
+            let stored = stored.value();
+            if !stored.starts_with(&prefix) {
+                continue;
+            }
+            if recorded.value() < cutoff {
+                expired.push(stored.to_owned());
+            } else {
+                kept.push(stored.to_owned());
+            }
+        }
+        for key in expired {
+            table.remove(key.as_str())?;
+        }
+        // Keys are the timestamps, so the vector is oldest first.
+        let excess = kept.len().saturating_add(1).saturating_sub(OWN_POST_KEEP);
+        for key in kept.drain(..excess) {
+            table.remove(key.as_str())?;
+        }
+        table.insert(key.as_str(), now)?;
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +515,70 @@ mod tests {
             "the parent ts is part of the key, not an overwrite",
         );
         assert_eq!(thread(&db, "acme", "C1", "999.9").expect("get"), None);
+    }
+
+    #[test]
+    fn an_own_post_is_known_only_in_the_conversation_it_was_recorded() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        record_own_post(&db, "acme", "C1", "100.000001", 1_700_000_000).expect("record");
+
+        assert!(
+            own_post(&db, "acme", "C1", "100.000001").expect("read"),
+            "the recorded ts is ours"
+        );
+        assert!(
+            !own_post(&db, "acme", "C1", "100.000002").expect("read"),
+            "a ts never recorded is not"
+        );
+        assert!(
+            !own_post(&db, "acme", "C2", "100.000001").expect("read"),
+            "another conversation is not"
+        );
+        assert!(
+            !own_post(&db, "beta", "C1", "100.000001").expect("read"),
+            "another workspace is not"
+        );
+        assert!(
+            !own_post(&db, "acme", "C1", "1700000000.0001").expect("read"),
+            "the ts is compared verbatim, never as a number",
+        );
+    }
+
+    /// The ledger is bounded two ways: a conversation keeps only its newest
+    /// rows, and a row past the age is dropped. Without either the table
+    /// grows for the process's whole life.
+    #[test]
+    fn the_ledger_keeps_only_recent_own_posts() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let now = 1_700_000_000;
+        // Slack ts shape: the same-width seconds prefix, so key order and
+        // time order agree the way they do on the wire.
+        let ts = |offset: u64| format!("{}.000001", now + offset);
+
+        for offset in 0..OWN_POST_KEEP as u64 {
+            record_own_post(&db, "acme", "C1", &ts(offset), now).expect("record");
+        }
+        record_own_post(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64), now).expect("record");
+
+        assert!(
+            !own_post(&db, "acme", "C1", &ts(0)).expect("read"),
+            "the oldest row past the count bound is dropped",
+        );
+        assert!(
+            own_post(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64 - 1)).expect("read"),
+            "the newest rows under the bound stay",
+        );
+
+        let old = now.saturating_sub(OWN_POST_MAX_AGE_SECS + 1);
+        record_own_post(&db, "acme", "C1", &ts(9_000), old).expect("record an old row");
+        record_own_post(&db, "acme", "C1", &ts(9_001), now).expect("record a fresh row");
+        assert!(
+            !own_post(&db, "acme", "C1", &ts(9_000)).expect("read"),
+            "a row past the age bound is dropped on the next write",
+        );
     }
 
     #[test]

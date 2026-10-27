@@ -125,6 +125,11 @@ pub trait SlackHost: Send + Sync {
     /// only seeing the ping. Returns whether a record was added: the host
     /// does nothing when that owner already covers the conversation.
     fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool;
+
+    /// Whether forge posted this message itself, read from the outbound
+    /// ledger by its ts. This is what the sweep refuses: forge posts as
+    /// the user, so the author says nothing about who wrote the words.
+    fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool;
 }
 
 /// The Web API calls this connector makes, behind a trait so a sweep or
@@ -361,17 +366,32 @@ pub fn mentions(text: &str, user_id: &str) -> bool {
     text.contains(&format!("<@{user_id}>"))
 }
 
-/// Whether one subscription wants this message. A message the user
-/// authored himself is never wanted, or an agent answering in Slack would
-/// answer itself.
+/// The `ts` of the message a file was shared as in `conversation`.
+/// `files.completeUploadExternal` answers no message `ts`; the file's own
+/// shares are where `files.info` names it, so the attachment path asks
+/// once more to ledger what it just posted.
+pub fn shared_message_ts(file: &SlackFile, conversation: &str) -> Option<String> {
+    file.shares
+        .public
+        .get(conversation)
+        .or_else(|| file.shares.private.get(conversation))
+        .and_then(|shares| shares.iter().map(|share| share.ts.as_str()).max())
+        .map(str::to_owned)
+}
+
+/// Whether one subscription wants this message. forge posts as the user, so
+/// a message is refused by identity - its ts in the outbound ledger - and
+/// never by author: refusing every message the user wrote drops what Ved
+/// types himself, and a thread he is in then reads one-sided.
 fn matches(
     subscription: &SlackSubscription,
     conversation: &SlackConversation,
-    author: Option<&str>,
     text: &str,
+    ts: &str,
     user_id: &str,
+    own_post: &dyn Fn(&str) -> bool,
 ) -> bool {
-    if author == Some(user_id) {
+    if own_post(ts) {
         return false;
     }
     match &subscription.target {
@@ -392,11 +412,12 @@ fn matches(
 pub fn wants(
     subscriptions: &[SlackSubscription],
     conversation: &SlackConversation,
-    author: Option<&str>,
     text: &str,
+    ts: &str,
     user_id: &str,
+    own_post: &dyn Fn(&str) -> bool,
 ) -> bool {
-    subscriptions.iter().any(|s| matches(s, conversation, author, text, user_id))
+    subscriptions.iter().any(|s| matches(s, conversation, text, ts, user_id, own_post))
 }
 
 /// Whether any subscription names this conversation, ignoring the mode and
@@ -978,9 +999,9 @@ pub(crate) async fn sweep_scope(
     }
     let user_id = host.user_id(workspace).unwrap_or_default();
     if user_id.is_empty() {
-        // The own-message filter needs the id, and the agent's own posts
-        // go out as the user - sweeping without it would echo those
-        // replies back into the session. Fail quiet-but-visible rather
+        // A mentions-only subscription matches on the id, and the thread
+        // walk reads participation from it; sweeping without either would
+        // miss every own-engagement signal. Fail quiet-but-visible rather
         // than sweep half-blind; the host retries the id in the
         // background.
         tracing::warn!(
@@ -1275,6 +1296,14 @@ pub(crate) async fn sweep_scope(
 
         let label =
             conversation.name.clone().or_else(|| conversation.user.clone()).unwrap_or_default();
+        // The ledger is per conversation, so one read per message serves
+        // every subscription watching it.
+        let own_posts: HashSet<&str> = batch
+            .iter()
+            .map(|message| message.ts.as_str())
+            .filter(|ts| host.own_post(workspace, &conversation.id, ts))
+            .collect();
+        let own_post = |ts: &str| own_posts.contains(ts);
         // One block per subscription that wants this conversation's news:
         // a lead and a worker watching one channel are two destinations,
         // and one shared block would starve whichever sorted second. No
@@ -1288,9 +1317,10 @@ pub(crate) async fn sweep_scope(
                     matches(
                         subscription,
                         conversation,
-                        message.user.as_deref(),
                         &message.text,
+                        &message.ts,
                         &user_id,
+                        &own_post,
                     )
                 })
                 .collect();
@@ -1446,8 +1476,9 @@ pub(crate) async fn sweep_scope(
                 // Replies never appear in history, so this walk is the one
                 // path that sees the agent's own answers to the threads it
                 // anchors - and they must not come back, or an agent
-                // answering the echo answers itself.
-                if reply.user.as_deref() == Some(user_id.as_str()) {
+                // answering the echo answers itself. Identity, not author:
+                // Ved's own replies in the thread are his to see.
+                if host.own_post(workspace, &conversation.id, &reply.ts) {
                     continue;
                 }
                 // Resolved the same way the conversation batch's are: a
@@ -1549,9 +1580,9 @@ pub(crate) async fn sweep_mentions(
     if mention_subscriptions.is_empty() {
         return Ok(SweepOutcome { delivered: 0, ..Default::default() });
     }
-    // Without the authenticated user's id there is no token to search
-    // for, and no way to tell the user's own messages from anyone else's.
-    // Fail quiet-but-visible rather than sweeping half-blind.
+    // The query is the authenticated user's own mention token, so without
+    // their id there is nothing to search for. Fail quiet-but-visible
+    // rather than sweeping half-blind.
     let Some(user_id) = host.user_id(workspace).filter(|id| !id.is_empty()) else {
         tracing::warn!(
             target: "forge_connectors::slack",
@@ -1603,9 +1634,10 @@ pub(crate) async fn sweep_mentions(
 
         for hit in &page.matches {
             // The query is the literal mention token, so it matches the
-            // user's own outgoing messages too - and every reply the agent
-            // posts that quotes one. Without this the sweep self-echoes.
-            if hit.user.as_deref() == Some(user_id.as_str()) {
+            // agent's own posts that quote one. The ledger is what refuses
+            // those; a message Ved wrote himself mentioning himself is his
+            // own conversation and is delivered.
+            if host.own_post(workspace, &hit.conversation_id, &hit.ts) {
                 continue;
             }
             if !is_newer(&hit.ts, watermark.as_deref()) {
@@ -2804,11 +2836,21 @@ mod tests {
         assert!(mentions("<@U123>", "U123"), "a mention with no surrounding text still counts");
     }
 
+    /// A message forge did not post: nothing in the outbound ledger.
+    fn not_ours(_ts: &str) -> bool {
+        false
+    }
+
+    /// A message forge posted: every ts is in the outbound ledger.
+    fn ours(_ts: &str) -> bool {
+        true
+    }
+
     #[test]
     fn a_dm_subscription_wants_every_dm() {
         let subs = vec![sub_for(SlackSubscriptionTarget::DirectMessages)];
         let dm = conversation_im("D1", "U9");
-        assert!(wants(&subs, &dm, Some("U9"), "anything", "U1"));
+        assert!(wants(&subs, &dm, "anything", "100.1", "U1", &not_ours));
     }
 
     #[test]
@@ -2819,21 +2861,41 @@ mod tests {
             mode: SlackWatchMode::MentionsOnly,
         })];
         let channel = conversation_channel("C1", "general");
-        assert!(!wants(&subs, &channel, Some("U9"), "no mention here", "U1"));
-        assert!(wants(&subs, &channel, Some("U9"), "ping <@U1>", "U1"));
+        assert!(!wants(&subs, &channel, "no mention here", "100.1", "U1", &not_ours));
+        assert!(wants(&subs, &channel, "ping <@U1>", "100.1", "U1", &not_ours));
     }
 
+    /// forge posts as the user, so refusing by author refuses the messages
+    /// he types himself - the bug this test reproduces. Only a ts in the
+    /// outbound ledger is forge's own post.
     #[test]
-    fn the_users_own_messages_are_never_delivered() {
-        // Otherwise the connector echoes back everything the user says, and an
-        // agent answering in Slack would answer itself.
+    fn a_self_authored_message_with_an_unledgered_ts_is_delivered() {
         let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
             id: "C1".to_owned(),
             name: None,
             mode: SlackWatchMode::All,
         })];
         let channel = conversation_channel("C1", "general");
-        assert!(!wants(&subs, &channel, Some("U1"), "my own words", "U1"));
+        assert!(
+            wants(&subs, &channel, "what I typed", "1700000000.000100", "U1", &not_ours),
+            "a thread Ved talks in must not read one-sided",
+        );
+    }
+
+    /// The agent must never answer itself: forge's own post carries the ts
+    /// it recorded at send time, so the ledger is what refuses it.
+    #[test]
+    fn a_ledgered_ts_is_refused_however_it_is_authored() {
+        let subs = vec![sub_for(SlackSubscriptionTarget::Conversation {
+            id: "C1".to_owned(),
+            name: None,
+            mode: SlackWatchMode::All,
+        })];
+        let channel = conversation_channel("C1", "general");
+        assert!(
+            !wants(&subs, &channel, "the agent's own words", "1700000000.000100", "U1", &ours),
+            "a post forge made comes back to it unless the ledger refuses it",
+        );
     }
 
     /// A mention target sweeps by search rather than by conversation, so
@@ -2843,8 +2905,8 @@ mod tests {
     fn a_mention_target_is_not_a_conversation_target() {
         let subs = vec![sub_for(SlackSubscriptionTarget::Mentions)];
         let channel = conversation_channel("C1", "general");
-        assert!(!wants(&subs, &channel, Some("U9"), "no mention here", "U1"));
-        assert!(!wants(&subs, &channel, Some("U9"), "a mention <@U1>", "U1"));
+        assert!(!wants(&subs, &channel, "no mention here", "100.1", "U1", &not_ours));
+        assert!(!wants(&subs, &channel, "a mention <@U1>", "100.1", "U1", &not_ours));
     }
 
     #[test]
@@ -2854,7 +2916,14 @@ mod tests {
             name: None,
             mode: SlackWatchMode::All,
         })];
-        assert!(!wants(&subs, &conversation_channel("C2", "other"), Some("U9"), "hi", "U1"));
+        assert!(!wants(
+            &subs,
+            &conversation_channel("C2", "other"),
+            "hi",
+            "100.1",
+            "U1",
+            &not_ours
+        ));
     }
 
     #[test]
@@ -3046,6 +3115,8 @@ mod tests {
         deliver_attempts: std::sync::Mutex<usize>,
         /// Followed threads keyed `workspace/conversation/parent`.
         threads: std::sync::Mutex<HashMap<String, SlackThreadRecord>>,
+        /// The outbound ledger, keyed `workspace/conversation/ts`.
+        own_posts: std::sync::Mutex<HashSet<String>>,
     }
 
     fn conversation_for(id: &str) -> SlackConversation {
@@ -3143,6 +3214,11 @@ mod tests {
 
         fn seed_user_name(&self, user: &str, name: &str) {
             self.user_names.lock().expect("lock").insert(user.to_owned(), name.to_owned());
+        }
+
+        /// Put a message in the outbound ledger: forge posted it.
+        fn record_own_post(&self, workspace: &str, conversation: &str, ts: &str) {
+            self.own_posts.lock().expect("lock").insert(format!("{workspace}/{conversation}/{ts}"));
         }
 
         fn rate_limit_user_info(&self, retry_after: Duration) {
@@ -3432,6 +3508,13 @@ mod tests {
             self.auto_subscribed.lock().expect("lock").push(message.conversation.clone());
             true
         }
+
+        fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
+            self.own_posts
+                .lock()
+                .expect("lock")
+                .contains(&format!("{workspace}/{conversation}/{ts}"))
+        }
     }
 
     #[async_trait::async_trait]
@@ -3567,7 +3650,12 @@ mod tests {
         }
 
         async fn file_info(&self, _id: &str) -> Result<SlackFile, SlackError> {
-            Ok(SlackFile { id: String::new(), name: String::new(), url_private: String::new() })
+            Ok(SlackFile {
+                id: String::new(),
+                name: String::new(),
+                url_private: String::new(),
+                shares: Default::default(),
+            })
         }
 
         async fn get_upload_url(
@@ -3771,6 +3859,29 @@ mod tests {
         let file = decode_file(body).expect("decodes");
         assert_eq!(file.name, "notes.txt");
         assert_eq!(file.url_private, "https://files.slack.com/x");
+    }
+
+    /// A posted file's message is named only on the file's shares: the
+    /// upload call answers no message ts, so this is what the attachment
+    /// path ledgers.
+    #[test]
+    fn a_files_shares_name_the_message_it_was_posted_as() {
+        let body = r#"{"ok":true,"file":{"id":"F1","name":"notes.txt",
+            "shares":{
+              "public":{"C1":[{"ts":"1700000000.000100"}]},
+              "private":{"C2":[{"ts":"1700000000.000200"}]}}}}"#;
+        let file = decode_file(body).expect("decodes");
+        assert_eq!(
+            shared_message_ts(&file, "C1").as_deref(),
+            Some("1700000000.000100"),
+            "a public share names its channel's message",
+        );
+        assert_eq!(
+            shared_message_ts(&file, "C2").as_deref(),
+            Some("1700000000.000200"),
+            "and a private share does too",
+        );
+        assert_eq!(shared_message_ts(&file, "C3"), None, "a conversation it was not shared in");
     }
 
     #[test]
@@ -4130,6 +4241,33 @@ mod tests {
         assert!(host.batches().is_empty(), "and must not call the seam at all");
     }
 
+    /// forge posts as the user, so the author cannot decide this: a
+    /// message Ved typed in a watched conversation is delivered, and only
+    /// the ts forge recorded when it posted is refused.
+    #[tokio::test]
+    async fn a_sweep_delivers_what_the_user_typed_and_refuses_what_forge_posted() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "100.0");
+        host.seed_history(
+            "C1",
+            vec![
+                history_message("200.2", "U1", "the agent's own post"),
+                history_message("200.1", "U1", "what Ved typed"),
+            ],
+        );
+        host.record_own_post("acme", "C1", "200.2");
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
+        assert_eq!(
+            texts,
+            vec!["what Ved typed".to_owned()],
+            "the ledger refuses the agent's post by ts; the user's own words arrive",
+        );
+    }
+
     /// Two conversations with news are two blocks, each carrying its own
     /// conversation's members. One block holding both would attribute one
     /// conversation's messages to the other.
@@ -4315,20 +4453,28 @@ mod tests {
     }
 
     /// The search query is the literal mention token, so it matches the
-    /// user's own outgoing messages as well - and every reply the agent
-    /// posts that quotes one. With the measured indexing lag that is a
-    /// self-echo loop.
+    /// agent's own posts that quote one. The ledger refuses those, at the
+    /// indexing lag that would otherwise make a self-echo loop; a message
+    /// Ved wrote himself is delivered, or his own side of the thread is
+    /// missing.
     #[tokio::test]
-    async fn the_mentions_own_author_is_never_delivered() {
+    async fn the_mention_sweep_refuses_its_own_ledgered_post_and_delivers_the_users_own() {
         let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
-        let mut own = search_match("300.2", "C1", "mine <@U1>");
-        own.user = Some("U1".to_owned());
-        host.seed_search(vec![search_match("200.1", "C1", "theirs <@U1>"), own]);
+        let mut agent_post = search_match("300.2", "C1", "mine <@U1>");
+        agent_post.user = Some("U1".to_owned());
+        let mut user_post = search_match("250.1", "C1", "what I wrote <@U1>");
+        user_post.user = Some("U1".to_owned());
+        host.seed_search(vec![search_match("200.1", "C1", "theirs <@U1>"), agent_post, user_post]);
+        host.record_own_post("acme", "C1", "300.2");
 
         let outcome = sweep_mentions(&host, &host, "acme").await.expect("sweep");
-        assert_eq!(outcome.delivered, 1, "only the other author's mention arrives");
+        assert_eq!(outcome.delivered, 2, "the agent's post is refused; every other hit arrives");
         let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
         assert!(!texts.iter().any(|t| t == "mine <@U1>"), "no self-echo: {texts:?}");
+        assert!(
+            texts.iter().any(|t| t == "what I wrote <@U1>"),
+            "the user's own mention is delivered: {texts:?}",
+        );
     }
 
     /// A dispatch failure must leave the cursor where it was, so the next
@@ -4509,8 +4655,13 @@ mod tests {
         let texts: Vec<_> = host.delivered().into_iter().map(|m| m.text).collect();
         assert_eq!(
             texts,
-            vec!["root".to_owned(), "reply one".to_owned(), "reply two".to_owned()],
-            "the parent must not be delivered once per page",
+            vec![
+                "root".to_owned(),
+                "the user's own reply".to_owned(),
+                "reply one".to_owned(),
+                "reply two".to_owned(),
+            ],
+            "the parent must not repeat per page, and the user's own reply rides in",
         );
     }
 
@@ -5026,7 +5177,11 @@ mod tests {
         let root = history_message("100.0", "U1", "deploy is green");
         host.seed_history("C1", vec![root]);
         sweep(&host, &host, "acme").await.expect("the root's sweep");
-        assert!(host.delivered().is_empty(), "his own message is not delivered to him");
+        assert_eq!(
+            host.delivered()[0].ts,
+            "100.0",
+            "his own message is delivered: it is his side of the thread",
+        );
         assert!(
             host.followed_threads("acme", "C1").is_empty(),
             "a message with no replies anchors nothing",
@@ -5078,9 +5233,8 @@ mod tests {
     }
 
     /// A thread the user started is one he is in, and Slack subscribes him
-    /// to its replies. His own message is never delivered, so nothing else
-    /// anchors the thread, and a colleague's answer under it would be
-    /// invisible for good.
+    /// to its replies. His own message is delivered now, and the colleague
+    /// answering it must arrive too.
     #[tokio::test]
     async fn a_colleagues_reply_under_the_users_own_message_is_delivered() {
         let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
@@ -5094,7 +5248,7 @@ mod tests {
         host.set_watermark("acme", "C1", "050.0");
         host.seed_history("C1", vec![mine.clone()]);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
-        assert!(host.delivered().is_empty(), "his own message is never delivered to him");
+        assert_eq!(host.delivered()[0].ts, "100.0", "his own message is delivered");
 
         host.seed_history("C1", vec![]);
         host.seed_replies("C1", "100.0", vec![mine, reply("150.0", "100.0", "U8", "the answer")]);
@@ -5538,10 +5692,11 @@ mod tests {
     }
 
     /// Replies never appear in history, so this walk is the one path that
-    /// sees the agent's own answers to the threads it anchors - and they
-    /// must not come back, or an agent answering the echo answers itself.
+    /// sees the agent's own answers to the threads it anchors - and a
+    /// ledgered one must not come back, or an agent answering the echo
+    /// answers itself. Ved's own reply carries no ledger row and arrives.
     #[tokio::test]
-    async fn the_agents_own_replies_are_never_delivered_back_by_the_thread_walk() {
+    async fn the_thread_walk_refuses_the_agents_ledgered_reply_not_the_users_own() {
         let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
             "acme",
             "forge",
@@ -5553,6 +5708,7 @@ mod tests {
         host.seed_history("C1", vec![parent.clone()]);
         seed_user_participation(&host, &parent);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
+        host.record_own_post("acme", "C1", "150.0");
 
         host.seed_replies(
             "C1",
@@ -5561,7 +5717,7 @@ mod tests {
                 parent,
                 history_message("150.0", "U1", "the agent's own reply"),
                 history_message("140.0", "U8", "someone else's reply"),
-                history_message("105.0", "U1", "the user's own reply"),
+                history_message("160.0", "U1", "what Ved typed"),
             ],
         );
         sweep(&host, &host, "acme").await.expect("follow-up sweep");
@@ -5570,6 +5726,10 @@ mod tests {
         assert!(
             !delivered.iter().any(|message| message.text == "the agent's own reply"),
             "the agent's own reply must not echo back: {delivered:?}",
+        );
+        assert!(
+            delivered.iter().any(|message| message.text == "what Ved typed"),
+            "the user's own reply is delivered: {delivered:?}",
         );
         assert!(
             delivered.iter().any(|message| message.text == "someone else's reply"),

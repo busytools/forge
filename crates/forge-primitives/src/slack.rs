@@ -3,6 +3,7 @@
 //! `users.conversations` reports, and the subscription record a session
 //! creates.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -194,13 +195,32 @@ pub struct SlackFile {
     pub name: String,
     #[serde(default)]
     pub url_private: String,
+    /// Where the file was shared. The upload call answers no message `ts`,
+    /// so this is the only place a posted file's message is named.
+    #[serde(default)]
+    pub shares: SlackFileShares,
+}
+
+/// A file's shares, keyed by visibility and then by conversation id.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SlackFileShares {
+    #[serde(default)]
+    pub public: HashMap<String, Vec<SlackFileShare>>,
+    #[serde(default)]
+    pub private: HashMap<String, Vec<SlackFileShare>>,
+}
+
+/// One message a file was shared as, in one conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SlackFileShare {
+    pub ts: String,
 }
 
 /// One hit from `search.messages`. `conversation_name` is absent on a DM,
 /// which has no name rather than an empty one. `user` is the author's id,
-/// which the mention sweep needs for the own-message filter - `username`
-/// is only a handle. A file-share with no text is a real hit, so the
-/// files ride along for delivery and `slack__attachment`.
+/// which the delivered block carries - `username` is only a handle. A
+/// file-share with no text is a real hit, so the files ride along for
+/// delivery and `slack__attachment`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SlackSearchMatch {
     pub ts: String,
