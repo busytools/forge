@@ -997,16 +997,19 @@ impl SlackFacade for ProdSlackFacade {
         api.post_bytes(&url, bytes)
             .await
             .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?;
-        // The upload call can put the message in history; its own guard
-        // covers that call, and a fresh one covers the shares read below -
-        // two calls, two budgets.
-        let uploaded = {
-            let _in_flight = ws.begin_slack_post(&label, &conversation);
-            api.complete_upload(&file_id, &request.conversation, request.thread_ts.as_deref())
-                .await
-                .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?
-        };
-        let _in_flight = ws.begin_slack_post(&label, &conversation);
+        // The upload call can put the message in history; its own stamp
+        // covers that call, and a second covers the shares read below. The
+        // second is taken before the first drops: a stamp each covers one
+        // call, and the map must never hold none between them, or a sweep
+        // in the gap delivers the file message before the shares are
+        // ledgered.
+        let upload_call = ws.begin_slack_post(&label, &conversation);
+        let uploaded = api
+            .complete_upload(&file_id, &request.conversation, request.thread_ts.as_deref())
+            .await
+            .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?;
+        let _shares = ws.begin_slack_post(&label, &conversation);
+        drop(upload_call);
         // Slack names the message the upload was posted as on the file's
         // shares, keyed by the share's own conversation - which need not be
         // the string the request addressed. The upload's own answer carries
@@ -1495,9 +1498,11 @@ mod tests {
         post_channel: parking_lot::Mutex<Option<String>>,
         /// Answer no channel at all, the shape Slack omits it in.
         post_channel_absent: parking_lot::Mutex<bool>,
-        /// Parks a post or an upload until the test releases it.
+        /// Parks a post, an upload or a `files.info` until the test
+        /// releases it.
         post_park: parking_lot::Mutex<Option<Arc<tokio::sync::Notify>>>,
         upload_park: parking_lot::Mutex<Option<Arc<tokio::sync::Notify>>>,
+        file_info_park: parking_lot::Mutex<Option<Arc<tokio::sync::Notify>>>,
         /// How many posts have been answered, so an unseeded answer is a
         /// distinct ts per call - a multi-part post needs two.
         post_calls: parking_lot::Mutex<usize>,
@@ -1623,6 +1628,12 @@ mod tests {
         fn park_uploads(&self) -> Arc<tokio::sync::Notify> {
             let gate = Arc::new(tokio::sync::Notify::new());
             *self.upload_park.lock() = Some(Arc::clone(&gate));
+            gate
+        }
+        /// Park every `files.info` until the returned gate is notified.
+        fn park_file_info(&self) -> Arc<tokio::sync::Notify> {
+            let gate = Arc::new(tokio::sync::Notify::new());
+            *self.file_info_park.lock() = Some(Arc::clone(&gate));
             gate
         }
         /// Make the 0-based `index` post call fail.
@@ -1787,6 +1798,10 @@ mod tests {
 
         async fn file_info(&self, id: &str) -> Result<SlackFile, SlackError> {
             *self.file_info_calls.lock() += 1;
+            let gate = self.file_info_park.lock().clone();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
             let files = self.files.lock();
             let Some((name, _)) = files.get(id) else {
                 return Err(SlackError::Api {
@@ -2412,6 +2427,39 @@ mod tests {
         assert!(
             ws.slack_post_in_flight("acme", "C1").is_none(),
             "and clears it once the upload's shares are ledgered",
+        );
+    }
+
+    /// The shares read after the upload carries a mark of its own: the
+    /// file message is already in history while that call is in flight,
+    /// and its ts is not ledgered until it returns.
+    #[tokio::test]
+    async fn the_upload_marks_its_conversation_while_the_shares_are_read() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        api.seed_file("F-uploaded", "file.txt", b"payload");
+        let gate = api.park_file_info();
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("file.txt");
+        std::fs::write(&source, b"payload").expect("write the source file");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+
+        until(|| api.file_info_calls() >= 1).await;
+        assert!(
+            ws.slack_post_in_flight("acme", "C1").is_some(),
+            "the shares read holds a fresh mark of its own",
+        );
+
+        gate.notify_one();
+        task.await.expect("no panic").expect("the upload sends");
+        assert!(
+            ws.slack_post_in_flight("acme", "C1").is_none(),
+            "and clears it once the shares are ledgered",
         );
     }
 

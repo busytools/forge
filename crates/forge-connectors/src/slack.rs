@@ -726,9 +726,10 @@ const MAX_HISTORY_PAGES: usize = 200;
 /// forever, the same guard the conversation walk carries.
 const MAX_REPLY_PAGES: usize = 200;
 
-/// How long one Web API call gets. The pump waits this long, and the
-/// facade's own client is built with the same budget, so a post that
-/// stalls cannot pin its in-flight mark past it.
+/// How long one Web API call gets. The pump waits this long, and every
+/// Web API request carries it, so a post that stalls cannot pin its
+/// in-flight mark past it. File bodies are not Web API calls and keep
+/// their own transfer behaviour.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What one sweep did.
@@ -1677,17 +1678,28 @@ pub(crate) async fn sweep_mentions(
             }
             // A post in flight in this conversation can already be in the
             // index with its ts not yet ledgered: the same window the
-            // conversation sweep skips. The hit stays behind the cursor, so
-            // the next tick reads it again.
-            if host.post_in_flight(workspace, &hit.conversation_id).is_some() {
+            // conversation sweep skips. Hits arrive newest-first, so a
+            // newer hit already delivered this sweep would move the cursor
+            // above this one and lose it for good - hold the cursor where
+            // it was, the way a failed delivery does, and let the next
+            // tick re-offer the newer hits (the destination's own memory
+            // absorbs them). The check is by id and by the name the search
+            // hit carries, for a stamp keyed under an unresolved address.
+            let in_flight = host.post_in_flight(workspace, &hit.conversation_id).or_else(|| {
+                hit.conversation_name
+                    .as_deref()
+                    .and_then(|name| host.post_in_flight(workspace, name))
+            });
+            if let Some(age) = in_flight {
                 tracing::debug!(
                     target: "forge_connectors::slack",
                     event_name = "slack_post_in_flight",
                     workspace,
                     conversation = %hit.conversation_id,
-                    "a post is in flight in this conversation; skipping the mention this tick",
+                    age_ms = age.as_millis(),
+                    "a post is in flight in this conversation; holding the mention cursor",
                 );
-                continue;
+                return Ok(SweepOutcome { delivered, ..Default::default() });
             }
             // The query is the literal mention token, so it matches the
             // agent's own posts that quote one. The ledger is what refuses
@@ -4413,23 +4425,38 @@ mod tests {
         assert!(host.delivered().is_empty(), "nothing is read from that DM");
     }
 
-    /// The mention path is the same commit-to-ledger window: a hit from a
-    /// conversation with a post in flight waits a tick, and the cursor
-    /// does not pass it.
+    /// The mention path is the same commit-to-ledger window, and the
+    /// cursor has to hold for it: hits arrive newest-first, so a newer hit
+    /// delivered in the same sweep would move the cursor above the skipped
+    /// one and lose it for good. Two hits, the newer in another
+    /// conversation, is the shape that catches that.
     #[tokio::test]
-    async fn a_mention_in_a_conversation_with_a_post_in_flight_waits() {
+    async fn a_mention_in_a_conversation_with_a_post_in_flight_holds_the_cursor() {
         let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
-        host.seed_search(vec![search_match("200.1", "C1", "ping <@U1>")]);
-        host.set_post_in_flight("acme", "C1", true);
+        host.seed_search(vec![
+            search_match("300.2", "C1", "newer <@U1>"),
+            search_match("200.1", "C2", "skipped <@U1>"),
+        ]);
+        host.set_post_in_flight("acme", "C2", true);
 
-        let outcome = sweep_mentions(&host, &host, "acme").await.expect("sweep");
+        let first = sweep_mentions(&host, &host, "acme").await.expect("first sweep");
 
-        assert_eq!(outcome.delivered, 0, "the mention waits while a post is in flight");
-        assert!(host.delivered().is_empty(), "nothing is delivered for the hit");
+        assert_eq!(first.delivered, 1, "the newer hit in another conversation is delivered");
         assert_eq!(
             host.watermark("acme", MENTION_CURSOR).expect("watermark"),
             None,
-            "and the cursor does not pass it",
+            "and the cursor holds below the skipped hit rather than passing it",
+        );
+
+        host.set_post_in_flight("acme", "C2", false);
+        sweep_mentions(&host, &host, "acme").await.expect("second sweep");
+
+        let delivered = host.delivered();
+        let conversations: Vec<&str> =
+            delivered.iter().map(|message| message.conversation.as_str()).collect();
+        assert!(
+            conversations.contains(&"C2"),
+            "the skipped mention is delivered once the post finished: {conversations:?}",
         );
     }
 
