@@ -3418,7 +3418,7 @@ provider = "anthropic"
         }
     }
 
-    use forge_primitives::slack::SlackFile;
+    use forge_primitives::slack::{SlackFile, SlackFileShares};
 
     fn slack_msg(text: &str) -> SlackMessage {
         SlackMessage {
@@ -5514,7 +5514,7 @@ provider = "anthropic"
             id: "F1".to_owned(),
             name: "notes.txt".to_owned(),
             url_private: "https://files.slack.com/x".to_owned(),
-            shares: Default::default(),
+            shares: SlackFileShares::default(),
         }];
 
         let prose = fresh_prose(&[message]);

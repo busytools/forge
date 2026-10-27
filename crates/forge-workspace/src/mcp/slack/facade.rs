@@ -1613,13 +1613,12 @@ mod tests {
                 text.to_owned(),
                 thread_ts.map(str::to_owned),
             ));
-            let answer = match self.post_ts.lock().clone() {
-                Some(seeded) => seeded,
-                None => {
-                    let mut calls = self.post_calls.lock();
-                    *calls += 1;
-                    format!("{calls}.0")
-                }
+            let answer = if let Some(seeded) = self.post_ts.lock().clone() {
+                seeded
+            } else {
+                let mut calls = self.post_calls.lock();
+                *calls += 1;
+                format!("{calls}.0")
             };
             Ok(answer)
         }
@@ -1772,28 +1771,23 @@ mod tests {
         (facade, ws, api, rx)
     }
 
-    /// The same workspace with a store installed, for the paths that
-    /// persist - the own-post ledger. The tempdir rides along so the store
-    /// outlives the test.
-    fn facade_with_recording_slack_and_store() -> (
+    /// A recording facade, its workspace, the double, the update stream,
+    /// and the tempdir that must outlive them.
+    type RecordingSlack = (
         Arc<dyn SlackFacade>,
         Arc<Workspace>,
         Arc<RecordingApi>,
         tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
         tempfile::TempDir,
-    ) {
+    );
+
+    /// The same workspace with a store installed, for the paths that
+    /// persist - the own-post ledger.
+    fn facade_with_recording_slack_and_store() -> RecordingSlack {
         facade_with_recording_slack_inner(true)
     }
 
-    fn facade_with_recording_slack_inner(
-        with_store: bool,
-    ) -> (
-        Arc<dyn SlackFacade>,
-        Arc<Workspace>,
-        Arc<RecordingApi>,
-        tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
-        tempfile::TempDir,
-    ) {
+    fn facade_with_recording_slack_inner(with_store: bool) -> RecordingSlack {
         let dir = tempdir().expect("tempdir");
         let mut config = LoadedConfig::empty_for_test();
         config.slack = vec![cfg("acme")];
@@ -2085,7 +2079,7 @@ mod tests {
         let outcome = task.await.expect("no panic").expect("the parts land");
         assert_eq!(outcome.ts, vec!["1.0".to_owned(), "2.0".to_owned()], "two parts were sent");
         for ts in &outcome.ts {
-            assert!(ws.slack_own_post("acme", "C1", ts), "part {ts} must be refused to the sweep",);
+            assert!(ws.slack_own_post("acme", "C1", ts), "part {ts} must be refused to the sweep");
         }
         assert!(
             !ws.slack_own_post("acme", "C2", "1.0"),

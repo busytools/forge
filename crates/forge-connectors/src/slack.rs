@@ -2617,7 +2617,7 @@ impl SlackClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_primitives::slack::SlackThreadRecord;
+    use forge_primitives::slack::{SlackFileShares, SlackThreadRecord};
     use std::collections::HashMap;
 
     /// Pinned against literals, not against `RETRY_FALLBACK` / `RETRY_CAP`:
@@ -3654,7 +3654,7 @@ mod tests {
                 id: String::new(),
                 name: String::new(),
                 url_private: String::new(),
-                shares: Default::default(),
+                shares: SlackFileShares::default(),
             })
         }
 
