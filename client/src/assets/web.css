@@ -1344,8 +1344,8 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .tb-btn { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
   background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
 .tb-btn.d { color: var(--muted); background: transparent; }
-/* A finger's targets: every control in the bar takes the 44px target the
-   pointer rule asks for. */
+/* A finger's targets: the bar's buttons take both axes here, and the feedback
+   row's mic and send take theirs from the shared `.micb`/`.sendb` rule. */
 @media (pointer: coarse) {
   .tb-btn { min-height: 44px; min-width: 44px; padding: 4px 9px; }
 }
@@ -3148,17 +3148,16 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   flex-wrap: wrap; }
 .dock .qrow .notes { flex: 1; min-width: 0; width: auto; caret-color: var(--hot); }
 .dock .qrow:focus-within .n { color: var(--hot); }
-.dock .qrow .micb { flex: none; margin-left: auto; width: 26px; height: 26px; border-radius: 8px;
+/* Bare, because the takeover bar's feedback line draws the same mic and send. */
+.micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
-.dock .qrow .micb:hover { color: var(--accent); border-color: var(--ctl); }
-/* The dock's take card rides the same rule as the composer's line above: one
-   look for one thing - the question's row and the draft's row draw the take
-   the same way (Ved, 2026-10-11). */
-.dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+.micb:hover { color: var(--accent); border-color: var(--ctl); }
+.dock .qrow .micb { margin-left: auto; }
+.sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
-.dock .qrow .sendb:hover { border-color: var(--accent); color: var(--hot); }
+.sendb:hover { border-color: var(--accent); color: var(--hot); }
 .dock .qrow.on .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
@@ -3170,15 +3169,15 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .blip .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
   background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
 .dock .blip .dot.tr { background: var(--blue); animation: none; }
-/* The actions and the mic keep a finger's target under a coarse pointer: the
-   sheet's own button rule gives the height, and the mic is narrower than the
-   floor, so its width is stated here. */
+/* The actions, the mic and the send keep a finger's target under a coarse
+   pointer: the sheet's own button rule gives the height, and the two glyphs
+   are narrower than the floor, so their widths are stated here. */
 @media (pointer: coarse) {
   .dock .btn { min-height: 44px; }
   /* The fold control is a glyph: its box is ~19px wide without this floor. */
   .dock .chevb { min-width: 44px; }
-  .dock .qrow .micb { min-height: 44px; min-width: 44px; }
-  .dock .qrow .sendb { min-height: 44px; min-width: 44px; }
+  .micb { min-height: 44px; min-width: 44px; }
+  .sendb { min-height: 44px; min-width: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;

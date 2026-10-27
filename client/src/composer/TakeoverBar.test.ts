@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { selectTab, surface } from '../browser/surface.svelte';
 import TakeoverBar from './TakeoverBar.svelte';
+
+const SHEET = readFileSync('src/assets/web.css', 'utf8');
 
 vi.mock('../browser/surface.svelte', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../browser/surface.svelte')>();
@@ -204,5 +208,30 @@ describe("the takeover bar's tab picker", () => {
     const picker = target.querySelector<HTMLSelectElement>('.tb-pick');
     expect(picker, 'the bar draws the picker once the list lands').not.toBeNull();
     expect(picker?.value, 'the viewed tab is the one the picker shows').toBe('3');
+  });
+});
+
+/**
+ * **The feedback line's mic and send are the dock's own controls**, so their
+ * rules have to be bare: a rule scoped under `.dock .qrow` reaches the dock's
+ * row and nothing in this bar, which is how both buttons sat at a UA button's
+ * ~19px width on a finger while the dock's own measured 44.
+ *
+ * jsdom has no layout, so what is pinned is the rule the sheet writes rather
+ * than a measured box; the 390x844 pointer:coarse measurement is the PR's.
+ */
+describe("the takeover bar's feedback controls", () => {
+  it("takes the dock's mic and send sizing at the sheet's root", () => {
+    for (const control of ['micb', 'sendb']) {
+      expect(
+        SHEET,
+        `.${control} is scoped to the dock, so the bar's keeps the UA's chrome`,
+      ).toMatch(new RegExp(`(^|\\n)\\.${control} \\{`));
+      expect(SHEET, `.${control} loses its width floor on a finger`).toMatch(
+        new RegExp(
+          `@media \\(pointer: coarse\\) \\{\\n(?: {2}[^\\n]*\\n)*? {2}\\.${control} \\{ min-height: 44px; min-width: 44px; \\}`,
+        ),
+      );
+    }
   });
 });
