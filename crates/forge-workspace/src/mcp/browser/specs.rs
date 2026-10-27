@@ -839,9 +839,10 @@ mod tests {
     }
 
     /// **The advertised names and the live tables agree.** The parity check
-    /// runs in `forge-browser`, which may not depend on this crate, so it
-    /// reads `forge_primitives::browser::ADVERTISED_TOOLS`; a spec added here
-    /// without the const would be a tool the check never looks at.
+    /// is `forge-server`'s `surface_parity_live` test, which may not depend on
+    /// this crate, so it reads `forge_primitives::browser::ADVERTISED_TOOLS`;
+    /// a spec added here without the const would be a tool the check never
+    /// looks at.
     #[test]
     fn the_advertised_const_is_the_spec_tables_names() {
         let mut table: Vec<&str> = specs().iter().map(|spec| spec.name).collect();

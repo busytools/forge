@@ -7542,7 +7542,10 @@ mod tests {
             }
         });
 
-        let started = service.record_start(&seat).await.expect("the first take starts");
+        let started = service
+            .call(&seat, "browser_record_start", json!({}))
+            .await
+            .expect("the first take starts");
         assert!(
             matches!(
                 started.as_slice(),
@@ -7566,7 +7569,7 @@ mod tests {
         );
         assert!(path.is_file(), "the writer opened the file at {}", path.display());
 
-        service.record_stop(&seat).await.expect("the take stops");
+        service.call(&seat, "browser_record_stop", json!({})).await.expect("the take stops");
         host.join().expect("the fake host ends");
         crate::osr::Ring::unlink(&ring_name);
     }
@@ -7578,7 +7581,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let refused = service.record_stop(&seat).await.expect_err("no take is running");
+        let refused = service
+            .call(&seat, "browser_record_stop", json!({}))
+            .await
+            .expect_err("no take is running");
         assert!(
             refused.contains("no recording is running"),
             "the stop names the missing take: {refused}"

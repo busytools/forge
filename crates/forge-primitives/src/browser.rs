@@ -344,8 +344,8 @@ pub struct HandOffAnswer {
 ///
 /// The table itself lives in `forge-workspace`'s `mcp::browser::specs`, which
 /// this crate may not depend on: a unit test there asserts the two lists
-/// agree, and the live parity check in `forge-browser` asserts every name is
-/// answered by the pinned driver or by a host arm.
+/// agree, and the live check in `forge-server`'s `surface_parity_live` test
+/// asserts every name is answered by the pinned driver or by a host arm.
 pub const ADVERTISED_TOOLS: [&str; 31] = [
     "browser_close",
     "browser_resize",

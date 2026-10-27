@@ -46,7 +46,8 @@ pub(crate) enum Routed {
 ///
 /// The live parity check holds the driver against this list, so a tool whose
 /// arm is deleted and whose name is left here is the one gap it cannot see;
-/// each name's own tests are that guard.
+/// each name's own test drives it through the same dispatch, so the arm and
+/// the name fail together.
 pub const HOST_ANSWERED: [&str; 6] = [
     "browser_challenge_state",
     "browser_click_and_capture",
@@ -56,12 +57,16 @@ pub const HOST_ANSWERED: [&str; 6] = [
     "browser_record_stop",
 ];
 
-/// Whether `name` is one of the tools forge answers itself.
+/// Whether `name` is one of the tools forge answers because the pinned driver
+/// does not publish it.
 pub fn answers(name: &str) -> bool {
     HOST_ANSWERED.contains(&name)
 }
 
-/// Every tool forge answers itself, for the live parity check.
+/// Every advertised tool forge answers because the pinned driver does not
+/// publish it, for the live parity check. A host-shaped tool the driver does
+/// publish (`browser_tabs`, `browser_close`, `browser_resize`,
+/// `browser_file_upload`) is deliberately absent.
 pub fn host_answered() -> &'static [&'static str] {
     &HOST_ANSWERED
 }
