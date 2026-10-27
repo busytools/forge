@@ -3502,18 +3502,23 @@ describe('the frame', () => {
 
   /**
    * **The phone's floors are read on the block itself**, because the coarse
-   * rules sit on one line inside the media query, where the per-selector scan
-   * above reaches only their base rules - and that is exactly how they went
-   * unpinned while two changes crossed.
+   * rules sit inside the media query, where the per-selector scan above
+   * reaches only their base rules - and that is exactly how they went unpinned
+   * while two changes crossed.
    */
-  it("keeps the mic and the panel's close at a finger's size, and the mic's accent", () => {
-    // Anchored so `.mic` cannot match as the tail of another class: a pattern
-    // that also accepts `.foot .mic` keeps passing while the on-line mic has
-    // lost the floor this is checking it for.
-    const coarse =
-      /@media \(pointer: coarse\) \{[^\n]*[^.\w]\.mic\s*\{[^\n]*\}/.exec(sheet)?.[0] ?? '';
-    expect(coarse, 'the mic lost its height floor on a finger').toContain('min-height: 44px');
-    expect(coarse, 'the mic lost its width floor on a finger').toContain('min-width: 44px');
+  it("keeps the glyph controls and the panel's close at a finger's size, and the mic's accent", () => {
+    // A rule per control rather than one selector pinned whole, so a control
+    // that leaves the shared glyph rule for one of its own still has to state
+    // both floors.
+    const coarse = [...sheet.matchAll(/@media \(pointer: coarse\) \{\n([\s\S]*?)\n\}/g)]
+      .map((match) => match[1])
+      .join('\n');
+    for (const control of ['mic', 'send', 'stop']) {
+      const rule = new RegExp(`\\.${control}(?:, [^{]*)? \\{([^}]*)\\}`).exec(coarse)?.[1];
+      expect(rule, `.${control} has no rule in a coarse-pointer block`).toBeDefined();
+      expect(rule, `.${control} lost its height floor on a finger`).toContain('min-height: 44px');
+      expect(rule, `.${control} lost its width floor on a finger`).toContain('min-width: 44px');
+    }
     expect(coarse, "the panel's close lost its width floor").toContain(
       '.pop .hd .x { min-width: 44px; }',
     );

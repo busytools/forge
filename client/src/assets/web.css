@@ -2714,13 +2714,15 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The mic lifts to the primary on hover, matching its sibling controls (the
    send's accent), rather than the sheet's generic text lift. */
 .mic:hover { color: var(--accent); }
-/* The mic is the phone's primary dictate control and carries the hold, so its
-   width takes the same 44px floor as the dock's (the sheet's button rule gives
-   the height; a finger drifting off 24px would cancel the hold). */
-@media (pointer: coarse) { .mic { min-height: 44px; min-width: 44px; } .pop .hd .x { min-width: 44px; } }
-/* The send, at the same 24px pointer floor as the mic and centred in whatever
-   box it gets, since the phone width gives every control a 44px floor and the
-   icon would otherwise sit at the top of it. */
+/* A finger's target for the composer's three glyph controls: each is 24px by
+   its own box, and the mic also carries the hold that a drift off 24px would
+   cancel. */
+@media (pointer: coarse) {
+  .mic, .send, .stop { min-height: 44px; min-width: 44px; }
+  .pop .hd .x { min-width: 44px; }
+}
+/* The send, at the mic's 24px box and centred in whatever box it gets, so the
+   icon stays centred once the coarse-pointer rule above takes it to 44px. */
 .send { color: var(--accent); background: none; border: 0; cursor: pointer;
   display: grid; place-items: center; width: 24px; height: 24px; }
 /* The stop, beside the send and at the same floor: a turn in flight is the one
