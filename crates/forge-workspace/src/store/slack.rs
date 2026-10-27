@@ -608,6 +608,33 @@ mod tests {
         );
     }
 
+    /// `range(prefix..)` is a lower bound, not a filter: without the prefix
+    /// guard a conversation's count bound would count every later-sorting
+    /// conversation's rows and prune them, and those conversations would
+    /// then echo their own posts. The filled conversation deliberately
+    /// sorts AFTER the recording one, or the mutant passes anyway.
+    #[test]
+    fn recording_one_conversation_never_prunes_another() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let now = 1_700_000_000;
+        let ts = |offset: u64| format!("{}.000001", now + offset);
+
+        for offset in 0..OWN_POST_KEEP as u64 {
+            record_own_post(&db, "acme", "C2", &ts(offset), now).expect("record");
+        }
+        record_own_post(&db, "acme", "C1", &ts(9_000), now).expect("record");
+
+        assert!(
+            own_post(&db, "acme", "C2", &ts(0)).expect("read"),
+            "another conversation's oldest row survives the write",
+        );
+        assert!(
+            own_post(&db, "acme", "C1", &ts(9_000)).expect("read"),
+            "and the recording conversation keeps its row",
+        );
+    }
+
     #[test]
     fn removing_a_thread_row_removes_only_that_row() {
         let dir = tempdir().expect("tempdir");

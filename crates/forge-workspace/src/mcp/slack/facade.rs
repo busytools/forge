@@ -511,34 +511,45 @@ impl ProdSlackFacade {
         resolve_workspace(&ws.slack, workspace)
     }
 
-    /// The conversation's display name for the approval prompt, falling
-    /// back to the id: a DM is named after its partner, and Slack's own
-    /// name for it is empty. A failed lookup is not a reason to refuse the
-    /// action - but it IS why the prompt would show an id, so it says so.
-    async fn conversation_label(
+    /// The conversation a request addresses, as `(id, display label)`.
+    /// `conversation` may be an id, a channel name or a DM's partner, and
+    /// the id is what the ledger and the in-flight mark key on - a post or
+    /// an edit addressed one way lands in the same conversation the sweep
+    /// reads. The label is what the approval prompt shows: a DM is named
+    /// after its partner, and Slack's own name for it is empty. A failed
+    /// lookup is not a reason to refuse the action - but it IS why the
+    /// prompt would show an id, so it says so.
+    async fn resolve_conversation(
         api: &Arc<dyn SlackApi>,
         workspace: &str,
         conversation: &str,
-    ) -> String {
+    ) -> (String, String) {
         let conversations = match api.list_conversations().await {
             Ok(conversations) => conversations,
             Err(error) => {
                 tracing::warn!(
                     target: "forge_workspace::slack",
+                    event_name = "slack_conversation_list_failed",
                     workspace,
                     conversation,
                     %error,
                     "listing conversations failed; the approval prompt names the id instead",
                 );
-                return conversation.to_owned();
+                return (conversation.to_owned(), conversation.to_owned());
             }
         };
-        conversations
-            .iter()
-            .find(|known| known.id == conversation)
-            .map(|known| known.name.clone().or_else(|| known.user.clone()).unwrap_or_default())
-            .filter(|label| !label.is_empty())
-            .unwrap_or_else(|| conversation.to_owned())
+        match conversations.iter().find(|known| {
+            known.id == conversation
+                || known.name.as_deref() == Some(conversation)
+                || known.user.as_deref() == Some(conversation)
+        }) {
+            Some(known) => {
+                let label = known.name.clone().or_else(|| known.user.clone()).unwrap_or_default();
+                let label = if label.is_empty() { known.id.clone() } else { label };
+                (known.id.clone(), label)
+            }
+            None => (conversation.to_owned(), conversation.to_owned()),
+        }
     }
 
     /// Register a draft for the user's decision and wait for it. The one
@@ -599,8 +610,8 @@ impl SlackFacade for ProdSlackFacade {
             .ok_or(SlackPostError::Workspace(SlackWorkspaceError::NotConfigured))?;
         let (label, api) = resolve_workspace(&ws.slack, request.workspace.as_deref())
             .map_err(SlackPostError::Workspace)?;
-        let conversation_label =
-            Self::conversation_label(&api, &label, &request.conversation).await;
+        let (conversation, conversation_label) =
+            Self::resolve_conversation(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
@@ -619,7 +630,7 @@ impl SlackFacade for ProdSlackFacade {
         // Held across the posting loop: a sweep that runs mid-post skips
         // the conversation instead of delivering a message whose ts is not
         // ledgered yet.
-        let _in_flight = ws.begin_slack_post(&draft.workspace, &draft.conversation);
+        let _in_flight = ws.begin_slack_post(&draft.workspace, &conversation);
         let parts = forge_connectors::slack::split_for_post(&draft.text);
         let mut ts: Vec<String> = Vec::new();
         for part in &parts {
@@ -630,8 +641,19 @@ impl SlackFacade for ProdSlackFacade {
                     // and the sweep looks it up by that id. Recorded per
                     // part as it lands, so a post that fails halfway still
                     // refuses the parts Slack took.
-                    let conversation = posted.channel.as_deref().unwrap_or(&draft.conversation);
-                    ws.record_slack_own_post(&draft.workspace, conversation, &posted.ts);
+                    let landed = if let Some(channel) = posted.channel.as_deref() {
+                        channel
+                    } else {
+                        tracing::debug!(
+                            target: "forge_workspace::slack",
+                            event_name = "slack_post_channel_omitted",
+                            workspace = %draft.workspace,
+                            conversation = %draft.conversation,
+                            "chat.postMessage answered no channel; the ledger keys on the resolved conversation",
+                        );
+                        &conversation
+                    };
+                    ws.record_slack_own_post(&draft.workspace, landed, &posted.ts);
                     ts.push(posted.ts);
                 }
                 Err(error) if ts.is_empty() => {
@@ -669,8 +691,8 @@ impl SlackFacade for ProdSlackFacade {
         // a deletion changes what they see on a message attributed to him -
         // and unlike a bad edit it cannot be fixed by editing again. Both
         // go through the same gate a post does.
-        let conversation_label =
-            Self::conversation_label(&api, &label, &request.conversation).await;
+        let (conversation, conversation_label) =
+            Self::resolve_conversation(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label.clone(),
@@ -700,8 +722,9 @@ impl SlackFacade for ProdSlackFacade {
             Ok(()) => {
                 // An edit or a delete keeps the message's ts, so this is
                 // the identity the sweep sees - and the agent authored the
-                // change, whoever posted the message first.
-                ws.record_slack_own_post(&label, &request.conversation, &request.ts);
+                // change, whoever posted the message first. Keyed by the
+                // resolved id: the request may have named the DM's partner.
+                ws.record_slack_own_post(&label, &conversation, &request.ts);
                 Ok(())
             }
             Err(SlackError::Api { error, .. })
@@ -728,8 +751,8 @@ impl SlackFacade for ProdSlackFacade {
         // A reaction is authored content in the user's name, so it goes
         // through the same gate a post does.
         let verb = if request.add { "react" } else { "unreact" };
-        let conversation_label =
-            Self::conversation_label(&api, &label, &request.conversation).await;
+        let (_, conversation_label) =
+            Self::resolve_conversation(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label,
@@ -949,8 +972,8 @@ impl SlackFacade for ProdSlackFacade {
         // will be called. The name is caller-controlled and can look
         // innocuous, so approving it without the local path would be
         // approving something the user has not seen.
-        let conversation_label =
-            Self::conversation_label(&api, &label, &request.conversation).await;
+        let (conversation, conversation_label) =
+            Self::resolve_conversation(&api, &label, &request.conversation).await;
         let draft = SlackDraft {
             id: Uuid::new_v4(),
             workspace: label.clone(),
@@ -975,7 +998,7 @@ impl SlackFacade for ProdSlackFacade {
             .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?;
         // Held across the post: a sweep that runs mid-upload skips the
         // conversation rather than delivering a message not yet ledgered.
-        let _in_flight = ws.begin_slack_post(&label, &request.conversation);
+        let _in_flight = ws.begin_slack_post(&label, &conversation);
         let uploaded = api
             .complete_upload(&file_id, &request.conversation, request.thread_ts.as_deref())
             .await
@@ -990,13 +1013,24 @@ impl SlackFacade for ProdSlackFacade {
                 Ok(file) => shared = shared_messages(&file),
                 Err(error) => tracing::warn!(
                     target: "forge_workspace::slack",
-                    event_name = "slack_attachment_ledger_missing",
+                    event_name = "slack_attachment_shares_unreadable",
                     workspace = %label,
                     conversation = %request.conversation,
                     %error,
                     "reading a posted file's shares failed; the attachment stays unledgered until this call succeeds",
                 ),
             }
+        }
+        if shared.is_empty() {
+            // Neither the upload's answer nor `files.info` named the
+            // message: say so rather than leaving the echo unexplained.
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                event_name = "slack_attachment_ledger_missing",
+                workspace = %label,
+                conversation = %request.conversation,
+                "the upload's shares name no message; the attachment stays unledgered and can come back once",
+            );
         }
         for (conversation, ts) in shared {
             ws.record_slack_own_post(&label, &conversation, &ts);
@@ -1406,8 +1440,8 @@ mod tests {
         AuthTest, MessagePage, PostedMessage, SearchPage, SlackApi, SlackError,
     };
     use forge_primitives::slack::{
-        SlackBookmark, SlackConfig, SlackFile, SlackFileShare, SlackFileShares, SlackPin,
-        SlackPinMessage, SlackUserProfile,
+        SlackBookmark, SlackConfig, SlackConversation, SlackFile, SlackFileShare, SlackFileShares,
+        SlackPin, SlackPinMessage, SlackUserProfile,
     };
     use forge_sdk::mcp::tool::{Tool as _, ToolInput};
     use std::collections::{BTreeMap, HashMap};
@@ -1455,6 +1489,11 @@ mod tests {
         /// The channel `chat.postMessage` answers with; defaults to the
         /// channel the request named.
         post_channel: parking_lot::Mutex<Option<String>>,
+        /// Answer no channel at all, the shape Slack omits it in.
+        post_channel_absent: parking_lot::Mutex<bool>,
+        /// Parks a post or an upload until the test releases it.
+        post_park: parking_lot::Mutex<Option<Arc<tokio::sync::Notify>>>,
+        upload_park: parking_lot::Mutex<Option<Arc<tokio::sync::Notify>>>,
         /// How many posts have been answered, so an unseeded answer is a
         /// distinct ts per call - a multi-part post needs two.
         post_calls: parking_lot::Mutex<usize>,
@@ -1566,6 +1605,22 @@ mod tests {
         fn answer_posts_in(&self, channel: &str) {
             *self.post_channel.lock() = Some(channel.to_owned());
         }
+        /// Answer no channel at all, the shape Slack omits it in.
+        fn answer_posts_without_channel(&self) {
+            *self.post_channel_absent.lock() = true;
+        }
+        /// Park every post until the returned gate is notified.
+        fn park_posts(&self) -> Arc<tokio::sync::Notify> {
+            let gate = Arc::new(tokio::sync::Notify::new());
+            *self.post_park.lock() = Some(Arc::clone(&gate));
+            gate
+        }
+        /// Park every upload until the returned gate is notified.
+        fn park_uploads(&self) -> Arc<tokio::sync::Notify> {
+            let gate = Arc::new(tokio::sync::Notify::new());
+            *self.upload_park.lock() = Some(Arc::clone(&gate));
+            gate
+        }
         /// Make the 0-based `index` post call fail.
         fn fail_post_at(&self, index: usize) {
             *self.post_fail_at.lock() = Some(index);
@@ -1666,6 +1721,10 @@ mod tests {
                 *calls += 1;
                 attempt
             };
+            let gate = self.post_park.lock().clone();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
             if *self.post_fail_at.lock() == Some(attempt) {
                 return Err(SlackError::Api {
                     method: "chat.postMessage".to_owned(),
@@ -1674,8 +1733,12 @@ mod tests {
                 });
             }
             let ts = self.post_ts.lock().clone().unwrap_or_else(|| format!("{}.0", attempt + 1));
-            let answered = self.post_channel.lock().clone().unwrap_or_else(|| channel.to_owned());
-            Ok(PostedMessage { channel: Some(answered), ts })
+            let answered = if *self.post_channel_absent.lock() {
+                None
+            } else {
+                Some(self.post_channel.lock().clone().unwrap_or_else(|| channel.to_owned()))
+            };
+            Ok(PostedMessage { channel: answered, ts })
         }
 
         async fn update_message(
@@ -1770,6 +1833,10 @@ mod tests {
                 channel.to_owned(),
                 thread_ts.map(str::to_owned),
             ));
+            let gate = self.upload_park.lock().clone();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
             Ok(vec![SlackFile {
                 id: file_id.to_owned(),
                 name: String::new(),
@@ -1890,6 +1957,22 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         panic!("no draft was registered");
+    }
+
+    /// A conversation as the sweep sees it, for the in-flight queries.
+    fn conversation_for_test(id: &str) -> SlackConversation {
+        SlackConversation {
+            id: id.to_owned(),
+            name: Some(id.to_lowercase()),
+            is_channel: true,
+            is_private: false,
+            is_im: false,
+            is_mpim: false,
+            is_archived: false,
+            user: None,
+            purpose: None,
+            topic: None,
+        }
     }
 
     fn post_request(conversation: &str, text: &str) -> SlackPostRequest {
@@ -2202,9 +2285,146 @@ mod tests {
             ws.slack_own_post("acme", "C1", "1.0"),
             "the part Slack took is refused to the sweep",
         );
+    }
+
+    /// The mark is held across the post call: without it a sweep in the
+    /// window delivers what the post is about to ledger.
+    #[tokio::test]
+    async fn a_post_marks_its_conversation_in_flight_until_the_ledger_write() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        let gate = api.park_posts();
+        let conversation = conversation_for_test("C1");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+
+        let mut marked = false;
+        for _ in 0..400 {
+            if ws.slack_post_in_flight("acme", &conversation).is_some() {
+                marked = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(marked, "the facade marks the conversation before the post returns");
+
+        gate.notify_one();
+        task.await.expect("no panic").expect("the post lands");
         assert!(
-            !ws.slack_own_post("acme", "C1", "2.0"),
-            "and the part that never landed is not pretended to be",
+            ws.slack_post_in_flight("acme", &conversation).is_none(),
+            "and clears it once the ts is ledgered",
+        );
+    }
+
+    /// A failed post leaves no mark behind: the guard drops on the error
+    /// return, so the conversation is swept again next tick.
+    #[tokio::test]
+    async fn a_failed_post_clears_its_in_flight_mark() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        api.fail_post_at(0);
+        let conversation = conversation_for_test("C1");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+
+        assert!(task.await.expect("no panic").is_err(), "the post fails");
+        assert!(
+            ws.slack_post_in_flight("acme", &conversation).is_none(),
+            "a failed post leaves no mark behind",
+        );
+    }
+
+    /// The upload site takes the same mark: it is held until the shares
+    /// have been read and ledgered.
+    #[tokio::test]
+    async fn an_upload_marks_its_conversation_in_flight_until_the_ledger_write() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        let gate = api.park_uploads();
+        let conversation = conversation_for_test("C1");
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("file.txt");
+        std::fs::write(&source, b"payload").expect("write the source file");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+
+        let mut marked = false;
+        for _ in 0..400 {
+            if ws.slack_post_in_flight("acme", &conversation).is_some() {
+                marked = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(marked, "the facade marks the conversation before the upload completes");
+
+        gate.notify_one();
+        task.await.expect("no panic").expect("an approved upload sends");
+        assert!(
+            ws.slack_post_in_flight("acme", &conversation).is_none(),
+            "and clears it once the upload's shares are ledgered",
+        );
+    }
+
+    /// A share read that fails is a ledger gap, not a failed upload: the
+    /// file is already posted, and reporting it as unsent would invite a
+    /// duplicate.
+    #[tokio::test]
+    async fn an_upload_whose_shares_cannot_be_read_still_succeeds() {
+        let (facade, ws, _api, _rx, _dir) = facade_with_recording_slack_and_store();
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("file.txt");
+        std::fs::write(&source, b"payload").expect("write the source file");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+
+        assert!(
+            task.await.expect("no panic").is_ok(),
+            "an unreadable share is a ledger gap, not a failed upload",
+        );
+        assert!(
+            ws.slack_post_in_flight("acme", &conversation_for_test("C1")).is_none(),
+            "and the mark is cleared whatever the share read did",
+        );
+    }
+
+    /// Slack's `chat.postMessage` answers the channel it posted into; the
+    /// fallback is for the case it omits it, and it is right where it can
+    /// be right: a conversation addressed by id.
+    #[tokio::test]
+    async fn a_post_answered_without_a_channel_is_ledgered_under_the_resolved_conversation() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        api.answer_posts_with("1700000000.000100");
+        api.answer_posts_without_channel();
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+        task.await.expect("no panic").expect("the post lands");
+
+        assert!(
+            ws.slack_own_post("acme", "C1", "1700000000.000100"),
+            "the resolved conversation is what the fallback keys on",
         );
     }
 

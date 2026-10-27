@@ -131,12 +131,15 @@ pub trait SlackHost: Send + Sync {
     /// the user, so the author says nothing about who wrote the words.
     fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool;
 
-    /// Whether forge has a post in flight into this conversation. A
-    /// message can reach history before the post call returns and its ts
-    /// is ledgered, so the sweep skips the conversation for the tick
-    /// instead of delivering its own post. The match is by whichever name
-    /// the post used: the conversation id, its name, or the DM partner.
-    fn post_in_flight(&self, workspace: &str, conversation: &SlackConversation) -> bool;
+    /// How long a live post has been in flight into this conversation, or
+    /// `None` when none is. A message can reach history before the post
+    /// call returns and its ts is ledgered, so the sweep skips the
+    /// conversation for the tick instead of delivering its own post. The
+    /// match is by whichever name the post used: the conversation id, its
+    /// name, or the DM partner. A mark older than [`REQUEST_TIMEOUT`] is
+    /// the host's to expire, never something to obey.
+    fn post_in_flight(&self, workspace: &str, conversation: &SlackConversation)
+    -> Option<Duration>;
 }
 
 /// The Web API calls this connector makes, behind a trait so a sweep or
@@ -725,8 +728,10 @@ const MAX_HISTORY_PAGES: usize = 200;
 /// forever, the same guard the conversation walk carries.
 const MAX_REPLY_PAGES: usize = 200;
 
-/// How long a pump waits on one Web API call.
-const PUMP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long one Web API call gets. The pump waits this long, and the
+/// facade's own client is built with the same budget, so a post that
+/// stalls cannot pin its in-flight mark past it.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What one sweep did.
 #[derive(Debug, Default)]
@@ -1083,13 +1088,29 @@ pub(crate) async fn sweep_scope(
         // ts is ledgered. Skipping the conversation for this tick, and not
         // moving its cursor, is what keeps that window from delivering a
         // self-post.
-        if host.post_in_flight(workspace, conversation) {
-            tracing::debug!(
-                target: "forge_connectors::slack",
-                workspace,
-                conversation = %conversation.id,
-                "a post is in flight; skipping this conversation this tick",
-            );
+        if let Some(age) = host.post_in_flight(workspace, conversation) {
+            // A post is in flight for one request round trip. One that has
+            // burned most of its budget is stalled, which a reader should
+            // see rather than infer from messages arriving late.
+            if age > REQUEST_TIMEOUT / 2 {
+                tracing::warn!(
+                    target: "forge_connectors::slack",
+                    event_name = "slack_post_in_flight_stalled",
+                    workspace,
+                    conversation = %conversation.id,
+                    age_ms = age.as_millis(),
+                    "a post has been in flight for most of its request budget; the conversation is being skipped",
+                );
+            } else {
+                tracing::debug!(
+                    target: "forge_connectors::slack",
+                    event_name = "slack_post_in_flight",
+                    workspace,
+                    conversation = %conversation.id,
+                    age_ms = age.as_millis(),
+                    "a post is in flight; skipping this conversation this tick",
+                );
+            }
             continue;
         }
         let watermark = match host.watermark(workspace, &conversation.id) {
@@ -1768,7 +1789,7 @@ pub async fn run_workspace_pump(
 ) {
     let interval = Duration::from_secs(poll_seconds);
     let dm_interval = Duration::from_secs(dm_poll_seconds);
-    let Ok(client) = host.client(&workspace, PUMP_TIMEOUT) else {
+    let Ok(client) = host.client(&workspace, REQUEST_TIMEOUT) else {
         tracing::warn!(
             target: "forge_connectors::slack",
             workspace = %workspace,
@@ -3565,12 +3586,17 @@ mod tests {
                 .contains(&format!("{workspace}/{conversation}/{ts}"))
         }
 
-        fn post_in_flight(&self, workspace: &str, conversation: &SlackConversation) -> bool {
+        fn post_in_flight(
+            &self,
+            workspace: &str,
+            conversation: &SlackConversation,
+        ) -> Option<Duration> {
             let inflight = self.inflight.lock().expect("lock");
             let marked = |address: &str| inflight.contains(&format!("{workspace}/{address}"));
-            marked(&conversation.id)
+            (marked(&conversation.id)
                 || conversation.name.as_deref().is_some_and(marked)
-                || conversation.user.as_deref().is_some_and(marked)
+                || conversation.user.as_deref().is_some_and(marked))
+            .then(Duration::default)
         }
     }
 
@@ -4349,6 +4375,18 @@ mod tests {
             host.watermark("acme", "C1").expect("watermark"),
             Some("100.0".to_owned()),
             "and the cursor holds, so the next tick reads the window whole",
+        );
+
+        host.set_post_in_flight("acme", "C1", false);
+        let outcome = sweep(&host, &host, "acme").await.expect("the next tick");
+        assert_eq!(
+            outcome.delivered, 1,
+            "the held message is delivered once the post has finished"
+        );
+        assert_eq!(
+            host.delivered().first().map(|message| message.ts.as_str()),
+            Some("200.0"),
+            "and it is the message the skip held, not a lost window",
         );
     }
 
