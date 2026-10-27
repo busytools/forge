@@ -11,10 +11,21 @@
 
 use std::path::PathBuf;
 #[cfg(any(target_os = "android", test))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(target_os = "android", test))]
 use std::time::{Duration, SystemTime};
 
 use forge_primitives::SessionSlot;
 use tauri::Manager as _;
+
+/// Whether this process has already answered the page's one ask.
+///
+/// **The launch's seat belongs to the process's first page load**: a later
+/// mount is a reload, not a launch. Without this, a tap the app was too late
+/// to report (a warm tap on Android) would pull the next reload to the seat it
+/// could not open.
+#[cfg(any(target_os = "android", test))]
+static ASKED: AtomicBool = AtomicBool::new(false);
 
 /// How long a remembered seat outlives its notification.
 ///
@@ -111,13 +122,27 @@ impl Seats {
     }
 }
 
-/// The seat a notification tap launched the client on, taken once.
+/// The seat a notification tap launched the client on, taken once per launch.
 ///
 /// Every launch that no notification opened answers `None`, which is every
 /// launch on the desktop as well.
 pub(crate) async fn take(app: &tauri::AppHandle) -> Option<SessionSlot> {
+    if !first_ask() {
+        return None;
+    }
     let id = tapped(app).await?;
     Seats::open(app)?.take(id)
+}
+
+/// Whether this process still owes the page its launch's seat.
+#[cfg(any(target_os = "android", test))]
+fn first_ask() -> bool {
+    !ASKED.swap(true, Ordering::SeqCst)
+}
+
+#[cfg(not(any(target_os = "android", test)))]
+fn first_ask() -> bool {
+    true
 }
 
 /// The id of the notification the activity was launched from, when a tap
@@ -268,6 +293,15 @@ mod tests {
 
         assert!(!stale.exists(), "an expired seat was kept");
         assert_eq!(seats.take(2), Some(lead()), "the raise dropped its own entry");
+    }
+
+    /// **The launch's seat is answered to the process's first ask only**: a
+    /// page reload is not a launch, and a tap the app was too late to report
+    /// must not pull the reload to its seat.
+    #[test]
+    fn only_the_first_ask_belongs_to_the_launch() {
+        assert!(first_ask(), "the launch's own ask is answered");
+        assert!(!first_ask(), "a reload is not the launch");
     }
 
     /// **Two notifications of one run never share an id**, or the second
