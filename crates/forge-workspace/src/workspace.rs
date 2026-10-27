@@ -22574,7 +22574,7 @@ base_url = "https://openrouter.ai/api"
 
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
+                workspace.config.read().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace
             .session_chip_for(&project_key)
@@ -22612,7 +22612,7 @@ base_url = "https://openrouter.ai/api"
 
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
+                workspace.config.read().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace
             .session_chip_for(&project_key)
