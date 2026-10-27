@@ -4110,54 +4110,53 @@ describe('the conversation the chat draws', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    const turnDone = (uuid: string): unknown => ({
-      type: 'result',
-      uuid,
-      subtype: 'success',
-      is_error: false,
-    });
-    server.update({ chat_appended: { key: LEAD, msg: typed('ask') } });
-    server.update({ chat_appended: { key: LEAD, msg: said('one') } });
-    // The CLI ends the first delivered prompt's turn here, and the frames
-    // after it open a row of their own.
-    server.update({ chat_appended: { key: LEAD, msg: turnDone('r-1') } });
-    for (const frame of [
-      typed('midfirst'),
-      said('a'),
-      typed('midsecond'),
-      said('b'),
-      typed('midthird'),
-      said('c'),
-    ]) {
-      server.update({ chat_appended: { key: LEAD, msg: frame } });
-    }
+    try {
+      server.update({ chat_appended: { key: LEAD, msg: typed('ask') } });
+      server.update({ chat_appended: { key: LEAD, msg: said('one') } });
+      // The CLI ends the first delivered prompt's turn here, and the frames
+      // after it open a row of their own.
+      server.update({ chat_appended: { key: LEAD, msg: ended() } });
+      for (const frame of [
+        typed('midfirst'),
+        said('a'),
+        typed('midsecond'),
+        said('b'),
+        typed('midthird'),
+        said('c'),
+      ]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
 
-    // The page keeps one turn across the live cut, and cuts at the last row.
-    server.send(
-      page(
-        [
-          {
-            key: 't1',
-            messages: [
-              typed('ask'),
-              said('one'),
-              typed('midfirst'),
-              said('a'),
-              typed('midsecond'),
-              said('b'),
-            ],
-          },
-          { key: 't2', messages: [typed('midthird'), said('c')] },
-        ],
-        null,
-      ),
-    );
+      // The page keeps one turn across the live cut, and cuts at the last row.
+      server.send(
+        page(
+          [
+            {
+              key: 't1',
+              messages: [
+                typed('ask'),
+                said('one'),
+                typed('midfirst'),
+                said('a'),
+                typed('midsecond'),
+                said('b'),
+              ],
+            },
+            { key: 't2', messages: [typed('midthird'), said('c')] },
+          ],
+          null,
+        ),
+      );
 
-    const held = JSON.stringify(get(chat.value).turns);
-    for (const words of ['midfirst', 'midsecond', 'midthird']) {
-      expect(held.split(`"u-${words}"`).length - 1, `${words} is drawn once`).toBe(1);
+      const held = JSON.stringify(get(chat.value).turns);
+      // Every frame of the stretch, user and assistant alike: a dedupe that
+      // only knew the prompt rows would leave the answers behind.
+      for (const id of ['u-midfirst', 'a-a', 'u-midsecond', 'a-b', 'u-midthird', 'a-c']) {
+        expect(held.split(`"${id}"`).length - 1, `${id} is drawn once`).toBe(1);
+      }
+    } finally {
+      stop();
     }
-    stop();
   });
 
   /**
