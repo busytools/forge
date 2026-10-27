@@ -183,6 +183,7 @@ fn install_browser(
     // its profile from `forge.toml` here, at boot, rather than naming one.
     configure_fleet_profiles(workspace, &fleet);
     fleet.start_idle();
+    fleet.start_pairing();
     // **A host an unclean exit left behind is reaped before any profile is
     // used.** It still holds the profile's singleton lock, and the first
     // call would wedge on it; the reaper checks the process is really this

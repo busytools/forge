@@ -127,9 +127,22 @@ class BrowserHostFocusTest(unittest.TestCase):
             stages_the_main_bundle(commented_out(script, 'write_plist "$MAIN" "$APP"', "#")),
             "a commented-out write_plist call satisfied the staging pin",
         )
+        # **One control per site.** The flag is set in two independent places
+        # - a tab's window info and a popup's - and a single control that
+        # silences both proves only that neither survives alone; each site is
+        # silenced on its own here, so a pin that stopped reading one of them
+        # fails.
         self.assertFalse(
-            has_windowless(commented_out(HOST.read_text(), "windowless_rendering_enabled", "//")),
-            "a commented-out windowless line satisfied the windowless pin",
+            has_windowless(
+                commented_out(HOST.read_text(), "info.windowless_rendering_enabled = 1", "//")
+            ),
+            "a commented-out popup window info satisfied the windowless pin",
+        )
+        self.assertFalse(
+            has_windowless(
+                commented_out(HOST.read_text(), "windowless_rendering_enabled: 1", "//")
+            ),
+            "a commented-out tab window info satisfied the windowless pin",
         )
         self.assertFalse(
             claims_accessory(

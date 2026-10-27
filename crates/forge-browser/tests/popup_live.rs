@@ -15,6 +15,7 @@
 
 #![cfg(target_os = "macos")]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![allow(unsafe_code, reason = "a test reads the host's ring header")]
 
 mod support;
 
@@ -51,29 +52,52 @@ document.title=w?'popup-open':'popup-blocked';\
 document.title='ready';\
 </script>";
 
-/// Serve [`PAGE`] on a loopback port for the length of the test.
+/// Serve `body` on a loopback port for the length of the test, and answer how
+/// many requests the page took.
 ///
 /// **A real origin, not a `data:` document**: the popup starts blank and the
 /// page that opened it is an ordinary web page, which is the shape a sign-in
-/// flow arrives in.
-fn serve_page() -> u16 {
+/// flow arrives in. `delay` is the page's own latency before its headers, so
+/// a navigation can be watched while it is in flight.
+fn serve_page(
+    body: &str,
+    delay: Duration,
+) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a loopback port");
     let port = listener.local_addr().expect("the bound address").port();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&hits);
+    let body = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { return };
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request);
-            let answer = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-                 Content-Length: {}\r\nConnection: close\r\n\r\n{PAGE}",
-                PAGE.len()
-            );
-            let _ = stream.write_all(answer.as_bytes());
-            let _ = stream.flush();
+            // **One connection at a time stalls a preconnect.** A browser
+            // opens a spare socket with no request on it, and a server that
+            // reads every accepted stream in turn would wait on that socket
+            // while the real request sat unread; each connection is served
+            // on its own thread, and only a request line counts.
+            let counted = std::sync::Arc::clone(&counted);
+            let body = body.clone();
+            std::thread::spawn(move || {
+                let mut request = [0_u8; 4096];
+                let Ok(read) = stream.read(&mut request) else { return };
+                // **The document, not the favicon**: every document load also
+                // asks for one, and counting it would halve the evidence.
+                if read == 0 || !request.starts_with(b"GET / HTTP") {
+                    return;
+                }
+                counted.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                std::thread::sleep(delay);
+                let _ = stream.write_all(body.as_bytes());
+                let _ = stream.flush();
+            });
         }
     });
-    port
+    (port, hits)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -95,11 +119,11 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
     })
     .expect("the frame socket is served");
 
-    let page_port = serve_page();
+    let (page_port, _pages) = serve_page(PAGE, Duration::ZERO);
     let mut host =
         support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
     let opener_page = support::wait_for_page(port, &log, BOUND);
-    let (mut cdp, _events) = Cdp::connect_watch(port, &format!("/devtools/page/{opener_page}"))
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener_page}"))
         .await
         .expect("the page's devtools endpoint accepts");
 
@@ -272,6 +296,228 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
     Ring::unlink(&ring_name);
 }
 
+/// **A popup the opener moves is left to finish.** `window.open('about:blank')`
+/// then `w.location = authUrl` is how half the OAuth libraries start, and the
+/// popup has no committed URL while that navigation is in flight: a host that
+/// judged by the committed URL would load `about:blank` over the sign-in leg.
+/// The gate is CEF's own load start, and the proof is the page that answered -
+/// once, with its own URL committed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_popup_navigated_by_its_opener_is_left_to_finish() {
+    const SLOW: &str = "<!doctype html><meta charset=utf-8><title>slow-done</title><h1>slow</h1>";
+    let (slow_port, hits) = serve_page(SLOW, Duration::from_millis(600));
+    let opener = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <style>html,body{{margin:0;padding:0}}\
+         button{{width:300px;height:120px;font-size:24px}}</style>\
+         <button id=signin>Sign in</button>\
+         <script>\
+         document.getElementById('signin').onclick=function(){{\
+         window.__opens=(window.__opens||0)+1;\
+         if (window.__popup && !window.__popup.closed) {{ return; }}\
+         window.__popup=window.open('http://127.0.0.1:{slow_port}/','signin');\
+         document.title='opened';\
+         }};\
+         </script>"
+    );
+    let (page_port, _) = serve_page(&opener, Duration::ZERO);
+
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-popup-slow-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener_page = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener_page}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{page_port}/") }), None)
+        .await
+        .expect("the page navigates");
+    let deadline = Instant::now() + BOUND;
+    while evaluate(&mut cdp, "document.readyState").await != json!("complete") {
+        assert!(Instant::now() < deadline, "the opener never finished loading");
+        tokio::time::sleep(POLL).await;
+    }
+    wait_for_paint(&ring_name, &host).await;
+    let tab = click_until_popup(&mut host, BOUND).await;
+    wait_for_pages(port, 2, BOUND).await;
+    let slow_url = Value::String(format!("http://127.0.0.1:{slow_port}/"));
+    let deadline = Instant::now() + BOUND;
+    loop {
+        let seen = popup_value(port, &opener_page, "location.href").await;
+        if seen.as_ref() == Some(&slow_url) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the popup never committed the page its opener named; it says {seen:?} \
+             (tab {tab}, log: {})",
+            host.log()
+        );
+        tokio::time::sleep(POLL).await;
+    }
+    assert_eq!(
+        popup_value(port, &opener_page, "document.title").await,
+        Some(Value::String("slow-done".to_owned())),
+        "the popup is the page its opener named",
+    );
+    let requests = hits.load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        requests,
+        1,
+        "the popup's own navigation is the only one the page took; opens {:?}, events {:?}, log {}",
+        evaluate(&mut cdp, "window.__opens").await,
+        host.events(),
+        host.log()
+    );
+
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
+/// **A popup still starts with a browser-level client auto-attached.** CEF
+/// does not start a popup's first document while an auto-attach session holds
+/// its target - measured, and neither a pause flag nor a release changes it -
+/// so the host's own navigation is what starts it. This rig is the
+/// deterministic form of that wedge: no Playwright, one root session with the
+/// same `setAutoAttach` the driver sends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_popup_starts_under_a_browser_level_auto_attach() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-popup-wedge-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+    let (page_port, _) = serve_page(PAGE, Duration::ZERO);
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener_page = support::wait_for_page(port, &log, BOUND);
+
+    // **The wedge's own shape**: a root session with auto-attach, exactly as
+    // Playwright asks for it, held open across the click.
+    let path = browser_path(port).expect("the host answers its browser endpoint");
+    let (mut root, _root_events) = connect(port, &path).await.expect("the browser root accepts");
+    root.call(
+        "Target.setAutoAttach",
+        json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
+        None,
+    )
+    .await
+    .expect("the root session auto-attaches");
+
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener_page}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{page_port}/") }), None)
+        .await
+        .expect("the page navigates");
+    let deadline = Instant::now() + BOUND;
+    while evaluate(&mut cdp, "document.readyState").await != json!("complete") {
+        assert!(Instant::now() < deadline, "the opener never finished loading");
+        tokio::time::sleep(POLL).await;
+    }
+    wait_for_paint(&ring_name, &host).await;
+    let tab = click_until_popup(&mut host, BOUND).await;
+    wait_for_pages(port, 2, BOUND).await;
+    // **The document is the assertion.** A popup the engine never started has
+    // no URL and answers no page-domain command.
+    let deadline = Instant::now() + BOUND;
+    let mut seen = None;
+    while seen.as_ref().and_then(Value::as_str).unwrap_or_default().is_empty() {
+        seen = popup_value(port, &opener_page, "location.href").await;
+        assert!(
+            Instant::now() < deadline,
+            "the popup never committed a document under a browser-level auto-attach \
+             (tab {tab}, log: {})",
+            host.log()
+        );
+        tokio::time::sleep(POLL).await;
+    }
+    assert_eq!(
+        popup_value(port, &opener_page, "document.readyState").await,
+        Some(json!("complete")),
+        "the started popup answers a page-domain command",
+    );
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
+/// The tab a popup was reported under, when the host has said so already.
+fn created_tab(host: &support::Host, opener: u16) -> Option<u16> {
+    host.events().iter().find_map(|line| match parse(line) {
+        Some(HostEvent::TabCreated { tab, opener: Some(open), .. }) if open == opener => Some(tab),
+        _ => None,
+    })
+}
+
+/// **Click until the host reports a popup.** A gesture sent the instant a
+/// document finishes loading can be dropped by the fresh renderer, so the
+/// click is retried rather than assumed; the first one that opens a popup
+/// ends the loop.
+async fn click_until_popup(host: &mut support::Host, bound: Duration) -> u16 {
+    let deadline = Instant::now() + bound;
+    loop {
+        for action in [MouseAction::Press, MouseAction::Release] {
+            host.input(&host_line(&HostInput::Mouse {
+                tab: 1,
+                action,
+                x: 60,
+                y: 60,
+                button: 0,
+                clicks: 1,
+                modifiers: InputModifiers::default(),
+            }));
+        }
+        let settle = Instant::now() + Duration::from_millis(800);
+        loop {
+            if let Some(tab) = created_tab(host, 1) {
+                return tab;
+            }
+            if Instant::now() >= settle {
+                break;
+            }
+            tokio::time::sleep(POLL).await;
+        }
+        assert!(Instant::now() < deadline, "the page's popup never opened (log: {})", host.log());
+    }
+}
+
+/// **A gesture only lands on a page that has painted.** Wait for the host's
+/// first frame, read off its ring, before a test clicks.
+async fn wait_for_paint(name: &str, host: &support::Host) {
+    let deadline = Instant::now() + BOUND;
+    loop {
+        if let Ok(ring) = Ring::open(name) {
+            // SAFETY: the header is mapped for this process's whole life.
+            let header = unsafe { &*ring.header() };
+            if header.width.load(std::sync::atomic::Ordering::Relaxed) > 0
+                && header.height.load(std::sync::atomic::Ordering::Relaxed) > 0
+            {
+                return;
+            }
+        }
+        assert!(Instant::now() < deadline, "the opener never painted (log: {})", host.log());
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// The browser endpoint's websocket path, from the host's own `/json/version`.
+fn browser_path(port: u16) -> Option<String> {
+    let answer = support::http_get(&format!("http://127.0.0.1:{port}/json/version"))?;
+    let body = answer.split_once("\r\n\r\n").map(|(_, body)| body)?;
+    let parsed: Value = serde_json::from_str(body).ok()?;
+    let url = parsed.get("webSocketDebuggerUrl")?.as_str()?;
+    let path = url.split(&format!(":{port}")).nth(1)?.to_owned();
+    path.starts_with("/devtools/browser/").then_some(path)
+}
+
 /// The host's ring, once the host has mapped it.
 fn wait_for_ring(name: &str, host: &support::Host) -> Ring {
     let deadline = Instant::now() + BOUND;
@@ -288,6 +534,41 @@ fn wait_for_ring(name: &str, host: &support::Host) -> Ring {
             }
         }
     }
+}
+
+/// A DevTools connection bounded like every other wait here, so a target that
+/// accepts a socket and never upgrades names the failure instead of hanging.
+async fn connect(
+    port: u16,
+    path: &str,
+) -> Option<(Cdp, tokio::sync::mpsc::UnboundedReceiver<Value>)> {
+    match tokio::time::timeout(Duration::from_secs(5), Cdp::connect_watch(port, path)).await {
+        Ok(Ok(pair)) => Some(pair),
+        _ => None,
+    }
+}
+
+/// One reading of the popup's committed URL, on a connection of its own.
+///
+/// **A navigation swaps the page's DevTools target**, so a connection held
+/// across one answers `Inspected target navigated or closed`; each reading
+/// asks the host's list for the page that is not the opener and connects
+/// fresh.
+async fn popup_value(port: u16, opener_page: &str, expression: &str) -> Option<Value> {
+    let popup = pages(port).into_iter().find(|page| page != opener_page)?;
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{popup}")).await?;
+    let reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        cdp.call(
+            "Runtime.evaluate",
+            json!({ "expression": expression, "returnByValue": true }),
+            None,
+        ),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    reply.pointer("/result/value").cloned()
 }
 
 async fn evaluate(cdp: &mut Cdp, expression: &str) -> Value {

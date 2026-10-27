@@ -203,6 +203,12 @@ pub struct BrowserService {
     /// stale seat set cannot rebuild `live` over a newer one. The generations
     /// are an order because the workspace serialises its captures.
     sweep_lock: AsyncMutex<u64>,
+    /// The profile keys a popup's birth asked to pair, for [`Self::start_pairing`].
+    pairing: mpsc::UnboundedSender<String>,
+    /// The pairing queue, until `start_pairing` takes it.
+    pairing_queue: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    /// Whether `start_pairing` has already spawned its consumer.
+    pairing_started: AtomicBool,
 }
 
 /// The idle release's settings, as the boot configures them.
@@ -221,6 +227,7 @@ struct ProfilesConfig {
 impl BrowserService {
     /// A service at `root`, with the vendored driver stack read from `stack`.
     pub fn at(root: PathBuf, stack: PathBuf) -> Self {
+        let (pairing, pairing_queue) = mpsc::unbounded_channel();
         Self {
             store: Store::at(&root),
             root,
@@ -239,6 +246,9 @@ impl BrowserService {
             launch: Arc::new(AsyncMutex::new(())),
             stopped: Arc::new(AtomicBool::new(false)),
             sweep_lock: AsyncMutex::new(0),
+            pairing,
+            pairing_queue: Mutex::new(Some(pairing_queue)),
+            pairing_started: AtomicBool::new(false),
         }
     }
 
@@ -272,6 +282,49 @@ impl BrowserService {
             loop {
                 interval.tick().await;
                 service.idle_pass().await;
+            }
+        });
+    }
+
+    /// Pair a page's popup as it is born, for the process's life, once.
+    ///
+    /// **A popup has no tool call behind it.** A person clicking a sign-in
+    /// button asks this service for nothing, so a birth that waited for the
+    /// next call would leave the strip unchanged and the tab undriveable;
+    /// this pass is what turns the host's `TabCreated` into a row, a pushed
+    /// list and a tab a session can be driven on.
+    pub fn start_pairing(self: &Arc<Self>) {
+        if self.pairing_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let taken = self.pairing_queue.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let Some(mut queue) = taken else { return };
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            while let Some(key) = queue.recv().await {
+                let profile = service.profiles.lock().await.get(&key).cloned();
+                let Some(profile) = profile else { continue };
+                let (driver, port) = {
+                    let state = profile.state.lock().await;
+                    (
+                        state.driver.as_ref().map(Arc::clone),
+                        state.host.as_ref().map(|host| host.port),
+                    )
+                };
+                let (Some(driver), Some(port)) = (driver, port) else { continue };
+                // **One turn per profile, like a call's**: a pairing pass and
+                // a call never pair against each other's listing.
+                let _turn = profile.call_lock.lock().await;
+                let outcome =
+                    tokio::time::timeout(PAIR_BOUND, service.reconcile(&profile, &driver, port))
+                        .await;
+                if outcome.is_err() {
+                    tracing::debug!(
+                        event_name = "browser_pair_slow",
+                        profile = %key,
+                        "a popup's pairing pass outlasted its bound"
+                    );
+                }
             }
         });
     }
@@ -484,6 +537,7 @@ impl BrowserService {
             call_lock: AsyncMutex::new(()),
             host_tab_events: AsyncMutex::new(None),
             deferred_tab_events: Mutex::new(Vec::new()),
+            pairing: self.pairing.clone(),
             state: AsyncMutex::new(State::default()),
             touch: Mutex::new(Touch::now()),
             ended: AtomicBool::new(false),
@@ -3342,6 +3396,10 @@ pub struct Profile {
     /// popup before the driver lists its page**, so an unmatched event waits
     /// for the next pass rather than being lost.
     deferred_tab_events: Mutex<Vec<(u64, HostEvent)>>,
+    /// Where a page's popup asks for a pairing pass. **A birth nothing asked
+    /// for must still become a row**: a person clicking "Continue with
+    /// Google" makes no tool call, so the service cannot wait for one.
+    pairing: mpsc::UnboundedSender<String>,
     state: AsyncMutex<State>,
     /// When a seat last used this profile.
     touch: Mutex<Touch>,
@@ -4346,6 +4404,9 @@ impl Profile {
         let recorded = self.recorded.clone();
         let dir = self.dir.clone();
         let key = self.key.clone();
+        // **A popup's birth pairs itself.** Nothing a person clicks is a call
+        // this service can wait for, so the birth asks for a pass here.
+        let pairing = self.pairing.clone();
         tokio::spawn(async move {
             let mut pending: std::collections::VecDeque<HostEvent> = pending.into();
             loop {
@@ -4366,6 +4427,12 @@ impl Profile {
                             generation,
                             HostEvent::TabCreated { tab, opener, url, request },
                         ));
+                        // **A popup is nobody's call**: its row has to appear
+                        // on its own, or the person who opened it sees the
+                        // screen unchanged.
+                        if opener.is_some() {
+                            let _ = pairing.send(key.clone());
+                        }
                     }
                     HostEvent::TabClosed { tab } => {
                         tracing::debug!(
@@ -4624,6 +4691,12 @@ async fn live_target(profile: &Arc<Profile>, tab: u16) -> LiveTarget {
 
 /// How long the watch waits for a page target that is not there yet.
 const NAV_RETRY: Duration = Duration::from_millis(500);
+
+/// How long one birth's pairing pass is given. **A pass that outlasts this is
+/// named rather than left to the driver's own 150 s**: the person is waiting
+/// on a popup's row, and a listing that never returns is the wedge a stuck
+/// popup target used to cause.
+const PAIR_BOUND: Duration = Duration::from_secs(30);
 
 /// Watch the focused tab's own navigations and publish the bar's arrows.
 ///

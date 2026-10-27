@@ -923,7 +923,11 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
         stack.display()
     );
     let scratch = tempfile::tempdir().expect("a scratch root");
-    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let service = std::sync::Arc::new(BrowserService::at(scratch.path().to_path_buf(), stack));
+    // **The boot's own pairing pass.** A popup has no call behind it, so this
+    // is what turns its birth into a row; without it this test would be the
+    // only thing reconciling, and the person would see nothing.
+    service.start_pairing();
     let seat = SessionSlot::lead("TestOrg", "proj");
     let url = format!("http://127.0.0.1:{}/", serve_page(PAGE));
 
@@ -965,20 +969,54 @@ async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
             .expect("the click is accepted");
     }
 
-    // **The next list reconciles**: the host's birth meets the popup's page.
-    let listed = service
-        .call(&seat, "browser_tabs", json!({ "action": "list" }))
-        .await
-        .expect("the list answers");
-    let rows = service.tabs(&seat).await.expect("rows").rows;
-    assert_eq!(rows.len(), 2, "the popup joins the profile: {rows:?}");
+    // **Nobody calls: the row appears on its own.** A person clicking a sign-in
+    // button makes no request of the service, so the birth's own pairing pass
+    // is what has to produce it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let rows = loop {
+        let rows = service.tabs(&seat).await.expect("rows").rows;
+        if rows.len() == 2 {
+            break rows;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the popup's row never appeared without a call: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     let popup = rows.iter().map(|row| row.number).max().expect("two rows");
     assert_ne!(popup, opener, "the popup has a number of its own");
     assert!(rows.iter().all(|row| row.owner == seat), "both tabs are the opener's session's");
+
+    // **The list is bounded like a call.** A listing that never returns is the
+    // wedge a stuck popup target used to cause; a future one names it here
+    // rather than running into nextest's own kill.
+    let listed = tokio::time::timeout(
+        Duration::from_secs(30),
+        service.call(&seat, "browser_tabs", json!({ "action": "list" })),
+    )
+    .await
+    .expect("the tab listing answers within its bound")
+    .expect("the list answers");
     let text = text_of(&listed);
     assert!(
         text.lines().any(|line| line.starts_with(&format!("- {popup}: (current) "))),
         "the popup is the session's current tab: {text}",
+    );
+
+    // **The popup is driven like any other page.** The fix's premise is that
+    // a document the host started is one the driver's paused session can
+    // drive; an about:blank document answers trivially and still proves it.
+    let evaluated = tokio::time::timeout(
+        Duration::from_secs(30),
+        service.call(&seat, "browser_evaluate", json!({ "function": "() => document.readyState" })),
+    )
+    .await
+    .expect("a call against the popup answers within its bound")
+    .expect("the popup answers a page call");
+    assert!(
+        text_of(&evaluated).contains("complete"),
+        "the popup is driven like any other page: {evaluated:?}",
     );
 
     service

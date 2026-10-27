@@ -324,6 +324,8 @@ struct Tab {
     browser: Browser,
     /// The tab whose page opened this one; `None` for a tab the host made.
     opener: Option<u16>,
+    /// Whether this tab's main frame has started a load; see `TabParts`.
+    loaded: Arc<AtomicBool>,
     pending: Arc<Pending>,
     /// Ends the tab's frame worker when the tab goes.
     stop: Arc<AtomicBool>,
@@ -374,6 +376,11 @@ const MAX_POPUP_TABS: usize = 16;
 /// commits on its own does so within a frame or two, and one still empty at
 /// this point never will.
 const POPUP_BOOT_GRACE_MS: u64 = 250;
+
+/// How many times the host offers a popup its navigation. **Not one**: a load
+/// the engine drops on the first offer is still started by the second, and a
+/// popup that never starts at all must not be retried for ever.
+const POPUP_BOOT_TRIES: u8 = 8;
 
 /// The host's recording, shared by the paint callback and the input pump.
 ///
@@ -493,6 +500,10 @@ struct TabParts {
     stop: Arc<AtomicBool>,
     key: Arc<AtomicBool>,
     size: Arc<crate::osr::ViewSize>,
+    /// Whether CEF has started a load for this tab's main frame. **The
+    /// popup bootstrap reads it**: a popup that started its own navigation
+    /// must not be navigated again.
+    loaded: Arc<AtomicBool>,
     paint: crate::osr::PaintSink,
     render: RenderHandler,
     page_audio: AudioHandler,
@@ -510,6 +521,7 @@ struct AdmittedPopup {
     stop: Arc<AtomicBool>,
     key: Arc<AtomicBool>,
     size: Arc<crate::osr::ViewSize>,
+    loaded: Arc<AtomicBool>,
 }
 
 impl AdmittedPopup {
@@ -548,9 +560,9 @@ struct PopupGate {
     /// the first row exists.
     live: Mutex<HashMap<u16, usize>>,
     /// Popups whose own first document has not started: their tab, the
-    /// navigation they asked for, and the moment the host stops waiting for
-    /// CEF to start it.
-    boot: Mutex<Vec<(u16, String, u64)>>,
+    /// navigation they asked for, when to look again, and how many attempts
+    /// are left.
+    boot: Mutex<Vec<(u16, String, u64, u8)>>,
 }
 
 impl PopupGate {
@@ -586,7 +598,8 @@ impl PopupGate {
         );
         let page_audio = crate::audio::handler(self.profile, tab, audio);
         let downloads = crate::download::handler(&self.downloads_dir, tab);
-        TabParts { pending, stop, key, size, paint, render, page_audio, downloads }
+        let loaded = Arc::new(AtomicBool::new(false));
+        TabParts { pending, stop, key, size, loaded, paint, render, page_audio, downloads }
     }
 
     /// The client one tab runs on; a popup's carries its own admission so CEF's
@@ -604,6 +617,7 @@ impl PopupGate {
             parts.render.clone(),
             parts.page_audio.clone(),
             parts.downloads.clone(),
+            Arc::clone(&parts.loaded),
             Arc::clone(self),
             popup,
         )
@@ -638,6 +652,7 @@ impl PopupGate {
             stop: Arc::clone(&parts.stop),
             key: Arc::clone(&parts.key),
             size: Arc::clone(&parts.size),
+            loaded: Arc::clone(&parts.loaded),
         };
         let client = self.client(tab, &parts, Some(admitted.clone()));
         Some((client, admitted))
@@ -649,7 +664,7 @@ impl PopupGate {
     /// later pass; a popup that closes itself at once is then a row that ends
     /// instead of one that never existed.
     fn adopt(&self, browser: Browser, admitted: AdmittedPopup) {
-        let AdmittedPopup { tab, opener, url, pending, stop, key, size } = admitted;
+        let AdmittedPopup { tab, opener, url, pending, stop, key, size, loaded } = admitted;
         // **The number was reserved at admission**, so an open row here is a
         // pairing bug; the browser is closed rather than left as a tab
         // nothing paints.
@@ -678,13 +693,14 @@ impl PopupGate {
         // own first document.** Measured: the target appears as `other`,
         // its URL stays empty and every page-domain command times out, while
         // the same popup in a host with no attached client runs. The
-        // navigation it asked for is kept here and issued by the pump once
-        // the grace has passed and the frame is still empty; issuing it now
-        // would race CEF's own commit and wipe a page that filled itself in.
+        // navigation it asked for is kept here for the pump, which issues it
+        // only while no load has started; issuing it now would race CEF's
+        // own commit and wipe a page that filled itself in.
         self.boot.lock().unwrap_or_else(PoisonError::into_inner).push((
             tab,
             url.clone(),
             elapsed_ms().saturating_add(POPUP_BOOT_GRACE_MS),
+            POPUP_BOOT_TRIES,
         ));
         {
             let mut tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
@@ -693,6 +709,7 @@ impl PopupGate {
                 Tab {
                     browser,
                     opener: Some(opener),
+                    loaded: Arc::clone(&loaded),
                     pending: Arc::clone(&pending),
                     stop: Arc::clone(&stop),
                     key: Arc::clone(&key),
@@ -715,9 +732,13 @@ impl PopupGate {
         });
     }
 
-    /// Start a popup's first document when CEF has not. **The grace is what
-    /// keeps this off a popup that started on its own**: the frame of one
-    /// that committed is not empty, and it is left alone.
+    /// Start a popup's first document when CEF has not. **A started load is
+    /// the signal, never a committed URL**: a popup at `about:blank` that the
+    /// page then moves with `location = authUrl` keeps its old URL while the
+    /// sign-in leg is in flight, and navigating it there would throw that
+    /// away. A popup CEF started on its own is dropped here; one that never
+    /// started is navigated again on the next tick, until [`POPUP_BOOT_TRIES`]
+    /// runs out.
     fn bootstrap(&self, now: u64) {
         let mut due = Vec::new();
         {
@@ -731,15 +752,38 @@ impl PopupGate {
                 }
             }
         }
-        for (tab, url, _) in due {
-            let browser = {
+        for (tab, url, _, tries) in due {
+            let (browser, loaded) = {
                 let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-                tabs.open.get(&tab).map(|entry| entry.browser.clone())
+                match tabs.open.get(&tab) {
+                    Some(entry) => (Some(entry.browser.clone()), Some(Arc::clone(&entry.loaded))),
+                    None => (None, None),
+                }
             };
-            let Some(frame) = browser.and_then(|browser| browser.main_frame()) else { continue };
-            if CefStringUtf16::from(&frame.url()).to_string().is_empty() {
-                let target = if url.is_empty() { "about:blank" } else { url.as_str() };
-                frame.load_url(Some(&CefString::from(target)));
+            let (Some(browser), Some(loaded)) = (browser, loaded) else { continue };
+            // **A navigation in flight is not the host's to replace**, and CEF
+            // reports one two ways: `is_loading` as soon as it has accepted
+            // the navigation (measured on a popup opened straight at a URL,
+            // where the load start callback had not fired yet), and the load
+            // start callback once it runs.
+            if loaded.load(Ordering::Acquire) || browser.is_loading() != 0 {
+                continue;
+            }
+            let Some(frame) = browser.main_frame() else { continue };
+            // **A document already there is not this call's to replace**, even
+            // with no load seen for it.
+            if !CefStringUtf16::from(&frame.url()).to_string().is_empty() {
+                continue;
+            }
+            let target = if url.is_empty() { "about:blank" } else { url.as_str() };
+            frame.load_url(Some(&CefString::from(target)));
+            if tries > 1 {
+                self.boot.lock().unwrap_or_else(PoisonError::into_inner).push((
+                    tab,
+                    url,
+                    now.saturating_add(POPUP_BOOT_GRACE_MS),
+                    tries - 1,
+                ));
             }
         }
     }
@@ -834,6 +878,7 @@ impl HostRuntime {
                 Tab {
                     browser,
                     opener: None,
+                    loaded: Arc::clone(&parts.loaded),
                     pending: Arc::clone(&parts.pending),
                     stop: Arc::clone(&parts.stop),
                     key: Arc::clone(&parts.key),
@@ -1365,9 +1410,26 @@ fn keep_awake() {
 }
 
 cef::wrap_load_handler! {
-    struct HostLoadHandler {}
+    struct HostLoadHandler {
+        // **The popup bootstrap's one signal.** A popup that has started a
+        // load of its own must never be navigated again, and a committed URL
+        // cannot say that: the frame keeps its last URL while the next load
+        // is in flight.
+        loaded: Arc<AtomicBool>,
+    }
 
     impl LoadHandler {
+        fn on_load_start(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            _transition_type: TransitionType,
+        ) {
+            if frame.is_some_and(|frame| frame.is_main() == 1) {
+                self.loaded.store(true, Ordering::Release);
+            }
+        }
+
         fn on_load_end(
             &self,
             browser: Option<&mut Browser>,
@@ -1440,7 +1502,7 @@ cef::wrap_life_span_handler! {
             _popup_features: Option<&PopupFeatures>,
             window_info: Option<&mut WindowInfo>,
             client: Option<&mut Option<Client>>,
-            _settings: Option<&mut BrowserSettings>,
+            settings: Option<&mut BrowserSettings>,
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut i32>,
         ) -> i32 {
@@ -1450,6 +1512,12 @@ cef::wrap_life_span_handler! {
             };
             if let Some(info) = window_info {
                 admitted.window_info(info);
+            }
+            // **Opaque, like every tab.** CEF's default leaves the popup
+            // transparent, and the takeover's dark ground would show through
+            // a page with no background rule.
+            if let Some(settings) = settings {
+                settings.background_color = 0xFF04_050A;
             }
             if let Some(out) = client {
                 *out = Some(popup_client);
@@ -1485,6 +1553,9 @@ cef::wrap_client! {
         // The page's downloads land beside the profile before they are the
         // controlling client's to save.
         downloads: DownloadHandler,
+        // Whether this tab's main frame has started a load, for the popup
+        // bootstrap.
+        loaded: Arc<AtomicBool>,
         // A page's `window.open` becomes a tab of this profile here.
         popups: Arc<PopupGate>,
         // Set on a popup's own client: the tab CEF is creating for it.
@@ -1509,7 +1580,7 @@ cef::wrap_client! {
         }
 
         fn load_handler(&self) -> Option<LoadHandler> {
-            Some(HostLoadHandler::new())
+            Some(HostLoadHandler::new(Arc::clone(&self.loaded)))
         }
 
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
@@ -1524,6 +1595,48 @@ cef::wrap_client! {
 
 #[cfg(test)]
 mod tests {
+    /// A popup gate on a scratch ring, for the tests that need one.
+    fn gate(ring: &std::sync::Arc<crate::osr::Ring>) -> std::sync::Arc<super::PopupGate> {
+        std::sync::Arc::new(super::PopupGate {
+            ring: std::sync::Arc::clone(ring),
+            paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            recording: super::Recording::new(),
+            profile: 1,
+            frames: std::path::PathBuf::from("/tmp/frames.sock"),
+            fps: 30,
+            quality: 75,
+            downloads_dir: std::path::PathBuf::from("/tmp"),
+            tabs: std::sync::Arc::new(std::sync::Mutex::new(super::Tabs::default())),
+            live: std::sync::Mutex::new(std::collections::HashMap::new()),
+            boot: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    /// **A page's popups are bounded, and the bound is given back.** A
+    /// dropped release would refuse a page's sign-in for the host's whole
+    /// life once it had opened sixteen popups; a double release would let the
+    /// cap be walked past.
+    #[test]
+    fn the_popup_cap_counts_reservations_and_gives_them_back() {
+        let name = format!("/forge-cef-test-cap-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        let mut held = Vec::new();
+        for _ in 0..super::MAX_POPUP_TABS {
+            held.push(popups.admit(1, "about:blank").expect("a popup within the cap"));
+        }
+        assert!(popups.admit(1, "about:blank").is_none(), "the cap refuses the next popup");
+        assert!(
+            popups.admit(2, "about:blank").is_some(),
+            "another page's sign-in is not refused by this page's popups",
+        );
+        popups.release(1);
+        assert!(popups.admit(1, "about:blank").is_some(), "a released place is usable again");
+        popups.release(2);
+        popups.release(1);
+        drop(held);
+        crate::osr::Ring::unlink(&name);
+    }
 
     /// **A pid the signal cannot name is refused.** `0` probes the caller's
     /// own group and a value past `i32::MAX` casts negative; either reads as
@@ -1619,19 +1732,7 @@ mod tests {
         let ring = Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
         let paint: crate::osr::PaintSink = Arc::new(|_, _, _, _| {});
         let audio: crate::audio::AudioSink = Arc::new(|_| {});
-        let popups = Arc::new(super::PopupGate {
-            ring: Arc::clone(&ring),
-            paused: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            recording: super::Recording::new(),
-            profile: 1,
-            frames: std::path::PathBuf::from("/tmp/frames.sock"),
-            fps: 30,
-            quality: 75,
-            downloads_dir: std::path::PathBuf::from("/tmp"),
-            tabs: Arc::new(std::sync::Mutex::new(super::Tabs::default())),
-            live: std::sync::Mutex::new(std::collections::HashMap::new()),
-            boot: std::sync::Mutex::new(Vec::new()),
-        });
+        let popups = gate(&ring);
         let client = super::HostClient::new(
             1,
             Arc::clone(&ring),
@@ -1639,6 +1740,7 @@ mod tests {
             crate::osr::handler(Arc::clone(&ring), None),
             crate::audio::handler(1, 1, audio),
             crate::download::handler(std::path::Path::new("/tmp"), 1),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
             popups,
             None,
         );
