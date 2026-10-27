@@ -42,6 +42,62 @@ impl Drop for HostGuard {
     }
 }
 
+/// The next frame for `tab`, waiting past `after`'s sequence number.
+async fn next_frame(
+    frames: &mut tokio::sync::watch::Receiver<Option<forge_primitives::browser::BrowserFrame>>,
+    tab: u16,
+    after: Option<u32>,
+) -> forge_primitives::browser::BrowserFrame {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(frame) = frames.borrow_and_update().clone()
+            && frame.tab == tab
+            && after.is_none_or(|seq| frame.seq > seq)
+        {
+            return frame;
+        }
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        tokio::time::timeout(left, frames.changed())
+            .await
+            .expect("a frame arrives")
+            .expect("the frame channel is open");
+    }
+}
+
+/// Serve `page` on a loopback port for the length of the test.
+fn serve_page(page: &'static str) -> u16 {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a loopback port");
+    let port = listener.local_addr().expect("the bound address").port();
+    std::thread::spawn(move || {
+        use std::io::{Read as _, Write as _};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                page.len()
+            );
+            let _ = stream.write_all(answer.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    port
+}
+
+/// Every text part of a tool answer, joined.
+fn text_of(parts: &[forge_primitives::browser::BrowserPart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            forge_primitives::browser::BrowserPart::Text { text } => Some(text.as_str()),
+            forge_primitives::browser::BrowserPart::Image { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn move_event() -> BrowserInputEvent {
     BrowserInputEvent::Mouse {
         action: MouseAction::Move,
@@ -832,5 +888,116 @@ async fn an_agent_resize_is_the_window_until_the_next_resize() {
     )
     .await;
 
+    service.close(&seat).await.expect("the profile closes");
+}
+
+/// **A page's popup joins the profile as a tab under its opener's session**,
+/// and the session goes back to the opener when the popup closes.
+///
+/// The join is the server's half: the host's `TabCreated` carries an opener,
+/// the driver's listing names the popup's page, and the registry files the tab
+/// under the opener's session and makes it that session's current tab.
+///
+/// **This is the red the driver's auto-attach cost.** A CEF popup whose target
+/// an attached DevTools client auto-attaches to never starts its own first
+/// document: the popup stayed at an empty URL, answered no page-domain
+/// command, and the driver's next listing hung on it until the call's bound.
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pages_popup_joins_the_profile_and_hands_the_session_back() {
+    // **A page whose button keeps the handle `window.open` answered**, the way
+    // a sign-in library does; the title says which way it went. Served over
+    // loopback, the origin a sign-in flow really arrives from.
+    const PAGE: &str = "<!doctype html><meta charset=utf-8>\
+        <style>html,body{margin:0;padding:0}\
+        #b{position:absolute;left:0;top:0;width:300px;height:120px;font-size:20px}</style>\
+        <button id=b onclick=\"window.__popup=window.open('about:blank','signin');\
+        document.title=window.__popup?'popup-open':'popup-blocked'\">sign in</button>";
+
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let seat = SessionSlot::lead("TestOrg", "proj");
+    let url = format!("http://127.0.0.1:{}/", serve_page(PAGE));
+
+    service
+        .call(&seat, "browser_snapshot", json!({}))
+        .await
+        .expect("the first page call opens the session's tab");
+    let attachment = service.attach(7, &seat, None).await.expect("the seat's profile opens");
+    let key = attachment.key.clone();
+    let opener = attachment.tab;
+    let mut frames = attachment.frames;
+    let first = next_frame(&mut frames, opener, None).await;
+
+    service
+        .call(&seat, "browser_navigate", json!({ "url": url }))
+        .await
+        .expect("the page navigates");
+    // **A gesture only lands on a page that has painted since it navigated.**
+    let _painted = next_frame(&mut frames, opener, Some(first.seq)).await;
+
+    service.take_control(&key, opener, 7).await.expect("the viewer takes control");
+    for (seq, action) in [(1_u64, MouseAction::Press), (2, MouseAction::Release)] {
+        service
+            .input(
+                &key,
+                opener,
+                7,
+                seq,
+                &BrowserInputEvent::Mouse {
+                    action,
+                    x: 60.0,
+                    y: 60.0,
+                    button: 0,
+                    clicks: 1,
+                    modifiers: InputModifiers::default(),
+                },
+            )
+            .await
+            .expect("the click is accepted");
+    }
+
+    // **The next list reconciles**: the host's birth meets the popup's page.
+    let listed = service
+        .call(&seat, "browser_tabs", json!({ "action": "list" }))
+        .await
+        .expect("the list answers");
+    let rows = service.tabs(&seat).await.expect("rows").rows;
+    assert_eq!(rows.len(), 2, "the popup joins the profile: {rows:?}");
+    let popup = rows.iter().map(|row| row.number).max().expect("two rows");
+    assert_ne!(popup, opener, "the popup has a number of its own");
+    assert!(rows.iter().all(|row| row.owner == seat), "both tabs are the opener's session's");
+    let text = text_of(&listed);
+    assert!(
+        text.lines().any(|line| line.starts_with(&format!("- {popup}: (current) "))),
+        "the popup is the session's current tab: {text}",
+    );
+
+    service
+        .call(&seat, "browser_tabs", json!({ "action": "close", "index": popup }))
+        .await
+        .expect("the popup closes");
+    let rows = service.tabs(&seat).await.expect("rows").rows;
+    assert_eq!(rows.len(), 1, "the opener is the tab left: {rows:?}");
+    assert_eq!(rows[0].number, opener);
+    let listed = service
+        .call(&seat, "browser_tabs", json!({ "action": "list" }))
+        .await
+        .expect("the list answers");
+    let text = text_of(&listed);
+    assert!(
+        text.lines().any(|line| line.starts_with(&format!("- {opener}: (current) "))),
+        "the session is back on the opener: {text}",
+    );
+
+    service.detach(7).await;
     service.close(&seat).await.expect("the profile closes");
 }

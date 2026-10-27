@@ -55,7 +55,18 @@ def stages_the_main_bundle(script: str) -> bool:
 
 
 def has_windowless(host: str) -> bool:
-    return any("windowless_rendering_enabled: 1" in line for line in code_lines(host, "//"))
+    """Every window info the host hands CEF carries the flag.
+
+    **Both sites, not one**: a tab is created with a struct literal, and a
+    page's popup gets the flag written onto the window info CEF hands its
+    callback. A pin that matched only the literal would let the popup's
+    assignment go and the host would create windowed browsers again.
+    """
+    code = "\n".join(code_lines(host, "//"))
+    return (
+        "windowless_rendering_enabled: 1" in code
+        and "info.windowless_rendering_enabled = 1" in code
+    )
 
 
 def claims_accessory(application: str) -> bool:
@@ -95,8 +106,8 @@ class BrowserHostFocusTest(unittest.TestCase):
     def test_the_browser_is_created_windowless(self):
         self.assertTrue(
             has_windowless(HOST.read_text()),
-            "the host no longer creates CEF's browser windowless, so it has a "
-            "window to bring to the front",
+            "the host no longer creates every browser windowless - a tab's own "
+            "window info and a popup's - so it has a window to bring to the front",
         )
 
     def test_the_process_claims_the_accessory_policy(self):

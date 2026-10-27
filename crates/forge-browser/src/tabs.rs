@@ -179,6 +179,15 @@ impl TabRegistry {
     pub fn close(&mut self, tab: u16) -> Option<SessionSlot> {
         self.unresolved.remove(&tab);
         let removed = self.tabs.remove(&tab)?;
+        // **A popup opened by a popup keeps its chain.** The row that named
+        // this tab as its opener takes this tab's own opener, so a middle
+        // popup closing leaves the leaf pointing at the page still there
+        // rather than at a number nobody holds.
+        for other in self.tabs.values_mut() {
+            if other.opener == Some(tab) {
+                other.opener = removed.opener;
+            }
+        }
         let opener = removed.opener.filter(|opener| self.tabs.contains_key(opener));
         match opener {
             Some(opener) => {
@@ -618,6 +627,24 @@ mod tests {
         registry.close(opener);
         assert_eq!(registry.current(&worker), Some(popup), "the popup keeps its place");
         assert_eq!(registry.owner(popup), Some(&worker), "and its owner");
+
+        // **A chain survives its middle.** A popup opened by a popup hands the
+        // session back past the one that has gone, not to a number nobody
+        // holds.
+        let root = registry.adopt(4, worker.clone(), "p4", "t4", "four", "u").expect("a root");
+        let middle =
+            registry.create_under(root, 5, "p5", "t5", "five", "http://e/").expect("the middle");
+        let leaf =
+            registry.create_under(middle, 6, "p6", "t6", "six", "http://f/").expect("the leaf");
+        assert_eq!(registry.current(&worker), Some(leaf), "the leaf is where the session is");
+        registry.close(middle);
+        assert_eq!(registry.current(&worker), Some(leaf), "the middle closing leaves the leaf");
+        registry.close(leaf);
+        assert_eq!(
+            registry.current(&worker),
+            Some(root),
+            "the leaf hands the session back past the middle",
+        );
     }
 
     /// **The export is Playwright's own line plus one machine line.** The

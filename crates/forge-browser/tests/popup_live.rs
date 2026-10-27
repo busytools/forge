@@ -163,10 +163,14 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
         host.log()
     );
 
-    let tab = wait_for_created(&host, 1, BOUND).await;
+    let tab = wait_for_created(&host, 1, &[], BOUND).await;
     println!("the popup is tab {tab}");
-    let frame = wait_for_frame(&painted, tab, BOUND).await;
-    println!("the popup paints tab {} ({}x{})", frame.tab, frame.width, frame.height);
+    let blank = wait_for_frame(&painted, tab, BOUND).await;
+    assert_eq!(
+        (blank.width, blank.height),
+        (800, 600),
+        "the popup paints the profile's view, not the size window.open asked for",
+    );
 
     // **A popup takes input as the tab it is.** The page that opened it draws
     // a button into it (same origin, so this is the opener's own write) and
@@ -184,6 +188,14 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
     )
     .await;
     assert_eq!(drawn, json!("p"), "the popup has a button at the point the click names");
+
+    // **The popup's own paint is what proves it renders.** Its first frame is
+    // a blank `about:blank`; the frame that differs from it is the composited
+    // DOM, so a view drawn but never composited fails here rather than
+    // passing on the blank one.
+    let painted_popup = wait_for_repaint(&painted, tab, &blank, BOUND).await;
+    assert_eq!((painted_popup.width, painted_popup.height), (800, 600), "the repaint is the view");
+
     for action in [MouseAction::Press, MouseAction::Release] {
         host.input(&host_line(&HostInput::Mouse {
             tab,
@@ -225,6 +237,36 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
     );
     let listed = wait_for_pages(port, 1, BOUND).await;
     assert_eq!(listed, vec![opener_page], "the popup's page is gone and the opener's is not");
+
+    // **The other order, on the same host**: the opener closes under the popup
+    // it opened, and the popup is the page left standing.
+    for action in [MouseAction::Press, MouseAction::Release] {
+        host.input(&host_line(&HostInput::Mouse {
+            tab: 1,
+            action,
+            x: 60,
+            y: 60,
+            button: 0,
+            clicks: 1,
+            modifiers: InputModifiers::default(),
+        }));
+    }
+    let second = wait_for_created(&host, 1, &[tab], BOUND).await;
+    println!("the second popup is tab {second}");
+    wait_for_pages(port, 2, BOUND).await;
+    let _ = cdp.call("Page.close", json!({}), None).await;
+    wait_for_closed(&host, 1, BOUND).await;
+    let left = wait_for_pages(port, 1, BOUND).await;
+    assert_eq!(left.len(), 1, "the popup is the page left standing: {left:?}");
+    let (mut popup_cdp, _popup_events) =
+        Cdp::connect_watch(port, &format!("/devtools/page/{}", left[0]))
+            .await
+            .expect("the popup still answers its devtools endpoint");
+    assert_eq!(
+        evaluate(&mut popup_cdp, "location.href").await,
+        Value::String("about:blank".to_owned()),
+        "the popup is a live page after its opener closed",
+    );
 
     assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
     Ring::unlink(&ring_name);
@@ -269,13 +311,15 @@ async fn wait_for_title(cdp: &mut Cdp, want: &[&str], bound: Duration) -> String
     }
 }
 
-/// The tab number of the popup reported under `opener`.
-async fn wait_for_created(host: &support::Host, opener: u16, bound: Duration) -> u16 {
+/// The tab number of the next popup reported under `opener`, ignoring any
+/// number already in `seen`.
+async fn wait_for_created(host: &support::Host, opener: u16, seen: &[u16], bound: Duration) -> u16 {
     let deadline = Instant::now() + bound;
     loop {
         for line in host.events() {
             if let Some(HostEvent::TabCreated { tab, opener: Some(open), .. }) = parse(&line)
                 && open == opener
+                && !seen.contains(&tab)
             {
                 return tab;
             }
@@ -321,6 +365,26 @@ async fn wait_for_frame(
             }
         }
         assert!(Instant::now() < deadline, "tab {tab} never painted");
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// One tab's next frame whose bytes differ from `blank`: the repaint a DOM
+/// change caused.
+async fn wait_for_repaint(
+    frames: &std::sync::mpsc::Receiver<Frame>,
+    tab: u16,
+    blank: &Frame,
+    bound: Duration,
+) -> Frame {
+    let deadline = Instant::now() + bound;
+    loop {
+        while let Ok(frame) = frames.try_recv() {
+            if frame.tab == tab && frame.bytes != blank.bytes {
+                return frame;
+            }
+        }
+        assert!(Instant::now() < deadline, "tab {tab} never repainted after its DOM changed");
         tokio::time::sleep(POLL).await;
     }
 }
