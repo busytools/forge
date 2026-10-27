@@ -213,25 +213,65 @@ describe("the takeover bar's tab picker", () => {
 
 /**
  * **The feedback line's mic and send are the dock's own controls**, so their
- * rules have to be bare: a rule scoped under `.dock .qrow` reaches the dock's
- * row and nothing in this bar, which is how both buttons sat at a UA button's
- * ~19px width on a finger while the dock's own measured 44.
+ * rules have to be bare and keep the box they give: a rule scoped under
+ * `.dock .qrow` reaches the dock's row and nothing in this bar, and a bare
+ * rule that lost its 26px box falls back to UA sizing in both rows - the same
+ * defect at a mouse's pointer as the 19px-wide one on a finger.
  *
- * jsdom has no layout, so what is pinned is the rule the sheet writes rather
- * than a measured box; the 390x844 pointer:coarse measurement is the PR's.
+ * jsdom has no layout, so what is pinned is the rule the sheet writes and the
+ * markup that wears it, not a measured box; the 390x844 pointer:coarse
+ * measurement is the PR's.
  */
 describe("the takeover bar's feedback controls", () => {
-  it("takes the dock's mic and send sizing at the sheet's root", () => {
+  it("takes the dock's mic and send box at the sheet's root", () => {
     for (const control of ['micb', 'sendb']) {
       expect(
         SHEET,
-        `.${control} is scoped to the dock, so the bar's keeps the UA's chrome`,
-      ).toMatch(new RegExp(`(^|\\n)\\.${control} \\{`));
+        `.${control} is scoped to the dock, or lost the 26px box the dock gives it`,
+      ).toMatch(new RegExp(`(^|\\n)\\.${control} \\{ flex: none; width: 26px; height: 26px;`));
       expect(SHEET, `.${control} loses its width floor on a finger`).toMatch(
         new RegExp(
           `@media \\(pointer: coarse\\) \\{\\n(?: {2}[^\\n]*\\n)*? {2}\\.${control} \\{ min-height: 44px; min-width: 44px; \\}`,
         ),
       );
     }
+  });
+
+  /// **The rules reach the bar only through the class the markup wears**, and
+  /// dropping one passes every rule pin above: the sheet would style a class
+  /// no control carries.
+  it('draws both controls in the feedback line, under the shared classes', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone: () => {},
+        onnotnow: () => {},
+        onfeedback: () => {},
+        dictation: true,
+        notes: 'the upload form rejected the file',
+      },
+    });
+    flushSync();
+    const wrong = [...target.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('wrong'),
+    );
+    if (wrong === undefined) throw new Error('the bar draws no feedback door');
+    wrong.click();
+    flushSync();
+    expect(
+      target.querySelector('.tb-feedback .micb'),
+      'the feedback line lost the mic, so the sheet styles nothing here',
+    ).not.toBeNull();
+    expect(
+      target.querySelector('.tb-feedback .sendb'),
+      'the feedback line lost the send, so the sheet styles nothing here',
+    ).not.toBeNull();
   });
 });
