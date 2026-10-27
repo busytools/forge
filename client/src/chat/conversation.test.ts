@@ -4160,6 +4160,84 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
+  /**
+   * **A frame the page moved between its rows belongs to the row it moved to.**
+   * The first matching here is by NAME - the page repeats the turn it held
+   * under the same key - and a merged row that read only its own copy put a
+   * frame the page had left out of this row back into it, beside the row the
+   * page moved it to.
+   */
+  it('leaves a frame the page moved to another row out of a repeated row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(
+        page(
+          [
+            { key: 't1', messages: [typed('turn-one'), said('one-a')] },
+            { key: 't2', messages: [typed('turn-two'), said('two-a')] },
+          ],
+          '1',
+        ),
+      );
+      // The re-read cut the turns differently: the frame that closed t2 now
+      // closes t1's repetition, and t2's row no longer carries it.
+      server.send(
+        page(
+          [
+            { key: 't1', messages: [typed('turn-one'), said('one-a'), said('two-a')] },
+            { key: 't2', messages: [typed('turn-two')] },
+          ],
+          '2',
+        ),
+      );
+
+      const held = JSON.stringify(get(chat.value).turns);
+      expect(held.split('"a-two-a"').length - 1, 'the frame the page moved draws once').toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **The same, where the page's rows carry no names.** The merge then finds
+   * each held turn by the frame the two copies share, which is the other arm
+   * that reconciles a row - and a held frame the page carries in another row
+   * must be left there just the same.
+   */
+  it('leaves a frame the page moved to another row out of an unnamed row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(
+        page(
+          [
+            { key: 't1', messages: [typed('turn-one'), said('one-a')] },
+            { key: 't2', messages: [typed('turn-two'), said('two-a')] },
+          ],
+          '1',
+        ),
+      );
+      // No names on either row, so neither matches by key.
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('turn-one'), said('one-a'), said('two-a')] },
+            { key: null, messages: [typed('turn-two')] },
+          ],
+          '2',
+        ),
+      );
+
+      const held = JSON.stringify(get(chat.value).turns);
+      expect(held.split('"a-two-a"').length - 1, 'the frame the page moved draws once').toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
   it('replaces a turn whose opening frame carries no id', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
