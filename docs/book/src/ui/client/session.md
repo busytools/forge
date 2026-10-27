@@ -158,8 +158,10 @@ read as one system.
   frame is seen on the day it arrives and can be given a face later, rather
   than being dropped. A refusal also settles the call it names, which no
   result frame will ever settle, and an assistant question nobody answered
-  keeps its call row marked `unanswered`, because its answer card never draws
-  and the dock clears.
+  keeps its call row marked `unanswered` once the turn has closed. Until then
+  the dock is the question's row, so the mark waits for the close; after it,
+  the answer card never drew and the dock has cleared, and the call row is the
+  only trace left.
 
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it
@@ -180,7 +182,8 @@ sit the record's own numbers: when the swap happened, what the cycle counted
 once they have been measured - an unmeasured successor is absent rather than a
 row of zeros. The ground truth names the forge actions the session took as
 well as its files and commands: one line each for the agents, tasks, crons,
-Slack, documents, reviews, System One decisions and browser pages it used, so
+Slack, Gotify, documents, reviews, System One decisions and browser pages it
+used, so
 work a successor cannot infer from the transcript it does not hold does not
 vanish with the handover. The previous
 conversation stays above it, so a swap reads as a seam in the page rather

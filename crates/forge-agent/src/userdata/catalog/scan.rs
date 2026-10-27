@@ -190,9 +190,8 @@ pub fn has_a_transcript_row(message: &forge_primitives::Message) -> bool {
         | Message::PermissionDenied { .. }
         | Message::Notification { .. }
         // Typed system subtypes whose rows the read keeps: the conversation
-        // draws them (a turn duration) or another surface reads them (the
-        // thinking counter, a dispatch's progress), so the scan keeps the row
-        // and the numbering must count it.
+        // draws a turn duration, and a dispatch's progress is read off the
+        // row the scan keeps, so the numbering must count it.
         | Message::TurnDuration { .. }
         | Message::TaskProgress { .. } => true,
         // A generic `system` row has a row unless its subtype is one whose
