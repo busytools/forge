@@ -14,9 +14,9 @@ use std::time::Duration;
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
     DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_STALE_AFTER_HOURS,
-    DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS, SlackConfig, SlackConversation, SlackDraft,
-    SlackDraftEnding, SlackFollowedThread, SlackMessage, SlackSubscription,
-    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
+    DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS, SlackConfig, SlackDraft, SlackDraftEnding,
+    SlackFollowedThread, SlackMessage, SlackSubscription, SlackSubscriptionTarget,
+    SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -388,7 +388,14 @@ impl Workspace {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return false };
         match crate::store::slack::own_post(db, workspace, conversation, ts) {
-            Ok(own) => own,
+            Ok(own) => {
+                // A read that works again ends the failure, so a later
+                // fault is a new line rather than silence.
+                self.slack_ledger_failures
+                    .lock()
+                    .remove(&(workspace.to_owned(), conversation.to_owned()));
+                own
+            }
             Err(error) => {
                 let first = self
                     .slack_ledger_failures
@@ -417,62 +424,80 @@ impl Workspace {
         }
     }
 
-    /// Mark this conversation's post in flight until the guard drops, so a
-    /// sweep that runs mid-post skips the conversation instead of
-    /// delivering a message whose ts is not ledgered yet.
+    /// Mark one call's post in flight until the guard drops, so a sweep
+    /// that runs mid-post skips the conversation instead of delivering a
+    /// message whose ts is not ledgered yet. A guard covers ONE call and
+    /// its ledger write: an operation of several calls takes one per call,
+    /// or a slow but healthy Slack would retire the mark mid-operation.
     pub(crate) fn begin_slack_post(
         self: &Arc<Self>,
         workspace: &str,
         conversation: &str,
     ) -> SlackPostInFlight {
         let key = (workspace.to_owned(), conversation.to_owned());
-        let mut inflight = self.slack_inflight.lock();
-        let slot = inflight.entry(key.clone()).or_insert_with(|| (std::time::Instant::now(), 0));
-        slot.1 += 1;
-        drop(inflight);
-        SlackPostInFlight { workspace: Arc::clone(self), key }
+        let id = NEXT_POST_STAMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.slack_inflight.lock().entry(key.clone()).or_default().push(SlackPostStamp {
+            id,
+            since: std::time::Instant::now(),
+            warned: false,
+        });
+        SlackPostInFlight { workspace: Arc::clone(self), key, id }
     }
 
-    /// How long a live post has been in flight for any name this
-    /// conversation answers to, or `None`. A post is addressed by whichever
-    /// name the caller had, so a DM posted by user id is marked under that
-    /// id and read here by the conversation's `user`. A mark older than the
-    /// request timeout is expired rather than obeyed: a stalled call must
-    /// not silence the conversation, and its expiry is forge's own problem,
-    /// so it says so once.
+    /// How long the oldest live post call in `conversation` has been in
+    /// flight, or `None`. A stamp past the request timeout is expired
+    /// rather than obeyed, so a stalled call cannot silence the
+    /// conversation. A stamp crossing half the budget says so once, on the
+    /// transition; both are forge's own problems, so both are warnings.
     pub(crate) fn slack_post_in_flight(
         &self,
         workspace: &str,
-        conversation: &SlackConversation,
+        conversation: &str,
     ) -> Option<std::time::Duration> {
         let mut inflight = self.slack_inflight.lock();
-        let mut expired: Vec<(String, String)> = Vec::new();
+        let mut empty: Vec<(String, String)> = Vec::new();
+        let mut stalled: Vec<(String, String, std::time::Duration)> = Vec::new();
         let mut oldest: Option<std::time::Duration> = None;
-        for ((marked_workspace, address), (since, count)) in inflight.iter() {
-            if *count == 0 {
+        for ((marked_workspace, marked_address), stamps) in inflight.iter_mut() {
+            stamps
+                .retain(|stamp| stamp.since.elapsed() <= forge_connectors::slack::REQUEST_TIMEOUT);
+            if stamps.is_empty() {
+                empty.push((marked_workspace.clone(), marked_address.clone()));
                 continue;
             }
-            let age = since.elapsed();
-            if age > forge_connectors::slack::REQUEST_TIMEOUT {
-                expired.push((marked_workspace.clone(), address.clone()));
+            if marked_workspace != workspace || marked_address != conversation {
                 continue;
             }
-            let matches = marked_workspace == workspace
-                && (address == &conversation.id
-                    || conversation.name.as_deref() == Some(address.as_str())
-                    || conversation.user.as_deref() == Some(address.as_str()));
-            if matches && oldest.is_none_or(|current| age > current) {
-                oldest = Some(age);
+            for stamp in stamps.iter_mut() {
+                let age = stamp.since.elapsed();
+                if age > forge_connectors::slack::REQUEST_TIMEOUT / 2 && !stamp.warned {
+                    stamp.warned = true;
+                    stalled.push((marked_workspace.clone(), marked_address.clone(), age));
+                }
+                if oldest.is_none_or(|current| age > current) {
+                    oldest = Some(age);
+                }
             }
         }
-        for (workspace, conversation) in expired {
-            inflight.remove(&(workspace.clone(), conversation.clone()));
+        for key in empty {
+            inflight.remove(&key);
             tracing::warn!(
                 target: "forge_workspace::slack",
                 event_name = "slack_post_mark_expired",
+                workspace = %key.0,
+                conversation = %key.1,
+                "a post's in-flight mark outlived its request timeout; the conversation is swept again",
+            );
+        }
+        drop(inflight);
+        for (workspace, conversation, age) in stalled {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                event_name = "slack_post_in_flight_stalled",
                 workspace = %workspace,
                 conversation = %conversation,
-                "a post's in-flight mark outlived its request timeout; the conversation is swept again",
+                age_ms = age.as_millis(),
+                "a post has been in flight for most of its request budget; the conversation is being skipped",
             );
         }
         oldest
@@ -1266,19 +1291,33 @@ impl Workspace {
     }
 }
 
-/// Clears a conversation's in-flight mark however the post ends, a failed
-/// call or a panic included.
+/// One live post call in a conversation: its identity, when it started,
+/// and whether the stall line has been said for it.
+pub(crate) struct SlackPostStamp {
+    pub(crate) id: u64,
+    pub(crate) since: std::time::Instant,
+    pub(crate) warned: bool,
+}
+
+/// Stamps are identified by a process-wide counter, so a guard's `Drop`
+/// removes its own stamp even after its entry was expired and its key
+/// taken again by a later post.
+static NEXT_POST_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Clears one call's in-flight stamp however it ends, a failed call or a
+/// panic included. It removes only its own stamp, never a later call's.
 pub(crate) struct SlackPostInFlight {
     workspace: Arc<Workspace>,
     key: (String, String),
+    id: u64,
 }
 
 impl Drop for SlackPostInFlight {
     fn drop(&mut self) {
         let mut inflight = self.workspace.slack_inflight.lock();
-        if let Some((_, count)) = inflight.get_mut(&self.key) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
+        if let Some(stamps) = inflight.get_mut(&self.key) {
+            stamps.retain(|stamp| stamp.id != self.id);
+            if stamps.is_empty() {
                 inflight.remove(&self.key);
             }
         }
@@ -1420,11 +1459,7 @@ impl SlackHost for SlackSubsystemHost {
         self.0.upgrade().is_some_and(|ws| ws.slack_own_post(workspace, conversation, ts))
     }
 
-    fn post_in_flight(
-        &self,
-        workspace: &str,
-        conversation: &SlackConversation,
-    ) -> Option<Duration> {
+    fn post_in_flight(&self, workspace: &str, conversation: &str) -> Option<Duration> {
         self.0.upgrade().and_then(|ws| ws.slack_post_in_flight(workspace, conversation))
     }
 
@@ -2112,62 +2147,27 @@ mod tests {
     /// id, a channel by name. The sweep holds the conversation and asks
     /// under each of its names.
     #[test]
-    fn an_in_flight_post_matches_every_name_the_conversation_answers_to() {
+    fn an_in_flight_mark_is_per_call_and_per_guard() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         let host = SlackSubsystemHost::new(&ws);
-        let dm = SlackConversation {
-            id: "D456".to_owned(),
-            name: None,
-            is_channel: false,
-            is_private: false,
-            is_im: true,
-            is_mpim: false,
-            is_archived: false,
-            user: Some("U123".to_owned()),
-            purpose: None,
-            topic: None,
-        };
-        let channel = SlackConversation {
-            id: "C789".to_owned(),
-            name: Some("general".to_owned()),
-            is_channel: true,
-            is_private: false,
-            is_im: false,
-            is_mpim: false,
-            is_archived: false,
-            user: None,
-            purpose: None,
-            topic: None,
-        };
 
-        let guard = ws.begin_slack_post("acme", "U123");
+        // Two calls into one conversation at once: the first to finish
+        // does not clear the other's stamp.
+        let first = ws.begin_slack_post("acme", "C789");
+        let second = ws.begin_slack_post("acme", "C789");
+        assert!(host.post_in_flight("acme", "C789").is_some(), "both calls are in flight");
         assert!(
-            host.post_in_flight("acme", &dm).is_some(),
-            "a DM posted by user id is marked under that id",
-        );
-        assert!(host.post_in_flight("acme", &channel).is_none(), "and only for that address");
-        assert!(
-            host.post_in_flight("beta", &dm).is_none(),
+            host.post_in_flight("beta", "C789").is_none(),
             "and only in the workspace that took the mark",
         );
-        drop(guard);
-        assert!(host.post_in_flight("acme", &dm).is_none(), "the mark clears with the guard");
-
-        // Two sessions can post into one conversation at once: the first
-        // to finish does not clear the other's mark.
-        let first = ws.begin_slack_post("acme", "general");
-        let second = ws.begin_slack_post("acme", "general");
-        assert!(
-            host.post_in_flight("acme", &channel).is_some(),
-            "a channel posted by name is marked by its name",
-        );
+        assert!(host.post_in_flight("acme", "C790").is_none(), "and only for that conversation");
         drop(first);
         assert!(
-            host.post_in_flight("acme", &channel).is_some(),
-            "one post finishing does not clear an overlapping one",
+            host.post_in_flight("acme", "C789").is_some(),
+            "one call finishing does not clear an overlapping one",
         );
         drop(second);
-        assert!(host.post_in_flight("acme", &channel).is_none(), "the last one clears the mark");
+        assert!(host.post_in_flight("acme", "C789").is_none(), "the last one clears the mark");
     }
 
     /// A mark past the request timeout is expired, not obeyed: a stalled
@@ -2177,32 +2177,57 @@ mod tests {
     fn an_expired_in_flight_mark_is_not_obeyed() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         let host = SlackSubsystemHost::new(&ws);
-        let channel = SlackConversation {
-            id: "C789".to_owned(),
-            name: Some("general".to_owned()),
-            is_channel: true,
-            is_private: false,
-            is_im: false,
-            is_mpim: false,
-            is_archived: false,
-            user: None,
-            purpose: None,
-            topic: None,
-        };
         let stale = std::time::Instant::now()
             .checked_sub(forge_connectors::slack::REQUEST_TIMEOUT)
             .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
             .expect("the clock is past the timeout");
-        ws.slack_inflight.lock().insert(("acme".to_owned(), "C789".to_owned()), (stale, 1));
+        ws.slack_inflight.lock().insert(
+            ("acme".to_owned(), "C789".to_owned()),
+            vec![SlackPostStamp { id: 1, since: stale, warned: false }],
+        );
 
         assert!(
-            host.post_in_flight("acme", &channel).is_none(),
+            host.post_in_flight("acme", "C789").is_none(),
             "an expired mark is expired, never obeyed",
         );
         assert!(
             ws.slack_inflight.lock().is_empty(),
             "and it is dropped, not left to be re-checked"
         );
+    }
+
+    /// An old guard that outlived its stamp must not clear a newer call's
+    /// mark: `Drop` removes only the stamp it took.
+    #[test]
+    fn an_expired_guards_drop_leaves_a_newer_mark_alone() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let host = SlackSubsystemHost::new(&ws);
+
+        let old = ws.begin_slack_post("acme", "C789");
+        let stale = std::time::Instant::now()
+            .checked_sub(forge_connectors::slack::REQUEST_TIMEOUT)
+            .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
+            .expect("the clock is past the timeout");
+        ws.slack_inflight
+            .lock()
+            .get_mut(&("acme".to_owned(), "C789".to_owned()))
+            .expect("the old guard's entry")
+            .first_mut()
+            .expect("its stamp")
+            .since = stale;
+        assert!(
+            host.post_in_flight("acme", "C789").is_none(),
+            "the old stamp is expired and pruned",
+        );
+
+        let fresh = ws.begin_slack_post("acme", "C789");
+        drop(old);
+        assert!(
+            host.post_in_flight("acme", "C789").is_some(),
+            "the old guard's drop must not clear the newer call's mark",
+        );
+        drop(fresh);
+        assert!(host.post_in_flight("acme", "C789").is_none(), "and the newer one clears it");
     }
 
     /// The workspace label the live test configures, and the project whose

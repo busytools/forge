@@ -627,13 +627,14 @@ impl SlackFacade for ProdSlackFacade {
             GateDecision::Expired => return Err(SlackPostError::Expired),
         }
         let conversation_name = draft.conversation_label.clone();
-        // Held across the posting loop: a sweep that runs mid-post skips
-        // the conversation instead of delivering a message whose ts is not
-        // ledgered yet.
-        let _in_flight = ws.begin_slack_post(&draft.workspace, &conversation);
         let parts = forge_connectors::slack::split_for_post(&draft.text);
         let mut ts: Vec<String> = Vec::new();
         for part in &parts {
+            // One guard per call, covering the call and its ledger write:
+            // each part has its own request budget, so a stamp taken once
+            // for the whole operation would expire between parts on a slow
+            // but healthy Slack.
+            let _in_flight = ws.begin_slack_post(&draft.workspace, &conversation);
             match api.post_message(&draft.conversation, part, draft.thread_ts.as_deref()).await {
                 Ok(posted) => {
                     // The channel Slack answers with, not the request
@@ -996,13 +997,16 @@ impl SlackFacade for ProdSlackFacade {
         api.post_bytes(&url, bytes)
             .await
             .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?;
-        // Held across the post: a sweep that runs mid-upload skips the
-        // conversation rather than delivering a message not yet ledgered.
+        // The upload call can put the message in history; its own guard
+        // covers that call, and a fresh one covers the shares read below -
+        // two calls, two budgets.
+        let uploaded = {
+            let _in_flight = ws.begin_slack_post(&label, &conversation);
+            api.complete_upload(&file_id, &request.conversation, request.thread_ts.as_deref())
+                .await
+                .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?
+        };
         let _in_flight = ws.begin_slack_post(&label, &conversation);
-        let uploaded = api
-            .complete_upload(&file_id, &request.conversation, request.thread_ts.as_deref())
-            .await
-            .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?;
         // Slack names the message the upload was posted as on the file's
         // shares, keyed by the share's own conversation - which need not be
         // the string the request addressed. The upload's own answer carries
@@ -1440,8 +1444,8 @@ mod tests {
         AuthTest, MessagePage, PostedMessage, SearchPage, SlackApi, SlackError,
     };
     use forge_primitives::slack::{
-        SlackBookmark, SlackConfig, SlackConversation, SlackFile, SlackFileShare, SlackFileShares,
-        SlackPin, SlackPinMessage, SlackUserProfile,
+        SlackBookmark, SlackConfig, SlackFile, SlackFileShare, SlackFileShares, SlackPin,
+        SlackPinMessage, SlackUserProfile,
     };
     use forge_sdk::mcp::tool::{Tool as _, ToolInput};
     use std::collections::{BTreeMap, HashMap};
@@ -1959,20 +1963,15 @@ mod tests {
         panic!("no draft was registered");
     }
 
-    /// A conversation as the sweep sees it, for the in-flight queries.
-    fn conversation_for_test(id: &str) -> SlackConversation {
-        SlackConversation {
-            id: id.to_owned(),
-            name: Some(id.to_lowercase()),
-            is_channel: true,
-            is_private: false,
-            is_im: false,
-            is_mpim: false,
-            is_archived: false,
-            user: None,
-            purpose: None,
-            topic: None,
+    /// Poll until `check` holds, failing the test rather than hanging.
+    async fn until(check: impl Fn() -> bool) {
+        for _ in 0..400 {
+            if check() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
+        panic!("the condition never held");
     }
 
     fn post_request(conversation: &str, text: &str) -> SlackPostRequest {
@@ -2293,7 +2292,6 @@ mod tests {
     async fn a_post_marks_its_conversation_in_flight_until_the_ledger_write() {
         let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
         let gate = api.park_posts();
-        let conversation = conversation_for_test("C1");
 
         let task = tokio::spawn({
             let facade = facade.clone();
@@ -2304,7 +2302,7 @@ mod tests {
 
         let mut marked = false;
         for _ in 0..400 {
-            if ws.slack_post_in_flight("acme", &conversation).is_some() {
+            if ws.slack_post_in_flight("acme", "C1").is_some() {
                 marked = true;
                 break;
             }
@@ -2315,9 +2313,50 @@ mod tests {
         gate.notify_one();
         task.await.expect("no panic").expect("the post lands");
         assert!(
-            ws.slack_post_in_flight("acme", &conversation).is_none(),
+            ws.slack_post_in_flight("acme", "C1").is_none(),
             "and clears it once the ts is ledgered",
         );
+    }
+
+    /// Each part carries its own mark: a part that has burned its budget
+    /// must not leave the next one unprotected, which is what a stamp
+    /// taken once per operation does.
+    #[tokio::test]
+    async fn each_post_part_takes_a_fresh_in_flight_mark() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        let gate = api.park_posts();
+        let text = "a".repeat(forge_connectors::slack::POST_LIMIT + 1);
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", &text)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+
+        until(|| ws.slack_post_in_flight("acme", "C1").is_some()).await;
+        // As if the first part had used its whole request budget.
+        let stale = std::time::Instant::now()
+            .checked_sub(forge_connectors::slack::REQUEST_TIMEOUT)
+            .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
+            .expect("the clock is past the timeout");
+        ws.slack_inflight
+            .lock()
+            .get_mut(&("acme".to_owned(), "C1".to_owned()))
+            .expect("the part's entry")
+            .iter_mut()
+            .for_each(|stamp| stamp.since = stale);
+        gate.notify_one();
+
+        // Part two is parked once its call has been recorded; its mark
+        // must be fresh, not the expired one.
+        until(|| api.posts().len() == 2).await;
+        assert!(
+            ws.slack_post_in_flight("acme", "C1").is_some(),
+            "the second part takes a fresh mark of its own",
+        );
+        gate.notify_one();
+        task.await.expect("no panic").expect("both parts land");
     }
 
     /// A failed post leaves no mark behind: the guard drops on the error
@@ -2326,7 +2365,6 @@ mod tests {
     async fn a_failed_post_clears_its_in_flight_mark() {
         let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
         api.fail_post_at(0);
-        let conversation = conversation_for_test("C1");
 
         let task = tokio::spawn({
             let facade = facade.clone();
@@ -2337,7 +2375,7 @@ mod tests {
 
         assert!(task.await.expect("no panic").is_err(), "the post fails");
         assert!(
-            ws.slack_post_in_flight("acme", &conversation).is_none(),
+            ws.slack_post_in_flight("acme", "C1").is_none(),
             "a failed post leaves no mark behind",
         );
     }
@@ -2348,7 +2386,6 @@ mod tests {
     async fn an_upload_marks_its_conversation_in_flight_until_the_ledger_write() {
         let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
         let gate = api.park_uploads();
-        let conversation = conversation_for_test("C1");
         let dir = tempdir().expect("tempdir");
         let source = dir.path().join("file.txt");
         std::fs::write(&source, b"payload").expect("write the source file");
@@ -2362,7 +2399,7 @@ mod tests {
 
         let mut marked = false;
         for _ in 0..400 {
-            if ws.slack_post_in_flight("acme", &conversation).is_some() {
+            if ws.slack_post_in_flight("acme", "C1").is_some() {
                 marked = true;
                 break;
             }
@@ -2373,7 +2410,7 @@ mod tests {
         gate.notify_one();
         task.await.expect("no panic").expect("an approved upload sends");
         assert!(
-            ws.slack_post_in_flight("acme", &conversation).is_none(),
+            ws.slack_post_in_flight("acme", "C1").is_none(),
             "and clears it once the upload's shares are ledgered",
         );
     }
@@ -2400,7 +2437,7 @@ mod tests {
             "an unreadable share is a ledger gap, not a failed upload",
         );
         assert!(
-            ws.slack_post_in_flight("acme", &conversation_for_test("C1")).is_none(),
+            ws.slack_post_in_flight("acme", "C1").is_none(),
             "and the mark is cleared whatever the share read did",
         );
     }

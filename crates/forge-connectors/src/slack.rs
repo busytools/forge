@@ -131,15 +131,13 @@ pub trait SlackHost: Send + Sync {
     /// the user, so the author says nothing about who wrote the words.
     fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool;
 
-    /// How long a live post has been in flight into this conversation, or
-    /// `None` when none is. A message can reach history before the post
-    /// call returns and its ts is ledgered, so the sweep skips the
-    /// conversation for the tick instead of delivering its own post. The
-    /// match is by whichever name the post used: the conversation id, its
-    /// name, or the DM partner. A mark older than [`REQUEST_TIMEOUT`] is
-    /// the host's to expire, never something to obey.
-    fn post_in_flight(&self, workspace: &str, conversation: &SlackConversation)
-    -> Option<Duration>;
+    /// How long the oldest live post call in `conversation` has been in
+    /// flight, or `None` when none is. A message can reach history before
+    /// the post call returns and its ts is ledgered, so the sweep skips
+    /// the conversation for the tick instead of delivering its own post.
+    /// A mark older than [`REQUEST_TIMEOUT`] is the host's to expire,
+    /// never something to obey.
+    fn post_in_flight(&self, workspace: &str, conversation: &str) -> Option<Duration>;
 }
 
 /// The Web API calls this connector makes, behind a trait so a sweep or
@@ -1087,30 +1085,24 @@ pub(crate) async fn sweep_scope(
         // A message can reach history before the post call returns and its
         // ts is ledgered. Skipping the conversation for this tick, and not
         // moving its cursor, is what keeps that window from delivering a
-        // self-post.
-        if let Some(age) = host.post_in_flight(workspace, conversation) {
-            // A post is in flight for one request round trip. One that has
-            // burned most of its budget is stalled, which a reader should
-            // see rather than infer from messages arriving late.
-            if age > REQUEST_TIMEOUT / 2 {
-                tracing::warn!(
-                    target: "forge_connectors::slack",
-                    event_name = "slack_post_in_flight_stalled",
-                    workspace,
-                    conversation = %conversation.id,
-                    age_ms = age.as_millis(),
-                    "a post has been in flight for most of its request budget; the conversation is being skipped",
-                );
-            } else {
-                tracing::debug!(
-                    target: "forge_connectors::slack",
-                    event_name = "slack_post_in_flight",
-                    workspace,
-                    conversation = %conversation.id,
-                    age_ms = age.as_millis(),
-                    "a post is in flight; skipping this conversation this tick",
-                );
-            }
+        // self-post. Marks are keyed by the conversation a post resolved
+        // to, so the id answers first; the name and the DM partner cover a
+        // post whose listing failed and fell back to the request address.
+        let in_flight = host.post_in_flight(workspace, &conversation.id).or_else(|| {
+            conversation.name.as_deref().and_then(|name| host.post_in_flight(workspace, name))
+        });
+        let in_flight = in_flight.or_else(|| {
+            conversation.user.as_deref().and_then(|user| host.post_in_flight(workspace, user))
+        });
+        if let Some(age) = in_flight {
+            tracing::debug!(
+                target: "forge_connectors::slack",
+                event_name = "slack_post_in_flight",
+                workspace,
+                conversation = %conversation.id,
+                age_ms = age.as_millis(),
+                "a post is in flight; skipping this conversation this tick",
+            );
             continue;
         }
         let watermark = match host.watermark(workspace, &conversation.id) {
@@ -1681,6 +1673,20 @@ pub(crate) async fn sweep_mentions(
         for hit in &page.matches {
             // The cursor test first: a stale hit costs no ledger read.
             if !is_newer(&hit.ts, watermark.as_deref()) {
+                continue;
+            }
+            // A post in flight in this conversation can already be in the
+            // index with its ts not yet ledgered: the same window the
+            // conversation sweep skips. The hit stays behind the cursor, so
+            // the next tick reads it again.
+            if host.post_in_flight(workspace, &hit.conversation_id).is_some() {
+                tracing::debug!(
+                    target: "forge_connectors::slack",
+                    event_name = "slack_post_in_flight",
+                    workspace,
+                    conversation = %hit.conversation_id,
+                    "a post is in flight in this conversation; skipping the mention this tick",
+                );
                 continue;
             }
             // The query is the literal mention token, so it matches the
@@ -2369,6 +2375,9 @@ impl SlackClient {
             .bearer_auth(&self.token)
             .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(encode_form(params))
+            // Per request, not on the client: a file body's transfer is
+            // not a Web API call and keeps its own behaviour.
+            .timeout(REQUEST_TIMEOUT)
             .send()
             .await
             .map_err(|err| SlackError::Transport {
@@ -3586,17 +3595,12 @@ mod tests {
                 .contains(&format!("{workspace}/{conversation}/{ts}"))
         }
 
-        fn post_in_flight(
-            &self,
-            workspace: &str,
-            conversation: &SlackConversation,
-        ) -> Option<Duration> {
-            let inflight = self.inflight.lock().expect("lock");
-            let marked = |address: &str| inflight.contains(&format!("{workspace}/{address}"));
-            (marked(&conversation.id)
-                || conversation.name.as_deref().is_some_and(marked)
-                || conversation.user.as_deref().is_some_and(marked))
-            .then(Duration::default)
+        fn post_in_flight(&self, workspace: &str, conversation: &str) -> Option<Duration> {
+            self.inflight
+                .lock()
+                .expect("lock")
+                .contains(&format!("{workspace}/{conversation}"))
+                .then(Duration::default)
         }
     }
 
@@ -4387,6 +4391,45 @@ mod tests {
             host.delivered().first().map(|message| message.ts.as_str()),
             Some("200.0"),
             "and it is the message the skip held, not a lost window",
+        );
+    }
+
+    /// A post whose listing failed is marked under the address it was sent
+    /// with; the sweep asks under the conversation's name and DM partner
+    /// too, so that mark still skips it.
+    #[tokio::test]
+    async fn an_alias_addressed_mark_still_skips_the_conversation() {
+        let host = FakeHost::with_subscriptions(vec![sub_dm("acme")]);
+        host.set_watermark("acme", "D1", "050.0");
+        host.seed_history("D1", vec![history_message("200.0", "U9", "a dm")]);
+        host.set_post_in_flight("acme", "U9", true);
+
+        let outcome = sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(
+            outcome.delivered, 0,
+            "the DM's partner address marks the conversation in flight"
+        );
+        assert!(host.delivered().is_empty(), "nothing is read from that DM");
+    }
+
+    /// The mention path is the same commit-to-ledger window: a hit from a
+    /// conversation with a post in flight waits a tick, and the cursor
+    /// does not pass it.
+    #[tokio::test]
+    async fn a_mention_in_a_conversation_with_a_post_in_flight_waits() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        host.seed_search(vec![search_match("200.1", "C1", "ping <@U1>")]);
+        host.set_post_in_flight("acme", "C1", true);
+
+        let outcome = sweep_mentions(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(outcome.delivered, 0, "the mention waits while a post is in flight");
+        assert!(host.delivered().is_empty(), "nothing is delivered for the hit");
+        assert_eq!(
+            host.watermark("acme", MENTION_CURSOR).expect("watermark"),
+            None,
+            "and the cursor does not pass it",
         );
     }
 

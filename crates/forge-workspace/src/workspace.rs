@@ -717,14 +717,14 @@ pub struct Workspace {
     /// Keyed by label for the same reason.
     pub(crate) slack_connected: Mutex<std::collections::BTreeMap<String, bool>>,
     /// Conversations forge has a post in flight into, keyed
-    /// `(workspace, the address the post used)`, with the instant the mark
-    /// was taken and a count, because two sessions can post into one
-    /// conversation at once. The sweep skips a conversation while its post
-    /// is in flight, because the message can reach history before its ts
-    /// is ledgered; a mark past the request timeout is expired, never
+    /// `(workspace, the resolved conversation)`, each entry a stamp per
+    /// live call: one post call with its ledger write, or one upload's
+    /// shares read. The sweep skips a conversation while any stamp is
+    /// within budget, because the message can reach history before its ts
+    /// is ledgered; a stamp past the request timeout is expired, never
     /// obeyed, so a stalled call cannot silence the conversation.
     pub(crate) slack_inflight:
-        Mutex<std::collections::HashMap<(String, String), (std::time::Instant, usize)>>,
+        Mutex<std::collections::HashMap<(String, String), Vec<crate::slack::SlackPostStamp>>>,
     /// The authenticated user's id per workspace, resolved once by the
     /// boot `auth.test` and needed to recognise `<@U...>` mentions.
     pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
@@ -1852,16 +1852,12 @@ impl Workspace {
         // entry refuses the boot, the way the rest of forge.toml does.
         // The client goes through the same TLS-trust helper the Gotify
         // seam uses, so NODE_EXTRA_CA_CERTS behaves identically.
-        // The same budget the pump gives a call: a post through this client
-        // must not stall forever holding its in-flight mark.
-        let slack_http = forge_agent::http_trust::with_extra_roots(
-            reqwest::Client::builder().timeout(forge_connectors::slack::REQUEST_TIMEOUT),
-        )
-        .build()
-        .map_err(|error| WorkspaceError::ConfigInvalid {
-            path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
-            message: format!("slack http client: {error}"),
-        })?;
+        let slack_http = forge_agent::http_trust::with_extra_roots(reqwest::Client::builder())
+            .build()
+            .map_err(|error| WorkspaceError::ConfigInvalid {
+                path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                message: format!("slack http client: {error}"),
+            })?;
         let slack = Arc::new(
             crate::slack::SlackWorkspaces::from_config(&config.slack, &slack_http).map_err(
                 |message| WorkspaceError::ConfigInvalid {
