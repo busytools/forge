@@ -130,11 +130,9 @@ mod commands {
 
     /// Which seat the page has on screen; null for none.
     ///
-    /// **`async`, though the body is sync**: a showing now re-evaluates the
-    /// notification rule, and the mobile permission request it can reach
-    /// waits for the platform - a sync command runs on the main thread, the
-    /// one that wait is waiting on.
-    #[tauri::command(async)]
+    /// **Sync on purpose**: two rapid invokes must land in order, and the
+    /// body only enqueues - the plugin work is the notify thread's.
+    #[tauri::command]
     pub fn client_showing(bridge: tauri::State<'_, Arc<Bridge>>, seat: Option<Value>) {
         bridge.showing(seat);
     }
