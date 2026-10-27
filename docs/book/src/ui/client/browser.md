@@ -132,6 +132,20 @@ sessions' tools - navigate, snapshot, click, type, evaluate - are the same
 vendored Playwright battery over the same CDP connection; nothing on the
 wire changed.
 
+**A snapshot's refs belong to the snapshot that minted them.** A ref names
+an element that was visible and pointer-interactive when the snapshot ran,
+and it survives an ordinary re-render that keeps that DOM node. A page that
+keeps replacing its elements retires refs before the next call, so it is
+driven by a unique role/name selector such as `role=button[name="Save"]` -
+scoped to a row when names repeat - which is resolved when the call runs; a
+name shared by several elements is refused rather than guessed at. Once the
+page has settled, a full-page `browser_snapshot` with no `target` and its
+refs hold: it keeps the ref of an element that stayed and carries the same
+role and accessible name, gives none to one that is no longer visible or
+pointer-interactive, and mints a new one when the role or name changed. A
+target-scoped snapshot answers with that subtree alone, so refs outside it do
+not resolve until a full-page snapshot.
+
 **Input is trusted input.** The person's mouse, wheel and keys are mapped by
 the SERVER to CDP `Input.*` events at the page's own scale: a click is a
 full pointer sequence, a wheel is a pixel delta, printable text is inserted
