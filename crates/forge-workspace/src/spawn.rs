@@ -9563,6 +9563,28 @@ mod lead_charter_tests {
         );
     }
 
+    /// Mid-turn delivery had no written duty of its own in this charter, so the
+    /// bullet that adds one is pinned sentence by sentence.
+    #[test]
+    fn the_charter_answers_a_mid_turn_message() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "- **A message from the user that arrives mid-turn is still owed an answer.**"
+            ),
+            "the bullet's own lead-in, so folding it into another bullet fails here",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("Answer it in that same turn, before you start the next piece of work"),
+            "the duty falls due in the same turn, before the next piece of work",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("a question left unanswered is a dropped message, not a deferred one"),
+            "the failure is named, so the line cannot be read as permission to defer",
+        );
+    }
+
     /// The charter's board lines carry the landing rule (#2377): a landed
     /// row with no epic above it is deleted in the same pass, a landed
     /// child of an open epic is left terminal so the epic can read `to
