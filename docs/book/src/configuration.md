@@ -565,7 +565,7 @@ an empty `workspace`, an empty `token`, and two entries sharing a
 `workspace` label. An unknown key inside an entry is rejected, so a
 near-miss fails loudly.
 
-A workspace becomes a project's only when a scope binds it:
+A workspace becomes a project's workspace only when a scope binds it:
 
 ```toml
 [[orgs]]
@@ -594,8 +594,8 @@ A binding that names no `[[slack]]` label fails the load, naming the
 label it asked for and the ones that exist:
 
 ```
-[[orgs]] slack: no [[slack]] workspace named 'acme'; configured: Service Alerts, Work Slack
-[[orgs.projects]] slack: no [[slack]] workspace named 'acme'; configured: Service Alerts, Work Slack
+forge.toml at <path> is otherwise invalid: [[orgs]] slack: no [[slack]] workspace named 'acme'; configured: Service Alerts, Work Slack
+forge.toml at <path> is otherwise invalid: [[orgs.projects]] slack: no [[slack]] workspace named 'acme'; configured: Service Alerts, Work Slack
 ```
 
 A session whose project binds nothing (and whose org binds nothing)
@@ -605,10 +605,28 @@ answers every Slack tool with the keys to add:
 no Slack workspace is bound to Work/service; add [orgs.slack] workspace = "<label>" to the org, or [orgs.projects.slack] workspace = "<label>" to the project in forge.toml
 ```
 
+A binding to a `[[slack]]` entry added since the last start has no token
+loaded yet, and names the way out instead of pretending the key is
+missing:
+
+```
+the [[slack]] workspace 'Work Slack' is bound but not live; a [[slack]] entry added or renamed since boot needs a forge restart
+```
+
 There is no default binding: a project that names nothing is left
 unbound rather than picking up the only configured workspace, because
 two orgs may share one Slack install and an implicit choice would post
 as the wrong one.
+
+A binding governs the tools, not delivery: a stored subscription keeps
+delivering into the project that created it, whatever the project later
+binds, because the record is the explicit statement of where those
+messages go. So removing a binding stops a project acting in that
+workspace without silencing what it already watches, and rebinding a
+project leaves the previous workspace's subscriptions delivering:
+`slack__list` shows only the newly bound workspace's records, while the
+old ones stay listed in the Inspector's Slack section for the project,
+where their ids are the handle `slack__unsubscribe` takes.
 
 The token is a credential, so it lives here rather than in the state
 store beside the subscriptions. forge proves it with `auth.test` at boot
@@ -915,7 +933,7 @@ which parts a running forge adopts and which wait for a restart.
 
 | Table or key | Takes effect |
 | --- | --- |
-| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`, `slack`; `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile`, `slack` | Live. The server's roster, pins and next spawn read the new values. An added project with `auto_start = true` starts; toggling `auto_start` on a project that already exists applies the next time it starts. A removed project leaves the server's roster; sessions already running keep running. An open client sees the new roster on its next home read. A Slack binding applies to the next tool call. |
+| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`, `slack`; `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile`, `slack` | Live. The server's roster, pins and next spawn read the new values. An added project with `auto_start = true` starts; toggling `auto_start` on a project that already exists applies the next time it starts. A removed project leaves the server's roster; sessions already running keep running. An open client sees the new roster on its next home read. A Slack binding to a label already in `[[slack]]` applies to the next tool call; an entry's `workspace`, `token`, `poll_seconds` and `dm_poll_seconds`, and adding a `[[slack]]` entry, are restart-only - the clients are built at boot. |
 | `[[accounts]]` - `display_name`, `provider`, `token`, `base_url`, `models`, `model_slugs`, `model_aliases`, `env` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
 | `[env]` | Live. Folded into each account's env at load, so the next spawn carries it. |
 | `[models."<name>"]` | Live. The next spawn stamps the new parameters. |

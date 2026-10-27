@@ -13,6 +13,11 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Test-only introspection: a registered tool's input schema, so a family
+# test can pin the surface it advertises without a live server.
+testing = []
+
 [dependencies]
 forge-primitives = { workspace = true }
 base64 = { workspace = true }

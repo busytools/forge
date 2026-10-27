@@ -24,14 +24,19 @@ use crate::workspace::Workspace;
 
 /// Why resolving a tool's workspace failed. One shape for every Slack
 /// tool, so the wording is the same whichever tool was called. The scope
-/// is the caller's slot, so the two cases left are a file with no
-/// `[[slack]]` section at all and a project with nothing bound to it.
+/// is the caller's slot, so the cases are a file with no `[[slack]]`
+/// section at all, a project with nothing bound to it, and a binding to a
+/// workspace whose entry was added or renamed since boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SlackWorkspaceError {
     /// No `[[slack]]` entry in forge.toml.
     NotConfigured,
     /// Neither the project nor its org binds a `[[slack]]` label.
     Unbound { org: String, project: String },
+    /// The project binds a label whose client is not loaded - a `[[slack]]`
+    /// entry added or renamed since boot, whose token is captured only at
+    /// start.
+    BoundButNotLive { label: String },
 }
 
 const BINDING_KEYS: &str = "[orgs.slack] workspace = \"<label>\" to the org, or \
@@ -47,14 +52,17 @@ pub(crate) fn format_workspace_error(err: &SlackWorkspaceError) -> String {
         SlackWorkspaceError::Unbound { org, project } => format!(
             "no Slack workspace is bound to {org}/{project}; add {BINDING_KEYS} in forge.toml"
         ),
+        SlackWorkspaceError::BoundButNotLive { label } => format!(
+            "the [[slack]] workspace '{label}' is bound but not live; a [[slack]] entry added \
+             or renamed since boot needs a forge restart"
+        ),
     }
 }
 
 /// Why `slack__subscribe` failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SlackSubscribeError {
-    /// The `workspace` argument named no configured workspace, or named
-    /// none while several are configured.
+    /// The caller's project resolved no live workspace.
     Workspace(SlackWorkspaceError),
     /// The caller couldn't be mapped to a project.
     UnknownCallerProject,
@@ -94,8 +102,7 @@ pub(crate) enum SlackPostError {
     /// Some parts of a split draft are live and the rest is not. Carries
     /// how many landed so a retry resumes instead of duplicating.
     Partial { posted: usize, total: usize, source: String },
-    /// The `workspace` argument named no configured workspace, or named
-    /// none while several are configured.
+    /// The caller's project resolved no live workspace.
     Workspace(SlackWorkspaceError),
     /// The Web API call failed. Carries the formatted error for the LLM.
     Fetch(String),
@@ -108,6 +115,9 @@ pub(crate) enum SlackPostError {
 /// several messages a reply can attach to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SlackPostOutcome {
+    /// The `[[slack]]` label the post went into, so the result names the
+    /// workspace even though the call takes no argument for it.
+    pub workspace: String,
     pub ts: Vec<String>,
     pub conversation_name: String,
     pub parts: usize,
@@ -278,24 +288,30 @@ fn resolve_in(
     let Some(label) = ws.slack_workspace_for_slot(caller) else {
         return Err(unbound());
     };
-    let api = ws.slack.client(&label).ok_or_else(unbound)?;
+    let Some(api) = ws.slack.client(&label) else {
+        return Err(SlackWorkspaceError::BoundButNotLive { label });
+    };
     Ok((label, api))
 }
 
 /// The Slack tools' view of the workspace.
 #[async_trait::async_trait]
 pub(crate) trait SlackFacade: Send + Sync {
-    /// Every conversation the caller's workspace token is in.
+    /// Every conversation the caller's workspace token is in, with the
+    /// label it came from - the one resolution the tool's result names, so
+    /// a reload between calls cannot report a different workspace than the
+    /// data was read from.
     async fn conversations(
         &self,
         caller: &SessionSlot,
-    ) -> Result<Vec<SlackConversation>, SlackReadError>;
+    ) -> Result<(String, Vec<SlackConversation>), SlackReadError>;
 
-    /// The caller's OWN subscriptions in its project's workspace - a
-    /// lead's the lead's, a worker's its own, never another owner's. What
-    /// `slack__list` marks and reports ids for: after a restart the ids
-    /// are the only handle a session has to unsubscribe with.
-    fn subscribed_targets(&self, caller: &SessionSlot) -> Vec<SlackSubscription>;
+    /// The caller's OWN subscriptions in `label` - a lead's the lead's, a
+    /// worker's its own, never another owner's. `slack__list` passes the
+    /// label its read resolved, so the mark and the rows cannot disagree
+    /// about which workspace they are in. After a restart these ids are
+    /// the only handle a session has to unsubscribe with.
+    fn subscribed_targets(&self, caller: &SessionSlot, label: &str) -> Vec<SlackSubscription>;
 
     /// Post a message, held for the user's decision first. Returns only
     /// once that decision is in, and nothing is sent unless it was an
@@ -356,7 +372,7 @@ pub(crate) trait SlackFacade: Send + Sync {
         query: &str,
         count: u32,
         conversation: Option<&str>,
-    ) -> Result<Vec<SlackSearchMatch>, SlackReadError>;
+    ) -> Result<(String, Vec<SlackSearchMatch>), SlackReadError>;
 
     /// One page of a conversation's messages. `oldest` and `newest` are
     /// exclusive bounds, so a caller pages backwards by feeding the earliest
@@ -368,7 +384,7 @@ pub(crate) trait SlackFacade: Send + Sync {
         limit: u32,
         oldest: Option<&str>,
         newest: Option<&str>,
-    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError>;
+    ) -> Result<(String, Vec<SlackHistoryMessage>), SlackReadError>;
 
     /// Every reply in one thread, the parent first, up to `limit` rows.
     async fn replies(
@@ -377,10 +393,14 @@ pub(crate) trait SlackFacade: Send + Sync {
         conversation: &str,
         ts: &str,
         limit: u32,
-    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError>;
+    ) -> Result<(String, Vec<SlackHistoryMessage>), SlackReadError>;
 
     /// `users.info` for one user id.
-    async fn user(&self, caller: &SessionSlot, user: &str) -> Result<SlackUser, SlackReadError>;
+    async fn user(
+        &self,
+        caller: &SessionSlot,
+        user: &str,
+    ) -> Result<(String, SlackUser), SlackReadError>;
 
     /// Every member whose handle, real name or display name contains
     /// `query`, case-insensitively. Every match is returned: silently
@@ -390,7 +410,7 @@ pub(crate) trait SlackFacade: Send + Sync {
         &self,
         caller: &SessionSlot,
         query: &str,
-    ) -> Result<Vec<SlackUser>, SlackReadError>;
+    ) -> Result<(String, Vec<SlackUser>), SlackReadError>;
 
     /// `auth.test`: the resolved `[[slack]]` label and the identity the
     /// workspace's token acts as. The label is returned alongside because it
@@ -402,14 +422,14 @@ pub(crate) trait SlackFacade: Send + Sync {
         &self,
         caller: &SessionSlot,
         conversation: &str,
-    ) -> Result<Vec<SlackPin>, SlackReadError>;
+    ) -> Result<(String, Vec<SlackPin>), SlackReadError>;
 
     /// `bookmarks.list` for one conversation.
     async fn bookmarks(
         &self,
         caller: &SessionSlot,
         conversation: &str,
-    ) -> Result<Vec<SlackBookmark>, SlackReadError>;
+    ) -> Result<(String, Vec<SlackBookmark>), SlackReadError>;
 
     /// Record what the caller wants to watch in its project's workspace,
     /// one record per target. Returns the records as they now stand, so a
@@ -553,9 +573,11 @@ impl SlackFacade for ProdSlackFacade {
     async fn conversations(
         &self,
         caller: &SessionSlot,
-    ) -> Result<Vec<SlackConversation>, SlackReadError> {
-        let (_, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
-        api.list_conversations().await.map_err(|err| SlackReadError::Fetch(err.to_string()))
+    ) -> Result<(String, Vec<SlackConversation>), SlackReadError> {
+        let (label, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
+        let conversations =
+            api.list_conversations().await.map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+        Ok((label, conversations))
     }
 
     async fn post(
@@ -606,7 +628,12 @@ impl SlackFacade for ProdSlackFacade {
                 }
             }
         }
-        Ok(SlackPostOutcome { ts, conversation_name, parts: parts.len() })
+        Ok(SlackPostOutcome {
+            workspace: draft.workspace.clone(),
+            ts,
+            conversation_name,
+            parts: parts.len(),
+        })
     }
 
     async fn edit(
@@ -704,14 +731,15 @@ impl SlackFacade for ProdSlackFacade {
         query: &str,
         count: u32,
         conversation: Option<&str>,
-    ) -> Result<Vec<SlackSearchMatch>, SlackReadError> {
-        let (_, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
+    ) -> Result<(String, Vec<SlackSearchMatch>), SlackReadError> {
+        let (label, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
         let Some(conversation) = conversation else {
-            return api
+            let matches = api
                 .search_messages(query, count, None)
                 .await
                 .map(|page| page.matches)
-                .map_err(|err| SlackReadError::Fetch(err.to_string()));
+                .map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+            return Ok((label, matches));
         };
 
         // Slack's search language narrows by channel NAME; an id in `in:`
@@ -751,7 +779,7 @@ impl SlackFacade for ProdSlackFacade {
             }
         }
         matches.truncate(count as usize);
-        Ok(matches)
+        Ok((label, matches))
     }
 
     async fn history(
@@ -761,12 +789,14 @@ impl SlackFacade for ProdSlackFacade {
         limit: u32,
         oldest: Option<&str>,
         newest: Option<&str>,
-    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
-        let (_, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
-        api.history(conversation, oldest, newest, limit, None)
+    ) -> Result<(String, Vec<SlackHistoryMessage>), SlackReadError> {
+        let (label, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
+        let messages = api
+            .history(conversation, oldest, newest, limit, None)
             .await
             .map(|page| page.messages)
-            .map_err(|err| SlackReadError::Fetch(err.to_string()))
+            .map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+        Ok((label, messages))
     }
 
     async fn replies(
@@ -775,29 +805,36 @@ impl SlackFacade for ProdSlackFacade {
         conversation: &str,
         ts: &str,
         limit: u32,
-    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
-        let (_, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
-        read_thread(api.as_ref(), conversation, ts, limit)
+    ) -> Result<(String, Vec<SlackHistoryMessage>), SlackReadError> {
+        let (label, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
+        let messages = read_thread(api.as_ref(), conversation, ts, limit)
             .await
-            .map_err(|err| SlackReadError::Fetch(err.to_string()))
+            .map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+        Ok((label, messages))
     }
 
-    async fn user(&self, caller: &SessionSlot, user: &str) -> Result<SlackUser, SlackReadError> {
-        let (_, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
-        api.user_info(user).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
+    async fn user(
+        &self,
+        caller: &SessionSlot,
+        user: &str,
+    ) -> Result<(String, SlackUser), SlackReadError> {
+        let (label, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
+        let user =
+            api.user_info(user).await.map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+        Ok((label, user))
     }
 
     async fn users(
         &self,
         caller: &SessionSlot,
         query: &str,
-    ) -> Result<Vec<SlackUser>, SlackReadError> {
-        let (_, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
+    ) -> Result<(String, Vec<SlackUser>), SlackReadError> {
+        let (label, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
         let needle = query.trim().to_lowercase();
         // An empty needle would match the whole directory; the tool refuses
         // it, and a direct facade call gets nothing rather than everyone.
         if needle.is_empty() {
-            return Ok(Vec::new());
+            return Ok((label, Vec::new()));
         }
         let mut found: Vec<SlackUser> = api
             .list_users()
@@ -807,7 +844,7 @@ impl SlackFacade for ProdSlackFacade {
             .filter(|user| !user.deleted && user_matches(user, &needle))
             .collect();
         found.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(found)
+        Ok((label, found))
     }
 
     async fn me(&self, caller: &SessionSlot) -> Result<(String, AuthTest), SlackReadError> {
@@ -820,18 +857,24 @@ impl SlackFacade for ProdSlackFacade {
         &self,
         caller: &SessionSlot,
         conversation: &str,
-    ) -> Result<Vec<SlackPin>, SlackReadError> {
-        let (_, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
-        api.pins(conversation).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
+    ) -> Result<(String, Vec<SlackPin>), SlackReadError> {
+        let (label, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
+        let pins =
+            api.pins(conversation).await.map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+        Ok((label, pins))
     }
 
     async fn bookmarks(
         &self,
         caller: &SessionSlot,
         conversation: &str,
-    ) -> Result<Vec<SlackBookmark>, SlackReadError> {
-        let (_, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
-        api.bookmarks(conversation).await.map_err(|err| SlackReadError::Fetch(err.to_string()))
+    ) -> Result<(String, Vec<SlackBookmark>), SlackReadError> {
+        let (label, api) = self.resolve(caller).map_err(SlackReadError::Workspace)?;
+        let bookmarks = api
+            .bookmarks(conversation)
+            .await
+            .map_err(|err| SlackReadError::Fetch(err.to_string()))?;
+        Ok((label, bookmarks))
     }
 
     async fn fetch_attachment(
@@ -925,11 +968,8 @@ impl SlackFacade for ProdSlackFacade {
             .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))
     }
 
-    fn subscribed_targets(&self, caller: &SessionSlot) -> Vec<SlackSubscription> {
+    fn subscribed_targets(&self, caller: &SessionSlot, label: &str) -> Vec<SlackSubscription> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
-        let Ok((label, _)) = resolve_in(&ws, caller) else {
-            return Vec::new();
-        };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
         ws.slack_subscriptions_for_project(&cx.project_name)
             .into_iter()
@@ -1065,7 +1105,7 @@ pub(crate) struct MockSlackFacade {
     pub conversations_calls: parking_lot::Mutex<Vec<SessionSlot>>,
     pub conversations_result:
         parking_lot::Mutex<Option<Result<Vec<SlackConversation>, SlackReadError>>>,
-    pub subscribed_targets_calls: parking_lot::Mutex<Vec<SessionSlot>>,
+    pub subscribed_targets_calls: parking_lot::Mutex<Vec<(SessionSlot, String)>>,
     pub subscribed_targets: parking_lot::Mutex<Vec<SlackSubscription>>,
     pub search_calls: parking_lot::Mutex<Vec<SearchCall>>,
     pub search_result: parking_lot::Mutex<Option<Result<Vec<SlackSearchMatch>, SlackReadError>>>,
@@ -1119,9 +1159,13 @@ impl SlackFacade for MockSlackFacade {
     async fn conversations(
         &self,
         caller: &SessionSlot,
-    ) -> Result<Vec<SlackConversation>, SlackReadError> {
+    ) -> Result<(String, Vec<SlackConversation>), SlackReadError> {
         self.conversations_calls.lock().push(caller.clone());
-        self.conversations_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+        self.conversations_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Ok(Vec::new()))
+            .map(|rows| ("acme".to_owned(), rows))
     }
 
     async fn search(
@@ -1130,14 +1174,18 @@ impl SlackFacade for MockSlackFacade {
         query: &str,
         count: u32,
         conversation: Option<&str>,
-    ) -> Result<Vec<SlackSearchMatch>, SlackReadError> {
+    ) -> Result<(String, Vec<SlackSearchMatch>), SlackReadError> {
         self.search_calls.lock().push((
             caller.clone(),
             query.to_owned(),
             count,
             conversation.map(str::to_owned),
         ));
-        self.search_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+        self.search_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Ok(Vec::new()))
+            .map(|rows| ("acme".to_owned(), rows))
     }
 
     async fn history(
@@ -1147,7 +1195,7 @@ impl SlackFacade for MockSlackFacade {
         limit: u32,
         oldest: Option<&str>,
         newest: Option<&str>,
-    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
+    ) -> Result<(String, Vec<SlackHistoryMessage>), SlackReadError> {
         self.history_calls.lock().push((
             caller.clone(),
             conversation.to_owned(),
@@ -1155,7 +1203,11 @@ impl SlackFacade for MockSlackFacade {
             oldest.map(str::to_owned),
             newest.map(str::to_owned),
         ));
-        self.history_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+        self.history_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Ok(Vec::new()))
+            .map(|rows| ("acme".to_owned(), rows))
     }
 
     async fn replies(
@@ -1164,37 +1216,53 @@ impl SlackFacade for MockSlackFacade {
         conversation: &str,
         ts: &str,
         limit: u32,
-    ) -> Result<Vec<SlackHistoryMessage>, SlackReadError> {
+    ) -> Result<(String, Vec<SlackHistoryMessage>), SlackReadError> {
         self.replies_calls.lock().push((
             caller.clone(),
             conversation.to_owned(),
             ts.to_owned(),
             limit,
         ));
-        self.replies_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+        self.replies_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Ok(Vec::new()))
+            .map(|rows| ("acme".to_owned(), rows))
     }
 
-    async fn user(&self, caller: &SessionSlot, user: &str) -> Result<SlackUser, SlackReadError> {
+    async fn user(
+        &self,
+        caller: &SessionSlot,
+        user: &str,
+    ) -> Result<(String, SlackUser), SlackReadError> {
         self.user_calls.lock().push((caller.clone(), user.to_owned()));
-        self.user_result.lock().clone().unwrap_or_else(|| {
-            Ok(SlackUser {
-                id: user.to_owned(),
-                name: "tester".to_owned(),
-                real_name: None,
-                tz: None,
-                deleted: false,
-                profile: None,
+        self.user_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| {
+                Ok(SlackUser {
+                    id: user.to_owned(),
+                    name: "tester".to_owned(),
+                    real_name: None,
+                    tz: None,
+                    deleted: false,
+                    profile: None,
+                })
             })
-        })
+            .map(|user| ("acme".to_owned(), user))
     }
 
     async fn users(
         &self,
         caller: &SessionSlot,
         query: &str,
-    ) -> Result<Vec<SlackUser>, SlackReadError> {
+    ) -> Result<(String, Vec<SlackUser>), SlackReadError> {
         self.users_calls.lock().push((caller.clone(), query.to_owned()));
-        self.users_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+        self.users_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Ok(Vec::new()))
+            .map(|rows| ("acme".to_owned(), rows))
     }
 
     async fn me(&self, caller: &SessionSlot) -> Result<(String, AuthTest), SlackReadError> {
@@ -1217,18 +1285,26 @@ impl SlackFacade for MockSlackFacade {
         &self,
         caller: &SessionSlot,
         conversation: &str,
-    ) -> Result<Vec<SlackPin>, SlackReadError> {
+    ) -> Result<(String, Vec<SlackPin>), SlackReadError> {
         self.pins_calls.lock().push((caller.clone(), conversation.to_owned()));
-        self.pins_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+        self.pins_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Ok(Vec::new()))
+            .map(|rows| ("acme".to_owned(), rows))
     }
 
     async fn bookmarks(
         &self,
         caller: &SessionSlot,
         conversation: &str,
-    ) -> Result<Vec<SlackBookmark>, SlackReadError> {
+    ) -> Result<(String, Vec<SlackBookmark>), SlackReadError> {
         self.bookmarks_calls.lock().push((caller.clone(), conversation.to_owned()));
-        self.bookmarks_result.lock().clone().unwrap_or_else(|| Ok(Vec::new()))
+        self.bookmarks_result
+            .lock()
+            .clone()
+            .unwrap_or_else(|| Ok(Vec::new()))
+            .map(|rows| ("acme".to_owned(), rows))
     }
 
     async fn fetch_attachment(
@@ -1256,6 +1332,7 @@ impl SlackFacade for MockSlackFacade {
     ) -> Result<SlackPostOutcome, SlackPostError> {
         self.post_calls.lock().push(request);
         self.post_result.lock().clone().unwrap_or(Ok(SlackPostOutcome {
+            workspace: "acme".to_owned(),
             ts: vec!["1.0".to_owned()],
             conversation_name: "general".to_owned(),
             parts: 1,
@@ -1280,8 +1357,8 @@ impl SlackFacade for MockSlackFacade {
         self.react_result.lock().clone().unwrap_or(Ok(()))
     }
 
-    fn subscribed_targets(&self, caller: &SessionSlot) -> Vec<SlackSubscription> {
-        self.subscribed_targets_calls.lock().push(caller.clone());
+    fn subscribed_targets(&self, caller: &SessionSlot, label: &str) -> Vec<SlackSubscription> {
+        self.subscribed_targets_calls.lock().push((caller.clone(), label.to_owned()));
         self.subscribed_targets.lock().clone()
     }
 
@@ -1692,22 +1769,89 @@ mod tests {
     /// argument resolves the project's binding and the result names it -
     /// the label stays visible, it just stops being an input.
     #[tokio::test]
-    async fn a_tool_call_with_no_workspace_argument_names_the_resolved_label() {
-        let (facade, _ws, _api, _rx) = facade_with_recording_slack();
-        let tool = crate::mcp::slack::Me { facade, slot: caller() };
+    async fn a_tool_resolves_each_projects_binding_from_the_config_file() {
+        // The production path: the bindings come from a real forge.toml, so
+        // deleting the config lookup cannot leave this green - unlike the
+        // overlay-seeded fixtures the other tests build.
+        let dir = tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[[orgs.projects]]
+name = "alpha"
+path = "/tmp/alpha"
+[orgs.projects.slack]
+workspace = "acme"
+[[orgs.projects]]
+name = "beta"
+path = "/tmp/beta"
+[orgs.projects.slack]
+workspace = "beta-ws"
+[[orgs.projects]]
+name = "gamma"
+path = "/tmp/gamma"
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "acme"
+token = "x"
+[[slack]]
+workspace = "beta-ws"
+token = "y"
+"#,
+        )
+        .expect("write forge.toml");
+        let config = crate::config::load_from_dir(dir.path()).expect("the config loads");
+        let mut apis: BTreeMap<String, Arc<dyn SlackApi>> = BTreeMap::new();
+        apis.insert("acme".to_owned(), Arc::new(RecordingApi::default()));
+        apis.insert("beta-ws".to_owned(), Arc::new(RecordingApi::default()));
+        let (ws, _rx) = Workspace::testing_stub_with_slack(
+            dir.path().to_path_buf(),
+            config,
+            Arc::new(crate::slack::SlackWorkspaces::from_apis(apis)),
+            None,
+        );
+        let facade = ProdSlackFacade::from_arc(&ws);
 
+        for (project, expected) in [("alpha", "acme"), ("beta", "beta-ws")] {
+            let tool = crate::mcp::slack::Me {
+                facade: facade.clone(),
+                slot: SessionSlot::lead("Busytools", project),
+            };
+            let out = forge_sdk::mcp::tool::Tool::call(
+                &tool,
+                forge_sdk::mcp::tool::ToolInput { value: serde_json::json!({}) },
+            )
+            .await;
+            let text = crate::mcp::test_support::text_of(&out);
+            assert!(!out.is_error, "{project} answers: {text}");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(text).expect("identity json")["workspace"],
+                expected,
+                "the slot's own project binding is the one resolved",
+            );
+        }
+
+        let unbound =
+            crate::mcp::slack::List { facade, slot: SessionSlot::lead("Busytools", "gamma") };
         let out = forge_sdk::mcp::tool::Tool::call(
-            &tool,
+            &unbound,
             forge_sdk::mcp::tool::ToolInput { value: serde_json::json!({}) },
         )
         .await;
-
         let text = crate::mcp::test_support::text_of(&out);
-        assert!(!out.is_error, "a bound project answers: {text}");
-        assert!(
-            text.contains("\"workspace\": \"acme\""),
-            "the resolved label is in the result: {text}"
-        );
+        assert!(out.is_error, "a project with no binding refuses: {text}");
+        assert!(text.contains("Busytools/gamma"), "names the scope: {text}");
+        assert!(text.contains("[orgs.slack]"), "names the org key: {text}");
+        assert!(text.contains("[orgs.projects.slack]"), "names the project key: {text}");
     }
 
     /// An answer as the registry takes it. Every call site here is a view
@@ -1959,6 +2103,7 @@ mod tests {
             vec!["1790186552.442169".to_owned()],
             "the ts the wire sent reaches the caller",
         );
+        assert_eq!(outcome.workspace, "acme", "and the label it posted into rides along");
     }
 
     /// The draft text is what the prompt shows. A file NAME is
@@ -2619,6 +2764,34 @@ mod tests {
         );
     }
 
+    /// A binding to a label added by a reload is set but has no client:
+    /// saying "add the key" would send the caller to a key that is there.
+    #[tokio::test]
+    async fn a_binding_to_a_workspace_added_since_boot_names_the_restart() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = LoadedConfig::empty_for_test();
+        config.slack = vec![cfg("acme")];
+        let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+            .expect("the stub config's [[slack]] entries are well-formed");
+        ws.seed_test_project_with_slack_workspace("forge", "/tmp/slack-facade-scope", "beta");
+        ws.record_connected_session("/tmp/slack-facade-scope", "caller-uuid", None);
+        let facade = ProdSlackFacade::from_arc(&ws);
+
+        let error = facade.pins(&caller(), "C1").await.expect_err("no client to read with");
+        let SlackReadError::Workspace(error) = &error else {
+            panic!("a missing client is a workspace refusal: {error:?}");
+        };
+        assert_eq!(
+            error,
+            &SlackWorkspaceError::BoundButNotLive { label: "beta".to_owned() },
+            "the refusal says the workspace is bound but not loaded",
+        );
+        assert!(
+            format_workspace_error(error).contains("needs a forge restart"),
+            "and tells the caller what makes it load",
+        );
+    }
+
     #[tokio::test]
     async fn subscribing_to_dms_then_a_channel_yields_two_records() {
         let (ws, facade) = workspace_with_one_slack_workspace("acme");
@@ -2775,13 +2948,14 @@ mod tests {
             directory_user("U3", "csmith", None, Some("Chris"), false),
         ]);
 
-        let by_handle = facade.users(&caller(), "VED").await.expect("handle, case-insensitive");
+        let (_, by_handle) =
+            facade.users(&caller(), "VED").await.expect("handle, case-insensitive");
         assert_eq!(by_handle.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(), ["U1"]);
 
-        let by_real_name = facade.users(&caller(), "abrams").await.expect("real name");
+        let (_, by_real_name) = facade.users(&caller(), "abrams").await.expect("real name");
         assert_eq!(by_real_name.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(), ["U2"]);
 
-        let by_display_name = facade.users(&caller(), "chris").await.expect("display name");
+        let (_, by_display_name) = facade.users(&caller(), "chris").await.expect("display name");
         assert_eq!(
             by_display_name.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(),
             ["U3"],
@@ -2796,7 +2970,7 @@ mod tests {
         let (facade, _ws, api, _rx) = facade_with_recording_slack();
         api.seed_users(vec![directory_user("U1", "ved", None, None, false)]);
 
-        let found = facade.users(&caller(), "   ").await.expect("the guard is not a failure");
+        let (_, found) = facade.users(&caller(), "   ").await.expect("the guard is not a failure");
 
         assert!(found.is_empty(), "an empty query matches nobody");
     }
@@ -2814,7 +2988,7 @@ mod tests {
             directory_user("U4", "other", None, None, false),
         ]);
 
-        let found = facade.users(&caller(), "sam").await.expect("the directory is read");
+        let (_, found) = facade.users(&caller(), "sam").await.expect("the directory is read");
 
         assert_eq!(
             found.iter().map(|user| user.id.as_str()).collect::<Vec<_>>(),
@@ -2834,7 +3008,7 @@ mod tests {
             vec![search_hit("C1", "100.2")],
         ]);
 
-        let found =
+        let (_, found) =
             facade.search(&caller(), "deploy", 20, Some("C1")).await.expect("the search runs");
 
         assert_eq!(found.len(), 1, "the match was on the second page: {found:?}");
@@ -2875,7 +3049,7 @@ mod tests {
             }],
         );
 
-        let pins = facade.pins(&caller(), "C1").await.expect("read");
+        let (_, pins) = facade.pins(&caller(), "C1").await.expect("read");
         assert_eq!(pins.len(), 1, "the seeded row comes back");
         assert_eq!(
             pins[0].message.as_ref().expect("the message rides along").text,
@@ -2917,7 +3091,7 @@ mod tests {
         let (facade, _ws, api, _rx) = facade_with_recording_slack();
         api.seed_history("C1", vec![history_message("100.1", "hello")]);
 
-        let messages =
+        let (_, messages) =
             facade.history(&caller(), "C1", 25, Some("100.0"), Some("200.0")).await.expect("read");
 
         assert_eq!(messages.len(), 1, "the seeded page comes back");
@@ -2938,7 +3112,7 @@ mod tests {
             vec![history_message("100.0", "parent"), history_message("100.5", "reply")],
         );
 
-        let messages =
+        let (_, messages) =
             facade.replies(&caller(), "C1", "100.0", 200).await.expect("the thread is read");
 
         assert_eq!(messages.len(), 2, "the whole thread comes back");
@@ -2960,7 +3134,7 @@ mod tests {
         api.seed_conversation("C1", "ops");
         api.seed_search(vec![search_hit("C1", "100.1"), search_hit("C2", "100.2")]);
 
-        let found =
+        let (_, found) =
             facade.search(&caller(), "deploy", 20, Some("C1")).await.expect("the search runs");
 
         assert_eq!(found.len(), 1, "only the filtered conversation's hit survives: {found:?}");
@@ -2985,12 +3159,12 @@ mod tests {
             search_hit("C2", "100.3"),
         ]);
 
-        let direct =
+        let (_, direct) =
             facade.search(&caller(), "deploy", 20, Some("D1")).await.expect("the search runs");
         assert_eq!(direct.len(), 1, "only the DM's hit survives: {direct:?}");
         assert_eq!(direct[0].conversation_id, "D1");
 
-        let group =
+        let (_, group) =
             facade.search(&caller(), "deploy", 20, Some("G1")).await.expect("the search runs");
         assert_eq!(group.len(), 1, "only the group DM's hit survives: {group:?}");
         assert_eq!(group[0].conversation_id, "G1");
@@ -3014,7 +3188,7 @@ mod tests {
             }],
         );
 
-        let bookmarks = facade.bookmarks(&caller(), "C1").await.expect("read");
+        let (_, bookmarks) = facade.bookmarks(&caller(), "C1").await.expect("read");
         assert_eq!(bookmarks.len(), 1, "the seeded row comes back");
         assert_eq!(bookmarks[0].title.as_deref(), Some("Runbook"));
         assert_eq!(api.bookmark_reads.lock().as_slice(), ["C1"]);
@@ -3066,7 +3240,7 @@ mod tests {
             .expect("the worker subscribes to the DM class");
 
         let lead_targets: Vec<SlackSubscriptionTarget> =
-            facade.subscribed_targets(&lead).into_iter().map(|s| s.target).collect();
+            facade.subscribed_targets(&lead, "acme").into_iter().map(|s| s.target).collect();
         assert_eq!(
             lead_targets,
             vec![SlackSubscriptionTarget::Conversation {
@@ -3077,7 +3251,7 @@ mod tests {
             "the lead sees only its own record",
         );
         let worker_targets: Vec<SlackSubscriptionTarget> =
-            facade.subscribed_targets(&worker_key).into_iter().map(|s| s.target).collect();
+            facade.subscribed_targets(&worker_key, "acme").into_iter().map(|s| s.target).collect();
         assert_eq!(
             worker_targets,
             vec![SlackSubscriptionTarget::DirectMessages],

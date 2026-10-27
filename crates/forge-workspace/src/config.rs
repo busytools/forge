@@ -3200,6 +3200,76 @@ token = "x"
         assert!(message.contains("real-one"), "names the labels that exist: {message}");
     }
 
+    /// A padded label is the same label: `[[slack]]` labels are matched
+    /// trimmed, so a binding is too, and the stored value is the trimmed
+    /// one every later lookup uses.
+    #[test]
+    fn a_slack_binding_label_is_trimmed_before_it_is_matched() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+[orgs.projects.slack]
+workspace = "  acme  "
+
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "acme"
+token = "x"
+"#,
+        );
+
+        let config = load_from_dir(dir.path()).expect("the padded label matches");
+        assert_eq!(
+            named(&config, "forge").slack_workspace.as_deref(),
+            Some("acme"),
+            "the stored label is the trimmed one the clients are keyed by",
+        );
+    }
+
+    /// A binding with no `[[slack]]` section at all is still refused, and
+    /// the message says there is nothing to bind to rather than printing an
+    /// empty list.
+    #[test]
+    fn a_binding_with_no_slack_entries_says_none_are_configured() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+[orgs.projects.slack]
+workspace = "acme"
+
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+
+        let error = load_from_dir(dir.path()).expect_err("there is no label to bind to");
+        assert!(
+            error.to_string().contains("configured: none"),
+            "the message says the file configures no workspace: {error}",
+        );
+    }
+
     #[test]
     fn a_whitespace_only_base_url_is_not_a_base_url() {
         let dir = tempdir().expect("tempdir");
