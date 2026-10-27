@@ -1061,3 +1061,15 @@ that build leaves off.
   `forge` under `/tmp` with its own config, ports and store, plus a dev
   client pointed at it, for feature-scale work the maintainer verifies
   before merge.
+
+  **A look door is not ready until the surface has been DRIVEN and the thing
+  the maintainer is meant to judge has been seen rendered.** A page returning
+  200 and a forge answering a WebSocket upgrade with 101 prove the transport
+  and nothing else: a scratch store starts empty, so the session page connects
+  perfectly and draws a blank conversation. Seed the stack with whatever the
+  feature needs (the skill's own step 8), open the route the person will open,
+  and confirm the content is there - the rows, the state, the brief - before
+  saying a door is up. Say which of the two you checked: "the ports are
+  listening" is not a door, "I opened it and the table draws both halves" is.
+  Ved, 2026-10-27, after two doors opened on blank pages: *"Do you not check
+  for yourself before you ask me to verify?"*
