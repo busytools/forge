@@ -43,6 +43,22 @@ vi.mock('../perf', async (importOriginal) => {
 const mockSeatClick = vi.mocked(noteSeatClick);
 
 /**
+ * The shell's commands, answered by the test.
+ *
+ * **The launch asks which seat a notification tap named**, and
+ * every other command answers nothing - which is what a shell-less page would
+ * have got anyway.
+ */
+const { invokeMock } = vi.hoisted(() => ({
+  invokeMock: vi.fn((_command: string, _args?: unknown): Promise<unknown> => Promise.resolve(null)),
+}));
+
+vi.mock('@tauri-apps/api/core', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@tauri-apps/api/core')>();
+  return { ...real, invoke: invokeMock };
+});
+
+/**
  * A socket and a server that a test in this realm can use, required through
  * node rather than imported.
  *
@@ -316,12 +332,18 @@ function appliedFont(): string {
 beforeEach(() => {
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: Socket });
   mockWatchUpdate.mockClear();
+  invokeMock.mockReset();
+  invokeMock.mockResolvedValue(null);
 });
 
 afterEach(async () => {
   for (const forge of forges.splice(0)) await forge.close();
   if (app !== null) await unmount(app);
   app = null;
+  // The shell a case gave a belief in a shell: taken away after its unmount,
+  // which is what unlistens through them.
+  Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+  Reflect.deleteProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__');
   localStorage.clear();
   history.replaceState(null, '', '/');
 });
@@ -340,6 +362,40 @@ describe('the shell at launch', () => {
     await openAt('/', null);
 
     expect(fieldAddress(), 'the door did not open on the default address').toBe(DEFAULT_ADDRESS);
+  });
+
+  /**
+   * **A notification tap that cold-starts the app opens the seat it named.**
+   * The platform reads the launch intent before this page
+   * exists, so the seat is the shell's answer rather than an event, and it
+   * outranks the home the launch would otherwise land on.
+   */
+  it('opens the seat a notification tap launched it on', async () => {
+    const seat: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
+    invokeMock.mockImplementation((command) =>
+      Promise.resolve(command === 'client_tap_seat' ? seat : null),
+    );
+    // The page believes it has a shell; the launch intent is the shell's own.
+    // The stubs carry the two calls the event API makes on the internals, and
+    // the teardown (below) is what takes them away, because the shell's own
+    // unmount unlistens on them.
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: { transformCallback: () => 1, invoke: () => Promise.resolve(null) },
+      configurable: true,
+    });
+    Object.defineProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__', {
+      value: { unregisterListener: () => undefined },
+      configurable: true,
+    });
+    // Nothing is remembered, so the launch itself would land on the door: the
+    // seat is the whole reason this launch opens anywhere else.
+    await openAt('/', null);
+    await until(
+      () => location.pathname === `/session/${seat.org}/${seat.project}/${seat.label}`,
+      'the launch to open the seat a tap named',
+    );
+
+    expect(invokeMock, 'the launch never asked for a seat').toHaveBeenCalledWith('client_tap_seat');
   });
 
   /**

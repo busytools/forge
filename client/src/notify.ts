@@ -203,6 +203,28 @@ export async function watchNotificationClicks(): Promise<() => void> {
   });
 }
 
+/**
+ * The seat a notification tap launched the client on.
+ *
+ * **The platform reads the launch intent before this page exists**, so a tap
+ * that cold-starts the app is not an event a page can listen for: the shell
+ * remembers the seat under the id the intent carries, and this is the page
+ * asking for it once it can route. `null` is every launch no tap opened, and
+ * every page with no shell.
+ */
+export async function launchSeat(): Promise<SessionSlot | null> {
+  if (!canHost()) return null;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return slotFrom(await invoke<unknown>('client_tap_seat'));
+  } catch (why) {
+    // **A seat the shell cannot answer is still a launch**: the page routes as
+    // if no tap opened it, rather than holding the launch on the command.
+    console.warn('the launch seat could not be read', why);
+    return null;
+  }
+}
+
 /** A seat as the shell's event carries it, or `null` when it is not one. */
 function slotFrom(value: unknown): SessionSlot | null {
   if (typeof value !== 'object' || value === null) return null;
