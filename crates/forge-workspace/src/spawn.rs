@@ -9566,20 +9566,23 @@ mod lead_charter_tests {
     /// A message the user sends while a turn is running arrives inside that
     /// turn, beside a tool result, where nothing forces a reply - and a lead's
     /// turns are long, so a direct question can end the turn unanswered. Every
-    /// other inbound channel has a written duty in this charter; this one is
-    /// the only channel the user has (#2626).
+    /// other inbound channel has a written duty in this charter; this one had
+    /// none.
     #[test]
     fn the_charter_answers_a_mid_turn_message() {
         assert!(
-            DEFAULT_LEAD_CHARTER.contains(
-                "Answer it in that same turn, before you start the next piece of work"
-            ),
-            "the debt and when it falls due are pinned together",
+            DEFAULT_LEAD_CHARTER
+                .contains("A message from the user that arrives mid-turn is still owed an answer"),
+            "the duty names its subject, so folding it into another bullet fails here",
         );
         assert!(
-            DEFAULT_LEAD_CHARTER.contains(
-                "a question left unanswered is a dropped message, not a deferred one"
-            ),
+            DEFAULT_LEAD_CHARTER
+                .contains("Answer it in that same turn, before you start the next piece of work"),
+            "and when it falls due",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("a question left unanswered is a dropped message, not a deferred one"),
             "the failure is named, so the line cannot be read as permission to defer",
         );
     }
