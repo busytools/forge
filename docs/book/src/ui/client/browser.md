@@ -141,8 +141,10 @@ scoped to a row when names repeat - which is resolved when the call runs; a
 name shared by several elements is refused rather than guessed at. Once the
 page has settled, a full-page `browser_snapshot` with no `target` and its
 refs hold: it keeps the ref of an element that stayed and carries the same
-role and accessible name, and mints a new one for anything else. A target-scoped
-snapshot replaces the snapshot with that subtree.
+role and accessible name, gives none to one that is no longer visible or
+pointer-interactive, and mints a new one when the role or name changed. A
+target-scoped snapshot answers with that subtree alone, so refs outside it do
+not resolve until a full-page snapshot.
 
 **Input is trusted input.** The person's mouse, wheel and keys are mapped by
 the SERVER to CDP `Input.*` events at the page's own scale: a click is a

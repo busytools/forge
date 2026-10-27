@@ -498,8 +498,9 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                           call, so drive it with a unique role/name selector such as \
                           role=button[name=\"Save\"], scoped when names repeat, which resolves at \
                           call time; once the page has settled, take a full-page snapshot with no \
-                          target and its refs hold. A target-scoped snapshot replaces the snapshot \
-                          with that subtree.",
+                          target and its refs hold. A target-scoped snapshot answers with that \
+                          subtree alone, so refs outside it do not resolve until a full-page \
+                          snapshot.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -917,7 +918,8 @@ mod tests {
             "drive it with a unique role/name selector",
             "scoped when names repeat",
             "take a full-page snapshot with no target and its refs hold",
-            "A target-scoped snapshot replaces the snapshot with that subtree",
+            "A target-scoped snapshot answers with that subtree alone",
+            "refs outside it do not resolve until a full-page snapshot",
         ] {
             assert!(
                 snapshot.description.contains(phrase),
