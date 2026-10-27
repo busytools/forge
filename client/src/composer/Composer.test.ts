@@ -3492,28 +3492,37 @@ describe('the frame', () => {
 
   /**
    * A narrow box cannot hold the hints and the controls on one row - measured,
-   * the widest pair needs 365px - so the keys go and the controls keep the row.
+   * the widest set needs 371px with a mouse's glyphs and 431px with a finger's
+   * - so the keys go and the controls keep the row, the finger's set first.
    */
   it('drops the key hints rather than the controls when the box is narrow', () => {
     expect(sheet, 'the foot wraps its hints instead of giving them up').toMatch(
       /@container \(max-width: 400px\) \{ \.foot \.hints \{ display: none; \} \}/,
     );
+    expect(sheet, "the foot keeps the key hints at a finger's width that cannot hold them").toMatch(
+      /@media \(pointer: coarse\) \{\n {2}@container \(max-width: 470px\) \{ \.foot \.hints \{ display: none; \} \}/,
+    );
   });
 
   /**
    * **The phone's floors are read on the block itself**, because the coarse
-   * rules sit on one line inside the media query, where the per-selector scan
-   * above reaches only their base rules - and that is exactly how they went
-   * unpinned while two changes crossed.
+   * rules sit inside the media query, where the per-selector scan above
+   * reaches only their base rules - and that is exactly how they went unpinned
+   * while two changes crossed.
    */
-  it("keeps the mic and the panel's close at a finger's size, and the mic's accent", () => {
-    // Anchored so `.mic` cannot match as the tail of another class: a pattern
-    // that also accepts `.foot .mic` keeps passing while the on-line mic has
-    // lost the floor this is checking it for.
-    const coarse =
-      /@media \(pointer: coarse\) \{[^\n]*[^.\w]\.mic\s*\{[^\n]*\}/.exec(sheet)?.[0] ?? '';
-    expect(coarse, 'the mic lost its height floor on a finger').toContain('min-height: 44px');
-    expect(coarse, 'the mic lost its width floor on a finger').toContain('min-width: 44px');
+  it("keeps the glyph controls and the panel's close at a finger's size, and the mic's accent", () => {
+    // A rule per control rather than one selector pinned whole, so a control
+    // that leaves the shared glyph rule for one of its own still has to state
+    // both floors.
+    const coarse = [...sheet.matchAll(/@media \(pointer: coarse\) \{\n([\s\S]*?)\n\}/g)]
+      .map((match) => match[1])
+      .join('\n');
+    for (const control of ['mic', 'send', 'stop']) {
+      const rule = new RegExp(`\\.${control}(?:, [^{]*)? \\{([^}]*)\\}`).exec(coarse)?.[1];
+      expect(rule, `.${control} has no rule in a coarse-pointer block`).toBeDefined();
+      expect(rule, `.${control} lost its height floor on a finger`).toContain('min-height: 44px');
+      expect(rule, `.${control} lost its width floor on a finger`).toContain('min-width: 44px');
+    }
     expect(coarse, "the panel's close lost its width floor").toContain(
       '.pop .hd .x { min-width: 44px; }',
     );
