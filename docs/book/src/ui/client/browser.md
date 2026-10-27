@@ -37,7 +37,7 @@ Neither client has a WebView engine or an in-process node any more.
 |---|---|---|
 | The hand-off's card | `browser hand-off · tab N`; **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar | the `browser_hand_off` ask, and the page's own surface state |
 | The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
-| The feedback line | a text field and **send**: the person's words go to the agent as a prompt and the hand-off is declined | the page's own state; the prompt rides the socket |
+| The feedback line | a text field and **send**: the person's words go to the agent as a prompt and the hand-off ends as *feedback* - they spoke, so nothing is recorded as a decline | the page's own state; the prompt rides the socket |
 | The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's canvas |
 | The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide** | the `browser_tabs` ask and its pushed frame |
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
@@ -82,9 +82,9 @@ file under `profiles/` is not a profile.
 **A hand-off names a tab.** `browser_hand_off` requires the number of one of
 the session's own tabs, and **Open** raises that tab. The tab is held while
 the ask is parked: the idle clock and the dead-seat sweep both leave it
-alone, the strip marks it **held**, and the hand-off's card names it. Done or
-Not now releases it, and a session that went while the tab was held takes it
-with it when the ask resolves.
+alone, the strip marks it **held**, and the hand-off's card names it. Any
+answer releases it - Done, Not now or feedback - and a session that went
+while the tab was held takes it with it when the ask resolves.
 
 **A page context that dies is rebuilt and answered in the client's words**,
 never handed back as the driver's `_page` TypeError, and a driver that cannot
@@ -222,9 +222,10 @@ frames per second at the surface's size; CPU was not profiled).
 
 **A failure is drawn where the person is looking.** The takeover's page area
 carries the server's sentence and the hand-off stays parked; the strip says
-what a refused show or hide said. **Done** and **Not now** are the hand-off's
-two answers; the feedback line sends its words as a prompt and declines with
-Not now.
+what a refused show or hide said. **Done**, **Not now** and **feedback** are
+the hand-off's answers; the feedback line sends its words as a prompt and,
+once they leave, ends the park as **feedback**, saying the person spoke
+rather than that they declined.
 
 ## The widths
 

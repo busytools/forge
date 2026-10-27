@@ -132,7 +132,18 @@ pub mod wire;
 /// no seat is ever attached and no mark is ever spent - the rail keeps
 /// diamonds the reader has already looked at. `baselines/socket/11/` is the
 /// record a v11 server emitted.
-pub const PROTOCOL_VERSION: u32 = 12;
+///
+/// **v13 is a bump for a hand-off's answer.** The answer carries what it
+/// means, the door in the client that sent it and the connection that
+/// carried it, in place of the bare `done` flag. A v12 client's answer names
+/// only `done` and cannot be decoded, so **nothing refuses the connection**
+/// (the endings it draws are ignored safely), and its answer comes back as
+/// a dispatch refusal, which a client draws where the answer came from: the
+/// command frame is recognised by its kind even when its body no longer
+/// parses, so the person is told the prompt is still waiting instead of
+/// losing the answer to the console. `baselines/socket/12/` is the record a
+/// v12 server emitted.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
