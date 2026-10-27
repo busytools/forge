@@ -171,20 +171,15 @@ pub(crate) fn assemble(
             }
         }
     }
-    GroundTruth {
-        sections: vec![
-            seat_section(seat, git),
-            role_section(&seat.role),
-            ask,
-            constraints,
-            files_section(messages, git),
-            verify_section(messages),
-            board_section(seat.slot, board),
-            record_section(seat),
-        ],
-        cycle: cycle(messages, asks.len()),
-        reads: read_set(messages),
-    }
+    let mut sections = seat_sections(seat, git);
+    sections.push(role_section(&seat.role));
+    sections.push(ask);
+    sections.push(constraints);
+    sections.push(files_section(messages, git));
+    sections.push(verify_section(messages));
+    sections.push(board_section(seat.slot, board));
+    sections.push(record_section(seat));
+    GroundTruth { sections, cycle: cycle(messages, asks.len()), reads: read_set(messages) }
 }
 
 /// A section's lines from a brief, by label. An older record's brief is the
@@ -324,23 +319,30 @@ fn states_a_correction(text: &str) -> bool {
     .any(|cue| lower.contains(cue))
 }
 
-fn seat_section(seat: &HandoffSeat<'_>, git: &HandoffGitState) -> HandoffSection {
-    let mut lines = vec![seat.slot.display(), format!("cwd {}", seat.cwd.display())];
-    match (git.branch.as_deref(), git.head.as_deref()) {
-        (Some(branch), Some(head)) => lines.push(format!("branch {branch} @ {head}")),
-        (Some(branch), None) => lines.push(format!("branch {branch}")),
-        (None, _) => lines.push("not a git repository".to_owned()),
-    }
+/// The seat's facts, one section per label: the brief draws a table, and a
+/// fact carried inside another section's value has no row of its own.
+fn seat_sections(seat: &HandoffSeat<'_>, git: &HandoffGitState) -> Vec<HandoffSection> {
+    let mut sections =
+        vec![fact("seat", seat.slot.display()), fact("cwd", seat.cwd.display().to_string())];
+    sections.push(match (git.branch.as_deref(), git.head.as_deref()) {
+        (Some(branch), Some(head)) => fact("branch", format!("{branch} @ {head}")),
+        (Some(branch), None) => fact("branch", branch.to_owned()),
+        (None, _) => fact("branch", "not a git repository".to_owned()),
+    });
     if let Some(account) = &seat.account {
-        lines.push(format!("account {account}"));
+        sections.push(fact("account", account.clone()));
     }
     if let Some(model) = &seat.model {
-        lines.push(format!("model {model}"));
+        sections.push(fact("model", model.clone()));
     }
     if let Some(mode) = &seat.permission_mode {
-        lines.push(format!("mode {mode}"));
+        sections.push(fact("mode", mode.clone()));
     }
-    HandoffSection { label: "seat".to_owned(), lines }
+    sections
+}
+
+fn fact(label: &str, line: String) -> HandoffSection {
+    HandoffSection { label: label.to_owned(), lines: vec![line] }
 }
 
 fn role_section(role: &Role) -> HandoffSection {
@@ -1605,24 +1607,50 @@ mod tests {
 
     /// The seat and the record are what tell the successor which session
     /// this brief belongs to, and where the rest of the truth is.
+    ///
+    /// **The seat's facts are one labelled row each.** The brief draws a
+    /// table, so a fact carried inside another row's value has no column of
+    /// its own and reads as part of the label above it.
     #[test]
     fn the_seat_and_the_record_name_the_identity_and_the_transcript() {
         let ground = assemble(&seat(), &[], &HandoffGitState::default(), &[], None);
-        let seat_lines = &ground.sections[0].lines;
-        assert_eq!(ground.sections[0].label, "seat");
-        assert!(
-            seat_lines.contains(&"Busytools/forge/handoff-cut".to_owned()),
-            "the slot: {seat_lines:?}",
+        let labels: Vec<&str> = ground.sections.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            &labels[..6],
+            ["seat", "cwd", "branch", "account", "model", "mode"],
+            "the seat block is one fact per row: {labels:?}",
         );
-        assert!(
-            seat_lines.contains(&"not a git repository".to_owned()),
-            "a directory git says nothing about is stated: {seat_lines:?}",
+        let values: Vec<Vec<&str>> = ground.sections[..6]
+            .iter()
+            .map(|section| section.lines.iter().map(String::as_str).collect())
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                vec!["Busytools/forge/handoff-cut"],
+                vec!["/tmp/forge"],
+                vec!["not a git repository"],
+                vec!["Personal"],
+                vec!["claude-opus-5-5"],
+                vec!["auto"],
+            ],
+            "each row carries its own value",
         );
-        assert!(
-            seat_lines.contains(&"account Personal".to_owned())
-                && seat_lines.contains(&"model claude-opus-5-5".to_owned())
-                && seat_lines.contains(&"mode auto".to_owned()),
-            "and what the seat runs as: {seat_lines:?}",
+        let git = HandoffGitState {
+            branch: Some("worktree-handoff-cut".to_owned()),
+            head: Some("94cab2f20".to_owned()),
+            ..HandoffGitState::default()
+        };
+        let on_a_branch = assemble(&seat(), &[], &git, &[], None);
+        assert_eq!(
+            on_a_branch.sections[2].label, "branch",
+            "the branch keeps its own row: {:?}",
+            on_a_branch.sections[2],
+        );
+        assert_eq!(
+            on_a_branch.sections[2].lines,
+            vec!["worktree-handoff-cut @ 94cab2f20".to_owned()],
+            "and names the commit it is at",
         );
         let record = ground.sections.last().expect("the record");
         assert_eq!(record.label, "record");
