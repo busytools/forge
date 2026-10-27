@@ -1102,6 +1102,24 @@ describe('the loading state over the column', () => {
   });
 });
 
+/**
+ * The one turn a settle case lands over the held window on its own: larger
+ * than `HISTORY_WINDOW_BYTES`, which is what makes the landing trim.
+ */
+const OVER_WINDOW_MIB = 10;
+
+/**
+ * A pessimistic rate for weighing turns in jsdom on a loaded gate: the
+ * over-window case below runs ~0.7 s idle and ~4 s at background QoS, and the
+ * full check that reddened this file ran past vitest's five-second default.
+ */
+const FOLD_MIB_PER_SEC = 1;
+
+// Weighing the window is CPU, not a wait, so there is no timer here to derive
+// a deadline from: the file's budget is vitest's default plus its heaviest
+// fixture at the pessimistic rate.
+vi.setConfig({ testTimeout: 5_000 + (OVER_WINDOW_MIB / FOLD_MIB_PER_SEC) * 1_000 });
+
 describe('the held window at the column foot', () => {
   /** One turn heavy enough that a handful pass the window. */
   const heavy = (key: string, mb = 1): unknown => ({
@@ -1206,7 +1224,7 @@ describe('the held window at the column foot', () => {
     const before = last()?.length ?? 0;
 
     // One landing of a single row over the window on its own.
-    server.page([heavy('h1', 10)], 'cursor-1');
+    server.page([heavy('h1', OVER_WINDOW_MIB)], 'cursor-1');
     await tick();
     await tick();
 
