@@ -38,6 +38,7 @@ describe('an agent row from a server that names no failure', () => {
           has_background_work: false,
           pending: null,
           pending_depth: 0,
+          pending_seq: 0,
           last_activity: null,
           reason: null,
           work: null,
@@ -250,6 +251,7 @@ function agent(
     has_background_work: false,
     pending: null,
     pending_depth: 0,
+    pending_seq: 0,
     last_activity: null,
     reason: null,
     failed_turn: failedTurn,
@@ -1239,6 +1241,28 @@ describe('what a row says', () => {
   it('narrows a pending kind it does not know', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, pending: 'elicit' as never }] };
     expect(rowsOf(homeFrom(unknown)).lead.pending).toBe('permission');
+  });
+
+  /// **An absent ask identity reads as zero**, not as a crash or as an ask a
+  /// client could not have announced: a server older than the field still
+  /// draws, and its first ask is announced by its number once one exists.
+  it('reads an absent pending_seq as zero', () => {
+    const older = {
+      ...FLEET,
+      agents: [{ ...FLEET_AGENT, pending: 'permission', pending_seq: undefined }],
+    };
+    expect(
+      homeFrom(older as unknown as HomeWire).agents[0]?.pending_seq,
+      'a missing identity is zero rather than undefined reaching the marks',
+    ).toBe(0);
+  });
+
+  /// **An absent run reads as no scope at all**, so a server older than the
+  /// field still has its asks seeded by the first read rather than compared
+  /// against a mark from a run it never named.
+  it('reads an absent boot_id as no scope', () => {
+    const older = { ...FLEET, boot_id: undefined };
+    expect(homeFrom(older as unknown as HomeWire).boot_id).toBe('');
   });
 
   /**

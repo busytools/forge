@@ -399,6 +399,57 @@ describe('the shell at launch', () => {
   });
 
   /**
+   * **Looking away is when an ask on the shown seat becomes news.** No frame
+   * arrives for a blur, so the rule has to run again on the event itself over
+   * the roster the page already holds.
+   */
+  it('announces the shown seat once the page is not looked at', async () => {
+    // **The premise is this case's own**: jsdom answers `hasFocus()` from the
+    // last focused element, and this case creates none. Earlier cases in the
+    // file focus a composer, which made this pass only in file order.
+    const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    try {
+      const forge = await stubForge({ mark: null, theme: null, font: null });
+      forges.push(forge);
+      await openAt('/session/TestOrg/proj/lead', forge.address);
+      await until(() => forge.homeReads() >= 1, 'the launch to take');
+
+      const shown: string[] = [];
+      class Note {
+        static permission: NotificationPermission = 'granted';
+        static requestPermission = (): Promise<NotificationPermission> =>
+          Promise.resolve('granted');
+        onclick: (() => void) | null = null;
+        title: string;
+        constructor(title: string) {
+          this.title = title;
+          shown.push(title);
+        }
+        close(): void {}
+      }
+      vi.stubGlobal('Notification', Note);
+
+      const lead = homeWire.agents[0];
+      if (lead === undefined) throw new Error('the fixture carries no lead row');
+      // The launch's own read seeded the fixture's ask, so this is a NEW one:
+      // the shown seat while it is looked at is not news, and the blur is.
+      forge.home({
+        ...homeWire,
+        agents: [{ ...lead, pending: 'question', pending_depth: 1, pending_seq: 1 }],
+      });
+      await quiet();
+      expect(shown, 'the seat on screen is not news while it is looked at').toEqual([]);
+
+      window.dispatchEvent(new Event('blur'));
+      await until(() => shown.length === 1, 'the ask to be announced on the blur');
+      expect(shown[0], 'the notification names the seat').toContain('proj');
+    } finally {
+      focused.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /**
    * The door's own URL is where a launch can finish while the door is already
    * on screen, so the reason has to arrive after the fact. A screen that seeds
    * it once is indistinguishable from one where nothing was tried.

@@ -62,6 +62,7 @@ impl Workspace {
             self.document_handoffs.lock().remove(&id);
             return None;
         }
+        self.note_ask(seat);
         Some((id, receiver))
     }
 

@@ -41,6 +41,20 @@ use crate::transport::conversation::{Conversation, Held};
 use crate::transport::envelope::Subject;
 use crate::work::{WorkState, git_work_view, work_from_scan};
 
+/// The server run's own identity, minted once.
+///
+/// **A client's ask marks outlive a forge restart while the counter does
+/// not**, so the roster carries this and every mark is scoped by it.
+fn boot_id() -> &'static str {
+    static BOOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BOOT.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |held| held.as_nanos());
+        format!("{}-{nanos}", std::process::id())
+    })
+}
+
 /// The seat the fixture surface is populated for.
 ///
 /// One seat is enough: a fixture pins the SHAPE of a snapshot, and a second
@@ -106,6 +120,13 @@ pub struct HomeWire {
     /// own, so the two are named apart rather than one standing for both.
     pub forge_version: String,
     pub forge_version_short: String,
+    /// The server run's own identity, minted once per process.
+    ///
+    /// **An ask's number restarts with the process**, so a client that kept
+    /// its marks across a forge restart would read a fresh ask as one it had
+    /// already announced. The run rides the roster and every mark is scoped
+    /// by it, so no two runs can be confused.
+    pub boot_id: String,
     pub service_status: Option<Value>,
     /// The last fatal error, held by the core: an App-level event with no
     /// state behind it reaches only whoever was subscribed when it fired.
@@ -249,6 +270,10 @@ pub struct AgentWire {
     pub has_background_work: bool,
     pub pending: Option<forge_workspace::PendingInteractionKind>,
     pub pending_depth: usize,
+    /// The ask's identity: how many asks have ever arrived for the seat.
+    /// A client announces a new ask by this number, so a re-read is not news
+    /// and an ask replacing another is.
+    pub pending_seq: u64,
     pub last_activity: Option<std::time::SystemTime>,
     pub reason: Option<String>,
     /// When the seat's newest turn ended in failure, filtered by what has
@@ -280,6 +305,7 @@ impl From<&AgentRow> for AgentWire {
             has_background_work: row.has_background_work,
             pending: row.pending,
             pending_depth: row.pending_depth,
+            pending_seq: row.pending_seq,
             last_activity: row.last_activity,
             reason: row.reason.clone(),
             failed_turn: row.failed_turn,
@@ -1929,6 +1955,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         cli_version: surface.cli_version().and_then(|version| serde_json::to_value(version).ok()),
         forge_version: crate::FORGE_VERSION.to_owned(),
         forge_version_short: crate::FORGE_VERSION_SHORT.to_owned(),
+        boot_id: boot_id().to_owned(),
         service_status: surface.service_status().and_then(|issue| serde_json::to_value(issue).ok()),
         // The words the server prints on exit, which is what a client draws:
         // the serde tag alone is for matching, and nothing matches on this.
@@ -3539,6 +3566,9 @@ mod tests {
             // which.
             (crate::FORGE_VERSION.to_owned(), "<forge-version>"),
             (crate::FORGE_VERSION_SHORT.to_owned(), "<forge-version-short>"),
+            // The run's own identity differs per process, so a fixture that
+            // pinned it would fail on the next run.
+            (boot_id().to_owned(), "<boot-id>"),
         ];
         forms.sort_by_key(|(form, _)| std::cmp::Reverse(form.len()));
         forms.dedup_by(|left, right| left.0 == right.0);

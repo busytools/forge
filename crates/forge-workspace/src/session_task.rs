@@ -844,6 +844,9 @@ impl SessionTask {
                         },
                     );
                 }
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.note_ask(&self.key);
+                }
                 let answerable = self.update_tx.send_answering(SessionUpdate::PermissionRequest {
                     key: self.key.clone(),
                     tool_id: tool_call_id.clone(),
@@ -900,6 +903,9 @@ impl SessionTask {
                             request: Box::new(wire_request.clone()),
                         },
                     );
+                }
+                if let Some(workspace) = self.workspace.upgrade() {
+                    workspace.note_ask(&self.key);
                 }
                 let answerable = self.update_tx.send_answering(SessionUpdate::QuestionRequest {
                     key: self.key.clone(),
@@ -7121,6 +7127,11 @@ mod tests {
             task.domain.lock().pending_interactions.contains_key("tu-1"),
             "the request parks a pending permission slot"
         );
+        assert_eq!(
+            workspace.pending_request_seq(&key),
+            1,
+            "the permission has its own identity on the wire",
+        );
 
         task.execute_command(Command::RespondPermission {
             key: key.clone(),
@@ -7320,6 +7331,11 @@ mod tests {
             session_id: key.display(),
             request: question_request_fixture("tu-q1"),
         });
+        assert_eq!(
+            workspace.pending_request_seq(&key),
+            1,
+            "the question has its own identity on the wire",
+        );
 
         task.execute_command(Command::RespondPermission {
             key: key.clone(),
