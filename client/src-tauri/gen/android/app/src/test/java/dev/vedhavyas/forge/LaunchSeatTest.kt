@@ -28,6 +28,14 @@ class LaunchSeatTest {
   }
 
   @Test
+  fun `a press without an id names nothing`() {
+    assertNull(
+      "an intent with the press action but no id named a notification",
+      LaunchSeatPlugin.tapSeatId(Intent.ACTION_MAIN, Int.MIN_VALUE, "tap"),
+    )
+  }
+
+  @Test
   fun `another action names nothing`() {
     assertNull(
       "an action that is not a launch named a notification",

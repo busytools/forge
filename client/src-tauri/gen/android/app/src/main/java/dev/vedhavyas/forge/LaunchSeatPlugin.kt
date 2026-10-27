@@ -27,13 +27,11 @@ class LaunchSeatPlugin(private val activity: Activity) : Plugin(activity) {
   fun tapped(invoke: Invoke) {
     val intent = MainActivity.newest ?: activity.intent
     val id = tapSeatId(intent?.action, notificationId(intent), pressAction(intent))
-    if (id == null) {
-      invoke.resolve()
-      return
-    }
-    // **The activity launch goes with the id**: a page reload in the same
-    // activity is not a launch, but a re-created activity asks again.
-    invoke.resolveObject(JSObject().put("id", id).put("launch", MainActivity.launches))
+    // **The launch count is answered even when no tap is named**: a warm tap
+    // lands on such a launch, and the shell's latch must have counted it.
+    val answer = JSObject().put("launch", MainActivity.launches)
+    if (id != null) answer.put("id", id)
+    invoke.resolveObject(answer)
   }
 
   /**

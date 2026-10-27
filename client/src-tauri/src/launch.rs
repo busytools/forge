@@ -134,7 +134,16 @@ impl Seats {
 /// launch on the desktop as well.
 pub(crate) async fn take(app: &tauri::AppHandle) -> Option<SessionSlot> {
     let ask = tapped(app).await?;
-    answered(first_for(ask.launch), Seats::open(app).as_ref(), ask.id)
+    asked(ask, Seats::open(app).as_ref())
+}
+
+/// What one ask answers, and what it leaves behind.
+///
+/// **The launch is counted whether or not it names a tap**: a warm tap lands
+/// on a launch whose first ask named nothing, and that ask must still arm the
+/// latch, or the reload after the tap would take a seat the tap itself opened.
+fn asked(ask: Ask, seats: Option<&Seats>) -> Option<SessionSlot> {
+    answered(first_for(ask.launch), seats, ask.id)
 }
 
 /// What one ask answers, and what it leaves behind.
@@ -142,14 +151,17 @@ pub(crate) async fn take(app: &tauri::AppHandle) -> Option<SessionSlot> {
 /// **The guard runs before the store is read**: a reload answers nothing and
 /// must not take the seat either, or the activity launch that follows would
 /// find it gone.
-fn answered(first: bool, seats: Option<&Seats>, id: i32) -> Option<SessionSlot> {
+fn answered(first: bool, seats: Option<&Seats>, id: Option<i32>) -> Option<SessionSlot> {
     if !first {
         return None;
     }
-    seats?.take(id)
+    seats?.take(id?)
 }
 
 /// Whether this activity launch still owes the page its seat.
+///
+/// **Zero is the not-yet-a-launch sentinel**: no launch is numbered zero, so
+/// the first launch's number differs from it and is answered.
 #[cfg(any(target_os = "android", test))]
 fn first_for(launch: i32) -> bool {
     ANSWERED.swap(launch, Ordering::SeqCst) != launch
@@ -170,11 +182,13 @@ pub(crate) fn seat(app: &tauri::AppHandle, id: i32) -> Option<SessionSlot> {
     Seats::open(app)?.peek(id)
 }
 
-/// What the activity says a launch names: the notification, and which
-/// activity launch is asking.
+/// What the activity says a launch names: the notification, if the intent is
+/// a tap, and which activity launch is asking.
 #[derive(serde::Deserialize)]
 struct Ask {
-    id: i32,
+    /// Missing when the intent is not a tap; the launch still counts.
+    #[serde(default)]
+    id: Option<i32>,
     /// The activity launch count, which tells a reload from a re-created
     /// activity.
     launch: i32,
@@ -281,11 +295,16 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                 }
                 Ok(())
             });
-            handle.run_mobile_plugin::<()>(
+            // **The reader is in place before the listener is asked for**: a
+            // listener this platform refuses costs the warm tap, which is not
+            // worth a cold start that cannot read its own launch either.
+            app.manage(std::sync::Arc::new(Reader(handle.clone())));
+            if let Err(why) = handle.run_mobile_plugin::<()>(
                 "registerListener",
                 RegisterTap { event: "tap", handler: channel },
-            )?;
-            app.manage(std::sync::Arc::new(Reader(handle)));
+            ) {
+                tauri_plugin_log::log::warn!("the tap listener was not registered: {why}");
+            }
             Ok(())
         })
         .build()
@@ -385,9 +404,9 @@ mod tests {
     /// but an activity the platform re-creates is, and it asks again.
     #[test]
     fn one_activity_launch_answers_once() {
-        assert!(first_for(1), "the launch's own ask is answered");
-        assert!(!first_for(1), "a reload in the same activity is not");
-        assert!(first_for(2), "a re-created activity is a new launch");
+        assert!(first_for(41), "the launch's own ask is answered");
+        assert!(!first_for(41), "a reload in the same activity is not");
+        assert!(first_for(42), "a re-created activity is a new launch");
     }
 
     /// **A reload answers nothing and takes nothing**: the guard runs before
@@ -397,13 +416,35 @@ mod tests {
     fn a_reload_answers_nothing_and_leaves_the_seat() {
         let (_dir, seats) = store();
         seats.record(7, &lead());
-        assert_eq!(answered(false, Some(&seats), 7), None, "a reload is not the launch");
+        assert_eq!(answered(false, Some(&seats), Some(7)), None, "a reload is not the launch",);
         assert_eq!(seats.peek(7), Some(lead()), "and a reload does not take the seat");
         assert_eq!(
-            answered(true, Some(&seats), 7),
+            answered(true, Some(&seats), Some(7)),
             Some(lead()),
             "the launch's own ask still answers it",
         );
+    }
+
+    /// **A launch that names no tap still arms the latch**: a warm tap lands
+    /// on such a launch, and the reload after it must not take the seat the
+    /// tap itself opened.
+    #[test]
+    fn a_launch_that_names_no_tap_still_arms_the_latch() {
+        let (_dir, seats) = store();
+        seats.record(7, &lead());
+        // The launcher starts the app: the first ask names no tap.
+        assert_eq!(asked(Ask { id: None, launch: 51 }, Some(&seats)), None);
+        // A warm tap then opens the seat from the store without taking it ...
+        assert_eq!(seats.peek(7), Some(lead()), "the warm report left the seat");
+        // ... and a reload in the same activity asks again, now naming the tap.
+        assert_eq!(
+            asked(Ask { id: Some(7), launch: 51 }, Some(&seats)),
+            None,
+            "a reload after a warm tap must not open the seat",
+        );
+        assert_eq!(seats.peek(7), Some(lead()), "and must not take it either");
+        // The next activity launch is the launch that answers it.
+        assert_eq!(asked(Ask { id: Some(7), launch: 52 }, Some(&seats)), Some(lead()));
     }
 
     /// **Two notifications of one run never share an id**, or the second
