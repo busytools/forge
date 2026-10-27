@@ -9563,6 +9563,27 @@ mod lead_charter_tests {
         );
     }
 
+    /// A message the user sends while a turn is running arrives inside that
+    /// turn, beside a tool result, where nothing forces a reply - and a lead's
+    /// turns are long, so a direct question can end the turn unanswered. Every
+    /// other inbound channel has a written duty in this charter; this one is
+    /// the only channel the user has (#2626).
+    #[test]
+    fn the_charter_answers_a_mid_turn_message() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "Answer it in that same turn, before you start the next piece of work"
+            ),
+            "the debt and when it falls due are pinned together",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "a question left unanswered is a dropped message, not a deferred one"
+            ),
+            "the failure is named, so the line cannot be read as permission to defer",
+        );
+    }
+
     /// The charter's board lines carry the landing rule (#2377): a landed
     /// row with no epic above it is deleted in the same pass, a landed
     /// child of an open epic is left terminal so the epic can read `to
