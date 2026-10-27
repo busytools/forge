@@ -37,6 +37,9 @@ enum Job {
     /// The person may have come back to the app: ask a held prompt, or show
     /// what waited for one.
     Review,
+    /// A tap the app was already running for, by the notification it opened.
+    #[cfg(target_os = "android")]
+    Tap(i32),
 }
 
 /// The one notification thread, started by the first job.
@@ -116,6 +119,9 @@ trait Platform {
     fn permission(&self) -> PermissionState;
     fn request(&self) -> Result<PermissionState, String>;
     fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String>;
+    /// Open the seat a tap names while the app is already running.
+    #[cfg(target_os = "android")]
+    fn tap(&self, id: i32);
 }
 
 /// The shell's own notification surface.
@@ -134,6 +140,11 @@ impl Platform for Shell {
 
     fn request(&self) -> Result<PermissionState, String> {
         self.app.notification().request_permission().map_err(|why| why.to_string())
+    }
+
+    #[cfg(target_os = "android")]
+    fn tap(&self, id: i32) {
+        open_tap(&self.app, id);
     }
 
     fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String> {
@@ -172,6 +183,8 @@ impl<P: Platform> Worker<P> {
         match job {
             Job::Raise(seat, kind) => self.raise(seat, kind),
             Job::Review => self.review(),
+            #[cfg(target_os = "android")]
+            Job::Tap(id) => self.platform.tap(id),
         }
     }
 
@@ -297,6 +310,31 @@ fn register(app: &AppHandle) {
     if let Err(why) = registered {
         tauri_plugin_log::log::warn!("the notification click listener was not registered: {why}");
     }
+}
+
+/// A tap the app was already running for, by the notification it opened.
+///
+/// **The plugin's action carries no seat on Android** - the notification
+/// object is never serialised into it - so the seat is opened from the id the
+/// tap's intent carries, the same store the page asks after a cold start. The
+/// entry is left where it is: a cold start reports the same tap through both
+/// doors, and the page's ask must still find it.
+#[cfg(target_os = "android")]
+fn open_tap(app: &AppHandle, id: i32) {
+    let Some(seat) = crate::launch::seat(app, id) else {
+        return;
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit("client://notification", seat);
+}
+
+/// Hand a tap the app was already running for to the notification thread.
+#[cfg(target_os = "android")]
+pub(crate) fn warm_tap(app: &AppHandle, id: i32) {
+    let _ = jobs(app).send(Job::Tap(id));
 }
 
 /// The notification thread's sender, started on the first call.

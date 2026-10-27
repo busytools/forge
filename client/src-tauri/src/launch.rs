@@ -89,14 +89,9 @@ impl Seats {
         self.prune(SystemTime::now());
     }
 
-    /// The seat of one tapped notification, taken once: a page that asks
-    /// again (a reload) is not pulled back to a seat it already opened.
-    fn take(&self, id: i32) -> Option<SessionSlot> {
-        let file = self.file(id);
-        let held = std::fs::read_to_string(&file).ok()?;
-        // **Taken whether or not it parses**: an unreadable entry can never
-        // name a seat, and leaving it would keep it for the store's life.
-        let _ = std::fs::remove_file(&file);
+    /// The seat of one notification, left for whichever reader comes next.
+    fn peek(&self, id: i32) -> Option<SessionSlot> {
+        let held = std::fs::read_to_string(self.file(id)).ok()?;
         match serde_json::from_str(&held) {
             Ok(seat) => Some(seat),
             Err(why) => {
@@ -104,6 +99,16 @@ impl Seats {
                 None
             }
         }
+    }
+
+    /// The seat of one tapped notification, taken once: a page that asks
+    /// again (a reload) is not pulled back to a seat it already opened.
+    fn take(&self, id: i32) -> Option<SessionSlot> {
+        let seat = self.peek(id);
+        // **Taken whether or not it parses**: an unreadable entry can never
+        // name a seat, and leaving it would keep it for the store's life.
+        let _ = std::fs::remove_file(self.file(id));
+        seat
     }
 
     #[cfg(any(target_os = "android", test))]
@@ -143,6 +148,16 @@ fn first_ask() -> bool {
 #[cfg(not(any(target_os = "android", test)))]
 fn first_ask() -> bool {
     true
+}
+
+/// The seat one notification names, left for the page's own ask.
+///
+/// **The same tap can arrive through two doors**: a warm tap is reported as
+/// the activity's new intent while a cold start has the page ask for the same
+/// id, and neither may consume the other's entry.
+#[cfg(target_os = "android")]
+pub(crate) fn seat(app: &tauri::AppHandle, id: i32) -> Option<SessionSlot> {
+    Seats::open(app)?.peek(id)
 }
 
 /// The id of the notification the activity was launched from, when a tap
@@ -216,12 +231,41 @@ impl Reader {
     }
 }
 
-/// Register the Kotlin plugin that reads the launch intent.
+/// A tap the Kotlin plugin reports while the app is already running.
+#[cfg(target_os = "android")]
+#[derive(serde::Deserialize)]
+struct Tapped {
+    id: i32,
+}
+
+/// The listener the Kotlin half reports a new intent through.
+#[cfg(target_os = "android")]
+#[derive(serde::Serialize)]
+struct RegisterTap {
+    event: &'static str,
+    handler: tauri::ipc::Channel,
+}
+
+/// Register the Kotlin plugin that reads the launch intent, and the listener
+/// its new intents arrive on.
 #[cfg(target_os = "android")]
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("launchseat")
         .setup(|app, api| {
             let handle = api.register_android_plugin("dev.vedhavyas.forge", "LaunchSeatPlugin")?;
+            let shown = app.clone();
+            let channel = tauri::ipc::Channel::new(move |body| {
+                if let tauri::ipc::InvokeResponseBody::Json(payload) = body
+                    && let Ok(tapped) = serde_json::from_str::<Tapped>(&payload)
+                {
+                    crate::notify::warm_tap(&shown, tapped.id);
+                }
+                Ok(())
+            });
+            handle.run_mobile_plugin::<()>(
+                "registerListener",
+                RegisterTap { event: "tap", handler: channel },
+            )?;
             app.manage(std::sync::Arc::new(Reader(handle)));
             Ok(())
         })
@@ -259,6 +303,18 @@ mod tests {
     fn an_unraised_notification_names_nothing() {
         let (_dir, seats) = store();
         assert_eq!(seats.take(9), None);
+    }
+
+    /// **A seat is left for the next reader**: one tap can reach both doors -
+    /// the warm report and the page's ask - so a read must not take it.
+    #[test]
+    fn a_read_leaves_the_seat_for_the_page() {
+        let (_dir, seats) = store();
+        seats.record(7, &lead());
+        assert_eq!(seats.peek(7), Some(lead()), "the warm report reads the seat");
+        assert_eq!(seats.peek(7), Some(lead()), "and leaves it where it was");
+        assert_eq!(seats.take(7), Some(lead()), "so the page still gets it");
+        assert_eq!(seats.peek(7), None, "and only the take removes it");
     }
 
     /// **One seat is not another's**: two outstanding notifications each keep
