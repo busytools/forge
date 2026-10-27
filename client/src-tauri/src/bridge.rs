@@ -2386,6 +2386,11 @@ mod tests {
         };
 
         send(seat()["session"].clone());
+        assert_eq!(
+            bridge.lock().shown,
+            Some(SessionSlot::lead("Busytools", "forge")),
+            "the first showing landed before the second was dispatched",
+        );
         send(Value::Null);
 
         assert_eq!(
