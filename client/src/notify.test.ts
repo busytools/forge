@@ -190,6 +190,50 @@ describe('which asks are news', () => {
   });
 });
 
+describe('a cold start from a notification', () => {
+  /** A page that believes it has a shell, and the shell's own answer. */
+  function shellAnswers(answer: unknown): ReturnType<typeof vi.fn> {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+    const invoke = vi.fn(() => Promise.resolve(answer));
+    vi.doMock('@tauri-apps/api/core', () => ({ invoke }));
+    return invoke;
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    vi.doUnmock('@tauri-apps/api/core');
+  });
+
+  /// **The tap's seat is the shell's to answer**: the platform read the
+  /// launch intent before this page existed, so the page asks once.
+  it('asks the shell for the seat the tap named', async () => {
+    vi.resetModules();
+    const invoke = shellAnswers(OTHER);
+    const fresh = await import('./notify');
+    expect(await fresh.launchSeat()).toEqual(OTHER);
+    expect(invoke).toHaveBeenCalledWith('client_tap_seat');
+  });
+
+  /// A launch no notification opened names nothing, and the page routes as
+  /// it always did.
+  it('names nothing when no tap launched the app', async () => {
+    vi.resetModules();
+    shellAnswers(null);
+    const fresh = await import('./notify');
+    expect(await fresh.launchSeat()).toBeNull();
+  });
+
+  /// A page with no shell has no launch intent to be woken by.
+  it('names nothing on a page with no shell', async () => {
+    vi.resetModules();
+    const invoke = vi.fn();
+    vi.doMock('@tauri-apps/api/core', () => ({ invoke }));
+    const fresh = await import('./notify');
+    expect(await fresh.launchSeat(), 'a page with no shell has no seat').toBeNull();
+    expect(invoke, 'a page with no shell asked nothing').not.toHaveBeenCalled();
+  });
+});
+
 describe('delivering an ask', () => {
   /// **The permission is asked from a user gesture**, because a browser that
   /// wants activation (Safari, Firefox) refuses the request made from an ask

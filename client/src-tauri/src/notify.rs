@@ -138,15 +138,20 @@ impl Platform for Shell {
 
     fn show(&self, seat: &SessionSlot, kind: AskKind) -> Result<(), String> {
         let held = serde_json::to_value(seat).map_err(|why| why.to_string())?;
-        self.app
+        let builder = self
+            .app
             .notification()
             .builder()
             .title(title(seat))
             .body(kind.body())
             .channel_id(CHANNEL)
-            .extra(SEAT_EXTRA, held)
-            .show()
-            .map_err(|why| why.to_string())
+            .extra(SEAT_EXTRA, held);
+        // **A tap that launches the app names its seat by the id the launch
+        // intent carries**, and the plugin's own id is one the shell never
+        // sees, so the notification is raised under an id it is remembered by.
+        #[cfg(target_os = "android")]
+        let builder = builder.id(crate::launch::remember(&self.app, seat));
+        builder.show().map_err(|why| why.to_string())
     }
 }
 

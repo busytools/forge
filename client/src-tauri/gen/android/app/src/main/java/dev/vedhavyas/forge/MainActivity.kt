@@ -1,6 +1,7 @@
 package dev.vedhavyas.forge
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
@@ -104,6 +105,17 @@ class MainActivity : TauriActivity() {
       handSafeArea(insets)
       insets
     }
+  }
+
+  /**
+   * **A notification tap into a task whose process has gone arrives here**, after
+   * `onCreate` has already read the intent the task was first launched with.
+   * Keeping the newest intent is what lets the shell name the seat the tap
+   * opened; without it `intent` answers the launcher's own.
+   */
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
   }
 
   override fun onWebViewCreate(webView: WebView) {
