@@ -2714,9 +2714,8 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 /* The mic lifts to the primary on hover, matching its sibling controls (the
    send's accent), rather than the sheet's generic text lift. */
 .mic:hover { color: var(--accent); }
-/* A finger's target for the composer's three glyph controls: each is 24px by
-   its own box, and the mic also carries the hold that a drift off 24px would
-   cancel. */
+/* A finger's target for the mic, the send and the stop: each is 24px by its own
+   box, and the mic also carries the hold that a drift off 24px would cancel. */
 @media (pointer: coarse) {
   .mic, .send, .stop { min-height: 44px; min-width: 44px; }
   .pop .hd .x { min-width: 44px; }
@@ -2736,9 +2735,13 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 /* A narrow box cannot hold the hints and the controls on one row: the keys are
    what the phone can spare, so they go and the controls keep the row. Measured:
-   the widest set (hints + mic + stop + send) needs 365px, so the box gives them
-   up a little before that. */
+   the widest set (hints + mic + stop + send) needs 371px with a mouse's glyphs
+   and 431px with a finger's; each threshold below is that set plus the box's
+   26px of padding, a little early. */
 @container (max-width: 400px) { .foot .hints { display: none; } }
+@media (pointer: coarse) {
+  @container (max-width: 470px) { .foot .hints { display: none; } }
+}
 
 /* The line a composer puts where the mockup puts key hints. The box's names
    the keys it honours; the list's says the one thing it cannot do, because

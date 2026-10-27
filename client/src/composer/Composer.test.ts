@@ -3492,11 +3492,15 @@ describe('the frame', () => {
 
   /**
    * A narrow box cannot hold the hints and the controls on one row - measured,
-   * the widest pair needs 365px - so the keys go and the controls keep the row.
+   * the widest set needs 371px with a mouse's glyphs and 431px with a finger's
+   * - so the keys go and the controls keep the row, the finger's set first.
    */
   it('drops the key hints rather than the controls when the box is narrow', () => {
     expect(sheet, 'the foot wraps its hints instead of giving them up').toMatch(
       /@container \(max-width: 400px\) \{ \.foot \.hints \{ display: none; \} \}/,
+    );
+    expect(sheet, "the foot keeps the key hints at a finger's width that cannot hold them").toMatch(
+      /@media \(pointer: coarse\) \{\n {2}@container \(max-width: 470px\) \{ \.foot \.hints \{ display: none; \} \}/,
     );
   });
 
