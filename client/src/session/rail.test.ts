@@ -7,7 +7,7 @@ import { homeWire } from '../dev/fixture.data';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { ServerMessage } from '../protocol';
 import type { Connection } from '../socket';
-import type { AgentRow, HomeWire } from '../wire/home';
+import type { AgentRow, ChipState, HomeWire } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { closeSeat, forgetClosed, watchReleases } from './close';
 import Rail from './Rail.svelte';
@@ -137,12 +137,12 @@ describe('the rail footer', () => {
 });
 
 /** The fixture's project, chipping the account its pool already lists. */
-function chipped(snapshot: unknown): HomeWire {
+function chipped(snapshot: unknown, state: ChipState = 'normal'): HomeWire {
   const [row] = homeWire.projects;
   if (row === undefined) throw new Error('the fixture holds no project');
   return {
     ...homeWire,
-    projects: [{ ...row, chip: { account_name: 'Acct', state: 'ready' } }],
+    projects: [{ ...row, chip: { account_name: 'Acct', state } }],
     accounts: { ...homeWire.accounts, usage: [{ display_name: 'Acct', snapshot }] },
   };
 }
@@ -228,6 +228,69 @@ describe('the footer when the snapshot carries windows', () => {
     expect(drawn, 'the 7d reading went missing').toContain('<span class="pc">24%</span>');
     expect(drawn, 'the 5h reset went missing').toContain('<span class="eta">1h 48m</span>');
     expect(drawn, 'a reading drew a placeholder').not.toContain('class="pc none"');
+  });
+});
+
+describe('the footer marks a spent window', () => {
+  /**
+   * **The spent window says so in words.** Colour is not a carrier of state
+   * on this page, so the window at its limit draws `at limit` beside the
+   * percent and the reset keeps its own slot.
+   */
+  it('states at limit on the spent window alone, and keeps its reset', () => {
+    const drawn = render(Rail, {
+      props: {
+        home: chipped({
+          source: 'Oauth',
+          five_hour: { utilization: 100, status: 'rejected', reset_description: '1h 48m' },
+          seven_day: { utilization: 42, status: 'allowed', reset_description: '2d 6h' },
+        }),
+        current: LEAD,
+        now: 0,
+        connection: untouched(),
+      },
+    }).body;
+    expect(drawn, 'the spent window drew no word').toContain('<span class="lim">at limit</span>');
+    expect(drawn.match(/at limit/g)?.length, 'a window under its cap claimed the mark').toBe(1);
+    expect(drawn, 'the clear window drew an empty slot').toContain('<span class="lim"></span>');
+    expect(drawn, 'the spent window lost its reset').toContain('<span class="eta">1h 48m</span>');
+    expect(rule('.bar .lim'), 'the mark lost its amber').toContain('var(--warn)');
+    expect(rule('.bar .lim'), 'the mark slot is not fixed, so the percents shift').toContain(
+      'width: 60px',
+    );
+  });
+});
+
+describe('the footer names a rate-limited account', () => {
+  /**
+   * **The chip's state is the one that says rate-limited.** The dot alone is
+   * colour, so the footer states the word beside the name; a chip with
+   * nothing extra to state draws no word.
+   */
+  it('draws the chip state word beside the name, and none for a ready chip', () => {
+    const drawn = render(Rail, {
+      props: {
+        home: chipped({ source: 'Oauth' }, 'rate_limited'),
+        current: LEAD,
+        now: 0,
+        connection: untouched(),
+      },
+    }).body;
+    expect(drawn, 'the rate-limited account drew no state word').toContain(
+      '<span class="st">rate limited</span>',
+    );
+    expect(rule('.rfoot .who .st'), 'the state word lost its amber').toContain('var(--warn)');
+
+    const ready = render(Rail, {
+      props: { home: chipped(null), current: LEAD, now: 0, connection: untouched() },
+    }).body;
+    expect(ready, 'a ready account claimed a state word').not.toContain('class="st"');
+  });
+
+  /** The footer's `.win` must not reach the decision panel's winning row. */
+  it('keeps the window row scoped to the footer', () => {
+    expect(sheet, 'a bare .win rule leaks into the decision panel').not.toMatch(/^\.win \{/m);
+    expect(rule('.rfoot .win'), 'the footer row lost its own rule').toContain('padding');
   });
 });
 

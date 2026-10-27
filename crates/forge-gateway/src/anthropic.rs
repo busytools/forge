@@ -1,8 +1,9 @@
 //! The Anthropic backend. The account's credential is its setup
 //! token, which probes a minimal billed `/v1/messages` call - the
-//! usage endpoint refuses setup tokens, while a 200 response there
-//! carries the `anthropic-ratelimit-unified-*` windows as headers.
-//! An account with no token has no credential at all.
+//! usage endpoint refuses setup tokens, while a `/v1/messages`
+//! response carries the `anthropic-ratelimit-unified-*` windows as
+//! headers, a 429 most of all. An account with no token has no
+//! credential at all.
 
 use std::collections::HashMap;
 
@@ -102,9 +103,10 @@ fn messages_headers(user_agent: &str, access_token: &str) -> Result<HeaderMap, O
 /// One round-trip against `/v1/messages` with the minimal probe call:
 /// the cheapest haiku model, `max_tokens` 1, a tiny input - about
 /// nine billed tokens. On a 200 the response headers carry the
-/// unified windows, so the HeaderMap is the payload; every other
-/// status classifies exactly like the windowed probe so the loader
-/// and poller treat both probes alike.
+/// unified windows, so the HeaderMap is the payload; a 429 keeps the
+/// windows it carried on the error; every other status classifies
+/// exactly like the windowed probe so the loader and poller treat
+/// both probes alike.
 async fn messages_probe(
     client: &reqwest::Client,
     user_agent: &str,
@@ -156,12 +158,18 @@ async fn messages_probe(
             overage_status = %unified_header_value(&headers, "overage-status"),
         );
     } else {
+        // The unified words are logged on every status, not only a 200:
+        // on a 429 the account-level one is the verdict and the window
+        // ones say which window is refusing.
         tracing::warn!(
             target: "forge_gateway::anthropic",
             event_name = "unified_usage_response",
             status,
             outcome = "non_ok",
             retry_after_secs = ?retry_after.map(|duration| duration.as_secs()),
+            five_hour_status = %unified_header_value(&headers, "5h-status"),
+            seven_day_status = %unified_header_value(&headers, "7d-status"),
+            unified_status = %unified_header_value(&headers, "status"),
             body_suffix = %redacted_body(&body, access_token),
         );
     }
@@ -169,9 +177,20 @@ async fn messages_probe(
     match status {
         200 => Ok(headers),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        429 => Err(OauthUsageError::RateLimited { retry_after }),
+        429 => Err(OauthUsageError::RateLimited {
+            retry_after,
+            snapshot: rate_limited_snapshot(&headers).map(Box::new),
+        }),
         _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, access_token))),
     }
+}
+
+/// The windows a 429 carried. A 429 with no unified headers - a
+/// reverse proxy's limit, or a plan without unified limits - has no
+/// reading and keeps the bare rate-limited verdict.
+fn rate_limited_snapshot(headers: &HeaderMap) -> Option<UsageSnapshot> {
+    let snapshot = snapshot_from_unified_headers(headers);
+    (snapshot.five_hour.is_some() || snapshot.seven_day.is_some()).then_some(snapshot)
 }
 
 fn unified_header_value(headers: &HeaderMap, suffix: &str) -> String {
@@ -182,9 +201,10 @@ fn unified_header_value(headers: &HeaderMap, suffix: &str) -> String {
         .to_owned()
 }
 
-/// One unified window off the 200's headers: utilization arrives on a
+/// One unified window off a response's headers: utilization arrives on a
 /// 0..1 scale and maps into the snapshot's percentage scale, the reset
-/// arrives as an epoch. Each header is independently optional.
+/// arrives as an epoch, and the status is the provider's own verdict on
+/// the window. Each header is independently optional.
 fn unified_window(headers: &HeaderMap, window: &str) -> Option<UsageWindow> {
     let utilization = headers
         .get(format!("{UNIFIED_PREFIX}{window}-utilization"))
@@ -200,7 +220,13 @@ fn unified_window(headers: &HeaderMap, window: &str) -> Option<UsageWindow> {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<i64>().ok())
         .and_then(system_time_from_epoch);
-    Some(UsageWindow { utilization, resets_at, reset_description: None })
+    let status = headers
+        .get(format!("{UNIFIED_PREFIX}{window}-status"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    Some(UsageWindow { utilization, resets_at, reset_description: None, status })
 }
 
 /// Map a 200's unified headers into a snapshot. Lenient by design: a
@@ -250,8 +276,10 @@ mod tests {
     fn unified_header_map() -> HeaderMap {
         let mut headers = HeaderMap::new();
         for (name, value) in [
+            ("anthropic-ratelimit-unified-5h-status", "allowed"),
             ("anthropic-ratelimit-unified-5h-utilization", "0.53"),
             ("anthropic-ratelimit-unified-5h-reset", "1766664000"),
+            ("anthropic-ratelimit-unified-7d-status", "allowed"),
             ("anthropic-ratelimit-unified-7d-utilization", "0.06"),
             ("anthropic-ratelimit-unified-7d-reset", "1767268800"),
         ] {
@@ -272,12 +300,14 @@ mod tests {
             five_hour.resets_at,
             Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_766_664_000)),
         );
+        assert_eq!(five_hour.status.as_deref(), Some("allowed"), "the window's own verdict");
         let seven_day = snapshot.seven_day.expect("seven day window");
         assert!((seven_day.utilization - 6.0).abs() < 1e-9, "got {}", seven_day.utilization);
         assert_eq!(
             seven_day.resets_at,
             Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_767_268_800)),
         );
+        assert_eq!(seven_day.status.as_deref(), Some("allowed"), "the window's own verdict");
         assert!(snapshot.seven_day_opus.is_none());
         assert!(snapshot.seven_day_sonnet.is_none());
         assert_eq!(snapshot.source, UsageSourceKind::Oauth);
@@ -333,7 +363,7 @@ mod tests {
     const PROBE_RESPONSE_200: &str = concat!(
         "HTTP/1.1 200 OK\r\n",
         "content-type: application/json\r\n",
-        "anthropic-ratelimit-unified-5h-status: ok\r\n",
+        "anthropic-ratelimit-unified-5h-status: allowed\r\n",
         "anthropic-ratelimit-unified-5h-utilization: 0.21\r\n",
         "anthropic-ratelimit-unified-5h-reset: 1766664000\r\n",
         "anthropic-ratelimit-unified-7d-utilization: 0.15\r\n",
@@ -343,6 +373,21 @@ mod tests {
 
     const PROBE_RESPONSE_429: &str =
         "HTTP/1.1 429 Too Many Requests\r\nretry-after: 30\r\ncontent-length: 0\r\n\r\n";
+
+    /// A 429 as Anthropic sends one: the refuse and the windows that
+    /// explain it on the same response.
+    const PROBE_RESPONSE_429_WITH_WINDOWS: &str = concat!(
+        "HTTP/1.1 429 Too Many Requests\r\n",
+        "retry-after: 30\r\n",
+        "anthropic-ratelimit-unified-status: rejected\r\n",
+        "anthropic-ratelimit-unified-5h-status: rejected\r\n",
+        "anthropic-ratelimit-unified-5h-utilization: 1.0\r\n",
+        "anthropic-ratelimit-unified-5h-reset: 1766664000\r\n",
+        "anthropic-ratelimit-unified-7d-status: allowed\r\n",
+        "anthropic-ratelimit-unified-7d-utilization: 0.42\r\n",
+        "anthropic-ratelimit-unified-7d-reset: 1767268800\r\n",
+        "content-length: 0\r\n\r\n",
+    );
 
     const PROBE_RESPONSE_401: &str =
         "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\ncontent-length: 0\r\n\r\n";
@@ -422,9 +467,8 @@ mod tests {
         assert!((seven_day.utilization - 15.0).abs() < 1e-9, "got {}", seven_day.utilization);
     }
 
-    /// A 429 classifies as RateLimited carrying the server Retry-After
-    /// - the headers-only-on-200 contract means an error response can
-    /// never be read as a window.
+    /// A 429 classifies as RateLimited carrying the server Retry-After,
+    /// and a response with no unified headers has no windows to keep.
     #[tokio::test]
     async fn a_429_is_a_rate_limited_error_with_the_retry_after() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -440,11 +484,55 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(OauthUsageError::RateLimited { retry_after: Some(retry_after) })
-                    if retry_after == Duration::from_secs(30)
+                Err(OauthUsageError::RateLimited {
+                    retry_after: Some(retry_after),
+                    snapshot: None,
+                }) if retry_after == Duration::from_secs(30)
             ),
             "got {result:?}",
         );
+    }
+
+    /// **A 429 is the response that says which window is spent, so its
+    /// windows ride the error rather than being thrown away with it.** The
+    /// refuse and the reading arrive on one response; keeping only the
+    /// first is why a cooling account read as `not reported`.
+    #[tokio::test]
+    async fn a_429_carrying_unified_headers_keeps_the_windows() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let _requests = serve_one(listener, PROBE_RESPONSE_429_WITH_WINDOWS);
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            messages_probe(&client, "claude-code/1.0.0", Some(&format!("http://{addr}")), "tok"),
+        )
+        .await
+        .expect("the probe returns");
+        let Err(OauthUsageError::RateLimited { retry_after, snapshot }) = result else {
+            panic!("a 429 must stay a rate-limited verdict, got {result:?}");
+        };
+        assert_eq!(
+            retry_after,
+            Some(Duration::from_secs(30)),
+            "the server hold-down survives the windows",
+        );
+        let snapshot = snapshot.expect("the 429's windows were dropped");
+        let five_hour = snapshot.five_hour.expect("five hour window");
+        assert!((five_hour.utilization - 100.0).abs() < f64::EPSILON);
+        assert_eq!(
+            five_hour.resets_at,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_766_664_000)),
+            "which window is spent comes with when it lifts",
+        );
+        assert_eq!(five_hour.status.as_deref(), Some("rejected"), "the spent window's own verdict");
+        let seven_day = snapshot.seven_day.expect("seven day window");
+        assert!((seven_day.utilization - 42.0).abs() < 1e-9, "got {}", seven_day.utilization);
+        assert_eq!(
+            seven_day.resets_at,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_767_268_800))
+        );
+        assert_eq!(seven_day.status.as_deref(), Some("allowed"));
     }
 
     /// A rejected token reaches the loader as Unauthorized - the
@@ -470,9 +558,9 @@ mod tests {
     fn the_complete_unified_family_maps_only_the_two_windows() {
         let mut headers = unified_header_map();
         for (name, value) in [
-            ("anthropic-ratelimit-unified-5h-status", "ok"),
-            ("anthropic-ratelimit-unified-7d-status", "ok"),
-            ("anthropic-ratelimit-unified-status", "ok"),
+            ("anthropic-ratelimit-unified-5h-status", "allowed"),
+            ("anthropic-ratelimit-unified-7d-status", "allowed"),
+            ("anthropic-ratelimit-unified-status", "allowed"),
             ("anthropic-ratelimit-unified-reset", "1767268800"),
             ("anthropic-ratelimit-unified-representative-claim", "5h"),
             ("anthropic-ratelimit-unified-fallback", "0"),

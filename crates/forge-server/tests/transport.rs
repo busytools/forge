@@ -62,13 +62,8 @@ async fn a_server_with_state() -> (String, Fleet, Arc<TransportState>) {
 /// the reap's wants, and that one shortens it so a silent peer can be watched
 /// being reaped rather than waiting the minute out.
 async fn serve_fleet(fleet: &Fleet, heartbeat: Heartbeat) -> (String, Arc<TransportState>) {
-    let state = Arc::new(
-        TransportState::for_workspace(
-            &fleet.workspace(),
-            forge_primitives::ClientConfig::default(),
-        )
-        .with_heartbeat(heartbeat),
-    );
+    let state =
+        Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(heartbeat));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -1600,6 +1595,41 @@ async fn the_greeting_carries_the_dictate_axes_the_config_set() {
         settings.dictate,
         fleet.surface().dictate_axes(),
         "the greeting's axes are the workspace's own, not a default standing in for them"
+    );
+}
+
+/// A `[client]` edit reaches the NEXT connection, not one already open: the
+/// client snapshots its settings at the handshake, so this cut has no live
+/// redraw.
+#[tokio::test]
+async fn a_client_setting_reload_applies_to_the_next_connection() {
+    let (url, fleet) = a_server().await;
+    let mut first = connect(&url).await;
+
+    let path = fleet.workspace().config_path();
+    let mut raw = std::fs::read_to_string(&path).expect("read");
+    raw.push_str("\n[client]\nmark = \"klin\"\n");
+    std::fs::write(&path, raw).expect("write");
+    let reload = fleet.workspace().reload_config().expect("the new file is valid");
+    assert!(reload.changed.contains(&"client"), "the client table moved: {reload:?}");
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(500), first.next()).await.is_err(),
+        "an open connection keeps the settings it greeted with",
+    );
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
+    let msg = socket.next().await.expect("a greeting").expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::Greeting { settings, .. } =
+        serde_json::from_str(text).expect("the greeting decodes")
+    else {
+        panic!("the next connection's first frame is its greeting, not {text}")
+    };
+    assert_eq!(
+        settings.mark.as_deref(),
+        Some("klin"),
+        "a connection opened after the reload greets with its sets",
     );
 }
 
@@ -5406,10 +5436,7 @@ async fn a_repo_server() -> (String, Fleet, Arc<TransportState>, tempfile::TempD
     std::fs::create_dir_all(&repo).expect("the project directory");
     a_repo(&repo);
 
-    let state = Arc::new(TransportState::for_workspace(
-        &fleet.workspace(),
-        forge_primitives::ClientConfig::default(),
-    ));
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);
@@ -5543,10 +5570,7 @@ async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
     std::fs::create_dir_all(&repo).expect("the project directory");
     let tip = a_repo_with_a_pushed_branch(&repo);
 
-    let state = Arc::new(TransportState::for_workspace(
-        &fleet.workspace(),
-        forge_primitives::ClientConfig::default(),
-    ));
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let served = Arc::clone(&state);

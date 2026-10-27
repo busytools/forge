@@ -109,6 +109,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.lifecycle=debug,\
     bridge.lifecycle=debug,\
     agent.env_git=debug,\
+    forge_agent::env::config_watch=debug,\
     forge_server=debug,\
     forge_agent::userdata::catalog::scan=debug,\
     forge_workspace::output_tail=debug,\

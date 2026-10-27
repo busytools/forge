@@ -180,7 +180,7 @@ impl Workspace {
                 reason: "the file is being downloaded right now".to_owned(),
             });
         }
-        if let Some(dir) = self.config.dictate.models_dir() {
+        if let Some(dir) = self.config_arc().dictate.models_dir() {
             let path = dir.join(file);
             if let Err(error) = std::fs::remove_file(&path)
                 && error.kind() != std::io::ErrorKind::NotFound
@@ -223,7 +223,7 @@ impl Workspace {
     /// The outcome rides [`SessionUpdate::DictateModelsChanged`], the same
     /// way a catalogue check's does.
     pub(crate) fn start_install(self: &Arc<Self>, variant: String) -> Result<(), DispatchError> {
-        if !self.config.dictate.enabled {
+        if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
         if self.bench_running() {
@@ -332,11 +332,11 @@ impl Workspace {
         // The base is the `[dictate]` settings, with the candidate in the
         // ASR slot and no normalizer: `prepare` fetches what the config
         // names, and this config names one file.
-        let Some(dir) = self.config.dictate.models_dir() else {
+        let Some(dir) = self.config_arc().dictate.models_dir() else {
             return self
                 .fail_install(download.filename, "no models directory is configured".to_owned());
         };
-        let mut cfg = self.config.dictate.to_config();
+        let mut cfg = self.config_arc().dictate.to_config();
         cfg.models_dir = Some(dir);
         cfg.asr_model = spec.clone();
         cfg.normalizer = None;
@@ -384,7 +384,7 @@ impl Workspace {
                 // can reach - the install takes its bytes back rather than
                 // leaving litter behind it.
                 if !recorded {
-                    if let Some(dir) = self.config.dictate.models_dir() {
+                    if let Some(dir) = self.config_arc().dictate.models_dir() {
                         let _ = std::fs::remove_file(dir.join(&spec.file));
                     }
                     self.fail_install(spec.file, "the download could not be recorded".to_owned());
@@ -679,7 +679,7 @@ impl Workspace {
         role: DictateRole,
         file: String,
     ) -> Result<(), DispatchError> {
-        if !self.config.dictate.enabled {
+        if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
         if let Some(key) = self.pinning_key(role) {
@@ -714,7 +714,7 @@ impl Workspace {
         self: &Arc<Self>,
         role: DictateRole,
     ) -> Result<(), DispatchError> {
-        if !self.config.dictate.enabled {
+        if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
         if let Some(key) = self.pinning_key(role) {
@@ -747,7 +747,8 @@ impl Workspace {
 
     /// The `[dictate]` key that pins one role, when one does.
     fn pinning_key(&self, role: DictateRole) -> Option<String> {
-        let settings = &self.config.dictate;
+        let config = self.config_arc();
+        let settings = &config.dictate;
         let pinned = match role {
             DictateRole::Transcribing => settings.transcribe_model.as_ref(),
             DictateRole::Normalization => settings.cleanup_model.as_ref(),
@@ -758,7 +759,7 @@ impl Workspace {
     /// The compiled default one role runs, when it has one: the cleanup
     /// role has none while `normalizer` is off.
     fn pin_for(&self, role: DictateRole) -> Option<ModelSpec> {
-        self.config
+        self.config_arc()
             .dictate
             .model_specs()
             .into_iter()
@@ -848,7 +849,7 @@ impl Workspace {
             })
             .collect();
 
-        let cfg = crate::dictate::preflight_config(&self.config.dictate, &next);
+        let cfg = crate::dictate::preflight_config(&self.config_arc().dictate, &next);
         let engine = build_engine(cfg).await?;
         let previous = self.dictate.engine.lock().replace(engine);
         drop(previous);
@@ -983,7 +984,7 @@ mod tests_install {
 
     /// The `[dictate]` settings a resolution test resolves against.
     fn settings_of(ws: &Workspace) -> DictateSettings {
-        ws.config.dictate.clone()
+        ws.config_arc().dictate.clone()
     }
 
     /// Put one variant in the installed set, as an install of it would.
@@ -1009,7 +1010,7 @@ mod tests_install {
         record_installed_model(&ws, "ruling");
 
         // The file on disk is what the removal is about.
-        let dir = ws.config.dictate.models_dir().expect("the fixture sets one");
+        let dir = ws.config_arc().dictate.models_dir().expect("the fixture sets one");
         std::fs::write(dir.join("spare-Q4_K_M.gguf"), b"six!!!").unwrap();
 
         // The role runs one of them: its swap is the caller's next step, and
@@ -1753,7 +1754,7 @@ mod tests_install {
     /// A file of bytes that are not a model, where the engine would look
     /// for one.
     fn write_unloadable_model(ws: &Workspace, file: &str) {
-        let path = ws.config.dictate.models_dir().expect("the fixture sets one").join(file);
+        let path = ws.config_arc().dictate.models_dir().expect("the fixture sets one").join(file);
         std::fs::write(&path, b"these bytes are not a model")
             .unwrap_or_else(|error| panic!("write {path:?}: {error}"));
     }
