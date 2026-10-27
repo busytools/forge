@@ -926,19 +926,28 @@
   .handoff:hover .word { color: var(--text); }
   details.handoff[open] > summary .word { color: var(--accent); }
   details.handoff[open] > summary .arw { color: var(--accent); }
-  .handoff .hbody { padding: 8px 0 4px 0; }
-  .handoff .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
-  .handoff .sessions { display: grid; gap: 4px; margin: 2px 0 10px; }
-  .handoff .sid { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .handoff .sid .k { flex: none; min-width: 82px; color: var(--dim); }
-  .handoff .sid .v { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+  /* The open brief is one grid: the session ids, the ground truth and the
+     judgment share a label column, so every value starts on the same edge
+     and the value column runs to the block's own right edge. `fit-content`
+     caps the label column at 40% of the pane, so a label a future build
+     does not know wraps rather than pushing the value column out. */
+  .handoff .hbody { display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr);
+    column-gap: 18px; row-gap: 4px; padding: 8px 0 4px 0; }
+  .handoff .hbody > .meta, .handoff .hbody > .hint, .handoff .hbody > .lbl { grid-column: 1 / -1; }
+  .handoff .meta { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  /* A row is two grid cells rather than a flex line, so the label column is
+     the same one for every row in both halves. `display: contents` puts the
+     row's children in the grid without a box of its own. */
+  .handoff .sessions, .handoff .sid, .handoff .fact { display: contents; }
+  .handoff .sid .v { display: flex; align-items: center; gap: 8px; min-width: 0;
+    overflow-wrap: anywhere; color: var(--muted); }
   .handoff .sessions .cp { color: var(--dim); background: none; border: 1px solid var(--line);
     border-radius: 5px; padding: 2px 5px; display: inline-flex; align-items: center; }
-  .handoff .hint { color: var(--dim); font-size: 12px; }
-  .handoff .lbl { color: var(--accent); font-size: 11px; letter-spacing: .08em; margin: 14px 0 6px 0; }
-  .handoff .fact { display: flex; gap: 18px; padding: 2px 0; font-size: 12px; color: var(--text); }
-  .handoff .fact .k { flex: 0 0 88px; color: var(--muted); }
-  .handoff .fact .v { flex: 1; white-space: pre-wrap; word-break: break-word; }
+  .handoff .hint { color: var(--dim); font-size: 12px; margin: 6px 0 0; }
+  .handoff .lbl { color: var(--accent); font-size: 11px; letter-spacing: .08em; margin: 10px 0 6px 0; }
+  .handoff .fact { font-size: 12px; color: var(--text); }
+  .handoff .k { color: var(--muted); }
+  .handoff .fact .v { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   @media (pointer: coarse) {
     details.handoff > summary { min-height: 44px; }
     .handoff .sessions .cp { min-width: 44px; min-height: 44px; justify-content: center; }
@@ -2550,13 +2559,22 @@ docs: The sprite a row draws, by the class it belongs to.</div>
         </summary>
         <div class="hbody">
           <div class="meta">85% of the window &#183; 867,000 of 1,020,000 read &#183; turn end</div>
+          <!-- The recovery's own door: both full ids, each with the control
+               that copies it, on the same label column as the facts. -->
+          <div class="sessions">
+            <div class="sid"><span class="k">previous</span><span class="v">9cfe315c-1111-2222-3333-444444444444
+              <button class="cp" type="button" aria-label="copy the previous session id"><svg class="ic"><use href="#i-copy"/></svg></button></span></div>
+            <div class="sid"><span class="k">this session</span><span class="v">4b21e0a7-5555-6666-7777-888888888888
+              <button class="cp" type="button" aria-label="copy this session id"><svg class="ic"><use href="#i-copy"/></svg></button></span></div>
+          </div>
+          <div class="hint">copy the previous id and run /resume &lt;old-id&gt; to bring it back</div>
           <div class="lbl">PART 1 &#183; GROUND TRUTH</div>
-          <div class="fact"><span class="k">seat</span><span class="v">Busytools/forge/server-browser
-cwd /Users/vedhavyas/Projects/forge
-branch worktree-server-browser @ 84369aae
-account Personal
-model claude-opus-5-5
-mode auto</span></div>
+          <div class="fact"><span class="k">seat</span><span class="v">Busytools/forge/server-browser</span></div>
+          <div class="fact"><span class="k">cwd</span><span class="v">/Users/vedhavyas/Projects/forge</span></div>
+          <div class="fact"><span class="k">branch</span><span class="v">worktree-server-browser @ 84369aae</span></div>
+          <div class="fact"><span class="k">account</span><span class="v">Personal</span></div>
+          <div class="fact"><span class="k">model</span><span class="v">claude-opus-5-5</span></div>
+          <div class="fact"><span class="k">mode</span><span class="v">auto</span></div>
           <div class="fact"><span class="k">role</span><span class="v">worker, charter opens: You build the cut.</span></div>
           <div class="fact"><span class="k">ask</span><span class="v">first: continue the migration
 #2: and open the PR</span></div>
