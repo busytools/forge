@@ -357,7 +357,7 @@ export interface ProjectWire {
   /** Whether a spawn here would find an account, beside `has_model`. */
   would_bind: boolean;
   /** The account the row chips, and its state. */
-  chip: { account_name: string; state: string } | null;
+  chip: { account_name: string; state: ChipState } | null;
 }
 
 interface GatewayWire {
@@ -542,6 +542,26 @@ const VERIFY_VALUES: ('user' | 'none')[] = ['user', 'none'];
 const PENDING: PendingKind[] = ['question', 'permission', 'hand_off'];
 const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
 const GATES: Gate[] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
+
+/**
+ * The states a project row's account chip can carry, mirroring
+ * `SessionChipState`. A union rather than a string so `view.ts` matching
+ * `rate_limited` is checked against the set: a rename on either side is a
+ * compile error instead of a word that silently stops drawing.
+ */
+export type ChipState = 'normal' | 'at_cap' | 'bailed' | 'degraded' | 'rate_limited';
+const CHIP_STATES: ChipState[] = ['normal', 'at_cap', 'bailed', 'degraded', 'rate_limited'];
+
+/** One row's account chip, narrowed where it enters. Unstated reads as no
+ *  chip; a state this client cannot name reads as `normal`. */
+function chipFrom(chip: ProjectWire['chip'] | undefined): ProjectWire['chip'] {
+  if (chip === null || chip === undefined) return null;
+  return {
+    account_name: typeof chip.account_name === 'string' ? chip.account_name : '',
+    state: narrow(typeof chip.state === 'string' ? chip.state : '', CHIP_STATES, 'normal'),
+  };
+}
+
 /** Every status the wire carries, for narrowing and for the board's lanes. */
 export const TASK_STATUSES: TaskStatus[] = [
   'pending',
@@ -757,6 +777,7 @@ export function homeFrom(data: HomeWire): HomeWire {
     projects: (Array.isArray(data.projects) ? data.projects : []).map((row) => ({
       ...row,
       work: { ...row.work, gate: narrow(row.work?.gate, GATES, 'in_repo') },
+      chip: chipFrom(row.chip),
     })),
     // The renderer calls `some` on this one, so a page handed no list reads
     // as no unseen marks rather than throwing inside a draw.

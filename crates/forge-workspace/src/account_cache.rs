@@ -96,6 +96,7 @@ mod tests {
                 utilization: 42.0,
                 resets_at: None,
                 reset_description: None,
+                status: None,
             }),
             seven_day: None,
             seven_day_opus: None,

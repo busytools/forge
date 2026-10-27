@@ -401,3 +401,436 @@ async fn a_tab_listing_never_creates_a_page() {
         assert!(targets.is_empty(), "round {round}: a listing creates no page: {targets:?}");
     }
 }
+
+/// **A challenge frame's presence is not its liveness, and a region the probe
+/// could not read is never "no CAPTCHA here".** The measured case is Google's
+/// EXPIRED reCAPTCHA overlay: an iframe parked at `top: -10000px` with
+/// `visibility: hidden`, whose rect is still a real rect at viewport
+/// y = -13576, so presence and geometry both read it as live.
+///
+/// The frames here are the states the signals have to separate: a widget the
+/// page is showing, the expired one, one covered by another element (the hit
+/// test), one hidden by an ancestor's opacity, one hidden by an ancestor's
+/// `filter: opacity(0)`, one inside an ancestor's `display: none`,
+/// Turnstile's own frame, a Cloudflare-branded frame that is neither
+/// Turnstile's host nor its name, an unrelated ad frame that must not be
+/// classified, an object and an embed whose documents are not read, and a
+/// challenge inside a shadow root the top-level query cannot see.
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_challenge_state_separates_a_live_widget_from_an_expired_one() {
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let seat = SessionSlot::lead("TestOrg", "proj");
+
+    // The expired frame carries the vendor in its SRC, the way the measured
+    // one did, and Turnstile's carries the challenge host with no "turnstile"
+    // in it, so the host marker is the one that has to match; the rest carry
+    // it in the title, which is how each vendor titles its frame.
+    let fixture = "<iframe src='about:blank' title='reCAPTCHA live' style='position:absolute;\
+            left:100px;top:100px;width:200px;height:100px;border:0'></iframe>\
+        <iframe src='about:blank#recaptcha' title='expired overlay' \
+            style='position:absolute;left:120px;top:-10000px;width:200px;height:100px;\
+            border:0;visibility:hidden'></iframe>\
+        <iframe src='about:blank' title='hCaptcha covered' style='position:absolute;\
+            left:100px;top:300px;width:200px;height:100px;border:0'></iframe>\
+        <div style='position:absolute;left:100px;top:300px;width:200px;height:100px;\
+            background:rgb(238,238,238)'></div>\
+        <iframe src='about:blank#https://challenges.cloudflare.com/cdn-cgi/\
+            challenge-platform/h/b/orchestrate/chl_page/v1' \
+            title='Widget containing a Cloudflare security challenge' \
+            style='position:absolute;left:700px;top:100px;width:200px;height:100px;\
+            border:0'></iframe>\
+        <div style='position:absolute;left:400px;top:300px;width:200px;height:100px;\
+            opacity:0'>\
+            <iframe src='about:blank' title='reCAPTCHA faded' \
+                style='width:200px;height:100px;border:0'></iframe>\
+        </div>\
+        <div style='position:absolute;left:700px;top:300px;width:200px;height:100px;\
+            filter:opacity(0)'>\
+            <iframe src='about:blank' title='reCAPTCHA filtered' \
+                style='width:200px;height:100px;border:0'></iframe>\
+        </div>\
+        <div style='position:absolute;left:1100px;top:500px;width:200px;height:100px;\
+            display:none'>\
+            <iframe src='about:blank' title='reCAPTCHA displayless' \
+                style='width:200px;height:100px;border:0'></iframe>\
+        </div>\
+        <iframe src='about:blank' title='Sponsored placement' style='position:absolute;\
+            left:1100px;top:300px;width:200px;height:100px;border:0'></iframe>\
+        <iframe src='about:blank' title='Cloudflare analytics beacon' \
+            style='position:absolute;left:400px;top:500px;width:200px;height:100px;\
+            border:0'></iframe>\
+        <object data='about:blank' type='text/html' title='Plugin surface' \
+            style='position:absolute;left:100px;top:600px;width:200px;height:100px'></object>\
+        <embed src='about:blank' type='text/html' title='Embedded surface' \
+            style='position:absolute;left:400px;top:600px;width:200px;height:100px'>\
+        <div id='shadow-host' style='position:absolute;left:1100px;top:100px;\
+            width:200px;height:100px'></div>";
+    // **The fixture is installed into a blank page** rather than navigated
+    // to as a data URL: the challenge probe reads a settled document, and a
+    // data-URL navigation snapshots the page as part of its own answer.
+    service
+        .call(
+            &seat,
+            "browser_navigate",
+            json!({ "url": "data:text/html,<title>fixture</title><h1>fixture</h1>" }),
+        )
+        .await
+        .expect("a blank page opens");
+    // A script cannot be installed through `innerHTML`, so the shadow root is
+    // attached here: its reCAPTCHA frame is the one the top-level query misses.
+    let install = format!(
+        "() => {{ document.body.innerHTML = {}; \
+         const host = document.getElementById('shadow-host'); \
+         host.attachShadow({{ mode: 'open' }}).innerHTML = \
+         \"<iframe src='about:blank' title='reCAPTCHA in shadow' \
+         style='width:200px;height:100px;border:0'></iframe>\"; }}",
+        serde_json::to_string(&fixture).expect("the fixture is a JSON string"),
+    );
+    service
+        .call(&seat, "browser_evaluate", json!({ "function": install }))
+        .await
+        .expect("the fixture is installed");
+
+    let answer = service
+        .call(&seat, "browser_challenge_state", json!({}))
+        .await
+        .expect("the challenge state answers");
+    let text = answer
+        .iter()
+        .find_map(|part| match part {
+            forge_primitives::browser::BrowserPart::Text { text } => Some(text.clone()),
+            forge_primitives::browser::BrowserPart::Image { .. } => None,
+        })
+        .unwrap_or_default();
+    let state: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|why| panic!("the answer is the report and nothing else ({why}): {text}"));
+
+    assert_eq!(state["challengePresent"], json!(true), "{state}");
+    assert_eq!(state["complete"], json!(false), "five regions went unread: {state}");
+    let unseen = state["unseen"].as_array().expect("the answer lists unseen regions");
+    assert_eq!(
+        unseen.len(),
+        5,
+        "an ad frame, a Cloudflare bead, an object, an embed and a shadow root: {state}",
+    );
+    for (kind, title, why) in [
+        ("iframe", "Sponsored placement", "an ad frame is not a challenge"),
+        (
+            "iframe",
+            "Cloudflare analytics beacon",
+            "a Cloudflare-branded frame that is not the challenge host is not a challenge",
+        ),
+        ("object", "Plugin surface", "an object document is not read either"),
+        ("embed", "Embedded surface", "an embed document is not read either"),
+    ] {
+        assert!(
+            unseen
+                .iter()
+                .any(|region| region["kind"] == json!(kind) && region["title"] == json!(title)),
+            "{why}, and it is named as unread: {state}",
+        );
+    }
+    assert!(
+        unseen.iter().any(|region| region["kind"] == json!("shadow-root")
+            && region["host"].as_str().unwrap_or_default().contains("shadow-host")),
+        "the shadow root is named as unread: {state}",
+    );
+
+    let challenges = state["challenges"].as_array().expect("the answer lists challenges");
+    assert_eq!(challenges.len(), 7, "only the vendor frames are classified: {state}");
+    for title in ["Sponsored placement", "Cloudflare analytics beacon"] {
+        assert!(
+            challenges.iter().all(|challenge| challenge["title"] != json!(title)),
+            "{title} is not a challenge: {state}",
+        );
+    }
+    let frame = |title: &str| {
+        challenges
+            .iter()
+            .find(|challenge| challenge["title"] == json!(title))
+            .unwrap_or_else(|| panic!("{title} is reported: {state}"))
+    };
+
+    let live = frame("reCAPTCHA live");
+    assert_eq!(live["vendor"], json!("reCAPTCHA"), "{live}");
+    assert_eq!(live["present"], json!(true), "{live}");
+    assert_eq!(live["visible"], json!(true), "{live}");
+    assert_eq!(live["onScreen"], json!(true), "{live}");
+    assert_eq!(live["hitTestable"], json!(true), "nothing covers it: {live}");
+    assert_eq!(live["live"], json!(true), "{live}");
+
+    let expired = frame("expired overlay");
+    assert_eq!(expired["vendor"], json!("reCAPTCHA"), "the src names the vendor: {expired}");
+    assert_eq!(
+        expired["present"],
+        json!(true),
+        "the expired frame IS present - presence is the trap, not the answer: {expired}",
+    );
+    assert_eq!(expired["visible"], json!(false), "visibility: hidden: {expired}");
+    assert_eq!(expired["onScreen"], json!(false), "a rect at y = -10000 is off screen: {expired}");
+    assert_eq!(expired["hitTestable"], json!(false), "{expired}");
+    assert_eq!(expired["live"], json!(false), "{expired}");
+    assert!(
+        expired["rect"]["y"].as_f64().unwrap_or_default() < 0.0,
+        "the off-screen rect is still reported, which is why geometry alone reads it as live: \
+         {expired}",
+    );
+
+    let covered = frame("hCaptcha covered");
+    assert_eq!(covered["visible"], json!(true), "{covered}");
+    assert_eq!(covered["onScreen"], json!(true), "{covered}");
+    assert_eq!(
+        covered["hitTestable"],
+        json!(false),
+        "a frame under another element is not what a click would reach: {covered}",
+    );
+    assert_eq!(covered["live"], json!(false), "{covered}");
+
+    // The frame's own computed opacity is 1; only the ancestor walk sees it.
+    let faded = frame("reCAPTCHA faded");
+    assert_eq!(
+        faded["visible"],
+        json!(false),
+        "an ancestor's opacity: 0 leaves the frame on screen and hit-testable but invisible: \
+         {faded}",
+    );
+    assert_eq!(faded["onScreen"], json!(true), "the frame is on screen: {faded}");
+    assert_eq!(faded["hitTestable"], json!(true), "a click would reach it: {faded}");
+    assert_eq!(faded["live"], json!(false), "an invisible widget is not live: {faded}");
+
+    let displayless = frame("reCAPTCHA displayless");
+    assert_eq!(
+        displayless["visible"],
+        json!(false),
+        "an ancestor's display: none hides the frame: {displayless}",
+    );
+    assert_eq!(displayless["onScreen"], json!(false), "a hidden frame has no rect: {displayless}");
+    assert_eq!(displayless["hitTestable"], json!(false), "{displayless}");
+    assert_eq!(displayless["live"], json!(false), "{displayless}");
+
+    let filtered = frame("reCAPTCHA filtered");
+    assert_eq!(
+        filtered["visible"],
+        json!(false),
+        "filter: opacity(0) on an ancestor hides the frame too: {filtered}",
+    );
+    assert_eq!(filtered["onScreen"], json!(true), "the frame is on screen: {filtered}");
+    assert_eq!(filtered["hitTestable"], json!(true), "a click would reach it: {filtered}");
+    assert_eq!(filtered["live"], json!(false), "an invisible widget is not live: {filtered}");
+
+    let turnstile = frame("Widget containing a Cloudflare security challenge");
+    assert_eq!(turnstile["vendor"], json!("Turnstile"), "{turnstile}");
+    assert_eq!(turnstile["live"], json!(true), "{turnstile}");
+
+    service.close(&seat).await.expect("the profile closes");
+}
+
+/// **A driver rebuild renames every page, and a session keeps its own.**
+/// Creating a tab rebuilds the driver, and a fresh Playwright backend gives
+/// every page a new guid. The first seat's next evaluate must still be its
+/// own document, not a new about:blank, and the tab number it was shown must
+/// still be the one a hand-off accepts (row c00bd4de).
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_driver_rebuild_keeps_a_sessions_page() {
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let one = SessionSlot::worker("TestOrg", "proj", "one");
+    let two = SessionSlot::worker("TestOrg", "proj", "two");
+    let page = "data:text/html,<title>kept</title><h1 id=kept>kept</h1>";
+
+    service
+        .call(&one, "browser_navigate", json!({ "url": page }))
+        .await
+        .expect("the first seat's page opens");
+    let tab = service.tabs(&one).await.expect("rows").rows[0].number;
+
+    // **A second seat's first call creates a tab**, and creating one rebuilds
+    // the driver, renaming every page the first seat holds.
+    service.call(&two, "browser_snapshot", json!({})).await.expect("the second seat opens");
+
+    let answer = service
+        .call(
+            &one,
+            "browser_evaluate",
+            json!({ "function": "() => [location.href, !!document.getElementById('kept')]" }),
+        )
+        .await
+        .expect("the first seat's page is still driven");
+    let text = answer
+        .iter()
+        .find_map(|part| match part {
+            forge_primitives::browser::BrowserPart::Text { text } => Some(text.clone()),
+            forge_primitives::browser::BrowserPart::Image { .. } => None,
+        })
+        .unwrap_or_default();
+    assert!(text.contains(page), "the first seat's own document answers: {text}");
+    assert!(text.contains("true"), "and its content is there, not a blank tab: {text}");
+
+    let rows = service.tabs(&one).await.expect("rows").rows;
+    assert!(
+        rows.iter().any(|row| row.number == tab),
+        "the seat keeps the tab it was shown: {rows:?}",
+    );
+    service.hand_off_started(&one, tab).await.expect("the number a tool printed is accepted");
+    service.hand_off_finished(&one, tab).await;
+
+    service.close(&one).await.expect("the profile closes");
+}
+
+/// The page's own report of its surface: the viewport it lays out at, the
+/// outer size, and the ratio it paints at.
+const LAYOUT: &str = "() => ({ innerWidth: window.innerWidth, innerHeight: window.innerHeight, \
+                      outerWidth: window.outerWidth, outerHeight: window.outerHeight, \
+                      dpr: window.devicePixelRatio })";
+
+/// One `browser_evaluate` of [`LAYOUT`], as the object the page returned.
+///
+/// **The driver frames an answer as `### Result` followed by `### Ran
+/// Playwright code`**, so the object is cut out of the framing before it is
+/// parsed.
+async fn page_layout(service: &BrowserService, seat: &SessionSlot) -> serde_json::Value {
+    let answer = service
+        .call(seat, "browser_evaluate", json!({ "function": LAYOUT }))
+        .await
+        .expect("the page evaluates");
+    let text = answer
+        .iter()
+        .filter_map(|part| match part {
+            forge_primitives::browser::BrowserPart::Text { text } => Some(text.as_str()),
+            forge_primitives::browser::BrowserPart::Image { .. } => None,
+        })
+        .collect::<String>();
+    let result = text.split_once("### Result").map_or(text.as_str(), |(_, result)| result);
+    let result = result.split_once("\n### ").map_or(result, |(object, _)| object);
+    let (Some(start), Some(end)) = (result.find('{'), result.rfind('}')) else {
+        panic!("the page's answer carries an object: {text}");
+    };
+    serde_json::from_str(&result[start..=end])
+        .unwrap_or_else(|why| panic!("the page's answer is JSON ({why}): {text}"))
+}
+
+/// The layout the page settles on. **A ring request reaches the page on the
+/// host's own pump**, so a read taken right after a resize can still see the
+/// size before it.
+async fn wait_for_layout(
+    service: &BrowserService,
+    seat: &SessionSlot,
+    what: &str,
+    want: serde_json::Value,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let layout = page_layout(service, seat).await;
+        if layout == want {
+            return layout;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: the page never reported {want}, it reported {layout}",
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// **An agent's `browser_resize` moves the painted surface, and the page
+/// follows it.** The tool used to go to the driver's `page.setViewportSize`:
+/// the page was told one size while the host painted another, and the device
+/// pixel ratio was left at 1 for the rest of the host's life. It now moves
+/// the profile's ring, the same path a viewer's own resize takes, so the
+/// viewport, the outer size and the ratio all move together.
+///
+/// **That window is then the person's to replace**: their own surface report
+/// is a resize like any other, and the last one wins.
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_resize_is_the_window_until_the_next_resize() {
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let seat = SessionSlot::lead("TestOrg", "proj");
+    service
+        .call(
+            &seat,
+            "browser_navigate",
+            json!({ "url": "data:text/html,<h1 id=probe>resize probe</h1>" }),
+        )
+        .await
+        .expect("the page opens");
+    let attachment = service.attach(7, &seat, None).await.expect("the seat's profile attaches");
+    let (key, tab) = (attachment.key.clone(), attachment.tab);
+
+    // **A viewer's surface first**, so the page is painted at a ratio of 2
+    // the way a Retina surface paints it.
+    service.take_control(&key, tab, 7).await.expect("the viewer takes control");
+    service.resize(&key, tab, 7, 2880, 2128, 2.0).await;
+    wait_for_layout(
+        &service,
+        &seat,
+        "a viewer's resize paints the page at its own size and ratio",
+        json!({
+            "innerWidth": 1440, "innerHeight": 1064,
+            "outerWidth": 1440, "outerHeight": 1064, "dpr": 2,
+        }),
+    )
+    .await;
+
+    // **The agent's resize is the same window.** The page's viewport, its
+    // outer size and its ratio move together, and the ratio stays 2.
+    service
+        .call(&seat, "browser_resize", json!({ "width": 1120, "height": 760 }))
+        .await
+        .expect("the agent resizes the window");
+    wait_for_layout(
+        &service,
+        &seat,
+        "an agent's resize moves the painted surface and keeps the ratio",
+        json!({
+            "innerWidth": 1120, "innerHeight": 760,
+            "outerWidth": 1120, "outerHeight": 760, "dpr": 2,
+        }),
+    )
+    .await;
+
+    // **The person's own surface report is a resize, and the last one wins.**
+    // The client re-sends its region on a layout change and when it takes
+    // control; either puts its own window back.
+    service.resize(&key, tab, 7, 2880, 2128, 2.0).await;
+    wait_for_layout(
+        &service,
+        &seat,
+        "a viewer's report after the tool's resize puts the viewer's window back",
+        json!({
+            "innerWidth": 1440, "innerHeight": 1064,
+            "outerWidth": 1440, "outerHeight": 1064, "dpr": 2,
+        }),
+    )
+    .await;
+
+    service.close(&seat).await.expect("the profile closes");
+}

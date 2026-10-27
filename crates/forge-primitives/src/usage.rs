@@ -77,6 +77,10 @@ pub struct UsageWindow {
     pub utilization: f64,
     pub resets_at: Option<std::time::SystemTime>,
     pub reset_description: Option<String>,
+    /// The provider's own verdict on this window (`allowed`,
+    /// `allowed_warning`, `rejected`), when it stated one: a window can be
+    /// rejected below 100%, so the percentage alone cannot say it is spent.
+    pub status: Option<String>,
 }
 
 impl UsageWindow {
@@ -254,7 +258,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn window(utilization: f64, resets_at: Option<SystemTime>) -> UsageWindow {
-        UsageWindow { utilization, resets_at, reset_description: None }
+        UsageWindow { utilization, resets_at, reset_description: None, status: None }
     }
 
     #[test]

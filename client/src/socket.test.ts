@@ -6,7 +6,13 @@ import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { noteSnapshot, noteSubscribe } from './perf';
-import { connect, type BrowserFrame, type Connection, type ConnectionStatus } from './socket';
+import {
+  connect,
+  RETRY_MS,
+  type BrowserFrame,
+  type Connection,
+  type ConnectionStatus,
+} from './socket';
 import { onRefusal, type Refusal } from './refusals';
 import {
   PROTOCOL_VERSION,
@@ -130,27 +136,49 @@ function commands(received: ClientMessage[]) {
   );
 }
 
-/**
- * How long a wait here is given: the socket, the handshake and the round trips
- * behind a condition all run for real, and a loaded machine stretches one well
- * past the quiet-machine figure this used to be.
- */
-const WAIT_MS = 3_000;
+/** A condition's poll budget: the round trips a check waits on, over loopback. */
+const POLL_MS = 3_000;
 
-// A test here can carry several waits in sequence, so the file's own deadline
-// is a sum rather than one wait: vitest's five-second default leaves nothing
-// for the test's own work once two of them run long, and it sits under the
-// status-bound wait's own generous deadline.
-vi.setConfig({ testTimeout: 20_000 });
+/**
+ * The worst a socket open has measured on a saturated machine: about 19 s,
+ * under five concurrent workers (#2273). `MAX_RETRY_MS` bounds the backoff
+ * BETWEEN attempts, not how long one open takes on a machine like that.
+ */
+const OBSERVED_OPEN_MS = 19_000;
+
+/**
+ * The belt on an open: that sighting with the margin the oversized-frame
+ * bound in the desktop half takes (26 s over the same 19 s). It stays well
+ * above `POLL_MS`, or the status wait would fail a live connection whose
+ * reconnect simply outlasted the poll budget.
+ */
+const OPEN_BELT_MS = OBSERVED_OPEN_MS + 7_000;
+
+// A test here can carry six polls behind its connect's open, so the file's own
+// deadline is that sum rather than vitest's five-second default, which leaves
+// nothing for the test's own work once two of them run long.
+vi.setConfig({ testTimeout: OPEN_BELT_MS + POLL_MS * 6 + 5_000 });
 
 /** Wait until `check` holds, or fail rather than hang. */
 async function until(check: () => boolean, what: string) {
-  const deadline = Date.now() + WAIT_MS;
+  const deadline = Date.now() + POLL_MS;
   while (Date.now() < deadline) {
     if (check()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`timed out waiting for ${what}`);
+}
+
+/**
+ * Hold a window open, for a claim that nothing happened.
+ *
+ * **This waits on nothing drawing**: the case has already seen what it wants,
+ * and what the window buys is the span in which a stray re-ask, a second
+ * delivery or a warning would land. Only an absence needs it; anything that
+ * can be waited for is waited for with `until`.
+ */
+async function quiet(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -188,14 +216,20 @@ function untilStatus(conn: Connection, wanted: ConnectionStatus, what: string): 
     // generous on purpose: a reconnect on a saturated machine has been
     // measured past nine seconds and is still healthy, so a tighter one would
     // report a live connection as a timeout, which is the whole shape here.
-    setTimeout(() => settle(`timed out waiting for ${what}`), WAIT_MS * 5);
+    setTimeout(() => settle(`timed out waiting for ${what}`), OPEN_BELT_MS);
   });
 }
 
-/** Give anything already in flight a chance to arrive, for an absence to assert. */
-async function settle() {
-  await new Promise((resolve) => setTimeout(resolve, 80));
-}
+/**
+ * The span an absence is claimed over: two of the connection's own retry
+ * beats, which is where a re-ask after a drop would arrive.
+ */
+const ABSENCE_MS = RETRY_MS * 2;
+
+/** A short read bound, injected: the shipping figure is five seconds. */
+const SHORT_READ_BOUND_MS = 40;
+/** A short reply bound, injected: the shipping figure is ten seconds. */
+const SHORT_REPLY_BOUND_MS = 40;
 
 const HOME: Subject = 'home';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -656,7 +690,7 @@ describe('the connection', () => {
       const conn = connect(server.url);
       opened.push(conn);
       conn.close();
-      await settle();
+      await quiet(ABSENCE_MS);
     } finally {
       spy.mockRestore();
     }
@@ -677,7 +711,7 @@ describe('the connection', () => {
     const server = await stubServer();
     servers.push(server);
     // The shipping bound is ten seconds; the rule is the bound, not the number.
-    const conn = connect(server.url, undefined, 40);
+    const conn = connect(server.url, undefined, SHORT_REPLY_BOUND_MS);
     opened.push(conn);
     await untilStatus(conn, 'open', 'the socket to open');
 
@@ -713,7 +747,7 @@ describe('the connection', () => {
     const server = await stubServer();
     servers.push(server);
     // The shipping bound is ten seconds; the rule is the bound, not the number.
-    const conn = connect(server.url, undefined, 40);
+    const conn = connect(server.url, undefined, SHORT_REPLY_BOUND_MS);
     opened.push(conn);
     await untilStatus(conn, 'open', 'the socket to open');
 
@@ -735,7 +769,7 @@ describe('the connection', () => {
       },
     );
     // Several times the injected bound: it must still be waiting.
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await quiet(SHORT_REPLY_BOUND_MS * 5);
     expect(settled, 'the despawn waits past the reply bound').toBe(false);
 
     server.send({ kind: 'reply', reply_to: sent.reply_to, body: 'gone' });
@@ -889,7 +923,7 @@ describe('the connection', () => {
 
     // One entry is left, so exactly one re-ask: a second would mean the count
     // came back as two.
-    await settle();
+    await quiet(ABSENCE_MS);
     expect(server.received.slice(4)).toEqual([]);
   });
 
@@ -909,7 +943,7 @@ describe('the connection', () => {
     server.drop();
     await until(() => server.received.length >= 4, 'both re-asks');
 
-    await settle();
+    await quiet(ABSENCE_MS);
     expect(server.received.length, 'a subject held twice was re-asked for once').toBe(4);
   });
 
@@ -1103,7 +1137,7 @@ describe('the connection', () => {
     servers.push(server);
     // A short bound, injected: the shipping figure is five seconds, and the
     // rule being tested is the re-ask rather than the number.
-    const conn = connect(server.url, 40);
+    const conn = connect(server.url, SHORT_READ_BOUND_MS);
     opened.push(conn);
     const store = conn.subscribe(HOME);
     await until(() => server.received.length >= 1, 'the first subscribe');
@@ -1119,7 +1153,7 @@ describe('the connection', () => {
     // **The cadence ends at that pass.** The slow beat is a minute at the
     // shipping bound, so six cadences of quiet is the claim: a slow answer
     // buys one retry, not a whole record per bound while it travels.
-    await new Promise((resolve) => setTimeout(resolve, 40 * 6));
+    await quiet(SHORT_READ_BOUND_MS * 6);
     expect(
       server.received.length,
       "the bound kept asking on its cadence past the read's one retry",
@@ -1129,7 +1163,7 @@ describe('the connection', () => {
   it('asks nothing again for a read that was answered', async () => {
     const server = await stubServer();
     servers.push(server);
-    const conn = connect(server.url, 40);
+    const conn = connect(server.url, SHORT_READ_BOUND_MS);
     opened.push(conn);
     const store = conn.subscribe(HOME);
     await until(() => server.received.length === 1, 'the subscribe');
@@ -1137,8 +1171,7 @@ describe('the connection', () => {
     await until(() => store.state().kind === 'ready', 'the answer to land');
 
     // Two bounds of quiet: an answered read owes nothing.
-    await settle();
-    await settle();
+    await quiet(SHORT_READ_BOUND_MS * 2);
     expect(server.received.length, 'an answered read is not re-asked').toBe(1);
   });
 
@@ -1388,7 +1421,7 @@ describe('the connection', () => {
     } as unknown as Connection;
 
     const waited = untilStatus(conn, 'open', 'the socket to open');
-    await new Promise((resolve) => setTimeout(resolve, WAIT_MS + 100));
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS + 100));
     status = 'open';
     listener.report?.('open');
 
@@ -1469,7 +1502,7 @@ describe('the connection', () => {
     // in either case; waiting on it is waiting for the delivery, not for the
     // outcome.
     await until(() => threw.length === 1, 'the frame to be delivered');
-    await settle();
+    await quiet(ABSENCE_MS);
     expect(threw).toHaveLength(1);
     expect(behind, 'a listener that threw silenced the listener behind it').toEqual([
       { kind: 'update', update: 'catalog_loaded' },

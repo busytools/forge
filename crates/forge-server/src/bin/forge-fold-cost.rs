@@ -526,10 +526,7 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
         println!("{}", breakdown(&surface, &seat, &args.dir.join(&args.project))?);
     }
 
-    let state = Arc::new(TransportState::for_workspace(
-        &fleet.workspace(),
-        forge_primitives::ClientConfig::default(),
-    ));
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     // The seat's conversation, put where a `Connected` would have left it.
     //
     // **The transport does not read a transcript**, so a server left to

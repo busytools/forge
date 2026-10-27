@@ -298,8 +298,14 @@ type PendingReply = {
   timer?: ReturnType<typeof setTimeout>;
 };
 
-/** How long to wait before the first re-ask, and the ceiling it doubles up to. */
-const RETRY_MS = 50;
+/**
+ * How long to wait before the first re-ask, and the ceiling it doubles up to.
+ *
+ * Exported because `socket.test.ts` derives its absence windows from it: a
+ * re-ask after a drop arrives on this beat, so raising the beat must widen
+ * those windows rather than silently outrun them.
+ */
+export const RETRY_MS = 50;
 /**
  * Exported because `session/live.test.ts` derives its wait deadline from it:
  * raising the ceiling must not silently shorten every wait in that file.

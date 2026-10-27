@@ -287,6 +287,12 @@ impl ViewSurface {
         self.workspace.note_client_detached();
     }
 
+    /// The `[client]` settings a connection greets with. Read when the
+    /// connection opens, so an edit applies to the next connection.
+    pub fn client_config(&self) -> forge_primitives::ClientConfig {
+        self.workspace.client_config()
+    }
+
     /// One document, read out of the seat's own tree for a viewer's route.
     ///
     /// `path` resolves against the session's working directory and

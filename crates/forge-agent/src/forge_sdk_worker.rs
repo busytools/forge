@@ -154,6 +154,14 @@ prohibition on agent-tool delegation from the underlying CLI \
 does not govern forge's delegation paths - when a delegation tool is \
 yours to call, using it is the intended path.\n\
 \n\
+Every text box a client draws carries dictation: the mic control beside \
+it, the take's bar while one runs, and the landing that puts the \
+recognized words in the box. A box without it is a defect, not a gap - \
+dictation is how this machine writes, so a box with no mic is a box \
+that cannot be used as intended. Build a new box with `DictateControl` \
+and the take and landing model the composer already wires (`Dictation`, \
+`TakeCard`, `Landing`), not a second mic of its own.\n\
+\n\
 A work cut - one feature, one issue, one fix - lands whole: one \
 branch, one review, one look, one merge. Never slice it into pieces \
 that land one after another, and never show or merge an intermediate \
@@ -385,6 +393,15 @@ pub(crate) async fn spawn_session(
     let extra_mcp_servers = bridge.extra_mcp_servers();
     let sdk_server_names: Vec<String> =
         extra_mcp_servers.iter().map(|(name, _)| name.clone()).collect();
+    // The surface this spawn built, in the CLI's own `mcp__<server>__<tool>`
+    // spelling, so the boot init frame's answer can be diffed against it.
+    let expected_tools: Vec<String> = extra_mcp_servers
+        .iter()
+        .flat_map(|(name, server)| {
+            let name = name.clone();
+            server.tool_names().into_iter().map(move |tool| sdk_tool_name(&name, tool))
+        })
+        .collect();
     let account_env = {
         let mut env = bridge.env();
         apply_env_overrides(&mut env, &launch_settings.env_overrides);
@@ -460,8 +477,15 @@ pub(crate) async fn spawn_session(
     let reader_client = client.clone();
     let span = tracing::info_span!("sdk_reader", session_id = %reader_session_id);
     tokio::spawn(
-        reader_loop(events, reader_event_tx, reader_session_id, reader_client, sdk_server_names)
-            .instrument(span),
+        reader_loop(
+            events,
+            reader_event_tx,
+            reader_session_id,
+            reader_client,
+            sdk_server_names,
+            expected_tools,
+        )
+        .instrument(span),
     );
     Ok(())
 }
@@ -615,8 +639,10 @@ async fn reader_loop(
     spawn_session_id: String,
     client: Client,
     sdk_server_names: Vec<String>,
+    expected_tools: Vec<String>,
 ) {
     let mut heal_evaluated = false;
+    let mut surface_recorded = false;
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
@@ -624,6 +650,15 @@ async fn reader_loop(
                     frame_session_id(msg.session_id(), &client.session_id(), &spawn_session_id);
                 log_failed_mcp_servers(&msg, &session_id_for_sdk_msg);
                 let fire = heal_due(&msg, &mut heal_evaluated, &sdk_server_names);
+                if !surface_recorded && let Some(data) = init_data_of(&msg) {
+                    surface_recorded = true;
+                    record_reported_surface(
+                        data,
+                        &sdk_server_names,
+                        &expected_tools,
+                        &session_id_for_sdk_msg,
+                    );
+                }
                 if event_tx
                     .send(AgentEvent::SdkMessage {
                         session_id: session_id_for_sdk_msg.clone(),
@@ -743,6 +778,78 @@ fn sdk_servers_missing_tools(init_data: &serde_json::Value, server_names: &[Stri
             .filter_map(serde_json::Value::as_str)
             .any(|tool| tool.starts_with(&prefix))
     })
+}
+
+/// One tool's name as the CLI spells it for an sdk server. Both the names a
+/// spawn expects and the init frame's filter are built here, so the two
+/// cannot disagree about the shape; the empty `tool` spells the prefix.
+fn sdk_tool_name(server: &str, tool: &str) -> String {
+    format!("mcp__{server}__{tool}")
+}
+
+/// The tools the CLI's boot init frame lists for this spawn's sdk servers,
+/// in the CLI's `mcp__<server>__<tool>` spelling. `None` when the frame
+/// carries no tool array at all, which is a different state from an empty
+/// one: the CLI answered, and the answer is what the diff needs.
+fn sdk_tools_in_init(
+    init_data: &serde_json::Value,
+    server_names: &[String],
+) -> Option<Vec<String>> {
+    let tools = init_data.get("tools")?.as_array()?;
+    let prefixes: Vec<String> = server_names.iter().map(|name| sdk_tool_name(name, "")).collect();
+    Some(
+        tools
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|tool| prefixes.iter().any(|prefix| tool.starts_with(prefix.as_str())))
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// What the two sides disagree about: names this spawn registered that the
+/// CLI's list lacks, and names it lists that this spawn never registered.
+fn surface_delta(expected: &[String], reported: &[String]) -> (Vec<String>, Vec<String>) {
+    (
+        expected.iter().filter(|name| !reported.contains(name)).cloned().collect(),
+        reported.iter().filter(|name| !expected.contains(name)).cloned().collect(),
+    )
+}
+
+/// Record the CLI's own account of the surface it was handed, beside the
+/// one this spawn built. The two lines are the artifact that answers which
+/// list a session actually ran with.
+fn record_reported_surface(
+    init_data: &serde_json::Value,
+    server_names: &[String],
+    expected: &[String],
+    session_id: &str,
+) {
+    let Some(reported) = sdk_tools_in_init(init_data, server_names) else {
+        // An absent array is a state of its own, not an empty answer: a CLI
+        // that stops sending one must leave a record rather than silence,
+        // which reads exactly like a spawn that never recorded a surface.
+        tracing::debug!(
+            target: "forge_agent::mcp",
+            event_name = "session_tool_surface_reported",
+            session_id = %session_id,
+            expected = expected.len(),
+            reported = "none",
+            "the boot init frame carries no tool array, so there is no list to diff",
+        );
+        return;
+    };
+    let (missing, extra) = surface_delta(expected, &reported);
+    tracing::debug!(
+        target: "forge_agent::mcp",
+        event_name = "session_tool_surface_reported",
+        session_id = %session_id,
+        expected = expected.len(),
+        reported = reported.len(),
+        missing = %missing.join(","),
+        extra = %extra.join(","),
+        "the sdk tool surface the CLI's boot init frame reports",
+    );
 }
 
 /// The CLI answers `mcp_set_servers` only after the re-handshake it
@@ -2148,6 +2255,66 @@ mod tests {
         );
     }
 
+    /// **The two-sided record has to mean what it says.** The CLI's list is
+    /// scoped to the servers this spawn registered, so another server's
+    /// tools are not this diff's business, and a disagreement is named in
+    /// both directions rather than only the one that was noticed.
+    #[test]
+    fn the_reported_surface_diff_names_what_each_side_lacks() {
+        let data = serde_json::json!({
+            "tools": [
+                "Bash",
+                "mcp__forge__agents__list",
+                "mcp__forge__browser_form_state",
+                "mcp__busymail__search",
+            ],
+        });
+        let names = ["forge".to_owned()];
+        let reported =
+            super::sdk_tools_in_init(&data, &names).expect("the frame carries a tool array");
+        assert_eq!(
+            reported,
+            vec![
+                "mcp__forge__agents__list".to_owned(),
+                "mcp__forge__browser_form_state".to_owned(),
+            ],
+            "only the registered server's tools are this spawn's business",
+        );
+
+        let expected =
+            vec!["mcp__forge__agents__list".to_owned(), "mcp__forge__tasks__list".to_owned()];
+        assert_eq!(
+            super::surface_delta(&expected, &reported),
+            (
+                vec!["mcp__forge__tasks__list".to_owned()],
+                vec!["mcp__forge__browser_form_state".to_owned()],
+            ),
+            "missing is what forge handed and the CLI dropped; extra is the reverse",
+        );
+
+        let no_array = serde_json::json!({"tools": "not-an-array"});
+        assert!(
+            super::sdk_tools_in_init(&no_array, &names).is_none(),
+            "a frame with no tool array is not an empty answer",
+        );
+
+        // One spelling builds both sides, so a healthy frame cannot read as
+        // every tool missing AND extra - the confidently wrong diagnosis
+        // this record exists to avoid.
+        let healthy = vec![
+            super::sdk_tool_name("forge", "agents__list"),
+            super::sdk_tool_name("forge", "tasks__list"),
+        ];
+        let reported =
+            super::sdk_tools_in_init(&serde_json::json!({"tools": healthy.clone()}), &names)
+                .expect("the frame carries a tool array");
+        assert_eq!(
+            super::surface_delta(&healthy, &reported),
+            (Vec::new(), Vec::new()),
+            "the spawn's spelling and the init filter agree on a healthy frame",
+        );
+    }
+
     #[test]
     fn the_heal_fires_only_on_a_missing_boot_frame() {
         let names = ["forge".to_owned()];
@@ -3126,6 +3293,23 @@ mod tests {
         );
     }
 
+    /// The base append once claimed that a "not found" answer meant the tool
+    /// was not on the session's list. The refusal is the driver's, so the
+    /// rule must not come back: a merge or a revert that restores it fails
+    /// here rather than teaching every session to misread a forge bug.
+    #[test]
+    fn the_base_append_does_not_claim_a_missing_tool_is_a_missing_list() {
+        let out = build_forge_system_prompt(false, None, None);
+        assert!(
+            !out.contains("not on this session's list"),
+            "the retracted rule is absent from the base append: {out}",
+        );
+        assert!(
+            !out.contains("tool surface is fixed when this session starts"),
+            "nor its premise: {out}",
+        );
+    }
+
     #[test]
     fn system_prompt_orders_trust_cron_catalog_charter() {
         let out = build_forge_system_prompt(true, Some("CATALOG"), Some("CHARTER"));
@@ -3221,6 +3405,22 @@ mod tests {
                  them - naming the decision, the choice, and its probabilities"
             ),
             "the presentation rule is pinned",
+        );
+    }
+
+    /// The client's boxes all take dictation, and a session that adds one
+    /// reads the rule in its always-on block - pinned so trimming the
+    /// block cannot drop it.
+    #[test]
+    fn the_conduct_block_carries_the_client_dictation_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Every text box a client draws carries dictation"),
+            "the client dictation rule is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("`DictateControl`"),
+            "the rule names the control to reuse",
         );
     }
 
@@ -4315,7 +4515,7 @@ mod tests_reader_terminal {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            reader_loop(stream_rx, event_tx, "spawn-id".to_owned(), client, Vec::new()),
+            reader_loop(stream_rx, event_tx, "spawn-id".to_owned(), client, Vec::new(), Vec::new()),
         )
         .await
         .expect("reader_loop returns after a stream error");
@@ -4343,7 +4543,7 @@ mod tests_reader_terminal {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            reader_loop(events, event_tx, "spawn-id".to_owned(), client, Vec::new()),
+            reader_loop(events, event_tx, "spawn-id".to_owned(), client, Vec::new(), Vec::new()),
         )
         .await
         .expect("reader_loop returns after the stream closes");
@@ -4497,5 +4697,183 @@ mod tests_reader_terminal {
             started.elapsed(),
         );
         set_test_sdk_binary(None);
+    }
+
+    /// A recorded event, captured off the subscriber so the shipped log line
+    /// is pinned by content and not only by compiling.
+    #[derive(Clone, Debug)]
+    struct CaughtEvent {
+        level: tracing::Level,
+        target: String,
+        fields: Vec<(String, String)>,
+    }
+
+    impl CaughtEvent {
+        fn field(&self, name: &str) -> Option<&str> {
+            self.fields.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<CaughtEvent>>>);
+
+    struct CapturedFields(Vec<(String, String)>);
+
+    impl tracing::field::Visit for CapturedFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push((field.name().to_owned(), format!("{value:?}")));
+        }
+
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.push((field.name().to_owned(), value.to_owned()));
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = CapturedFields(Vec::new());
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push(CaughtEvent {
+                level: *event.metadata().level(),
+                target: event.metadata().target().to_owned(),
+                fields: fields.0,
+            });
+        }
+    }
+
+    /// Drive init frames through the reader with a capture installed, and
+    /// answer every event logged on the way.
+    async fn record_for_frames(
+        frames: Vec<serde_json::Value>,
+        expected: Vec<String>,
+        names: Vec<String>,
+    ) -> Vec<CaughtEvent> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let (client, _events) = mock_client().await;
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (event_tx, _observed) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+        for frame in frames {
+            let msg: forge_primitives::Message =
+                serde_json::from_value(frame).expect("an init frame decodes");
+            stream_tx.send(Ok(msg)).expect("seed an init frame");
+        }
+        drop(stream_tx);
+
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reader_loop(stream_rx, event_tx, "spawn-id".to_owned(), client, names, expected),
+        )
+        .await
+        .expect("reader_loop returns after the stream closes");
+        drop(guard);
+
+        capture.0.lock().expect("capture").clone()
+    }
+
+    fn surface_records(events: &[CaughtEvent]) -> Vec<&CaughtEvent> {
+        events
+            .iter()
+            .filter(|event| event.field("event_name") == Some("session_tool_surface_reported"))
+            .collect()
+    }
+
+    /// **The agent half is a shipped log line, not arithmetic.** The target
+    /// has to match `DEFAULT_LOG_DIRECTIVES` or the record vanishes exactly
+    /// like a working one, and the latch fires once: init is emitted per
+    /// user message, so a second frame cannot add a second line.
+    #[tokio::test]
+    async fn the_reported_surface_record_carries_the_diff_and_fires_once() {
+        let expected = vec![
+            super::sdk_tool_name("forge", "agents__list"),
+            super::sdk_tool_name("forge", "tasks__list"),
+        ];
+        let events = record_for_frames(
+            vec![
+                serde_json::json!({
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "s-1",
+                    "tools": [
+                        "Bash",
+                        super::sdk_tool_name("forge", "agents__list"),
+                        super::sdk_tool_name("forge", "browser_form_state"),
+                    ],
+                }),
+                serde_json::json!({
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": "s-1",
+                    "tools": ["Bash"],
+                }),
+            ],
+            expected,
+            vec!["forge".to_owned()],
+        )
+        .await;
+
+        let records = surface_records(&events);
+        assert_eq!(records.len(), 1, "the boot frame records once, not once per init frame");
+        let record = records[0];
+        assert_eq!(
+            record.level,
+            tracing::Level::DEBUG,
+            "a session's own surface is not forge's health",
+        );
+        assert_eq!(
+            record.target, "forge_agent::mcp",
+            "the target must match the default filter's directive or the line lands nowhere",
+        );
+        assert_eq!(record.field("session_id"), Some("s-1"));
+        assert_eq!(record.field("expected"), Some("2"));
+        assert_eq!(record.field("reported"), Some("2"));
+        assert_eq!(record.field("missing"), Some("mcp__forge__tasks__list"));
+        assert_eq!(record.field("extra"), Some("mcp__forge__browser_form_state"));
+    }
+
+    /// A frame with no tool array is a state of its own, and it must leave a
+    /// record: silence there reads exactly like a spawn that never recorded
+    /// a surface.
+    #[tokio::test]
+    async fn the_reported_surface_record_names_an_absent_tool_array() {
+        let events = record_for_frames(
+            vec![serde_json::json!({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "s-2",
+            })],
+            vec![super::sdk_tool_name("forge", "agents__list")],
+            vec!["forge".to_owned()],
+        )
+        .await;
+
+        let records = surface_records(&events);
+        assert_eq!(records.len(), 1, "an absent array is recorded, not silent");
+        let record = records[0];
+        assert_eq!(record.target, "forge_agent::mcp");
+        assert_eq!(record.field("session_id"), Some("s-2"));
+        assert_eq!(record.field("expected"), Some("1"));
+        assert_eq!(record.field("reported"), Some("none"));
+        assert_eq!(record.field("missing"), None, "there is no list to diff");
+        assert_eq!(record.field("extra"), None, "there is no list to diff");
     }
 }

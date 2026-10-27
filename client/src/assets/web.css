@@ -40,8 +40,9 @@
 
 /* ---------- one scrollbar skin for every scroller on the page ----------
    The root viewport (the home page scrolls the document), the rail, the chat,
-   the autocomplete, the segment list, the dictation popover and both text
-   fields - the composer's and the dock's. An unstyled bar is a white or grey
+   the autocomplete, the segment list, the dictation popover, both text
+   fields - the composer's and the dock's - and the dock's own scrollers, its
+   option list and its preview panels. An unstyled bar is a white or grey
    strip against the dark panels. The parts do not take the element's own
    cursor, so the pointer is set per part; the thumb brightens on hover and
    again while dragged. `scrollbar-gutter: stable` stays each scroller's own
@@ -54,6 +55,8 @@ html::-webkit-scrollbar,
 .pop::-webkit-scrollbar,
 .box textarea::-webkit-scrollbar,
 .dock .notes::-webkit-scrollbar,
+.dock .opts::-webkit-scrollbar,
+.dock .preview::-webkit-scrollbar,
 .dr-body::-webkit-scrollbar {
   width: 8px;
   cursor: pointer;
@@ -66,6 +69,8 @@ html::-webkit-scrollbar-track,
 .pop::-webkit-scrollbar-track,
 .box textarea::-webkit-scrollbar-track,
 .dock .notes::-webkit-scrollbar-track,
+.dock .opts::-webkit-scrollbar-track,
+.dock .preview::-webkit-scrollbar-track,
 .dr-body::-webkit-scrollbar-track {
   background: transparent;
   cursor: pointer;
@@ -78,6 +83,8 @@ html::-webkit-scrollbar-corner,
 .pop::-webkit-scrollbar-corner,
 .box textarea::-webkit-scrollbar-corner,
 .dock .notes::-webkit-scrollbar-corner,
+.dock .opts::-webkit-scrollbar-corner,
+.dock .preview::-webkit-scrollbar-corner,
 .dr-body::-webkit-scrollbar-corner {
   background: transparent;
   cursor: pointer;
@@ -90,6 +97,8 @@ html::-webkit-scrollbar-thumb,
 .pop::-webkit-scrollbar-thumb,
 .box textarea::-webkit-scrollbar-thumb,
 .dock .notes::-webkit-scrollbar-thumb,
+.dock .opts::-webkit-scrollbar-thumb,
+.dock .preview::-webkit-scrollbar-thumb,
 .dr-body::-webkit-scrollbar-thumb {
   background: var(--s3);
   border-radius: 99px;
@@ -103,6 +112,8 @@ html::-webkit-scrollbar-thumb:hover,
 .pop::-webkit-scrollbar-thumb:hover,
 .box textarea::-webkit-scrollbar-thumb:hover,
 .dock .notes::-webkit-scrollbar-thumb:hover,
+.dock .opts::-webkit-scrollbar-thumb:hover,
+.dock .preview::-webkit-scrollbar-thumb:hover,
 .dr-body::-webkit-scrollbar-thumb:hover {
   background: var(--line);
 }
@@ -114,6 +125,8 @@ html::-webkit-scrollbar-thumb:active,
 .pop::-webkit-scrollbar-thumb:active,
 .box textarea::-webkit-scrollbar-thumb:active,
 .dock .notes::-webkit-scrollbar-thumb:active,
+.dock .opts::-webkit-scrollbar-thumb:active,
+.dock .preview::-webkit-scrollbar-thumb:active,
 .dr-body::-webkit-scrollbar-thumb:active {
   background: var(--muted);
 }
@@ -1331,8 +1344,8 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .tb-btn { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
   background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
 .tb-btn.d { color: var(--muted); background: transparent; }
-/* A finger's targets: every control in the bar takes the 44px target the
-   pointer rule asks for. */
+/* A finger's targets: the bar's buttons take both axes here, and the feedback
+   row's mic and send take theirs from the shared `.micb`/`.sendb` rule. */
 @media (pointer: coarse) {
   .tb-btn { min-height: 44px; min-width: 44px; padding: 4px 9px; }
 }
@@ -1588,8 +1601,24 @@ details.sfold div.wk:hover { background: none; }
 /* A window the snapshot did not carry: the placeholder is not a reading, so
    it takes the dim the figures' own placeholders wear. */
 .bar .pc.none { color: var(--dim); }
-.bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px;
-  text-align: right; }
+/* One window on the footer: the bar line, and its reset under it. The reset
+   needs its own line at this width - label, bar, percent, mark and
+   `resets Tue 09:00` do not fit on one and leave a bar worth reading. Scoped
+   to the footer: `.win` is also the decision panel's winning row. */
+.rfoot .win { padding: 3px 0; }
+.rfoot .win .bar { padding: 0; }
+/* The spent window says so in words: colour alone is not a carrier of state,
+   so the amber word sits beside a percent a reader can see in greyscale. The
+   slot is always drawn so the percents line up row to row; 60px is the floor
+   at the default mono, and it shrinks to an ellipsis under a wider face. */
+.bar .lim { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
+  flex: 0 1 60px; width: 60px; min-width: 0; overflow: hidden; white-space: nowrap;
+  text-overflow: ellipsis; }
+.rfoot .win .eta { display: block; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); text-align: right; white-space: nowrap; }
+/* The chip's own state word, beside the account name: the dot's colour alone
+   cannot say a rate-limited account is rate-limited. */
+.rfoot .who .st { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
 
 /* ---------- narrow: a phone is a client too ---------- */
 
@@ -3135,17 +3164,16 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   flex-wrap: wrap; }
 .dock .qrow .notes { flex: 1; min-width: 0; width: auto; caret-color: var(--hot); }
 .dock .qrow:focus-within .n { color: var(--hot); }
-.dock .qrow .micb { flex: none; margin-left: auto; width: 26px; height: 26px; border-radius: 8px;
+/* Bare, because the takeover bar's feedback line draws the same mic and send. */
+.micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid var(--line); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
-.dock .qrow .micb:hover { color: var(--accent); border-color: var(--ctl); }
-/* The dock's take card rides the same rule as the composer's line above: one
-   look for one thing - the question's row and the draft's row draw the take
-   the same way (Ved, 2026-10-11). */
-.dock .qrow .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+.micb:hover { color: var(--accent); border-color: var(--ctl); }
+.dock .qrow .micb { margin-left: auto; }
+.sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
-.dock .qrow .sendb:hover { border-color: var(--accent); color: var(--hot); }
+.sendb:hover { border-color: var(--accent); color: var(--hot); }
 .dock .qrow.on .micb { border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
@@ -3157,27 +3185,34 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .blip .dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
   background: var(--accent); animation: pulse 1.05s ease-in-out infinite; }
 .dock .blip .dot.tr { background: var(--blue); animation: none; }
-/* The actions and the mic keep a finger's target under a coarse pointer: the
-   sheet's own button rule gives the height, and the mic is narrower than the
-   floor, so its width is stated here. */
+/* The actions, the mic and the send keep a finger's target under a coarse
+   pointer: the sheet's own button rule gives the height, and the two glyphs
+   are narrower than the floor, so their widths are stated here. */
 @media (pointer: coarse) {
   .dock .btn { min-height: 44px; }
   /* The fold control is a glyph: its box is ~19px wide without this floor. */
   .dock .chevb { min-width: 44px; }
-  .dock .qrow .micb { min-height: 44px; min-width: 44px; }
-  .dock .qrow .sendb { min-height: 44px; min-width: 44px; }
+  .micb { min-height: 44px; min-width: 44px; }
+  .sendb { min-height: 44px; min-width: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
-/* The marked option's own prose: markdown on the wire, rendered as markdown
-   rather than shown as its source. Flush with the dock's own left edge - it is
-   a panel belonging to the prompt, not a caption hanging off the option - and
-   the renderer's own `.prose` rules set the type inside. */
+/* The preview's own prose: markdown on the wire, rendered as markdown rather
+   than shown as its source. Flush with the dock's own left edge - it is a
+   panel belonging to the prompt, not a caption hanging off the option - and
+   the renderer's own `.prose` rules set the type inside.
+
+   **A preview is a DOCUMENT**, so it is bounded and scrolls in place:
+   unbound, forty lines of issue body - or a long Slack post held for
+   approval - grew the composer lane past the window, and `.session-page`
+   clips its grid. The bound leaves the option list and the key line their
+   room. */
 .dock .preview { border: 1px solid var(--line); border-radius: 9px;
-  padding: 7px 11px; font-size: var(--fs-data); color: var(--muted); }
+  padding: 7px 11px; font-size: var(--fs-data); color: var(--muted);
+  max-height: min(34vh, 320px); overflow-y: auto; }
 /* The escape hatch is the row's own box, so the field carries no chrome of
    its own: no border, no second panel, no indent - the caret sits in the row
    under its own words, and what is typed there is the answer. */

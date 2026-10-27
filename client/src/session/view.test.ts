@@ -9,7 +9,7 @@ import { PROTOCOL_VERSION } from '../protocol';
 import { rankOf } from '../home/view';
 import { repoPath } from '../repo';
 import type { BoardWire, ProjectBoardWire } from '../wire/board';
-import type { AgentRow, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
+import type { AgentRow, ChipState, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { applyUpdate } from './apply';
 import {
@@ -1301,7 +1301,7 @@ describe('the monitors the strip draws', () => {
 /** The fixture's home with a chipped account and a usage snapshot behind it. */
 const withPool = (snapshot: unknown): HomeWire =>
   withHome({
-    projects: [{ ...project(), chip: { account_name: 'Acct', state: 'ready' } }],
+    projects: [{ ...project(), chip: { account_name: 'Acct', state: 'normal' } }],
     accounts: {
       ...homeWire.accounts,
       loading: [
@@ -1318,6 +1318,46 @@ const withPool = (snapshot: unknown): HomeWire =>
       usage: [{ display_name: 'Acct', snapshot }],
     },
   });
+
+/** The fixture's home with `Acct` chipped in `state` and one usage snapshot. */
+const withAccount = (state: ChipState, snapshot: unknown, cooling = false): HomeWire =>
+  withHome({
+    projects: [{ ...project(), chip: { account_name: 'Acct', state } }],
+    accounts: {
+      ...homeWire.accounts,
+      loading: [
+        {
+          display_name: 'Acct',
+          state: 'ready',
+          last_error: null,
+          retry_after: null,
+          auth: 'token',
+          at_cap: false,
+          cooling,
+        },
+      ],
+      usage: [{ display_name: 'Acct', snapshot }],
+    },
+  });
+
+/**
+ * An instant built in the reader's own zone, so the clock a window draws is
+ * the same assertion on any machine rather than one timezone's digits.
+ */
+function localInstant(
+  hours: number,
+  minutes: number,
+  daysAhead = 0,
+): {
+  secs_since_epoch: number;
+  nanos_since_epoch: number;
+} {
+  const at = new Date(2026, 9, 26 + daysAhead, hours, minutes, 0, 0);
+  return { secs_since_epoch: Math.floor(at.getTime() / 1000), nanos_since_epoch: 0 };
+}
+
+/** 2026-10-26 08:00, the reader's own clock for the reset labels below. */
+const FOOTER_NOW = new Date(2026, 9, 26, 8, 0, 0, 0).getTime();
 
 describe('the rail footer', () => {
   /**
@@ -1427,7 +1467,29 @@ describe('the rail footer', () => {
    * the dot beside it and nothing else: the chip's billing word is gone. */
   it('names the account and carries no billing word', () => {
     const footer = railFooter(withPool(null), LEAD);
-    expect(footer.account).toEqual({ name: 'Acct', tone: 'ok' });
+    expect(footer.account).toEqual({ name: 'Acct', tone: 'ok', state: null });
+  });
+
+  /**
+   * **The chip's own state drives the dot and the word.** A cooling account's
+   * loading row is still `ready`, so the pool's state drew a green dot beside
+   * a spent window; the chip is what says it is rate-limited.
+   */
+  it('draws the rate-limited state the chip names, not the loading row', () => {
+    const footer = railFooter(
+      withAccount(
+        'rate_limited',
+        {
+          source: 'Oauth',
+          five_hour: { utilization: 100, status: 'rejected', resets_at: localInstant(23, 10) },
+        },
+        true,
+      ),
+      LEAD,
+      null,
+      FOOTER_NOW,
+    );
+    expect(footer.account).toEqual({ name: 'Acct', tone: 'wait', state: 'rate limited' });
   });
 
   /** A project whose chip has not resolved still names the account it
@@ -1438,6 +1500,7 @@ describe('the rail footer', () => {
     expect(footer.account, 'a project chipping no account drew no account').toEqual({
       name: 'Acct',
       tone: 'wait',
+      state: null,
     });
     expect(footer.figures).toEqual([{ label: 'usage', value: 'not reported', dim: true }]);
     expect(footer.windows, 'a billing kind nobody resolved drew plan windows').toEqual([]);
@@ -1450,6 +1513,111 @@ describe('the rail footer', () => {
       ['7d', '-', true],
     ]);
   });
+
+  /**
+   * **A rate-limited account still states its windows.** This is the row
+   * that read `usage / not reported` while the account was cooling: the
+   * chip resolves, and each window carries its percent, the provider's mark
+   * on the spent one, and the reset in the reader's own clock.
+   */
+  it('states both windows and their resets for a rate-limited account', () => {
+    const footer = railFooter(
+      withAccount(
+        'rate_limited',
+        {
+          source: 'Oauth',
+          five_hour: { utilization: 100, status: 'rejected', resets_at: localInstant(23, 10) },
+          seven_day: { utilization: 42, status: 'allowed', resets_at: localInstant(9, 0, 3) },
+        },
+        true,
+      ),
+      LEAD,
+      null,
+      FOOTER_NOW,
+    );
+    expect(footer.figures, 'a rate-limited window account drew the not-reported row').toEqual([]);
+    expect(footer.windows.map((window) => [window.label, window.text, window.atLimit])).toEqual([
+      ['5h', '100%', true],
+      ['7d', '42%', false],
+    ]);
+    expect(footer.windows.map((window) => window.reset)).toEqual([
+      'resets 23:10',
+      'resets Thu 09:00',
+    ]);
+  });
+
+  /**
+   * A window the provider itself rejects is spent even below 100% - a
+   * request-count limit rather than a token one - so the mark follows the
+   * status, not the percentage alone.
+   */
+  it('marks a window the provider rejects below its cap', () => {
+    const footer = railFooter(
+      withAccount('rate_limited', {
+        source: 'Oauth',
+        five_hour: { utilization: 80, status: 'rejected' },
+      }),
+      LEAD,
+      null,
+      FOOTER_NOW,
+    );
+    expect(footer.windows[0]?.atLimit, 'a rejected window under 100% read as clear').toBe(true);
+  });
+
+  /** A window with no reading keeps its dash and claims no mark. */
+  it('marks nothing on a window nobody has reported', () => {
+    const footer = railFooter(withPool({ source: 'Oauth', five_hour: { utilization: 68 } }), LEAD);
+    expect(footer.windows.map((window) => window.atLimit)).toEqual([false, false]);
+  });
+
+  /**
+   * A 100% window whose reset the clock has passed has rolled: the cached
+   * reading is stale, so the row claims no mark and prints no past time.
+   */
+  it('marks nothing once the window has rolled, and prints no past reset', () => {
+    const footer = railFooter(
+      withAccount('normal', {
+        source: 'Oauth',
+        five_hour: { utilization: 100, resets_at: localInstant(7, 0) },
+      }),
+      LEAD,
+      null,
+      FOOTER_NOW,
+    );
+    expect(footer.windows[0]?.atLimit, 'a rolled window read as spent').toBe(false);
+    expect(footer.windows[0]?.reset, 'a rolled window printed its past reset').toBe('');
+  });
+
+  /**
+   * **A rejected window is spent only until its stated reset passes.** A
+   * cached 429 reading that outlived its reset must stop drawing the mark.
+   */
+  it('stops marking a rejected window once its stated reset has passed', () => {
+    const footer = railFooter(
+      withAccount('normal', {
+        source: 'Oauth',
+        five_hour: { utilization: 80, status: 'rejected', resets_at: localInstant(7, 0) },
+      }),
+      LEAD,
+      null,
+      FOOTER_NOW,
+    );
+    expect(footer.windows[0]?.atLimit, 'a rolled rejected window read as spent').toBe(false);
+  });
+
+  /**
+   * A 100% window with no stated reset is not a proven cap: the walk's own
+   * `is_currently_limited` needs a reset ahead, so the row claims no mark.
+   */
+  it('marks no cap that states no reset', () => {
+    const footer = railFooter(
+      withAccount('normal', { source: 'Oauth', five_hour: { utilization: 100 } }),
+      LEAD,
+      null,
+      FOOTER_NOW,
+    );
+    expect(footer.windows[0]?.atLimit, 'a cap with no stated reset read as spent').toBe(false);
+  });
 });
 
 describe('the account chip', () => {
@@ -1459,7 +1627,7 @@ describe('the account chip', () => {
   });
 
   it('reads the pool own words for the account the project would bind to', () => {
-    const home = withProject({ chip: { account_name: 'Acct', state: 'loading' } });
+    const home = withProject({ chip: { account_name: 'Acct', state: 'normal' } });
     const view = accountChip(home, LEAD);
     expect(view?.name).toBe('Acct');
     expect(view?.tone, 'a pool that has not settled does not read as ready').toBe('wait');
@@ -1472,7 +1640,7 @@ describe('the account chip', () => {
    * has to be readable in, and a label that echoed the bar would hide it.
    */
   it('states the figure a past-cap window reports rather than the bar width', () => {
-    const home = withProject({ chip: { account_name: 'Acct', state: 'ready' } });
+    const home = withProject({ chip: { account_name: 'Acct', state: 'normal' } });
     const over = {
       ...home,
       accounts: {
@@ -1480,7 +1648,9 @@ describe('the account chip', () => {
         usage: [
           {
             display_name: 'Acct',
-            snapshot: { five_hour: { utilization: 101, reset_description: 'in 2h' } },
+            snapshot: {
+              five_hour: { utilization: 101, status: 'rejected', reset_description: 'in 2h' },
+            },
           },
         ],
       },
@@ -1490,6 +1660,7 @@ describe('the account chip', () => {
       percent: 100,
       text: '101%',
       reset: 'in 2h',
+      atLimit: true,
     });
   });
 
@@ -1499,7 +1670,7 @@ describe('the account chip', () => {
    * neither draws no rows rather than zeroes.
    */
   it('draws the spend and the balance the poller reported, and neither when it did not', () => {
-    const home = withProject({ chip: { account_name: 'Acct', state: 'ready' } });
+    const home = withProject({ chip: { account_name: 'Acct', state: 'normal' } });
     const billed = {
       ...home,
       accounts: {

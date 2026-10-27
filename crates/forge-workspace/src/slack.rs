@@ -64,21 +64,14 @@ impl SlackWorkspaces {
     /// Labels address workspaces in the MCP tools and the Inspector, so
     /// they must be distinct and the token must be present.
     pub fn from_config(configs: &[SlackConfig], http: &reqwest::Client) -> Result<Self, String> {
-        let mut clients: BTreeMap<String, Arc<dyn SlackApi>> = BTreeMap::new();
-        for config in configs {
-            let label = config.workspace.trim();
-            if label.is_empty() {
-                return Err("a [[slack]] entry has an empty workspace label".to_owned());
-            }
-            if config.token.trim().is_empty() {
-                return Err(format!("slack workspace '{label}' has an empty token"));
-            }
-            if clients.contains_key(label) {
-                return Err(format!("two [[slack]] entries share the label '{label}'"));
-            }
-            let client = Arc::new(SlackClient::new(http.clone(), config.token.clone()));
-            clients.insert(label.to_owned(), client);
-        }
+        validate_configs(configs)?;
+        let clients: BTreeMap<String, Arc<dyn SlackApi>> = configs
+            .iter()
+            .map(|config| {
+                let client = Arc::new(SlackClient::new(http.clone(), config.token.clone()));
+                (config.workspace.trim().to_owned(), client as Arc<dyn SlackApi>)
+            })
+            .collect();
         Ok(Self { clients })
     }
 
@@ -112,6 +105,26 @@ impl SlackWorkspaces {
         }
         out
     }
+}
+
+/// The semantic checks a `[[slack]]` list must pass. Shared by the boot's
+/// client build and the config loader, so a reload refuses what a restart
+/// refuses.
+pub(crate) fn validate_configs(configs: &[SlackConfig]) -> Result<(), String> {
+    let mut labels: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for config in configs {
+        let label = config.workspace.trim();
+        if label.is_empty() {
+            return Err("a [[slack]] entry has an empty workspace label".to_owned());
+        }
+        if config.token.trim().is_empty() {
+            return Err(format!("slack workspace '{label}' has an empty token"));
+        }
+        if !labels.insert(label) {
+            return Err(format!("two [[slack]] entries share the label '{label}'"));
+        }
+    }
+    Ok(())
 }
 
 /// The distinct projects a set of subscriptions belongs to, in the order the
@@ -506,7 +519,7 @@ impl Workspace {
     /// `[[slack]]` entry: the followed set is per workspace, so its window
     /// is too. A workspace whose entry is gone keeps the default.
     fn slack_thread_idle_days(&self, workspace: &str) -> u64 {
-        self.config
+        self.config_arc()
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -517,7 +530,7 @@ impl Workspace {
     /// `[[slack]]` entry. A workspace whose entry is gone keeps the default.
     pub(crate) fn slack_stale_after(&self, workspace: &str) -> Duration {
         let hours = self
-            .config
+            .config_arc()
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -1078,8 +1091,9 @@ impl Workspace {
             guard.insert(label.clone(), shutdown_tx);
             drop(guard);
 
+            let config = self.config_arc();
             let entry =
-                self.config.slack.iter().find(|config| config.workspace.trim() == label.as_str());
+                config.slack.iter().find(|config| config.workspace.trim() == label.as_str());
             let poll_seconds = entry.map_or(DEFAULT_POLL_SECONDS, |config| config.poll_seconds);
             // Clamped because the two clocks share one token's allowance: a
             // value below the floor is the overrun the key exists to prevent.
@@ -1144,8 +1158,8 @@ impl SlackSubsystemHost {
 impl SlackHost for SlackSubsystemHost {
     fn client(&self, workspace: &str, timeout: Duration) -> Result<Arc<dyn SlackApi>, String> {
         let ws = self.0.upgrade().ok_or("the workspace is gone")?;
-        let config = ws
-            .config
+        let config = ws.config_arc();
+        let entry = config
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -1154,7 +1168,7 @@ impl SlackHost for SlackSubsystemHost {
             forge_agent::http_trust::with_extra_roots(reqwest::Client::builder().timeout(timeout))
                 .build()
                 .map_err(|error| error.to_string())?;
-        Ok(Arc::new(SlackClient::new(http, config.token.clone())))
+        Ok(Arc::new(SlackClient::new(http, entry.token.clone())))
     }
 
     fn user_id(&self, workspace: &str) -> Option<String> {
@@ -1985,7 +1999,7 @@ mod tests {
         // Everything at or below this is old news, so the sweep's news is
         // exactly what is posted below.
         let watermark = user
-            .history(&conversation_id, None, 1, None)
+            .history(&conversation_id, None, None, 1, None)
             .await
             .expect("the user reads the channel")
             .messages

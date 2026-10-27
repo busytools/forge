@@ -65,7 +65,10 @@ for. Never promote a `diag-*` file.
 
 `tests/sdk_capture_hygiene.rs` asserts every committed capture is a
 fixed point of `session_redact::WireRedactor` - redacting it again
-changes nothing. Two ways to satisfy it:
+changes nothing - and that every user frame carries only top-level keys
+from `WIRE_USER_FRAME_KEYS`, the allowlist read from the pinned binary's
+own emitters for one and from the transform for `is_virtual`. Three ways
+to satisfy it:
 
 - **Baselines** are redacted on the way out of `TraceLog::to_jsonl`, so
   a `capture-*` file promoted per the step above is already clean.
@@ -79,6 +82,10 @@ changes nothing. Two ways to satisfy it:
   cargo run -p forge-test-harness --example sdk_reredact_capture -- \
     .claude/skills/claude-cli-upgrade/reference-captures
   ```
+- **A capture that legitimately gains a wire key** needs an edit to
+  `WIRE_USER_FRAME_KEYS` in the test. It is an allowlist read from the
+  pinned binary's own emitters for a user frame, so a key outside it
+  fails the gate by name rather than passing quietly.
 
 The same command brings an existing capture up to a redaction rule added
 after it was captured, which is the case the gate cannot fix for you: it
@@ -86,7 +93,9 @@ reports disagreement between corpus and rules without saying which side
 is stale. Pass `--check` to see what would change without writing.
 
 A fixed-point gate can only ever check that a capture agrees with the
-rules in `session_redact`, so its reach is exactly theirs. Read that
+rules in `session_redact`, so its reach is exactly theirs; the key
+allowlist is the other half, bounded from outside by the wire's own key
+set, which is why it can refuse a name the rules never knew. Read that
 module's own account of what its spelling rules do not cover before
 committing a fresh capture, and prefer a rule that replaces a whole
 field over one that recognises a spelling.

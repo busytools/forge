@@ -496,7 +496,7 @@
       // core reads as the session carrying on without the browser. Without
       // this arm the parked call - which has no timeout - waits forever on a
       // key the dock's own row advertises.
-      handOff(false);
+      handOff('not_now', 'dock_escape');
       return;
     }
     if (ask.kind === 'document_hand_off') {
@@ -616,12 +616,17 @@
    *  **Answering also lowers the takeover**: Open covers the chat, Done or
    *  Not now gives it back, and the browser keeps running with its page and
    *  tabs intact (Ved, 2026-10-07: "I said done, but the browser is still
-   *  open" - he stops seeing it, and the next call drives it). */
-  function handOff(done: boolean): void {
+   *  open" - he stops seeing it, and the next call drives it).
+   *
+   *  **The source rides the answer** so the core's log names the door the
+   *  ending came through, not just its meaning. */
+  function handOff(ending: 'done' | 'not_now', source: 'dock' | 'dock_escape'): void {
     if (answered || ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
     onanswer(id);
-    answer({ respond_browser_hand_off: { key: slot, id, done } });
+    answer({
+      respond_browser_hand_off: { key: slot, id, answer: { ending: { type: ending }, source } },
+    });
     // The lower names no profile: the shell lowers the attach this page
     // actually holds, which is the one the hand-off's Open raised.
     void closeSurface(null, slot);
@@ -707,6 +712,17 @@
   const inField = (event: KeyboardEvent): boolean =>
     event.target instanceof HTMLElement && event.target.closest('[data-editor="dock"]') !== null;
 
+  /**
+   * Whether a key landed in a preview panel, which is a scroller before it is
+   * anything else. By its own mark rather than its class, for the reason
+   * `inField` gives.
+   */
+  const inPreview = (event: KeyboardEvent): boolean =>
+    event.target instanceof HTMLElement && event.target.closest('[data-preview]') !== null;
+
+  /** The keys a scroller answers itself, which are the only ones the dock yields. */
+  const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+
   /** The keys a dock answers to, which are the ones that can do what they say. */
   function onkey(event: KeyboardEvent): void {
     // **A button answers its own keys.** The row model's Enter and Space are
@@ -717,6 +733,12 @@
     if (event.target instanceof HTMLButtonElement && (event.key === 'Enter' || event.key === ' ')) {
       return;
     }
+    // The preview owns the keys that scroll it and nothing else: a character
+    // typed there still starts the reader's own answer, and Enter still submits.
+    // The tab stop is unconditional, so these keys leave the dock even over a
+    // preview too short to scroll; a conditional one would need a live overflow
+    // read, and jsdom cannot measure one to test it.
+    if (inPreview(event) && SCROLL_KEYS.has(event.key)) return;
     if (event.key === 'Escape' && take !== null) {
       // A live take owns the first Escape: it is abandoned and the dock stands,
       // which is the same rule the view this client replaced applied to the
@@ -890,6 +912,20 @@
     </div>
   {/snippet}
 
+  <!-- **A preview is a document, so it is one region.** Both the marked
+       option's prose and a held Slack post are markdown the reader is being
+       asked to approve, and both are the same panel as a result: the sheet
+       bounds it and gives it its own scroll, and this is the one place that
+       panel is drawn. **A tab stop, because it is a document**: the keys that
+       read the rest of it have to reach it. It is not a widget, so it takes
+       no widget role for being focusable. -->
+  {#snippet previewRegion(label: string, text: string)}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div class="preview" tabindex="0" role="region" aria-label={label} data-preview>
+      <Prose {text} />
+    </div>
+  {/snippet}
+
   {#if collapsed}
     <!-- The bar: the question and the count behind it, and that is all - a
          click (or Enter/Space on it) unfolds the body so the reader can see
@@ -1000,7 +1036,7 @@
          markdown renderer and the same panel: Slack text IS markdown, the
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
-      <div class="preview"><Prose text={ask.request.text} /></div>
+      {@render previewRegion('the post held for approval', ask.request.text)}
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1024,7 +1060,7 @@
       <div class="d-q">{ask.request.reason}</div>
       <div class="desc">
         {raiseFailed ??
-          'Open browser shows the page the session prepared, exactly as it stands. The session waits, with no timeout, until Done or Not now.'}
+          'Open browser shows the page the session prepared, exactly as it stands. The session waits, with no timeout, for your answer.'}
       </div>
     {/if}
 
@@ -1101,7 +1137,7 @@
            rendered as markdown rather than shown as its source - the same
            renderer the conversation's prose uses, which escapes what it is
            handed. -->
-        <div class="preview"><Prose text={markedRow.preview} /></div>
+        {@render previewRegion("the marked option's preview", markedRow.preview)}
       {/if}
     {/if}
 
@@ -1140,8 +1176,8 @@
                Done and Not now before the takeover; inside it the bar adds
                the feedback line and back to chat. -->
           <button class="btn p" onclick={open}>Open browser</button>
-          <button class="btn" onclick={() => handOff(true)}>Done</button>
-          <button class="btn d" onclick={() => handOff(false)}>Not now</button>
+          <button class="btn" onclick={() => handOff('done', 'dock')}>Done</button>
+          <button class="btn d" onclick={() => handOff('not_now', 'dock')}>Not now</button>
         {/if}
       </div>
     {/if}
@@ -1170,6 +1206,16 @@
             <span><kbd>&darr;</kbd> past the last option: your own words</span>
             <span><kbd>Enter</kbd> {submitLabel}</span>
           {/if}
+        {:else if ask.kind === 'slack_draft'}
+          <!-- **The order is the order that works.** A held post arrives with
+             the keyboard on the dock root, where the arrows are the dock's own
+             and move nothing; they scroll only once the keyboard is in the
+             region, so the Tab leads. -->
+          <span
+            ><kbd>Tab</kbd> into the post, then <kbd>&uarr;</kbd><kbd>&darr;</kbd> scroll it</span
+          >
+          <span><kbd>Tab</kbd> again for Post and Don't send</span>
+          <span><kbd>Enter</kbd> activates</span>
         {:else}
           <span><kbd>Tab</kbd> between the actions</span>
           <span><kbd>Enter</kbd> activates</span>

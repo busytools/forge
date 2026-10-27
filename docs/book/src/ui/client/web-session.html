@@ -230,6 +230,8 @@
   .rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
   .rfoot .who { display: flex; align-items: center; gap: 8px; padding: 0 1px 4px; }
   .rfoot .led { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--ok); }
+  .rfoot .led.wait { background: var(--warn); }
+  .rfoot .led.bad { background: var(--bad); }
   .rfoot .an { color: var(--text); font-size: var(--fs-base); }
   .rfoot .frs { display: flex; flex-direction: column; gap: 1px; }
   .rfoot .fr { display: flex; font-family: var(--mono); font-size: var(--fs-data); }
@@ -469,7 +471,14 @@
      scoped to the track because `.fl` names a file in a chat search hit too. */
   .tk > .fl { display: block; height: 100%; background: var(--accent); }
   .bar .pc { font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); width: 34px; text-align: right; }
-  .bar .eta { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); width: 60px; text-align: right; }
+  .rfoot .win { padding: 3px 0; }
+  .rfoot .win .bar { padding: 0; }
+  .bar .lim { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn);
+    flex: 0 1 60px; width: 60px; min-width: 0; overflow: hidden; white-space: nowrap;
+    text-overflow: ellipsis; }
+  .rfoot .win .eta { display: block; font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); text-align: right; white-space: nowrap; }
+  .rfoot .who .st { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
 
   /* The conversation leads tighter than the rest of the page. `body`'s 1.5 is a
      book page; a terminal draws one row per line at 1.231em of its own text
@@ -1227,9 +1236,12 @@
   .mopt .tx { flex: 1; min-width: 0; }
   .mopt .why { display: block; color: var(--dim); font-size: var(--fs-label); }
   /* An option's own preview, and a held Slack draft: one panel, the marked
-     option's prose or the post itself, markdown on the wire. */
+     option's prose or the post itself, markdown on the wire. Both are bounded
+     and scroll in place, as the client's own rule does, so a long post draws
+     without growing the composer lane past the window. */
   .mpreview { border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px;
-    font-size: var(--fs-data); color: var(--muted); }
+    font-size: var(--fs-data); color: var(--muted);
+    max-height: min(34vh, 320px); overflow-y: auto; }
   .mpreview p { margin: 0; }
   .mdhead .qm { color: var(--accent); font-weight: 700; display: flex; align-items: center; }
   .mopt .ic { color: var(--dim); }
@@ -1681,18 +1693,33 @@
 
     <!-- The rail's own footer: the account, what it is costing and the two
          builds. Below the list, so the projects scroll behind it. Drawn here
-         for a spend-billed key; a window-billed account draws its 5h/7d bars
-         in the same block with `-` for a window it has no reading for, and an
-         account whose billing kind nothing has resolved reads `usage not
-         reported` rather than a guessed window shape. -->
+         for a window-billed account: the two plan windows, the spent one
+         marked in words as well as colour, each one's own reset, and `-` for
+         a window it has no reading for. A spend-billed key draws its five
+         money rows in the same block, and an account whose billing kind
+         nothing has resolved reads `usage not reported` rather than a guessed
+         window shape. -->
     <div class="rfoot">
-      <div class="who"><span class="led"></span><span class="an">OpenRouter</span></div>
+      <div class="who"><span class="led wait"></span><span class="an">Subspace</span><span class="st">rate limited</span></div>
       <div class="frs">
-        <div class="fr"><span class="k">day</span><span class="v">$69.43</span></div>
-        <div class="fr"><span class="k">week</span><span class="v">$584.42</span></div>
-        <div class="fr"><span class="k">month</span><span class="v">$69.43</span></div>
-        <div class="fr"><span class="k">balance</span><span class="v">$202.29</span></div>
-        <div class="fr"><span class="k">cap</span><span class="v none">not set</span></div>
+        <div class="win">
+          <div class="bar">
+            <span class="lb">5h</span>
+            <span class="tk"><span class="fl" style="width:100%"></span></span>
+            <span class="pc">100%</span>
+            <span class="lim">at limit</span>
+          </div>
+          <span class="eta">resets 23:10</span>
+        </div>
+        <div class="win">
+          <div class="bar">
+            <span class="lb">7d</span>
+            <span class="tk"><span class="fl" style="width:42%"></span></span>
+            <span class="pc">42%</span>
+            <span class="lim"></span>
+          </div>
+          <span class="eta">resets Tue 09:00</span>
+        </div>
       </div>
       <div class="vers">
         <!-- The socket protocol the client and server must agree on, shown
@@ -3269,7 +3296,7 @@ branch main, nothing to commit</div>
                from the CLI, one answer at a time, and a Slack post held for
                approval. Each says what it is, and the words row is the one row
                that takes text. -->
-          <div class="annot"><span class="dim">a question &#183; its own words, the batch as marks, numbered rows, and the words row the mic lives on</span></div>
+          <div class="annot"><span class="dim">a question &#183; its own words, the batch as marks, numbered rows, the marked option's preview scrolling in place, and the words row the mic lives on</span></div>
           <div class="mdock">
             <div class="mdhead"><svg class="ic qm"><use href="#i-question"/></svg>
               <span class="md-q">Pick the environments to deploy to.</span>
@@ -3300,12 +3327,16 @@ branch main, nothing to commit</div>
               <span><span class="mk">esc</span> reject</span></div>
           </div>
 
-          <div class="annot"><span class="dim">a held Slack post &#183; the destination is a chip and the body is the card; no mic, because the text is approved rather than composed</span></div>
+          <div class="annot"><span class="dim">a held Slack post &#183; the destination is a chip and the body is the card, scrolling in place when the post runs long; no mic, because the text is approved rather than composed</span></div>
           <div class="mdock">
             <div class="mdhead"><span class="mdest">Trust Machines &#183; #granite-staging-alerts</span>
               <span class="q trail">Post to Slack</span></div>
             <div class="mpreview">The staging deploy is green. Rolling to production once the 14:30 window closes.</div>
             <div class="macts"><span class="mbtn p">Post</span><span class="mbtn d">Don't send</span></div>
+            <div class="mkeys"><span><span class="mk">tab</span> into the post, then <span class="mk">&#8593;&#8595;</span> scroll it</span>
+              <span><span class="mk">tab</span> again for Post and Don't send</span>
+              <span><span class="mk">&#9166;</span> activates</span>
+              <span><span class="mk">esc</span> reject</span></div>
           </div>
         </div>
       </div>

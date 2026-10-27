@@ -167,7 +167,6 @@
     "BrowserResize": "browser_resize",
     "BrowserTabs": "browser_tabs",
     "BrowserView": "browser_view",
-    "ClientPerf": "client_perf",
     "Command": "command",
     "CommitDiff": "commit_diff",
     "DocumentRead": "document_read",
@@ -199,6 +198,35 @@
         "tab"
       ],
       "/update/browser_hand_off_pending/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "BrowserHandOffResolved": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "browser_hand_off_resolved"
+      ],
+      "/update/browser_hand_off_resolved": [
+        "answer",
+        "id",
+        "key"
+      ],
+      "/update/browser_hand_off_resolved/answer": [
+        "client",
+        "ending",
+        "source"
+      ],
+      "/update/browser_hand_off_resolved/answer/ending": [
+        "type"
+      ],
+      "/update/browser_hand_off_resolved/key": [
         "label",
         "org",
         "project"
@@ -1059,17 +1087,6 @@
         "label",
         "org",
         "project"
-      ]
-    },
-    "ClientPerf": {
-      "": [
-        "kind",
-        "records"
-      ],
-      "/records[]": [
-        "kind",
-        "schema",
-        "ts_ms"
       ]
     },
     "DocumentRead": {

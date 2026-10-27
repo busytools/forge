@@ -493,7 +493,7 @@
       if (id === null || id !== held.shownHandOff) return;
       // The reader's own answer: the ending would only repeat the click.
       if (held.answered === id) return;
-      held.ended = handOffEndingLine(payload['ending']);
+      held.ended = handOffEndingLine(payload['answer']);
       // **A takeover another view's answer leaves raised comes down here.**
       // The local Done lowers its own; an answer from another view never
       // touches this shell. Through the store, so the page's phase follows
@@ -1099,13 +1099,23 @@
         : 'browser hand-off',
   );
 
-  /** Done or Not now: the hand-off's answer, and the takeover comes down. */
-  function takeoverAnswer(done: boolean): void {
+  /** Done, Not now or feedback: the hand-off's answer, and the takeover comes down. */
+  function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): void {
     if (takeoverAsk === null) return;
     const id = takeoverAsk.request.id;
     remember(id);
+    const source = ending === 'feedback' ? 'feedback' : 'takeover';
     try {
-      void connection.dispatch({ respond_browser_hand_off: { key: slot, id, done } }, slot);
+      void connection.dispatch(
+        {
+          respond_browser_hand_off: {
+            key: slot,
+            id,
+            answer: { ending: { type: ending }, source },
+          },
+        },
+        slot,
+      );
     } catch (error) {
       report('the answer was not sent', error);
     }
@@ -1114,9 +1124,13 @@
   }
 
   /**
-   * The feedback line's send: the words go as a prompt, then the hand-off is
-   * declined - its answer shape carries only done/not-done, so the prompt is
-   * how the session reads what did not work.
+   * The feedback line's send: the words go to the session as a prompt, and
+   * the hand-off ends as **feedback** rather than as a decline.
+   *
+   * **A person reporting a problem is still working the page**, so the
+   * recorded ending must say they spoke: `not_now` told the session "the
+   * person declined, decide what to do instead" while they were mid-task
+   * (live, 2026-10-26, twice on one CAPTCHA).
    */
   function takeoverFeedback(text: string): void {
     if (takeoverAsk === null) return;
@@ -1127,9 +1141,13 @@
         slot,
       );
     } catch (error) {
+      // **Nothing left, so there is nothing to read.** Answering feedback here
+      // would tell the session to read a message that never went, and the
+      // park would end on words nobody sent; the dock stays live to retry.
       report('the feedback was not sent', error);
+      return;
     }
-    takeoverAnswer(false);
+    takeoverAnswer('feedback');
   }
 
   /** Back to chat answers nothing: the hand-off stays parked for the next Open. */
@@ -1222,8 +1240,8 @@
       onabandon={abandon}
       onmic={() => dictate.toggle()}
       {dictation}
-      ondone={takeoverAsk === null ? null : () => takeoverAnswer(true)}
-      onnotnow={takeoverAsk === null ? null : () => takeoverAnswer(false)}
+      ondone={takeoverAsk === null ? null : () => takeoverAnswer('done')}
+      onnotnow={takeoverAsk === null ? null : () => takeoverAnswer('not_now')}
       onback={takeoverBack}
       onnav={takeoverNav}
       onfeedback={takeoverAsk === null ? null : takeoverFeedback}

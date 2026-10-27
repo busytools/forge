@@ -346,18 +346,66 @@ impl Driver {
         if result.is_error == Some(true) {
             // Upstream reports a failed call as an error result whose content
             // is the reason; the answer's failure arm carries the words.
-            let reason = parts
-                .iter()
-                .map(|part| match part {
-                    BrowserPart::Text { text } => text.clone(),
-                    BrowserPart::Image { .. } => "[an image]".to_owned(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Err(if reason.is_empty() { format!("{tool} failed") } else { reason });
+            return Err(failure_reason(&parts).unwrap_or_else(|| format!("{tool} failed")));
         }
         Ok(parts)
     }
+}
+
+/// A failed call's own words, with upstream's terse stale-ref sentence
+/// replaced by one that says what happened and what to do about it.
+fn failure_reason(parts: &[BrowserPart]) -> Option<String> {
+    let reason = parts
+        .iter()
+        .map(|part| match part {
+            BrowserPart::Text { text } => text.clone(),
+            BrowserPart::Image { .. } => "[an image]".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if reason.is_empty() {
+        return None;
+    }
+    Some(stale_ref_recovery(&reason).unwrap_or(reason))
+}
+
+/// Upstream's stale-ref failure, rewritten to name the cause and both ways
+/// out.
+///
+/// **Measured against `@playwright/mcp` 0.0.83 on a React form, 2026-10-27.**
+/// A ref names the element object its snapshot captured, so it survives an
+/// ordinary re-render that keeps that node (eight over 2 s, click still
+/// landed) and stops resolving once a re-render replaces the node (a form
+/// remounting every 250 ms failed on the next tick) or the page navigates.
+/// A full-page snapshot keeps the ref of an element that stayed and carries
+/// the same role and accessible name; a stayed element that is no longer
+/// visible or pointer-interactive gets no ref, one whose role or name changed
+/// gets a new one, and a target-scoped snapshot answers with its subtree
+/// alone, so refs outside it do not resolve until a full-page snapshot. A
+/// unique role/name selector is resolved when the call runs, so it needs no
+/// snapshot, and a name shared by several elements is refused rather than
+/// guessed at.
+fn stale_ref_recovery(why: &str) -> Option<String> {
+    const OPEN: &str = "Ref ";
+    const CLOSE: &str = " not found in the current page snapshot. Try capturing new snapshot.";
+    let open = why.find(OPEN)?;
+    let target_start = open + OPEN.len();
+    let target_end = target_start + why[target_start..].find(CLOSE)?;
+    let target = &why[target_start..target_end];
+    if target.is_empty() || !target.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(why.replace(
+        &why[open..target_end + CLOSE.len()],
+        &format!(
+            "Ref {target} is not in the current page snapshot any more: either the element it \
+             named was replaced or renamed, or the snapshot in hand was taken of a subtree, of \
+             another tab, or after a navigation. While the page still changes between calls, pass \
+             a unique role/name selector such as role=button[name=\"Save\"], scoped when names \
+             repeat, and it is resolved when the call runs. Once it has settled, take a full-page \
+             browser_snapshot (no target) and use its refs."
+        ),
+    ))
 }
 
 /// The sentence a call that ran past its bound reports: one builder, so a
@@ -398,6 +446,21 @@ const DEAD_PAGE: [&str; 2] = [
 /// Whether a failure is the driver's held page outliving its renderer.
 pub fn stale_page(why: &str) -> bool {
     DEAD_PAGE.iter().any(|line| why.contains(line))
+}
+
+/// Whether a failure is one of ours running past its bound: the driver never
+/// answered the MCP request. A tool's own timeout arrives as the tool's
+/// error text and does not match this prefix.
+pub fn timed_out(why: &str) -> bool {
+    why.starts_with("the driver did not answer ")
+}
+
+/// Whether a failure says the driver itself is dead and must be replaced: its
+/// held page outlived its renderer, it never finished attaching, or it
+/// stopped answering at all. **The call that finds any of these replaces it
+/// on that call.**
+pub fn died(why: &str) -> bool {
+    stale_page(why) || timed_out(why) || attach_timed_out(why)
 }
 
 /// Map one MCP result onto the parts the socket carries.
@@ -591,6 +654,34 @@ mod tests {
         );
     }
 
+    /// **A bound of ours is a dead driver; a tool's own timeout is not.** The
+    /// builder is the only place the sentence is written, so this reads it
+    /// rather than matching prose by hand.
+    #[test]
+    fn a_call_bound_that_expired_is_a_dead_driver_and_a_tools_timeout_is_not() {
+        let expired = did_not_answer("browser_tabs", Duration::from_secs(150));
+        assert!(timed_out(&expired), "our own bound expiring is the driver's silence");
+        assert!(died(&expired), "and it makes the driver dead");
+        assert!(
+            !timed_out("### Error\nTimeoutError: page.click: Timeout 30000ms exceeded."),
+            "a tool's own timeout is the tool's, not the driver's",
+        );
+        assert!(
+            !died("### Error\nTimeoutError: page.click: Timeout 30000ms exceeded."),
+            "so it replaces nothing",
+        );
+        assert!(died(&attach_failure_line()), "an attach that never finished is still dead");
+        assert!(
+            died("browserBackend.callTool: Cannot read properties of undefined (reading '_page')"),
+            "and so is a held page outliving its renderer",
+        );
+    }
+
+    /// The measured attach timeout, in whole.
+    fn attach_failure_line() -> String {
+        "### Error\nTimeoutError: async initializeServer: Timeout 30000ms exceeded.".to_owned()
+    }
+
     /// **Both measured dead-page prefixes are recognised**, and a page
     /// script's own TypeError carrying the same reading is not.
     #[test]
@@ -630,6 +721,68 @@ mod tests {
             parts_of(&failed),
             Ok(vec![BrowserPart::Text { text: "no such element".to_owned() }]),
         );
+    }
+
+    /// **A stale-ref failure answers with the condition, the route that fits
+    /// a page still changing before the one that fits a settled page, and the
+    /// ref it names** - and the driver's own envelope around it is left
+    /// alone. Both ref shapes are real: `e26` on a first frame and `f2e26`
+    /// after a main-frame navigation.
+    #[test]
+    fn a_stale_ref_failure_names_the_cause_and_both_ways_out() {
+        for target in ["e26", "f2e26"] {
+            let measured = format!(
+                "### Error\nError: Ref {target} not found in the current page snapshot. \
+                 Try capturing new snapshot."
+            );
+            let rewritten = failure_reason(&[BrowserPart::Text { text: measured }])
+                .expect("the measured stale-ref failure has a reason");
+            assert!(
+                rewritten.starts_with(&format!(
+                    "### Error\nError: Ref {target} is not in the current page snapshot any more"
+                )),
+                "the envelope and the ref survive: {rewritten}",
+            );
+            assert!(
+                rewritten.contains(
+                    "either the element it named was replaced or renamed, or the snapshot in hand \
+                     was taken of a subtree, of another tab, or after a navigation"
+                ),
+                "the condition is named without closing the list of causes: {rewritten}",
+            );
+            let selector = rewritten
+                .find("pass a unique role/name selector")
+                .expect("the still-changing page is answered with a selector");
+            assert!(
+                rewritten.contains("scoped when names repeat"),
+                "a repeated name is scoped rather than guessed at: {rewritten}",
+            );
+            let snapshot = rewritten
+                .find("take a full-page browser_snapshot (no target) and use its refs")
+                .expect("the settled page is answered with a full-page snapshot");
+            assert!(
+                selector < snapshot,
+                "the route for a still-changing page comes first: {rewritten}"
+            );
+            assert!(!rewritten.contains("Try capturing new snapshot"), "{rewritten}");
+        }
+    }
+
+    /// A failure that is not the measured stale-ref sentence is handed back
+    /// verbatim, including one that names a ref in other words.
+    #[test]
+    fn another_failure_is_handed_back_verbatim() {
+        for measured in [
+            "### Error\nTimeoutError: page.click: Timeout 30000ms exceeded.",
+            "### Error\nError: Ref e26 points at a detached element.",
+            "### Error\nError: No such element",
+        ] {
+            assert_eq!(stale_ref_recovery(measured), None, "{measured}");
+            assert_eq!(
+                failure_reason(&[BrowserPart::Text { text: measured.to_owned() }]).as_deref(),
+                Some(measured),
+            );
+        }
     }
 
     /// An image crosses with its mime and its decoded bytes - the shape the
