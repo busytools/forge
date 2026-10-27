@@ -66,16 +66,26 @@ struct DriverCall<'a> {
 
 /// The driver tool a call runs as, and the name a failure reports. **They
 /// differ only for a tool forge composes**, whose caller never called the
-/// evaluate underneath.
-fn driver_call(tool: &str, args: Value) -> DriverCall<'_> {
+/// evaluate or the snippet underneath.
+///
+/// `Err` is the call's own shape fault - a forced click with no target, a
+/// wait carrying both a time and an expression - decided before a profile is
+/// opened or the call lock taken, so the refusal is unconditional.
+fn driver_call(tool: &str, args: Value) -> Result<DriverCall<'_>, String> {
     if tool == "browser_challenge_state" {
-        DriverCall {
+        return Ok(DriverCall {
             tool: "browser_evaluate",
             reported: tool,
             args: json!({ "function": crate::challenge::state_js() }),
-        }
-    } else {
-        DriverCall { tool, reported: tool, args }
+        });
+    }
+    match crate::custom::route(tool, args)? {
+        crate::custom::Routed::Upstream { args } => Ok(DriverCall { tool, reported: tool, args }),
+        crate::custom::Routed::Snippet(code) => Ok(DriverCall {
+            tool: "browser_run_code_unsafe",
+            reported: tool,
+            args: json!({ "code": code }),
+        }),
     }
 }
 
@@ -817,6 +827,13 @@ impl BrowserService {
         // the person's own answer carries.
         let upload =
             if tool == "browser_file_upload" { Some(upload_request(&args)?) } else { None };
+        // **The call's own shape is refused before a browser is opened for
+        // it**: a malformed call is its argument error, never a host boot or
+        // a "the browser is busy" it would not act on. The family's composed
+        // tools are built here too, and the driver's name rides beside the
+        // caller's, because a failure reported as the evaluate or the snippet
+        // underneath would name a tool the session never called.
+        let DriverCall { tool: driver_tool, reported, args } = driver_call(tool, args)?;
         let profile = self.open(seat).await?;
         // **A queued call is a call the session is waiting on.** The wait for
         // the profile's turn is bounded by the driver's own call timeout, and
@@ -915,11 +932,16 @@ impl BrowserService {
         // driver as the evaluate it is; upstream has no tool that answers it.
         // The caller's own name rides beside it, because a failure reported as
         // `browser_evaluate` would name a tool the session never called.
-        let DriverCall { tool, reported, args } = driver_call(tool, args);
         let challenge = reported == "browser_challenge_state";
         let retry_args = args.clone();
         let (tab, outcome) = self
-            .drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port, generation })
+            .drive(
+                &profile,
+                seat,
+                &driver,
+                tab,
+                Drive { tool: driver_tool, args, bound, port, generation },
+            )
             .await;
         // **The agent answered a chooser the driver had not reported yet.**
         // One event is owed to this answer, so it is consumed rather than
@@ -936,7 +958,7 @@ impl BrowserService {
             .after_failure(
                 &profile,
                 Driven { generation, pid, port, tab, bound },
-                Call { tool, reported, args: &retry_args },
+                Call { tool: driver_tool, reported, args: &retry_args },
                 outcome,
             )
             .await;
@@ -952,7 +974,7 @@ impl BrowserService {
                 }
                 Ok(parts)
             }
-            Err(why) => Err(reported_error(why, tool, reported)),
+            Err(why) => Err(reported_error(why, driver_tool, reported)),
         }
     }
 
@@ -4864,8 +4886,9 @@ fn reported_error(why: String, driver_tool: &str, reported: &str) -> String {
 /// A dead page context is rebuilt and the call repeated only here; a click,
 /// a submit or a type is handed back with the rebuild named instead.
 fn repeatable(tool: &str, reported: &str, args: &Value) -> bool {
-    // The challenge probe is a read: repeating it cannot land twice.
-    if reported == "browser_challenge_state" {
+    // The challenge probe and a form read are reads: repeating either cannot
+    // land twice.
+    if matches!(reported, "browser_challenge_state" | "browser_form_state") {
         return true;
     }
     match tool {
@@ -4885,7 +4908,8 @@ fn repeatable(tool: &str, reported: &str, args: &Value) -> bool {
 /// is different - its context died and took the action with it - so
 /// [`repeatable`] is the broader rule there.)
 fn repeatable_after_timeout(tool: &str, reported: &str, _args: &Value) -> bool {
-    reported == "browser_challenge_state" || matches!(tool, "browser_snapshot")
+    matches!(reported, "browser_challenge_state" | "browser_form_state")
+        || matches!(tool, "browser_snapshot")
 }
 
 /// What became of a call whose page context died, as the answer's own words.
@@ -7115,7 +7139,8 @@ mod tests {
     /// session never used, so the two names are pinned here.
     #[test]
     fn a_composed_tool_drives_as_an_evaluate_and_reports_its_caller() {
-        let composed = super::driver_call("browser_challenge_state", json!({}));
+        let composed = super::driver_call("browser_challenge_state", json!({}))
+            .expect("the challenge probe composes");
         assert_eq!(composed.tool, "browser_evaluate");
         assert_eq!(composed.reported, "browser_challenge_state");
         assert!(
@@ -7126,13 +7151,33 @@ mod tests {
             composed.args,
         );
 
-        let plain = super::driver_call("browser_click", json!({ "target": "e1" }));
+        let plain = super::driver_call("browser_click", json!({ "target": "e1" }))
+            .expect("a plain call composes");
         assert_eq!(plain.tool, "browser_click");
         assert_eq!(plain.reported, "browser_click");
         assert_eq!(
             plain.args,
             json!({ "target": "e1" }),
             "a plain call's arguments ride untouched"
+        );
+
+        // **A host-answered tool is a snippet over the driver's own run_code**,
+        // and the caller's name rides beside it so a failure names the tool a
+        // session called rather than the one underneath.
+        let snippet = super::driver_call("browser_form_state", json!({}))
+            .expect("a host-answered tool composes");
+        assert_eq!(snippet.tool, "browser_run_code_unsafe");
+        assert_eq!(snippet.reported, "browser_form_state");
+        assert!(
+            snippet.args["code"].as_str().is_some_and(|code| code.contains("elementHandles")),
+            "the driver is handed the form snippet: {}",
+            snippet.args,
+        );
+
+        // The call's own shape fault is decided here, before any page.
+        assert!(
+            super::driver_call("browser_click", json!({ "force": true })).is_err(),
+            "a forced click with no target is refused before a tab is consulted",
         );
 
         // A read is safe to repeat after a dead page and after a timeout.
@@ -7146,6 +7191,24 @@ mod tests {
             !super::repeatable("browser_evaluate", "browser_evaluate", &json!({})),
             "an evaluate a session sent is not assumed repeatable",
         );
+
+        // **A form read cannot land twice either**, and the click-and-capture
+        // tool is a click underneath, so it stays out of both lists.
+        assert!(super::repeatable("browser_run_code_unsafe", "browser_form_state", &json!({})));
+        assert!(super::repeatable_after_timeout(
+            "browser_run_code_unsafe",
+            "browser_form_state",
+            &json!({})
+        ));
+        assert!(
+            !super::repeatable("browser_run_code_unsafe", "browser_click_and_capture", &json!({})),
+            "a capture clicks, so it is not repeated after a dead page",
+        );
+        assert!(!super::repeatable_after_timeout(
+            "browser_run_code_unsafe",
+            "browser_click_and_capture",
+            &json!({})
+        ));
 
         // The driver's own words name the caller's tool in what the session reads.
         let scrubbed = super::reported_error(
@@ -7493,7 +7556,10 @@ mod tests {
             }
         });
 
-        let started = service.record_start(&seat).await.expect("the first take starts");
+        let started = service
+            .call(&seat, "browser_record_start", json!({}))
+            .await
+            .expect("the first take starts");
         assert!(
             matches!(
                 started.as_slice(),
@@ -7517,7 +7583,7 @@ mod tests {
         );
         assert!(path.is_file(), "the writer opened the file at {}", path.display());
 
-        service.record_stop(&seat).await.expect("the take stops");
+        service.call(&seat, "browser_record_stop", json!({})).await.expect("the take stops");
         host.join().expect("the fake host ends");
         crate::osr::Ring::unlink(&ring_name);
     }
@@ -7529,10 +7595,33 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let refused = service.record_stop(&seat).await.expect_err("no take is running");
+        let refused = service
+            .call(&seat, "browser_record_stop", json!({}))
+            .await
+            .expect_err("no take is running");
         assert!(
             refused.contains("no recording is running"),
             "the stop names the missing take: {refused}"
+        );
+    }
+
+    /// **A malformed call is refused before a browser opens for it.** A cold
+    /// profile must not boot a host to answer a call that cannot run, and a
+    /// busy one must not answer "the browser is busy" to an argument error.
+    #[tokio::test]
+    async fn a_malformed_call_is_refused_before_a_profile_opens() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let refused = service
+            .call(&seat, "browser_click", json!({ "force": true }))
+            .await
+            .expect_err("a forced click with no target is refused");
+        assert!(refused.contains("`target`"), "the call's own argument error: {refused}");
+        assert!(
+            !dir.path().join("profiles").exists(),
+            "no profile was opened for it: {:?}",
+            dir.path().join("profiles"),
         );
     }
 
