@@ -4017,6 +4017,23 @@ describe('the frames the fold had no row for', () => {
     expect(info?.severity, 'the informational line reads at its own level').toBe('warning');
     expect(info?.mark).toBe('informational');
     expect(info?.text).toBe('Goal cleared after an unrecoverable error');
+
+    // An EMPTY `formatted` must not swallow the row: the first non-blank of
+    // the two wins, or a 502 row would read as a bare status.
+    const carried = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'api_error',
+          level: 'error',
+          error: { message: 'connection reset by peer', formatted: '', status: 502 },
+          uuid: 'ae2',
+        },
+      ])[0],
+    );
+    expect(carried?.text, 'a blank formatted line falls back to the message').toContain(
+      'connection reset by peer',
+    );
   });
 
   it('draws a notification, warning only when its priority is immediate', () => {

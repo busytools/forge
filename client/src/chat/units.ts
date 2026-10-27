@@ -2298,11 +2298,15 @@ export function fold(
       }
       if (frame.subtype === 'api_error') {
         const error = obj(frame.error);
-        // **`formatted` first.** The CLI's `message` is the raw provider body
-        // serialised into a string on real rows (a wall of JSON on the
-        // commonest error there is), while `formatted` is the line written
-        // for a reader.
-        const said = str(error, 'formatted') ?? str(error, 'message') ?? 'API request failed';
+        // **`formatted` first, and the first NON-BLANK of the two.** The
+        // CLI's `message` is the raw provider body serialised into a string
+        // on real rows (a wall of JSON on the commonest error there is),
+        // while `formatted` is the line written for a reader - and an empty
+        // `formatted` must not swallow the row's words.
+        const said =
+          [str(error, 'formatted'), str(error, 'message')].find(
+            (line): line is string => line !== null && line.trim() !== '',
+          ) ?? 'API request failed';
         const status = typeof error.status === 'number' ? ` HTTP ${error.status}` : '';
         const attempt = typeof frame.retryAttempt === 'number' ? frame.retryAttempt : null;
         const cap = typeof frame.maxRetries === 'number' ? frame.maxRetries : null;
