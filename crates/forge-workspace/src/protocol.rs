@@ -363,13 +363,14 @@ pub enum Command {
         approved: bool,
     },
     /// Answer a parked browser hand-off. The blocked `browser_hand_off`
-    /// handler is awaiting this; `done: false` is the person declining.
-    /// App-level like `RespondSlackPost`: the registry is workspace state,
+    /// handler is awaiting this answer: what it means, the door in the client
+    /// that sent it, and - stamped by the server - the connection that carried
+    /// it. App-level like `RespondSlackPost`: the registry is workspace state,
     /// and `key` names the owner the answer is checked against.
     RespondBrowserHandOff {
         key: SessionSlot,
         id: uuid::Uuid,
-        done: bool,
+        answer: forge_primitives::browser::HandOffAnswer,
     },
     /// Answer a parked document hand-off: `NotNow` declines it, `Done`
     /// releases it with what the viewer's finish filed. The blocked
@@ -971,11 +972,11 @@ impl std::fmt::Debug for Command {
                 .field("id", id)
                 .field("approved", approved)
                 .finish_non_exhaustive(),
-            Self::RespondBrowserHandOff { key, id, done } => f
+            Self::RespondBrowserHandOff { key, id, answer } => f
                 .debug_struct("RespondBrowserHandOff")
                 .field("key", key)
                 .field("id", id)
-                .field("done", done)
+                .field("answer", answer)
                 .finish_non_exhaustive(),
             Self::AnswerDocumentHandOff { key, id, answer } => f
                 .debug_struct("AnswerDocumentHandOff")
@@ -1920,12 +1921,13 @@ pub enum SessionUpdate {
         handoff: forge_primitives::browser::HandOff,
     },
     /// A browser hand-off left the core's registry: answered in some view, or
-    /// its asking session gone. `ending` is what a view that did not answer
-    /// it says happened.
+    /// its asking session gone. `answer` is the ending, the door that sent it
+    /// and the connection that carried it - what a view that did not answer it
+    /// reads, and what the log names.
     BrowserHandOffResolved {
         key: SessionSlot,
         id: Uuid,
-        ending: forge_primitives::browser::HandOffEnding,
+        answer: forge_primitives::browser::HandOffAnswer,
     },
     /// A prompt entered the CLI's queue: the row a view draws as waiting,
     /// with the words and the sender the lifecycle frames do not carry.
@@ -2414,11 +2416,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("id", &handoff.id)
                 .field("tab", &handoff.tab)
                 .finish_non_exhaustive(),
-            Self::BrowserHandOffResolved { key, id, ending } => f
+            Self::BrowserHandOffResolved { key, id, answer } => f
                 .debug_struct("BrowserHandOffResolved")
                 .field("key", key)
                 .field("id", id)
-                .field("ending", ending)
+                .field("answer", answer)
                 .finish(),
             Self::PromptQueued { key, uuid, .. } => f
                 .debug_struct("PromptQueued")

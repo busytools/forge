@@ -146,6 +146,14 @@ impl BrowserTool {
                  do instead."
                     .to_owned(),
             ),
+            // **The person is still on the page**: they sent their words as
+            // a prompt beside this result, so the answer names that rather
+            // than reading as a decline.
+            HandOffEnding::Feedback => Ok(vec![BrowserPart::Text {
+                text: "The person sent you a message about the page instead of Done or Not \
+                       now; read it and carry on - the browser is as it was."
+                    .to_owned(),
+            }]),
             // The waiter cannot outlive a drop that sends this, so seeing it
             // here would mean the registry and the waiter disagree.
             HandOffEnding::Abandoned => Err("The hand-off ended without an answer.".to_owned()),
@@ -471,6 +479,28 @@ mod tests {
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("declined"), "{text}");
+    }
+
+    /// **A message from the person is not a refusal**, so it is not a tool
+    /// error and does not tell the model to decide what to do instead: the
+    /// person's words are a prompt riding beside this result, and the answer
+    /// names them as one.
+    #[tokio::test]
+    async fn a_hand_off_feedback_is_not_a_decline() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        *mock.hand_off_answer.lock() = Ok(HandOffEnding::Feedback);
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
+
+        assert!(!out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("sent you a message"), "the person spoke: {text}");
+        assert!(!text.contains("declined"), "and the answer never reads as a decline: {text}");
     }
 
     /// No tab is the call's own mistake too: the person is asked to look at
