@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::{BrowserPart, HandOff, HandOffEnding};
+use forge_primitives::browser::{
+    BrowserPart, HandOff, HandOffAnswer, HandOffEnding, HandOffSource,
+};
 use serde_json::Value;
 
 use crate::browser::NO_BROWSER_HOST;
@@ -107,7 +109,15 @@ struct ResolveHandOffOnDrop {
 
 impl Drop for ResolveHandOffOnDrop {
     fn drop(&mut self) {
-        self.workspace.resolve_browser_hand_off(self.id, &self.caller, HandOffEnding::Abandoned);
+        self.workspace.resolve_browser_hand_off(
+            self.id,
+            &self.caller,
+            HandOffAnswer {
+                ending: HandOffEnding::Abandoned,
+                source: HandOffSource::Abandoned,
+                client: None,
+            },
+        );
     }
 }
 
@@ -233,10 +243,10 @@ mod tests {
 
         let mut resolved = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::BrowserHandOffResolved { ending, .. } =
+            if let crate::protocol::SessionUpdate::BrowserHandOffResolved { answer, .. } =
                 frame.update
             {
-                resolved.push(ending);
+                resolved.push(answer.ending);
             }
         }
         assert_eq!(

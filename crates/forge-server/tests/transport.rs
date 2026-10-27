@@ -2871,7 +2871,11 @@ async fn a_refused_hand_off_answer_names_its_own_operation() {
             command: Box::new(Command::RespondBrowserHandOff {
                 key: lead_seat(),
                 id: uuid::Uuid::new_v4(),
-                done: true,
+                answer: forge_primitives::browser::HandOffAnswer {
+                    ending: forge_primitives::browser::HandOffEnding::Done,
+                    source: forge_primitives::browser::HandOffSource::Takeover,
+                    client: None,
+                },
             }),
             reply_to: None,
         },
@@ -2888,6 +2892,41 @@ async fn a_refused_hand_off_answer_names_its_own_operation() {
     assert!(
         why.contains("no longer waiting") && why.contains("asking session"),
         "and carries the hand-off's own sentence, endings included: {why}",
+    );
+}
+
+/// **A command the server cannot read is answered where a refusal is drawn.**
+/// A client older than the server sends a command in the shape it knows; the
+/// decode fails, and a `client_message` refusal is one a client reports only
+/// to its console - its dock has already stood down, so the person believes
+/// the answer left while the prompt, and the tool behind it, wait for ever.
+/// The frame's kind is readable even when its body is not, and that is what
+/// the reply routes by.
+#[tokio::test]
+async fn an_unreadable_command_is_answered_as_a_dispatch_refusal() {
+    let mut socket = connected().await;
+    // The v12 answer: `done` in place of this build's `answer`.
+    let sent = serde_json::json!({
+        "kind": "command",
+        "command": {
+            "respond_browser_hand_off": {
+                "key": lead_seat(),
+                "id": "0192e1c0-0000-7000-8000-0000000000aa",
+                "done": false,
+            },
+        },
+        "reply_to": null,
+    });
+    socket.send(Message::Text(sent.to_string().into())).await.expect("send");
+
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("an unreadable command is answered, not dropped");
+    };
+    assert_eq!(what, "dispatch", "the refusal a client draws where the answer came from: {why}");
+    assert!(why.contains("older"), "and the likely cause is named: {why}");
+    assert!(
+        why.contains("still waiting"),
+        "with the fact that the prompt survives the failed answer: {why}",
     );
 }
 

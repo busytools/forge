@@ -1039,6 +1039,36 @@ async fn next_update(
     }
 }
 
+/// This connection's own stamp on the commands that carry one.
+///
+/// The take a start begins and the stop that ends it are this connection's
+/// alone, and the stamp riding back on the take's updates is what routes them
+/// home. A hand-off's answer carries the same stamp, so an ending names the
+/// connection that sent it rather than only the seat it was addressed to. **A
+/// client cannot claim another's**: a stamp the client put on the frame is
+/// overwritten here, because the field never crosses the wire.
+fn stamp(command: Command, me: u64) -> Command {
+    match command {
+        Command::DictateStream { key, options, surface, .. } => {
+            Command::DictateStream { key, options, surface, initiator: Some(me) }
+        }
+        Command::DictateStop { key, submit, .. } => {
+            Command::DictateStop { key, submit, initiator: Some(me) }
+        }
+        Command::DictateReadAloudStart { .. } => {
+            Command::DictateReadAloudStart { initiator: Some(me) }
+        }
+        Command::DictateReadAloudStop { keep, .. } => {
+            Command::DictateReadAloudStop { keep, initiator: Some(me) }
+        }
+        Command::RespondBrowserHandOff { key, id, mut answer } => {
+            answer.client = Some(me);
+            Command::RespondBrowserHandOff { key, id, answer }
+        }
+        other => other,
+    }
+}
+
 /// Answer one client message.
 async fn handle_client<S>(
     socket: &mut S,
@@ -1073,11 +1103,32 @@ where
         _ => return Ok(()),
     };
     let Ok(client) = serde_json::from_str::<ClientMessage>(&text) else {
+        // **A command this server cannot read is an answer somebody gave.**
+        // A client older than the server sends its commands in the shape it
+        // knows; the decode fails here, and a `client_message` refusal is one
+        // a client reports only to its console - its dock has already stood
+        // down, so the person believes the answer left while the park, and
+        // the tool behind it, wait for ever. Tagging a command frame as a
+        // dispatch refusal is what draws the reason where the answer came
+        // from instead.
+        let command = serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|frame| {
+            frame.get("kind").and_then(serde_json::Value::as_str) == Some("command")
+        });
+        let (what, why) = if command {
+            (
+                "dispatch",
+                "this server could not read that command; if this client's build is older than \
+                 the server's, restart the client so both speak the same protocol - the prompt \
+                 it answered is still waiting",
+            )
+        } else {
+            ("client_message", "that is not a message this server knows")
+        };
         return send(
             socket,
             ServerMessage::Error {
-                what: "client_message".to_owned(),
-                why: "that is not a message this server knows".to_owned(),
+                what: what.to_owned(),
+                why: why.to_owned(),
                 seat: None,
                 dispatch_id: None,
             },
@@ -1279,26 +1330,7 @@ where
             }
         }
         ClientMessage::Command { command, reply_to } => {
-            // This connection's own stamp on the two commands that carry
-            // one: the take a start begins and the stop that ends it are
-            // this connection's alone, and the stamp riding back on the
-            // take's updates is what routes them home. A client cannot
-            // claim another's - the field never crosses the wire.
-            let command = match *command {
-                Command::DictateStream { key, options, surface, .. } => {
-                    Command::DictateStream { key, options, surface, initiator: Some(me) }
-                }
-                Command::DictateStop { key, submit, .. } => {
-                    Command::DictateStop { key, submit, initiator: Some(me) }
-                }
-                Command::DictateReadAloudStart { .. } => {
-                    Command::DictateReadAloudStart { initiator: Some(me) }
-                }
-                Command::DictateReadAloudStop { keep, .. } => {
-                    Command::DictateReadAloudStop { keep, initiator: Some(me) }
-                }
-                other => other,
-            };
+            let command = stamp(*command, me);
             // The seat a stream start names is this connection's to
             // remember: the dictation frames that follow carry no seat of
             // their own, and this is the one message that says which take
@@ -3625,6 +3657,36 @@ mod tests {
             matches!(updates, Some((_, true))),
             "and the client is still counted as one that can answer",
         );
+    }
+
+    /// **A hand-off's answer is stamped with the connection that sent it, and
+    /// a client cannot claim another's.** The stamp is the only place
+    /// `answer.client` is ever set, so a helper that stopped stamping would
+    /// leave every ending naming nobody while each suite stayed green.
+    #[test]
+    fn an_answer_is_stamped_with_the_connection_that_sent_it() {
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let id = uuid::Uuid::from_u128(7);
+        let answer = |client| forge_primitives::browser::HandOffAnswer {
+            ending: forge_primitives::browser::HandOffEnding::Feedback,
+            source: forge_primitives::browser::HandOffSource::Feedback,
+            client,
+        };
+
+        let Command::RespondBrowserHandOff { answer: stamped, .. } = stamp(
+            Command::RespondBrowserHandOff { key: seat.clone(), id, answer: answer(None) },
+            7,
+        ) else {
+            panic!("the command is a hand-off answer");
+        };
+        assert_eq!(stamped.client, Some(7), "the connection that carried it is named");
+
+        let Command::RespondBrowserHandOff { answer: claimed, .. } =
+            stamp(Command::RespondBrowserHandOff { key: seat, id, answer: answer(Some(99)) }, 7)
+        else {
+            panic!("the command is a hand-off answer");
+        };
+        assert_eq!(claimed.client, Some(7), "and a client cannot claim another's");
     }
 
     /// A connection hears its own take's updates and no other's: another

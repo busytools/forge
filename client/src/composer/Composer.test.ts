@@ -5705,6 +5705,28 @@ describe('the dock', () => {
     expect(drawn(), 'the reason is drawn where the dock stood').toContain('no longer waiting');
   });
 
+  /** **The dock card's own door before the takeover is up.** The page writes
+   *  this word by hand and nothing else ties it to the core's enum, so a
+   *  rename here would compile, keep every suite green, and leave every
+   *  answer given before Open undecodable - the exact failure the wire test
+   *  exists for, and the one door no client test used to cover. */
+  it('answers the dock card with its own door before Open', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Done').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_browser_hand_off: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          answer: { ending: { type: 'done' }, source: 'dock' },
+        },
+      },
+    ]);
+  });
+
   it('answers the hand-off as the verb says: Done settles it', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
@@ -5718,7 +5740,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: true,
+          answer: { ending: { type: 'done' }, source: 'takeover' },
         },
       },
     ]);
@@ -5817,7 +5839,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });
@@ -5839,7 +5861,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: false,
+          answer: { ending: { type: 'not_now' }, source: 'takeover' },
         },
       },
     ]);
@@ -5871,7 +5893,13 @@ describe('the dock', () => {
     expect(surface.phase, 'the second ask landed').toBe('live');
   });
 
-  it("sends the bar's feedback to the agent, then declines the hand-off", () => {
+  /** **A person reporting a problem is not a person declining.** The feedback
+   *  line sends their words as a prompt and then ends the park, and the ending
+   *  it sends must say they spoke - `not_now` here told the session "the person
+   *  declined, decide what to do instead" while they were still working the
+   *  page (live, 2026-10-26: two parks ended that way with the person's own
+   *  words describing the page). */
+  it('sends the bar feedback to the agent and ends the park as spoken, not declined', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
@@ -5898,9 +5926,64 @@ describe('the dock', () => {
       respond_browser_hand_off: {
         key: { org: 'Busytools', project: 'forge', label: 'lead' },
         id: '0192e1c0-0000-7000-8000-0000000000aa',
-        done: false,
+        answer: { ending: { type: 'feedback' }, source: 'feedback' },
       },
     });
+  });
+
+  /** **Words that never left are not a message to read.** A send the socket
+   *  refused used to answer `feedback` anyway, telling the session to read a
+   *  prompt nobody sent and ending the park on nothing; the dock stays live,
+   *  so the reader can press send again when the socket is back. */
+  it('keeps the hand-off parked when the feedback never left', () => {
+    const shared = wire();
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+
+    shared.down = true;
+    send.click();
+    flushSync();
+    expect(commands(harness), 'the refused send answers nothing').toEqual([]);
+
+    shared.down = false;
+    send.click();
+    flushSync();
+    expect(
+      commands(harness).map((command) => Object.keys(command)[0]),
+      'and the retry sends the words and then the ending',
+    ).toEqual(['prompt_under', 'respond_browser_hand_off']);
+  });
+
+  /** **A key inside the raised takeover is the page's, not the dock's.** The
+   *  native overlay holds the keyboard while the surface is up, and a key the
+   *  bar itself receives must not reach the dock's refusal - Escape in a
+   *  raised takeover declining the hand-off was the first suspect in the live
+   *  incident, and this is the property that rules it out. */
+  it('does not answer the hand-off on Escape inside the raised takeover', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.focus();
+    press('Escape');
+
+    expect(commands(harness), 'the hand-off is still parked, nothing answered it').toEqual([]);
   });
 
   it('declines the hand-off on Escape, which the dock row promises', () => {
@@ -5918,7 +6001,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: false,
+          answer: { ending: { type: 'not_now' }, source: 'dock_escape' },
         },
       },
     ]);
@@ -5936,7 +6019,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });
@@ -5945,6 +6028,30 @@ describe('the dock', () => {
 
     expect(document.querySelector('.dock'), 'the dock stands down').toBeNull();
     expect(drawn(), 'and the row says which ending took it').toContain('settled in another view');
+  });
+
+  /** The feedback ending is a new word on the wire, and a client that does
+   *  not know it falls through to "no longer waiting" - which would tell a
+   *  reader nothing about a hand-off the person settled with a message. */
+  it('says a hand-off another view settled with a message', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    harness.say({
+      kind: 'update',
+      update: {
+        browser_hand_off_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          answer: { ending: { type: 'feedback' }, source: 'feedback', client: 1 },
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+
+    expect(drawn(), 'the news is the message, not a silence').toContain(
+      'settled with a message in another view',
+    );
   });
 
   it("does not narrate the reader's own answer to a hand-off", () => {
@@ -5965,7 +6072,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });
