@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use forge_connectors::slack::{
     AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, read_thread,
-    shared_message_ts,
+    shared_messages,
 };
 use forge_primitives::slack::{
     SlackBookmark, SlackConversation, SlackDraft, SlackDraftEnding, SlackPin, SlackSearchMatch,
@@ -616,15 +616,23 @@ impl SlackFacade for ProdSlackFacade {
             GateDecision::Expired => return Err(SlackPostError::Expired),
         }
         let conversation_name = draft.conversation_label.clone();
+        // Held across the posting loop: a sweep that runs mid-post skips
+        // the conversation instead of delivering a message whose ts is not
+        // ledgered yet.
+        let _in_flight = ws.begin_slack_post(&draft.workspace, &draft.conversation);
         let parts = forge_connectors::slack::split_for_post(&draft.text);
         let mut ts: Vec<String> = Vec::new();
         for part in &parts {
             match api.post_message(&draft.conversation, part, draft.thread_ts.as_deref()).await {
                 Ok(posted) => {
-                    // Recorded per part as it lands: a multi-part post that
-                    // fails halfway must still refuse the parts Slack took.
-                    ws.record_slack_own_post(&draft.workspace, &draft.conversation, &posted);
-                    ts.push(posted);
+                    // The channel Slack answers with, not the request
+                    // string: a DM addressed by user id lands in `D...`,
+                    // and the sweep looks it up by that id. Recorded per
+                    // part as it lands, so a post that fails halfway still
+                    // refuses the parts Slack took.
+                    let conversation = posted.channel.as_deref().unwrap_or(&draft.conversation);
+                    ws.record_slack_own_post(&draft.workspace, conversation, &posted.ts);
+                    ts.push(posted.ts);
                 }
                 Err(error) if ts.is_empty() => {
                     // Nothing landed, so the failure is an ordinary one.
@@ -690,9 +698,9 @@ impl SlackFacade for ProdSlackFacade {
         };
         match result {
             Ok(()) => {
-                // An edit keeps the message's ts, so this is the identity
-                // the sweep would see - whether forge posted it or the
-                // user did and the agent has since rewritten it.
+                // An edit or a delete keeps the message's ts, so this is
+                // the identity the sweep sees - and the agent authored the
+                // change, whoever posted the message first.
                 ws.record_slack_own_post(&label, &request.conversation, &request.ts);
                 Ok(())
             }
@@ -965,26 +973,33 @@ impl SlackFacade for ProdSlackFacade {
         api.post_bytes(&url, bytes)
             .await
             .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?;
-        api.complete_upload(&file_id, &request.conversation, request.thread_ts.as_deref())
+        // Held across the post: a sweep that runs mid-upload skips the
+        // conversation rather than delivering a message not yet ledgered.
+        let _in_flight = ws.begin_slack_post(&label, &request.conversation);
+        let uploaded = api
+            .complete_upload(&file_id, &request.conversation, request.thread_ts.as_deref())
             .await
             .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?;
-        // The upload answers no message ts, so the file's own shares are
-        // where the message it was posted as is named. A lookup that
-        // fails leaves the post unledgered, which costs at most the one
-        // self-delivery a store reset costs.
-        match api.file_info(&file_id).await {
-            Ok(file) => {
-                if let Some(ts) = shared_message_ts(&file, &request.conversation) {
-                    ws.record_slack_own_post(&label, &request.conversation, &ts);
-                }
+        // Slack names the message the upload was posted as on the file's
+        // shares, keyed by the share's own conversation - which need not be
+        // the string the request addressed. The upload's own answer carries
+        // them when Slack fills them; `files.info` is the fallback.
+        let mut shared: Vec<(String, String)> = uploaded.iter().flat_map(shared_messages).collect();
+        if shared.is_empty() {
+            match api.file_info(&file_id).await {
+                Ok(file) => shared = shared_messages(&file),
+                Err(error) => tracing::warn!(
+                    target: "forge_workspace::slack",
+                    event_name = "slack_attachment_ledger_missing",
+                    workspace = %label,
+                    conversation = %request.conversation,
+                    %error,
+                    "reading a posted file's shares failed; the attachment stays unledgered until this call succeeds",
+                ),
             }
-            Err(error) => tracing::debug!(
-                target: "forge_workspace::slack",
-                workspace = %label,
-                conversation = %request.conversation,
-                %error,
-                "reading a posted file's shares failed; the attachment stays unledgered",
-            ),
+        }
+        for (conversation, ts) in shared {
+            ws.record_slack_own_post(&label, &conversation, &ts);
         }
         Ok(())
     }
@@ -1387,7 +1402,9 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::mcp::slack::Unsubscribe;
     use crate::mcp::test_support::text_of;
-    use forge_connectors::slack::{AuthTest, MessagePage, SearchPage, SlackApi, SlackError};
+    use forge_connectors::slack::{
+        AuthTest, MessagePage, PostedMessage, SearchPage, SlackApi, SlackError,
+    };
     use forge_primitives::slack::{
         SlackBookmark, SlackConfig, SlackFile, SlackFileShare, SlackFileShares, SlackPin,
         SlackPinMessage, SlackUserProfile,
@@ -1435,11 +1452,21 @@ mod tests {
         users_rows: parking_lot::Mutex<Vec<SlackUser>>,
         /// The ts `chat.postMessage` answers with.
         post_ts: parking_lot::Mutex<Option<String>>,
+        /// The channel `chat.postMessage` answers with; defaults to the
+        /// channel the request named.
+        post_channel: parking_lot::Mutex<Option<String>>,
         /// How many posts have been answered, so an unseeded answer is a
         /// distinct ts per call - a multi-part post needs two.
         post_calls: parking_lot::Mutex<usize>,
+        /// The 0-based post call that fails, for a partial multi-part post.
+        post_fail_at: parking_lot::Mutex<Option<usize>>,
         /// Where each seeded file was shared: id -> shares.
         file_shares: parking_lot::Mutex<HashMap<String, SlackFileShares>>,
+        /// The shares `files.completeUploadExternal` answers with, when a
+        /// test wants the extra `files.info` read to be skipped.
+        upload_shares: parking_lot::Mutex<Option<SlackFileShares>>,
+        /// How many `files.info` calls were made.
+        file_info_calls: parking_lot::Mutex<usize>,
         /// Seeded conversations, for the display name a held draft carries.
         conversations: parking_lot::Mutex<Vec<SlackConversation>>,
     }
@@ -1535,14 +1562,34 @@ mod tests {
         fn answer_posts_with(&self, ts: &str) {
             *self.post_ts.lock() = Some(ts.to_owned());
         }
-        /// Seed where the next upload's file is shared: the message ts
-        /// `files.info` reports for it.
+        /// The channel `chat.postMessage` answers with.
+        fn answer_posts_in(&self, channel: &str) {
+            *self.post_channel.lock() = Some(channel.to_owned());
+        }
+        /// Make the 0-based `index` post call fail.
+        fn fail_post_at(&self, index: usize) {
+            *self.post_fail_at.lock() = Some(index);
+        }
+        /// Seed where a file is shared, as `files.info` reports it: the
+        /// message ts for the conversation the share names.
         fn seed_file_shares(&self, id: &str, conversation: &str, ts: &str) {
             let mut shares = SlackFileShares::default();
             shares
                 .public
                 .insert(conversation.to_owned(), vec![SlackFileShare { ts: ts.to_owned() }]);
             self.file_shares.lock().insert(id.to_owned(), shares);
+        }
+        /// Seed the shares `files.completeUploadExternal` itself answers
+        /// with, so no `files.info` follow-up is needed.
+        fn seed_upload_shares(&self, conversation: &str, ts: &str) {
+            let mut shares = SlackFileShares::default();
+            shares
+                .public
+                .insert(conversation.to_owned(), vec![SlackFileShare { ts: ts.to_owned() }]);
+            *self.upload_shares.lock() = Some(shares);
+        }
+        fn file_info_calls(&self) -> usize {
+            *self.file_info_calls.lock()
         }
     }
 
@@ -1607,20 +1654,28 @@ mod tests {
             channel: &str,
             text: &str,
             thread_ts: Option<&str>,
-        ) -> Result<String, SlackError> {
+        ) -> Result<PostedMessage, SlackError> {
             self.posts.lock().push((
                 channel.to_owned(),
                 text.to_owned(),
                 thread_ts.map(str::to_owned),
             ));
-            let answer = if let Some(seeded) = self.post_ts.lock().clone() {
-                seeded
-            } else {
+            let attempt = {
                 let mut calls = self.post_calls.lock();
+                let attempt = *calls;
                 *calls += 1;
-                format!("{calls}.0")
+                attempt
             };
-            Ok(answer)
+            if *self.post_fail_at.lock() == Some(attempt) {
+                return Err(SlackError::Api {
+                    method: "chat.postMessage".to_owned(),
+                    error: "rate_limited".to_owned(),
+                    needed: None,
+                });
+            }
+            let ts = self.post_ts.lock().clone().unwrap_or_else(|| format!("{}.0", attempt + 1));
+            let answered = self.post_channel.lock().clone().unwrap_or_else(|| channel.to_owned());
+            Ok(PostedMessage { channel: Some(answered), ts })
         }
 
         async fn update_message(
@@ -1664,6 +1719,7 @@ mod tests {
         }
 
         async fn file_info(&self, id: &str) -> Result<SlackFile, SlackError> {
+            *self.file_info_calls.lock() += 1;
             let files = self.files.lock();
             let Some((name, _)) = files.get(id) else {
                 return Err(SlackError::Api {
@@ -1708,13 +1764,18 @@ mod tests {
             file_id: &str,
             channel: &str,
             thread_ts: Option<&str>,
-        ) -> Result<(), SlackError> {
+        ) -> Result<Vec<SlackFile>, SlackError> {
             self.uploads.lock().push((
                 file_id.to_owned(),
                 channel.to_owned(),
                 thread_ts.map(str::to_owned),
             ));
-            Ok(())
+            Ok(vec![SlackFile {
+                id: file_id.to_owned(),
+                name: String::new(),
+                url_private: String::new(),
+                shares: self.upload_shares.lock().clone().unwrap_or_default(),
+            }])
         }
 
         async fn search_messages(
@@ -2087,14 +2148,102 @@ mod tests {
         );
     }
 
-    /// An attachment posts a message of its own, and the upload call does
-    /// not answer its ts - the file's shares do. Without this one the agent
-    /// sees its own upload come back.
+    /// A request can address a DM by user id or a channel by name, and
+    /// Slack answers the conversation it actually posted into. The ledger
+    /// has to key on that answer, or the sweep looks under the id and the
+    /// agent's own DM comes back to it.
     #[tokio::test]
-    async fn an_upload_ledgers_the_message_the_file_was_shared_as() {
+    async fn a_post_is_ledgered_under_the_channel_slack_posted_into() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        api.answer_posts_with("1700000000.000100");
+        api.answer_posts_in("D456");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("U123", "hello")).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+        let outcome = task.await.expect("no panic").expect("the post lands");
+
+        assert_eq!(outcome.ts, vec!["1700000000.000100".to_owned()]);
+        assert!(
+            ws.slack_own_post("acme", "D456", "1700000000.000100"),
+            "the conversation the post landed in is refused to the sweep",
+        );
+        assert!(
+            !ws.slack_own_post("acme", "U123", "1700000000.000100"),
+            "the address it was sent to is not the conversation the sweep reads",
+        );
+    }
+
+    /// A port that records ts but not the answer's channel would false the
+    /// assertion above; the same guard for the partial case is that the
+    /// parts Slack took are recorded even when a later part fails.
+    #[tokio::test]
+    async fn a_partial_multi_part_post_ledgers_the_parts_slack_took() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        api.fail_post_at(1);
+        let text = "a".repeat(forge_connectors::slack::POST_LIMIT + 1);
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post(&caller(), post_request("C1", &text)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+        let outcome = task.await.expect("no panic");
+
+        assert!(
+            matches!(outcome, Err(SlackPostError::Partial { posted: 1, .. })),
+            "the failure names how much landed: {outcome:?}",
+        );
+        assert!(
+            ws.slack_own_post("acme", "C1", "1.0"),
+            "the part Slack took is refused to the sweep",
+        );
+        assert!(
+            !ws.slack_own_post("acme", "C1", "2.0"),
+            "and the part that never landed is not pretended to be",
+        );
+    }
+
+    /// An attachment posts a message of its own, and the upload call
+    /// answers no message ts - the file's shares do. The share's own
+    /// conversation is what the ledger keys on.
+    #[tokio::test]
+    async fn an_upload_ledgers_the_message_under_the_shares_own_conversation() {
         let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
         api.seed_file("F-uploaded", "file.txt", b"payload");
-        api.seed_file_shares("F-uploaded", "C1", "1700000000.000100");
+        api.seed_file_shares("F-uploaded", "D456", "1700000000.000100");
+        let dir = tempdir().expect("tempdir");
+        let source = dir.path().join("file.txt");
+        std::fs::write(&source, b"payload").expect("write the source file");
+
+        let task = tokio::spawn({
+            let facade = facade.clone();
+            async move { facade.post_attachment(&caller(), upload_request("U123", &source)).await }
+        });
+        let id = wait_for_draft(&ws).await;
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+        task.await.expect("no panic").expect("an approved upload sends");
+
+        assert!(
+            ws.slack_own_post("acme", "D456", "1700000000.000100"),
+            "the share's own conversation holds the message, so that is what the ledger keys",
+        );
+        assert!(
+            !ws.slack_own_post("acme", "U123", "1700000000.000100"),
+            "the request string is not a conversation",
+        );
+    }
+
+    /// When the upload's own answer already carries the shares, the
+    /// `files.info` follow-up is not worth a call.
+    #[tokio::test]
+    async fn an_upload_answer_that_carries_its_shares_costs_no_files_info_call() {
+        let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+        api.seed_upload_shares("C1", "1700000000.000100");
         let dir = tempdir().expect("tempdir");
         let source = dir.path().join("file.txt");
         std::fs::write(&source, b"payload").expect("write the source file");
@@ -2107,9 +2256,10 @@ mod tests {
         ws.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved upload sends");
 
+        assert_eq!(api.file_info_calls(), 0, "the answer was enough; no follow-up read");
         assert!(
             ws.slack_own_post("acme", "C1", "1700000000.000100"),
-            "the shared message's ts is refused to the sweep",
+            "and the message it named is refused to the sweep",
         );
     }
 

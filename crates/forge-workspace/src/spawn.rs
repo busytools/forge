@@ -5678,8 +5678,8 @@ provider = "anthropic"
     }
 
     /// The name the connector resolved is what the block shows. The raw id
-    /// stays on the message for the own-message filter, and the block drops
-    /// it, so the resolved name is the only one that reaches a reader.
+    /// stays on the message and the block drops it, so the resolved name is
+    /// the only one that reaches a reader.
     #[test]
     fn a_bundle_prefers_the_resolved_author_over_the_id() {
         let mut message = slack_msg_at("1.1", "U0ATEK2EAGP", "hi");

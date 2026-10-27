@@ -716,6 +716,12 @@ pub struct Workspace {
     /// Per-workspace pump liveness for the Inspector's SLACK section.
     /// Keyed by label for the same reason.
     pub(crate) slack_connected: Mutex<std::collections::BTreeMap<String, bool>>,
+    /// Conversations forge has a post in flight into, keyed
+    /// `(workspace, the address the post used)` and counted, because two
+    /// sessions can post into one conversation at once. The sweep skips a
+    /// conversation while its post is in flight, because the message can
+    /// reach history before its ts is ledgered.
+    pub(crate) slack_inflight: Mutex<std::collections::HashMap<(String, String), usize>>,
     /// The authenticated user's id per workspace, resolved once by the
     /// boot `auth.test` and needed to recognise `<@U...>` mentions.
     pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
@@ -2014,6 +2020,7 @@ impl Workspace {
             slack_subs: Mutex::new(slack_subs),
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_inflight: Mutex::new(std::collections::HashMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),

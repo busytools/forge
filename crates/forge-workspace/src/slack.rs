@@ -14,9 +14,9 @@ use std::time::Duration;
 use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
     DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_STALE_AFTER_HOURS,
-    DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS, SlackConfig, SlackDraft, SlackDraftEnding,
-    SlackFollowedThread, SlackMessage, SlackSubscription, SlackSubscriptionTarget,
-    SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
+    DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS, SlackConfig, SlackConversation, SlackDraft,
+    SlackDraftEnding, SlackFollowedThread, SlackMessage, SlackSubscription,
+    SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
 };
 use uuid::Uuid;
 
@@ -398,6 +398,39 @@ impl Workspace {
                 false
             }
         }
+    }
+
+    /// Mark this conversation's post in flight until the guard drops, so a
+    /// sweep that runs mid-post skips the conversation instead of
+    /// delivering a message whose ts is not ledgered yet.
+    pub(crate) fn begin_slack_post(
+        self: &Arc<Self>,
+        workspace: &str,
+        conversation: &str,
+    ) -> SlackPostInFlight {
+        let key = (workspace.to_owned(), conversation.to_owned());
+        *self.slack_inflight.lock().entry(key.clone()).or_insert(0) += 1;
+        SlackPostInFlight { workspace: Arc::clone(self), key }
+    }
+
+    /// Whether a post is in flight for any name this conversation answers
+    /// to. A post is addressed by whichever name the caller had, so a DM
+    /// posted by user id is marked under that id and read here by the
+    /// conversation's `user`.
+    pub(crate) fn slack_post_in_flight(
+        &self,
+        workspace: &str,
+        conversation: &SlackConversation,
+    ) -> bool {
+        let inflight = self.slack_inflight.lock();
+        let marked = |address: &str| {
+            inflight.iter().any(|((marked_workspace, marked_address), count)| {
+                *count > 0 && marked_workspace == workspace && marked_address == address
+            })
+        };
+        marked(&conversation.id)
+            || conversation.name.as_deref().is_some_and(marked)
+            || conversation.user.as_deref().is_some_and(marked)
     }
 
     /// Fill in the display name on this workspace's conversation
@@ -1188,6 +1221,25 @@ impl Workspace {
     }
 }
 
+/// Clears a conversation's in-flight mark however the post ends, a failed
+/// call or a panic included.
+pub(crate) struct SlackPostInFlight {
+    workspace: Arc<Workspace>,
+    key: (String, String),
+}
+
+impl Drop for SlackPostInFlight {
+    fn drop(&mut self) {
+        let mut inflight = self.workspace.slack_inflight.lock();
+        if let Some(count) = inflight.get_mut(&self.key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                inflight.remove(&self.key);
+            }
+        }
+    }
+}
+
 /// The [`SlackHost`] one pump drives: a `Weak<Workspace>` behind the port,
 /// so the workspace can drop while a pump runs and every port call then
 /// degrades to a no-op.
@@ -1321,6 +1373,10 @@ impl SlackHost for SlackSubsystemHost {
 
     fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
         self.0.upgrade().is_some_and(|ws| ws.slack_own_post(workspace, conversation, ts))
+    }
+
+    fn post_in_flight(&self, workspace: &str, conversation: &SlackConversation) -> bool {
+        self.0.upgrade().is_some_and(|ws| ws.slack_post_in_flight(workspace, conversation))
     }
 
     fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool {
@@ -1984,6 +2040,80 @@ mod tests {
         );
     }
 
+    /// The host hop is the whole read path for the ledger: a harness that
+    /// swapped the workspace and the conversation would leave every
+    /// connector test green.
+    #[test]
+    fn the_own_post_port_reads_the_ledger_by_workspace_and_conversation() {
+        let (host, ws, _dir) = host_with_c1_subscriber("forge", None);
+        ws.record_slack_own_post("acme", "C1", "1700000000.000100");
+
+        assert!(host.own_post("acme", "C1", "1700000000.000100"), "the recorded row is read back");
+        assert!(
+            !host.own_post("acme", "C2", "1700000000.000100"),
+            "another conversation's ledger does not answer for it",
+        );
+        assert!(
+            !host.own_post("beta", "C1", "1700000000.000100"),
+            "another workspace's ledger does not answer for it",
+        );
+    }
+
+    /// A post is addressed by whichever name the caller had: a DM by user
+    /// id, a channel by name. The sweep holds the conversation and asks
+    /// under each of its names.
+    #[test]
+    fn an_in_flight_post_matches_every_name_the_conversation_answers_to() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let host = SlackSubsystemHost::new(&ws);
+        let dm = SlackConversation {
+            id: "D456".to_owned(),
+            name: None,
+            is_channel: false,
+            is_private: false,
+            is_im: true,
+            is_mpim: false,
+            is_archived: false,
+            user: Some("U123".to_owned()),
+            purpose: None,
+            topic: None,
+        };
+        let channel = SlackConversation {
+            id: "C789".to_owned(),
+            name: Some("general".to_owned()),
+            is_channel: true,
+            is_private: false,
+            is_im: false,
+            is_mpim: false,
+            is_archived: false,
+            user: None,
+            purpose: None,
+            topic: None,
+        };
+
+        let guard = ws.begin_slack_post("acme", "U123");
+        assert!(host.post_in_flight("acme", &dm), "a DM posted by user id is marked under that id");
+        assert!(!host.post_in_flight("acme", &channel), "and only for that address");
+        drop(guard);
+        assert!(!host.post_in_flight("acme", &dm), "the mark clears with the guard");
+
+        // Two sessions can post into one conversation at once: the first
+        // to finish does not clear the other's mark.
+        let first = ws.begin_slack_post("acme", "general");
+        let second = ws.begin_slack_post("acme", "general");
+        assert!(
+            host.post_in_flight("acme", &channel),
+            "a channel posted by name is marked by its name",
+        );
+        drop(first);
+        assert!(
+            host.post_in_flight("acme", &channel),
+            "one post finishing does not clear an overlapping one",
+        );
+        drop(second);
+        assert!(!host.post_in_flight("acme", &channel), "the last one clears the mark");
+    }
+
     /// The workspace label the live test configures, and the project whose
     /// running lead receives the block.
     const LIVE_WORKSPACE: &str = "live-test";
@@ -2061,8 +2191,9 @@ mod tests {
         let texts: Vec<String> = (1..=3).map(|n| format!("live bundle {n} {stamp}")).collect();
         let mut posted = Vec::new();
         for text in &texts {
-            posted
-                .push(bot.post_message(&conversation_id, text, None).await.expect("the bot posts"));
+            posted.push(
+                bot.post_message(&conversation_id, text, None).await.expect("the bot posts").ts,
+            );
         }
 
         let dir = tempfile::tempdir().expect("tempdir");

@@ -273,10 +273,10 @@ pub fn remove_thread(
 /// posts as the user and the author can no longer tell them apart.
 const OWN_POSTS: TableDefinition<&str, u64> = TableDefinition::new("slack_own_posts");
 
-/// A conversation's newest own posts kept, and how long one is kept at
-/// all. Both bounds only have to outlive the sweeps that could re-offer a
-/// post; a pruned row costs at most one self-delivery, the same cost as a
-/// lost ledger.
+/// A conversation's newest own posts kept, and the age past which a row is
+/// dropped. Both are applied when that conversation records its next post,
+/// so a conversation that never posts again keeps what it had. A pruned row
+/// costs at most one self-delivery, the same cost as a lost ledger.
 const OWN_POST_KEEP: usize = 200;
 const OWN_POST_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 
@@ -317,10 +317,17 @@ pub fn record_own_post(
         let mut table = txn.open_table(OWN_POSTS)?;
         let mut kept: Vec<String> = Vec::new();
         let mut expired: Vec<String> = Vec::new();
-        for entry in table.iter()? {
+        // This conversation's rows only, and only until the prefix ends:
+        // the table holds every conversation's posts.
+        for entry in table.range(prefix.as_str()..)? {
             let (stored, recorded) = entry?;
             let stored = stored.value();
             if !stored.starts_with(&prefix) {
+                break;
+            }
+            // Re-recording a ts - an edit, a share read again - refreshes
+            // its row; counting it here would prune a live row each time.
+            if stored == key.as_str() {
                 continue;
             }
             if recorded.value() < cutoff {
@@ -541,14 +548,15 @@ mod tests {
             "another workspace is not"
         );
         assert!(
-            !own_post(&db, "acme", "C1", "1700000000.0001").expect("read"),
-            "the ts is compared verbatim, never as a number",
+            !own_post(&db, "acme", "C1", "100.0000010").expect("read"),
+            "the ts is compared verbatim, never as a number - both parse to the same f64",
         );
     }
 
     /// The ledger is bounded two ways: a conversation keeps only its newest
-    /// rows, and a row past the age is dropped. Without either the table
-    /// grows for the process's whole life.
+    /// rows, and a row past the age is dropped. Both apply when that
+    /// conversation next records a post, so a quiet conversation keeps what
+    /// it had. Without either the table grows for the process's whole life.
     #[test]
     fn the_ledger_keeps_only_recent_own_posts() {
         let dir = tempdir().expect("tempdir");
@@ -561,20 +569,39 @@ mod tests {
         for offset in 0..OWN_POST_KEEP as u64 {
             record_own_post(&db, "acme", "C1", &ts(offset), now).expect("record");
         }
-        record_own_post(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64), now).expect("record");
+        // Re-recording a row already held - an edit, a share read again -
+        // refreshes it and prunes nothing.
+        record_own_post(&db, "acme", "C1", &ts(5), now).expect("re-record");
+        assert!(
+            own_post(&db, "acme", "C1", &ts(0)).expect("read")
+                && own_post(&db, "acme", "C1", &ts(5)).expect("read"),
+            "a re-recorded ts is not counted twice",
+        );
 
+        record_own_post(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64), now).expect("record");
         assert!(
             !own_post(&db, "acme", "C1", &ts(0)).expect("read"),
             "the oldest row past the count bound is dropped",
         );
         assert!(
-            own_post(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64 - 1)).expect("read"),
-            "the newest rows under the bound stay",
+            own_post(&db, "acme", "C1", &ts(1)).expect("read"),
+            "exactly one row is dropped: the next-oldest survives",
+        );
+        assert!(
+            own_post(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64)).expect("read"),
+            "the new row is kept",
         );
 
-        let old = now.saturating_sub(OWN_POST_MAX_AGE_SECS + 1);
-        record_own_post(&db, "acme", "C1", &ts(9_000), old).expect("record an old row");
+        // The age bound is exclusive: a row recorded exactly at the cutoff
+        // is still recent.
+        let old = now.saturating_sub(OWN_POST_MAX_AGE_SECS);
+        record_own_post(&db, "acme", "C1", &ts(9_000), old).expect("record at the bound");
         record_own_post(&db, "acme", "C1", &ts(9_001), now).expect("record a fresh row");
+        assert!(
+            own_post(&db, "acme", "C1", &ts(9_000)).expect("read"),
+            "a row exactly at the age bound is kept",
+        );
+        record_own_post(&db, "acme", "C1", &ts(9_002), now + 1).expect("record one second on");
         assert!(
             !own_post(&db, "acme", "C1", &ts(9_000)).expect("read"),
             "a row past the age bound is dropped on the next write",

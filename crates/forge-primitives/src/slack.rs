@@ -197,8 +197,17 @@ pub struct SlackFile {
     pub url_private: String,
     /// Where the file was shared. The upload call answers no message `ts`,
     /// so this is the only place a posted file's message is named.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "shares_or_null")]
     pub shares: SlackFileShares,
+}
+
+/// Slack sends `shares: null` on a file it has not shared; that is not an
+/// object, and it reads as no shares rather than failing the whole file.
+fn shares_or_null<'de, D>(deserializer: D) -> Result<SlackFileShares, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<SlackFileShares>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 /// A file's shares, keyed by visibility and then by conversation id.
