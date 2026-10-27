@@ -7,9 +7,10 @@
 //! browser's own layout and hit testing are the truth.
 //!
 //! **A frame the probe cannot see is never reported absent.** The script reads
-//! the top-level document, so every iframe it did not classify and every open
-//! shadow root are named in `unseen`, which keeps an empty challenge list from
-//! reading as "no CAPTCHA here".
+//! the top-level document, so every iframe it did not classify, every frame,
+//! object and embed element and every open shadow root are named in `unseen`;
+//! a closed shadow root cannot be seen at all, and `unseen` is what keeps an
+//! empty challenge list from reading as "no CAPTCHA here".
 
 use serde_json::{Value, json};
 
@@ -44,16 +45,14 @@ const STATE_JS: &str = r#"() => {
   // An ancestor's display: none, opacity and filter hide the subtree; the
   // frame's own computed values report none of them.
   const paintHidden = (el) => {
-    let opacity = 1;
     for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
       const style = getComputedStyle(node);
-      if (style.display === "none") return { hidden: true, opacity: 0 };
-      opacity *= Number(style.opacity);
-      if (opacity <= 0) return { hidden: true, opacity: 0 };
+      if (style.display === "none") return true;
+      if (Number(style.opacity) <= 0) return true;
       const filter = style.filter || "none";
-      if (filter !== "none" && /opacity\(\s*0*(?:\.0+)?%?\s*\)/.test(filter)) return { hidden: true, opacity: 0 };
+      if (filter !== "none" && /opacity\(\s*0*(?:\.0+)?%?\s*\)/.test(filter)) return true;
     }
-    return { hidden: false, opacity };
+    return false;
   };
   const vendorOf = (el) => {
     const named = `${el.getAttribute("src") || ""} ${el.getAttribute("title") || ""}`.toLowerCase();
@@ -70,8 +69,7 @@ const STATE_JS: &str = r#"() => {
     }
     const rect = frame.getBoundingClientRect();
     const style = getComputedStyle(frame);
-    const paint = paintHidden(frame);
-    const visible = style.display !== "none" && style.visibility !== "hidden" && style.visibility !== "collapse" && !paint.hidden;
+    const visible = style.display !== "none" && style.visibility !== "hidden" && style.visibility !== "collapse" && !paintHidden(frame);
     const onScreen = rect.width > 0 && rect.height > 0 && rect.left < viewport.width && rect.top < viewport.height && rect.right > 0 && rect.bottom > 0;
     const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
     const hitTestable = hit === frame;

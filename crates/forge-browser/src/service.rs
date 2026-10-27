@@ -8421,6 +8421,8 @@ mod tests {
         /// **Every** page call answers an initialise timeout, as a driver
         /// that could not attach to its host does.
         attach_timeout: Arc<std::sync::atomic::AtomicBool>,
+        /// Every page call answers the driver's plain failure.
+        fail_calls: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeDriver {
@@ -8512,6 +8514,11 @@ mod tests {
         /// Every upload answers the driver's plain failure.
         fn fail_uploads(&self) {
             self.fail_upload.store(true, Ordering::Release);
+        }
+
+        /// Every page call answers the driver's plain failure.
+        fn fail_calls(&self) {
+            self.fail_calls.store(true, Ordering::Release);
         }
     }
 
@@ -8720,6 +8727,9 @@ mod tests {
                         .to_owned(),
                 );
             }
+            if self.fail_calls.load(Ordering::Acquire) {
+                return Err(format!("{tool} failed"));
+            }
             Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "ok".to_owned() }])
         }
 
@@ -8758,6 +8768,28 @@ mod tests {
         let tabs = service.tabs(&seat).await.expect("the rows");
         assert_eq!(tabs.rows.len(), 1);
         assert_eq!(tabs.rows[0].owner, seat);
+    }
+
+    /// **A composed call's failure, through the whole path, names the tool the
+    /// session called.** The scrub sits on the one boundary every error leaves
+    /// [`BrowserService::call`] through, so this drives it end to end: the
+    /// fake driver answers the synthetic "browser_evaluate failed" a real one
+    /// does, and the session must not read that name.
+    #[tokio::test]
+    async fn a_failed_challenge_call_names_the_caller_not_the_evaluate() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::with_blank("T1");
+        driver.fail_calls();
+        service.install_fake(&seat, driver).await;
+
+        let why = service
+            .call(&seat, "browser_challenge_state", json!({}))
+            .await
+            .expect_err("the driver's failure is the call's");
+        assert!(why.contains("browser_challenge_state"), "the caller's tool is named: {why}");
+        assert!(!why.contains("browser_evaluate"), "the evaluate it ran as is not: {why}");
     }
 
     /// **Two sessions never drive each other's tab.** The second session's
