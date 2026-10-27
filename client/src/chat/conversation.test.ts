@@ -4096,6 +4096,70 @@ describe('the conversation the chat draws', () => {
     ).toEqual(['turn-u-alpha', 'turn-u-bravo', 'turn-u-charlie']);
   });
 
+  /**
+   * **The live fold and the page's fold can cut one turn at different rows.**
+   * A delivered prompt's result ends a CLI turn where the transcript fold keeps
+   * one - the delivery was pressed into the running turn - so the client holds
+   * two rows where the page has one. The page's first row then carries the
+   * frames between the two cuts itself, and the page row that opens at the
+   * later cut matches the held row whose own leading frames are those same
+   * ones. A merge that read each row's copy alone drew that stretch in both
+   * rows: one section of the conversation, twice.
+   */
+  it('draws the stretch between two different cuts once', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const turnDone = (uuid: string): unknown => ({
+      type: 'result',
+      uuid,
+      subtype: 'success',
+      is_error: false,
+    });
+    server.update({ chat_appended: { key: LEAD, msg: typed('ask') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('one') } });
+    // The CLI ends the first delivered prompt's turn here, and the frames
+    // after it open a row of their own.
+    server.update({ chat_appended: { key: LEAD, msg: turnDone('r-1') } });
+    for (const frame of [
+      typed('midfirst'),
+      said('a'),
+      typed('midsecond'),
+      said('b'),
+      typed('midthird'),
+      said('c'),
+    ]) {
+      server.update({ chat_appended: { key: LEAD, msg: frame } });
+    }
+
+    // The page keeps one turn across the live cut, and cuts at the last row.
+    server.send(
+      page(
+        [
+          {
+            key: 't1',
+            messages: [
+              typed('ask'),
+              said('one'),
+              typed('midfirst'),
+              said('a'),
+              typed('midsecond'),
+              said('b'),
+            ],
+          },
+          { key: 't2', messages: [typed('midthird'), said('c')] },
+        ],
+        null,
+      ),
+    );
+
+    const held = JSON.stringify(get(chat.value).turns);
+    for (const words of ['midfirst', 'midsecond', 'midthird']) {
+      expect(held.split(`"u-${words}"`).length - 1, `${words} is drawn once`).toBe(1);
+    }
+    stop();
+  });
+
   it('replaces a turn whose opening frame carries no id', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
