@@ -593,17 +593,29 @@ impl Workspace {
     /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
     pub fn seed_test_project(&self, name: &str, path: &str) {
-        self.seed_test_project_inner(name, path, None);
+        self.seed_test_project_inner(name, path, None, None);
+    }
+
+    /// [`Workspace::seed_test_project`] with a Slack binding, so a facade
+    /// test can drive the slot-to-workspace resolution. Test-only.
+    pub fn seed_test_project_with_slack_workspace(&self, name: &str, path: &str, workspace: &str) {
+        self.seed_test_project_inner(name, path, None, Some(workspace));
     }
 
     /// [`Workspace::seed_test_project`] with the project's
     /// `max_workers` override, so facade tests can
     /// exercise the override arm of the capacity read. Test-only.
     pub fn seed_test_project_with_max_workers(&self, name: &str, path: &str, max_workers: usize) {
-        self.seed_test_project_inner(name, path, Some(max_workers));
+        self.seed_test_project_inner(name, path, Some(max_workers), None);
     }
 
-    fn seed_test_project_inner(&self, name: &str, path: &str, max_workers: Option<usize>) {
+    fn seed_test_project_inner(
+        &self,
+        name: &str,
+        path: &str,
+        max_workers: Option<usize>,
+        slack_workspace: Option<&str>,
+    ) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
@@ -621,6 +633,7 @@ impl Workspace {
             browser_profile: forge_primitives::browser::ProfileKey::from_parts_for_test(
                 "TestOrg", "default",
             ),
+            slack_workspace: slack_workspace.map(str::to_owned),
         });
     }
 

@@ -3982,6 +3982,25 @@ impl Workspace {
             .cloned()
     }
 
+    /// The Slack workspace bound to `slot`'s project: the project's own
+    /// binding, else its org's. `None` when the slot names no configured
+    /// project or nothing binds one - both leave the Slack tools refusing
+    /// with the key to add.
+    pub(crate) fn slack_workspace_for_slot(&self, slot: &SessionSlot) -> Option<String> {
+        let config = self.config_arc();
+        let find =
+            |project: &LoadedProject| project.org == slot.org() && project.name == slot.project();
+        if let Some(project) = config.projects.iter().find(|project| find(project)) {
+            return project.slack_workspace.clone();
+        }
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(project) = self.test_extra_projects.lock().iter().find(|project| find(project))
+        {
+            return project.slack_workspace.clone();
+        }
+        None
+    }
+
     /// Look up a project by `name` from `forge.toml`. Returns
     /// [`WorkspaceError::ProjectNotFound`] when no project carries
     /// that name.
@@ -10013,6 +10032,7 @@ mod account_stamp_tests {
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
                 .expect("a profile key"),
+            slack_workspace: None,
         }
     }
 
