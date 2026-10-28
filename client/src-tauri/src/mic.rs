@@ -773,9 +773,10 @@ mod tests {
                     warm: Mutex::new(None),
                     opener: Box::new(move |device, carry| {
                         let name = device.unwrap_or("default").to_owned();
-                        // A cold press logs its line naming the device it
-                        // asked for, so this open's own is the one to look
-                        // for - an older press's line cannot answer for it.
+                        // The press's line names the device it asked for; one
+                        // this test asks for only once is what makes this look
+                        // that press's own - a repeated device can be
+                        // answered by an earlier press's line.
                         let asked = format!("requested Some(\"{name}\")");
                         let seen = crate::log_capture::records().iter().any(|line| {
                             line.message.contains("client_mic_press")
@@ -996,10 +997,12 @@ mod tests {
                 ],
                 "the hold for the default re-acquires it, and the press opens nothing",
             );
-            let opening = rig.opening();
-            assert!(
-                opening[0] && opening[1],
-                "each press's line exists while its open runs: {opening:?}",
+            assert_eq!(
+                rig.opening(),
+                vec![true, true, true, false],
+                "the presses asking for a device once see their own line already logged at open; \
+                 the same-pick press's look is answered by the earlier press that asked for it; \
+                 the hold's own open has no press line at all",
             );
 
             let presses: Vec<crate::log_capture::Line> = crate::log_capture::records()

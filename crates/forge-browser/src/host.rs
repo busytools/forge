@@ -1063,6 +1063,8 @@ impl HostRuntime {
             Some(&CefString::from(url)),
             Some(&settings),
             None,
+            // **The global context**: the one whose autofill preferences
+            // `turn_off_autofill` sets.
             None,
         );
         let host = browser.as_ref().and_then(cef::ImplBrowser::host);

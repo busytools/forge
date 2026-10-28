@@ -13,7 +13,7 @@
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
     --line:#222a3c; --ctl:#516590;
     --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
-    --accent:#f47600; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --accent:#f47600; --hot:#ffb058; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
     --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
     --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "Fira Code", ui-monospace, Menlo, monospace;
@@ -69,6 +69,36 @@
   .micb { border: 1px solid var(--line); color: var(--dim); }
   .sendb { border: 1px solid rgba(244,118,0,.45); color: var(--accent); }
   .micb .ic, .sendb .ic { width: 15px; height: 15px; display: block; }
+  /* The take's card is the dock's own, drawn as the composer draws it. */
+  .tc { align-self: flex-start; display: flex; max-width: 100%;
+    align-items: center; gap: 10px; padding: 5px 10px; margin-bottom: 8px;
+    border-radius: 999px; font-family: var(--mono); font-size: var(--fs-label);
+    white-space: nowrap; border: 1px solid rgba(244,118,0,.45);
+    background: linear-gradient(180deg, #1b1622, #12161f);
+    box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  /* The take takes the line the field gave up, and the graph takes the
+     line's room: the card grows to what the controls leave. */
+  .feedback .tc { align-self: center; margin: 0; border: 0; background: none;
+    box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
+  .tc .dot { width: 7px; height: 7px; flex: none; border-radius: 50%;
+    background: var(--accent); }
+  .tc .clock { color: var(--text); }
+  .tc .wave { flex: 1 1 auto; min-width: 0; height: 26px; align-self: center; }
+  .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
+    vector-effect: non-scaling-stroke; }
+  .tc .fr, .tc .kb { color: var(--dim); }
+  .tc .pace { color: var(--ok); }
+  .tc .x { color: var(--dim); }
+  /* What a take pressed from the bar is doing, above the row its mic lives
+     in: the composer's own band is behind the picture. */
+  .tb-line { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    border-top: 1px solid var(--line); background: var(--s2); font-size: var(--fs-data); }
+  .tb-line.opening { color: var(--muted); }
+  .tb-line.bad { color: var(--bad); }
+  .tb-line .ring { width: 9px; height: 9px; flex: none; border-radius: 50%;
+    border: 2px solid var(--s3); border-top-color: var(--accent);
+    animation: tbload 1s linear infinite; }
+  @keyframes tbload { to { transform: rotate(360deg); } }
 
   /* The page area: the page itself, no browser chrome. */
   .stage { position: relative; flex: 1; min-height: 340px; background: #fdfbf7;
@@ -309,6 +339,75 @@
     so the session hears what went wrong and carries on without reading it as a decline. The mic
     is the composer's own, so a take here is the same capture the dock draws. Back to chat closes
     the takeover and leaves the hand-off parked, the session still waiting.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap"><b>a take in the feedback line</b> - the field gives its line up to the card</div>
+    <div class="takeover" style="min-height: 0;">
+      <div class="bar">
+        <span class="bt d">back to chat</span>
+        <span class="bnav">
+          <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+          <span class="bt arrow" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        </span>
+        <span class="btitle">browser hand-off &middot; tab 2</span>
+        <span class="bt bpick" title="the profile's tabs">2 &middot; Senior Rust engineer &middot; Busytools/forge/lead
+          <span class="car">&#9662;</span></span>
+        <span class="bacts">
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
+      </div>
+      <div class="feedback">
+        <span class="tc">
+          <span class="dot" aria-hidden="true"></span>
+          <span class="clock">0:12</span>
+          <svg class="wave" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path class="edge" d="M 0 70 C 8 30, 16 62, 24 48 S 40 76, 48 40 S 64 66, 72 52 S 88 44, 100 58"/></svg>
+          <span class="fr">612 fr</span>
+          <span class="kb">382.0 KB</span>
+          <span class="pace">31 KB/s</span>
+          <span class="x" aria-label="abandon the take">&#10005;</span>
+        </span>
+        <span class="micb" aria-label="stop dictating"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+      </div>
+    </div>
+    <div class="tnote">a take replaces the field with the dock's own card, and the card takes
+    the line: it grows to everything the mic leaves and its graph takes that room, so what the
+    take is doing is the row's meter rather than a pill in an otherwise empty row. The mic is
+    the press that ends the take, and the card's <b>&#10005;</b> abandons it without sending.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap"><b>a take still opening</b> - the press landed, and nothing else would say so</div>
+    <div class="takeover" style="min-height: 0;">
+      <div class="bar">
+        <span class="bt d">back to chat</span>
+        <span class="bnav">
+          <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+          <span class="bt arrow" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        </span>
+        <span class="btitle">browser hand-off &middot; tab 2</span>
+        <span class="bt bpick" title="the profile's tabs">2 &middot; Senior Rust engineer &middot; Busytools/forge/lead
+          <span class="car">&#9662;</span></span>
+        <span class="bacts">
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
+      </div>
+      <div class="tb-line opening"><span class="ring" aria-hidden="true"></span>opening the microphone&hellip;</div>
+      <div class="feedback">
+        <input class="fld" value="the upload form rejected the file" aria-label="feedback">
+        <span class="micb" aria-label="dictate the feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        <span class="sendb" aria-label="send the feedback and end the hand-off"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
+      </div>
+    </div>
+    <div class="tnote">the card draws from this page's own take, which exists only once the
+    capture has opened; until then the row keeps its field, mic and send, and nothing says the
+    take is running, so a slow open reads as a dead press. The line is drawn only once the open
+    outlasts a quick one - a fast press is not a state to flash - and it goes when the card
+    arrives.</div>
   </div>
 
   <h2>Before Open, and the strip</h2>

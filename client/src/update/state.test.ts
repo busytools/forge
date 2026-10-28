@@ -28,6 +28,9 @@ const mockRestart = vi.mocked(restartApp);
 const mockPublished = vi.mocked(latestPublished);
 const mockIsTauri = vi.mocked(isTauri);
 
+/** The store's value at import, before any test resets it: the launch state. */
+const initial = get(updateState);
+
 /** The release after the one this build is, so the test outlives a bump. */
 function nextRelease(): string {
   const parts = versionParts(CLIENT_VERSION);
@@ -38,10 +41,29 @@ function nextRelease(): string {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  updateState.set({ stage: 'current' });
+  updateState.set({ stage: 'checking' });
 });
 
 describe('watchUpdate', () => {
+  /**
+   * The launch state is the check itself, not a build that is current: on the
+   * phone the check is an HTTP fetch, and a page that starts on `current` is
+   * silent for however long that fetch takes.
+   */
+  it('starts on the check rather than on a build that is current', () => {
+    expect(initial).toEqual({ stage: 'checking' });
+  });
+
+  it('stays on the check while it is in flight', () => {
+    mockIsTauri.mockReturnValue(true);
+    mockCheck.mockImplementation(() => new Promise(() => {}));
+
+    void watchUpdate();
+
+    expect(mockCheck, 'no check was ever asked for').toHaveBeenCalledTimes(1);
+    expect(get(updateState)).toEqual({ stage: 'checking' });
+  });
+
   it('names the version an update would install, in a shell', async () => {
     mockIsTauri.mockReturnValue(true);
     mockCheck.mockResolvedValue('1.0.116');
@@ -58,6 +80,31 @@ describe('watchUpdate', () => {
     await watchUpdate();
 
     expect(get(updateState)).toEqual({ stage: 'current' });
+  });
+
+  /**
+   * "No update" and "could not check" must not draw identically: a check
+   * that failed carries the shell's own words to the header.
+   */
+  it("draws a check that could not run, in the shell's words", async () => {
+    mockIsTauri.mockReturnValue(true);
+    mockCheck.mockRejectedValue('No command check found for plugin FileNamePlugin');
+
+    await watchUpdate();
+
+    expect(get(updateState)).toEqual({
+      stage: 'check-failed',
+      detail: 'No command check found for plugin FileNamePlugin',
+    });
+  });
+
+  it('carries a non-string rejection the same way', async () => {
+    mockIsTauri.mockReturnValue(true);
+    mockCheck.mockRejectedValue(new Error('offline'));
+
+    await watchUpdate();
+
+    expect(get(updateState)).toEqual({ stage: 'check-failed', detail: 'offline' });
   });
 
   /**

@@ -47,6 +47,23 @@ pub fn next_forged_prompt_id() -> String {
     mint("forge_nudge")
 }
 
+/// Generate a prompt id for the handoff's procedure turn: the judgment prompt
+/// forge itself writes, which asks the handing-over session to run the handoff
+/// skill.
+///
+/// **The extra segment sits under the machinery's prefix on purpose.** Every
+/// row that reads `forge_nudge_` to tell the machinery's words from the
+/// reader's keeps answering the same way, while a view that knows the longer
+/// prefix draws the procedure as its own row. A client that does not know it
+/// falls back to the ordinary machinery row rather than to the reader's own.
+pub fn next_handoff_prompt_id() -> String {
+    mint(HANDOFF_PROMPT_PREFIX)
+}
+
+/// The prefix [`next_handoff_prompt_id`] mints under, shared so a reader
+/// matching the procedure row and the mint cannot drift apart.
+pub const HANDOFF_PROMPT_PREFIX: &str = "forge_nudge_handoff";
+
 /// The mint itself: `<prefix>_<counter>_<hex8>`, with the counter-derived
 /// suffix standing in when the entropy source is unreachable.
 fn mint(prefix: &str) -> String {
@@ -76,5 +93,15 @@ mod tests {
     fn the_minted_prefixes_separate_the_machinery_from_the_reader() {
         assert!(next_prompt_id().starts_with("forge_prompt_"), "a reader's send");
         assert!(next_forged_prompt_id().starts_with("forge_nudge_"), "the machinery's own");
+    }
+
+    /// **The procedure's id is still the machinery's.** Its marker is the extra
+    /// segment, so every existing check keeps matching it while a view can pick
+    /// it out; a mint outside `forge_nudge_` would redraw it as the reader's.
+    #[test]
+    fn the_procedure_prompt_is_a_machinery_row_with_its_own_marker() {
+        let id = next_handoff_prompt_id();
+        assert!(id.starts_with("forge_nudge_handoff_"), "the procedure's own marker: {id}");
+        assert!(id.starts_with("forge_nudge_"), "and still the machinery's: {id}");
     }
 }

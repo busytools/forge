@@ -559,6 +559,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(android::init())
+        .plugin(android::init_file_names())
         .plugin(micstate::init())
         .plugin(launch::init())
         .invoke_handler(tauri::generate_handler![
@@ -755,6 +756,14 @@ fn restart_app(app: tauri::AppHandle) {
     app.restart()
 }
 
+/// The plugin name each Android class is registered under - one name per class,
+/// because tauri keys the Android plugin map by the builder's name and two
+/// classes under one name would replace each other's commands.
+#[cfg(any(test, target_os = "android"))]
+const ANDROID_UPDATE_PLUGIN: &str = "androidupdate";
+#[cfg(any(test, target_os = "android"))]
+const ANDROID_FILE_NAME_PLUGIN: &str = "androidfilenames";
+
 /// The phone's half of the updater, as a Kotlin plugin the commands below
 /// bridge to. Everything the update does on Android is Android's own: the
 /// manifest fetch, the download, the signer read of this install, and the
@@ -799,10 +808,20 @@ mod android {
     }
 
     pub fn init<R: Runtime>() -> TauriPlugin<R> {
-        Builder::new("androidupdate")
+        Builder::new(super::ANDROID_UPDATE_PLUGIN)
             .setup(|app, api| {
                 let handle = api.register_android_plugin("dev.vedhavyas.forge", "UpdatePlugin")?;
                 app.manage(Updater(handle, Mutex::new(None)));
+                Ok(())
+            })
+            .build()
+    }
+
+    /// The name lookup's plugin, under its own name for the reason
+    /// [`super::ANDROID_FILE_NAME_PLUGIN`] carries.
+    pub fn init_file_names<R: Runtime>() -> TauriPlugin<R> {
+        Builder::new(super::ANDROID_FILE_NAME_PLUGIN)
+            .setup(|app, api| {
                 let names = api.register_android_plugin("dev.vedhavyas.forge", "FileNamePlugin")?;
                 app.manage(FileName(names));
                 Ok(())
@@ -899,7 +918,7 @@ fn record(log_file: Option<&std::path::Path>, line: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::attention;
+    use super::{ANDROID_FILE_NAME_PLUGIN, ANDROID_UPDATE_PLUGIN, attention};
 
     /// **A blur is the moment the rule must look again**, and no frame
     /// carries it. A gain of focus asks the same review; an event that says
@@ -935,5 +954,51 @@ mod tests {
         );
         assert!(keeps(Level::Warn, "forge_client::socket"), "a warning always crosses");
         assert!(keeps(Level::Info, "forge_client::socket"), "so does `Info`");
+    }
+
+    /// Two Android classes under one plugin name replace each other's commands:
+    /// tauri keys the Android plugin map by the builder's name, which is why
+    /// the update check dispatched into the file-name plugin and failed.
+    #[test]
+    fn every_android_plugin_class_keeps_a_name_of_its_own() {
+        assert_ne!(
+            ANDROID_UPDATE_PLUGIN, ANDROID_FILE_NAME_PLUGIN,
+            "two Android plugin classes share one tauri plugin name again"
+        );
+    }
+
+    /// **The shipped logger, built.** The tests' capture keeps by [`keeps`] on
+    /// its own, so nothing above reached `client_logger`: swapping its level
+    /// or dropping its filter left every test green while `forge.log` lost the
+    /// press line. This builds the dispatch the app installs, through the same
+    /// `split` -> `acquire_logger` -> `into_dispatch` path.
+    #[test]
+    fn the_shipped_logger_keeps_the_press_line_and_drops_its_neighbours() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tauri_plugin_log::log::{Level, Log as _, Metadata};
+
+        use super::{LOG_MAX, client_logger, mic};
+
+        fn metadata(level: Level, target: &str) -> Metadata<'_> {
+            let mut builder = Metadata::builder();
+            builder.level(level).target(target).build()
+        }
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("a mock app builds");
+        let (_plugin, max, logger) =
+            client_logger().split(app.handle()).expect("the logger builds");
+        assert_eq!(max, LOG_MAX, "the facade allows what the filter keeps");
+        assert!(
+            logger.enabled(&metadata(Level::Debug, mic::LOG_TARGET)),
+            "the press line is kept at `debug`",
+        );
+        assert!(
+            !logger.enabled(&metadata(Level::Debug, "forge_client::socket")),
+            "an unnamed target's debug line is dropped",
+        );
+        assert!(
+            logger.enabled(&metadata(Level::Info, "forge_client::socket")),
+            "and the baseline is still written",
+        );
     }
 }

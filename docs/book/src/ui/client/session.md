@@ -198,10 +198,19 @@ documents, reviews, System One decisions and browser pages it used, so work a
 successor cannot infer from the transcript it does not hold does not vanish
 with the handover. The previous
 conversation stays above it, so a swap reads as a seam in the page rather
-than a seat that emptied, and the old session is one `/resume` away. A
-client that attaches after the swap draws the row from the seat's record:
-it sees where the work continues, not the closed turns above it, which
-belong to the client that watched them.
+than a seat that emptied, and the old session is one `/resume` away.
+
+**The turn that ran the handoff draws above the row.** Its first row is the
+procedure forge wrote - the prompt that asks the handing-over session to run
+the handoff skill - drawn under the handoff's own mark rather than as an
+ordinary machinery nudge, closed on its name and open on the whole text.
+Below it are the calls the turn made, the exit call among them, so the row
+is the end of work the reader can read rather than a seam with nothing
+above it. **That turn comes from the handoff record, not from the
+successor's transcript**, because it ran in the session that left: a client
+that attached after the swap, or reloaded, draws exactly what the client
+that watched the swap drew, and the closed conversation above it stays with
+the client that watched it.
 
 **A row is drawn before the list has measured it.** The virtualised list
 places a row on an estimate-derived offset and corrects it the moment the

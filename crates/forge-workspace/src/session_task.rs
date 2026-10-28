@@ -1752,7 +1752,11 @@ impl SessionTask {
         }
         let token = workspace.begin_swap(&self.key);
         self.domain.lock().handoff.swap_token = Some(token);
-        let uuid = forge_sdk::request_id::next_forged_prompt_id();
+        // **The procedure's own marker.** The judgment prompt is the handoff
+        // turn's opener, so a view draws it as the procedure rather than as an
+        // ordinary machinery nudge; the longer prefix is that marker and still
+        // reads as the machinery's to every existing check.
+        let uuid = forge_sdk::request_id::next_handoff_prompt_id();
         {
             let mut domain = self.domain.lock();
             domain.handoff.awaiting = true;
@@ -4625,6 +4629,7 @@ mod tests {
                 max_tokens: Some(1_000_000),
                 at_percent: 85,
                 brief: forge_primitives::HandoffBrief::default(),
+                judgment_turn: Vec::new(),
                 transcript_path: "/tmp/old.jsonl".to_owned(),
                 at: "2026-10-24T08:00:00Z".to_owned(),
                 cycle: forge_primitives::HandoffCycle::default(),
@@ -4681,6 +4686,7 @@ mod tests {
                 max_tokens: Some(1_000_000),
                 at_percent: 85,
                 brief: forge_primitives::HandoffBrief::default(),
+                judgment_turn: Vec::new(),
                 transcript_path: "/tmp/old.jsonl".to_owned(),
                 at: "2026-10-24T08:00:00Z".to_owned(),
                 cycle: forge_primitives::HandoffCycle::default(),
