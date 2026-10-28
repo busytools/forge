@@ -153,6 +153,21 @@ read as one system.
   never asked for.
 - **A settled failure with nothing to open onto** says so in words rather
   than drawing an empty body.
+- **A frame the page has no face for yet draws as itself, marked
+  provisional.** An unknown top-level frame and an unknown content block, and
+  the CLI's own system lines for a permission refusal, an API error, an
+  informational line and a notification, each draw as a notice whose mark is
+  the wire's own type. The open body lists what the frame carried as one-line
+  labelled values - the tool and call a refusal names, an error's message,
+  status and retry, an unknown frame's fields - and the frame itself sits
+  behind a second control under them, so the payload stays reachable while
+  the row's face is the facts. The frame is seen the day it arrives and can
+  be given a real face later, rather than being dropped. A refusal also
+  settles the call it names, which no result frame will ever settle, and an
+  assistant question nobody answered keeps its call row marked `unanswered`
+  once the turn has closed. Until then the dock is the question's row, so the
+  mark waits for the close; after it, the answer card never drew and the dock
+  has cleared, and the call row is the only trace left.
 
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it
@@ -173,7 +188,15 @@ successor knows what to resume - then the judgment the handing-over session
 wrote. **The brief is one
 table.** Each section takes its own labelled row, and the judgment's five
 headings sit on the same label column; the value takes the width the pane has
-and wraps inside its own row. The previous
+and wraps inside its own row. Under the meta sit the record's own numbers:
+when the swap happened, what the cycle counted (requests, turns and prompt
+tokens) and how the successor's first turns went once they have been
+measured - an unmeasured successor is absent rather than a row of zeros. The
+ground truth names the forge actions the session took as well as its files
+and commands: one line each for the agents, tasks, crons, Slack, Gotify,
+documents, reviews, System One decisions and browser pages it used, so work a
+successor cannot infer from the transcript it does not hold does not vanish
+with the handover. The previous
 conversation stays above it, so a swap reads as a seam in the page rather
 than a seat that emptied, and the old session is one `/resume` away. A
 client that attaches after the swap draws the row from the seat's record:

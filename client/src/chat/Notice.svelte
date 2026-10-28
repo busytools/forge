@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Chevron from '../components/Chevron.svelte';
   import type { Notice } from './units';
 
   /**
@@ -8,6 +9,13 @@
    * The severity is the word the row leads with rather than a colour alone,
    * because a reader who cannot see the ground still has to know whether this
    * is a delivery or a failure.
+   *
+   * **A provisional notice opens onto the frame's own facts.** A frame this
+   * build has no face for yet draws as itself, marked with its own type, and
+   * the open body lists what the frame carried as labelled values - the raw
+   * JSON was the first cut's face, and a reader asked for the facts instead
+   * (Ved, 2026-10-28). The frame itself stays one control further in, so the
+   * decision about its real face is still made from what arrived (rule 25).
    */
   let { notice }: { notice: Notice } = $props();
 
@@ -17,15 +25,51 @@
   const word = $derived(
     notice.severity === 'warning' ? 'Warning' : notice.severity === 'error' ? 'Error' : 'Info',
   );
+
+  /** The raw frame is only rendered once its own control is open. */
+  let rawOpen = $state(false);
 </script>
 
-<div class="notice {tone}">
-  {#if notice.chip !== undefined}
-    <span class="chip">{notice.chip}</span>
+{#snippet head()}
+  {#if notice.mark !== undefined}
+    <span class="mark">{notice.mark}</span>
   {/if}
   <span class="sev">{word}</span>
   {notice.text}
-  {#if notice.sub !== undefined}
-    <span class="sub2">{notice.sub}</span>
-  {/if}
-</div>
+{/snippet}
+
+{#if notice.raw === undefined}
+  <div class="notice {tone}">
+    {#if notice.chip !== undefined}
+      <span class="chip">{notice.chip}</span>
+    {/if}
+    {@render head()}
+    {#if notice.sub !== undefined}
+      <span class="sub2">{notice.sub}</span>
+    {/if}
+  </div>
+{:else}
+  <details class="notice {tone}">
+    <summary>
+      {@render head()}
+      {#if notice.sub !== undefined}
+        <span class="sub2">{notice.sub}</span>
+      {/if}
+      {#if notice.chip !== undefined}
+        <span class="chip">{notice.chip}</span>
+      {/if}
+      <Chevron />
+    </summary>
+    <div class="nbody">
+      {#each notice.fields ?? [] as field (field.label)}
+        <div class="nfact">
+          <span class="k">{field.label}</span><span class="v">{field.value}</span>
+        </div>
+      {/each}
+      <details class="raw" bind:open={rawOpen}>
+        <summary><Chevron />raw frame</summary>
+        {#if rawOpen}<pre>{notice.raw}</pre>{/if}
+      </details>
+    </div>
+  </details>
+{/if}

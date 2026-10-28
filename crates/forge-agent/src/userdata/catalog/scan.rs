@@ -156,10 +156,11 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
 ///
 /// **The row rule's other half, and the one place it is stated.** A frame
 /// whose kind no row round-trips - a `Result`, a thinking-token frame, a
-/// `system` subtype other than the two kept - is one the live stream emits and
-/// the CLI never writes, so a copy holding it counts a frame the file counts
-/// no row for. That difference is what a page below the floor has to be
-/// numbered through, by whoever still holds the frames the drops took.
+/// `system` subtype whose row belongs to another surface - is one the live
+/// stream emits and the CLI never writes, so a copy holding it counts a frame
+/// the file counts no row for. That difference is what a page below the floor
+/// has to be numbered through, by whoever still holds the frames the drops
+/// took.
 ///
 /// **A live hook frame has no row, though the read now serves hook rows.** The
 /// CLI mints three ids for one run - the attachment row's uuid, the live
@@ -168,28 +169,94 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> SessionHistory {
 /// synthesizes is a copy of the run, not the frame. The answer stays false,
 /// which is what keeps a stop off a frame the file cannot be asked for.
 pub fn has_a_transcript_row(message: &forge_primitives::Message) -> bool {
+    use forge_primitives::Message;
     // The row rule drops a sub-agent's frame, so a frame naming one has no
     // row either, whatever its kind: a numbering that counted it as having
     // one would be off for every page below it.
     let parent = match message {
-        forge_primitives::Message::User { parent_tool_use_id, .. }
-        | forge_primitives::Message::Assistant { parent_tool_use_id, .. }
-        | forge_primitives::Message::StopHookSummary { parent_tool_use_id, .. } => {
-            parent_tool_use_id.as_deref()
-        }
+        Message::User { parent_tool_use_id, .. }
+        | Message::Assistant { parent_tool_use_id, .. }
+        | Message::StopHookSummary { parent_tool_use_id, .. } => parent_tool_use_id.as_deref(),
         _ => None,
     };
     if forge_primitives::names_a_dispatch(parent) {
         return false;
     }
-    matches!(
-        message,
-        forge_primitives::Message::User { .. }
-            | forge_primitives::Message::Assistant { .. }
-            | forge_primitives::Message::StopHookSummary { .. }
-            | forge_primitives::Message::CompactBoundary { .. }
-    )
+    match message {
+        Message::User { .. }
+        | Message::Assistant { .. }
+        | Message::StopHookSummary { .. }
+        | Message::CompactBoundary { .. }
+        | Message::PermissionDenied { .. }
+        | Message::Notification { .. }
+        // Typed system subtypes whose rows the read keeps: the conversation
+        // draws a turn duration, and a dispatch's progress is read off the
+        // row the scan keeps, so the numbering must count it.
+        | Message::TurnDuration { .. }
+        | Message::TaskProgress { .. } => true,
+        // A generic `system` row has a row unless its subtype is one whose
+        // row is drawn elsewhere: the read keeps the set the client draws.
+        Message::System { subtype, .. } => {
+            !SYSTEM_ROWS_DRAWN_ELSEWHERE.contains(&subtype.as_str())
+        }
+        // An unknown top-level frame has a row unless its type is one of the
+        // transcript's own bookkeeping kinds, which no live stream emits.
+        Message::Unknown { type_str, .. } => !UNSERVED_ROWS.contains(&type_str.as_str()),
+        _ => false,
+    }
 }
+
+/// The `system` subtypes whose row is not the conversation's: the task
+/// lifecycle lands on its call's row, the background-task and command lists
+/// feed their own surfaces, the handshake is not content, and a hook run
+/// draws from its attachment row. **The client filters the same list** (its
+/// own `SYSTEM_DRAWN_ELSEWHERE`), because the read and the live path are one
+/// obligation - a subtype added here belongs there, and the other way round.
+const SYSTEM_ROWS_DRAWN_ELSEWHERE: [&str; 11] = [
+    "task_started",
+    "task_updated",
+    "task_notification",
+    "background_tasks_changed",
+    "commands_changed",
+    "init",
+    "status",
+    "thinking_tokens",
+    "hook_started",
+    "hook_progress",
+    "hook_response",
+];
+
+/// Top-level rows the read does not serve, of two kinds: the transcript's
+/// own bookkeeping, which the CLI writes to disk and never streams, and the
+/// wire types that live only on the stream and have no durable row.
+///
+/// **A row not named here is an unknown type, and draws as itself.** These
+/// are the types the read has always dropped, so keeping one would change
+/// what a reopened conversation holds rather than restore what a live one
+/// drew.
+const UNSERVED_ROWS: [&str; 18] = [
+    // Bookkeeping the CLI writes and never streams.
+    "last-prompt",
+    "atis-latch",
+    "queue-operation",
+    "worktree-state",
+    "mode",
+    "pr-link",
+    "tag",
+    "permission-mode",
+    "cost-state",
+    "ai-title",
+    "file-history-snapshot",
+    "summary",
+    // Wire-only kinds: a row of one of these is a fixture's or an artefact's,
+    // not something the CLI persists.
+    "result",
+    "error",
+    "rate_limit_event",
+    "command_lifecycle",
+    "stream_event",
+    "tool_progress",
+];
 
 /// One transcript row as the session's message, or `None` for a row that is
 /// not one. The flag says the row is a compaction boundary, which the read
@@ -269,11 +336,32 @@ fn transcript_row(value: &Value) -> Option<(SessionMessage, bool)> {
         Some("system")
             if value.get("subtype").and_then(Value::as_str) == Some("stop_hook_summary") =>
         {
-            let mut frame = value.clone();
-            if let Some(record) = frame.as_object_mut() {
-                record.insert("session_id".into(), Value::String(session_in_row(value)));
-            }
-            (SessionMessageKind::System, Some(frame))
+            (SessionMessageKind::System, Some(wire_session_frame(value)))
+        }
+        // **The system rows the live conversation draws.** A refusal, a
+        // failed API call, an informational line, a notification and any
+        // other subtype whose row is the conversation's are each a line the
+        // session was told and the CLI persists, and the scan dropped every
+        // system row but the two above - so a resumed seat or a reopened page
+        // lost frames the live view had (rule 25). Kept whole, in the shape
+        // the wire sends, with the wire's own spelling of the session stamped
+        // on. A row whose subtype draws elsewhere keeps dropping here, the
+        // same list the client filters.
+        Some("system")
+            if value
+                .get("subtype")
+                .and_then(Value::as_str)
+                .is_none_or(|subtype| !SYSTEM_ROWS_DRAWN_ELSEWHERE.contains(&subtype)) =>
+        {
+            (SessionMessageKind::System, Some(wire_session_frame(value)))
+        }
+        // **A top-level row this build has no kind for draws as itself.** The
+        // row is kept whole and decoded by the same decoder the wire feeds -
+        // `messages_from_rows` presents it under the `system` arm, the one
+        // that hands a frame straight to `Message`. The rows the read has
+        // never served stay out (see [`UNSERVED_ROWS`]).
+        Some(other) if other != "system" && !UNSERVED_ROWS.contains(&other) => {
+            (SessionMessageKind::System, Some(value.clone()))
         }
         _ => return None,
     };
@@ -323,6 +411,20 @@ fn session_in_row(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// A kept row carrying the session under the spelling the live frame sends.
+///
+/// **The CLI writes `sessionId` and the wire sends `session_id`.** Stamping
+/// the wire's spelling onto a clone that still held the CLI's put both in the
+/// frame, so the raw a reader opens showed the session twice (Ved, 2026-10-28).
+fn wire_session_frame(value: &Value) -> Value {
+    let mut frame = value.clone();
+    if let Some(record) = frame.as_object_mut() {
+        record.remove("sessionId");
+        record.insert("session_id".into(), Value::String(session_in_row(value)));
+    }
+    frame
 }
 
 /// Which of the facts the kept boundary frame reads the row did not yield -
@@ -760,8 +862,15 @@ pub(crate) fn messages_from_rows(
             forge_primitives::Message::Assistant { session_id: s, .. }
             | forge_primitives::Message::User { session_id: s, .. }
             | forge_primitives::Message::StopHookSummary { session_id: s, .. }
-            | forge_primitives::Message::CompactBoundary { session_id: s, .. } => {
+            | forge_primitives::Message::CompactBoundary { session_id: s, .. }
+            | forge_primitives::Message::PermissionDenied { session_id: s, .. }
+            | forge_primitives::Message::Notification { session_id: s, .. } => {
                 session_id.clone_into(s);
+            }
+            // The generic system rows the read keeps carry the same field,
+            // optional because the CLI omits it on some subtypes.
+            forge_primitives::Message::System { session_id: s, .. } => {
+                *s = Some(session_id.to_owned());
             }
             _ => {}
         }
@@ -2158,7 +2267,7 @@ mod tests {
 {"type":"system","subtype":"compact_boundary","uuid":"cb1","session_id":"s1","compactMetadata":{"trigger":"auto","preTokens":1002459,"postTokens":31253}}
 {"type":"assistant","message":{"role":"assistant","content":[]},"uuid":"as1","session_id":"s1"}
 {"type":"system","subtype":"compact_boundary","uuid":"cb2","session_id":"s1","compactMetadata":{"trigger":"manual","preTokens":53903,"postTokens":9149}}
-{"type":"system","subtype":"other_thing","uuid":"x1","session_id":"s1"}
+{"type":"system","subtype":"init","uuid":"x1","session_id":"s1"}
 "#;
         let history = parse_session_messages(jsonl.as_bytes());
         assert_eq!(
@@ -2222,7 +2331,7 @@ mod tests {
     fn parse_session_messages_keeps_a_stop_hook_summary() {
         let jsonl = r#"{"type":"user","message":{"role":"user","content":"one"},"uuid":"u1","session_id":"s1"}
 {"type":"system","subtype":"stop_hook_summary","hookCount":2,"hookInfos":[{"command":"just fmt","durationMs":1400},{"command":"just check","durationMs":62000}],"hookErrors":[],"hasOutput":true,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"toolu_hook","timestamp":"2026-09-04T00:57:38.264Z","uuid":"h1","sessionId":"s1","cwd":"/proj"}
-{"type":"system","subtype":"other_thing","uuid":"x1","session_id":"s1"}
+{"type":"system","subtype":"init","uuid":"x1","session_id":"s1"}
 "#;
         let history = parse_session_messages(jsonl.as_bytes());
 
@@ -2247,6 +2356,187 @@ mod tests {
         assert_eq!(hook_infos.len(), 2, "and one entry per hook behind it");
         assert_eq!(hook_infos[0].command, "just fmt", "each naming what it ran");
         assert_eq!(hook_infos[1].duration_ms, Some(62000), "and how long it took");
+    }
+
+    /// **The read serves the frames the live conversation draws.** A
+    /// permission refusal, an API error, an informational line and a
+    /// notification are rows the CLI persists, and the scan kept no system
+    /// row but its two - so a resumed seat or a reopened page lost lines the
+    /// live view had. A top-level type this build has no variant for arrives
+    /// as itself, exactly as the live decoder surfaces it, while the
+    /// transcript's own bookkeeping rows still stay out of the conversation.
+    #[test]
+    fn parse_session_messages_keeps_the_system_rows_the_live_view_draws() {
+        let jsonl = r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_1","decision_reason_type":"other","decision_reason":"Contains simple_expansion","message":"Contains simple_expansion","uuid":"p1","sessionId":"s1","timestamp":"2026-10-26T10:00:00.000Z"}
+{"type":"system","subtype":"api_error","level":"error","error":{"message":"502 upstream request failed","status":502},"retryInMs":610,"uuid":"e1","sessionId":"s1","timestamp":"2026-10-26T10:00:01.000Z"}
+{"type":"system","subtype":"informational","content":"Goal cleared","level":"warning","uuid":"i1","sessionId":"s1","timestamp":"2026-10-26T10:00:02.000Z"}
+{"type":"system","subtype":"notification","text":"a stop hook errored","priority":"immediate","uuid":"n1","sessionId":"s1","timestamp":"2026-10-26T10:00:03.000Z"}
+{"type":"widget_state","widget":{"name":"counter"},"uuid":"w1","sessionId":"s1","timestamp":"2026-10-26T10:00:04.000Z"}
+{"type":"worktree-state","worktree":{},"uuid":"ws1"}
+{"type":"mode","mode":"default","uuid":"m1"}
+{"type":"system","subtype":"turn_duration","durationMs":10,"uuid":"t1","sessionId":"s1"}
+"#;
+        let history = parse_session_messages(jsonl.as_bytes());
+        assert_eq!(
+            history.messages.iter().map(|row| row.uuid.as_str()).collect::<Vec<_>>(),
+            // `t1` is a subtype with no face of its own yet: the client draws
+            // it provisionally, so the read keeps it too.
+            ["p1", "e1", "i1", "n1", "w1", "t1"],
+            "the live rows are kept, and no bookkeeping row is",
+        );
+
+        let messages = messages_from_rows(history.messages, "s1");
+        assert!(
+            matches!(
+                &messages[0],
+                forge_primitives::Message::PermissionDenied { tool_use_id, session_id, .. }
+                    if tool_use_id == "toolu_1" && session_id == "s1"
+            ),
+            "the refusal decodes typed, under the session the caller names: {:?}",
+            messages[0],
+        );
+        assert!(
+            matches!(
+                &messages[1],
+                forge_primitives::Message::System { subtype, .. } if subtype == "api_error"
+            ),
+            "the api error decodes as the generic system frame: {:?}",
+            messages[1],
+        );
+        assert!(
+            matches!(
+                &messages[2],
+                forge_primitives::Message::System { subtype, .. } if subtype == "informational"
+            ),
+            "and so does the informational line: {:?}",
+            messages[2],
+        );
+        assert!(
+            matches!(
+                &messages[3],
+                forge_primitives::Message::Notification { text, .. }
+                    if text == "a stop hook errored"
+            ),
+            "the notification decodes typed: {:?}",
+            messages[3],
+        );
+        assert!(
+            matches!(
+                &messages[4],
+                forge_primitives::Message::Unknown { type_str, raw }
+                    if type_str == "widget_state" && raw["widget"]["name"] == "counter"
+            ),
+            "an unknown top-level row arrives as itself, payload and all: {:?}",
+            messages[4],
+        );
+        assert!(
+            matches!(&messages[5], forge_primitives::Message::TurnDuration { ms: 10, .. }),
+            "a system subtype with no face of its own still round-trips: {:?}",
+            messages[5],
+        );
+
+        let frame = |line: &str| -> forge_primitives::Message {
+            serde_json::from_value(serde_json::from_str(line).expect("json"))
+                .expect("a decodable frame")
+        };
+        for served in [
+            r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"t","decision_reason_type":"other","decision_reason":"r","message":"r","uuid":"p","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"api_error","error":{"message":"down"},"uuid":"e","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"informational","content":"c","uuid":"i","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"notification","text":"t","uuid":"n","session_id":"s"}"#,
+            // A typed system subtype the read keeps while another surface
+            // draws it: the numbering has to count its row as the scan does.
+            r#"{"type":"system","subtype":"task_progress","task_id":"t","description":"mapping","usage":{"total_tokens":1,"tool_uses":1,"duration_ms":1},"uuid":"tp","session_id":"s"}"#,
+        ] {
+            assert!(
+                has_a_transcript_row(&frame(served)),
+                "a frame the read serves counts as having a row: {served}",
+            );
+        }
+        assert!(
+            !has_a_transcript_row(&frame(
+                r#"{"type":"system","subtype":"init","uuid":"t","session_id":"s"}"#,
+            )),
+            "a system subtype the read drops still counts as no row",
+        );
+        assert!(
+            !has_a_transcript_row(&frame(
+                r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":100,"estimated_tokens_delta":10,"uuid":"k","session_id":"s"}"#,
+            )),
+            "the thinking counter is a report figure, not a row",
+        );
+        assert!(
+            has_a_transcript_row(&frame(
+                r#"{"type":"system","subtype":"turn_duration","durationMs":1,"uuid":"t","session_id":"s"}"#,
+            )),
+            "and a subtype the client draws provisionally has its row",
+        );
+    }
+
+    /// **One spelling of the session in a read frame.** The CLI writes
+    /// `sessionId` on a row and the wire sends `session_id`; a kept row that
+    /// carried both named the session twice, which is what a reader expanding
+    /// a provisional row saw raw (Ved, 2026-10-28). The scan drops the row's
+    /// own spelling, so the read frame is shaped like the live one.
+    #[test]
+    fn a_kept_system_row_carries_one_session_spelling() {
+        let jsonl = r#"{"type":"system","subtype":"api_error","error":{"message":"down"},"uuid":"e1","sessionId":"s1","timestamp":"2026-10-28T10:00:00.000Z"}
+{"type":"system","subtype":"stop_hook_summary","hookCount":0,"hookInfos":[],"hookErrors":[],"hasOutput":false,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"toolu_h","uuid":"h1","sessionId":"s1","timestamp":"2026-10-28T10:00:01.000Z"}
+"#;
+        let frames = messages_from_rows(parse_session_messages(jsonl.as_bytes()).messages, "s1");
+        assert_eq!(frames.len(), 2, "both kept system rows reach the frame");
+        for (at, frame) in frames.iter().enumerate() {
+            let wire = serde_json::to_value(frame).expect("a frame serialises").to_string();
+            assert!(
+                !wire.contains("\"sessionId\""),
+                "frame {at} carries the CLI's spelling as well as the wire's: {wire}",
+            );
+            assert_eq!(
+                wire.matches("\"session_id\"").count(),
+                1,
+                "frame {at} names the session exactly once: {wire}",
+            );
+        }
+    }
+
+    /// **One list, two consumers.** The scan and the client filter the same
+    /// `system` subtypes: a subtype in one and not the other either loses a
+    /// row at the transcript or draws one live that a reopened conversation
+    /// cannot serve. The two live in different languages, so this test reads
+    /// the client's literal and compares it with this crate's const.
+    #[test]
+    fn the_system_skip_list_matches_the_clients() {
+        const CLIENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../client/src/chat/units.ts");
+        const MARKER: &str = "const SYSTEM_DRAWN_ELSEWHERE: ReadonlySet<string> = new Set([";
+        let source = std::fs::read_to_string(CLIENT)
+            .unwrap_or_else(|err| panic!("the client's fold is readable at {CLIENT}: {err}"));
+        let start =
+            source.find(MARKER).unwrap_or_else(|| panic!("the client still declares {MARKER:?}"));
+        let block = &source[start + MARKER.len()..];
+        let end = block
+            .find("]);")
+            .unwrap_or_else(|| panic!("the client's skip list closes after its entries"));
+        let mut theirs: Vec<String> = block[..end]
+            .split(',')
+            .filter_map(|entry| {
+                let entry = entry.trim();
+                let quoted = entry.strip_prefix('\'')?.strip_suffix('\'')?;
+                (!quoted.is_empty()).then(|| quoted.to_owned())
+            })
+            .collect();
+        assert!(
+            !theirs.is_empty(),
+            "the client's skip list parsed to nothing, so this test compared nothing",
+        );
+        theirs.sort();
+        let mut ours: Vec<String> =
+            SYSTEM_ROWS_DRAWN_ELSEWHERE.iter().map(|name| (*name).to_owned()).collect();
+        ours.sort();
+        assert_eq!(
+            ours, theirs,
+            "the scan's SYSTEM_ROWS_DRAWN_ELSEWHERE and the client's SYSTEM_DRAWN_ELSEWHERE \
+             have diverged; a subtype belongs in both or neither",
+        );
     }
 
     /// **Every row a transcript read keeps reaches the wire stamped**, which
