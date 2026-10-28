@@ -162,8 +162,8 @@ impl Tool for Handoff {
          previous conversation on screen. The swap happens after the current turn ends, never \
          in the middle of it, on the same order `/new` uses. \
          \
-         Pass the note the skill has you write, under the five headings: Now, Tried and \
-         failed, Do not, Next, Done means."
+         Pass the note the skill has you write, under the five headings: Now, Where it \
+         stood, Pointers, Next, Done means."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -172,7 +172,7 @@ impl Tool for Handoff {
             "properties": {
                 "brief": {
                     "type": "string",
-                    "description": "The handoff note the skill has you write, under the headings Now, Tried and failed, Do not, Next and Done means.",
+                    "description": "The handoff note the skill has you write, under the headings Now, Where it stood, Pointers, Next and Done means.",
                 },
             },
             "additionalProperties": false,

@@ -185,7 +185,9 @@ successor was given: the ground truth forge read off the transcript, git and
 the board - including what was still running when the seat changed: the live
 agents, background tasks, monitors and the session's process tree, so the
 successor knows what to resume - then the judgment the handing-over session
-wrote. **The brief is one
+wrote: where the work stood, the index of what it left - memory files, board
+rows, PRs and the transcript - and the next actions, so the successor opens what
+the note names rather than reading a retelling of it. **The brief is one
 table.** Each section takes its own labelled row, and the judgment's five
 headings sit on the same label column; the value takes the width the pane has
 and wraps inside its own row. Under the meta sit the record's own numbers:

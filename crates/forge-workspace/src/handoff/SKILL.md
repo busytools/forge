@@ -72,11 +72,13 @@ not finish in this turn - a blocked ask, a deferred fix, a call that was refused
 open - with the reason it stopped and where its context lives. The next session starts exactly
 where this one stopped; anything left out is lost when the turn ends.
 
-**Exit through the tool.** Forge asks for the handoff under five headings - Now, Tried and
-failed, Do not, Next, Done means - and your Step 2 document is that same note, so its parts land
-as: the state snapshot in Now, the next steps and open threads in Next, the process facts in
-Do not or Next, and the suggested skills in Next. Give the note the five headings, with the last
-line under Now naming what you recorded in memory and where. Write it where Step 2 says and pass
-the same text to `agents__handoff` as `brief` as the turn's last act. Do not call
-`agents__handoff` for any other reason - a handoff starts at `/handoff` or at the automatic
-trigger (fill or compaction).
+**Exit through the tool.** Forge asks for the handoff under five headings - Now, Where it stood,
+Pointers, Next, Done means - and your Step 2 document is that same note, so its parts land as:
+the state snapshot in Now, the exact position and process facts in Where it stood, the paths they
+live at in Pointers, the next steps and open threads in Next, and the suggested skills in Next.
+The note is the position and the index rather than a retelling: `Pointers` names the memory
+files, the handoff document, the board rows and the PRs so the successor opens them instead of
+reading a summary of them. Give the note the five headings, with the last line under Now naming
+what you recorded in memory and where. Write it where Step 2 says and pass the same text to
+`agents__handoff` as `brief` as the turn's last act. Do not call `agents__handoff` for any other
+reason - a handoff starts at `/handoff` or at the automatic trigger (fill or compaction).
