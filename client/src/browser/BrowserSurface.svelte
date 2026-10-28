@@ -73,6 +73,14 @@
    *  tab must not paint over the one already there. */
   const painted: Record<string, number> = {};
 
+  /**
+   * **The page the last painted frame shows**, in its own CSS pixels: the
+   * space a gesture is sent in. Not the canvas box and not this surface's
+   * area - an agent's `browser_resize` under the controller lays the page
+   * out at another size, and the picture is letterboxed in this one.
+   */
+  let picturePage = $state<{ width: number; height: number } | null>(null);
+
   /** Draw one frame, answering whether it became the picture. */
   async function paint(frame: BrowserFrame): Promise<boolean> {
     const canvas = canvasEl;
@@ -132,19 +140,29 @@
     canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
     bitmap.close();
     painted[key] = frame.seq;
+    picturePage = { width: frame.page_width, height: frame.page_height };
     return true;
   }
 
-  /** A gesture's point, in the PAGE's own CSS pixels.
+  /** The picture a gesture is measured against: its box on screen, and the
+   *  page it shows.
    *
    *  **The canvas is scaled to fit and may be letterboxed**, so its element's
-   *  pixels are not always the page's: the page area is the viewport the
-   *  page was laid out at, and the gesture maps through both. */
-  function point(event: { clientX: number; clientY: number }): { x: number; y: number } {
+   *  pixels are not always the page's: the frame names the page it was
+   *  painted from, and every measure maps through both. Before a frame lands
+   *  the surface's own area is the only page known. */
+  function picture(): { box: DOMRect; page: { width: number; height: number } } | null {
     const canvas = canvasEl;
-    const area = pageArea();
-    if (canvas === null || area === null) return { x: 0, y: 0 };
-    return pagePoint(event.clientX, event.clientY, canvas.getBoundingClientRect(), area);
+    const page = picturePage ?? pageArea();
+    if (canvas === null || page === null) return null;
+    return { box: canvas.getBoundingClientRect(), page };
+  }
+
+  /** A gesture's point, in the PAGE's own CSS pixels. */
+  function point(event: { clientX: number; clientY: number }): { x: number; y: number } {
+    const shown = picture();
+    if (shown === null) return { x: 0, y: 0 };
+    return pagePoint(event.clientX, event.clientY, shown.box, shown.page);
   }
 
   function modifiers(event: {
@@ -257,12 +275,21 @@
         // **A finger's drag is a scroll, not a mouse drag.** A page scrolls
         // under a swipe; sending it as a held mouse button selected text and
         // dragged links instead.
-        const { x, y } = point(event);
+        const shown = picture();
+        if (shown === null) return;
+        const { box, page } = shown;
+        const { x, y } = pagePoint(event.clientX, event.clientY, box, page);
+        // **A finger's displacement is the page's own too.** A scaled picture
+        // - another surface's layout, or an agent's resize under the
+        // controller - moves the page by its CSS pixels: a 39 px swipe over a
+        // 390 px picture of a 1280 px page scrolls 128, not 39.
+        const scaleX = box.width > 0 ? page.width / box.width : 1;
+        const scaleY = box.height > 0 ? page.height / box.height : 1;
         // **The wire's deltas are the wheel's own**, so each is inverted
         // from the finger's motion: a finger moving up scrolls down, and a
         // finger moving left scrolls right.
-        const dx = event.clientX - touch.lastX;
-        const dy = event.clientY - touch.lastY;
+        const dx = (event.clientX - touch.lastX) * scaleX;
+        const dy = (event.clientY - touch.lastY) * scaleY;
         connection.browserInput({
           kind: 'wheel',
           x,
@@ -428,6 +455,9 @@
     event.preventDefault();
     if (!holdsControl()) return;
     const { x, y } = point(event);
+    // **The deltas are a scroll amount in the page's CSS pixels, not a
+    // displacement on the picture**, so only the point is fitted: a wheel
+    // tick scrolls the page as far whatever size the picture is drawn at.
     const gesture: BrowserInputEvent = {
       kind: 'wheel',
       x,

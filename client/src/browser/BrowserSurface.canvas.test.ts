@@ -87,6 +87,8 @@ function frame(seq: number): BrowserFrame {
     width: 100,
     height: 50,
     key: seq === 0,
+    page_width: 100,
+    page_height: 50,
     bytes: new Uint8Array([1]),
   };
 }
@@ -203,9 +205,11 @@ describe('the canvas viewer', () => {
       width: 111,
       height: 50,
       key: false,
+      page_width: 111,
+      page_height: 50,
       bytes: new Uint8Array([1]),
     };
-    const second: BrowserFrame = { ...first, seq: 7, width: 222 };
+    const second: BrowserFrame = { ...first, seq: 7, width: 222, page_width: 222 };
     for (const listener of listeners) listener(first);
     await vi.waitFor(() => expect(calls).toBe(1));
     for (const listener of listeners) listener(second);
@@ -258,6 +262,8 @@ describe('the canvas viewer', () => {
       width: 320,
       height: 200,
       key: true,
+      page_width: 160,
+      page_height: 100,
       bytes: new Uint8Array([1]),
     });
     await vi.waitFor(() => expect(canvas?.width).toBe(320));
@@ -390,7 +396,7 @@ describe('the canvas viewer', () => {
   /// is not always the page's size; reading the client point straight put
   /// taps off the field they were aimed at. The buffer's device pixels are
   /// not the page's either.
-  it("maps the picture's point through the page area, not the buffer's device pixels", async () => {
+  it("maps the picture's point through the page the frame names, not the buffer's device pixels", async () => {
     vi.stubGlobal('createImageBitmap', () =>
       Promise.resolve({ width: 400, height: 200, close: () => {} }),
     );
@@ -400,7 +406,10 @@ describe('the canvas viewer', () => {
     if (canvas === null) throw new Error('no canvas');
     surface.id = 1;
     flushSync();
-    for (const listener of listeners) listener({ ...frame(0), width: 400, height: 200 });
+    // A 400x200 frame of a 290x146 page (its own CSS viewport).
+    for (const listener of listeners) {
+      listener({ ...frame(0), width: 400, height: 200, page_width: 290, page_height: 146 });
+    }
     await vi.waitFor(() => expect(canvas.width).toBe(400));
     // A 145x73 picture showing a 290x146 page: every point doubles.
     vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
@@ -424,6 +433,55 @@ describe('the canvas viewer', () => {
     canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 10, clientY: 5, bubbles: true }));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ kind: 'mouse', action: 'press', x: 20, y: 10 });
+  });
+
+  /// **The page mapped through is the frame's, not this surface's box.** An
+  /// agent's `browser_resize` under the controller lays the page out at
+  /// another size; the picture is letterboxed here and a tap must land on the
+  /// page point the picture shows. Mapping through the surface's own area
+  /// sent it to a different point.
+  it('maps a tap into the page the frame shows, not into the surface box', async () => {
+    vi.stubGlobal('createImageBitmap', () =>
+      Promise.resolve({ width: 400, height: 200, close: () => {} }),
+    );
+    const { connection, listeners, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.id = 1;
+    flushSync();
+    // Painted at 2x from a page laid out 200x100 CSS.
+    for (const listener of listeners) {
+      listener({ ...frame(0), width: 400, height: 200, page_width: 200, page_height: 100 });
+    }
+    await vi.waitFor(() => expect(canvas.width).toBe(400));
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 145,
+      bottom: 73,
+      width: 145,
+      height: 73,
+      toJSON: () => ({}),
+    });
+    surface.viewer = 7;
+    surface.controller = 7;
+    flushSync();
+    // A page area of a different size again: the mapping must not read it.
+    setRegion({ x: 0, y: 0, width: 290, height: 146 }, { width: 390, height: 844 }, 1);
+
+    canvas.dispatchEvent(
+      new MouseEvent('pointerdown', { clientX: 72.5, clientY: 36.5, bubbles: true }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0], 'the centre of the picture is the centre of the page').toMatchObject({
+      kind: 'mouse',
+      action: 'press',
+      x: 100,
+      y: 50,
+    });
   });
 
   /// **Only the controller's gestures go out.** A surface that does not hold
@@ -564,6 +622,91 @@ describe('the canvas viewer', () => {
       { kind: 'mouse', action: 'press' },
       { kind: 'mouse', action: 'release' },
     ]);
+  });
+
+  /// **A finger's displacement is the page's too.** A scaled picture - an
+  /// agent's `browser_resize` under the controller, the case this surface's
+  /// mapping exists for - must move the page by its own CSS pixels: 10 px
+  /// over a half-size picture scrolls 20, not 10.
+  it("fits a swipe's displacement to the page the picture shows", async () => {
+    vi.stubGlobal('createImageBitmap', () =>
+      Promise.resolve({ width: 400, height: 200, close: () => {} }),
+    );
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection, listeners, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.id = 1;
+    flushSync();
+    // A 400x200 frame of a 290x146 page.
+    for (const listener of listeners) {
+      listener({ ...frame(0), width: 400, height: 200, page_width: 290, page_height: 146 });
+    }
+    await vi.waitFor(() => expect(canvas.width).toBe(400));
+    // The picture is drawn at half the page's size.
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 145,
+      bottom: 73,
+      width: 145,
+      height: 73,
+      toJSON: () => ({}),
+    });
+
+    canvas.dispatchEvent(finger('pointerdown', 60, 60));
+    canvas.dispatchEvent(finger('pointermove', 50, 50));
+    canvas.dispatchEvent(finger('pointerup', 50, 50));
+
+    const wheel = events.find((event) => event.kind === 'wheel');
+    if (wheel?.kind !== 'wheel') throw new Error('the swipe sent no wheel');
+    expect(wheel.delta_y, "the finger's 10 px is the page's 20").toBe(20);
+    expect(wheel.delta_x, "and the width's 10 px is the page's 20").toBe(20);
+  });
+
+  /// **A wheel tick is an amount, not a displacement on the picture.** The
+  /// page scrolls as far whatever size the picture is drawn at, so the same
+  /// scaled picture must not fit the wheel's deltas the way it fits a finger's.
+  it('sends the wheel as an amount, not fitted to the picture', async () => {
+    vi.stubGlobal('createImageBitmap', () =>
+      Promise.resolve({ width: 400, height: 200, close: () => {} }),
+    );
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection, listeners, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.id = 1;
+    flushSync();
+    for (const listener of listeners) {
+      listener({ ...frame(0), width: 400, height: 200, page_width: 290, page_height: 146 });
+    }
+    await vi.waitFor(() => expect(canvas.width).toBe(400));
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 145,
+      bottom: 73,
+      width: 145,
+      height: 73,
+      toJSON: () => ({}),
+    });
+
+    canvas.dispatchEvent(
+      new WheelEvent('wheel', { deltaX: -30, deltaY: -40, bubbles: true, cancelable: true }),
+    );
+
+    const wheel = events.find((event) => event.kind === 'wheel');
+    if (wheel?.kind !== 'wheel') throw new Error('the wheel sent nothing');
+    expect(wheel.delta_x, "the wheel's own amount, not the picture's").toBe(30);
+    expect(wheel.delta_y, "the wheel's own amount, not the picture's").toBe(40);
   });
 
   /// **The phone's keys and text reach the page.** The canvas has no fields,

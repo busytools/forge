@@ -153,7 +153,16 @@ pub mod wire;
 /// path takes as a refused subscribe: an in-flight read can be marked
 /// refused while the connection stays up. `baselines/socket/13/` is the
 /// record a v13 server emitted.
-pub const PROTOCOL_VERSION: u32 = 14;
+///
+/// **v15 is a bump for the browser frame's header.** It grew from 14 to 18
+/// bytes: the page's own viewport rides beside the encoded pixels, so a
+/// viewer maps a gesture through the picture it draws rather than sending it
+/// 1:1 into a page laid out at another shape. A v14 client splits the header
+/// at the old offsets and reads the four new bytes as the head of the WebP,
+/// so its decoder fails and the surface draws nothing at all - a silent
+/// blank, which is exactly what the greeting's version is for.
+/// `baselines/socket/14/` is the record a v14 server emitted.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

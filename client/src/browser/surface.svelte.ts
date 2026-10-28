@@ -620,11 +620,13 @@ function reconnect(): void {
 let region: { width: number; height: number; scale: number } | null = null;
 
 /**
- * The page area's size, in the page's own CSS pixels.
+ * The takeover's own page area, in CSS pixels: the size this surface asks the
+ * server to lay the page out at, and the page a gesture falls back to before
+ * any frame names one.
  *
- * **A gesture maps through this, not through the canvas element**: the
- * picture is scaled to fit its box, and a letterboxed canvas is smaller than
- * the page it shows.
+ * **A painted frame's page is the frame's own** (`BrowserFrame.page_width`),
+ * not this: the page may be laid out for another surface, or resized by an
+ * agent under the controller, and the picture is then letterboxed here.
  */
 export function pageArea(): { width: number; height: number } | null {
   return region === null ? null : { width: region.width, height: region.height };
