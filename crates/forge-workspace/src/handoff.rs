@@ -266,19 +266,30 @@ fn cap_turn(turn: &[Message]) -> Vec<Message> {
 
 /// The row a capped turn ends on: a notice, so the fold draws it as the
 /// machinery's line rather than the reader's words.
+///
+/// **A stable id, because the record is seeded more than once.** A view folds
+/// the turn from every seat read and reconnect; a frame with no id is one
+/// nothing can pair, so each seed would append the line again and the cut
+/// would multiply down the turn. `uuid` flattens onto the frame, which is
+/// what the client's own matching reads.
 fn omission(dropped: usize) -> Message {
     Message::System {
         subtype: "forge_notice".to_owned(),
         session_id: None,
         data: serde_json::json!({
+            "uuid": HANDOFF_TURN_CUT_ID,
             "severity": "info",
             "text": format!(
-                "[cut; {dropped} earlier messages of this turn are in the transcript the \
-                 handoff row names]"
+                "[cut; {dropped} earlier messages of this turn are in the previous session - \
+                 resume it from the handoff row]"
             ),
         }),
     }
 }
+
+/// The omission row's id, shared so a reader that pairs frames by id knows
+/// the line is one fact however often the record is seeded.
+pub(crate) const HANDOFF_TURN_CUT_ID: &str = "forge_handoff_turn_cut";
 
 /// Whether a row is the handoff procedure's own prompt: minted under the
 /// procedure's prefix and opening on the words the machinery matcher reads.
@@ -3267,11 +3278,13 @@ mod tests {
         assert!(
             matches!(turn.last(), Some(Message::System { subtype, data, .. })
                 if subtype == "forge_notice"
+                    && data.get("uuid").and_then(serde_json::Value::as_str)
+                        == Some(HANDOFF_TURN_CUT_ID)
                     && data
                         .get("text")
                         .and_then(serde_json::Value::as_str)
                         .is_some_and(|text| text.contains("[cut;") && text.contains("earlier messages"))),
-            "the turn ends on the stated cut: {:?}",
+            "the turn ends on the stated cut, with the id that keeps it one line: {:?}",
             turn.last(),
         );
         assert!(
