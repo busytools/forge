@@ -8495,11 +8495,14 @@ mod tests {
         assert!(why.contains("not the browser's controller"), "{why}");
     }
 
-    /// **A re-attach of the same viewer to the same tab keeps its role.**
-    /// A surface that opens twice (or asks again for the tab it is already
-    /// on) is the same viewer looking at the same page; dropping the role
-    /// there left the person driving a tab whose every gesture was refused.
-    /// A move to another tab still leaves the role behind with the tab.
+    /// **A re-attach of the same viewer to the same tab keeps its role, and
+    /// a different viewer's take still moves it.** A surface that opens twice
+    /// (or asks again for the tab it is already on) is one viewer on one
+    /// page; dropping the role there left the person driving a tab whose
+    /// every gesture was refused. Keeping it must not make the role the
+    /// first taker's for good: a take is still what moves it, and the holder
+    /// it moved from is a watcher. A move to another tab leaves the role
+    /// behind with the tab.
     #[tokio::test]
     async fn a_reattach_of_the_same_viewer_keeps_its_role() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -8517,6 +8520,23 @@ mod tests {
 
         service.attach(7, &seat, Some(tab)).await.expect("the re-attach");
         assert_eq!(profile.controller(tab), Some(7), "the re-attach keeps the role");
+
+        // **A take still moves the role**, so keeping it across a re-attach
+        // did not make it the first taker's for good.
+        service.take_control(&profile.key, tab, 8).await.expect("another viewer's take");
+        assert_eq!(profile.controller(tab), Some(8), "a take moves the role");
+        let why = service
+            .input(
+                &profile.key,
+                tab,
+                7,
+                1,
+                &forge_primitives::browser::BrowserInputEvent::Text { text: "x".to_owned() },
+            )
+            .await
+            .expect_err("the holder it moved from is a watcher now");
+        assert!(why.contains("not the browser's controller"), "{why}");
+        service.take_control(&profile.key, tab, 7).await.expect("the role back");
 
         profile
             .tabs
