@@ -1003,14 +1003,41 @@ fn turn_wire(
     key: Option<&str>,
     endings: &HashMap<String, TaskEnding>,
 ) -> TurnWire {
-    let mut frames: Vec<Value> = messages[from..to]
-        .iter()
-        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
-        .collect();
+    let mut frames: Vec<Value> =
+        messages[from..to].iter().map(|message| frame_of(message, message.session_id())).collect();
     for ending in owed_endings(messages, from, to, endings) {
-        frames.push(serde_json::to_value(forged_ending(ending)).unwrap_or(Value::Null));
+        let forged = forged_ending(ending);
+        frames.push(frame_of(&forged, forged.session_id()));
     }
     TurnWire { key: key.map(str::to_owned), messages: frames }
+}
+
+/// One message as the page carries it, or the notice that says it will not.
+///
+/// **A failed encode used to cross as `Value::Null`**, and the fold reads
+/// `type` off every frame - so the page threw on exactly the frame it could
+/// not describe. The notice names the failure and draws in its place: nothing
+/// is dropped, and nothing arrives as a value no reader can read. The warning
+/// names the session the frame belongs to, which is the identity a reader of
+/// the log can act on.
+fn frame_of<T: Serialize>(value: &T, session: Option<&str>) -> Value {
+    match serde_json::to_value(value) {
+        Ok(frame) => frame,
+        Err(error) => {
+            tracing::warn!(
+                event_name = "conversation_frame_unsent",
+                session = session.unwrap_or("unknown"),
+                error = %error,
+                "a conversation frame could not be serialised; drawn as a notice instead",
+            );
+            serde_json::json!({
+                "type": "system",
+                "subtype": "forge_notice",
+                "severity": "warning",
+                "text": format!("a conversation frame could not be serialised: {error}"),
+            })
+        }
+    }
 }
 
 /// Fold each run of consecutive thinking-token counters in a turn into the one
@@ -2537,6 +2564,45 @@ mod tests {
             panic!("the store must not be read when the copy already has the row")
         });
         assert!(drawn.is_some(), "the copy's own row is the answer");
+    }
+
+    /// A value whose serialisation fails, which is the only case a message
+    /// can reach the page as anything but itself.
+    struct WillNotSerialise;
+
+    impl Serialize for WillNotSerialise {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("this value cannot be a frame"))
+        }
+    }
+
+    /// **A null frame throws the fold that receives it.** The page reads
+    /// `type` off every frame, so a message that will not serialise must
+    /// arrive as a notice naming the failure rather than as `Value::Null`.
+    #[test]
+    fn a_frame_that_will_not_serialise_draws_a_notice_rather_than_null() {
+        let frame = frame_of(&WillNotSerialise, Some("a-session"));
+        assert!(
+            !frame.is_null(),
+            "the null this replaces is the value the fold throws on: {frame}",
+        );
+        assert_eq!(frame.get("type").and_then(Value::as_str), Some("system"), "{frame}");
+        assert_eq!(
+            frame.get("subtype").and_then(Value::as_str),
+            Some("forge_notice"),
+            "the frame is the notice the client already draws: {frame}",
+        );
+        let Some(text) = frame.get("text").and_then(Value::as_str) else {
+            panic!("the notice says what failed: {frame}");
+        };
+        assert!(text.contains("could not be serialised"), "the failure is named: {frame}");
+
+        let held = frame_of(&serde_json::json!({ "type": "widget_state", "n": 1 }), None);
+        assert_eq!(
+            held,
+            serde_json::json!({ "type": "widget_state", "n": 1 }),
+            "a frame that serialises is carried unchanged",
+        );
     }
 
     /// A row naming another occupant is not drawn, and neither is one on a

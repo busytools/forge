@@ -240,6 +240,106 @@ impl Drop for Host {
     }
 }
 
+/// One full click, written the way the server writes it.
+pub fn click(host: &mut Host, x: i32, y: i32) {
+    for action in [
+        forge_primitives::browser::MouseAction::Press,
+        forge_primitives::browser::MouseAction::Release,
+    ] {
+        host.input(&forge_browser::input::host_line(&forge_browser::input::HostInput::Mouse {
+            tab: 1,
+            action,
+            x,
+            y,
+            button: 0,
+            clicks: 1,
+            modifiers: forge_primitives::browser::InputModifiers::default(),
+        }));
+    }
+}
+
+/// Click the page at `at` until it has seen a pointer gesture.
+///
+/// **The first pointer event after a host starts is spent activating it, and
+/// under load more than one can be**, so the page's own count is what says a
+/// later click will land. **`at` must be the page itself**, which is checked
+/// rather than assumed: a point off the page would otherwise be blamed on the
+/// page. `deadline` bounds the devtools answers as well as the clicks, so a
+/// connected but mute endpoint cannot outlive it.
+pub async fn prime_clicks(
+    host: &mut Host,
+    cdp: &mut forge_browser::window::Cdp,
+    at: (i32, i32),
+    deadline: std::time::Instant,
+) {
+    let left = || {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .max(std::time::Duration::from_millis(100))
+    };
+    let setup = format!(
+        "(() => {{ \
+            const at = document.elementFromPoint({x}, {y}); \
+            if (at !== document.body && at !== document.documentElement) {{ \
+                return at ? at.tagName.toLowerCase() : 'nothing (off the page)'; \
+            }} \
+            window.__forge_downs = 0; \
+            document.addEventListener('mousedown', () => {{ window.__forge_downs += 1; }}, true); \
+            return null; \
+        }})()",
+        x = at.0,
+        y = at.1,
+    );
+    let reply = tokio::time::timeout(
+        left(),
+        cdp.call(
+            "Runtime.evaluate",
+            serde_json::json!({ "expression": setup, "returnByValue": true }),
+            None,
+        ),
+    )
+    .await
+    .expect("the devtools endpoint answers within the bound")
+    .expect("the page takes the gesture counter");
+    let refusal = reply.pointer("/result/value").and_then(serde_json::Value::as_str);
+    assert!(
+        refusal.is_none(),
+        "the priming point ({}, {}) is not the blank page: {}",
+        at.0,
+        at.1,
+        refusal.unwrap_or(""),
+    );
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no priming click reached the page at ({}, {}) (log: {})",
+            at.0,
+            at.1,
+            host.log()
+        );
+        click(host, at.0, at.1);
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let reply = tokio::time::timeout(
+            left(),
+            cdp.call(
+                "Runtime.evaluate",
+                serde_json::json!({ "expression": "window.__forge_downs", "returnByValue": true }),
+                None,
+            ),
+        )
+        .await
+        .expect("the devtools endpoint answers within the bound")
+        .expect("the page answers its gesture count");
+        if reply
+            .pointer("/result/value")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|downs| downs > 0)
+        {
+            return;
+        }
+    }
+}
+
 /// One HTTP GET over a plain socket.
 ///
 /// **A server that holds the socket open is an answer too**: the read is

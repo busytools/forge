@@ -64,7 +64,9 @@ function spoke(uuid: string): Record<string, unknown> {
  * "answer behind the stream" this file exists to hold.
  */
 async function slowLink(answerMs: number, frameMs: number) {
-  const server = new WebSocketServer({ port: 0 });
+  // **A `::` listener can share a port with a v4 one**, and the page's v4 dial
+  // then lands on that process; bind the address the page dials.
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
   const sockets = new Set<import('ws').WebSocket>();

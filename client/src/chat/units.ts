@@ -165,6 +165,30 @@ export interface Notice {
   chip?: string;
   /** A quieter tail under the line, which the retry line's delay rides in. */
   sub?: string;
+  /**
+   * The visible mark a PROVISIONAL row wears: the wire's own type, so a
+   * frame with no designed face is told apart from an integrated one on
+   * sight rather than by colour (Ved, 2026-10-26).
+   */
+  mark?: string;
+  /**
+   * The frame's own fields, labelled for a reader, as the open body draws
+   * them. Set only on a provisional row: JSON under the open was the first
+   * cut's shape, and a reader asked for the facts instead (Ved, 2026-10-28).
+   */
+  fields?: NoticeField[];
+  /**
+   * The frame or block exactly as it arrived, behind its own control inside
+   * the open body. Set only on a provisional row, whose whole point is that
+   * the payload itself stays reachable (rule 25).
+   */
+  raw?: string;
+}
+
+/** One labelled fact under a provisional row's open. */
+export interface NoticeField {
+  label: string;
+  value: string;
 }
 
 /**
@@ -508,6 +532,125 @@ function obj(value: unknown): Record<string, unknown> {
 }
 
 /**
+ * A row for a frame or block this build draws but has no face for.
+ *
+ * **Visible on purpose** (rule 25, Ved 2026-10-26): the mark names the
+ * wire's own type and the frame's fields sit labelled behind the row's
+ * open, so the gap draws itself rather than reading as a frame that never
+ * arrived - and the frame itself stays one control further in (Ved,
+ * 2026-10-28).
+ */
+function provisional(
+  mark: string,
+  severity: NoticeSeverity,
+  text: string,
+  raw: unknown,
+  fields: NoticeField[] = [],
+): Notice {
+  return {
+    severity,
+    text,
+    mark,
+    raw: JSON.stringify(raw) ?? '',
+    ...(fields.length === 0 ? {} : { fields }),
+  };
+}
+
+/** One labelled fact, dropped when the frame carried nothing to say. */
+function fact(label: string, value: string | null): NoticeField | null {
+  return value === null || value === '' ? null : { label, value };
+}
+
+/** The facts that survived [`fact`], in the row's own order. */
+function facts(...rows: (NoticeField | null)[]): NoticeField[] {
+  return rows.filter((row): row is NoticeField => row !== null);
+}
+
+/**
+ * The frame's own identity and plumbing, which the row or the seat already
+ * carries: a reader deciding a face for the row's content is not helped by
+ * being shown which session said it or what its uuid was.
+ */
+const PROVISIONAL_PLUMBING: ReadonlySet<string> = new Set([
+  'type',
+  'subtype',
+  'uuid',
+  'session_id',
+  'sessionId',
+  'parent_tool_use_id',
+  'timestamp',
+  'cwd',
+]);
+
+/** A content block's own plumbing: its type is the row's mark. */
+const BLOCK_PLUMBING: ReadonlySet<string> = new Set(['type']);
+
+/**
+ * A frame or block this build has no schema for, flattened into labelled
+ * facts: what a reader gets instead of the payload's raw JSON.
+ *
+ * Dotted labels keep a nested object readable without pretending the build
+ * knows what it means (`widget.name`), and a list or a deeply nested value
+ * stays one compact value - it has no labels to split into.
+ */
+function payloadFacts(payload: unknown, skip: ReadonlySet<string>): NoticeField[] {
+  const rows: NoticeField[] = [];
+  const walk = (value: unknown, prefix: string, depth: number) => {
+    if (value === null || value === undefined) return;
+    if (typeof value === 'object' && !Array.isArray(value) && depth < 3) {
+      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+        if (prefix === '' && skip.has(key)) continue;
+        walk(child, prefix === '' ? key : `${prefix}.${key}`, depth + 1);
+      }
+      return;
+    }
+    rows.push({ label: words(prefix), value: brief(value) });
+  };
+  walk(payload, '', 0);
+  return rows;
+}
+
+/** A wire field's name as words: `durationMs` reads as `duration ms`. */
+function words(field: string): string {
+  return field
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .toLowerCase();
+}
+
+/** One value as a reader reads it: text as itself, anything else compact. */
+function brief(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null) return 'null';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value) ?? '';
+}
+
+/**
+ * The `system` subtypes whose row is another row's, or which are plumbing.
+ *
+ * The task lifecycle lands on the call it belongs to (the pass above reads
+ * it), the background-task and command lists feed their own surfaces, the
+ * handshake is not content, and a hook run draws from its attachment row.
+ * **The transcript read filters the same list** (its own
+ * `SYSTEM_ROWS_DRAWN_ELSEWHERE`), because the read and the live path are one
+ * obligation - a subtype added here belongs there, and the other way round.
+ */
+const SYSTEM_DRAWN_ELSEWHERE: ReadonlySet<string> = new Set([
+  'task_started',
+  'task_updated',
+  'task_notification',
+  'background_tasks_changed',
+  'commands_changed',
+  'init',
+  'status',
+  'thinking_tokens',
+  'hook_started',
+  'hook_progress',
+  'hook_response',
+]);
+
+/**
  * The frame a page carries, as the fields this fold reads.
  *
  * Every read is tolerant on purpose: a frame is the CLI's own message and a
@@ -548,6 +691,18 @@ interface Frame {
   max_retries?: unknown;
   retry_delay_ms?: unknown;
   error_status?: unknown;
+  /** `system/api_error`'s own attempt and wait, in the CLI's spelling. */
+  retryAttempt?: unknown;
+  maxRetries?: unknown;
+  retryInMs?: unknown;
+  /** `system/informational`'s body and level. */
+  level?: unknown;
+  content?: unknown;
+  /** `system/notification`'s body, kind and delivery priority. */
+  text?: unknown;
+  priority?: unknown;
+  /** `system/permission_denied`'s refused tool. */
+  tool_name?: unknown;
   /** The snapshot a `rate_limit_event` carries: status, window type, reset, overage. */
   rate_limit_info?: unknown;
   duration_ms?: unknown;
@@ -1758,6 +1913,14 @@ export function fold(
   let resultAt: number | null = null;
   /** What the wire reported about each backgrounded call, by call. */
   const tasks = new Map<string, TaskFact>();
+  /**
+   * The calls the CLI refused on permission grounds.
+   *
+   * **A refusal is not a result**, so no frame will ever settle the call:
+   * the mark has to be taken here, in the pass that runs before the row is
+   * built, or the refused row spins forever.
+   */
+  const denied = new Set<string>();
   /** The call a task belongs to, which the frames that carry one name. */
   const owners = new Map<string, string>();
   /**
@@ -1786,6 +1949,9 @@ export function fold(
     if (frame.type === 'system') {
       const task = str(frame, 'task_id');
       const call = str(frame, 'tool_use_id');
+      if (frame.subtype === 'permission_denied' && call !== null) {
+        denied.add(call);
+      }
       if (frame.subtype === 'task_started' && call !== null) {
         if (task !== null) owners.set(task, call);
         // What the wire says about the task living past its turn, which is the
@@ -1911,6 +2077,14 @@ export function fold(
   let lastCompaction: number | null = null;
   /** The stage each notice key sits at, so a walk-back cannot soften a line. */
   const noticeStages = new Map<string, number>();
+  /**
+   * The refusal notices already drawn, by the call they name.
+   *
+   * **Keyed by the call, not by the frame.** A refusal is one fact about one
+   * call, and two frames for it would otherwise draw two rows - then two
+   * units sharing a key, which stops the whole turn from mounting.
+   */
+  const drawnDenials = new Set<string>();
 
   /**
    * Hang a skill's body on the call that loaded it.
@@ -2225,6 +2399,123 @@ export function fold(
         drawHook(key, hookRun(frame));
         continue;
       }
+      // **The system subtypes the fold had no arm for**, each a line the
+      // session was told and the reader was not. They draw provisional - the
+      // subtype as the mark, the whole frame behind the open - so the shape
+      // is visible and can be decided later rather than dropped (rule 25).
+      if (frame.subtype === 'permission_denied') {
+        const id = str(frame, 'tool_use_id');
+        const key = id === null ? keyOf(at, frame, 'permission_denied') : `denied-${id}`;
+        if (!drawnDenials.has(key)) {
+          drawnDenials.add(key);
+          const tool = str(frame, 'tool_name') ?? 'a tool';
+          const reason = str(frame, 'message') ?? str(frame, 'decision_reason') ?? '';
+          push({
+            kind: 'notice',
+            key,
+            notice: provisional(
+              'permission_denied',
+              'error',
+              `${tool} refused${reason === '' ? '' : `: ${reason}`}`,
+              frame,
+              facts(
+                fact('tool', str(frame, 'tool_name')),
+                fact('call', str(frame, 'tool_use_id')),
+                fact('reason', str(frame, 'decision_reason') ?? str(frame, 'message')),
+                fact('decision', str(frame, 'decision_reason_type')),
+              ),
+            ),
+          });
+        }
+        continue;
+      }
+      if (frame.subtype === 'api_error') {
+        const error = obj(frame.error);
+        // **`formatted` first, and the first NON-BLANK of the two.** The
+        // CLI's `message` is the raw provider body serialised into a string
+        // on real rows (a wall of JSON on the commonest error there is),
+        // while `formatted` is the line written for a reader - and an empty
+        // `formatted` must not swallow the row's words.
+        const said =
+          [str(error, 'formatted'), str(error, 'message')].find(
+            (line): line is string => line !== null && line.trim() !== '',
+          ) ?? 'API request failed';
+        const status = typeof error.status === 'number' ? ` HTTP ${error.status}` : '';
+        const attempt = typeof frame.retryAttempt === 'number' ? frame.retryAttempt : null;
+        const cap = typeof frame.maxRetries === 'number' ? frame.maxRetries : null;
+        const delay = typeof frame.retryInMs === 'number' ? frame.retryInMs : null;
+        // One row per run, the way the CLI's retry line is: a storm of
+        // attempts is one incident, not a column of identical lines.
+        upsertNotice('api-error', NOTICE_STAGE.warning, {
+          ...provisional(
+            'api_error',
+            str(frame, 'level') === 'error' ? 'error' : 'warning',
+            `${said}${status}`,
+            frame,
+            facts(
+              fact('message', said),
+              fact('status', typeof error.status === 'number' ? `HTTP ${error.status}` : null),
+              fact('level', str(frame, 'level')),
+              fact('attempt', attempt === null || cap === null ? null : `${attempt} of ${cap}`),
+              fact('retry in', delay === null ? null : retryDelay(delay)),
+            ),
+          ),
+          ...(attempt === null || cap === null ? {} : { chip: `attempt ${attempt} / ${cap}` }),
+          ...(delay === null ? {} : { sub: `retrying in ${retryDelay(delay)}` }),
+        });
+        continue;
+      }
+      if (frame.subtype === 'informational') {
+        const level = str(frame, 'level');
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'informational'),
+          notice: provisional(
+            'informational',
+            level === 'error' ? 'error' : level === 'warning' ? 'warning' : 'info',
+            str(frame, 'content') ?? '',
+            frame,
+            facts(fact('content', str(frame, 'content')), fact('level', level)),
+          ),
+        });
+        continue;
+      }
+      if (frame.subtype === 'notification') {
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'notification'),
+          notice: provisional(
+            'notification',
+            str(frame, 'priority') === 'immediate' ? 'warning' : 'info',
+            str(frame, 'text') ?? '',
+            frame,
+            facts(
+              fact('text', str(frame, 'text')),
+              fact('priority', str(frame, 'priority')),
+              fact('key', str(frame, 'key')),
+            ),
+          ),
+        });
+        continue;
+      }
+      // **A system subtype this build has no arm for draws as itself**, the
+      // same default the top-level catch-all keeps, so one the CLI adds is
+      // seen on the day it arrives rather than waiting for an arm. Only the
+      // subtypes whose row is drawn elsewhere stay silent here.
+      const system = str(frame, 'subtype');
+      if (system === null || !SYSTEM_DRAWN_ELSEWHERE.has(system)) {
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'system'),
+          notice: provisional(
+            system ?? 'system',
+            'info',
+            `unhandled frame: system${system === null ? '' : `/${system}`}`,
+            frame,
+            payloadFacts(frame, PROVISIONAL_PLUMBING),
+          ),
+        });
+      }
       continue;
     }
 
@@ -2324,7 +2615,25 @@ export function fold(
       continue;
     }
 
-    if (frame.type !== 'assistant' && frame.type !== 'user') continue;
+    // **A frame type this build has no row for draws as itself** rather than
+    // vanishing: its own type is the mark and the payload is behind the open,
+    // so a frame the CLI adds is seen on the day it arrives (rule 25).
+    if (frame.type !== 'assistant' && frame.type !== 'user') {
+      const kind = typeof frame.type === 'string' && frame.type !== '' ? frame.type : 'untyped';
+      const subtype = str(frame, 'subtype');
+      push({
+        kind: 'notice',
+        key: keyOf(at, frame, 'frame'),
+        notice: provisional(
+          kind,
+          'info',
+          `unhandled frame: ${subtype === null ? kind : `${kind}/${subtype}`}`,
+          frame,
+          payloadFacts(frame, PROVISIONAL_PLUMBING),
+        ),
+      });
+      continue;
+    }
 
     // What the frame attached, read before its blocks are walked: the wire
     // puts the thing AFTER the words it came with, and they are one row - so
@@ -2642,6 +2951,8 @@ export function fold(
           pending.push({ tag: 'card', card });
           continue;
         }
+        /** Whether this call is a question the CLI left unanswered. */
+        let unanswered = false;
         if (isQuestion(name)) {
           const record = records.get(id);
           const card = questionCard(
@@ -2656,7 +2967,13 @@ export function fold(
           // An omitted record is not a question nobody answered: the card has
           // no answers to read, so the call falls through to its leaf, which
           // opens on the omission rather than the row vanishing (#2374).
-          if (omittedRecord(record) === null) continue;
+          // **Anything else is a question nobody answered**, and its call row
+          // is the only trace of it - the card never drew, so dropping the
+          // call too would lose the question entirely (rule 25). **Only
+          // once the turn has closed**: a question still waiting is the
+          // dock's row, and marking that unanswered would state as a verdict
+          // what is only the wait.
+          unanswered = abandoned && omittedRecord(record) === null;
         }
         const leaf = leafOf(
           id,
@@ -2665,9 +2982,12 @@ export function fold(
           results.get(id),
           records.get(id),
           tasks.get(id),
-          abandoned,
+          // A call the CLI refused on permission grounds is settled by that
+          // refusal: no result frame follows it.
+          abandoned || denied.has(id),
           stops.settled.get(id) ?? null,
         );
+        leaf.unanswered = unanswered;
         if (name.toLowerCase() === 'skill') {
           // A skill's body follows its call as a user frame; the claim is
           // recorded here, and the body attaches to this row when it arrives.
@@ -2687,6 +3007,23 @@ export function fold(
         // turn the words above it opened, not a row of its own.
         continue;
       }
+      // A result is drawn on the call's own row, so drawing it here would be
+      // the same content twice. **Any other block type draws as itself**
+      // rather than falling out of the loop unread (rule 25).
+      if (block.type === 'tool_result') continue;
+      const kind =
+        typeof block.type === 'string' && block.type !== '' ? block.type : 'untyped block';
+      push({
+        kind: 'notice',
+        key: keyOf(at, frame, blockAt),
+        notice: provisional(
+          kind,
+          'info',
+          `unhandled content block: ${kind}`,
+          block,
+          payloadFacts(block, BLOCK_PLUMBING),
+        ),
+      });
     }
 
     // A frame that attached something and said nothing is still a turn the

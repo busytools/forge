@@ -21,6 +21,9 @@ const a_handoff = (overrides: Partial<HandoffRecord> = {}): HandoffRecord => ({
   total_tokens: 850_000,
   max_tokens: 1_000_000,
   at_percent: 85,
+  at: '2026-10-24T08:00:00Z',
+  cycle: { requests: 514, turns: 96, prompt_tokens: 4_970_000_000 },
+  successor: { turns: 10, reread_files: 3, questions: 1, corrections: 0 },
   ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
   judgment: [{ label: 'Next', lines: ['the client row'] }],
   judgment_turn: [],
@@ -86,6 +89,58 @@ describe('the handoff row, mounted', () => {
         document.querySelectorAll('.hbody button.cp').length,
         'each id carries the control that copies it',
       ).toBe(2);
+    } finally {
+      void unmount(app);
+      document.body.innerHTML = '';
+    }
+  });
+
+  /**
+   * The record's own numbers, which the row used to narrow and never draw.
+   * They sit with the brief's facts, so the tuning numbers the handoff fires
+   * for are readable on the row that recorded the swap.
+   */
+  it('draws the cycle, the successor and the time under the meta', () => {
+    const app = mount(HandoffRow, {
+      target: document.body,
+      props: { handoff: a_handoff() },
+    });
+    try {
+      flushSync();
+      const row = document.querySelector('details');
+      if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
+      row.open = true;
+      row.dispatchEvent(new Event('toggle'));
+      flushSync();
+      const body = document.querySelector('.hbody')?.textContent ?? '';
+      expect(body, 'the record states when the swap happened').toContain('2026-10-24T08:00:00Z');
+      expect(body, 'the cycle it ended, in its own counts').toContain('514 requests');
+      expect(body, 'and what the cycle spent').toContain('4,970,000,000 prompt tokens');
+      expect(body, 'then how the successor went').toContain('3 rereads');
+      expect(body, 'which is measured in its own words').toContain('1 question');
+    } finally {
+      void unmount(app);
+      document.body.innerHTML = '';
+    }
+  });
+
+  /** An unmeasured successor is absent until its first turns are read: a row
+   * of zeros would read as the best possible handover. */
+  it('writes no successor line for one that has not been measured', () => {
+    const app = mount(HandoffRow, {
+      target: document.body,
+      props: { handoff: a_handoff({ successor: null }) },
+    });
+    try {
+      flushSync();
+      const row = document.querySelector('details');
+      if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
+      row.open = true;
+      row.dispatchEvent(new Event('toggle'));
+      flushSync();
+      const body = document.querySelector('.hbody')?.textContent ?? '';
+      expect(body, 'the row still says when').toContain('2026-10-24T08:00:00Z');
+      expect(body, 'but nothing of a successor nobody measured').not.toContain('rereads');
     } finally {
       void unmount(app);
       document.body.innerHTML = '';
