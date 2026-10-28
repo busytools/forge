@@ -8434,6 +8434,8 @@ async fn a_session_subscribe_logs_its_own_open_timings() {
         "page_ms",
         "cards_ms",
         "work_ms",
+        "base_ms",
+        "rescan_ms",
         "content_ms",
         "reviews_ms",
         "tree_reviews_ms",

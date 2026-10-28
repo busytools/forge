@@ -421,10 +421,10 @@ export interface GitWorkRecord {
   worktree: GitStatsRecord | null;
   /**
    * What the seat's last watch refresh measured for the base the chain is
-   * measured against. **The only field that moves on a base-only move**: an
-   * upstream commit the branch already contains leaves the count and the
-   * chain alone, so a review page watching only those would keep a `current`
-   * label nobody re-checked.
+   * measured against. **The only field that moves on a base-only move**: the
+   * range is `base..HEAD`, so an upstream advance the branch does not contain
+   * leaves the count and the chain alone, and a review page watching only
+   * those would keep a `current` label nobody re-checked.
    */
   base: BaseStateRecord | null;
   ahead: {

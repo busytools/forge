@@ -34,6 +34,7 @@ import {
   skewOf,
   slotOf,
   subjectFromKey,
+  subjectKey,
   type BrowserInputEvent,
   type Command,
   type ServerMessage,
@@ -229,9 +230,29 @@ class RustConnection implements Connection {
    */
   private readonly bounds: ReadBounds;
 
+  /**
+   * The scope each subject was last asked with, for the read bound's retry.
+   *
+   * **The retry says nothing on the invoke** - the shell keeps the held scope
+   * - but its deadline has to match the read it is retrying, and a review
+   * read's server-side bounds are longer than an ordinary one's.
+   */
+  private readonly scopes = new Map<string, boolean>();
+
   constructor(url: string, boundMs: number = READ_BOUND_MS) {
-    this.bounds = new ReadBounds(this.stores, (what) => this.refresh(what), boundMs);
+    this.bounds = new ReadBounds(this.stores, (what) => this.refreshHeld(what), boundMs);
     void this.begin(url);
+  }
+
+  /** One bound retry: no scope on the invoke, the held one's deadline. */
+  private refreshHeld(what: Subject): boolean {
+    if (this.state !== 'open') return false;
+    const review = this.scopes.get(subjectKey(what)) ?? false;
+    this.bounds.arm(what, review ? REVIEW_READ_BOUND_MS : undefined);
+    void invoke('client_refresh', { what }).catch((why: unknown) => {
+      report('a refresh could not reach the shell', why);
+    });
+    return true;
   }
 
   private async begin(url: string): Promise<void> {
@@ -459,6 +480,7 @@ class RustConnection implements Connection {
       return this.stores.refused(what, 'this connection is closed');
     }
     const store = this.stores.open(what);
+    if (options?.review !== undefined) this.scopes.set(subjectKey(what), options.review);
     void invoke('client_subscribe', {
       what,
       answering: options?.answering ?? false,
@@ -476,6 +498,7 @@ class RustConnection implements Connection {
   unsubscribe(what: Subject): void {
     if (this.stores.get(what) === undefined) return;
     const last = this.stores.close(what);
+    if (last) this.scopes.delete(subjectKey(what));
     void invoke('client_unsubscribe', { what }).catch((why: unknown) => {
       report('an unsubscribe could not reach the shell', why);
     });
@@ -513,6 +536,7 @@ class RustConnection implements Connection {
    * declared.
    */
   relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void {
+    if (options?.review !== undefined) this.scopes.set(subjectKey(what), options.review);
     void invoke('client_relist', {
       what,
       answering: options?.answering ?? false,
@@ -538,6 +562,7 @@ class RustConnection implements Connection {
    */
   release(what: Subject): void {
     while (this.stores.get(what) !== undefined) this.stores.close(what);
+    this.scopes.delete(subjectKey(what));
     void invoke('client_release', { what }).catch((why: unknown) => {
       report('a release could not reach the shell', why);
     });
@@ -555,6 +580,7 @@ class RustConnection implements Connection {
     // bound's retry for a store still loading says nothing, and the shell
     // knows which kind of read that store was asked as.
     const review = options?.review;
+    if (review !== undefined) this.scopes.set(subjectKey(what), review);
     this.bounds.arm(what, review === true ? REVIEW_READ_BOUND_MS : undefined);
     const payload = review === undefined ? { what } : { what, review };
     void invoke('client_refresh', payload).catch((why: unknown) => {

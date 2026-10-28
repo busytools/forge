@@ -1804,6 +1804,23 @@ mod tests {
         assert_eq!(seen["payload"]["a"], json!(1));
     }
 
+    /// **The desktop shell's own subscribe frame carries the review scope.**
+    /// The page's review open reaches the server through this frame; a Bridge
+    /// that dropped the flag while keeping its own bookkeeping right would
+    /// leave every desktop review read ordinary.
+    #[tokio::test]
+    async fn the_bridge_subscribe_frame_carries_the_review_scope() {
+        let mut stub = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(stub.url.clone());
+        connected(&bridge).await;
+
+        bridge.subscribe(seat(), false, true);
+        let frame = stub.heard_until(|value| value["kind"] == "subscribe").await;
+        assert_eq!(frame["what"], seat(), "the seat's subscribe went");
+        assert_eq!(frame["review"], json!(true), "carrying the page's review scope");
+    }
+
     /// **The review scope crosses the Bridge, not only the socket.** The
     /// page's first read, a relink and the read bound's retry all come
     /// through these calls, so a Bridge that dropped the flag would turn them

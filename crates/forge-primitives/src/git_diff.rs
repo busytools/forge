@@ -220,8 +220,9 @@ pub struct GitWorkView {
     pub ahead: Option<GitBranchAhead>,
     /// What the seat's last watch refresh found for the base the chain is
     /// measured against, `None` until one has run. **A base can move without
-    /// the count or the chain moving** - an upstream commit the branch
-    /// already contains - so this is the only field that makes that news.
+    /// the count or the chain moving**: the range is `base..HEAD`, so an
+    /// upstream advance the branch does not contain leaves the branch's own
+    /// commits exactly as they were, and this is the only field that says so.
     #[serde(default)]
     pub base: Option<BaseState>,
 }

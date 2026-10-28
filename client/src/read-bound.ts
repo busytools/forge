@@ -72,10 +72,11 @@ export const SLOW_RETRY_MS = 60_000;
  *
  * **The server bounds that read itself, and its bounds are longer than a
  * healthy one**: up to three seconds refreshing the base, then up to three
- * more waiting for a scan already in flight, then the record's own encode.
- * The ordinary pass would land inside that window and ask for a second whole
- * review read - another fetch and another pinned scan - under the first one
- * still on its way.
+ * more waiting for a scan already in flight (and, when that wait runs out, a
+ * local re-read of the tree against the refreshed base), then the record's
+ * own encode. The ordinary pass would land inside that window and ask for a
+ * second whole review read - another fetch and another scan - under the first
+ * one still on its way.
  */
 export const REVIEW_READ_BOUND_MS = READ_BOUND_MS + 7_000;
 

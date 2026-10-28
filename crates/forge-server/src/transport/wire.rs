@@ -2346,7 +2346,7 @@ async fn session(
     let at = std::time::Instant::now();
     let pin = match &refresh {
         Some(refresh) => surface
-            .diff_scan(slot, &held.cwd, refresh.base_ref.as_deref())
+            .diff_scan(slot, &held.cwd, refresh)
             .await
             .map(|scan| (scan, refresh.base_ref.as_deref())),
         None => None,

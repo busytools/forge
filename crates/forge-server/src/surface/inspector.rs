@@ -175,13 +175,36 @@ impl ViewSurface {
     /// ([`Self::work_local`]) and drop the pin: the store's count predates the
     /// base the refresh moved, and a scan against the ref's name cannot be
     /// paired with content read at the sha this read resolved.
+    ///
+    /// The refresh's state rides the stored row, so the `base` beside a pinned
+    /// `ahead` is that base's own measurement rather than the last watch's.
     pub async fn diff_scan(
         &self,
         slot: &SessionSlot,
         cwd: &std::path::Path,
-        base: Option<&str>,
+        refresh: &forge_workspace::env::git_diff::BaseRefresh,
     ) -> Option<WorkSnapshot> {
-        self.workspace.scan_work_pinned(slot, cwd, base).await.ok()
+        match self
+            .workspace
+            .scan_work_pinned(slot, cwd, refresh.base_ref.as_deref(), Some(refresh.state))
+            .await
+        {
+            Ok(held) => Some(held),
+            Err(why) => {
+                // DEBUG: the read answers a correct scan either way, and the
+                // no-session case is this door's own reason - the only one
+                // that would otherwise reach the caller as a bare `None`.
+                tracing::debug!(
+                    target: "forge_workspace::work",
+                    event_name = "review_diff_scan_refused",
+                    slot = %slot.display(),
+                    outcome = "no_data",
+                    error = %why,
+                    "the pinned scan could not be taken; the read re-reads locally",
+                );
+                None
+            }
+        }
     }
 
     /// The local re-read a drawing read takes when its pin could not be: the

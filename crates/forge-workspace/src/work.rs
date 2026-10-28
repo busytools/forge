@@ -106,10 +106,11 @@ pub fn work_from_scan(diff: &GitDiffSnapshot, cwd: &Path) -> WorkState {
 /// carries the gate that says which.
 ///
 /// `base` is the state the seat's last watch refresh measured for the layer's
-/// base. **It rides the row so a base-only move is news**: an upstream commit
-/// the branch already contains moves `origin/main` without changing the count
-/// or the chain, and a review page drawing `current` over it would keep a
-/// label nobody re-checked.
+/// base. **It rides the row so a base-only move is news**: the range is
+/// `base..HEAD`, so an upstream advance the branch does not contain moves
+/// `origin/main` while the count and the chain stay exactly as they were, and
+/// a review page drawing `current` over it would keep a label nobody
+/// re-checked.
 pub fn git_work_view(diff: &GitDiffSnapshot, base: Option<BaseState>) -> GitWorkView {
     let worktree = match &diff.worktree {
         forge_primitives::git_diff::LayerState::Populated(stats) => Some(stats.clone()),
@@ -752,6 +753,7 @@ impl Workspace {
         slot: &SessionSlot,
         cwd: &Path,
         base: Option<&str>,
+        measured: Option<BaseState>,
     ) -> Result<WorkSnapshot, String> {
         if self.domain_session_for(slot).is_none() {
             return Err(format!("{} has no session to store a scan on", slot.display()));
@@ -787,7 +789,7 @@ impl Workspace {
             }
             None => None,
         };
-        Ok(self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, None).await)
+        Ok(self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured).await)
     }
 
     /// `project`'s own declared environment, `env_file` included, which
@@ -1493,8 +1495,9 @@ provider = "anthropic"
         let scanning = Arc::clone(&workspace);
         let at = dir.path().to_path_buf();
         let seat_for_task = seat.clone();
-        let waiting =
-            tokio::spawn(async move { scanning.scan_work_pinned(&seat_for_task, &at, None).await });
+        let waiting = tokio::spawn(async move {
+            scanning.scan_work_pinned(&seat_for_task, &at, None, None).await
+        });
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!waiting.is_finished(), "the drawing read queues on the scan in flight");
 
@@ -1524,7 +1527,7 @@ provider = "anthropic"
         let in_flight = gate.lock().await;
 
         let started = Instant::now();
-        let refused = workspace.scan_work_pinned(&seat, dir.path(), None).await;
+        let refused = workspace.scan_work_pinned(&seat, dir.path(), None, None).await;
         assert!(refused.is_err(), "a held gate past the bound refuses the read");
         assert!(
             started.elapsed() >= Duration::from_millis(100),
@@ -1533,7 +1536,7 @@ provider = "anthropic"
 
         drop(in_flight);
         assert!(
-            workspace.scan_work_pinned(&seat, dir.path(), None).await.is_ok(),
+            workspace.scan_work_pinned(&seat, dir.path(), None, None).await.is_ok(),
             "a free gate scans at once",
         );
         set_pinned_gate_wait(0);

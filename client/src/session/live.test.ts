@@ -3235,6 +3235,57 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **A read wanted while the cap dropped its answer is still served.** The
+   * cap drops the answer, but a want latched behind it would be unserved with
+   * no ask outstanding - the two-sources answer a review page's own read
+   * exists to prevent - and would fire later as a stray read. Every path that
+   * spends an ask funnels through the same want.
+   */
+  it('serves a read wanted while the cap dropped its answer', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+
+    // Three outruns, each re-asked; the ask from the third is in flight.
+    for (let round = 1; round <= 3; round += 1) {
+      page.land(
+        frameOf({ chat_appended: { key: LEAD, msg: spoke(`line ${round}`, `u${round}`) } }, round),
+      );
+      page.land(
+        snapshotOf(
+          LEAD,
+          { conversation: { turns: [], compaction_count: 0 } },
+          { epoch: 'one', seq: 1 },
+        ),
+      );
+    }
+    expect(page.reads(), 'the first three outruns asked').toBe(3);
+
+    // A frame lands, and the page wants a read while that ask is in flight.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('four', 'u4') } }, 4));
+    rereadSeat(connection, LEAD, { review: true });
+
+    // The fourth answer is the cap's: dropped, and the want served.
+    page.land(
+      snapshotOf(
+        LEAD,
+        { conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'one', seq: 1 },
+      ),
+    );
+    paint();
+
+    expect(page.reads(), 'the want latched behind the dropped answer was never served').toBe(4);
+    page.stop();
+  });
+
+  /**
    * **The drop's premise is a record of the answer's OWN epoch, and a swap's
    * read is not one** (#2276). A wipe starts the count again without clearing
    * the record, so the new epoch's frames merge onto the PREVIOUS occupant's

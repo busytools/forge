@@ -296,12 +296,6 @@ describe('the diff parse', () => {
   });
 
   /**
-   * **An absent base over a drawn branch layer is an unread base, not a fresh
-   * one.** A client newer than its server gets a v14 record with no `base` at
-   * all; reading that as nothing drew the same silence as "the base is fine",
-   * which is the one claim nobody checked.
-   */
-  /**
    * **The seat row's own base measurement** is what a page compares against
    * its read's: absent means an older server that never measured one, which
    * is not a state a page may read as `unknown`.
@@ -316,6 +310,12 @@ describe('the diff parse', () => {
     });
   });
 
+  /**
+   * **An absent base over a drawn branch layer is an unread base, not a fresh
+   * one.** A client newer than its server gets a v14 record with no `base` at
+   * all; reading that as nothing drew the same silence as "the base is fine",
+   * which is the one claim nobody checked.
+   */
   it('reads an absent base over a drawn branch layer as unknown', () => {
     const skew = diffFrom({ branch_ahead: { populated: [] } });
     expect(skew.base?.state, 'the older server never checked, so the page says so').toBe('unknown');

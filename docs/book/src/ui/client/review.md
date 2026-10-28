@@ -64,13 +64,14 @@ first.** Opening the review page asks the server for a review-scoped read: it
 fetches the remote-tracking default (`origin/main`) before it reads the branch
 layer, because a base the remote has moved past moves the merge-base back and
 folds main's own commits into the branch's diff. Every other read of the seat's
-record serves what the stores hold and never waits on the network, so a cached
-record's diff is labelled `unverified` until this page's own read lands. That
-fetch is bounded by the read's own short budget, so it can fail to land: the
-page then says so above the canvas instead of drawing the files as the branch's
-change, naming how many commits upstream is ahead when that can be measured and
-plainly that it could not be checked when it could not. A commit's own view
-reads that commit's immutable tree, so it carries no such line.
+record serves what the stores hold and never waits on the network, so a record
+this page did not read itself is drawn with no base line at all - it has not
+checked, and the page says nothing it cannot back. That fetch is bounded by the
+read's own short budget, so it can fail to land: the page then says so above
+the canvas instead of drawing the files as the branch's change, naming how many
+commits upstream is ahead when that can be measured and plainly that it could
+not be checked when it could not. A commit's own view reads that commit's
+immutable tree, so it carries no such line.
 
 The keys, as the keycap row under the tabs states them: `←` and `→` step one
 scope and `shift`+`←`/`→` step one comment. **The scopes are a line, not a

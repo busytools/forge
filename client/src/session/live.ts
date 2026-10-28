@@ -398,6 +398,10 @@ export function clearReview(connection: Connection, slot: SessionSlot): void {
   const seat = seats(connection).get(subjectKey(subject));
   if (seat === undefined) return;
   seat.review = false;
+  // Nothing this page read belongs to a review sitting any more: a later
+  // mount draws the held record without a base line until its own read lands.
+  seat.readReview = false;
+  seat.view.set({ wire: seat.wire, refused: seat.refused, review: false });
   // **The transports learn it too.** Their held declaration is what a
   // reconnect re-asks with; left saying `review`, every reconnect would pay
   // a base fetch and a pinned scan for a seat nobody is reviewing.
@@ -751,6 +755,18 @@ function createSeat(
    */
   function answeredRead(): void {
     read();
+    serveWanted();
+  }
+
+  /**
+   * Ask for a read wanted while another was in flight.
+   *
+   * **Every path that spends an ask funnels through here**, including the one
+   * that drops an answer past the outrun cap: a want left latched there would
+   * be unserved with no ask outstanding - the two-sources answer this seat's
+   * review read exists to prevent - and would fire later as a stray read.
+   */
+  function serveWanted(): void {
     if (!seat.wanted) return;
     seat.wanted = false;
     reread();
@@ -770,7 +786,7 @@ function createSeat(
    * never stopped for it, and the return no longer re-reads, so this is the
    * only ask a seat away from the reader has.
    */
-  function reread(): void {
+  function reread(options?: { review?: boolean }): void {
     // A seat never opened has nothing to ask on; its first subscribe is its
     // read, and that subscribe carries `seat.review`.
     if (seat.opened === 0) return;
@@ -784,11 +800,14 @@ function createSeat(
       return;
     }
     seat.asking = true;
-    seat.askingReview = seat.review;
+    // **A one-shot scope, not the seat's.** A notice-driven read needs the
+    // record and not a base refresh; the held intent is left as it is.
+    const scope = options?.review ?? seat.review;
+    seat.askingReview = scope;
     // Where the stream stood when the ask left, so the answer can be read
     // against what has arrived since.
     seat.askedAt = seat.seen;
-    connection.refresh(subject, { review: seat.review });
+    connection.refresh(subject, { review: scope });
   }
 
   /** The beat a refused seat is asked again on, or `null` when none is armed. */
@@ -982,7 +1001,10 @@ function createSeat(
     // that read again; without it the strip's rows and its panel keep saying
     // `open` at threads the reader just settled.
     if (name === 'review_activity_notice') {
-      reread();
+      // **The record, not the base.** A write's notice is one of ten a minute
+      // when a round is being sealed; each review read would fetch the same
+      // repo again for a base the page read seconds ago.
+      reread({ review: false });
     }
 
     const seq = typeof frame.seq === 'number' ? frame.seq : null;
@@ -1142,6 +1164,9 @@ function createSeat(
             // the re-ask stops here (#1472).
             if (sameOccupant) {
               seat.outrun = 0;
+              // The answer is dropped, but a read the page wanted while it
+              // was in flight is still owed.
+              serveWanted();
               return;
             }
           } else {

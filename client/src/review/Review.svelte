@@ -114,9 +114,10 @@
 
   /**
    * What the seat's last watch refresh measured for the base, as one value to
-   * compare. **The field that catches a base-only move**: an upstream commit
-   * the branch already contains moves `origin/main` without moving the count
-   * or the chain, and only this says so.
+   * compare. **The field that catches a base-only move**: the range is
+   * `base..HEAD`, so an upstream advance the branch does not contain moves
+   * `origin/main` while the count and the chain stay as they were, and only
+   * this says so.
    */
   function baseOf(base: BaseStateRecord | null | undefined): string | null {
     if (base === null || base === undefined) return null;
