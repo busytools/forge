@@ -77,6 +77,8 @@
 
   // Where virtua reads it: before the DOM updates, on the change itself - and
   // only when the count moved, since that is the one moment virtua consults it.
+  // **The comparison is against the module's last record**, so the gate holds
+  // for one list at a time; a test drawing two would read the other's count.
   $effect.pre(() => {
     const length = data.length;
     if (records.at(-1)?.length === length) return;

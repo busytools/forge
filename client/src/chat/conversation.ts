@@ -1647,7 +1647,9 @@ export class Chat {
    * published or armed, and nothing else clears that.
    */
   private wake(): void {
-    if (this.queued !== null) this.flush();
+    // A hidden page's landing waits on a tick rather than a frame, and a
+    // suspended page can lose that tick the same way it loses a frame.
+    if (this.queued !== null || this.deferred !== null) this.flush();
   }
 
   /**
@@ -1725,11 +1727,14 @@ export class Chat {
     // A marked value not yet published is spent first, and a frame that moves
     // the head is never merged into a draw already armed. Any other frame may
     // ride the draw it meets: appends are the burst the paint coalesces.
-    if (headMoved(before.turns) || (moved && this.queued !== null)) this.flush();
+    const spent = headMoved(before.turns) || (moved && this.queued !== null);
+    if (spent) this.flush();
     this.held = next;
-    // A frame that moves the head has to be seen on a write of its own, and a
-    // hidden page has no frame to make one of - so it takes a tick.
-    if (moved && cannotPaint()) {
+    // **A spent publish and a head move both owe a boundary of their own.** On
+    // a visible page the next frame is that boundary; a page that cannot paint
+    // has no frame, so it takes a tick - without which this frame would merge
+    // with the one just spent and the landing's mark would be lost.
+    if (cannotPaint() && (moved || spent)) {
       this.deferred = setTimeout(() => this.flush(), 0);
       return;
     }
@@ -4188,11 +4193,12 @@ export function headMoved(turns: readonly unknown[]): boolean {
  *
  * **Every way the held rows move goes through `fold` or `stream`**, so marking
  * there cannot be forgotten by one of them. What counts is the head itself
- * moving - a page landing above, a trim that cuts the front, a retraction that
- * empties the first row - while a turn opening at the tail is the one change
- * that must not be read as the same fact. (`replaced`, the occupant swap, is
- * the exception: it writes a whole new conversation rather than moving rows in
- * the one already drawn.)
+ * moving - a page landing above, a trim that cuts the front, `dropEmptied`
+ * removing the row a cancelled prompt left (a retraction keeps its row, so it
+ * only moves the head when that row was the first) - while a turn opening at
+ * the tail is the one change that must not be read as the same fact.
+ * (`replaced`, the occupant swap, is the exception: it writes a whole new
+ * conversation rather than moving rows in the one already drawn.)
  *
  * **A list built from nothing is not a head move.** The first page has nothing
  * above the reader to hold, and the list fills an empty one row by row.

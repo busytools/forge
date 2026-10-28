@@ -147,12 +147,11 @@ function stub() {
       flushSync();
     },
     /**
-     * Two messages delivered in ONE task with no paint between them, which is
-     * the burst a socket produces and the order the pins are about.
+     * Messages delivered in ONE task with no paint between them, which is the
+     * burst a socket produces and the order every boundary pin is about.
      */
-    burst(first: ServerMessage, second: ServerMessage): void {
-      for (const fn of listeners) fn(first);
-      for (const fn of listeners) fn(second);
+    burst(...messages: ServerMessage[]): void {
+      for (const fn of listeners) for (const message of messages) fn(message);
       flushSync();
     },
     /**
@@ -389,11 +388,11 @@ describe('the compensation the list is handed', () => {
     await tick();
     const handed = records.length;
 
-    // **The burst, one write longer than the last pin.** A frame opens a turn
-    // at the tail, the page lands, and a second frame arrives before either
-    // draw: the landing's mark must reach the list on its own change, or a
-    // later write replaces the marked array and the prepend is never
-    // compensated at all.
+    // **Three writes, and the landing's paint still in the future.** The
+    // helpers each render before returning, so the first two are separate
+    // tasks; the third lands in the same task as the landing's deferred draw,
+    // which is the window that matters. (All three in one task coalesce in
+    // Svelte before any render, so the boundary there is the hidden pin's.)
     server.update({
       chat_appended: {
         key: LEAD,
@@ -405,11 +404,9 @@ describe('the compensation the list is handed', () => {
       },
     });
     server.page([turn('t0'), turn('t1'), turn('t2')], null);
-    // **A third write before either draw.** A catch-up page one turn longer is
-    // the shape the harness can build here: an appended frame that opens a row
-    // is held as `unturned` once a page's row is the newest, so it would not
-    // change the list at all. What the pin needs is only a write whose turns
-    // differ while the landing's mark is still unpublished, and this is one.
+    // A catch-up page one turn longer: an appended frame that opens a row is
+    // held as `unturned` once a page's row is the newest, so a page is the
+    // write the harness can build that still moves the list.
     server.page([turn('t0'), turn('t1'), turn('t2'), turn('t3')], null);
     await frame();
 
@@ -462,7 +459,146 @@ describe('the compensation the list is handed', () => {
     ).toEqual([[3, true]]);
   });
 
-  it('keeps a mid-handoff prepend off the draw it meets', async () => {
+  it('publishes a frame that spends a mark on its own tick when the page cannot paint', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // **The reverse order, hidden.** The landing comes first and the frame
+    // second, both in one task; the frame spends the landing's mark, and a
+    // page that cannot paint has no frame to put between the two publishes.
+    // Without the tick the frame replaces the marked value and the prepend is
+    // never compensated.
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    try {
+      server.burst(
+        {
+          kind: 'page',
+          conversation: LEAD,
+          turns: [turn('t0'), turn('t1'), turn('t2')],
+          cursor: null,
+        },
+        {
+          kind: 'update',
+          update: {
+            chat_appended: {
+              key: LEAD,
+              msg: {
+                type: 'user',
+                uuid: 'u-reverse',
+                message: { role: 'user', content: [{ type: 'text', text: 'after the page' }] },
+              },
+            },
+          },
+        },
+      );
+      await tick();
+    } finally {
+      if (hidden !== undefined) Object.defineProperty(document, 'hidden', hidden);
+    }
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the landing, then the frame',
+    ).toEqual([
+      [3, true],
+      [4, false],
+    ]);
+  });
+
+  it('spends a waiting mark before a frame whose turns differ', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // Frame, landing, then a frame that only joins the newest row: no row is
+    // added, but the turns are rebuilt, so the landing's unpublished mark is
+    // spent by that write rather than replaced by it. The first two render
+    // before returning; the last lands while the landing's draw is deferred.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-head',
+          message: { role: 'user', content: [{ type: 'text', text: 'the burst' }] },
+        },
+      },
+    });
+    server.page([turn('t0'), turn('t1'), turn('t2')], null);
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'assistant',
+          uuid: 'a-tail',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'and more' }] },
+        },
+      },
+    });
+    await frame();
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the frame, then the landing marked, then the frame',
+    ).toEqual([
+      [3, false],
+      [4, true],
+    ]);
+  });
+
+  it('keeps a landing marked when a turn ends on a page that cannot paint', async () => {
+    const server = stub();
+    draw(server);
+    // A running turn, so its ending rebuilds the rows.
+    server.snapshot([turn('t1'), turn('t2')], true);
+    await tick();
+    const handed = records.length;
+
+    // The landing is deferred to a tick (no frame to publish on) and the turn
+    // ends before that tick. The ending does not move the head, so only the
+    // unpublished mark tells the column to spend it first.
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    try {
+      server.burst(
+        {
+          kind: 'page',
+          conversation: LEAD,
+          turns: [turn('t0'), turn('t1'), turn('t2')],
+          cursor: null,
+        },
+        { kind: 'update', update: { turn_cancelled: {} } },
+      );
+      await tick();
+    } finally {
+      if (hidden !== undefined) Object.defineProperty(document, 'hidden', hidden);
+    }
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the landing keeps its mark through the ending',
+    ).toEqual([[3, true]]);
+  });
+
+  // **A composition pin, not a fix pin.** It holds on the round-2 code too:
+  // it says #2639's handoff row goes through the same funnel and therefore
+  // gets the same boundary, not that this cut changed it.
+  it('joins a mid-handoff prepend as a change of its own', async () => {
     const server = stub();
     draw(server);
     server.page([turn('t1'), turn('t2')], '2');

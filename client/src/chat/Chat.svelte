@@ -526,8 +526,8 @@
       // A reader away from the foot has a place of their own, and a size change
       // is one of the two ways it moves under them. **Not while the prepend
       // compensation is on**, same as the effect's own pass: that path holds
-      // the reader by the list's own shift as older turns arrive above them,
-      // and two hands on the scroll is one too many.
+      // the reader by the list's own compensation as older turns arrive above
+      // them, and two hands on the scroll is one too many.
       else if (!compensating) {
         restored += 1;
         restoreAnchor();
@@ -1354,8 +1354,8 @@
    * the observer's.)
    *
    * **Skipped while the prepend compensation is on**: that path holds the
-   * reader by the list's own shift as older turns arrive above them, and two
-   * hands on the scroll is one too many.
+   * reader by the list's own compensation as older turns arrive above them,
+   * and two hands on the scroll is one too many.
    */
   $effect(() => {
     const park = held;
