@@ -122,6 +122,9 @@ pub fn pump() {
 /// bundle into `/var/folders/.../X` per launch to keep a staged update's
 /// signature valid; a CEF host has no updater, and 172 test launches filled a
 /// disk. The rest are the keychain and windowless-browser rules above.
+///
+/// **One entry per switch**: a repeated switch keeps the last value, so a
+/// second `disable-blink-features` tuple would silently replace this one.
 pub(crate) const HOST_SWITCHES: &[(&str, Option<&str>)] = &[
     ("use-mock-keychain", None),
     ("password-store", Some("basic")),

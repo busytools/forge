@@ -1,6 +1,12 @@
 //! The in-app browser offers no WebAuthn, live: a fresh page of a real host
-//! sees no `PublicKeyCredential`, in its top frame and in an iframe, while
-//! the page still works as an ordinary page.
+//! sees no `PublicKeyCredential`, in its top frame and in a cross-site
+//! subframe, while the page still works as an ordinary page.
+//!
+//! **The subframe is addressed as `localhost` against a server bound to
+//! `127.0.0.1`**, so it is a different site from the page and in a renderer
+//! of its own. It reports back over `postMessage`, which is the only way into
+//! a cross-origin frame; a patch that reached only the top frame would leave
+//! this one reporting the API.
 //!
 //! **The control is the page's own credentials manager and form.** A
 //! `chrome-error://` document, or one that never ran, reports the API absent
@@ -31,8 +37,8 @@ use serde_json::{Value, json};
 const BOUND: Duration = Duration::from_secs(45);
 const POLL_EVERY: Duration = Duration::from_millis(100);
 
-/// One page served from loopback - a secure context, and one subframe on the
-/// same origin - with a form that records its own submit.
+/// One page served from loopback - a secure context, and one cross-site
+/// subframe - with a form that records its own submit.
 fn serve_page() -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a loopback listener");
     let port = listener.local_addr().expect("the bound address").port();
@@ -49,15 +55,22 @@ fn serve_page() -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
             let request = String::from_utf8_lossy(&request);
             let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
             let body = if path == "/frame" {
-                "<html><body>frame</body></html>".to_owned()
-            } else {
-                "<html><body><form id=f><input id=i name=q><button id=b type=submit>go</button>\
-                 </form><iframe id=fr src=\"/frame\"></iframe><script>\
-                 window.__submitted = false; \
-                 document.getElementById('f').addEventListener('submit', function (e) { \
-                 e.preventDefault(); window.__submitted = true; });\
-                 </script></body></html>"
+                "<html><body><script>parent.postMessage({type: 'forge-frame', \
+                 secure: isSecureContext, pkc: typeof PublicKeyCredential, \
+                 present: 'PublicKeyCredential' in window}, '*');</script></body></html>"
                     .to_owned()
+            } else {
+                format!(
+                    "<html><body><form id=f><input id=i name=q>\
+                     <button id=b type=submit>go</button></form>\
+                     <iframe id=fr src=\"http://localhost:{port}/frame\"></iframe><script>\
+                     window.__frame = null; window.__submitted = false; \
+                     addEventListener('message', function (e) {{ \
+                     if (e.data && e.data.type === 'forge-frame') window.__frame = e.data; }}); \
+                     document.getElementById('f').addEventListener('submit', function (e) {{ \
+                     e.preventDefault(); window.__submitted = true; }});\
+                     </script></body></html>"
+                )
             };
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
@@ -78,16 +91,14 @@ async fn evaluate(cdp: &mut Cdp, expression: &str) -> Value {
     reply.pointer("/result/value").cloned().unwrap_or(Value::Null)
 }
 
-/// Open the served page and wait until both it and its subframe are the
-/// documents under test.
-async fn open_page(cdp: &mut Cdp, carried: &str, subframe: &str) {
+/// Open the served page and wait until both it and its cross-site subframe
+/// have reported.
+async fn open_page(cdp: &mut Cdp, carried: &str) {
     cdp.call("Page.navigate", json!({ "url": carried }), None).await.expect("the page navigates");
     let deadline = Instant::now() + BOUND;
     let ready = format!(
         "location.href === {carried:?} && document.readyState === 'complete' \
-         && !!document.getElementById('fr') && \
-         document.getElementById('fr').contentWindow.location.href === {subframe:?} && \
-         document.getElementById('fr').contentWindow.document.readyState === 'complete'"
+         && !!window.__frame"
     );
     loop {
         if evaluate(cdp, &ready).await.as_bool() == Some(true) {
@@ -122,7 +133,7 @@ async fn a_page_in_the_host_offers_no_webauthn() {
         .strip_prefix(&forge_browser::spawn::ws_prefix(port))
         .expect("the endpoint is on the host's port");
     let (mut cdp, _events) = Cdp::connect_watch(port, path).await.expect("a page connection");
-    open_page(&mut cdp, &carried, &format!("{carried}frame")).await;
+    open_page(&mut cdp, &carried).await;
 
     // The control: this is the served secure document, with the credentials
     // manager every page has, so the absence below is not a page that failed.
@@ -138,8 +149,8 @@ async fn a_page_in_the_host_offers_no_webauthn() {
         "the served page is a secure document with the ordinary credentials API: {control}",
     );
 
-    // The property, from the top frame and from inside the iframe: the whole
-    // API is absent, not just its passkey entry points.
+    // The property, from the top frame and from the cross-site subframe: the
+    // whole API is absent, not just its passkey entry points.
     let top = evaluate(
         &mut cdp,
         "({type: typeof PublicKeyCredential, present: 'PublicKeyCredential' in window})",
@@ -150,17 +161,11 @@ async fn a_page_in_the_host_offers_no_webauthn() {
         json!({ "type": "undefined", "present": false }),
         "the host's page exposes no PublicKeyCredential: {top}",
     );
-    let frame = evaluate(
-        &mut cdp,
-        "(() => { const w = document.getElementById('fr').contentWindow; \
-          return {secure: w.isSecureContext, type: typeof w.PublicKeyCredential, \
-          present: 'PublicKeyCredential' in w}; })()",
-    )
-    .await;
+    let frame = evaluate(&mut cdp, "window.__frame").await;
     assert_eq!(
         frame,
-        json!({ "secure": true, "type": "undefined", "present": false }),
-        "a subframe of the secure host page exposes none either: {frame}",
+        json!({ "type": "forge-frame", "secure": true, "pkc": "undefined", "present": false }),
+        "a cross-site subframe of the host's page exposes none either: {frame}",
     );
 
     // The page is still an ordinary page: a field takes a value and the form
