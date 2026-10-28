@@ -716,6 +716,15 @@ pub struct Workspace {
     /// Per-workspace pump liveness for the Inspector's SLACK section.
     /// Keyed by label for the same reason.
     pub(crate) slack_connected: Mutex<std::collections::BTreeMap<String, bool>>,
+    /// Conversations forge has a post in flight into, keyed
+    /// `(workspace, the resolved conversation)`, each entry a stamp per
+    /// live call: one post call with its ledger write, or one upload's
+    /// shares read. The sweep skips a conversation while any stamp is
+    /// within budget, because the message can reach history before its ts
+    /// is ledgered; a stamp past the request timeout is expired, never
+    /// obeyed, so a stalled call cannot silence the conversation.
+    pub(crate) slack_inflight:
+        Mutex<std::collections::HashMap<(String, String), Vec<crate::slack::SlackPostStamp>>>,
     /// The authenticated user's id per workspace, resolved once by the
     /// boot `auth.test` and needed to recognise `<@U...>` mentions.
     pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
@@ -725,6 +734,11 @@ pub struct Workspace {
     /// `(workspace, user id)` pairs whose failed lookup has been reported, so
     /// a persistent failure says so once rather than on every tick.
     pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
+    /// Conversations whose own-post ledger could not be read this run,
+    /// keyed `(workspace, conversation)`. The read is retried on every
+    /// message; this only decides whether the failure is worth a line a
+    /// reader sees, once rather than per message.
+    pub(crate) slack_ledger_failures: Mutex<std::collections::HashSet<(String, String)>>,
     /// Composed Slack messages held for the user's decision, keyed by
     /// draft id and carrying the session that asked. The owner is stored
     /// beside it so an answer is only ever applied by the session it was
@@ -2018,9 +2032,11 @@ impl Workspace {
             slack_subs: Mutex::new(slack_subs),
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_inflight: Mutex::new(std::collections::HashMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
@@ -3975,11 +3991,26 @@ impl Workspace {
 
     /// The project `slot` names, if `forge.toml` still declares it.
     pub(crate) fn project_for_slot(&self, slot: &SessionSlot) -> Option<LoadedProject> {
-        self.config_arc()
-            .projects
-            .iter()
-            .find(|project| project.org == slot.org() && project.name == slot.project())
-            .cloned()
+        let config = self.config_arc();
+        let find =
+            |project: &LoadedProject| project.org == slot.org() && project.name == slot.project();
+        if let Some(project) = config.projects.iter().find(|project| find(project)) {
+            return Some(project.clone());
+        }
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(project) = self.test_extra_projects.lock().iter().find(|project| find(project))
+        {
+            return Some(project.clone());
+        }
+        None
+    }
+
+    /// The Slack workspace bound to `slot`'s project: the project's own
+    /// binding, else its org's. `None` when the slot names no configured
+    /// project or nothing binds one - both leave the Slack tools refusing
+    /// with the key to add.
+    pub(crate) fn slack_workspace_for_slot(&self, slot: &SessionSlot) -> Option<String> {
+        self.project_for_slot(slot).and_then(|project| project.slack_workspace)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -10013,6 +10044,7 @@ mod account_stamp_tests {
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
                 .expect("a profile key"),
+            slack_workspace: None,
         }
     }
 

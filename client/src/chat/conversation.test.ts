@@ -6581,6 +6581,250 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
   });
 
   /**
+   * A row the READ built is filled in place too.
+   *
+   * The row above is one the frames built, which the drain joins because it is
+   * still being written; a row the transcript gave this page carries neither
+   * `live` nor `running`, so the drain opened a new row below and left the
+   * emptied one drawing nothing - the blank band Ved reported after a queued
+   * send (2026-10-27).
+   */
+  it('fills the row the read built when the drain lands, in place', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+
+    // A page landing before the hold arms draws the forged row as a row of the
+    // transcript's: no frame built it here, so it carries neither flag.
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    const built = get(chat.value).turns.at(-1);
+    expect(built?.key, 'precondition: the page built the row').toBeDefined();
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    const held = get(chat.value).turns;
+    expect(held.at(-1)?.key, 'the retraction keeps the row under its key').toBe(built?.key);
+    expect(held.at(-1)?.held, 'and marks it held').toBe(true);
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    const drained = get(chat.value).turns;
+    expect(
+      drained.filter((row) => fold(row.messages).length === 0),
+      'no row is left drawing nothing',
+    ).toHaveLength(0);
+    expect(drained.at(-1)?.key, 'the drain lands in the row the read built').toBe(built?.key);
+    expect(drained.at(-1)?.held, 'and the hold is over').toBe(false);
+    expect(JSON.stringify(drained.at(-1)?.messages), 'with the words in it').toContain('the words');
+    stop();
+  });
+
+  /**
+   * **The drained row stays at the tail when a page does not carry it.**
+   *
+   * A page landing after the drain is the ordinary path (`turn_complete` asks
+   * for one), and a newest page that leaves the row out must not file it above
+   * itself as another reach of the conversation: the reader's own send drifts
+   * to the oldest end of the window, where a trim can drop it.
+   */
+  it('keeps a drained row at the end when a newest page does not carry it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    const sent = get(chat.value).turns.at(-1)?.key;
+    expect(
+      JSON.stringify(get(chat.value).turns.at(-1)?.messages),
+      'precondition: drained',
+    ).toContain('the words');
+
+    // A newest page read before the CLI wrote the prompt's own turn.
+    server.send(page([turn('t1', 'kept')], null));
+
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the sent row keeps the foot it was at',
+    ).toEqual(['t1', String(sent)]);
+    stop();
+  });
+
+  /**
+   * **A page landing between the retraction and the drain finds the row held**,
+   * which is the reconnect or missed-frame shape: the read carries no row for a
+   * prompt the CLI has not taken, and the held row must stay at the tail rather
+   * than being filed above the page.
+   */
+  it('keeps the held row at the end of a page that lands mid-wait', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    const built = get(chat.value).turns.at(-1)?.key;
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    expect(get(chat.value).turns.at(-1)?.held, 'precondition: the row is held').toBe(true);
+
+    server.send(page([turn('t1', 'kept')], null));
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the held row stays at the foot',
+    ).toEqual(['t1', String(built)]);
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    const drained = get(chat.value).turns;
+    expect(
+      drained.filter((row) => fold(row.messages).length === 0),
+      'no row is left drawing nothing',
+    ).toHaveLength(0);
+    expect(drained.at(-1)?.key, 'and the drain still lands in it').toBe(built);
+    stop();
+  });
+
+  /**
+   * **A frame that joined the emptied row while the prompt waited is kept.**
+   *
+   * The drain's redirect matches a row that is still held AND empty; a row a
+   * continuation grew is neither, so the words open a row below it rather than
+   * replacing the frame with themselves.
+   */
+  it('keeps a continuation that joined the emptied row before the drain', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+
+    server.update({ chat_appended: { key: LEAD, msg: said('answer in between') } });
+    const joined = get(chat.value).turns;
+    expect(JSON.stringify(joined), 'precondition: the frame joined the emptied row').toContain(
+      'answer in between',
+    );
+    expect(joined.at(-1)?.held, 'and the row is held no longer').toBe(false);
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    const drained = get(chat.value).turns;
+    expect(JSON.stringify(drained), 'the frame survives the drain').toContain('answer in between');
+    expect(drained, 'and the words open a row of their own below it').toHaveLength(3);
+    expect(JSON.stringify(drained.at(-1)?.messages), 'carrying the words').toContain('the words');
+    stop();
+  });
+
+  /**
+   * **A cancel leaves a row a continuation grew alone.**
+   *
+   * The cancel drops the row it emptied, and that is the row still held AND
+   * empty; a frame that joined it while the prompt waited is not the cancelled
+   * prompt's to take.
+   */
+  it('keeps a continuation when the cancelled prompt emptied a row it grew', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    server.update({ chat_appended: { key: LEAD, msg: said('answer in between') } });
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
+
+    const turns = get(chat.value).turns;
+    expect(JSON.stringify(turns), 'the frame the cancel did not own survives').toContain(
+      'answer in between',
+    );
+    expect(turns, 'and no row was dropped for it').toHaveLength(2);
+    stop();
+  });
+
+  /**
+   * **The reconnect arm fills the emptied row too.** A hold the read no longer
+   * lists draws its words where the row already stands; without the redirect
+   * the released row is left empty and a second one opens beside it.
+   */
+  it('fills the emptied row when a reconnect releases the hold', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    const built = get(chat.value).turns.at(-1)?.key;
+
+    // The first read arms the hold and retracts the page's copy; the seat says
+    // no turn is in flight, so nothing marks the emptied row as being written.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: { turn_in_flight: false },
+        state: { queue: [{ uuid: 'p1', source: 'you', text: 'the words' }] },
+      },
+    });
+    expect(get(chat.value).turns.at(-1)?.held, 'precondition: the row is held').toBe(true);
+
+    // The socket drops and the prompt settles while it is down; the return's
+    // read no longer lists it, so the hold releases.
+    server.reach('closed');
+    server.reach('open');
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false }, state: { queue: [] } },
+    });
+
+    const turns = get(chat.value).turns;
+    expect(
+      turns.filter((row) => fold(row.messages).length === 0),
+      'no row is left drawing nothing',
+    ).toHaveLength(0);
+    expect(turns.at(-1)?.key, 'the words draw in the row the read built').toBe(built);
+    expect(JSON.stringify(turns.at(-1)?.messages), 'with the words in it').toContain('the words');
+    stop();
+  });
+
+  /**
+   * A cancelled prompt takes the row it was held in with it.
+   *
+   * No drain is coming for a prompt the reader deleted, so the emptied row
+   * would stand at `.turn`'s floor for good - the same blank band, on the arm
+   * that unmounts its row rather than filling it.
+   */
+  it('drops the emptied row when its prompt is cancelled', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'kept')], null));
+    server.send(
+      page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
+    );
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
+    expect(get(chat.value).turns.at(-1)?.held, 'precondition: the row is held').toBe(true);
+
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
+
+    const turns = get(chat.value).turns;
+    expect(
+      turns.filter((row) => fold(row.messages).length === 0),
+      'no row is left drawing nothing',
+    ).toHaveLength(0);
+    expect(turns, 'and the row itself is gone').toHaveLength(1);
+    stop();
+  });
+
+  /**
    * **A queued send is the reader acting** (Ved, 2026-10-11: "when I press a
    * message, the chat does not scroll to my message"). A prompt the CLI queues
    * never folds as a user unit - the one thing the fold engages the follow for

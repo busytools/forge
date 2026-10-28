@@ -1,8 +1,10 @@
-//! Slack MCP - read the conversations a configured workspace offers
+//! Slack MCP - read the conversations the caller's workspace offers
 //! (`mcp__forge__slack__*`).
 //!
-//! `slack__list` lists every conversation in a workspace and marks which
-//! ones the caller has subscribed; `slack__subscribe` and
+//! No tool takes a `workspace` argument: the calling session's slot names
+//! its project, and `forge.toml`'s org or project binding names that
+//! project's workspace. `slack__list` lists every conversation in it and
+//! marks which ones the caller has subscribed; `slack__subscribe` and
 //! `slack__unsubscribe` manage those records. A subscription is live: the
 //! per-workspace poll pump sweeps it and delivers matches into the
 //! owning session.
@@ -45,15 +47,15 @@ pub(crate) fn add_tools(
     let post = Post { facade: facade.clone(), slot: slot.clone() };
     let edit = Edit { facade: facade.clone(), slot: slot.clone() };
     let react = React { facade: facade.clone(), slot: slot.clone() };
-    let attachment = Attachment { facade: facade.clone(), slot };
-    let search = Search { facade: facade.clone() };
-    let history = History { facade: facade.clone() };
-    let replies = Replies { facade: facade.clone() };
-    let user = User { facade: facade.clone() };
-    let users = Users { facade: facade.clone() };
-    let me = Me { facade: facade.clone() };
-    let pins = Pins { facade: facade.clone() };
-    let bookmarks = Bookmarks { facade };
+    let attachment = Attachment { facade: facade.clone(), slot: slot.clone() };
+    let search = Search { facade: facade.clone(), slot: slot.clone() };
+    let history = History { facade: facade.clone(), slot: slot.clone() };
+    let replies = Replies { facade: facade.clone(), slot: slot.clone() };
+    let user = User { facade: facade.clone(), slot: slot.clone() };
+    let users = Users { facade: facade.clone(), slot: slot.clone() };
+    let me = Me { facade: facade.clone(), slot: slot.clone() };
+    let pins = Pins { facade: facade.clone(), slot: slot.clone() };
+    let bookmarks = Bookmarks { facade, slot };
     builder
         .tool(list)
         .tool(subscribe)
@@ -197,8 +199,6 @@ struct List {
 #[derive(serde::Deserialize)]
 struct ListArgs {
     #[serde(default)]
-    workspace: Option<String>,
-    #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     kind: Option<String>,
@@ -214,12 +214,12 @@ impl Tool for List {
     }
 
     fn description(&self) -> &'static str {
-        "List every conversation in a Slack workspace - public and private channels, DMs and \
-         group DMs the token's user is a member of - each row marked with whether YOU are \
-         subscribed, counting only your own subscriptions rather than another session's. Pass \
-         `workspace` to choose one; omit it when only one is configured. Pass `name` for only \
-         conversations whose name, purpose or topic contains that text (case-insensitive), or \
-         `kind` for only one conversation type. Returns a JSON object of two keys. \
+        "List every conversation in the Slack workspace bound to your project - public and \
+         private channels, DMs and group DMs the token's user is a member of - each row marked \
+         with whether YOU are subscribed, counting only your own subscriptions rather than \
+         another session's. Pass `name` for only conversations whose name, purpose or topic \
+         contains that text (case-insensitive), or `kind` for only one conversation type. \
+         Returns a JSON object of three keys. `workspace` is the resolved `[[slack]]` label; \
          `conversations` is an array of {id, name, kind, subscribed, subscription_ids}; \
          `subscription_ids` lists your own ids covering that conversation, which is what \
          slack__unsubscribe takes. `subscriptions` lists your class subscriptions - the DM \
@@ -231,11 +231,6 @@ impl Tool for List {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label to list. Omit it when only \
-                                    one workspace is configured.",
-                },
                 "name": {
                     "type": "string",
                     "description": "Only conversations whose name, purpose or topic contains \
@@ -262,9 +257,9 @@ impl Tool for List {
         {
             return tool_error(format!("unknown kind '{kind}'; the kinds are {LIST_KINDS}"));
         }
-        match self.facade.conversations(args.workspace.as_deref()).await {
-            Ok(conversations) => {
-                let own = self.facade.subscribed_targets(&self.slot, args.workspace.as_deref());
+        match self.facade.conversations(&self.slot).await {
+            Ok((workspace, conversations)) => {
+                let own = self.facade.subscribed_targets(&self.slot, &workspace);
                 let subscribed: Vec<SlackSubscriptionTarget> =
                     own.iter().map(|sub| sub.target.clone()).collect();
                 let kept: Vec<SlackConversation> = conversations
@@ -276,6 +271,7 @@ impl Tool for List {
                     .collect();
                 let rows = list_rows(&kept, &subscribed, &own);
                 let listed = serde_json::json!({
+                    "workspace": workspace,
                     "conversations": rows,
                     "subscriptions": class_subscriptions(&own),
                 });
@@ -372,8 +368,6 @@ struct Subscribe {
 #[derive(serde::Deserialize)]
 struct SubscribeArgs {
     #[serde(default)]
-    workspace: Option<String>,
-    #[serde(default)]
     direct_messages: Option<bool>,
     #[serde(default)]
     mentions: Option<bool>,
@@ -393,9 +387,9 @@ impl Tool for Subscribe {
          sees mentions in public channels you are not in as well as in every conversation you \
          are, but not in private channels you are not in - those you could not read anyway, and \
          search lag means a mention is not instantaneous. A conversation in `mentions` mode \
-         delivers only messages that mention the user; `all` delivers every message. Pass \
-         `workspace` to choose one, or omit it when only one is configured. Returns one row per \
-         subscription as {id, workspace, target}, where target is {kind: \"conversation\", \
+         delivers only messages that mention the user; `all` delivers every message. Returns \
+         one row per subscription as {id, workspace, target}, where target is \
+         {kind: \"conversation\", \
          id, name, mode} | {kind: \"dm\"} | {kind: \"mentions\"}; the id is the only handle \
          slack__unsubscribe accepts. A conversation already watched hands back that record \
          rather than creating a second one. Any session in the project may call this."
@@ -405,11 +399,6 @@ impl Tool for Subscribe {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label to subscribe in. Omit it \
-                                    when only one workspace is configured.",
-                },
                 "direct_messages": {
                     "type": "boolean",
                     "description": "Watch every DM in the workspace, group DMs included.",
@@ -475,7 +464,7 @@ impl Tool for Subscribe {
         }
         let mut rows: Vec<serde_json::Value> = Vec::new();
         for request in requests {
-            match self.facade.subscribe(&self.slot, args.workspace.as_deref(), request) {
+            match self.facade.subscribe(&self.slot, request) {
                 Ok(created) => rows.extend(created.iter().map(sub_to_row)),
                 Err(err) => {
                     return tool_error(format_subscribe_error(&err));
@@ -607,8 +596,6 @@ struct Post {
 
 #[derive(serde::Deserialize)]
 struct PostArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     conversation: String,
     #[serde(default)]
     thread_ts: Option<String>,
@@ -626,21 +613,17 @@ impl Tool for Post {
          thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
          until the user decides in the dock prompt, and a rejected or unanswered draft posts \
          nothing. Text past 4000 characters is split into numbered parts automatically, each a \
-         separate message. Returns {ts, conversation_name, parts}: the `ts` of every message \
-         it posted, in the order they went out; slack__edit, slack__react and a reply each take \
-         one. Any session in the project may call this. If this call fails, report the exact \
-         error and stop - never fall back to Slack's web API with the configured token."
+         separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
+         the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
+         in the order they went out; slack__edit, slack__react and a reply each take one. Any \
+         session in the project may call this. If this call fails, report the exact error and \
+         stop - never fall back to Slack's web API with the configured token."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label to post in. Omit it when \
-                                    only one workspace is configured.",
-                },
                 "conversation": {
                     "type": "string",
                     "description": "The conversation id from slack__list, or a user id to open \
@@ -664,13 +647,13 @@ impl Tool for Post {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         let request = SlackPostRequest {
-            workspace: args.workspace,
             conversation: args.conversation,
             thread_ts: args.thread_ts,
             text: args.text,
         };
         match self.facade.post(&self.slot, request).await {
             Ok(outcome) => match serde_json::to_string_pretty(&serde_json::json!({
+                "workspace": outcome.workspace,
                 "ts": outcome.ts,
                 "conversation_name": outcome.conversation_name,
                 "parts": outcome.parts,
@@ -690,8 +673,6 @@ struct Edit {
 
 #[derive(serde::Deserialize)]
 struct EditArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     conversation: String,
     ts: String,
     #[serde(default)]
@@ -721,11 +702,6 @@ impl Tool for Edit {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "conversation": { "type": "string", "description": "The conversation id." },
                 "ts": { "type": "string", "description": "The message's ts." },
                 "text": {
@@ -752,7 +728,6 @@ impl Tool for Edit {
             return tool_error("pass `text` to update the message, or `delete: true`".to_owned());
         }
         let request = SlackEditRequest {
-            workspace: args.workspace,
             conversation: args.conversation,
             ts: args.ts,
             text: if delete { None } else { args.text },
@@ -773,8 +748,6 @@ struct React {
 
 #[derive(serde::Deserialize)]
 struct ReactArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     conversation: String,
     ts: String,
     name: String,
@@ -799,11 +772,6 @@ impl Tool for React {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "conversation": { "type": "string", "description": "The conversation id." },
                 "ts": { "type": "string", "description": "The message's ts." },
                 "name": {
@@ -827,7 +795,6 @@ impl Tool for React {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         let request = SlackReactRequest {
-            workspace: args.workspace,
             conversation: args.conversation,
             ts: args.ts,
             name: args.name,
@@ -867,8 +834,6 @@ struct Attachment {
 #[derive(serde::Deserialize)]
 struct AttachmentArgs {
     #[serde(default)]
-    workspace: Option<String>,
-    #[serde(default)]
     file_id: Option<String>,
     #[serde(default)]
     dir: Option<String>,
@@ -899,11 +864,6 @@ impl Tool for Attachment {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "file_id": {
                     "type": "string",
                     "description": "The Slack file id to fetch. Pair it with `dir`.",
@@ -942,12 +902,8 @@ impl Tool for Attachment {
                         "pass `dir`, the directory the fetched file should land in".to_owned(),
                     );
                 };
-                let request = SlackFetchRequest {
-                    workspace: args.workspace,
-                    file_id,
-                    dir: std::path::PathBuf::from(dir),
-                };
-                match self.facade.fetch_attachment(request).await {
+                let request = SlackFetchRequest { file_id, dir: std::path::PathBuf::from(dir) };
+                match self.facade.fetch_attachment(&self.slot, request).await {
                     Ok(path) => ToolOutput::text(format!("fetched to {}", path.display())),
                     Err(err) => tool_error(format_attachment_error(&err)),
                 }
@@ -959,7 +915,6 @@ impl Tool for Attachment {
                     );
                 };
                 let request = SlackUploadRequest {
-                    workspace: args.workspace,
                     conversation,
                     thread_ts: args.thread_ts,
                     path: std::path::PathBuf::from(path),
@@ -991,12 +946,11 @@ const DEFAULT_SEARCH_COUNT: u32 = 20;
 
 struct Search {
     facade: Arc<dyn SlackFacade>,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
 struct SearchArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     query: String,
     #[serde(default)]
     count: Option<u32>,
@@ -1011,23 +965,19 @@ impl Tool for Search {
     }
 
     fn description(&self) -> &'static str {
-        "Search a Slack workspace's messages by text, newest first. This is a LOOKUP, not a \
-         mention detector: it matches the words you pass and cannot find every message that \
-         mentions a user - subscribe to the mention target for that. Pass `conversation` with \
-         an id from slack__list to keep only that conversation's hits. Returns a JSON array of \
-         {ts, text, conversation, conversation_name, username}; `conversation_name` is null for \
-         a DM, which has none. Any session in the project may call this."
+        "Search the Slack workspace bound to your project by text, newest first. This is a \
+         LOOKUP, not a mention detector: it matches the words you pass and cannot find every \
+         message that mentions a user - subscribe to the mention target for that. Pass \
+         `conversation` with an id from slack__list to keep only that conversation's hits. \
+         Returns a JSON object: `workspace` is the resolved `[[slack]]` label, and `matches` is \
+         an array of {ts, text, conversation, conversation_name, username}; `conversation_name` \
+         is null for a DM, which has none. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "query": {
                     "type": "string",
                     "description": "Slack search syntax. Matches text; it is not a mention \
@@ -1055,12 +1005,9 @@ impl Tool for Search {
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         let count = args.count.unwrap_or(DEFAULT_SEARCH_COUNT);
-        match self
-            .facade
-            .search(args.workspace.as_deref(), &args.query, count, args.conversation.as_deref())
-            .await
+        match self.facade.search(&self.slot, &args.query, count, args.conversation.as_deref()).await
         {
-            Ok(found) => {
+            Ok((workspace, found)) => {
                 let rows: Vec<serde_json::Value> = found
                     .iter()
                     .map(|hit| {
@@ -1077,7 +1024,8 @@ impl Tool for Search {
                         })
                     })
                     .collect();
-                match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+                let found = serde_json::json!({ "workspace": workspace, "matches": rows });
+                match serde_json::to_string_pretty(&found) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("search serialization failed: {err}")),
                 }
@@ -1123,12 +1071,11 @@ fn read_rows(messages: &[SlackHistoryMessage]) -> serde_json::Value {
 
 struct History {
     facade: Arc<dyn SlackFacade>,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
 struct HistoryArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     conversation: String,
     #[serde(default)]
     limit: Option<u32>,
@@ -1147,21 +1094,17 @@ impl Tool for History {
     fn description(&self) -> &'static str {
         "Read one Slack conversation's messages, newest first. `oldest` and `newest` are Slack \
          ts bounds and both are exclusive; to read further back, pass the earliest `ts` of the \
-         page you just read as `newest`. Returns a JSON array of {ts, user, bot_name, text, \
-         thread_ts, reply_count, edited, files}; `user` is the author's id, which slack__user \
-         resolves to a name, and `reply_count` above zero means slack__replies has more. \
-         Read-only and not held for approval. Any session in the project may call this."
+         page you just read as `newest`. Returns a JSON object: `workspace` is the resolved \
+         `[[slack]]` label, and `messages` is an array of {ts, user, bot_name, text, thread_ts, \
+         reply_count, edited, files}; `user` is the author's id, which slack__user resolves to a \
+         name, and `reply_count` above zero means slack__replies has more. Read-only and not \
+         held for approval. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "conversation": {
                     "type": "string",
                     "description": "The conversation id from slack__list.",
@@ -1200,7 +1143,7 @@ impl Tool for History {
         match self
             .facade
             .history(
-                args.workspace.as_deref(),
+                &self.slot,
                 &args.conversation,
                 limit,
                 args.oldest.as_deref(),
@@ -1208,10 +1151,16 @@ impl Tool for History {
             )
             .await
         {
-            Ok(messages) => match serde_json::to_string_pretty(&read_rows(&messages)) {
-                Ok(json) => ToolOutput::text(json),
-                Err(err) => tool_error(format!("history serialization failed: {err}")),
-            },
+            Ok((workspace, messages)) => {
+                let page = serde_json::json!({
+                    "workspace": workspace,
+                    "messages": read_rows(&messages),
+                });
+                match serde_json::to_string_pretty(&page) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("history serialization failed: {err}")),
+                }
+            }
             Err(err) => tool_error(format_read_error(&err)),
         }
     }
@@ -1219,12 +1168,11 @@ impl Tool for History {
 
 struct Replies {
     facade: Arc<dyn SlackFacade>,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
 struct RepliesArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     conversation: String,
     ts: String,
     #[serde(default)]
@@ -1241,19 +1189,14 @@ impl Tool for Replies {
         "Read one Slack thread: the parent message first, then replies oldest first, up to \
          `limit` rows (default 200, max 1000). `conversation` is the id from slack__list and \
          `ts` the parent message's ts, which is the `ts` slack__history reports for it. Returns \
-         the same row shape as slack__history, with the parent exactly once. Read-only and not \
-         held for approval. Any session in the project may call this."
+         the same shape as slack__history - `workspace` and `messages` - with the parent exactly \
+         once. Read-only and not held for approval. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "conversation": {
                     "type": "string",
                     "description": "The conversation id from slack__list.",
@@ -1285,15 +1228,17 @@ impl Tool for Replies {
                 "`limit` must be between 1 and {MAX_REPLIES_LIMIT}, Slack's page ceiling"
             ));
         }
-        match self
-            .facade
-            .replies(args.workspace.as_deref(), &args.conversation, &args.ts, limit)
-            .await
-        {
-            Ok(messages) => match serde_json::to_string_pretty(&read_rows(&messages)) {
-                Ok(json) => ToolOutput::text(json),
-                Err(err) => tool_error(format!("replies serialization failed: {err}")),
-            },
+        match self.facade.replies(&self.slot, &args.conversation, &args.ts, limit).await {
+            Ok((workspace, messages)) => {
+                let thread = serde_json::json!({
+                    "workspace": workspace,
+                    "messages": read_rows(&messages),
+                });
+                match serde_json::to_string_pretty(&thread) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("replies serialization failed: {err}")),
+                }
+            }
             Err(err) => tool_error(format_read_error(&err)),
         }
     }
@@ -1301,12 +1246,11 @@ impl Tool for Replies {
 
 struct User {
     facade: Arc<dyn SlackFacade>,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
 struct UserArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     user: String,
 }
 
@@ -1318,20 +1262,15 @@ impl Tool for User {
 
     fn description(&self) -> &'static str {
         "Look up one Slack user by id: their handle, real name and timezone. Returns \
-         {id, name, real_name, tz}, each of the last three null when the workspace does not \
-         report it. Use slack__users to find an id from a name. Any session in the project may \
-         call this."
+         {id, name, real_name, tz} plus `workspace`, the resolved `[[slack]]` label; each of \
+         real_name and tz is null when the workspace does not report it. Use slack__users to \
+         find an id from a name. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "user": { "type": "string", "description": "The user id, e.g. `U06MVPF6HU4`." },
             },
             "required": ["user"],
@@ -1344,9 +1283,10 @@ impl Tool for User {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.user(args.workspace.as_deref(), &args.user).await {
-            Ok(user) => {
+        match self.facade.user(&self.slot, &args.user).await {
+            Ok((workspace, user)) => {
                 let body = serde_json::json!({
+                    "workspace": workspace,
                     "id": user.id,
                     "name": user.name,
                     "real_name": user.real_name,
@@ -1364,13 +1304,11 @@ impl Tool for User {
 
 struct Me {
     facade: Arc<dyn SlackFacade>,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
-struct MeArgs {
-    #[serde(default)]
-    workspace: Option<String>,
-}
+struct MeArgs {}
 
 #[async_trait::async_trait]
 impl Tool for Me {
@@ -1379,8 +1317,9 @@ impl Tool for Me {
     }
 
     fn description(&self) -> &'static str {
-        "Report which Slack identity a workspace's token acts as, over `auth.test`: the team \
-         and the user behind it. `user_id` is what a message's `user` field carries and what a \
+        "Report which Slack identity the project's workspace token acts as, over `auth.test`: \
+         the team and the user behind it. `user_id` is what a message's `user` field carries \
+         and what a \
          mention is written with, so this is how a caller knows which id is its own. Returns \
          {workspace, team, team_id, user, user_id, url}; `workspace` is the `[[slack]]` label, \
          which can differ from the team's name. Read-only and not held for approval. Any \
@@ -1390,23 +1329,17 @@ impl Tool for Me {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
-            "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
-            },
+            "properties": {},
             "additionalProperties": false,
         })
     }
 
     async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: MeArgs = match serde_json::from_value(input.value) {
+        let MeArgs {} = match serde_json::from_value(input.value) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.me(args.workspace.as_deref()).await {
+        match self.facade.me(&self.slot).await {
             Ok((workspace, auth)) => {
                 let body = serde_json::json!({
                     "workspace": workspace,
@@ -1428,12 +1361,11 @@ impl Tool for Me {
 
 struct Users {
     facade: Arc<dyn SlackFacade>,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
 struct UsersArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     query: String,
 }
 
@@ -1448,19 +1380,15 @@ impl Tool for Users {
          id. Matching is a case-insensitive substring over all three, and EVERY match is \
          returned - silently choosing one of several is how a mention reaches the wrong person, \
          so read the rows and pick the `id` yourself. Write a mention as `<@ID>`. Deactivated \
-         members are excluded. Returns a JSON array of {id, name, real_name, display_name}. \
-         Read-only and not held for approval. Any session in the project may call this."
+         members are excluded. Returns a JSON object: `workspace` is the resolved `[[slack]]` \
+         label, and `users` is an array of {id, name, real_name, display_name}. Read-only and \
+         not held for approval. Any session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "query": {
                     "type": "string",
                     "description": "A handle, real name or display name, or part of one.",
@@ -1483,8 +1411,8 @@ impl Tool for Users {
                     .to_owned(),
             );
         }
-        match self.facade.users(args.workspace.as_deref(), &args.query).await {
-            Ok(found) => {
+        match self.facade.users(&self.slot, &args.query).await {
+            Ok((workspace, found)) => {
                 let rows: Vec<serde_json::Value> = found
                     .iter()
                     .map(|user| {
@@ -1499,7 +1427,8 @@ impl Tool for Users {
                         })
                     })
                     .collect();
-                match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+                let found = serde_json::json!({ "workspace": workspace, "users": rows });
+                match serde_json::to_string_pretty(&found) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("user-list serialization failed: {err}")),
                 }
@@ -1511,12 +1440,11 @@ impl Tool for Users {
 
 struct Pins {
     facade: Arc<dyn SlackFacade>,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
 struct PinsArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     conversation: String,
 }
 
@@ -1528,20 +1456,15 @@ impl Tool for Pins {
 
     fn description(&self) -> &'static str {
         "List a Slack conversation's pinned messages - what the channel has kept as standing \
-         context. Read-only and not held for approval. Pass `workspace` to choose one; omit it \
-         when only one is configured. Returns a JSON array of {ts, user, text}. Any session in \
-         the project may call this."
+         context. Read-only and not held for approval. Returns a JSON object: `workspace` is \
+         the resolved `[[slack]]` label, and `pins` is an array of {ts, user, text}. Any \
+         session in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "conversation": {
                     "type": "string",
                     "description": "The conversation id from slack__list.",
@@ -1557,8 +1480,8 @@ impl Tool for Pins {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.pins(args.workspace.as_deref(), &args.conversation).await {
-            Ok(pins) => {
+        match self.facade.pins(&self.slot, &args.conversation).await {
+            Ok((workspace, pins)) => {
                 let rows: Vec<serde_json::Value> = pins
                     .iter()
                     .filter_map(|pin| {
@@ -1570,7 +1493,8 @@ impl Tool for Pins {
                         }))
                     })
                     .collect();
-                match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+                let listed = serde_json::json!({ "workspace": workspace, "pins": rows });
+                match serde_json::to_string_pretty(&listed) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("pins serialization failed: {err}")),
                 }
@@ -1582,12 +1506,11 @@ impl Tool for Pins {
 
 struct Bookmarks {
     facade: Arc<dyn SlackFacade>,
+    slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
 struct BookmarksArgs {
-    #[serde(default)]
-    workspace: Option<String>,
     conversation: String,
 }
 
@@ -1599,8 +1522,8 @@ impl Tool for Bookmarks {
 
     fn description(&self) -> &'static str {
         "List a Slack conversation's bookmarks - the links saved on the channel. Read-only and \
-         not held for approval. Pass `workspace` to choose one; omit it when only one is \
-         configured. Returns a JSON array of {id, title, link}, each of the last two null when \
+         not held for approval. Returns a JSON object: `workspace` is the resolved `[[slack]]` \
+         label, and `bookmarks` is an array of {id, title, link}, each of the last two null when \
          the workspace does not report it. Any session in the project may call this."
     }
 
@@ -1608,11 +1531,6 @@ impl Tool for Bookmarks {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "workspace": {
-                    "type": "string",
-                    "description": "The `[[slack]]` workspace label. Omit it when only one \
-                                    workspace is configured.",
-                },
                 "conversation": {
                     "type": "string",
                     "description": "The conversation id from slack__list.",
@@ -1628,8 +1546,8 @@ impl Tool for Bookmarks {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.bookmarks(args.workspace.as_deref(), &args.conversation).await {
-            Ok(bookmarks) => {
+        match self.facade.bookmarks(&self.slot, &args.conversation).await {
+            Ok((workspace, bookmarks)) => {
                 let rows: Vec<serde_json::Value> = bookmarks
                     .iter()
                     .map(|bookmark| {
@@ -1640,7 +1558,8 @@ impl Tool for Bookmarks {
                         })
                     })
                     .collect();
-                match serde_json::to_string_pretty(&serde_json::Value::Array(rows)) {
+                let listed = serde_json::json!({ "workspace": workspace, "bookmarks": rows });
+                match serde_json::to_string_pretty(&listed) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("bookmarks serialization failed: {err}")),
                 }
@@ -1728,7 +1647,7 @@ mod tests {
         *mock.subscribed_targets.lock() = vec![mentions.clone()];
         let tool = List { facade: mock, slot: caller_slot() };
 
-        let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
+        let out = tool.call(input(serde_json::json!({}))).await;
 
         assert!(!out.is_error, "the list succeeds: {}", text_of(&out));
         assert!(
@@ -1764,9 +1683,7 @@ mod tests {
             Some(Ok(vec![dm.clone(), channel.clone(), mentions.clone()]));
         let tool = Subscribe { facade: mock, slot: caller_slot() };
 
-        let out = tool
-            .call(input(serde_json::json!({ "workspace": "acme", "direct_messages": true })))
-            .await;
+        let out = tool.call(input(serde_json::json!({ "direct_messages": true }))).await;
 
         assert!(!out.is_error, "a valid subscribe succeeds: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the rows stay one text block: {out:?}");
@@ -1798,7 +1715,6 @@ mod tests {
 
         let out = tool
             .call(input(serde_json::json!({
-                "workspace": "acme",
                 "direct_messages": true,
                 "mentions": true,
             })))
@@ -1820,8 +1736,7 @@ mod tests {
         *mock.subscribe_result.lock() = Some(Ok(Vec::new()));
         let tool = Subscribe { facade: mock, slot: caller_slot() };
 
-        let out =
-            tool.call(input(serde_json::json!({ "workspace": "acme", "mentions": true }))).await;
+        let out = tool.call(input(serde_json::json!({ "mentions": true }))).await;
 
         assert!(!out.is_error, "nothing new to watch is not an error: {}", text_of(&out));
         let rows: serde_json::Value =
@@ -1837,16 +1752,15 @@ mod tests {
     async fn slack_post_reports_the_ts_the_channel_and_the_part_count() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.post_result.lock() = Some(Ok(SlackPostOutcome {
+            workspace: "acme".to_owned(),
             ts: vec!["1790186552.442169".to_owned(), "1790186552.442170".to_owned()],
             conversation_name: "granite-staging".to_owned(),
             parts: 2,
         }));
         let tool = Post { facade: mock, slot: caller_slot() };
 
-        let out = tool
-            .call(input(serde_json::json!({ "workspace": "acme", "conversation": "C1",
-                                            "text": "hello" })))
-            .await;
+        let out =
+            tool.call(input(serde_json::json!({ "conversation": "C1", "text": "hello" }))).await;
 
         assert!(!out.is_error, "the post succeeds: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the record stays one text block: {out:?}");
@@ -1859,6 +1773,7 @@ mod tests {
         );
         assert_eq!(json["conversation_name"], "granite-staging");
         assert_eq!(json["parts"], 2, "so a reader sees the text went out in two messages");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
     }
 
     /// A failed `slack__post` is the moment the configured token looks
@@ -1966,58 +1881,101 @@ mod tests {
         let not_configured = format_workspace_error(&SlackWorkspaceError::NotConfigured);
         assert!(not_configured.contains("[[slack]]"), "got: {not_configured}");
 
-        let unknown = format_workspace_error(&SlackWorkspaceError::UnknownWorkspace {
-            requested: "nope".to_owned(),
-            known: vec!["acme".to_owned(), "beta".to_owned()],
+        let unbound = format_workspace_error(&SlackWorkspaceError::Unbound {
+            org: "Granite".to_owned(),
+            project: "core-v1".to_owned(),
         });
-        assert!(unknown.contains("nope"), "names what was asked for: {unknown}");
-        assert!(unknown.contains("acme") && unknown.contains("beta"), "lists the known: {unknown}");
+        assert!(unbound.contains("Granite/core-v1"), "names the scope: {unbound}");
+        assert!(unbound.contains("[orgs.slack]"), "names the org key: {unbound}");
+        assert!(unbound.contains("[orgs.projects.slack]"), "names the project key: {unbound}");
 
-        let ambiguous = format_workspace_error(&SlackWorkspaceError::WorkspaceRequired {
-            known: vec!["acme".to_owned(), "beta".to_owned()],
+        let not_loaded = format_workspace_error(&SlackWorkspaceError::BoundButNotLive {
+            label: "acme".to_owned(),
         });
-        assert!(ambiguous.contains("acme") && ambiguous.contains("beta"), "got: {ambiguous}");
+        assert!(not_loaded.contains("'acme'"), "names the label: {not_loaded}");
+        assert!(not_loaded.contains("restart"), "names the way out: {not_loaded}");
 
         let fetch = format_read_error(&SlackReadError::Fetch("boom".to_owned()));
         assert!(fetch.contains("boom"), "carries the cause: {fetch}");
     }
 
-    /// The omitted-`workspace` case has one answer whichever tool was called:
+    /// A project with no binding has one answer whichever tool was called:
     /// a tool that reworded it would send the caller looking for a config key
     /// that is already set.
     #[test]
     fn every_tool_words_a_workspace_refusal_the_same_way() {
-        let ambiguous = SlackWorkspaceError::WorkspaceRequired {
-            known: vec!["acme".to_owned(), "beta".to_owned()],
+        let unbound = SlackWorkspaceError::Unbound {
+            org: "Granite".to_owned(),
+            project: "core-v1".to_owned(),
         };
-        let expected = "several Slack workspaces are configured; pass `workspace`: acme, beta";
+        let expected = format_workspace_error(&unbound);
         let answers = [
-            format_read_error(&SlackReadError::Workspace(ambiguous.clone())),
-            format_post_error(&SlackPostError::Workspace(ambiguous.clone())),
-            format_edit_error(&SlackEditError::Workspace(ambiguous.clone())),
-            format_react_error(&SlackReactError::Workspace(ambiguous.clone())),
-            format_attachment_error(&SlackAttachmentError::Workspace(ambiguous.clone())),
-            format_subscribe_error(&SlackSubscribeError::Workspace(ambiguous)),
+            format_read_error(&SlackReadError::Workspace(unbound.clone())),
+            format_post_error(&SlackPostError::Workspace(unbound.clone())),
+            format_edit_error(&SlackEditError::Workspace(unbound.clone())),
+            format_react_error(&SlackReactError::Workspace(unbound.clone())),
+            format_attachment_error(&SlackAttachmentError::Workspace(unbound.clone())),
+            format_subscribe_error(&SlackSubscribeError::Workspace(unbound)),
         ];
         for answer in answers {
             assert_eq!(answer, expected, "every tool shares the one wording");
         }
     }
 
+    /// The headline of the cut: no Slack tool advertises a `workspace`
+    /// argument, whatever its verb. One re-advertised property is a model
+    /// that keeps passing an argument the tool no longer reads.
+    #[test]
+    fn no_slack_tool_advertises_a_workspace_argument() {
+        let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
+        let server =
+            add_tools(McpServerBuilder::new("forge", "test"), facade, caller_slot()).build();
+        let schemas = server.tool_schemas();
+        assert_eq!(schemas.len(), 15, "every Slack tool is registered: {schemas:?}");
+        for (name, schema) in &schemas {
+            assert!(
+                schema["properties"].get("workspace").is_none(),
+                "{name} still advertises a workspace argument: {schema}",
+            );
+        }
+    }
+
     #[tokio::test]
-    async fn slack_list_returns_rows_and_passes_the_workspace_through() {
+    async fn slack_list_returns_rows_and_asks_for_the_callers_slot() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.conversations_result.lock() = Some(Ok(vec![channel("C1", "general")]));
         let tool = List { facade: mock.clone(), slot: caller_slot() };
 
-        let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
+        let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error, "a configured workspace succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("C1"), "the row reaches the output: {}", text_of(&out));
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the list object");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         assert_eq!(
             mock.conversations_calls.lock().as_slice(),
-            [Some("acme".to_owned())],
-            "the named workspace is the one queried",
+            [caller_slot()],
+            "the tool hands the facade the calling session's slot, never a workspace argument",
         );
+        assert_eq!(
+            mock.subscribed_targets_calls.lock().as_slice(),
+            [(caller_slot(), "acme".to_owned())],
+            "the marks use the read's own resolved label, not a second resolution",
+        );
+    }
+
+    /// A caller that still sends `workspace` is ignored, not refused: the
+    /// argument is gone from the schema, and a stale transcript replaying it
+    /// must not fail the call.
+    #[tokio::test]
+    async fn a_stale_workspace_argument_is_ignored() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.conversations_result.lock() = Some(Ok(vec![channel("C1", "general")]));
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
+
+        let out = tool.call(input(serde_json::json!({ "workspace": "elsewhere" }))).await;
+        assert!(!out.is_error, "the stale argument does not refuse the call: {}", text_of(&out));
+        assert_eq!(mock.conversations_calls.lock().as_slice(), [caller_slot()]);
     }
 
     fn caller_slot() -> SessionSlot {
@@ -2033,7 +1991,6 @@ mod tests {
 
         let out = tool
             .call(input(serde_json::json!({
-                "workspace": "acme",
                 "conversations": [{ "id": "C1", "mode": "mentions" }],
             })))
             .await;
@@ -2041,11 +1998,7 @@ mod tests {
 
         let calls = mock.subscribe_calls.lock();
         assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0].0.as_deref(),
-            Some("acme"),
-            "the named workspace is the one written to"
-        );
+        assert_eq!(calls[0].0, caller_slot(), "the caller's slot is what the facade resolves on");
         assert_eq!(
             calls[0].1,
             SlackSubscribeRequest::Conversations(vec![SlackChannelWatch {
@@ -2061,7 +2014,7 @@ mod tests {
         let mock = Arc::new(MockSlackFacade::new());
         let tool = Subscribe { facade: mock.clone(), slot: caller_slot() };
 
-        let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
+        let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error, "a call naming nothing to watch must not create records");
         assert!(
             text_of(&out).contains("direct_messages"),
@@ -2072,22 +2025,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slack_subscribe_names_the_workspace_that_was_refused() {
+    async fn slack_subscribe_names_the_unbound_scope() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.subscribe_result.lock() =
-            Some(Err(SlackSubscribeError::Workspace(SlackWorkspaceError::UnknownWorkspace {
-                requested: "nope".to_owned(),
-                known: vec!["acme".to_owned()],
+            Some(Err(SlackSubscribeError::Workspace(SlackWorkspaceError::Unbound {
+                org: "Granite".to_owned(),
+                project: "core-v1".to_owned(),
             })));
         let tool = Subscribe { facade: mock, slot: caller_slot() };
 
-        let out = tool
-            .call(input(serde_json::json!({ "workspace": "nope", "direct_messages": true })))
-            .await;
+        let out = tool.call(input(serde_json::json!({ "direct_messages": true }))).await;
         assert!(out.is_error);
         assert!(
-            text_of(&out).contains("nope"),
-            "the error names the label that failed: {}",
+            text_of(&out).contains("Granite/core-v1"),
+            "the error names the scope that has no binding: {}",
             text_of(&out),
         );
     }
@@ -2171,7 +2122,7 @@ mod tests {
         *mock.subscribed_targets.lock() = vec![owned_sub(Uuid::from_u128(0x21), watching("C1"))];
         let tool = List { facade: mock.clone(), slot: caller_slot() };
 
-        let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
+        let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error, "list succeeds: {}", text_of(&out));
         let listed: serde_json::Value =
             serde_json::from_str(text_of(&out)).expect("the output is JSON");
@@ -2253,7 +2204,7 @@ mod tests {
             thread_ts: None,
             files: Vec::new(),
         }]));
-        let tool = Search { facade: mock.clone() };
+        let tool = Search { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
@@ -2264,10 +2215,14 @@ mod tests {
             .await;
         assert!(!out.is_error, "a search succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("general"), "got: {}", text_of(&out));
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the search object");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
+        assert_eq!(json["matches"][0]["text"], "hello", "the hits ride under their own key");
         assert_eq!(
             mock.search_calls.lock().as_slice(),
-            [(None, "hello".to_owned(), 5, Some("C1".to_owned()))],
-            "the query, the cap and the conversation filter reach the facade",
+            [(caller_slot(), "hello".to_owned(), 5, Some("C1".to_owned()))],
+            "the caller's slot, the query, the cap and the conversation filter reach the facade",
         );
     }
 
@@ -2293,7 +2248,7 @@ mod tests {
     async fn slack_history_passes_the_bounds_and_reports_the_rows() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.history_result.lock() = Some(Ok(vec![history_message("100.5", "hello")]));
-        let tool = History { facade: mock.clone() };
+        let tool = History { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
@@ -2305,14 +2260,22 @@ mod tests {
             .await;
 
         assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
-        let rows: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is a row array");
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the history object");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
+        let rows = &json["messages"];
         assert_eq!(rows[0]["ts"], "100.5", "the ts the caller pages with");
         assert_eq!(rows[0]["user"], "U1", "the author id a name resolves from");
         assert_eq!(rows[0]["text"], "hello");
         assert_eq!(
             mock.history_calls.lock().as_slice(),
-            [(None, "C1".to_owned(), 5, Some("100.0".to_owned()), Some("200.0".to_owned()))],
+            [(
+                caller_slot(),
+                "C1".to_owned(),
+                5,
+                Some("100.0".to_owned()),
+                Some("200.0".to_owned())
+            )],
             "both bounds, the limit and the conversation reach the facade",
         );
     }
@@ -2320,7 +2283,7 @@ mod tests {
     #[tokio::test]
     async fn slack_history_refuses_a_limit_past_slacks_ceiling() {
         let mock = Arc::new(MockSlackFacade::new());
-        let tool = History { facade: mock.clone() };
+        let tool = History { facade: mock.clone(), slot: caller_slot() };
 
         let out =
             tool.call(input(serde_json::json!({ "conversation": "C1", "limit": 1000 }))).await;
@@ -2336,19 +2299,21 @@ mod tests {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.replies_result.lock() =
             Some(Ok(vec![history_message("100.0", "parent"), history_message("100.5", "reply")]));
-        let tool = Replies { facade: mock.clone() };
+        let tool = Replies { facade: mock.clone(), slot: caller_slot() };
 
         let out =
             tool.call(input(serde_json::json!({ "conversation": "C1", "ts": "100.0" }))).await;
 
         assert!(!out.is_error, "a thread read succeeds: {}", text_of(&out));
-        let rows: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is a row array");
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the replies object");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
+        let rows = &json["messages"];
         assert_eq!(rows[0]["text"], "parent", "the parent comes first");
         assert_eq!(rows[1]["text"], "reply");
         assert_eq!(
             mock.replies_calls.lock().as_slice(),
-            [(None, "C1".to_owned(), "100.0".to_owned(), DEFAULT_REPLIES_LIMIT)],
+            [(caller_slot(), "C1".to_owned(), "100.0".to_owned(), DEFAULT_REPLIES_LIMIT)],
             "the conversation, parent ts and default cap reach the facade",
         );
     }
@@ -2356,7 +2321,7 @@ mod tests {
     #[tokio::test]
     async fn slack_replies_refuses_a_limit_past_slacks_ceiling() {
         let mock = Arc::new(MockSlackFacade::new());
-        let tool = Replies { facade: mock.clone() };
+        let tool = Replies { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
@@ -2376,7 +2341,7 @@ mod tests {
     #[tokio::test]
     async fn slack_replies_forwards_the_callers_limit() {
         let mock = Arc::new(MockSlackFacade::new());
-        let tool = Replies { facade: mock.clone() };
+        let tool = Replies { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
@@ -2389,7 +2354,7 @@ mod tests {
         assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
         assert_eq!(
             mock.replies_calls.lock().as_slice(),
-            [(None, "C1".to_owned(), "100.0".to_owned(), 50)],
+            [(caller_slot(), "C1".to_owned(), "100.0".to_owned(), 50)],
             "the caller's limit reaches the facade",
         );
     }
@@ -2405,12 +2370,15 @@ mod tests {
             deleted: false,
             profile: None,
         }));
-        let tool = User { facade: mock.clone() };
+        let tool = User { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "user": "U1" }))).await;
         assert!(!out.is_error, "a lookup succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("Vedhavyas S"), "got: {}", text_of(&out));
-        assert_eq!(mock.user_calls.lock().as_slice(), [(None, "U1".to_owned())]);
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the user record");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
+        assert_eq!(mock.user_calls.lock().as_slice(), [(caller_slot(), "U1".to_owned())]);
     }
 
     fn resolved_user(id: &str, name: &str, display_name: Option<&str>) -> SlackUser {
@@ -2435,19 +2403,21 @@ mod tests {
             resolved_user("U1", "sam", Some("Sam")),
             resolved_user("U2", "samuel", None),
         ]));
-        let tool = Users { facade: mock.clone() };
+        let tool = Users { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "query": "sam" }))).await;
 
         assert!(!out.is_error, "a lookup succeeds: {}", text_of(&out));
-        let rows: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is a row array");
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the users object");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
+        let rows = &json["users"];
         assert_eq!(rows[0]["id"], "U1");
         assert_eq!(rows[1]["id"], "U2", "both matches are returned, none silently chosen");
         assert_eq!(rows[0]["display_name"], "Sam");
         assert_eq!(
             mock.users_calls.lock().as_slice(),
-            [(None, "sam".to_owned())],
+            [(caller_slot(), "sam".to_owned())],
             "the query reaches the facade",
         );
     }
@@ -2455,7 +2425,7 @@ mod tests {
     #[tokio::test]
     async fn slack_users_refuses_an_empty_query() {
         let mock = Arc::new(MockSlackFacade::new());
-        let tool = Users { facade: mock.clone() };
+        let tool = Users { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "query": "   " }))).await;
 
@@ -2478,22 +2448,22 @@ mod tests {
                 url: "https://autonomys.slack.com/".to_owned(),
             },
         )));
-        let tool = Me { facade: mock.clone() };
+        let tool = Me { facade: mock.clone(), slot: caller_slot() };
 
-        let out = tool.call(input(serde_json::json!({ "workspace": "Subspace" }))).await;
+        let out = tool.call(input(serde_json::json!({}))).await;
 
         assert!(!out.is_error, "an identity lookup succeeds: {}", text_of(&out));
         let json: serde_json::Value =
             serde_json::from_str(text_of(&out)).expect("the result is the identity record");
-        assert_eq!(json["workspace"], "Subspace", "the label the caller chose");
+        assert_eq!(json["workspace"], "Subspace", "the resolved label is named in the result");
         assert_eq!(json["team"], "Autonomys", "the team the token belongs to");
         assert_eq!(json["user"], "ved");
         assert_eq!(json["user_id"], "U2", "the id a mention and a message's user carry");
         assert_eq!(json["url"], "https://autonomys.slack.com/");
         assert_eq!(
             mock.me_calls.lock().as_slice(),
-            [Some("Subspace".to_owned())],
-            "the named workspace is the one proved",
+            [caller_slot()],
+            "the caller's slot is what the facade resolves on",
         );
     }
 
@@ -2514,7 +2484,7 @@ mod tests {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.pins_result.lock() =
             Some(Ok(vec![pinned_row("1700000000.000100", "the pinned text")]));
-        let tool = Pins { facade: mock.clone() };
+        let tool = Pins { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
         assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
@@ -2524,9 +2494,12 @@ mod tests {
             "the ts reaches the caller verbatim: {}",
             text_of(&out),
         );
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the pins object");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         assert_eq!(
             mock.pins_calls.lock().as_slice(),
-            [(None, "C1".to_owned())],
+            [(caller_slot(), "C1".to_owned())],
             "the conversation reaches the facade",
         );
     }
@@ -2538,7 +2511,7 @@ mod tests {
             pinned_row("1700000000.000100", "readable"),
             SlackPin { created: 1, created_by: None, message: None },
         ]));
-        let tool = Pins { facade: mock };
+        let tool = Pins { facade: mock, slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
         assert!(!out.is_error);
@@ -2555,7 +2528,7 @@ mod tests {
     async fn slack_pins_surfaces_a_facade_error() {
         let mock = Arc::new(MockSlackFacade::new());
         *mock.pins_result.lock() = Some(Err(SlackReadError::Fetch("boom".to_owned())));
-        let tool = Pins { facade: mock };
+        let tool = Pins { facade: mock, slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
         assert!(out.is_error, "a failed read is an error, not an empty list");
@@ -2570,14 +2543,17 @@ mod tests {
             title: Some("Runbook".to_owned()),
             link: Some("https://example.com".to_owned()),
         }]));
-        let tool = Bookmarks { facade: mock.clone() };
+        let tool = Bookmarks { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool.call(input(serde_json::json!({ "conversation": "C1" }))).await;
         assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("Runbook"), "got: {}", text_of(&out));
+        let json: serde_json::Value =
+            serde_json::from_str(text_of(&out)).expect("the result is the bookmarks object");
+        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         assert_eq!(
             mock.bookmarks_calls.lock().as_slice(),
-            [(None, "C1".to_owned())],
+            [(caller_slot(), "C1".to_owned())],
             "the conversation reaches the facade",
         );
     }
@@ -2587,7 +2563,7 @@ mod tests {
         let mock = Arc::new(MockSlackFacade::new());
         let tool = Attachment { facade: mock.clone(), slot: caller_slot() };
 
-        let out = tool.call(input(serde_json::json!({ "workspace": "acme" }))).await;
+        let out = tool.call(input(serde_json::json!({}))).await;
         assert!(out.is_error, "a call naming neither a file nor a path must not reach Slack");
         assert!(
             text_of(&out).contains("file_id") && text_of(&out).contains("path"),
