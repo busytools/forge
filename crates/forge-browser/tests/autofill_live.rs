@@ -76,7 +76,7 @@ impl Page {
         let recorded = Arc::clone(&hits);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { return };
+                let Ok(mut stream) = stream else { continue };
                 // **One connection at a time stalls a preconnect.** A browser
                 // opens a spare socket with no request on it, and a server
                 // that read every accepted stream in turn would wait on that
@@ -291,7 +291,7 @@ async fn a_submitted_card_form_does_not_kill_the_host() {
     // form cannot exercise the profile path; these fail on that edit.
     let log = host.log();
     assert!(
-        log.contains("event_name cef_autofill_off"),
+        log.contains("event_name cef_autofill_off,"),
         "the host never turned autofill off, so the crash path is still reachable (log: {log})"
     );
     for pref in ["pref autofill.credit_card_enabled=0", "pref autofill.profile_enabled=0"] {
