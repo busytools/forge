@@ -488,7 +488,9 @@ export function forgeCardOf(
               ? reviewCard(verbOf(name), input, answer)
               : family === 'documents'
                 ? documentsCard(verbOf(name), input)
-                : agentsCard(verbOf(name), input, answer);
+                : family === 'handoff'
+                  ? handoffCard(input, answer)
+                  : agentsCard(verbOf(name), input, answer);
   // A result that said more than the one block the card reads draws the rest
   // beside the card: the card replaces the body, and a block it swallowed
   // would be the one thing a reader could not find.
@@ -515,6 +517,7 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
   slack: 'conversations',
   review: 'reviews',
   agents: 'workers',
+  handoff: 'handoff',
 };
 
 /** The last segment of a path, which is the name a row calls a file by. */
@@ -917,6 +920,28 @@ function agentsCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
     figure: session.slice(0, 6),
     pieces,
   };
+}
+
+/**
+ * The handoff's exit call: the note it carried is what a reader wants to see,
+ * and it lives in the call's input, not its answer.
+ */
+function handoffCard(input: unknown, answer: unknown): ForgeCard | null {
+  const note = str(obj(input), 'brief');
+  const held = obj(answer);
+  const status = str(held, 'status');
+  const runs = str(held, 'runs');
+  const hasNote = note !== null && note.trim() !== '';
+  if (!hasNote && status === null) return null;
+  const chips: ForgeChip[] = [];
+  if (status !== null && status.trim() !== '') chips.push({ text: status, tone: 'info' });
+  if (runs !== null && runs.trim() !== '') chips.push({ text: runs, tone: 'dim' });
+  const pieces: ForgePiece[] = [];
+  if (hasNote) {
+    pieces.push({ kind: 'tag', text: 'note' });
+    pieces.push({ kind: 'quote', text: note });
+  }
+  return { title: 'handed the seat over', chips, figure: null, pieces };
 }
 
 /**

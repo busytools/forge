@@ -33,10 +33,17 @@ export type Family =
  * One name per submodule of the `forge` server rather than a second list: the
  * family segment a tool name carries IS the family (`mcp__forge__tasks__update`
  * is tasks), so a family added on the server arrives here by being named.
+ *
+ * `agents__handoff` is the one exception, named in `forgeFamilyOf`: its verb
+ * ends a seat rather than acting on a worker, so its family is `handoff`.
  */
-export type ForgeFamily = 'agents' | 'cron' | 'documents' | 'gotify' | 'review' | 'slack' | 'tasks';
+export type ForgeFamily =
+  'agents' | 'cron' | 'documents' | 'gotify' | 'handoff' | 'review' | 'slack' | 'tasks';
 
-/** The families a `forge` call draws a card for; `systemone` keeps its own kind. */
+/**
+ * The families a `forge` call's name segment yields; `systemone` keeps its own
+ * kind, and `handoff` comes from the exception in `forgeFamilyOf`.
+ */
 const FORGE_FAMILIES = new Set<string>([
   'agents',
   'cron',
@@ -58,6 +65,10 @@ const FORGE_FAMILIES = new Set<string>([
 export function forgeFamilyOf(name: string): ForgeFamily | null {
   const parts = mcpParts(name);
   if (parts === null || parts.server !== 'forge') return null;
+  // **The handoff is its own family, not a worker call.** `agents__handoff`
+  // ends a seat: a row that says `workers` describes the wrong thing, and the
+  // handoff mark is its own.
+  if (parts.tool === 'agents__handoff') return 'handoff';
   const cut = parts.tool.indexOf('__');
   if (cut <= 0) return null;
   const family = parts.tool.slice(0, cut);
@@ -178,15 +189,16 @@ export function rowOf(name: string): KindRow {
 /**
  * The sprite a forge family draws.
  *
- * Every one is a shipped id except `review`, which is this work's own addition:
- * the mock's Lucide git-pull-request, added to the sprite in the PR that first
- * draws a review card.
+ * Every one is a shipped id except `review` and `handoff`: the mock's Lucide
+ * git-pull-request, and the two exchanging arrows this work added to the sprite
+ * for the exit call's row.
  */
 const FORGE_GLYPH: Record<ForgeFamily, string> = {
   agents: 'subagents',
   cron: 'schedules',
   documents: 'file',
   gotify: 'gotify',
+  handoff: 'handoff',
   review: 'review',
   slack: 'slack',
   tasks: 'tasks',
