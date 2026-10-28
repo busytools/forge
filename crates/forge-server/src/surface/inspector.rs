@@ -185,9 +185,9 @@ impl ViewSurface {
     /// `None` when the scan could not be taken - no session behind the seat,
     /// or its gate held past the read's bound (which `scan_work_pinned` logs
     /// with the slot and the wait). **The caller must then re-read locally**
-    /// ([`Self::work_local`]) and drop the pin: the store's count predates the
-    /// base the refresh moved, and a scan against the ref's name cannot be
-    /// paired with content read at the sha this read resolved.
+    /// ([`Self::work_pinned_local`]) at the same sha: the store's count
+    /// predates the base the refresh moved, and a scan against the ref's name
+    /// cannot be paired with content read at the sha this read resolved.
     ///
     /// The refresh's state rides the stored row, so the `base` beside a pinned
     /// `ahead` is that base's own measurement rather than the last watch's.
