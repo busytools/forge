@@ -9,7 +9,10 @@
    * rides the bar** because its card is drawn in the chat behind the page: the
    * words are here whenever the answers are. The feedback line is the dock's
    * own words row - the same Field, TakeCard and mic - so dictation here is
-   * the composer's, not a second implementation.
+   * the composer's, not a second implementation. **What the take is doing is
+   * the bar's to say**: the composer's band and notice rows are behind the
+   * picture while the takeover is up, so the open and a refusal draw above
+   * this row.
    */
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
@@ -17,6 +20,7 @@
   import { tabRows } from '../browser/host';
   import { holdsControl, selectTab, surface, takeControl } from '../browser/surface.svelte';
   import type { NavState } from '../browser/surface.svelte';
+  import type { RowPhase } from './dictate.svelte';
   import type { Take } from './wire';
 
   let {
@@ -24,12 +28,16 @@
     reason = null,
     notes = $bindable(''),
     take = null,
+    phase = null,
     wire = null,
     silent = null,
     nav = { can_back: false, can_forward: false },
     onabandon = () => {},
     onmic = () => {},
     dictation = false,
+    takeline = null,
+    opening = false,
+    ondismiss = () => {},
     ondone = null,
     onnotnow = null,
     onback,
@@ -42,6 +50,15 @@
     reason?: string | null;
     notes?: string;
     take?: Take | null;
+    /**
+     * What the take row is doing, from `takePhase`: **the page's own take
+     * counts, not only the record's**. The record's take is the socket's echo,
+     * so a take whose
+     * stream has not gone out yet - a socket still opening, or the round trip
+     * of every press - has no record and would draw an empty field here while
+     * the composer's own row already draws its card.
+     */
+    phase?: RowPhase | null;
     wire?: {
       frames: number;
       bytes: number;
@@ -55,6 +72,32 @@
     onabandon?: () => void;
     onmic?: () => void;
     dictation?: boolean;
+    /**
+     * What became of a take this page started, when the line is the bar's to
+     * say: the feedback row is this surface's words row, and the composer's
+     * own notice row is behind the picture while the takeover is up, so a
+     * refusal routed there would be invisible exactly when the mic was pressed.
+     *
+     * **The line is the seat's, not the row's**, and it draws here whichever
+     * row's press left it: the takeover covers the row that would have shown
+     * it, and a seat's last take did or did not open regardless of which of
+     * its mics was pressed.
+     */
+    takeline?: { tone: string; text: string } | null;
+    /**
+     * Whether the open has outlasted `OPEN_DRAWN_MS` - the composer's own
+     * `openingShown`: false for the first 180ms and never true for an open
+     * that lands inside it, so a quick press flashes nothing.
+     *
+     * **Nothing else on this surface says the open is running.** The card
+     * draws from this page's own take, which exists only once the capture has
+     * opened; until then the row keeps its field, mic and send and changes in
+     * no way, so the press reads as dead.
+     */
+    opening?: boolean;
+    /** The reader typed in the row, which dismisses the line above it the way
+     *  the same typing dismisses the composer's own notice. */
+    ondismiss?: () => void;
     /** The hand-off's answers; null once no ask is parked, leaving back-to-chat. */
     ondone?: (() => void) | null;
     onnotnow?: (() => void) | null;
@@ -218,9 +261,22 @@
     <div class="tb-ask">{askWords}</div>
   {/if}
   {#if feedbackOpen && onfeedback !== null}
+    {#if opening}
+      <!-- The open, in the bar and only past the wait the props doc names:
+           until this page's own take exists there is nothing else on the
+           surface that says the press landed. -->
+      <div class="tb-line opening">
+        <span class="ring" aria-hidden="true"></span>opening the microphone…
+      </div>
+    {:else if takeline !== null}
+      <!-- The reason a take pressed here did not open, in the bar: the
+           composer's own row is behind the picture, so a line drawn there is
+           a press that looks dead. -->
+      <div class="tb-line {takeline.tone}">{takeline.text}</div>
+    {/if}
     <div class="tb-feedback">
-      {#if take !== null}
-        <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} {silent} spread />
+      {#if phase !== null}
+        <TakeCard {take} {phase} {wire} oncancel={onabandon} {silent} spread />
       {:else}
         <Field
           editor="dock"
@@ -228,6 +284,7 @@
           bind:value={notes}
           rows={1}
           placeholder="what did not work? the agent reads this"
+          oninput={() => ondismiss()}
           onkeydown={(event: KeyboardEvent) => {
             event.stopPropagation();
             if (event.key === 'Enter') send();
@@ -238,13 +295,13 @@
         <button
           class="micb"
           type="button"
-          aria-label={take === null ? 'dictate the feedback' : 'stop dictating'}
+          aria-label={phase === null ? 'dictate the feedback' : 'stop dictating'}
           onclick={onmic}
         >
           <Icon name="mic" />
         </button>
       {/if}
-      {#if take === null && notes.trim() !== ''}
+      {#if phase === null && notes.trim() !== ''}
         <button
           class="sendb"
           type="button"
