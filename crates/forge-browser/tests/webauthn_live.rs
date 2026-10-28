@@ -2,11 +2,12 @@
 //! sees no `PublicKeyCredential`, in its top frame and in a cross-site
 //! subframe, while the page still works as an ordinary page.
 //!
-//! **The subframe is addressed as `localhost` against a server bound to
+//! **The subframe is served from `[::1]` while the page is served from
 //! `127.0.0.1`**, so it is a different site from the page and in a renderer
-//! of its own. It reports back over `postMessage`, which is the only way into
-//! a cross-origin frame; a patch that reached only the top frame would leave
-//! this one reporting the API.
+//! of its own. Both are loopback literals, so no name resolution can fail a
+//! run; it reports back over `postMessage`, which is the only way into a
+//! cross-origin frame, and a patch that reached only the top frame would
+//! leave this one reporting the API.
 //!
 //! **The control is the page's own credentials manager and form.** A
 //! `chrome-error://` document, or one that never ran, reports the API absent
@@ -37,10 +38,13 @@ use serde_json::{Value, json};
 const BOUND: Duration = Duration::from_secs(45);
 const POLL_EVERY: Duration = Duration::from_millis(100);
 
-/// One page served from loopback - a secure context, and one cross-site
-/// subframe - with a form that records its own submit.
-fn serve_page() -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a loopback listener");
+/// One tiny loopback HTTP server on `host`: every connection is answered
+/// with what `answer` builds from the request's path.
+fn serve(
+    host: &str,
+    answer: impl Fn(&str) -> String + Send + 'static,
+) -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let listener = std::net::TcpListener::bind((host, 0)).expect("a loopback listener");
     let port = listener.local_addr().expect("the bound address").port();
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
@@ -54,24 +58,7 @@ fn serve_page() -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
             let _ = stream.read(&mut request);
             let request = String::from_utf8_lossy(&request);
             let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
-            let body = if path == "/frame" {
-                "<html><body><script>parent.postMessage({type: 'forge-frame', \
-                 secure: isSecureContext, pkc: typeof PublicKeyCredential, \
-                 present: 'PublicKeyCredential' in window}, '*');</script></body></html>"
-                    .to_owned()
-            } else {
-                format!(
-                    "<html><body><form id=f><input id=i name=q>\
-                     <button id=b type=submit>go</button></form>\
-                     <iframe id=fr src=\"http://localhost:{port}/frame\"></iframe><script>\
-                     window.__frame = null; window.__submitted = false; \
-                     addEventListener('message', function (e) {{ \
-                     if (e.data && e.data.type === 'forge-frame') window.__frame = e.data; }}); \
-                     document.getElementById('f').addEventListener('submit', function (e) {{ \
-                     e.preventDefault(); window.__submitted = true; }});\
-                     </script></body></html>"
-                )
-            };
+            let body = answer(&path);
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
                  Connection: close\r\n\r\n{body}",
@@ -81,6 +68,33 @@ fn serve_page() -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
         }
     });
     (port, stop, thread)
+}
+
+/// The frame's own document: it reports what it sees to the page that
+/// embedded it. The listener is registered before the iframe, so the message
+/// cannot arrive ahead of it.
+fn frame_page() -> String {
+    "<html><body><script>parent.postMessage({type: 'forge-frame', \
+     secure: isSecureContext, pkc: typeof PublicKeyCredential, \
+     present: 'PublicKeyCredential' in window}, '*');</script></body></html>"
+        .to_owned()
+}
+
+/// The page under test: a form that records its own submit, and the
+/// cross-site subframe's URL.
+fn page(frame_url: &str) -> String {
+    format!(
+        "<html><head><script>window.__frame = null; \
+         addEventListener('message', function (e) {{ \
+         if (e.data && e.data.type === 'forge-frame') window.__frame = e.data; }});\
+         </script></head><body><form id=f><input id=i name=q>\
+         <button id=b type=submit>go</button></form>\
+         <iframe id=fr src=\"{frame_url}\"></iframe><script>\
+         window.__submitted = false; \
+         document.getElementById('f').addEventListener('submit', function (e) {{ \
+         e.preventDefault(); window.__submitted = true; }});\
+         </script></body></html>"
+    )
 }
 
 async fn evaluate(cdp: &mut Cdp, expression: &str) -> Value {
@@ -120,7 +134,12 @@ async fn a_page_in_the_host_offers_no_webauthn() {
     std::fs::create_dir_all(&profile).expect("the profile dir");
     let ring_name = format!("/forge-webauthn-{}", std::process::id());
     let log = scratch.path().join("host.log");
-    let (page_port, stop_page, page) = serve_page();
+    let (frame_port, stop_frame, frame_server) = serve("::1", |_| frame_page());
+    let page_server = {
+        let frame_url = format!("http://[::1]:{frame_port}/frame");
+        serve("127.0.0.1", move |_| page(&frame_url))
+    };
+    let (page_port, stop_page, page) = page_server;
     let carried = format!("http://127.0.0.1:{page_port}/");
     let port = support::free_port();
     let mut host = support::Host::start(&exe, &profile, port, &ring_name, "800x600", &[], &log);
@@ -189,4 +208,7 @@ async fn a_page_in_the_host_offers_no_webauthn() {
     stop_page.store(true, Ordering::Release);
     let _ = std::net::TcpStream::connect(("127.0.0.1", page_port));
     page.join().expect("the page server ends");
+    stop_frame.store(true, Ordering::Release);
+    let _ = std::net::TcpStream::connect(("::1", frame_port));
+    frame_server.join().expect("the frame server ends");
 }
