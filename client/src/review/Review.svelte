@@ -16,7 +16,7 @@
   import { noticeLine, joined } from '../composer/view';
   import { ago } from '../components/age';
   import { subjectKey } from '../protocol';
-  import { hrefForSlot } from '../routes';
+  import { goTo, hrefForSlot } from '../routes';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
   import { clearReview, rereadSeat, watchSession, type SessionRead } from '../session/live';
@@ -374,6 +374,22 @@
    *  seat's - the record in hand can be another seat's between two reads. */
   const landing = new Landing(surface);
 
+  /**
+   * **Whether a take this page began is still owed its landing.** Mirrored
+   * into state because the Landing's own arm is not reactive, and the seal
+   * has to re-read it when the notice arrives: a page that closes under the
+   * words loses them, and a landing for this surface has nowhere else to go.
+   */
+  let landingArmed = $state(false);
+  function armLanding(): void {
+    landing.arm(boxKey(slot), composer.notice);
+    landingArmed = true;
+  }
+  function dropLanding(): void {
+    landing.drop();
+    landingArmed = false;
+  }
+
   /** The boxes' own field elements, so a key or a panel close can put the
    *  keyboard back in the box that holds the take. */
   const elements: Record<BoxName, HTMLElement | null> = {
@@ -446,14 +462,14 @@
       // The arm this take's landing waits on, set at the press, on the seat
       // the take belongs to, with the notice the record was already showing -
       // which the memory skips rather than spending the arm on.
-      landing.arm(boxKey(slot), composer.notice);
+      armLanding();
     },
     onLine: (line) => {
       // The take's own line belongs to the box it began in, and no landing is
       // coming for it: the arm goes with the failure.
       lineIn = takeIn;
       dictateLine = line;
-      landing.drop();
+      dropLanding();
     },
     onRefused: (line) => {
       // A refused press belongs to the box that was pressed.
@@ -544,6 +560,15 @@
   }
 
   /**
+   * **A page about to close under a take's words waits for them.** True from
+   * the press that arms this page's landing until the notice arrives, across
+   * every box: the seal navigates away, and a landing for this surface has
+   * nowhere else to go. The release alone is not the end - the words are
+   * still in flight after it.
+   */
+  const sealHeld = $derived(phaseIn('summary') !== null || landingArmed);
+
+  /**
    * What the canvas's boxes read off their own state.
    *
    * **A mounted row reads its props once**, so everything a take moves has to
@@ -588,6 +613,8 @@
    */
   $effect(() => {
     const words = landing.place(boxKey(slot), composer.notice);
+    // The arm the notice spent (or left standing) is what the seal reads.
+    landingArmed = landing.armed;
     if (words === null) return;
     if (
       composer.take === null &&
@@ -655,7 +682,7 @@
     if (gone && (dictate.opening || (live !== null && !live.submitted))) {
       // The arm goes with the cancelled take: no notice is coming for it, and
       // a standing arm would ride the next one that does.
-      landing.drop();
+      dropLanding();
       dictate.act('cancel');
     }
   });
@@ -744,7 +771,7 @@
       if (dictate.take !== null || dictate.opening || dictate.held) {
         event.preventDefault();
         event.stopPropagation();
-        landing.drop();
+        dropLanding();
         dictate.act('cancel');
         return;
       }
@@ -888,13 +915,14 @@
     if (sealed) {
       drafts.clear();
       summary = '';
-      // The files half's row collapses with the round: the reader is back to
-      // the diff with nothing of the round open.
+      // **A sealed round returns the reader to the seat's chat** (Ved,
+      // 2026-10-28): the page has nothing left to show, and the agent is
+      // waiting, so the close lands where a hand-off's Done does.
       finishOpen = false;
       summaryFocus = false;
       // **Done closes the round** (Ved, 2026-10-15): the boxes, the summary's
-      // panel and any take line go with it, so the page is back to the diff
-      // with nothing of the round left open.
+      // panel and any take line go with it, so no box of the sealed round is
+      // left open behind the reader.
       box.spot = null;
       box.line = null;
       box.draft = '';
@@ -906,6 +934,7 @@
       pressedIn = null;
       panelIn = null;
       dictate.panel = false;
+      goTo({ name: 'session', slot });
     }
   }
 
@@ -1087,9 +1116,10 @@
     count={drafts.size}
     complete={drafts.size > 0}
     {busy}
+    held={sealHeld}
     onfinish={() => void finish()}
     oncancel={() => {
-      landing.drop();
+      dropLanding();
       dictate.act('cancel');
     }}
     onpress={() => (pressedIn = 'summary')}

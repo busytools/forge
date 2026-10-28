@@ -43,6 +43,7 @@
     onback,
     onnav = null,
     onfeedback = null,
+    cansend = true,
     onretry = null,
   }: {
     title: string;
@@ -105,6 +106,8 @@
     /** The history arrows' click; their keys are the surface's own. */
     onnav?: ((direction: 'back' | 'forward') => void) | null;
     onfeedback?: ((text: string) => void) | null;
+    /** Whether those words can be sent: only a page the ask names answers. */
+    cansend?: boolean;
     /** Present while the surface failed: the door back to a live page. */
     onretry?: (() => void) | null;
   } = $props();
@@ -139,6 +142,8 @@
   });
 
   function send(): void {
+    // The click and the Enter agree: a line that cannot answer sends nothing.
+    if (!cansend) return;
     const text = notes.trim();
     if (text === '' || onfeedback === null) return;
     onfeedback(text);
@@ -301,7 +306,7 @@
           <Icon name="mic" />
         </button>
       {/if}
-      {#if phase === null && notes.trim() !== ''}
+      {#if cansend && phase === null && notes.trim() !== ''}
         <button
           class="sendb"
           type="button"
