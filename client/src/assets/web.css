@@ -4236,6 +4236,10 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    right edge - the corner the collapsed control has (Ved, 2026-10-28); the
    document's exit keeps its door on the left with the mic at the far end. */
 .rv-finishacts .mic { margin-left: auto; }
+/* With no mic offered (no model installed, or no box that takes one) the
+   sealing button is the row's only child, and it keeps the stack's right
+   edge by itself. The document's exit row has no stack and is untouched. */
+.rv-finishstack .rv-finishacts { justify-content: flex-end; }
 .rv-wordline { flex: 1; min-width: 0; }
 .rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--bg);
   background: var(--accent); border: 0; border-radius: 8px; padding: 6px 14px;

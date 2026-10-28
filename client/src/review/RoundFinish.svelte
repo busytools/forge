@@ -28,6 +28,7 @@
     count,
     complete,
     busy,
+    held = false,
     onfinish,
     oncancel,
     onpress,
@@ -54,6 +55,8 @@
     /** Whether sealing is possible at all: the button's own gate. */
     complete: boolean;
     busy: boolean;
+    /** A take's words are still on their way to a box on this page. */
+    held?: boolean;
     /** Seal the round, with the summary as written. */
     onfinish: () => void;
     /** A live take's cancel, which may drop the page's landing arm too. */
@@ -85,9 +88,9 @@
           // nothing filed from sealing (Ved, 2026-10-15).
           if (event.key !== 'Enter' || event.shiftKey) return;
           event.preventDefault();
-          // **A live take seals nothing** (the seal closes the page, and the
-          // words it is still carrying would go with it).
-          if (!busy && complete && phase === null) onfinish();
+          // **A take's words seal nothing** (the seal closes the page, and
+          // words still in flight would go with it).
+          if (!busy && complete && phase === null && !held) onfinish();
         }}
         field={onfield}
       />
@@ -100,7 +103,7 @@
     <button
       class="rv-finish"
       type="button"
-      disabled={busy || !complete || phase !== null}
+      disabled={busy || !complete || phase !== null || held}
       onclick={onfinish}
     >
       {count > 0 ? `finish review (${count})` : 'finish review'}
