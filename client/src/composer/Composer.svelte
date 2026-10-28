@@ -387,6 +387,11 @@
       : null,
   );
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
+  /** What the takeover bar's line says: the same seat line, dismissed by the
+   *  same typing - the bar's field is the row that typing goes into. */
+  const takeoverLine = $derived(
+    box.dictateLine !== null && box.dismissed === box.dictateLine.text ? null : box.dictateLine,
+  );
 
   /**
    * The draft this box is drawing, remembered so a stand-down can tell THIS
@@ -1224,14 +1229,16 @@
       title={takeoverTitle}
       bind:notes={dockDraft}
       take={composer.take}
+      phase={rowPhase}
       {wire}
       silent={silentLine}
       nav={surface.nav}
       onabandon={abandon}
       onmic={() => dictate.toggle()}
       {dictation}
-      takeline={box.dictateLine}
+      takeline={takeoverLine}
       opening={openingShown}
+      ondismiss={() => (box.dismissed = box.dictateLine?.text ?? null)}
       ondone={takeoverAsk === null ? null : () => takeoverAnswer('done')}
       onnotnow={takeoverAsk === null ? null : () => takeoverAnswer('not_now')}
       onback={takeoverBack}

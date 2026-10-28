@@ -2903,6 +2903,14 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   .tc .x { position: relative; }
   .tc .x::after { content: ''; position: absolute; left: 50%; top: 50%;
     width: 44px; height: 44px; transform: translate(-50%, -50%); }
+  /* **On a card that sits in a line of controls, the halo grows left from the
+     glyph's right edge.** Centred, its 22px half reached through the row's gap
+     and over the mic beside it, and since it is positioned it painted and
+     hit-tested above that button: a tap on the mic's left edge could throw the
+     take away instead of stopping it. Anchored right, the target stays 44px
+     and stops at the card's edge. */
+  .takeline .tc .x::after, .dock .qrow .tc .x::after, .tb-feedback .tc .x::after {
+    left: auto; right: 0; transform: translate(0, -50%); }
 }
 
 /* A notice shares the row with the take and wins it. Each rule here is scoped

@@ -18,12 +18,14 @@
   import { tabRows } from '../browser/host';
   import { holdsControl, selectTab, surface, takeControl } from '../browser/surface.svelte';
   import type { NavState } from '../browser/surface.svelte';
+  import type { RowPhase } from './dictate.svelte';
   import type { Take } from './wire';
 
   let {
     title,
     notes = $bindable(''),
     take = null,
+    phase = null,
     wire = null,
     silent = null,
     nav = { can_back: false, can_forward: false },
@@ -32,6 +34,7 @@
     dictation = false,
     takeline = null,
     opening = false,
+    ondismiss = () => {},
     ondone = null,
     onnotnow = null,
     onback,
@@ -42,6 +45,15 @@
     title: string;
     notes?: string;
     take?: Take | null;
+    /**
+     * What the take row is doing, read the way every box that draws a take row
+     * reads it (`takePhase`): **the page's own take counts, not only the
+     * record's**. The record's take is the socket's echo, so a take whose
+     * stream has not gone out yet - a socket still opening, or the round trip
+     * of every press - has no record and would draw an empty field here while
+     * the composer's own row already draws its card.
+     */
+    phase?: RowPhase | null;
     wire?: {
       frames: number;
       bytes: number;
@@ -71,6 +83,9 @@
      * and the press reads as dead.
      */
     opening?: boolean;
+    /** The reader typed in the row, which dismisses the line above it the way
+     *  the same typing dismisses the composer's own notice. */
+    ondismiss?: () => void;
     /** The hand-off's answers; null once no ask is parked, leaving back-to-chat. */
     ondone?: (() => void) | null;
     onnotnow?: (() => void) | null;
@@ -237,11 +252,11 @@
       <!-- The reason a take pressed here did not open, in the bar: the
            composer's own row is behind the picture, so a line drawn there is
            a press that looks dead. -->
-      <div class="tb-line bad">{takeline.text}</div>
+      <div class="tb-line {takeline.tone}">{takeline.text}</div>
     {/if}
     <div class="tb-feedback">
-      {#if take !== null}
-        <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} {silent} spread />
+      {#if phase !== null}
+        <TakeCard {take} {phase} {wire} oncancel={onabandon} {silent} spread />
       {:else}
         <Field
           editor="dock"
@@ -249,6 +264,7 @@
           bind:value={notes}
           rows={1}
           placeholder="what did not work? the agent reads this"
+          oninput={() => ondismiss()}
           onkeydown={(event: KeyboardEvent) => {
             event.stopPropagation();
             if (event.key === 'Enter') send();
@@ -259,13 +275,13 @@
         <button
           class="micb"
           type="button"
-          aria-label={take === null ? 'dictate the feedback' : 'stop dictating'}
+          aria-label={phase === null ? 'dictate the feedback' : 'stop dictating'}
           onclick={onmic}
         >
           <Icon name="mic" />
         </button>
       {/if}
-      {#if take === null && notes.trim() !== ''}
+      {#if phase === null && notes.trim() !== ''}
         <button
           class="sendb"
           type="button"

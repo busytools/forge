@@ -324,6 +324,23 @@ describe("the takeover bar's feedback controls", () => {
     );
   });
 
+  /// **The abandon halo stops at the card's edge on every row that puts a
+  /// control beside it.** Centred, its 22px half reached through the row's gap
+  /// and over the mic, and being positioned it painted and hit-tested above
+  /// that button - a tap on the mic's left edge could throw the take away.
+  it('keeps the abandon halo out of the control beside it', () => {
+    for (const selector of [
+      '.takeline .tc .x::after',
+      '.dock .qrow .tc .x::after',
+      '.tb-feedback .tc .x::after',
+    ]) {
+      const rule = ruleWith(selector);
+      expect(rule, `${selector} is in no rule, so its halo is still centred`).not.toBeNull();
+      expect(rule?.body, `${selector} is still anchored from the left`).toMatch(/left: auto/);
+      expect(rule?.body, `${selector} does not stop at the card's edge`).toMatch(/right: 0/);
+    }
+  });
+
   /// **The rules reach the bar only through the class the markup wears**, and
   /// dropping one passes every rule pin above: the sheet would style a class
   /// no control carries.

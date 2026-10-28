@@ -6827,6 +6827,37 @@ describe("the takeover bar's feedback line", () => {
     }
   });
 
+  /** **The card is this page's take, not the record's echo.** A take whose
+   *  stream has not left yet - a socket still opening under the press - has no
+   *  record to draw from, and the composer's own row draws it from `takePhase`
+   *  anyway; a bar reading only the record drew the empty field for as long as
+   *  the socket stayed down, which is the dead-looking press again. */
+  it("draws the card from this page's own take before the record has it", async () => {
+    const shared = wire();
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }), dictation: true }, shared);
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    const button = document.querySelector('.takeover-bar .micb');
+    if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+    shared.down = true;
+    try {
+      button.click();
+      await opened();
+    } finally {
+      shared.down = false;
+    }
+
+    expect(
+      document.querySelector('.tb-feedback .tc'),
+      'the page holds a take, so the bar draws its row',
+    ).not.toBeNull();
+    expect(document.querySelector('.tb-field'), 'and the field it replaces is gone').toBeNull();
+  });
+
   /** **A take that will not open says so where it was pressed.** The bar's
    *  feedback row is the words row a take here belongs to, and the composer's
    *  own notice row is behind the picture while the takeover is up - so a
@@ -6854,6 +6885,17 @@ describe("the takeover bar's feedback line", () => {
       document.querySelector('.takeover-bar')?.textContent,
       'the bar names the refusal where the press was made',
     ).toContain('the microphone was refused');
+    // **The reader's own typing dismisses the line**, as it does the
+    // composer's notice: the bar's field is where that typing lands.
+    const field = document.querySelector('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no field');
+    field.value = 'the upload form rejected the file';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(
+      document.querySelector('.takeover-bar')?.textContent,
+      'and a line typed away does not keep drawing',
+    ).not.toContain('the microphone was refused');
   });
 
   /** **The open itself is the bar's to say.** The card draws from the record,
@@ -6911,6 +6953,10 @@ describe("the takeover bar's feedback line", () => {
         document.querySelector('.takeover-bar')?.textContent,
         'and the line goes with it',
       ).not.toContain('opening the microphone');
+      expect(
+        document.querySelector('.tb-feedback .tc'),
+        'the card replaces the line rather than leaving the row empty',
+      ).not.toBeNull();
     } finally {
       mic.held.gated = false;
       mic.held.release = null;
