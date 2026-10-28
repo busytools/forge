@@ -117,15 +117,16 @@ pub fn initialize(profile: &std::path::Path, port: u16, app: &mut App, args: &ar
     true
 }
 
-/// **Autofill's save prompts are Chrome UI a windowless host cannot draw.**
-/// A submitted card form reaches `SaveCardBubbleControllerImpl::DoShowBubble`,
-/// which dereferences the tab behind the WebContents; an alloy host has none
-/// and the fault lands before CEF's own null guard, so the process dies. CEF
-/// names turning autofill off as the workaround, and an agent-driven host has
-/// nobody to answer a save prompt.
+/// **Autofill for cards and profiles is off in the host, not merely its save
+/// prompts.** A submitted card form reaches
+/// `SaveCardBubbleControllerImpl::DoShowBubble`, which dereferences the tab
+/// behind the WebContents; an alloy host has none and the fault lands before
+/// CEF's own null guard, so the process dies. CEF names turning autofill off
+/// as the workaround, and an agent-driven host has nobody to fill a form for.
+/// **The password manager is untouched**: it gates on its own preferences.
 fn turn_off_autofill() {
     static OFF: AtomicBool = AtomicBool::new(false);
-    if OFF.swap(true, Ordering::AcqRel) {
+    if OFF.load(Ordering::Acquire) {
         return;
     }
     let Some(context) = request_context_get_global_context() else {
@@ -154,16 +155,21 @@ fn turn_off_autofill() {
             Some(&mut value),
             Some(&mut error),
         );
-        if applied != 1 {
+        // **The stored value is the fact, not the write's return**: a write
+        // CEF accepted and did not keep leaves autofill on.
+        let stored = context.preference(Some(&CefString::from(name))).map(|value| value.bool());
+        if applied != 1 || stored != Some(0) {
             all_set = false;
             eprintln!(
-                "cef host: an autofill preference was refused (event_name \
-                 cef_autofill_off_refused, pref {name}, error {error})"
+                "cef host: an autofill preference did not take (event_name \
+                 cef_autofill_off_refused, pref {name}, write {applied}, stored {stored:?}, \
+                 error {error})"
             );
         }
     }
     if all_set {
-        eprintln!("cef host: autofill is off (event_name cef_autofill_off)");
+        OFF.store(true, Ordering::Release);
+        eprintln!("cef host: autofill for cards and profiles is off (event_name cef_autofill_off)");
     }
 }
 

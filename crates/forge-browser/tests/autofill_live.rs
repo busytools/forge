@@ -129,11 +129,16 @@ async fn evaluate(cdp: &mut Cdp, expression: &str) -> Value {
 
 /// Put text into one field the way a person does, so the renderer reports it
 /// as an edit rather than an autofilled value.
+///
+/// **The field's own value is the fact**: a text that never landed leaves the
+/// card blank, the importer finds no card, and the guard passes vacuously.
 async fn type_into(cdp: &mut Cdp, field: &str, text: &str) {
     evaluate(cdp, &format!("document.querySelector('{field}').focus()")).await;
     cdp.call("Input.insertText", json!({ "text": text }), None)
         .await
         .expect("the field takes text");
+    let typed = evaluate(cdp, &format!("document.querySelector('{field}').value")).await;
+    assert_eq!(typed.as_str(), Some(text), "{field} did not take the text: {typed}");
 }
 
 /// The point the page lays the submit button's centre on, once the document
@@ -203,11 +208,21 @@ async fn a_submitted_card_form_does_not_kill_the_host() {
         .expect("the page's devtools endpoint accepts");
     cdp.call("Page.navigate", json!({ "url": page.url }), None).await.expect("the page navigates");
 
-    // **The form has to be there before a click can mean it.**
+    // **Every field the importer needs, on a parsed document.** Waiting on
+    // `#cc` alone let a slow parse leave the card fields empty, the importer
+    // find no card, and the guard pass with nothing exercised.
+    //
+    // **`try_evaluate`**: the navigation replaces the execution context, so a
+    // `Runtime.evaluate` landing in that window is an error, not a page state.
     let deadline = Instant::now() + BOUND;
     loop {
-        let ready = evaluate(&mut cdp, "!!document.querySelector('#cc')").await;
-        if ready.as_bool() == Some(true) {
+        let ready = try_evaluate(
+            &mut cdp,
+            "document.readyState === 'complete' && ['#cc', '#name', '#exp', '#cvc']\
+             .every((selector) => document.querySelector(selector) !== null)",
+        )
+        .await;
+        if ready.and_then(|ready| ready.as_bool()) == Some(true) {
             break;
         }
         assert!(Instant::now() < deadline, "the form never loaded (log: {})", host.log());
@@ -269,7 +284,7 @@ async fn a_submitted_card_form_does_not_kill_the_host() {
     // **The fix's own evidence**: the crash path is gone because the host
     // turned it off, not because the form missed autofill's heuristics.
     assert!(
-        host.log().contains("autofill is off (event_name cef_autofill_off)"),
+        host.log().contains("autofill for cards and profiles is off (event_name cef_autofill_off)"),
         "the host never turned autofill off, so the crash path is still reachable (log: {})",
         host.log(),
     );
