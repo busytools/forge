@@ -1,13 +1,7 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
-  import {
-    attachHandOff,
-    clearHandOff,
-    closeSurface,
-    openSurface,
-    surface,
-  } from '../browser/surface.svelte';
+  import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
   import type { Command } from '../protocol';
@@ -35,6 +29,7 @@
     silent = null,
     takeline = null,
     answered = false,
+    carried = null,
   }: {
     ask: Ask;
     /**
@@ -120,6 +115,13 @@
      * back live, with the reason.
      */
     answered?: boolean;
+    /**
+     * Words the takeover's line was holding when it was lowered, now in the
+     * chat's draft. **The composer is behind this card while the hand-off is
+     * parked**, so the card is where the person can read what happened to
+     * them.
+     */
+    carried?: string | null;
   } = $props();
 
   /**
@@ -597,13 +599,10 @@
   function open(): void {
     if (ask.kind !== 'browser_hand_off') return;
     const id = ask.request.id;
-    // **The takeover marks itself live for this ask, and the composer's bar
-    // is what answers it.** Attaching also routes a take started from the
-    // bar's mic into this dock's own words box.
-    attachHandOff({ id, tab: ask.request.tab });
     // **The hand-off's own tab**: the takeover draws THAT tab's page - the
     // CAPTCHA lands in the page the session prepared. **The asking seat rides
-    // the raise**, and the server resolves the seat's own profile.
+    // the raise**, and the server resolves the seat's own profile. The bar
+    // answers this ask because the surface is this seat's, on that tab.
     void openSurface(null, slot, ask.request.tab).then((why) => {
       if (why !== null) {
         raiseFailedFor = id;
@@ -630,7 +629,6 @@
     // The lower names no profile: the shell lowers the attach this page
     // actually holds, which is the one the hand-off's Open raised.
     void closeSurface(null, slot);
-    clearHandOff(id);
   }
 
   /**
@@ -1061,6 +1059,11 @@
       <!-- The reason verbatim: it is what the session needs, in its own words,
          and a summary of it would be the client guessing at the act. -->
       <div class="d-q">{ask.request.reason}</div>
+      {#if carried !== null && carried.trim() !== ''}
+        <div class="desc">
+          What you said at the bar is in the chat's draft: {carried}
+        </div>
+      {/if}
       <div class="desc">
         {raiseFailed ??
           'Open browser shows the page the session prepared, exactly as it stands. The session waits, with no timeout, for your answer.'}

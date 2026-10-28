@@ -267,6 +267,8 @@ struct PaintJob {
     pixels: Vec<u8>,
     width: u32,
     height: u32,
+    /// The page's own viewport this paint was laid out at.
+    page: (u32, u32),
     /// Not a repaint of the same view: a popup appearing or closing.
     distinct: bool,
 }
@@ -676,7 +678,7 @@ impl PopupGate {
             let pending = Arc::clone(&pending);
             let paused = Arc::clone(&self.paused);
             let recording = Arc::clone(&self.recording);
-            Arc::new(move |view, width, height, distinct| {
+            Arc::new(move |view, width, height, distinct, page| {
                 // **A recording is not the viewers'.** A take runs whether or
                 // not anyone is watching, so it is offered the viewport
                 // before the encoding pause.
@@ -684,7 +686,7 @@ impl PopupGate {
                 if paused.load(Ordering::Acquire) {
                     return;
                 }
-                push_paint(&pending, view, width, height, distinct);
+                push_paint(&pending, view, width, height, distinct, page);
             })
         };
         let audio: crate::audio::AudioSink = {
@@ -1063,6 +1065,8 @@ impl HostRuntime {
             Some(&CefString::from(url)),
             Some(&settings),
             None,
+            // **The global context**: the one whose autofill preferences
+            // `turn_off_autofill` sets.
             None,
         );
         let host = browser.as_ref().and_then(cef::ImplBrowser::host);
@@ -1297,7 +1301,14 @@ impl HostRuntime {
 }
 
 /// Queue one paint for a tab's worker.
-fn push_paint(pending: &Pending, view: &[u8], width: u32, height: u32, distinct: bool) {
+fn push_paint(
+    pending: &Pending,
+    view: &[u8],
+    width: u32,
+    height: u32,
+    distinct: bool,
+    page: (u32, u32),
+) {
     let (queue, wake) = pending;
     let mut held = queue.lock().unwrap_or_else(PoisonError::into_inner);
     // **A queued popup frame is not replaced by a plain repaint.** The queue
@@ -1308,7 +1319,7 @@ fn push_paint(pending: &Pending, view: &[u8], width: u32, height: u32, distinct:
         held.back(),
         Some(job) if matches!(job, Job::Frame(job) if replaces_queued(Some(job), distinct))
     );
-    let paint = PaintJob { pixels: view.to_vec(), width, height, distinct };
+    let paint = PaintJob { pixels: view.to_vec(), width, height, page, distinct };
     if replace {
         if let Some(slot) = held.back_mut() {
             *slot = Job::Frame(paint);
@@ -1380,7 +1391,7 @@ fn start_tab_encoder(
                         take_for_encode(&mut held)
                     };
                     let job = encode_target(job, newest);
-                    sink.offer(&job.pixels, job.width, job.height);
+                    sink.offer(&job.pixels, job.width, job.height, job.page);
                 }
                 // **Audio never waits on the frame rate**: it is a clock of
                 // its own, and the paused state is the viewer's.
@@ -2150,7 +2161,7 @@ mod tests {
         use std::sync::Arc;
         let name = format!("/forge-cef-test-shared-{}", std::process::id());
         let ring = Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
-        let paint: crate::osr::PaintSink = Arc::new(|_, _, _, _| {});
+        let paint: crate::osr::PaintSink = Arc::new(|_, _, _, _, _| {});
         let audio: crate::audio::AudioSink = Arc::new(|_| {});
         let popups = gate(&ring);
         let client = super::HostClient::new(
@@ -2180,7 +2191,8 @@ mod tests {
     #[test]
     fn a_queued_popup_frame_is_not_replaced_by_a_plain_repaint() {
         use super::{PaintJob, replaces_queued};
-        let job = |distinct| PaintJob { pixels: Vec::new(), width: 1, height: 1, distinct };
+        let job =
+            |distinct| PaintJob { pixels: Vec::new(), width: 1, height: 1, page: (1, 1), distinct };
         assert!(replaces_queued(None, false), "an empty slot takes any paint");
         assert!(replaces_queued(None, true), "including a popup's");
         assert!(replaces_queued(Some(&job(false)), false), "the newest plain paint wins");
@@ -2200,7 +2212,7 @@ mod tests {
     fn the_encoder_takes_the_newest_paint() {
         use super::{Job, PaintJob, take_for_encode};
         let job = |width, distinct| {
-            Job::Frame(PaintJob { pixels: Vec::new(), width, height: 1, distinct })
+            Job::Frame(PaintJob { pixels: Vec::new(), width, height: 1, page: (1, 1), distinct })
         };
         let mut queue =
             std::collections::VecDeque::from([job(1, false), job(2, false), job(3, false)]);
@@ -2218,7 +2230,7 @@ mod tests {
     fn the_encoder_takes_a_queued_popup_first() {
         use super::{Job, PaintJob, take_for_encode};
         let job = |width, distinct| {
-            Job::Frame(PaintJob { pixels: Vec::new(), width, height: 1, distinct })
+            Job::Frame(PaintJob { pixels: Vec::new(), width, height: 1, page: (1, 1), distinct })
         };
         let mut queue = std::collections::VecDeque::from([job(1, true), job(2, false)]);
         let Some(Job::Frame(next)) = take_for_encode(&mut queue) else {
@@ -2235,7 +2247,13 @@ mod tests {
     #[test]
     fn a_held_popup_survives_a_newer_plain_paint() {
         use super::{Job, PaintJob, encode_target};
-        let paint = |width, distinct| PaintJob { pixels: Vec::new(), width, height: 1, distinct };
+        let paint = |width, distinct| PaintJob {
+            pixels: Vec::new(),
+            width,
+            height: 1,
+            page: (1, 1),
+            distinct,
+        };
         let next = encode_target(paint(1, true), Some(Job::Frame(paint(2, false))));
         assert_eq!(next.width, 1, "the held popup is encoded");
         assert!(next.distinct);

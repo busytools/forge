@@ -4,7 +4,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { hideBrowser, showBrowser } from '../browser/link';
-import { surface } from '../browser/surface.svelte';
+import { openSurface, selectTab, surface } from '../browser/surface.svelte';
 
 /**
  * The shell's own door, mock-able so both halves of Open's claim are testable
@@ -204,7 +204,14 @@ afterEach(() => {
   if (second !== null) void unmount(second);
   app = null;
   second = null;
-  vi.mocked(hideBrowser).mockClear();
+  // **`mockClear` is not enough here**: it drops the call history but keeps
+  // both an unconsumed `mockResolvedValueOnce` and a persistent implementation,
+  // so either would decide the next case's open or lower. Both doors are reset
+  // and re-armed with the defaults the module mock declares.
+  vi.mocked(showBrowser).mockReset();
+  vi.mocked(showBrowser).mockImplementation(() => Promise.resolve({ profile: 'job-hunt', tab: 2 }));
+  vi.mocked(hideBrowser).mockReset();
+  vi.mocked(hideBrowser).mockImplementation(() => Promise.resolve(true));
   document.body.innerHTML = '';
   // The pending send outlives the page that drew it, so a case that leaves one
   // behind would hand it to the next.
@@ -426,6 +433,103 @@ function barAction(label: string): HTMLElement {
   return found;
 }
 
+/** Every label the takeover's bar is drawing, which is what a person can act on. */
+function barButtons(): string[] {
+  return [...document.querySelectorAll('.takeover-bar .tb-btn')].map(
+    (button) => button.textContent?.trim() ?? '',
+  );
+}
+
+/** What the takeover's bar itself is saying - never the chat drawn behind it. */
+function barText(): string {
+  return document.querySelector('.takeover-bar')?.textContent ?? '';
+}
+
+/**
+ * A surface raised for one seat and tab, as Open, the strip's row or a raise
+ * for another seat leaves it. The shell's answer is the suite's mock.
+ */
+async function surfaceOn(seat: SessionSlot, tab: number): Promise<void> {
+  vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt', tab });
+  await openSurface(null, seat, tab);
+  flushSync();
+}
+
+/**
+ * Let an Open land. **The bar's answers ride the page, not the press**: Done,
+ * Not now and the feedback line are offered once the surface is live on the
+ * tab the ask named, which is the shell's answer away.
+ */
+async function raised(): Promise<void> {
+  await vi.waitFor(() => expect(surface.phase, 'the page the ask named is up').toBe('live'));
+  flushSync();
+}
+
+/**
+ * Begin a take at the takeover's own mic, which is the one door a take has
+ * while the page owns the keyboard, and end it with the core's word.
+ */
+async function beginBarTake(harness: {
+  page: { record: ComposerRecord };
+  say: (message: ServerMessage) => void;
+}): Promise<void> {
+  const mic = document.querySelector('.takeover-bar .micb');
+  if (!(mic instanceof HTMLElement)) throw new Error('the bar drew no mic');
+  mic.click();
+  await opened();
+  showTake(harness);
+  endTake(harness);
+}
+
+/** Start a take at the bar's mic and leave it recording. */
+async function startBarTake(): Promise<void> {
+  const mic = document.querySelector('.takeover-bar .micb');
+  if (!(mic instanceof HTMLElement)) throw new Error('the bar drew no mic');
+  mic.click();
+  await opened();
+}
+
+/** The shell's answer to a raise, as the mocked door carries it. */
+type OpenAnswer = Awaited<ReturnType<typeof showBrowser>>;
+
+/**
+ * Press a failed page's retry, holding the shell's answer so the surface
+ * stays `opening` until the case lands it.
+ */
+function retryHeld(): { land: (answer: OpenAnswer) => void } {
+  let land: (answer: OpenAnswer) => void = () => {};
+  vi.mocked(showBrowser).mockReturnValueOnce(
+    new Promise<OpenAnswer>((resolve) => {
+      land = resolve;
+    }),
+  );
+  barAction('try again').click();
+  flushSync();
+  return { land };
+}
+
+/**
+ * End the take and let its words land on the page as it stands now, with
+ * whatever ask is still parked.
+ */
+function landBarTake(
+  harness: { page: { record: ComposerRecord }; say: (message: ServerMessage) => void },
+  asks: unknown[] = [browserHandOffAsk()],
+): void {
+  showTake(harness);
+  endTake(harness);
+  harness.page.record = record({
+    pending_asks: asks,
+    composer: {
+      take: null,
+      notice: { kind: 'landed', text: 'the words', truncated: false },
+      compacting: false,
+      sign_in: null,
+    },
+  });
+  flushSync();
+}
+
 /**
  * The one behaviour here whose failure destroys something a person typed.
  *
@@ -436,10 +540,19 @@ function barAction(label: string): HTMLElement {
  */
 beforeEach(() => {
   // The surface store is the page's own state; each case starts with nothing
-  // open, exactly as a fresh page does.
+  // open, exactly as a fresh page does - and with no seat, tab or ask left
+  // from the case before it.
   surface.phase = 'closed';
   surface.profile = null;
   surface.reason = null;
+  surface.id = null;
+  surface.tab = null;
+  surface.seat = null;
+  surface.tabs = null;
+  surface.attachedProfile = null;
+  surface.viewer = null;
+  surface.controller = null;
+  surface.nav = { can_back: false, can_forward: false };
 });
 
 describe("the reader's draft", () => {
@@ -5784,11 +5897,11 @@ describe('the dock', () => {
     expect(drawn()).toContain('Not now');
   });
 
-  it('says why an answer did not land when the hand-off left under the click', () => {
+  it('says why an answer did not land when the hand-off left under the click', async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    flushSync();
+    await raised();
     barAction('Done').click();
     flushSync();
     expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
@@ -5828,11 +5941,11 @@ describe('the dock', () => {
     ]);
   });
 
-  it('answers the hand-off as the verb says: Done settles it', () => {
+  it('answers the hand-off as the verb says: Done settles it', async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    flushSync();
+    await raised();
     barAction('Done').click();
     flushSync();
 
@@ -5872,7 +5985,7 @@ describe('the dock', () => {
         null,
       ),
     );
-    flushSync();
+    await raised();
     barAction('Done').click();
     flushSync();
 
@@ -5880,6 +5993,191 @@ describe('the dock', () => {
       null,
       SLOT,
     );
+  });
+
+  /**
+   * **A surface raised for another seat is not this seat's, and does not stay
+   * over it.** The page covers the chat, so the hand-off's card - and its
+   * reason - was behind it: the person saw a browser they did not open over
+   * the seat they moved to, and no ask. Leaving the seat that raised a page
+   * lowers it, which puts the chat and this seat's card back.
+   */
+  it("lowers a takeover raised for another seat, so this seat's ask is on screen", async () => {
+    await surfaceOn(ELSEWHERE, 2);
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    await vi.waitFor(() =>
+      expect(surface.phase, "the other seat's page comes down").toBe('closed'),
+    );
+    flushSync();
+
+    expect(hideBrowser, "and the lower is the shell's").toHaveBeenCalled();
+    expect(document.querySelector('.takeover-bar'), 'no bar stands over this seat').toBeNull();
+    expect(drawn(), 'the ask is drawn where the person is looking').toContain(
+      'The sign-in page is showing a CAPTCHA.',
+    );
+  });
+
+  /** **A switch is not a mount.** The page hands this composer one seat's
+   *  record after another and keeps it mounted, so the lower must follow the
+   *  `slot` prop: the incident's path was a seat change, not a page load. */
+  it("lowers this seat's page when the reader moves to another seat", async () => {
+    await surfaceOn(SLOT, 2);
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    expect(surface.phase, 'precondition: this seat opened its page').toBe('live');
+
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE, pending_asks: [browserHandOffAsk()] });
+    flushSync();
+
+    await vi.waitFor(() =>
+      expect(surface.phase, 'the page the seat left behind comes down').toBe('closed'),
+    );
+    flushSync();
+    expect(
+      document.querySelector('.takeover-bar'),
+      'and no bar stands over the seat moved to',
+    ).toBeNull();
+    expect(drawn(), 'the seat moved to draws its own ask').toContain(
+      'The sign-in page is showing a CAPTCHA.',
+    );
+  });
+
+  /** **A lower that cannot land leaves the other seat's page over this one**,
+   *  failed and still owned by the seat that raised it. The bar must not
+   *  answer this seat's ask from it: the seat check is what holds when the
+   *  page cannot be taken down. */
+  it("answers nothing from another seat's failed page", async () => {
+    await surfaceOn(ELSEWHERE, 2);
+    vi.mocked(hideBrowser).mockResolvedValue('the shell is not answering');
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    await vi.waitFor(() => expect(surface.phase, 'the lower was refused').toBe('failed'));
+    flushSync();
+
+    expect(surface.seat, "the page is still the other seat's").toEqual(ELSEWHERE);
+    expect(barButtons(), "so this seat's ask is not answered from it").not.toContain('Done');
+    expect(barText(), 'and its words do not ride it').not.toContain(
+      'The sign-in page is showing a CAPTCHA.',
+    );
+  });
+
+  /** **The press is not the page.** While the attach is in flight the ask
+   *  already rides the bar, but nothing may answer it until the page the ask
+   *  named is actually up. */
+  it('offers the ask while the page opens, and no answers until it is up', async () => {
+    let release: ((answer: { profile: string; tab: number }) => void) | null = null;
+    vi.mocked(showBrowser).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    flushSync();
+
+    expect(surface.phase, 'the page is on its way').toBe('opening');
+    expect(barText(), 'the ask rides the bar from the press').toContain(
+      'The sign-in page is showing a CAPTCHA.',
+    );
+    expect(barButtons(), 'but its answers wait for the page').not.toContain('Done');
+
+    (release as ((answer: { profile: string; tab: number }) => void) | null)?.({
+      profile: 'job-hunt',
+      tab: 2,
+    });
+    await raised();
+    expect(barButtons(), 'and arrive with it').toContain('Done');
+  });
+
+  /**
+   * **The tab is half of the ask.** A surface showing another tab is a page
+   * the session did not prepare, so its Done and feedback line are not this
+   * ask's answers - but the ask itself must still be named, with the tab it
+   * wants, because the card carrying it is behind the page.
+   */
+  it('names the ask on a surface showing another tab, and offers no answer', async () => {
+    await surfaceOn(SLOT, 3);
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    expect(barButtons(), 'the wrong tab does not answer').not.toContain('Done');
+    expect(barButtons(), 'and the feedback line is not offered for it').not.toContain(
+      "something's wrong…",
+    );
+    expect(barText(), 'and the ask is still named, with the tab it wants').toContain(
+      'browser hand-off · tab 2',
+    );
+    expect(barText(), "with the session's own words").toContain(
+      'The sign-in page is showing a CAPTCHA.',
+    );
+  });
+
+  /**
+   * **The bar carries the ask.** With the page covering the chat, the reason
+   * exists only on the card behind it; the bar must say what is asked wherever
+   * its answers are on screen.
+   */
+  it("carries the ask's words on the surface it stands for", async () => {
+    await surfaceOn(SLOT, 2);
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    expect(barText(), "the session's own words, on the bar that answers").toContain(
+      'The sign-in page is showing a CAPTCHA.',
+    );
+    expect(barButtons(), 'with the answers beside them').toContain('Done');
+  });
+
+  /** **A page that failed is still the ask's page.** The host dying under a
+   *  parked hand-off is the one case the person most needs to report - "the
+   *  browser exited" is a message to the session, not a decline - so the ask
+   *  and the feedback line stay on the bar. */
+  it('keeps the ask and its answers when the page fails under it', async () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited (signal 11)');
+
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+
+    expect(barText(), 'the ask stays on the bar').toContain(
+      'The sign-in page is showing a CAPTCHA.',
+    );
+    expect(barButtons(), 'and the person can still answer it').toContain('Done');
+    expect(barButtons(), 'and can say the host died').toContain("something's wrong…");
+  });
+
+  /**
+   * **A take begun at the bar belongs to the bar.** Its mic is the only door
+   * a take has while the page owns the keyboard, and the words it brings are
+   * the feedback line's - not the chat draft's, which is hidden behind the
+   * page.
+   */
+  it("lands a take's words in the feedback line the bar stands for", async () => {
+    await surfaceOn(SLOT, 2);
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [browserHandOffAsk()] }),
+    });
+    barAction('something').click();
+    flushSync();
+
+    await beginBarTake(harness);
+    harness.page.record = record({
+      pending_asks: [browserHandOffAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    expect(field, 'the bar keeps its feedback line').not.toBeNull();
+    expect(field?.value, "and the take's words land in it").toBe('the words');
   });
 
   /** **An answer from another view lowers the window here.** The local Done
@@ -5948,12 +6246,12 @@ describe('the dock', () => {
     expect(hideBrowser, 'the attach this page holds comes down').toHaveBeenCalledWith(null, SLOT);
   });
 
-  it('declines the hand-off with Not now, which is the same release', () => {
+  it('declines the hand-off with Not now, which is the same release', async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     // Not now is the takeover bar's; Open puts the surface up.
     action('Open browser').click();
-    flushSync();
+    await raised();
     barAction('Not now').click();
     flushSync();
 
@@ -5966,6 +6264,9 @@ describe('the dock', () => {
         },
       },
     ]);
+    // The answer lowers the page it was given on, which is also the door a
+    // shell that refuses every lower would fail to close.
+    await vi.waitFor(() => expect(surface.phase, 'the answer lowers the page').toBe('closed'));
   });
 
   it('offers a retry when the surface failed, without leaving the hand-off', async () => {
@@ -6000,11 +6301,11 @@ describe('the dock', () => {
    *  declined, decide what to do instead" while they were still working the
    *  page (live, 2026-10-26: two parks ended that way with the person's own
    *  words describing the page). */
-  it('sends the bar feedback to the agent and ends the park as spoken, not declined', () => {
+  it('sends the bar feedback to the agent and ends the park as spoken, not declined', async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    flushSync();
+    await raised();
     barAction('something').click();
     flushSync();
 
@@ -6036,12 +6337,12 @@ describe('the dock', () => {
    *  refused used to answer `feedback` anyway, telling the session to read a
    *  prompt nobody sent and ending the park on nothing; the dock stays live,
    *  so the reader can press send again when the socket is back. */
-  it('keeps the hand-off parked when the feedback never left', () => {
+  it('keeps the hand-off parked when the feedback never left', async () => {
     const shared = wire();
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
 
     action('Open browser').click();
-    flushSync();
+    await raised();
     barAction('something').click();
     flushSync();
     const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
@@ -6071,11 +6372,11 @@ describe('the dock', () => {
    *  bar itself receives must not reach the dock's refusal - Escape in a
    *  raised takeover declining the hand-off was the first suspect in the live
    *  incident, and this is the property that rules it out. */
-  it('does not answer the hand-off on Escape inside the raised takeover', () => {
+  it('does not answer the hand-off on Escape inside the raised takeover', async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    flushSync();
+    await raised();
     barAction('something').click();
     flushSync();
 
@@ -6085,6 +6386,297 @@ describe('the dock', () => {
     press('Escape');
 
     expect(commands(harness), 'the hand-off is still parked, nothing answered it').toEqual([]);
+  });
+
+  /**
+   * **A take begun at the bar stays the bar's while its takeover stands.**
+   * A failed page keeps the feedback line (the person can say the host died),
+   * and its retry puts the surface back into opening with the take still
+   * recording. The words were spoken for that line, so they land there: the
+   * composer's draft is behind the picture, where a press reads as dead.
+   */
+  it("keeps a bar take's words in the bar while a retry opens the page under it", async () => {
+    const harness = await failedPageTaking();
+    const { land } = retryHeld();
+    expect(surface.phase, 'the retry is opening the page').toBe('opening');
+
+    // The take ends while the page is opening, and its words come back.
+    landBarTake(harness);
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are on the line while the retry opens the page',
+    ).toBe('the words');
+    expect(
+      document.querySelector('.takeover-bar .sendb'),
+      'a line that cannot answer offers no send',
+    ).toBeNull();
+
+    // The retry asked for tab null; the shell answers with the ask's own tab,
+    // so the page is answerable again and the line stays it.
+    land({ profile: 'job-hunt', tab: 2 });
+    await vi.waitFor(() => expect(surface.phase, 'the retried page is up').toBe('live'));
+    flushSync();
+    const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    expect(line.value, 'the words were held for the line the reader spoke them into').toBe(
+      'the words',
+    );
+    expect(
+      document.querySelector('.takeover-bar .sendb'),
+      'the page answers again, so the send is back',
+    ).not.toBeNull();
+
+    // The ask resolves: the line goes with it, so the words land in the
+    // composer once - and no second copy stays behind.
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+    expect(field().value, 'the words land in the composer, once').toBe('the words');
+  });
+
+  /** A page that fails its first open, with the feedback line open and a take
+   *  running at the bar's mic, which is where every carry case starts. */
+  async function failedPageTaking(): Promise<ReturnType<typeof open>> {
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [browserHandOffAsk()] }),
+    });
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+    return harness;
+  }
+
+  /**
+   * **A failed page keeps the line, and the line keeps the words.** After the
+   * first failed open the surface holds no tab list, so the retry asks for
+   * none and the ask still names tab 2. A line that cannot answer still shows
+   * what was spoken into it - showing the words is not answering - and offers
+   * no send it could not honour.
+   */
+  it("keeps a bar take's words on the line when the retry fails again", async () => {
+    const harness = await failedPageTaking();
+    const { land } = retryHeld();
+    landBarTake(harness);
+
+    land('the browser host exited again');
+    await vi.waitFor(() => expect(surface.phase, 'the retry failed too').toBe('failed'));
+    flushSync();
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are still on the line',
+    ).toBe('the words');
+    expect(
+      document.querySelector('.takeover-bar .sendb'),
+      'and the line offers no send it cannot honour',
+    ).toBeNull();
+  });
+
+  /** The same when the retry lands on a page the ask did not name. */
+  it("keeps a bar take's words on the line when the retry lands elsewhere", async () => {
+    const harness = await failedPageTaking();
+    const { land } = retryHeld();
+    landBarTake(harness);
+
+    land({ profile: 'job-hunt', tab: 3 });
+    await vi.waitFor(() => expect(surface.phase, 'the retried page is up').toBe('live'));
+    flushSync();
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are still on the line',
+    ).toBe('the words');
+    expect(
+      document.querySelector('.takeover-bar .sendb'),
+      'and the line offers no send it cannot honour',
+    ).toBeNull();
+  });
+
+  /** **The line is the ask's, not the phase's.** Another view answering the
+   *  ask mid-take must not leave the words in a line nothing draws. */
+  it("carries a bar take's words when another view answers the ask mid-take", async () => {
+    const harness = await failedPageTaking();
+    const { land } = retryHeld();
+
+    // The other view's answer lands as the record dropping the ask.
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+    landBarTake(harness, []);
+    land({ profile: 'job-hunt', tab: 2 });
+    await vi.waitFor(() => expect(surface.phase, 'the retried page is up').toBe('live'));
+    flushSync();
+
+    expect(field().value, 'the words go to the composer, not a line nothing draws').toBe(
+      'the words',
+    );
+  });
+
+  /** **The line is the ask's, whatever tab is showing.** A reader on another
+   *  tab when the take lands still gets the words on the line, with no send. */
+  it("keeps a bar take's words on the line when the reader is on another tab as they land", async () => {
+    await surfaceOn(SLOT, 2);
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [browserHandOffAsk()] }),
+    });
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+
+    vi.mocked(showBrowser).mockResolvedValueOnce({ profile: 'job-hunt', tab: 3 });
+    await selectTab(3);
+    flushSync();
+    expect(surface.tab, 'the reader left the ask its tab').toBe(3);
+
+    landBarTake(harness);
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are on the line',
+    ).toBe('the words');
+    expect(
+      document.querySelector('.takeover-bar .sendb'),
+      'and the line offers no send it cannot honour',
+    ).toBeNull();
+  });
+
+  /**
+   * **A lowered takeover hands its words to the chat, and the card says so.**
+   * The line goes with the page, so the carry joins the words into the
+   * composer's draft - and the composer is behind the hand-off's card until
+   * the ask is answered, so the card is where the person reads what happened.
+   * The line must not redraw them and send them a second time.
+   */
+  it("hands a lowered takeover's words to the chat, and the card says so", async () => {
+    const harness = await failedPageTaking();
+    landBarTake(harness);
+    barAction('back to chat').click();
+    await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
+    flushSync();
+    expect(drawn(), 'the card says where the words went').toContain(
+      "What you said at the bar is in the chat's draft: the words",
+    );
+
+    // The line cannot redraw and re-send the same words.
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page is up again').toBe('live'));
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the line is empty: the words went to the chat',
+    ).toBe('');
+
+    // Answering settles it: the composer shows what the card said it held.
+    barAction('Done').click();
+    await vi.waitFor(() => expect(surface.phase, 'the answer lowered it').toBe('closed'));
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+    expect(field().value, 'the words are in the chat, visible').toBe('the words');
+  });
+
+  /** **An ask answered from elsewhere still hands the line's words over.**
+   *  The record can drop the ask before the surface is lowered, so the words
+   *  have to be in the seat's draft by then - and the composer draws them
+   *  once the card is gone. */
+  it("keeps a bar take's words when another view answers the ask", async () => {
+    const harness = await failedPageTaking();
+    landBarTake(harness);
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are on the line',
+    ).toBe('the words');
+
+    // Another view answered: the record drops the ask first.
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+
+    expect(field().value, 'the words are in the composer once the card is gone').toBe('the words');
+  });
+
+  /** **An emptied line hands nothing over.** The words land, the reader
+   *  clears them, then lowers the takeover: the card must not claim words
+   *  that are not there, and a draft already in the chat gains no stray
+   *  space. */
+  it('hands nothing over when the reader emptied the line', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
+    const harness = open({ dictation: true });
+    type('hello');
+    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
+    flushSync();
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+    landBarTake(harness);
+
+    const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    line.value = '   ';
+    line.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('back to chat').click();
+    await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
+    flushSync();
+    expect(drawn(), 'the card claims no words').not.toContain('What you said at the bar');
+
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+    expect(field().value, 'the draft is the one the reader had, untouched').toBe('hello');
+  });
+
+  /** **The carry joins, it does not clobber.** A draft the reader already had
+   *  keeps its words when the line's come in behind them. */
+  it('joins a carried line to the draft the reader already had', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
+    const harness = open({ dictation: true });
+    type('hello');
+    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
+    flushSync();
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+    landBarTake(harness);
+    barAction('back to chat').click();
+    await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
+    flushSync();
+
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+    expect(field().value, "the reader's own words come first").toBe('hello the words');
+  });
+
+  /** **A parked hand-off's words are the seat's.** A visit to another seat
+   *  must not release them; coming back, they are still there to read. */
+  it("keeps a parked hand-off's words across a visit to another seat", async () => {
+    const harness = await failedPageTaking();
+    landBarTake(harness);
+
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+    harness.page.record = record({ slot: ELSEWHERE });
+    flushSync();
+    // The page shows this seat again before its record arrives, which is the
+    // frame the guard is for: the record in hand is still the other seat's.
+    harness.page.slot = SLOT;
+    flushSync();
+    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
+    flushSync();
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      "the words are still on the seat's line",
+    ).toBe('the words');
   });
 
   it('declines the hand-off on Escape, which the dock row promises', () => {
@@ -6155,11 +6747,11 @@ describe('the dock', () => {
     );
   });
 
-  it("does not narrate the reader's own answer to a hand-off", () => {
+  it("does not narrate the reader's own answer to a hand-off", async () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
-    flushSync();
+    await raised();
     barAction('Done').click();
     flushSync();
     expect(document.querySelector('.dock'), 'the dock stands down for the click').toBeNull();
@@ -6779,6 +7371,189 @@ describe('the dock', () => {
       document.querySelector('.dock .d-q')?.textContent,
       'and prose is drawn as prose rather than dressed as a command',
     ).toBe('Push the release tag once the wave lands');
+  });
+});
+
+/**
+ * The takeover bar's feedback line: the one words row the bar owns, and the
+ * only place a take pressed there can say what it is doing - the composer's
+ * band and notice rows are behind the picture while the takeover is up.
+ */
+describe("the takeover bar's feedback line", () => {
+  const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
+    harness.sent.map((entry) => entry.command);
+
+  /** **The bar's mic is the composer's take, not a second one.** The feedback
+   *  line draws the dock's own words row, take card and mic, so the press there
+   *  has to open the microphone exactly as the box's mic does. The case passes
+   *  on the tree before this cut too: what it pins is the contract the fix
+   *  keeps, not the defect. */
+  it('starts a take from the bar feedback line, and ends it there', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+
+      action('Open browser').click();
+      await opened();
+      barAction('something').click();
+      flushSync();
+      const micButton = document.querySelector('.takeover-bar .micb');
+      if (!(micButton instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+      micButton.click();
+      await opened();
+      expect(commands(harness), 'the press opens the microphone').toMatchObject([
+        { dictate_stream: { key: SLOT } },
+      ]);
+
+      micButton.click();
+      settle();
+      expect(commands(harness).at(-1), 'and the second press submits it').toMatchObject({
+        dictate_stop: { key: SLOT, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** **The card is this page's take, not the record's echo.** A take whose
+   *  stream has not left yet - a socket still opening under the press - has no
+   *  record to draw from, and the composer's own row draws it from `takePhase`
+   *  anyway; a bar reading only the record drew the empty field for as long as
+   *  the socket stayed down, which is the dead-looking press again. */
+  it("draws the card from this page's own take before the record has it", async () => {
+    const shared = wire();
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }), dictation: true }, shared);
+
+    action('Open browser').click();
+    await opened();
+    barAction('something').click();
+    flushSync();
+    const button = document.querySelector('.takeover-bar .micb');
+    if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+    shared.down = true;
+    try {
+      button.click();
+      await opened();
+    } finally {
+      shared.down = false;
+    }
+
+    expect(
+      document.querySelector('.tb-feedback .tc'),
+      'the page holds a take, so the bar draws its row',
+    ).not.toBeNull();
+    expect(document.querySelector('.tb-field'), 'and the field it replaces is gone').toBeNull();
+  });
+
+  /** **A take that will not open says so where it was pressed.** The bar's
+   *  feedback row is the words row a take here belongs to, and the composer's
+   *  own notice row is behind the picture while the takeover is up - so a
+   *  refusal routed there was a press that looked dead, while the same press
+   *  in the box drew its line. */
+  it('says in the bar why a take pressed there did not open', async () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }), dictation: true });
+
+    action('Open browser').click();
+    await opened();
+    barAction('something').click();
+    flushSync();
+    const button = document.querySelector('.takeover-bar .micb');
+    if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+    mic.held.refuse = true;
+    try {
+      button.click();
+      await opened();
+    } finally {
+      mic.held.refuse = false;
+    }
+
+    expect(
+      document.querySelector('.takeover-bar')?.textContent,
+      'the bar names the refusal where the press was made',
+    ).toContain('the microphone was refused');
+    // **The reader's own typing dismisses the line**, as it does the
+    // composer's notice: the bar's field is where that typing lands.
+    const field = document.querySelector('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no field');
+    field.value = 'the upload form rejected the file';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(
+      document.querySelector('.takeover-bar')?.textContent,
+      'and a line typed away does not keep drawing',
+    ).not.toContain('the microphone was refused');
+  });
+
+  /** **The open itself is the bar's to say.** The card comes from this page's
+   *  own take, which exists only once the capture has opened, and the
+   *  composer's own band is behind the picture while the takeover is up - so
+   *  an open that takes seconds drew nothing at all, and the press read as
+   *  dead (measured live: a 4s open showed no card, no line and no status on
+   *  this surface, while the composer's band said it within 200ms).
+   *  **The wait is pinned at the 180ms `OPEN_DRAWN_MS` sets, not at whatever
+   *  the constant holds today**: the band's delay is what stops a fast press
+   *  flashing the state, and a "make it snappier" edit is the change it exists
+   *  to refuse. */
+  it('says in the bar that a take pressed there is still opening', async () => {
+    vi.useFakeTimers();
+    mic.held.gated = true;
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+
+      action('Open browser').click();
+      await opened();
+      barAction('something').click();
+      flushSync();
+      const button = document.querySelector('.takeover-bar .micb');
+      if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+      button.click();
+      flushSync();
+      vi.advanceTimersByTime(179);
+      flushSync();
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'an open inside the 180ms wait is the press itself, not a state to flash',
+      ).not.toContain('opening the microphone');
+
+      vi.advanceTimersByTime(1);
+      flushSync();
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'the band the composer draws is behind the picture, so this row says it',
+      ).toContain('opening the microphone');
+      expect(
+        document.querySelector('.tb-feedback .tc'),
+        'and no card claims a take that does not exist yet',
+      ).toBeNull();
+
+      mic.held.release?.();
+      await opened();
+      expect(commands(harness), 'the open lands, and the take goes out').toMatchObject([
+        { dictate_stream: { key: SLOT } },
+      ]);
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'and the line goes with it',
+      ).not.toContain('opening the microphone');
+      expect(
+        document.querySelector('.tb-feedback .tc'),
+        'the card replaces the line rather than leaving the row empty',
+      ).not.toBeNull();
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      vi.useRealTimers();
+    }
   });
 });
 

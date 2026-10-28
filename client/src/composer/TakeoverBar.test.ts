@@ -212,6 +212,30 @@ describe("the takeover bar's tab picker", () => {
 });
 
 /**
+ * The first rule in the sheet whose selector list names `selector`, as its
+ * selector list and its body - or `null` when no rule names it.
+ *
+ * **First, because one selector can appear in more than one rule** -
+ * `.takeline .tc` is in the line rule and again in its min-height rule - and a
+ * caller wants the first rule that names it, which is the one carrying the
+ * property it pins.
+ *
+ * **Membership, not text**: a rule's selectors are reordered and its body
+ * re-wrapped by any hand that touches it, and a pin on the text would go red
+ * on the formatting rather than on the property.
+ */
+function ruleWith(selector: string): { selectors: string[]; body: string } | null {
+  // Comments strip first: a rule's header otherwise carries the paragraph
+  // above it, and the selector it names would never match.
+  const sheet = SHEET.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const match of sheet.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    const selectors = (match[1] ?? '').split(',').map((one) => one.trim());
+    if (selectors.includes(selector)) return { selectors, body: match[2] ?? '' };
+  }
+  return null;
+}
+
+/**
  * **The feedback line's mic and send are the dock's own controls**, so their
  * rules have to be bare and keep the box they give: a rule scoped under
  * `.dock .qrow` reaches the dock's row and nothing in this bar, and a bare
@@ -234,6 +258,91 @@ describe("the takeover bar's feedback controls", () => {
           `@media \\(pointer: coarse\\) \\{\\n(?: {2}[^\\n]*\\n)*? {2}\\.${control} \\{ min-height: 44px; min-width: 44px; \\}`,
         ),
       );
+    }
+  });
+
+  /// **The take card replaces the field, so it has to take the field's line**,
+  /// and so must its graph: outside the line rules the card sizes to its own
+  /// content (344px of a 1576px row at 1600, and 344 of 406 at 430 with a
+  /// coarse pointer, measured on the dev stack), and the progress bar and the
+  /// tick row keep the pill's 116px and their own width, which is the same
+  /// empty-row defect one phase later. Each selector is pinned by membership
+  /// so a rewrap or a reorder does not read as a lost property.
+  it('gives the take card and its graph the line the feedback field gives up', () => {
+    for (const selector of ['.takeline .tc', '.dock .qrow .tc', '.tb-feedback .tc']) {
+      const rule = ruleWith(selector);
+      expect(rule, `${selector} is in no rule, so the card sizes to its content`).not.toBeNull();
+      expect(rule?.body, `${selector} is not what makes the card grow`).toMatch(/flex: 1 1 auto/);
+      expect(rule?.body, `${selector} does not let it shrink below its content`).toMatch(
+        /min-width: 0/,
+      );
+    }
+
+    for (const selector of [
+      '.takeline .tc .bar',
+      '.dock .qrow .tc .bar',
+      '.tb-feedback .tc .bar',
+    ]) {
+      const rule = ruleWith(selector);
+      expect(rule, `${selector} is in no rule, so the progress bar stays a bead`).not.toBeNull();
+      expect(rule?.body, `${selector} does not take the row the card took`).toMatch(
+        /flex: 1 1 auto/,
+      );
+      expect(rule?.body, `${selector} keeps the pill's fixed width`).toMatch(/width: auto/);
+      expect(rule?.body, `${selector} cannot shrink below its content`).toMatch(/min-width: 0/);
+    }
+
+    for (const selector of [
+      '.takeline .tc .ticks',
+      '.dock .qrow .tc .ticks',
+      '.tb-feedback .tc .ticks',
+    ]) {
+      const rule = ruleWith(selector);
+      expect(
+        rule,
+        `${selector} is in no rule, so the ticks stay bunched at the left`,
+      ).not.toBeNull();
+      expect(rule?.body, `${selector} does not take the row the card took`).toMatch(
+        /flex: 1 1 auto/,
+      );
+      expect(rule?.body, `${selector} does not spread across it`).toMatch(
+        /justify-content: space-between/,
+      );
+    }
+  });
+
+  /// **What a press on that row is doing is said there**, so the line's three
+  /// looks have to exist: a rule that lost its box or its tone leaves the
+  /// reason drawn as bare text in the bar.
+  it('styles the line the bar says a take by', () => {
+    const base = ruleWith('.tb-line');
+    expect(base, 'no .tb-line rule, so the line draws as bare text').not.toBeNull();
+    expect(base?.body, 'the line lost the band the feedback row wears').toMatch(
+      /border-top: 1px solid var\(--line\)/,
+    );
+    expect(base?.body, 'the line lost its padding').toMatch(/padding: 7px 12px/);
+    expect(ruleWith('.tb-line.bad')?.body, 'a refusal lost its tone').toMatch(
+      /color: var\(--bad\)/,
+    );
+    expect(ruleWith('.tb-line.opening')?.body, 'an open lost its tone').toMatch(
+      /color: var\(--muted\)/,
+    );
+  });
+
+  /// **The abandon halo stops at the card's edge on every row that puts a
+  /// control beside it.** Centred, its 22px half reached through the row's gap
+  /// and over the mic, and being positioned it painted and hit-tested above
+  /// that button - a tap on the mic's left edge could throw the take away.
+  it('keeps the abandon halo out of the control beside it', () => {
+    for (const selector of [
+      '.takeline .tc .x::after',
+      '.dock .qrow .tc .x::after',
+      '.tb-feedback .tc .x::after',
+    ]) {
+      const rule = ruleWith(selector);
+      expect(rule, `${selector} is in no rule, so its halo is still centred`).not.toBeNull();
+      expect(rule?.body, `${selector} is still anchored from the left`).toMatch(/left: auto/);
+      expect(rule?.body, `${selector} does not stop at the card's edge`).toMatch(/right: 0/);
     }
   });
 
@@ -273,5 +382,34 @@ describe("the takeover bar's feedback controls", () => {
       target.querySelector('.tb-feedback .sendb'),
       'the feedback line lost the send, so the sheet styles nothing here',
     ).not.toBeNull();
+  });
+});
+
+/** **An ask with no words draws no row**: a blank reason would otherwise be an
+ *  empty bordered strip that says nothing and takes the page's room. */
+describe("the bar's ask", () => {
+  async function drawn(reason: string | null): Promise<HTMLElement> {
+    if (shown !== null) await unmount(shown);
+    document.body.innerHTML = '';
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: { title: 'browser hand-off', reason, onback: () => {} },
+    });
+    flushSync();
+    return target;
+  }
+
+  it('draws the ask only when it has words', async () => {
+    expect((await drawn(null)).querySelector('.tb-ask'), 'no reason, no row').toBeNull();
+    expect(
+      (await drawn('   ')).querySelector('.tb-ask'),
+      'a blank reason draws no row either',
+    ).toBeNull();
+    expect(
+      (await drawn('The sign-in page is showing a CAPTCHA.')).querySelector('.tb-ask')?.textContent,
+      'and words are drawn as they came',
+    ).toBe('The sign-in page is showing a CAPTCHA.');
   });
 });

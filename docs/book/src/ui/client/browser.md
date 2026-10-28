@@ -39,15 +39,16 @@ in-process node any more.
 
 | Region | Shows | Read from |
 |---|---|---|
-| The hand-off's card | `browser hand-off · tab N`; **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar | the `browser_hand_off` ask, and the page's own surface state |
+| The hand-off's card | `browser hand-off · tab N`; **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar. **Words a lowered takeover handed to the chat are named here**, since the composer is behind this card until the ask is answered | the `browser_hand_off` ask, and the page's own surface state |
 | The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
-| The feedback line | a text field and the dock's own **mic** and **send**: the person's words go to the agent as a prompt and the hand-off ends as *feedback* - they spoke, so nothing is recorded as a decline | the page's own state; the prompt rides the socket |
+| The ask on the bar | this seat's parked hand-off: its own words under the bar row, with the tab its title names. Shown whenever the page is this seat's; **Done, Not now and the feedback line's send are offered only while that page is up on the tab the hand-off named** (live, or failed with its host gone), and **a page raised for another seat is lowered when that seat is left** | the `browser_hand_off` ask, and the page's own surface state |
+| The feedback line | a text field and the dock's own **mic** and **send**: the person's words go to the agent as a prompt and the hand-off ends as *feedback* - they spoke, so nothing is recorded as a decline. A take begun at the bar's mic lands in this line. **The line holds those words in every phase the takeover stands** - opening, failed, or showing another tab - and showing them is not answering, so only the send waits for the page. **Lowering the takeover hands them to the chat's draft**, and the hand-off's card says so. **A take replaces the field with the dock's own card**, and the card takes the line: it grows to everything the mic leaves, so its graph is the row's meter rather than a pill in an empty row. **A slow open says so in a line above the row**: one brief enough to be the press itself draws no line, and a longer one says the microphone is opening. The card draws from this page's own take, which exists only once the capture has opened, and the composer's own band is behind the picture | the page's own state, and the take it is opening; the prompt rides the socket |
 | The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's and the web page's canvas |
 | The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide**. **The row is drawn only while the profile has a tab**: a browser nothing has invoked is no row at all | the `browser_tabs` ask and its pushed frame |
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
 | The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on every client, or `nothing to run a page` | the tab list |
 | The states | `opening the browser…`, the server's sentence when it failed, the host's own death sentence - `the browser host exited (signal 9; pid 1234); the next call brings it back` - when a host dies under the surface (the cause is a signal or an exit code), and the page's own error page when a load fails | the page's surface state, and the server's failure frame |
-| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, or a page area that could not be placed | the attach's answer and the surface's failure frame |
+| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, or a page area that could not be placed. **A take the bar's mic pressed and could not open says why above the feedback row**: the composer's own notice row is behind the picture while the takeover is up | the attach's answer, the surface's failure frame, and the take's own line |
 
 ## The rules
 
@@ -86,6 +87,10 @@ its address cannot be preceded by a blank. The host starts the address the
 popup asked for as that first document; the veto patches that document's world
 as soon as its context is reported, which is the out-of-band case a tab
 another client creates directly at a URL is already in.
+
+**The browser offers no WebAuthn**: its pages expose no `PublicKeyCredential`,
+so passkey and security-key sign-in stop working and a site that checks for the
+API asks for a password instead.
 
 **The old profile trees go once.** The first server that finds no marker
 deletes the client's old in-process CEF caches - `browser/cef-profile` and
@@ -276,6 +281,14 @@ what a refused show or hide said. **Done**, **Not now** and **feedback** are
 the hand-off's answers; the feedback line sends its words as a prompt and,
 once they leave, ends the park as **feedback**, saying the person spoke
 rather than that they declined.
+
+**An answer belongs to the page it answers.** The takeover is one seat's page:
+leaving that seat lowers it, so it never sits over a seat whose ask is waiting.
+The bar carries the ask while the page is the asking seat's, and offers Done,
+Not now and the feedback line only while that page is up on the tab the
+hand-off named; a page moved to another tab names the ask and answers nothing.
+**A failed page stays answerable**: a host that died under a parked ask is what
+the feedback line is for.
 
 ## The widths
 

@@ -353,6 +353,10 @@ export interface BrowserFrame {
   height: number;
   /** A full-quality frame: the first of a surface, a resize, an attach. */
   key: boolean;
+  /** The page's own viewport, the space a gesture's point is sent in. **Not
+   *  the frame's pixels**: the encode's raster sits between them. */
+  page_width: number;
+  page_height: number;
   /** The encoded pixels, untouched by the server. */
   bytes: Uint8Array;
 }
@@ -425,8 +429,8 @@ function attachOf(body: unknown): BrowserAttach {
 
 /** One binary message, decoded as a browser frame, when it is one. */
 function browserFrame(bytes: Uint8Array): BrowserFrame | null {
-  // The kind tag, then the host's own 14-byte header, then the pixels.
-  if (bytes.length < 15 || bytes[0] !== BROWSER_FRAME_TAG) return null;
+  // The kind tag, then the host's own 18-byte header, then the pixels.
+  if (bytes.length < 19 || bytes[0] !== BROWSER_FRAME_TAG) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return {
     profile: view.getUint16(1, true),
@@ -435,7 +439,9 @@ function browserFrame(bytes: Uint8Array): BrowserFrame | null {
     width: view.getUint16(9, true),
     height: view.getUint16(11, true),
     key: bytes[14] === 1,
-    bytes: bytes.subarray(15),
+    page_width: view.getUint16(15, true),
+    page_height: view.getUint16(17, true),
+    bytes: bytes.subarray(19),
   };
 }
 

@@ -39,6 +39,10 @@ pub struct Frame {
     pub tab: u16,
     pub width: u32,
     pub height: u32,
+    /// The page's own viewport, from the frame's header: the space a
+    /// gesture's point is sent in.
+    pub page_width: u32,
+    pub page_height: u32,
     /// RGBA or RGB bytes, whichever the bitstream carried.
     pub pixels: Vec<u8>,
     /// Whether `pixels` carries an alpha channel (four bytes per pixel).
@@ -50,7 +54,14 @@ pub struct Frame {
 /// **A frame whose pixels do not match the header's size is dropped**, not
 /// stretched: the header is the host's own statement about the frame, and a
 /// mismatch is a corrupt or truncated relay rather than a page to draw.
-pub fn decode(profile: u16, tab: u16, webp: &[u8], width: u32, height: u32) -> Option<Frame> {
+pub fn decode(
+    profile: u16,
+    tab: u16,
+    webp: &[u8],
+    width: u32,
+    height: u32,
+    page: (u32, u32),
+) -> Option<Frame> {
     let image = webp::Decoder::new(webp).decode()?;
     if image.width() != width || image.height() != height {
         return None;
@@ -61,7 +72,16 @@ pub fn decode(profile: u16, tab: u16, webp: &[u8], width: u32, height: u32) -> O
         len if len == (width as usize) * (height as usize) * 3 => false,
         _ => return None,
     };
-    Some(Frame { profile, tab, width, height, pixels, alpha })
+    Some(Frame {
+        profile,
+        tab,
+        width,
+        height,
+        page_width: page.0,
+        page_height: page.1,
+        pixels,
+        alpha,
+    })
 }
 
 /// One open surface's native half.
@@ -95,11 +115,29 @@ struct OverlayIvars {
     /// The app, for the one key that acts on the surface itself (Cmd+W) and
     /// for the socket the gestures go back on.
     app: Mutex<Option<tauri::AppHandle>>,
+    /// The picture this view is drawing: a gesture is mapped through it.
+    picture: Mutex<Option<Picture>>,
+}
+
+/// The drawn picture's two spaces: the frame's own pixels, and the page's
+/// viewport they were painted from.
+#[derive(Clone, Copy)]
+struct Picture {
+    pixels: (f64, f64),
+    page: (f64, f64),
+}
+
+/// The picture one drawn frame puts on screen.
+fn picture_of(frame: &Frame) -> Picture {
+    Picture {
+        pixels: (f64::from(frame.width), f64::from(frame.height)),
+        page: (f64::from(frame.page_width), f64::from(frame.page_height)),
+    }
 }
 
 impl Default for OverlayIvars {
     fn default() -> Self {
-        Self { app: Mutex::new(None) }
+        Self { app: Mutex::new(None), picture: Mutex::new(None) }
     }
 }
 
@@ -158,7 +196,7 @@ define_class!(
         #[unsafe(method(scrollWheel:))]
         unsafe fn scroll_wheel(&self, event: &objc2_app_kit::NSEvent) {
             let point = self.convertPoint_fromView(event.locationInWindow(), None);
-            let (x, y) = css_point(point);
+            let (x, y) = self.page_point_of(point);
             self.send(BrowserInputEvent::Wheel {
                 x,
                 y,
@@ -280,7 +318,7 @@ impl OverlayView {
 
     fn mouse(&self, action: MouseAction, event: &objc2_app_kit::NSEvent) {
         let point = self.convertPoint_fromView(event.locationInWindow(), None);
-        let (x, y) = css_point(point);
+        let (x, y) = self.page_point_of(point);
         self.send(BrowserInputEvent::Mouse {
             action,
             x,
@@ -302,10 +340,15 @@ impl OverlayView {
                     | BrowserInputEvent::Wheel { .. }
             );
             if streaming {
-                tauri_plugin_log::log::debug!(
-                    "the overlay sent a gesture (event_name client_browser_input_sent, {})",
-                    describe(&event)
-                );
+                // **The guard is the allocation**: the facade admits `debug`
+                // for the mic's target, so without it every move and wheel
+                // would build its line before the filter drops it.
+                if tauri_plugin_log::log::log_enabled!(tauri_plugin_log::log::Level::Debug) {
+                    tauri_plugin_log::log::debug!(
+                        "the overlay sent a gesture (event_name client_browser_input_sent, {})",
+                        describe(&event)
+                    );
+                }
             } else {
                 tauri_plugin_log::log::info!(
                     "the overlay sent a gesture (event_name client_browser_input_sent, {})",
@@ -326,6 +369,25 @@ impl OverlayView {
     fn set_app(&self, app: tauri::AppHandle) {
         if let Ok(mut slot) = self.ivars().app.lock() {
             *slot = Some(app);
+        }
+    }
+
+    /// One point in the view, in the page's own CSS pixels.
+    ///
+    /// **The mapping is against the picture actually drawn**, so a resize, a
+    /// re-lay or a frame for another surface's layout needs no bookkeeping
+    /// here: the last drawn frame names both spaces.
+    fn page_point_of(&self, point: NSPoint) -> (f64, f64) {
+        let size = self.bounds().size;
+        let picture = self.ivars().picture.lock().ok().and_then(|held| *held);
+        match picture {
+            Some(picture) => point_in_page(
+                (point.x, point.y),
+                (size.width, size.height),
+                picture.pixels,
+                picture.page,
+            ),
+            None => (point.x, point.y),
         }
     }
 
@@ -458,6 +520,11 @@ impl OverlayView {
             &*(objc2_core_foundation::CFRetained::as_ptr(&image).as_ptr().cast::<AnyObject>())
         };
         unsafe { layer.setContents(Some(contents)) };
+        // **The gesture mapping follows the picture that is drawn**, so it is
+        // taken from the same frame and only once the layer has it.
+        if let Ok(mut held) = self.ivars().picture.lock() {
+            *held = Some(picture_of(frame));
+        }
     }
 }
 
@@ -543,12 +610,28 @@ fn pasteboard_text() -> Option<String> {
 
 /// A point in the view, as the page's CSS pixels.
 ///
-/// **The overlay is laid at the page area's own rect, so its points ARE the
-/// page's CSS pixels.** Scaling by the frame's size treated the frame's
-/// DEVICE pixels as CSS ones and doubled every gesture on a retina display
-/// (measured on the dev stack: clicks and wheels landed off the page).
-fn css_point(point: NSPoint) -> (f64, f64) {
-    (point.x, point.y)
+/// **The layer draws the picture fitted to the view (`resizeAspect`), so a
+/// view's point is the page's only when the picture fills the view.** A page
+/// laid out to another viewer's surface or to an agent's `browser_resize` is
+/// letterboxed here, and the gesture maps through the rect it is drawn in,
+/// then through the page's own viewport the frame names.
+fn point_in_page(
+    point: (f64, f64),
+    bounds: (f64, f64),
+    picture: (f64, f64),
+    page: (f64, f64),
+) -> (f64, f64) {
+    if bounds.0 <= 0.0 || bounds.1 <= 0.0 || picture.0 <= 0.0 || picture.1 <= 0.0 {
+        return (0.0, 0.0);
+    }
+    if page.0 <= 0.0 || page.1 <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let drawn = (bounds.0 / picture.0).min(bounds.1 / picture.1);
+    let (width, height) = (picture.0 * drawn, picture.1 * drawn);
+    let left = (bounds.0 - width) / 2.0;
+    let top = (bounds.1 - height) / 2.0;
+    ((point.0 - left) / width * page.0, (point.1 - top) / height * page.1)
 }
 
 /// The view's frame inside its superview, for a page area in CSS pixels.
@@ -820,6 +903,85 @@ pub fn detach(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A picture that is not the box's shape is letterboxed, and a gesture
+    /// maps through the rect it is drawn in.** Measured on a scratch host
+    /// with the page's own mousedown log: a page laid out 1280x720 at 2x
+    /// sends a 2560x1440 frame, drawn in a 1200x800 box as 1200x675 at y
+    /// 62.5. A press on the picture at (900, 500) is the page's (960, 466.7);
+    /// mapping the view's points 1:1 sent it to (900, 500), 60 px and 33 px
+    /// from the pixel under the pointer.
+    #[test]
+    fn a_gesture_maps_through_the_rect_the_picture_is_drawn_in() {
+        let bounds = (1200.0, 800.0);
+        let picture = (2560.0, 1440.0);
+        let page = (1280.0, 720.0);
+        let (x, y) = point_in_page((900.0, 500.0), bounds, picture, page);
+        assert!((x - 960.0).abs() < 0.01, "x is the page's 960, got {x}");
+        assert!((y - 466.67).abs() < 0.01, "y is the page's 466.7, got {y}");
+        let (x, y) = point_in_page((600.0, 62.5), bounds, picture, page);
+        assert!((x - 640.0).abs() < 0.01, "the picture's middle is the page's 640, got {x}");
+        assert!(y.abs() < 0.01, "and its top edge is the page's 0, got {y}");
+    }
+
+    /// **The mapping is built from the frame's own two sizes.** A page read
+    /// from the pixels, or a page and a picture crossed, sends every
+    /// letterboxed press somewhere else on the page, and nothing else in the
+    /// draw path would notice.
+    #[test]
+    fn a_drawn_frame_names_both_sizes_the_mapping_reads() {
+        let frame = Frame {
+            profile: 1,
+            tab: 1,
+            width: 2560,
+            height: 1440,
+            page_width: 1280,
+            page_height: 720,
+            pixels: Vec::new(),
+            alpha: true,
+        };
+        let picture = picture_of(&frame);
+        assert_eq!(picture.pixels, (2560.0, 1440.0), "the picture is the frame's pixels");
+        assert_eq!(picture.page, (1280.0, 720.0), "and the page is the viewport it came from");
+    }
+
+    /// **A picture taller than its box keeps its own aspect too**, so the map
+    /// accounts for the left bar as well as the top one.
+    #[test]
+    fn a_picture_taller_than_its_box_maps_through_its_side_bars() {
+        let bounds = (1200.0, 800.0);
+        let picture = (1280.0, 1600.0);
+        let page = (1280.0, 1600.0);
+        let (x, y) = point_in_page((280.0, 0.0), bounds, picture, page);
+        assert!(
+            x.abs() < 0.01 && y.abs() < 0.01,
+            "the picture's top-left is the page's, got {x},{y}"
+        );
+        let (x, y) = point_in_page((920.0, 800.0), bounds, picture, page);
+        assert!(
+            (x - 1280.0).abs() < 0.01 && (y - 1600.0).abs() < 0.01,
+            "and its bottom-right is the page's corner, got {x},{y}"
+        );
+    }
+
+    /// **A frame that already fills its box maps its points as they are.**
+    #[test]
+    fn a_picture_that_fills_its_box_maps_the_point_itself() {
+        let bounds = (1200.0, 800.0);
+        assert_eq!(
+            point_in_page((400.0, 300.0), bounds, bounds, bounds),
+            (400.0, 300.0),
+            "no bars, no scaling"
+        );
+    }
+
+    /// **A view with no picture drawn answers the page's origin** rather than
+    /// dividing by an extent it does not have.
+    #[test]
+    fn a_view_with_no_extent_answers_the_page_origin() {
+        assert_eq!(point_in_page((5.0, 5.0), (0.0, 0.0), (100.0, 50.0), (100.0, 50.0)), (0.0, 0.0));
+        assert_eq!(point_in_page((5.0, 5.0), (100.0, 50.0), (0.0, 0.0), (100.0, 50.0)), (0.0, 0.0));
+    }
 
     /// **The page measures top-down; a view that is not flipped measures
     /// from the bottom.** Skipping the mirror put the picture a bar's height

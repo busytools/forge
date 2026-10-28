@@ -106,6 +106,10 @@ pub fn free_port() -> u16 {
 }
 
 /// A host this test started: ended if the test fails before it does.
+///
+/// **A struct holding one declares it before the scratch dir its log lives
+/// in**: fields drop in declaration order, and this type's drop reads the log
+/// on the way out of a failing test.
 pub struct Host {
     child: Child,
     log: PathBuf,
@@ -214,6 +218,11 @@ impl Host {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
+    /// The host's own last words, read the way the service reads them.
+    pub fn log_tail(&self) -> String {
+        forge_browser::spawn::log_tail(&self.log)
+    }
+
     /// End the host the way the server does, and wait for it to go.
     pub fn terminate(&mut self, bound: std::time::Duration) -> std::process::ExitStatus {
         // SAFETY: a plain signal to this test's own child.
@@ -226,7 +235,7 @@ impl Host {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the host did not exit within {bound:?} of SIGTERM (log: {})",
-                self.log()
+                self.log_tail()
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -235,8 +244,122 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
+        // **A test that failed still has to say what the host was doing.**
+        // The log names the wait that expired, and it dies with the scratch
+        // dir the failing test never reaches, so the unwind is the one place
+        // it can still reach the failure's output.
+        if std::thread::panicking() {
+            use std::io::Write as _;
+            let tail = self.log_tail();
+            let words = if tail.is_empty() {
+                "the host log is empty".to_owned()
+            } else {
+                format!("the host log ends: {tail}")
+            };
+            let _ = writeln!(std::io::stderr(), "{words} ({})", self.log.display());
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// One full click, written the way the server writes it.
+pub fn click(host: &mut Host, x: i32, y: i32) {
+    for action in [
+        forge_primitives::browser::MouseAction::Press,
+        forge_primitives::browser::MouseAction::Release,
+    ] {
+        host.input(&forge_browser::input::host_line(&forge_browser::input::HostInput::Mouse {
+            tab: 1,
+            action,
+            x,
+            y,
+            button: 0,
+            clicks: 1,
+            modifiers: forge_primitives::browser::InputModifiers::default(),
+        }));
+    }
+}
+
+/// Click the page at `at` until it has seen a pointer gesture.
+///
+/// **The first pointer event after a host starts is spent activating it, and
+/// under load more than one can be**, so the page's own count is what says a
+/// later click will land. **`at` must be the page itself**, which is checked
+/// rather than assumed: a point off the page would otherwise be blamed on the
+/// page. `deadline` bounds the devtools answers as well as the clicks, so a
+/// connected but mute endpoint cannot outlive it.
+pub async fn prime_clicks(
+    host: &mut Host,
+    cdp: &mut forge_browser::window::Cdp,
+    at: (i32, i32),
+    deadline: std::time::Instant,
+) {
+    let left = || {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .max(std::time::Duration::from_millis(100))
+    };
+    let setup = format!(
+        "(() => {{ \
+            const at = document.elementFromPoint({x}, {y}); \
+            if (at !== document.body && at !== document.documentElement) {{ \
+                return at ? at.tagName.toLowerCase() : 'nothing (off the page)'; \
+            }} \
+            window.__forge_downs = 0; \
+            document.addEventListener('mousedown', () => {{ window.__forge_downs += 1; }}, true); \
+            return null; \
+        }})()",
+        x = at.0,
+        y = at.1,
+    );
+    let reply = tokio::time::timeout(
+        left(),
+        cdp.call(
+            "Runtime.evaluate",
+            serde_json::json!({ "expression": setup, "returnByValue": true }),
+            None,
+        ),
+    )
+    .await
+    .expect("the devtools endpoint answers within the bound")
+    .expect("the page takes the gesture counter");
+    let refusal = reply.pointer("/result/value").and_then(serde_json::Value::as_str);
+    assert!(
+        refusal.is_none(),
+        "the priming point ({}, {}) is not the blank page: {}",
+        at.0,
+        at.1,
+        refusal.unwrap_or(""),
+    );
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no priming click reached the page at ({}, {}) (log: {})",
+            at.0,
+            at.1,
+            host.log_tail()
+        );
+        click(host, at.0, at.1);
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let reply = tokio::time::timeout(
+            left(),
+            cdp.call(
+                "Runtime.evaluate",
+                serde_json::json!({ "expression": "window.__forge_downs", "returnByValue": true }),
+                None,
+            ),
+        )
+        .await
+        .expect("the devtools endpoint answers within the bound")
+        .expect("the page answers its gesture count");
+        if reply
+            .pointer("/result/value")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|downs| downs > 0)
+        {
+            return;
+        }
     }
 }
 
@@ -296,7 +419,7 @@ pub fn wait_for_page(port: u16, log: &Path, bound: std::time::Duration) -> Strin
         assert!(
             std::time::Instant::now() < deadline,
             "the host's page target never answered on port {port} (log: {})",
-            std::fs::read_to_string(log).unwrap_or_default(),
+            forge_browser::spawn::log_tail(log),
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }

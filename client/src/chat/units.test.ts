@@ -12,7 +12,9 @@ import {
   type HookLeaf,
   type HookRun,
   type InboundLeaf,
+  type Notice,
   type NudgeLeaf,
+  type ProcedureLeaf,
   type PeerCard,
   type ThoughtLeaf,
   type Unit,
@@ -86,6 +88,10 @@ const inboundsOf = (unit: Unit | undefined): InboundLeaf[] =>
 /** The nudge rows of a unit, in the order they arrived. */
 const nudgesOf = (unit: Unit | undefined): NudgeLeaf[] =>
   rowsOf(unit).flatMap((row) => (row.tag === 'nudge' ? [row] : []));
+
+/** The handoff procedure rows of a unit, in the order they arrived. */
+const proceduresOf = (unit: Unit | undefined): ProcedureLeaf[] =>
+  rowsOf(unit).flatMap((row) => (row.tag === 'procedure' ? [row] : []));
 
 /** The hook runs a fold drew, in the order they arrived, grouped or not. */
 const runsOf = (units: Unit[]): HookLeaf[] =>
@@ -1723,13 +1729,23 @@ describe('one turn folded into the units a view draws', () => {
     // The dock is the question's row while it waits, so a card carrying it too
     // drew the same prompt twice. It appears the moment an answer lands, which
     // the answer's own frame brings.
+    //
+    // **The call row still draws**: the card never did, so dropping the call
+    // too would leave a question with no row while the dock still shows it.
+    // The `unanswered` mark waits for the turn to close - while it waits, the
+    // dock is the row, and the mark would call a wait a verdict.
     const asked = said([
       use('toolu_q', 'AskUserQuestion', {
         questions: [{ question: 'Which colour?', options: [{ label: 'Red' }] }],
       }),
     ]);
 
-    expect(fold([asked]), 'a waiting question drew a card').toEqual([]);
+    const units = fold([asked]);
+    expect(kinds(units), 'a waiting question draws no card').not.toContain('question');
+    expect(
+      callsOf(units[0])[0]?.leaf.unanswered,
+      'and a still-waiting question is not marked unanswered',
+    ).toBe(false);
   });
 
   it('draws the turn hooks after the run they followed, and nothing when none fired', () => {
@@ -2780,6 +2796,44 @@ describe('one turn folded into the units a view draws', () => {
     // two apart, so a plain prompt id is still the reader's words.
     const typed = fold([heard([text(words)], { uuid: 'forge_prompt_8_5e6f7a8b' })]);
     expect(kinds(typed), "a typed prompt is still the reader's row").toEqual(['user']);
+  });
+
+  /**
+   * **The handoff's procedure is the turn's opening row, not a nudge.**
+   * Forge mints its prompt under the machinery's prefix with a segment of its
+   * own, so it is still nobody's typed words - and it draws as the procedure,
+   * carrying the whole text the handing-over session was given.
+   */
+  it('draws the handoff procedure as its own row, live and reloaded alike', () => {
+    const ordinary = 'task board: worker w-1 holds no row - feed it or despawn it.';
+    const procedure = 'A handoff is starting for this session: run the skill, then exit.';
+    const id = 'forge_nudge_handoff_4_1a2b3c4d';
+
+    const live = fold([heard([text(procedure)], { uuid: id })]);
+    expect(kinds(live), "the procedure is work, not the reader's own turn").toEqual(['leaves']);
+    expect(
+      proceduresOf(live[0]).map((row) => row.text),
+      'the whole procedure is kept',
+    ).toEqual([procedure]);
+    expect(nudgesOf(live[0]), 'and it is not an ordinary nudge').toEqual([]);
+
+    const reloaded = fold([
+      heard(
+        [{ type: 'queued_command', commandMode: 'prompt', prompt: procedure, source_uuid: id }],
+        { uuid: 'c9351772-2ce7-4c28-88e1-6fcad33c0905' },
+      ),
+    ]);
+    expect(
+      proceduresOf(reloaded[0]).map((row) => row.text),
+      'the read draws it the same',
+    ).toEqual([procedure]);
+
+    const nudge = fold([heard([text(ordinary)], { uuid: 'forge_nudge_7_1a2b3c4d' })]);
+    expect(
+      nudgesOf(nudge[0]).map((row) => row.text),
+      'a plain nudge keeps its own row',
+    ).toEqual([ordinary]);
+    expect(proceduresOf(nudge[0]), 'and is not the procedure').toEqual([]);
   });
 
   it('draws no line for a task the wire did not say outlives its turn', () => {
@@ -3885,8 +3939,12 @@ describe('a page seam that re-serves a result', () => {
         total_tokens: null,
         max_tokens: null,
         at_percent: 85,
+        at: null,
+        cycle: { requests: 0, turns: 0, prompt_tokens: 0 },
+        successor: null,
         ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
         judgment: [{ label: 'Next', lines: ['the client row'] }],
+        judgment_turn: [],
       }),
       said([{ type: 'text', text: 'picked up' }]),
     ]);
@@ -3896,5 +3954,234 @@ describe('a page seam that re-serves a result', () => {
     expect(handed?.to, 'the row names the session that continues').toBe('new-session-id');
     expect(handed?.ground_truth[0]?.label, 'the ground truth rides the row').toBe('seat');
     expect(handed?.judgment[0]?.label, 'and the judgment with it').toBe('Next');
+  });
+});
+
+/**
+ * Frames the CLI sends that the fold had no row for.
+ *
+ * **Every row here is provisional** (Ved, 2026-10-26): the frame draws as
+ * itself, carrying a mark naming what it is, with its fields listed under the
+ * open - so the shape is visible and can be decided later rather than being
+ * dropped in silence. Each test asserts the ROW: its mark, what it says, the
+ * facts its body lists, and that the raw payload stays reachable.
+ */
+describe('the frames the fold had no row for', () => {
+  const noticeOf = (unit: Unit | undefined): Notice | null =>
+    unit?.kind === 'notice' ? unit.notice : null;
+
+  it('draws an unknown top-level frame as a marked notice with its payload', () => {
+    const units = fold([
+      { type: 'widget_state', uuid: 'w1', widget: { name: 'counter', value: 7 } },
+    ]);
+
+    expect(kinds(units), 'the frame draws rather than vanishing').toEqual(['notice']);
+    const notice = noticeOf(units[0]);
+    expect(notice?.mark, 'the frame names itself, which is what marks it provisional').toBe(
+      'widget_state',
+    );
+    expect(notice?.text, 'the row says what arrived').toContain('widget_state');
+    expect(notice?.fields, "the open body lists the frame's own fields, flattened").toEqual([
+      { label: 'widget.name', value: 'counter' },
+      { label: 'widget.value', value: '7' },
+    ]);
+    expect(notice?.raw, 'and the frame itself stays reachable').toContain('"counter"');
+  });
+
+  it('draws a content block the fold does not know, and still draws no result block', () => {
+    const units = fold([
+      said([{ type: 'mystery_block', payload: { n: 1 } }]),
+      // A result block is drawn on its call's row and must not become a
+      // second line here: the arm that adds the notice is the loop's own
+      // fallthrough, which a result also reaches.
+      heard([result('toolu_elsewhere')]),
+    ]);
+
+    expect(kinds(units), 'the unknown block draws, the result does not').toEqual(['notice']);
+    const notice = noticeOf(units[0]);
+    expect(notice?.mark, 'the block names itself').toBe('mystery_block');
+    expect(notice?.text, 'the row says what arrived').toContain('mystery_block');
+    expect(notice?.fields, "the block's own fields are the body").toEqual([
+      { label: 'payload.n', value: '1' },
+    ]);
+    expect(notice?.raw, 'and the block itself stays reachable').toContain('"payload"');
+  });
+
+  it('draws a permission denial as an error and settles the call it refused', () => {
+    const units = fold([
+      said([use('toolu_denied', 'Bash', { command: 'echo $HOME' })]),
+      {
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'toolu_denied',
+        decision_reason_type: 'other',
+        decision_reason: 'Contains simple_expansion',
+        message: 'Contains simple_expansion',
+        uuid: 'pd1',
+      },
+    ]);
+
+    const leaf = callsOf(units[0])[0]?.leaf;
+    expect(leaf?.status, 'the refused call is settled, not left spinning').toBe('failed');
+    const notice = noticeOf(units[1]);
+    expect(notice?.severity, 'a refusal reads as an error').toBe('error');
+    expect(notice?.mark).toBe('permission_denied');
+    expect(notice?.text, 'the tool and the reason').toContain('Bash');
+    expect(notice?.text, 'the CLI said why').toContain('Contains simple_expansion');
+    expect(notice?.fields, 'the open body names the refused call and why').toEqual([
+      { label: 'tool', value: 'Bash' },
+      { label: 'call', value: 'toolu_denied' },
+      { label: 'reason', value: 'Contains simple_expansion' },
+      { label: 'decision', value: 'other' },
+    ]);
+    expect(notice?.raw, 'and the frame itself stays reachable').toContain('toolu_denied');
+  });
+
+  it('draws an api error with its status and retry, and an informational line at its level', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'api_error',
+        level: 'error',
+        // The real row's shape: `message` is the provider body serialised
+        // into a string, `formatted` the line written for a reader.
+        error: {
+          message: '{"type":"error","error":{"type":"overloaded_error"}}',
+          formatted: '502 Durable Object is overloaded, retrying',
+          status: 502,
+        },
+        retryInMs: 610,
+        retryAttempt: 1,
+        maxRetries: 300,
+        uuid: 'ae1',
+      },
+      {
+        type: 'system',
+        subtype: 'informational',
+        content: 'Goal cleared after an unrecoverable error',
+        level: 'warning',
+        uuid: 'in1',
+      },
+    ]);
+
+    expect(kinds(units), 'two frames, two lines').toEqual(['notice', 'notice']);
+    const failed = noticeOf(units[0]);
+    expect(failed?.severity, 'the api error reads at its level').toBe('error');
+    expect(failed?.mark).toBe('api_error');
+    expect(failed?.text, 'the reader-facing line wins over the raw body').toContain(
+      '502 Durable Object is overloaded, retrying',
+    );
+    expect(failed?.text, 'and never draws the provider JSON').not.toContain('overloaded_error');
+    expect(failed?.text, 'the status').toContain('502');
+    expect(failed?.sub, 'and the retry delay').toContain('610ms');
+    expect(failed?.fields, 'the open body carries the incident as labelled facts').toEqual([
+      { label: 'message', value: '502 Durable Object is overloaded, retrying' },
+      { label: 'status', value: 'HTTP 502' },
+      { label: 'level', value: 'error' },
+      { label: 'attempt', value: '1 of 300' },
+      { label: 'retry in', value: '610ms' },
+    ]);
+    const info = noticeOf(units[1]);
+    expect(info?.severity, 'the informational line reads at its own level').toBe('warning');
+    expect(info?.mark).toBe('informational');
+    expect(info?.text).toBe('Goal cleared after an unrecoverable error');
+    expect(info?.fields).toEqual([
+      { label: 'content', value: 'Goal cleared after an unrecoverable error' },
+      { label: 'level', value: 'warning' },
+    ]);
+
+    // An EMPTY `formatted` must not swallow the row: the first non-blank of
+    // the two wins, or a 502 row would read as a bare status.
+    const carried = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'api_error',
+          level: 'error',
+          error: { message: 'connection reset by peer', formatted: '', status: 502 },
+          uuid: 'ae2',
+        },
+      ])[0],
+    );
+    expect(carried?.text, 'a blank formatted line falls back to the message').toContain(
+      'connection reset by peer',
+    );
+  });
+
+  it('draws a notification, warning only when its priority is immediate', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'notification',
+        text: 'a stop hook errored',
+        priority: 'immediate',
+        uuid: 'n1',
+      },
+      { type: 'system', subtype: 'notification', text: 'the queue drained', uuid: 'n2' },
+    ]);
+
+    expect(kinds(units), 'both draw').toEqual(['notice', 'notice']);
+    expect(noticeOf(units[0])?.severity, 'an immediate one is a warning').toBe('warning');
+    expect(noticeOf(units[0])?.text).toBe('a stop hook errored');
+    expect(noticeOf(units[0])?.fields).toEqual([
+      { label: 'text', value: 'a stop hook errored' },
+      { label: 'priority', value: 'immediate' },
+    ]);
+    expect(noticeOf(units[1])?.severity, 'the ordinary one is informational').toBe('info');
+    expect(noticeOf(units[1])?.mark).toBe('notification');
+    expect(noticeOf(units[1])?.fields, 'an absent priority draws no empty fact').toEqual([
+      { label: 'text', value: 'the queue drained' },
+    ]);
+  });
+
+  it('draws a system subtype it does not know, and stays silent for one drawn elsewhere', () => {
+    const future = fold([{ type: 'system', subtype: 'future_state', uuid: 'f1' }]);
+    expect(kinds(future), 'a subtype the CLI adds still draws').toEqual(['notice']);
+    expect(noticeOf(future[0])?.mark).toBe('future_state');
+    expect(noticeOf(future[0])?.text).toBe('unhandled frame: system/future_state');
+    expect(
+      noticeOf(future[0])?.fields,
+      'a frame carrying nothing but its identity draws no empty fact list',
+    ).toBeUndefined();
+
+    // An unmodelled subtype that DOES carry fields draws them as the body,
+    // named in words rather than left as the wire's spelling.
+    const timed = fold([
+      { type: 'system', subtype: 'turn_duration', durationMs: 4210, messageCount: 4, uuid: 't1' },
+    ]);
+    expect(noticeOf(timed[0])?.fields).toEqual([
+      { label: 'duration ms', value: '4210' },
+      { label: 'message count', value: '4' },
+    ]);
+
+    const elsewhere = fold([
+      { type: 'system', subtype: 'background_tasks_changed', tasks: [], uuid: 'b1' },
+      { type: 'system', subtype: 'init', uuid: 'i1' },
+    ]);
+    expect(kinds(elsewhere), 'a list another surface draws, and the handshake').toEqual([]);
+  });
+
+  it('marks a question unanswered only once its turn has closed', () => {
+    const asked = said([
+      use('toolu_q', 'AskUserQuestion', {
+        questions: [{ question: 'which way?', options: [{ label: 'a' }, { label: 'b' }] }],
+      }),
+    ]);
+
+    // The closed form: the turn ended with the question still unanswered.
+    const units = fold([asked], null, false, true);
+    expect(kinds(units), 'the call row draws rather than being dropped').toEqual(['leaves']);
+    const leaf = callsOf(units[0])[0]?.leaf;
+    expect(leaf?.unanswered, 'the closed row carries the mark').toBe(true);
+    expect(leaf?.status, 'and is settled failed by the closed-turn sweep').toBe('failed');
+    expect(leaf?.title, 'it still names what it asked').toContain('AskUserQuestion');
+
+    // The waiting form: the dock is its row, so the call wears no verdict.
+    const waiting = fold([asked]);
+    expect(
+      callsOf(waiting[0])[0]?.leaf.unanswered,
+      'a question still waiting in the dock is not marked unanswered',
+    ).toBe(false);
   });
 });

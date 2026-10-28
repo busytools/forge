@@ -154,6 +154,9 @@ pub(crate) struct Relayed<'a> {
     pub height: u16,
     pub format: u8,
     pub key: bool,
+    /// The page's own viewport, the space a gesture's point is sent in.
+    pub page_width: u16,
+    pub page_height: u16,
     pub encoded: &'a [u8],
 }
 
@@ -162,12 +165,12 @@ pub(crate) struct Relayed<'a> {
 ///
 /// **One split for both arms**: the desktop's overlay and the phone's canvas
 /// read the same host wire - the profile, the tab, the sequence, the view
-/// size, the format and the key flag - so a drift in one cannot disagree
-/// with the other.
+/// size, the format, the key flag and the page's viewport - so a drift in one
+/// cannot disagree with the other.
 pub(crate) fn split_frame(bytes: &[u8]) -> Option<Relayed<'_>> {
     let (profile, rest) = bytes.split_first_chunk::<2>()?;
     let (tab, rest) = rest.split_first_chunk::<2>()?;
-    let header = rest.get(..10)?;
+    let header = rest.get(..14)?;
     Some(Relayed {
         profile: u16::from_le_bytes(*profile),
         tab: u16::from_le_bytes(*tab),
@@ -176,7 +179,9 @@ pub(crate) fn split_frame(bytes: &[u8]) -> Option<Relayed<'_>> {
         height: u16::from_le_bytes([header[6], header[7]]),
         format: header[8],
         key: header[9] != 0,
-        encoded: &rest[10..],
+        page_width: u16::from_le_bytes([header[10], header[11]]),
+        page_height: u16::from_le_bytes([header[12], header[13]]),
+        encoded: &rest[14..],
     })
 }
 
@@ -306,8 +311,9 @@ pub fn frame(app: &tauri::AppHandle, bytes: &[u8]) {
         let Some(frame) = split_frame(bytes) else {
             // **A frame this half cannot read is said**, not dropped quietly:
             // the page's frames come through here and a missing one has no
-            // other trace. **Info, not debug**: the client logger keeps
-            // `Info`, so a debug line would never reach `forge.log`.
+            // other trace. **Info, not debug**: this module is not a target
+            // the default directives name, so a debug line would never reach
+            // `forge.log`.
             tauri_plugin_log::log::info!(
                 "a relayed frame did not fit its header (event_name \
                  client_browser_frame_undecodable, {} bytes)",
@@ -323,6 +329,8 @@ pub fn frame(app: &tauri::AppHandle, bytes: &[u8]) {
             "height": frame.height,
             "format": frame.format,
             "key": frame.key,
+            "page_width": frame.page_width,
+            "page_height": frame.page_height,
             "bytes": base64::engine::general_purpose::STANDARD.encode(frame.encoded),
         });
         // **The newest frame is KEPT for the page that arrives late.** An
@@ -499,9 +507,9 @@ mod tests {
     }
 
     /// **A relayed frame splits into the fields both arms draw by.** The
-    /// desktop's overlay reads the size and the pixels, the phone's canvas
-    /// the profile, tab and sequence; a header parsed at the wrong offset
-    /// draws shifted rows or another tab's page.
+    /// desktop's overlay reads the size, the page and the pixels, the phone's
+    /// canvas the profile, tab and sequence; a header parsed at the wrong
+    /// offset draws shifted rows or another tab's page.
     #[test]
     fn a_relayed_frame_splits_its_header() {
         let mut bytes = vec![7_u8, 0]; // profile 7
@@ -511,6 +519,8 @@ mod tests {
         bytes.extend_from_slice(&480_u16.to_le_bytes());
         bytes.push(1); // WebP
         bytes.push(1); // a key frame
+        bytes.extend_from_slice(&320_u16.to_le_bytes()); // the page's own width
+        bytes.extend_from_slice(&240_u16.to_le_bytes()); // and height
         bytes.extend_from_slice(&[4, 3, 2, 1]);
 
         let split = split_frame(&bytes).expect("a whole frame");
@@ -523,11 +533,13 @@ mod tests {
                 split.height,
                 split.format,
                 split.key,
+                split.page_width,
+                split.page_height,
                 split.encoded,
             ),
-            (7, 3, 9, 640, 480, 1, true, &[4_u8, 3, 2, 1][..]),
-            "the profile, tab, sequence, size, format, key flag and payload"
+            (7, 3, 9, 640, 480, 1, true, 320, 240, &[4_u8, 3, 2, 1][..]),
+            "the profile, tab, sequence, size, format, key flag, page and payload"
         );
-        assert!(split_frame(&bytes[..13]).is_none(), "a frame shorter than its header is refused");
+        assert!(split_frame(&bytes[..17]).is_none(), "a frame shorter than its header is refused");
     }
 }

@@ -6,7 +6,7 @@
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/link';
-  import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
+  import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -27,6 +27,7 @@
   import {
     bindPushToTalk,
     Dictation,
+    OPEN_DRAWN_MS,
     openCapture,
     takeCounts,
     takePhase,
@@ -270,19 +271,8 @@
     return beat ? 'done' : null;
   });
 
-  /**
-   * Whether the open has lasted long enough to draw on the band.
-   *
-   * **The delay is the point.** An open that lands inside it is not a state,
-   * it is the press itself: the desktop's native capture is tens of
-   * milliseconds, so drawing its breath made the band flash between colours
-   * on every press - Ved, in the look: "the color changes, and then goes back
-   * to orange in a glitch like that", and "if we are running it on the Rust
-   * side ... I should not rightly be seeing any at all". A browser's open is
-   * the permission round trip and the audio graph's start, which outlasts it
-   * and is what the state is for.
-   */
-  const OPEN_DRAWN_MS = 180;
+  /** Whether the open has lasted long enough to draw on the band; the wait
+   *  itself is {@link OPEN_DRAWN_MS}, shared with the takeover bar's line. */
   let openingShown = $state(false);
   $effect(() => {
     if (!dictate.opening) {
@@ -306,12 +296,8 @@
    */
   const silentLine = $derived(takeSilenceLine(dictate, slot)?.text ?? null);
 
-  /** What the reader wrote in the dock's box, which a landed take has to reach. */
-  let dockDraft = $state('');
   /** Whether the dock has its own box open, which is what makes it a destination. */
   let dockOpen = $state(false);
-  /** A take's words that landed in the dock, which is what brings its box the keyboard. */
-  let dockLanded = $state<string | null>(null);
 
   /**
    * The prompt the dock draws, which is the one the seat is parked on - unless
@@ -397,6 +383,11 @@
       : null,
   );
   const line = $derived(notice !== null && box.dismissed === notice.text ? null : notice);
+  /** What the takeover bar's line says: the same seat line, dismissed by the
+   *  same typing - the bar's field is the row that typing goes into. */
+  const takeoverLine = $derived(
+    box.dictateLine !== null && box.dismissed === box.dictateLine.text ? null : box.dictateLine,
+  );
 
   /**
    * The draft this box is drawing, remembered so a stand-down can tell THIS
@@ -476,6 +467,22 @@
   });
 
   /**
+   * **A takeover is one seat's page.** Leaving that seat lowers it - the chat
+   * comes back with this seat's own card, and the browser keeps running for
+   * the seat that raised it. A page left up over a seat it does not belong to
+   * is how a parked ask ended up hidden behind a browser it never named
+   * (live, 2026-10-28: the ask drawn, its card covered, its answers on the
+   * bar).
+   */
+  $effect(() => {
+    // Only a page coming up or up is this seat's to lower; a failed one has
+    // had its lower already, and asking again earns a second refusal.
+    if (surface.phase !== 'opening' && surface.phase !== 'live') return;
+    if (surface.seat === null || boxKey(surface.seat) === boxKey(slot)) return;
+    void closeSurface();
+  });
+
+  /**
    * A held hand-off leaving the core, the draft's own twin: the dock vanishes
    * with the update that drops it, and the ENDING is what tells this reader
    * what became of a hand-off they did not answer.
@@ -498,7 +505,6 @@
       // The local Done lowers its own; an answer from another view never
       // touches this shell. Through the store, so the page's phase follows
       // the shell's answer instead of staying live over a closed surface.
-      if (surface.hand_off?.id === id) clearHandOff(id);
       void closeSurface(null, at);
     });
   });
@@ -541,23 +547,85 @@
     if (field !== null) field.focus();
   });
 
-  /** What the dock's own box belongs to, which is what its words go with. */
-  let ownKey: string | null = null;
-
   // The dock's box belongs to the prompt, so what was written in it goes when
   // the prompt does - which is what the dock's own mount used to do for it.
   //
   // Keyed on the prompt's identity rather than on its absence: the next prompt
   // can arrive in the same frame as the last, and a release that only fires on
   // `ask === null` never sees that, so the words would come back in the box
-  // that replaced them.
+  // that replaced them. **The key lives on the seat's own box**, so a visit to
+  // another seat neither releases a parked hand-off's words nor forgets which
+  // prompt they belong to.
   $effect(() => {
+    // **A record that is not this seat's says nothing about this seat's
+    // prompt**: between a seat switch and its own record the page still hands
+    // over the seat being left's, and releasing on that would take a parked
+    // hand-off's words with it.
+    if (!owns) return;
     const key = ownKeyOf(ask);
-    if (key === ownKey) return;
-    ownKey = key;
-    dockDraft = '';
-    dockLanded = null;
+    if (key === box.askKey) return;
+    // **Held words are not dropped with the ask that held them.** The record
+    // can drop the ask before the listener that lowers the surface runs (an
+    // answer from another view), and the line's words have to reach the
+    // seat's draft before the line's own state is cleared - the person still
+    // has to be able to read what they said.
+    carryBarWords();
+    box.askKey = key;
+    box.dockDraft = '';
+    box.dockLanded = null;
+    box.barLanded = null;
+    box.carried = null;
   });
+
+  /**
+   * Whether the takeover's page is this seat's own.
+   *
+   * A surface outlives a seat switch - one page at a time, and its host keeps
+   * running - so a page raised for another seat can be on screen while this
+   * one has a hand-off parked. It is not this seat's page to answer from.
+   */
+  const surfaceIsMine = $derived(
+    surface.phase !== 'closed' && surface.seat !== null && boxKey(surface.seat) === boxKey(slot),
+  );
+
+  /**
+   * The hand-off this takeover stands in front of: this seat's parked ask.
+   *
+   * **The bar is where an ask under an open page can be seen at all** - the
+   * card carrying its reason is drawn in the chat behind the native layer, so
+   * with the page up the bar is the only place the ask can ride.
+   */
+  const takeoverAsk = $derived(
+    surfaceIsMine && dockAsk?.kind === 'browser_hand_off' ? dockAsk : null,
+  );
+
+  /**
+   * Whether the page is the one the ask asked for: up, on the tab the
+   * hand-off named (or on any, when it named none). **Only then are its
+   * answers offered**, by the bar or by a take's words - Done and Not now are
+   * ways of answering THIS ask, and a page the session did not prepare is not
+   * one. The dock's card asks the same question of its own Open.
+   *
+   * **A failed page keeps them.** The person still has to be able to say the
+   * host died rather than the page being wrong - that is what the feedback
+   * line is for, and it is exactly what was done when the browser crashed
+   * under a parked ask (live, 2026-10-28).
+   */
+  const answering = $derived(
+    takeoverAsk !== null &&
+      (surface.phase === 'live' || surface.phase === 'failed') &&
+      (takeoverAsk.request.tab === null || surface.tab === takeoverAsk.request.tab),
+  );
+
+  /**
+   * Whether the bar's line is where a take's words belong, and so whether the
+   * bar draws it: **the takeover stands for this ask**, whatever phase it is
+   * in. A page opening or failed, or one showing another tab, still has the
+   * line as the only box the reader can see. Showing the words is not
+   * answering - the doors and the send stay on `answering` - so a line that
+   * cannot answer still carries what was spoken into it.
+   */
+  const barLineHolds = $derived(takeoverAsk !== null);
 
   /**
    * Whether the dock is the box a landing belongs to.
@@ -568,10 +636,11 @@
    * the notes option, and a held post never.
    */
   function toDock(): boolean {
-    // **The takeover's feedback line is this dock's words box.** While the
-    // surface is open, the only text box on screen is the bar's, so a take
-    // started from its mic belongs there - the same `notes` the dock binds.
-    if (surface.phase === 'live' && surface.hand_off !== null) return true;
+    // **The takeover's feedback line is this dock's words box** while the
+    // takeover stands for this seat's hand-off: the only text box on screen is
+    // the bar's, so a take started at it belongs there - the same `notes` the
+    // dock binds.
+    if (barLineHolds) return true;
     const asking = dockAsk;
     if (asking === null || blocker !== null) return false;
     if (asking.kind === 'question') return true;
@@ -610,12 +679,16 @@
     // the reader's last touch wrote it into a draft nobody could see - and a
     // take begun in the composer keeps its words even when a prompt arrived
     // mid-flight.
-    if (box.tookFrom === 'dock' && untrack(() => toDock())) {
-      dockDraft = joined(
-        untrack(() => dockDraft),
+    // Read untracked so the effect still runs on the notice alone.
+    const barHolds = untrack(() => box.tookFrom === 'dock' && toDock());
+    const onBar = untrack(() => barLineHolds);
+    if (barHolds) {
+      box.dockDraft = joined(
+        untrack(() => box.dockDraft),
         words,
       );
-      dockLanded = words;
+      box.dockLanded = words;
+      box.barLanded = onBar ? words : null;
       // **The memory is marked where the words went** (#1360): the dock's
       // row holds them now, so a carried re-hand on a later read must not
       // append them a second time.
@@ -630,6 +703,7 @@
         untrack(() => box.draft),
         words,
       );
+      box.barLanded = null;
     }
     box.beatAt = Date.now();
     // The words come with the keyboard, so an immediate Enter sends what just
@@ -638,6 +712,42 @@
     // the prompt replaced - destroyed with the box, so detached, and taking no
     // focus - and the dock brings its own box back from its `land`.
     field?.focus();
+  });
+
+  /**
+   * **Words held for the bar are never dropped under it.** Lowering the
+   * takeover takes the line away while the ask is still parked - so what the
+   * line holds goes into the chat's draft (joining whatever was there) and
+   * the hand-off's card says where they went, since the composer is behind
+   * the card until the ask is answered.
+   */
+  function carryBarWords(): void {
+    if (box.barLanded === null) return;
+    const held = untrack(() => box.dockDraft);
+    // **A line the reader emptied has nothing to hand over**: carrying an
+    // empty string would leave the card claiming words that are not there.
+    const speaks = held.trim() !== '';
+    if (speaks) {
+      box.draft = joined(
+        untrack(() => box.draft),
+        held,
+      );
+    }
+    box.carried = speaks ? held : null;
+    box.dockDraft = '';
+    box.dockLanded = null;
+    box.barLanded = null;
+  }
+
+  $effect(() => {
+    // **Only while the ask is still parked.** When the ask itself resolves -
+    // or the reader answers it, which stands `dockAsk` down - the line's words
+    // go with the prompt that owned them, as any draft does; it is the line
+    // being taken away UNDER the ask (the takeover lowered) that must not
+    // lose them.
+    if (box.barLanded === null || dockAsk === null) return;
+    if (barLineHolds) return;
+    carryBarWords();
   });
 
   /**
@@ -1069,16 +1179,6 @@
   }
 
   /**
-   * The hand-off the takeover's bar is answering, while the surface is up.
-   *
-   * **The bar lives here rather than in the dock** because `.surf` is a
-   * `container-type`, so a fixed child of it hangs off the composer instead
-   * of the window - and this bar must sit at the window's top.
-   */
-  const takeoverAsk = $derived(
-    surface.phase !== 'closed' && dockAsk?.kind === 'browser_hand_off' ? dockAsk : null,
-  );
-  /**
    * **The bar stays while the surface is up, even when the ask leaves**: a
    * hand-off the core resolved elsewhere takes the dock's card with it, and a
    * bare picture with no way back to the chat is a trap. With no ask the bar
@@ -1101,7 +1201,7 @@
 
   /** Done, Not now or feedback: the hand-off's answer, and the takeover comes down. */
   function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): void {
-    if (takeoverAsk === null) return;
+    if (takeoverAsk === null || !answering) return;
     const id = takeoverAsk.request.id;
     remember(id);
     const source = ending === 'feedback' ? 'feedback' : 'takeover';
@@ -1120,7 +1220,6 @@
       report('the answer was not sent', error);
     }
     void closeSurface(null, slot);
-    clearHandOff(id);
   }
 
   /**
@@ -1133,7 +1232,7 @@
    * (live, 2026-10-26, twice on one CAPTCHA).
    */
   function takeoverFeedback(text: string): void {
-    if (takeoverAsk === null) return;
+    if (takeoverAsk === null || !answering) return;
     const uuid = mintPromptId();
     try {
       void connection.dispatch(
@@ -1232,19 +1331,30 @@
   {#if surface.phase !== 'closed' && drawsSurface()}
     <TakeoverBar
       title={takeoverTitle}
-      bind:notes={dockDraft}
+      reason={takeoverAsk?.request.reason ?? null}
+      bind:notes={box.dockDraft}
       take={composer.take}
+      phase={rowPhase}
       {wire}
       silent={silentLine}
       nav={surface.nav}
       onabandon={abandon}
       onmic={() => dictate.toggle()}
       {dictation}
-      ondone={takeoverAsk === null ? null : () => takeoverAnswer('done')}
-      onnotnow={takeoverAsk === null ? null : () => takeoverAnswer('not_now')}
+      takeline={takeoverLine}
+      opening={openingShown}
+      ondismiss={() => {
+        // **Only a line that is there is dismissed.** Typing with no take
+        // line must not clear one the reader already typed away, or a
+        // composer notice can come back when the takeover lowers.
+        if (box.dictateLine !== null) box.dismissed = box.dictateLine.text;
+      }}
+      ondone={answering ? () => takeoverAnswer('done') : null}
+      onnotnow={answering ? () => takeoverAnswer('not_now') : null}
       onback={takeoverBack}
       onnav={takeoverNav}
-      onfeedback={takeoverAsk === null ? null : takeoverFeedback}
+      onfeedback={barLineHolds ? takeoverFeedback : null}
+      cansend={answering}
       onretry={surface.phase === 'failed' ? takeoverRetry : null}
     />
   {/if}
@@ -1289,9 +1399,10 @@
           notice={box.refusal}
           take={composer.take}
           {wire}
-          bind:notes={dockDraft}
+          bind:notes={box.dockDraft}
           bind:ownOpen={dockOpen}
-          land={dockLanded}
+          land={box.dockLanded}
+          carried={box.carried}
           onanswer={remember}
           onabandon={abandon}
           onmic={() => dictate.toggle()}

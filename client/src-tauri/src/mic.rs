@@ -28,9 +28,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use forge_primitives::SessionSlot;
 use serde::{Deserialize, Serialize};
 
 use crate::bridge::Bridge;
+
+/// This module's own log target, which the client's default directives name
+/// so a line demoted under rule 20 stays readable in `forge.log`.
+pub(crate) const LOG_TARGET: &str = module_path!();
 
 /// One frame's payload: 20 ms of mono 16 kHz samples, the cadence the
 /// server's meter polls at.
@@ -261,6 +266,27 @@ impl Warm {
         self.held.carry().delivering(SILENT_LIMIT)
     }
 
+    /// What a press asking for `device` does with this capture: the warm
+    /// take, a fresh open, or a refusal - with the delivery that decided it.
+    ///
+    /// Only a capture the device is still serving is worth beginning a take
+    /// on: one it stopped serving would deliver the take nothing, and the
+    /// reader would see a meter that never moves (#2359). The delivery is
+    /// read once and handed back, because the capture's callback stamps it
+    /// under its own lock: a second read can see a block this one did not,
+    /// and the press's line must not contradict the path it reports.
+    fn press_path(&self, device: Option<&str>) -> Found {
+        let delivering = self.delivering();
+        let path = if self.recording() {
+            PressPath::Busy
+        } else if self.requested.as_deref() == device && delivering {
+            PressPath::Warm
+        } else {
+            PressPath::Cold
+        };
+        Found { path, delivering }
+    }
+
     /// End a recording `page` does not own, if one is running.
     ///
     /// A hold or a press naming a page other than the one recording means
@@ -286,6 +312,60 @@ impl Warm {
         self.owner = None;
         self.held.carry().end()
     }
+}
+
+/// What a press does with the hold it finds.
+#[derive(Clone, Copy)]
+enum PressPath {
+    /// The held capture is the one asked for, and the device is feeding it.
+    Warm,
+    /// The device is opened: nothing is held, another pick is, or the stream
+    /// stopped being fed.
+    Cold,
+    /// Another take is recording, so the press is refused.
+    Busy,
+}
+
+impl PressPath {
+    /// The path's name in the press's own line.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Warm => "warm",
+            Self::Cold => "cold",
+            Self::Busy => "busy",
+        }
+    }
+}
+
+/// The hold a press found and what it does with it: the path, and the delivery
+/// that path was chosen with.
+struct Found {
+    path: PressPath,
+    delivering: bool,
+}
+
+/// Say the hold a press found and the path it took.
+///
+/// A press that goes cold is answerable from here: the hold's state says why
+/// it was not serving the take, so a slow open is explained by the line that
+/// opened it. It is `debug` - one session's own work, not forge's (rule 20) -
+/// and [`crate::DEBUG_TARGETS`] is what keeps it in `forge.log`.
+fn log_press(
+    session: Option<&SessionSlot>,
+    device: Option<&str>,
+    hold: Option<&Warm>,
+    found: &Found,
+) {
+    let session = session.map(SessionSlot::display).unwrap_or_else(|| "none".to_owned());
+    tauri_plugin_log::log::debug!(
+        target: LOG_TARGET,
+        "a press asks for the microphone (event_name client_mic_press, session {session}, \
+         requested {device:?}, held {held:?}, held_for {held_for:?}, delivering {}, path {})",
+        found.delivering,
+        found.path.name(),
+        held = hold.map(|hold| hold.held.device().id.as_str()),
+        held_for = hold.and_then(|hold| hold.requested.as_deref()),
+    );
 }
 
 /// The microphone, as this half holds it: at most one capture, open from the
@@ -403,27 +483,37 @@ impl Mic {
         take: &str,
         abandoned: Option<&GivenUp>,
     ) -> Result<forge_capture::Device, String> {
+        // Read before the hold's lock: the on-screen seat is the bridge's
+        // state, and the two locks never nest.
+        let session = bridge.shown();
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(held) = warm.as_mut() {
-            held.claim(page);
-            if held.recording() {
-                return Err("the microphone is already recording".to_owned());
+        let found = match warm.as_mut() {
+            Some(held) => {
+                held.claim(page);
+                held.press_path(device.as_deref())
             }
-            // Only a capture the device is still serving is worth beginning a
-            // take on: one it stopped serving would deliver the take nothing,
-            // and the reader would see a meter that never moves (#2359).
-            if held.requested == device && held.delivering() {
-                held.begin(page, take);
-                // **The read comes after the begin, as the last act**: a warm
-                // capture answers at once, so a give-up only lands inside this
-                // call when the lock waited - a wedged open holding it - and
-                // the take begun above is one the caller gave up on. Ended in
-                // place, the capture stays the hold.
-                if abandoned.is_some_and(GivenUp::spent) {
-                    held.end();
-                    return Err(NOT_COME_UP.to_owned());
+            None => Found { path: PressPath::Cold, delivering: false },
+        };
+        log_press(session.as_ref(), device.as_deref(), warm.as_ref(), &found);
+        if let Some(held) = warm.as_mut() {
+            match found.path {
+                PressPath::Busy => {
+                    return Err("the microphone is already recording".to_owned());
                 }
-                return Ok(held.held.device().clone());
+                PressPath::Warm => {
+                    held.begin(page, take);
+                    // **The read comes after the begin, as the last act**: a
+                    // warm capture answers at once, so a give-up only lands
+                    // inside this call when the lock waited - a wedged open
+                    // holding it - and the take begun above is one the caller
+                    // gave up on. Ended in place, the capture stays the hold.
+                    if abandoned.is_some_and(GivenUp::spent) {
+                        held.end();
+                        return Err(NOT_COME_UP.to_owned());
+                    }
+                    return Ok(held.held.device().clone());
+                }
+                PressPath::Cold => {}
             }
         }
         let next = self.open(bridge, device.as_deref(), Some((page, take)))?;
@@ -667,16 +757,32 @@ mod tests {
             bridge: Arc<Bridge>,
             /// What the take sent, where a test that watches the wire reads it.
             frames: tokio::sync::mpsc::UnboundedReceiver<crate::bridge::ClientEvent>,
+            /// Per open, whether that open's own press line was already in
+            /// the log: the value of the line is that it exists WHILE the
+            /// device is being opened, not only once it answers.
+            opening: Arc<Mutex<Vec<bool>>>,
         }
 
         impl Rig {
             fn new() -> Self {
                 let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
                 let opened = Arc::clone(&log);
+                let opening: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+                let watching = Arc::clone(&opening);
                 let mic = Mic {
                     warm: Mutex::new(None),
                     opener: Box::new(move |device, carry| {
                         let name = device.unwrap_or("default").to_owned();
+                        // The press's line names the device it asked for; one
+                        // this test asks for only once is what makes this look
+                        // that press's own - a repeated device can be
+                        // answered by an earlier press's line.
+                        let asked = format!("requested Some(\"{name}\")");
+                        let seen = crate::log_capture::records().iter().any(|line| {
+                            line.message.contains("client_mic_press")
+                                && line.message.contains(&asked)
+                        });
+                        watching.lock().unwrap().push(seen);
                         opened.lock().unwrap().push(format!("open {name}"));
                         Ok(Box::new(Fake {
                             device: forge_capture::Device {
@@ -691,11 +797,16 @@ mod tests {
                 };
                 let (events, frames) = tokio::sync::mpsc::unbounded_channel();
                 let bridge = Bridge::new(None, events);
-                Self { mic, log, bridge, frames }
+                Self { mic, log, bridge, frames, opening }
             }
 
             fn calls(&self) -> Vec<String> {
                 self.log.lock().unwrap().clone()
+            }
+
+            /// Whether each open saw its own press line already logged.
+            fn opening(&self) -> Vec<bool> {
+                self.opening.lock().unwrap().clone()
             }
         }
 
@@ -784,6 +895,200 @@ mod tests {
                 rig.calls(),
                 vec!["open one", "open one", "release one"],
                 "a press on a capture the device stopped serving opens it again"
+            );
+        }
+
+        /// **Every press says the hold it found and the path it took, before
+        /// the open runs.** A press that went cold used to leave no line at
+        /// all, so the seconds its open took had nothing to explain them.
+        #[test]
+        fn a_press_says_the_hold_it_found_and_the_path_it_took() {
+            let _kept = crate::log_capture::capture();
+            let rig = Rig::new();
+            // The seat is this test's own - no other test puts one on screen -
+            // so its lines are its own even under an in-process `cargo test`,
+            // where every captured line lands in one shared buffer.
+            rig.bridge.showing(Some(serde_json::json!({
+                "org": "Busytools",
+                "project": "forge",
+                "label": "lead",
+            })));
+
+            // Nothing held: the device is opened, and the line has to be there
+            // while that open runs - the whole point of it.
+            rig.mic
+                .start(&rig.bridge, Some("held-first".to_owned()), "page", "take-1")
+                .expect("a press with no hold opens the device");
+            assert_eq!(rig.calls(), vec!["open held-first"], "the cold press opens the device");
+
+            // Warm from a block the device delivers, not from the open's own
+            // stamp: stale first, then a block.
+            rig.mic.stop("take-1");
+            staled(&rig);
+            deliver(&rig, &[0.0; 8]);
+            rig.mic
+                .start(&rig.bridge, Some("held-first".to_owned()), "page", "take-2")
+                .expect("the held capture serves the press");
+            assert_eq!(rig.calls().len(), 1, "the warm press opens nothing");
+
+            // A different pick on a capture that stopped delivering: the
+            // device is opened for the pick asked for, and the hold it
+            // replaces is let go.
+            rig.mic.stop("take-2");
+            staled(&rig);
+            rig.mic
+                .start(&rig.bridge, Some("asked-second".to_owned()), "page", "take-3")
+                .expect("the press the hold cannot serve opens its own");
+            assert_eq!(
+                rig.calls(),
+                vec!["open held-first", "open asked-second", "release held-first"],
+                "the cold press re-acquires the device",
+            );
+
+            // Another take is recording, so the press is refused by name.
+            let refused =
+                rig.mic.start(&rig.bridge, Some("asked-third".to_owned()), "page", "take-4");
+            assert_eq!(
+                refused.err().as_deref(),
+                Some("the microphone is already recording"),
+                "the busy press is refused rather than served",
+            );
+            assert_eq!(rig.calls().len(), 3, "the busy press opens nothing");
+
+            // A reloaded page presses while the discarded page's take still
+            // runs: the claim ends it, so the line reads warm, not busy.
+            deliver(&rig, &[0.0; 8]);
+            rig.mic
+                .start(&rig.bridge, Some("asked-second".to_owned()), "page-2", "take-5")
+                .expect("the press after a reload records");
+            assert_eq!(rig.calls().len(), 3, "the reload's press opens nothing");
+
+            // The same pick, on a capture that stopped delivering: the device
+            // is opened again, which is the delivery alone deciding the path.
+            rig.mic.stop("take-5");
+            staled(&rig);
+            rig.mic
+                .start(&rig.bridge, Some("asked-second".to_owned()), "page", "take-6")
+                .expect("a stale capture the press would have been warm on is reopened");
+            assert_eq!(
+                rig.calls().len(),
+                5,
+                "the same pick opener is an open and a release of the capture it replaced",
+            );
+
+            // The pick moves to the system default, which resolves to a
+            // device: `held` is that device while `held_for` is the no-pick.
+            rig.mic.stop("take-6");
+            rig.mic.hold(&rig.bridge, None, "page").expect("the default is held");
+            deliver(&rig, &[0.0; 8]);
+            rig.mic
+                .start(&rig.bridge, None, "page", "take-7")
+                .expect("the default serves the press");
+            assert_eq!(
+                rig.calls(),
+                vec![
+                    "open held-first",
+                    "open asked-second",
+                    "release held-first",
+                    "open asked-second",
+                    "release asked-second",
+                    "open default",
+                    "release asked-second",
+                ],
+                "the hold for the default re-acquires it, and the press opens nothing",
+            );
+            assert_eq!(
+                rig.opening(),
+                vec![true, true, true, false],
+                "the presses asking for a device once see their own line already logged at open; \
+                 the same-pick press's look is answered by the earlier press that asked for it; \
+                 the hold's own open has no press line at all",
+            );
+
+            let presses: Vec<crate::log_capture::Line> = crate::log_capture::records()
+                .into_iter()
+                .filter(|line| {
+                    line.message.contains("client_mic_press")
+                        && line.message.contains("session Busytools/forge/lead")
+                })
+                .collect();
+            assert_eq!(
+                presses.len(),
+                7,
+                "this test's every press is logged: {:?}",
+                presses.iter().map(|line| &line.message).collect::<Vec<_>>(),
+            );
+            for line in &presses {
+                assert_eq!(
+                    line.level,
+                    tauri_plugin_log::log::Level::Debug,
+                    "a press is the session's own work, not forge's warning: {}",
+                    line.message,
+                );
+            }
+            // No hold: both device fields are absent while the press names one.
+            assert!(
+                presses[0].message.contains("requested Some(\"held-first\")")
+                    && presses[0].message.contains("held None")
+                    && presses[0].message.contains("held_for None")
+                    && presses[0].message.contains("delivering false")
+                    && presses[0].message.contains("path cold"),
+                "the press with no hold says so: {}",
+                presses[0].message,
+            );
+            // Warm: the hold serves the pick asked for.
+            assert!(
+                presses[1].message.contains("requested Some(\"held-first\")")
+                    && presses[1].message.contains("held Some(\"held-first\")")
+                    && presses[1].message.contains("held_for Some(\"held-first\")")
+                    && presses[1].message.contains("delivering true")
+                    && presses[1].message.contains("path warm"),
+                "the warm press names the hold that served it: {}",
+                presses[1].message,
+            );
+            // Cold on another pick: the devices differ, which is why it opened.
+            assert!(
+                presses[2].message.contains("requested Some(\"asked-second\")")
+                    && presses[2].message.contains("held Some(\"held-first\")")
+                    && presses[2].message.contains("held_for Some(\"held-first\")")
+                    && presses[2].message.contains("delivering false")
+                    && presses[2].message.contains("path cold"),
+                "the cold press names the pick it would not use: {}",
+                presses[2].message,
+            );
+            assert!(
+                presses[3].message.contains("requested Some(\"asked-third\")")
+                    && presses[3].message.contains("path busy"),
+                "the refused press says so rather than reading as a take: {}",
+                presses[3].message,
+            );
+            assert!(
+                presses[4].message.contains("requested Some(\"asked-second\")")
+                    && presses[4].message.contains("path warm"),
+                "the press after a reload reads as warm: the claim ended the orphaned take \
+                 before the hold was read: {}",
+                presses[4].message,
+            );
+            // The same pick and no delivery: the devices match and it still
+            // opened, so the line says why.
+            assert!(
+                presses[5].message.contains("requested Some(\"asked-second\")")
+                    && presses[5].message.contains("held Some(\"asked-second\")")
+                    && presses[5].message.contains("held_for Some(\"asked-second\")")
+                    && presses[5].message.contains("delivering false")
+                    && presses[5].message.contains("path cold"),
+                "the press opens a capture the device stopped serving, and says so: {}",
+                presses[5].message,
+            );
+            // A default hold: the device resolved, the pick it was opened for
+            // absent, which is the one line that tells the two apart.
+            assert!(
+                presses[6].message.contains("requested None")
+                    && presses[6].message.contains("held Some(\"default\")")
+                    && presses[6].message.contains("held_for None")
+                    && presses[6].message.contains("path warm"),
+                "the default's hold is named by the device it resolved to, not the pick: {}",
+                presses[6].message,
             );
         }
 

@@ -9,11 +9,11 @@
  * has paged in and asks for more when the reader reaches the top.
  *
  * **A row's key is the turn's own, assigned once and never recomputed.** A
- * key derived at read time would change when older turns are prepended - and
- * `virtua` stores its measured sizes PER KEY, so a key that shifts throws away
- * what it learned and re-measures the list, taking the reader's place with it.
- * That is why a turn the fold could not name is named here at ingest, from its
- * own content, rather than being derived by whoever draws it.
+ * key derived at read time would change when older turns are prepended, and a
+ * changed key remounts the row - which draws at the list's estimate until it
+ * measures again, and moves everything below it (the list's heights are stored
+ * by POSITION). That is why a turn the fold could not name is named here at
+ * ingest, from its own content, rather than being derived by whoever draws it.
  *
  * **A page may repeat a row the client already holds.** The server errs toward
  * repeating rather than toward a gap, because a turn the client was never sent
@@ -107,6 +107,17 @@ export interface Turn {
    * trim only ever drops from the oldest end, where the page's own turns sit.
    */
   before?: string | null;
+  /**
+   * A turn that came from a record rather than from this conversation's
+   * transcript: the handoff's judgment turn, which ran in the session that
+   * left.
+   *
+   * **No page of THIS transcript can ever carry it**, so a walk toward it
+   * would fetch every page above the successor's head and never arrive - the
+   * same reason a forged notice is not a walk target. It draws where it was
+   * seeded and is never asked for again.
+   */
+  record?: boolean;
 }
 
 /**
@@ -298,12 +309,13 @@ export interface Conversation {
   /**
    * How many pages of OLDER turns have landed.
    *
-   * A count rather than a flag because the list has to know when one change
-   * differs from the last, and a flag that goes back to `false` reads the same
-   * twice. It is what tells the list to compensate for a prepend and not for
-   * anything else: the compensation is written for rows arriving ABOVE the
-   * reader, and applying it to a turn appended below them moves them by that
-   * row's height, which is the one thing this page must not do.
+   * A count rather than a flag because one landing has to be told from the
+   * next, and a flag that goes back to `false` reads the same twice. It is what
+   * settles one of the column's asks - **not** what the list is told: the
+   * compensation is written for rows arriving ABOVE the reader, and applying
+   * it to a turn appended below them moves them by that row's height, which is
+   * the one thing this page must not do. The list reads the change itself (see
+   * `HEAD_MOVED`).
    */
   prepends: number;
   /**
@@ -408,6 +420,27 @@ function liveName(message: unknown, at: number): string {
 /** The messages of one frame, which is what a turn's own content is. */
 function messagesOf(turn: PageTurn): unknown[] {
   return Array.isArray(turn.messages) ? turn.messages : [];
+}
+
+/**
+ * The judgment turn a handoff record carries, as a turn the chat can hold.
+ *
+ * **Keyed the way the live frames named it** (`live:<the prompt's uuid>`), so
+ * a client that watched the swap keeps the row it already drew rather than a
+ * second copy of the same turn from the record. A turn whose prompt row lost
+ * its id falls back to a name of its own rather than to an empty one, which
+ * would make every such turn one row.
+ */
+function judgmentTurnOf(handoff: HandoffRecord): Turn | null {
+  const messages = handoff.judgment_turn;
+  if (messages.length === 0) return null;
+  const id = uuidOf(messages[0]);
+  return {
+    key: id !== null ? `live:${id}` : `live:judgment-${handoff.from}`,
+    messages: [...messages],
+    live: false,
+    record: true,
+  };
 }
 
 /**
@@ -723,33 +756,13 @@ function interleave(base: unknown[], other: unknown[]): unknown[] {
     const run = foldedRunMs(message);
     if (run !== null) otherCovers.push(run);
   }
-  const offeredByOther = (message: unknown): boolean => {
-    if (otherCovers.length === 0) return false;
-    const folded = foldedRunMs(message);
-    if (folded !== null) {
-      return otherCovers.some((run) => run.from <= folded.from && folded.through <= run.through);
-    }
-    return withinRuns(otherCovers, counterStampMs(message));
-  };
-  const offered = base.filter((message) => !offeredByOther(message));
+  const offered =
+    otherCovers.length === 0 ? base : base.filter((message) => !insideRun(otherCovers, message));
   // Where each offered frame the other side also carries sits. **The same
   // three faces `Frames` answers by** - id, the ending's envelope, then the
   // words - so a frame the other side carries under an id-less copy is
   // placed, not inserted beside itself.
-  const byId = new Map<string, number>();
-  const byEnding = new Map<string, number>();
-  const byWords = new Map<string, number>();
-  offered.forEach((message, index) => {
-    const id = uuidOf(message);
-    if (id !== null && !byId.has(id)) byId.set(id, index);
-    const ending = completionText(message);
-    if (ending !== null && !byEnding.has(ending)) byEnding.set(ending, index);
-    const words = wordsOf(message);
-    if (words.length > 0) {
-      const key = JSON.stringify(words);
-      if (!byWords.has(key)) byWords.set(key, index);
-    }
-  });
+  const whereOf = frameIndex(offered);
   /**
    * The stamp ranges the offered side's folded counter runs cover.
    *
@@ -762,14 +775,6 @@ function interleave(base: unknown[], other: unknown[]): unknown[] {
     const run = foldedRunMs(message);
     if (run !== null) covers.push(run);
   }
-  const whereOf = (message: unknown): number | undefined => {
-    const id = uuidOf(message);
-    if (id !== null) return byId.get(id);
-    const ending = completionText(message);
-    if (ending !== null) return byEnding.get(ending);
-    const words = wordsOf(message);
-    return words.length > 0 ? byWords.get(JSON.stringify(words)) : undefined;
-  };
   /** The other-only frames that follow the offered frame at a given index. */
   const after = new Map<number, unknown[]>();
   let anchor = -1;
@@ -830,6 +835,133 @@ function outsidePage(merged: unknown[], here: Frames, fromPage: Frames): unknown
   // Handing back the array itself when nothing went keeps a row the reader is
   // looking at the object it was.
   return kept.length === merged.length ? merged : kept;
+}
+
+/**
+ * Where a list answers a frame: its id, a task ending's envelope, then its
+ * words - the same three faces [`Frames`] carries a frame by.
+ */
+function frameIndex(frames: readonly unknown[]): (message: unknown) => number | undefined {
+  const byId = new Map<string, number>();
+  const byEnding = new Map<string, number>();
+  const byWords = new Map<string, number>();
+  frames.forEach((message, index) => {
+    const id = uuidOf(message);
+    if (id !== null && !byId.has(id)) byId.set(id, index);
+    const ending = completionText(message);
+    if (ending !== null && !byEnding.has(ending)) byEnding.set(ending, index);
+    const words = wordsOf(message);
+    if (words.length > 0) {
+      const key = JSON.stringify(words);
+      if (!byWords.has(key)) byWords.set(key, index);
+    }
+  });
+  return (message) => {
+    const id = uuidOf(message);
+    if (id !== null) return byId.get(id);
+    const ending = completionText(message);
+    if (ending !== null) return byEnding.get(ending);
+    const words = wordsOf(message);
+    return words.length > 0 ? byWords.get(JSON.stringify(words)) : undefined;
+  };
+}
+
+/** Whether a folded run counts this frame: a run by range, a counter by stamp. */
+function insideRun(runs: readonly FoldedRun[], message: unknown): boolean {
+  const folded = foldedRunMs(message);
+  if (folded !== null) {
+    return runs.some((run) => run.from <= folded.from && folded.through <= run.through);
+  }
+  return withinRuns(runs, counterStampMs(message));
+}
+
+/**
+ * `target` with the frames of `copy` it does not hold, each placed where the
+ * exchange's own order puts it.
+ *
+ * **The drawn row and the page row are two cuts of one exchange, so the turn's
+ * order is the only thing that anchors both.** `outsidePage` has already taken
+ * the frames this page carries in a later row out of the drawn row, which is
+ * what leaves the page row's own neighbours useless as anchors: its first frame
+ * has none, so it went to the front of the row before, and the end is the same
+ * mistake mirrored - a live frame that arrived after the page was read sits
+ * there, and the page's frames are older than it. So each frame the page adds
+ * goes after the last drawn frame that precedes it in `order`, before the first
+ * one that follows it, and at the end only when nothing drawn follows it. A
+ * frame the page carries that the turn never did follows the one before it in
+ * the page row.
+ *
+ * **The fold is `interleave`'s.** A page row's folded counter run replaces the
+ * drawn raw counters it covers here, and a drawn run counts the page's raw
+ * counters through `have` - the drawn row's own index - so neither is added
+ * beside the other.
+ */
+function rejoin(target: unknown[], copy: unknown[], order: readonly unknown[]): unknown[] {
+  const have = new Frames(target);
+  const runs: FoldedRun[] = [];
+  for (const message of copy) {
+    const run = foldedRunMs(message);
+    if (run !== null) runs.push(run);
+  }
+  const kept = runs.length === 0 ? target : target.filter((message) => !insideRun(runs, message));
+  const at = frameIndex(order);
+  const position = kept.map((message) => at(message) ?? null);
+  const drawnAt = frameIndex(kept);
+  /** Frames to place after one drawn index, ordered by where the turn had them. */
+  const buckets = new Map<number, Array<{ rank: number; message: unknown }>>();
+  const add = (after: number, rank: number, message: unknown): void => {
+    const bucket = buckets.get(after);
+    if (bucket === undefined) buckets.set(after, [{ rank, message }]);
+    else bucket.push({ rank, message });
+  };
+  /** The drawn index the page row has reached, which a frame with no order position follows. */
+  let last = -1;
+  /** The turn's position of the frame last placed, which one with none shares. */
+  let rank = -1;
+  for (const message of copy) {
+    // A frame the drawn row already holds keeps its place, and is the anchor
+    // the next one measures from.
+    if (have.carries(message)) {
+      const index = drawnAt(message);
+      if (index !== undefined) last = index;
+      continue;
+    }
+    // A page counter inside a run the drawn row holds is answered by `have`,
+    // top of this loop: its covers are a superset of any run kept here.
+    const want = at(message);
+    if (want !== undefined) rank = want;
+    let anchor = last;
+    if (want !== undefined) {
+      let before: number | null = null;
+      let following: number | undefined;
+      position.forEach((spot, index) => {
+        if (spot === null) return;
+        if (spot < want) before = index;
+        else if (following === undefined) following = index;
+      });
+      // A frame that leads the row goes before the first drawn frame that
+      // follows it; one nothing drawn follows goes at the end. **Leading every
+      // drawn frame is the defensive arm** - a later page row is a later slice
+      // of the turn, so it has no frame before the drawn row's first one - and
+      // it is kept so a cut the server sends still lands somewhere ordered
+      // rather than at the front of the row.
+      if (before === null) before = following === undefined ? kept.length - 1 : following - 1;
+      anchor = before;
+    }
+    add(anchor, rank, message);
+    last = anchor;
+  }
+  if (kept.length === target.length && buckets.size === 0) return target;
+  // Two frames can share an anchor; the turn's own order is what ranks them
+  // (a frame the turn never had keeps the rank of the one before it).
+  for (const bucket of buckets.values()) bucket.sort((one, other) => one.rank - other.rank);
+  const out: unknown[] = (buckets.get(-1) ?? []).map((entry) => entry.message);
+  kept.forEach((message, index) => {
+    out.push(message);
+    const bucket = buckets.get(index);
+    if (bucket !== undefined) out.push(...bucket.map((entry) => entry.message));
+  });
+  return out;
 }
 
 /**
@@ -1228,6 +1360,8 @@ export class Chat {
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
   private watchdog: ReturnType<typeof setTimeout> | null = null;
+  /** The tick a hidden page's landing waits on, so a publish can drop it. */
+  private deferred: ReturnType<typeof setTimeout> | null = null;
   /**
    * When the waiting publish was armed, by the wall clock - `0` when none is.
    *
@@ -1489,8 +1623,18 @@ export class Chat {
       clearTimeout(this.watchdog);
       this.watchdog = null;
     }
+    if (this.deferred !== null) {
+      clearTimeout(this.deferred);
+      this.deferred = null;
+    }
     this.armedAt = 0;
-    this.inner.set(this.held);
+    const written = this.held;
+    this.inner.set(written);
+    // **A mark is spent by the publish it was made for.** Cleared after the
+    // write and on the next microtask, because the readers that write wakes
+    // read `shift` as the rows change - which Svelte does on that microtask -
+    // and a mark cleared first would be gone before the list saw it.
+    if (headMoved(written.turns)) queueMicrotask(() => HEAD_MOVED.delete(written.turns));
   }
 
   /**
@@ -1503,7 +1647,9 @@ export class Chat {
    * published or armed, and nothing else clears that.
    */
   private wake(): void {
-    if (this.queued !== null) this.flush();
+    // A hidden page's landing waits on a tick rather than a frame, and a
+    // suspended page can lose that tick the same way it loses a frame.
+    if (this.queued !== null || this.deferred !== null) this.flush();
   }
 
   /**
@@ -1548,13 +1694,50 @@ export class Chat {
    * writes a read's answer (`session/live.ts`).
    */
   private fold(fn: (held: Conversation) => Conversation): void {
-    this.held = fn(this.held);
-    this.flush();
+    const before = this.held;
+    const next = fn(before);
+    const moved = movedHead(before, next);
+    if (moved) HEAD_MOVED.add(next.turns);
+    // **A value waiting for its publish is spent, never replaced.** The list
+    // reads the compensation per change, so a change that overwrote the
+    // waiting one would hand it a single update in which the head moved and
+    // the tail grew - the whole delta compensated as a prepend. A marked
+    // value not yet published, and any armed draw (which this change would be
+    // merged into), go out first; this change follows on the next paint,
+    // because two writes in one task coalesce before Svelte renders.
+    const waiting = this.queued !== null || headMoved(before.turns);
+    if (waiting) this.flush();
+    this.held = next;
+    if (!waiting && !(moved && cannotPaint())) {
+      this.flush();
+      return;
+    }
+    // A page that cannot paint has no frame to wait for, and a write in the
+    // same task as the one above would coalesce with it - so it waits a tick.
+    if (cannotPaint()) this.deferred = setTimeout(() => this.flush(), 0);
+    else this.soon();
   }
 
   /** Apply one STREAM frame, whose draw lands on the next painted frame. */
   private stream(fn: (held: Conversation) => Conversation): void {
-    this.held = fn(this.held);
+    const before = this.held;
+    const next = fn(before);
+    const moved = movedHead(before, next);
+    if (moved) HEAD_MOVED.add(next.turns);
+    // A marked value not yet published is spent first, and a frame that moves
+    // the head is never merged into a draw already armed. Any other frame may
+    // ride the draw it meets: appends are the burst the paint coalesces.
+    const spent = headMoved(before.turns) || (moved && this.queued !== null);
+    if (spent) this.flush();
+    this.held = next;
+    // **A spent publish and a head move both owe a boundary of their own.** On
+    // a visible page the next frame is that boundary; a page that cannot paint
+    // has no frame, so it takes a tick - without which this frame would merge
+    // with the one just spent and the landing's mark would be lost.
+    if (cannotPaint() && (moved || spent)) {
+      this.deferred = setTimeout(() => this.flush(), 0);
+      return;
+    }
     this.soon();
   }
 
@@ -1599,7 +1782,7 @@ export class Chat {
       handoff?: unknown;
     };
     const record = handoffOf(conversation.handoff);
-    if (record !== null) this.seedHandoffTurn(record, 'ahead');
+    if (record !== null) this.seedHandoffJoin(record, 'ahead');
     const rows = pageTurns(conversation.turns);
     if (rows.length === 0) return;
     const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
@@ -2110,7 +2293,7 @@ export class Chat {
           // carries**, because the successor's transcript never holds it and
           // the live frame it arrived on is long gone.
           const record = handoffOf(conversation.handoff);
-          if (record !== null) this.seedHandoffTurn(record, 'ahead');
+          if (record !== null) this.seedHandoffJoin(record, 'ahead');
           if (fresh) {
             const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
@@ -2498,20 +2681,21 @@ export class Chat {
         const placedAt = placed.get(match);
         if (placedAt !== undefined) {
           // The same exchange cut again: its frames join the row already
-          // drawn rather than opening a second one.
+          // drawn rather than opening a second one - placed by the exchange's
+          // own order, so nothing drawn moves (see `rejoin`).
           const target = drawn[placedAt];
           if (target === undefined) continue;
-          const have = new Frames(target.messages);
-          const grown = copy.filter((message) => !have.carries(message));
+          const messages = pairHookRuns(rejoin(target.messages, copy, match.messages));
           const also = target.also ?? [];
           const later = also.includes(row.key) ? also : [...also, row.key];
-          drawn[placedAt] = {
-            ...target,
-            ...(grown.length > 0
-              ? { messages: pairHookRuns(interleave(target.messages, copy)) }
-              : {}),
-            ...(later === also ? {} : { also: later }),
-          };
+          drawn[placedAt] =
+            messages === target.messages && later === also
+              ? target
+              : {
+                  ...target,
+                  ...(messages === target.messages ? {} : { messages }),
+                  ...(later === also ? {} : { also: later }),
+                };
           continue;
         }
         placed.set(match, drawn.length);
@@ -2670,10 +2854,15 @@ export class Chat {
       // is written here and nowhere else - no read restores it - so a tail of
       // nothing but notices has nothing to walk for, and targeting one would
       // fetch the whole history one page per landing for a turn no page will
-      // ever carry. The walk's own reach is the transcript-carried turns.
+      // ever carry. **A record turn is the same fact from the other
+      // transcript**: the handoff's judgment turn ran in the session that
+      // left, so no page of the successor's history names it, and walking to
+      // it would read that history to its top on every load. The walk's own
+      // reach is the transcript-carried turns.
       if (direction === 'newest' && !reachesHeld) {
-        const carriable = rest.filter((turn) =>
-          turn.messages.some((message) => !isForgeNotice(message)),
+        const carriable = rest.filter(
+          (turn) =>
+            turn.record !== true && turn.messages.some((message) => !isForgeNotice(message)),
         );
         walk.key = carriable.length > 0 ? (carriable[carriable.length - 1]?.key ?? null) : null;
         walk.below = walk.key === null ? null : new Set(rest.map((turn) => turn.key));
@@ -2750,6 +2939,23 @@ export class Chat {
           loose.push(turn);
         }
       }
+      // **The turns a newest page does not carry keep the order they were
+      // held in.** A settled turn and one still in play are not two ranks
+      // here: a watched swap leaves the judgment turn in play while its row
+      // is already settled, and placing every settled turn above every
+      // in-play one lifted the row over the turn it ends - within one
+      // successor turn (#2639). The seam is one stretch of held order.
+      //
+      // **An older landing needs no such rule.** Its page is older than
+      // every held turn, so the recorded seam sits wholly below it; the one
+      // way an older landing can order the two is a record capped shorter
+      // than the page's copy (a turn past the ceiling), where the settle does
+      // not fire and the live turn outlives its row. That is bounded by the
+      // cap and left as the older landing's own order.
+      const keptByKey = new Map([...rest, ...overtaken].map((turn) => [turn.key, turn]));
+      const aboveHeld = healed.turns
+        .map((turn) => keptByKey.get(turn.key))
+        .filter((turn): turn is Turn => turn !== undefined);
       const turns =
         direction === 'older'
           ? this.walkTo !== null && this.walkBelow !== null
@@ -2767,7 +2973,7 @@ export class Chat {
                 ...loose,
               ]
             : [...drawn, ...rest, ...loose]
-          : [...rest, ...overtaken, ...drawn, ...loose];
+          : [...aboveHeld, ...drawn, ...loose];
       // **The newest page is the trim's floor**: its first row is where the
       // window may stop, so no row of it is ever dropped. The seed is the
       // other floor - the one page `more` can never name again.
@@ -2879,7 +3085,7 @@ export class Chat {
    * describes.
    */
   private holdHandoff(handoff: HandoffRecord): void {
-    this.seedHandoffTurn(handoff, 'after');
+    this.seedHandoffJoin(handoff, 'after');
     // **The successor's id rides with the turns.** A swap that never lands
     // (a failed spawn, a dropped socket) leaves this set, and the next
     // `session_replaced` from anything else - a plain `/new` - must not read
@@ -2887,20 +3093,81 @@ export class Chat {
     this.carried = { turns: this.held.turns, to: handoff.to };
   }
 
-  /** Put the row in the conversation once, wherever it is missing: the live
-   * frame and a seat record's copy are the same row by its key. */
-  private seedHandoffTurn(handoff: HandoffRecord, where: 'ahead' | 'after'): void {
-    const key = handoffKey(handoff);
-    if (this.held.turns.some((turn) => turn.key === key)) return;
-    const turn: Turn = { key, messages: [handoffFrame(handoff)], live: false };
-    // **A live swap puts the row after the outgoing conversation**; a seed
-    // from a seat record puts it before the successor turns that are already
-    // held - the successor's transcript never carries the row, so it is the
-    // head of what is drawn, not its tail.
-    this.fold((held) => ({
-      ...held,
-      turns: where === 'ahead' ? [turn, ...held.turns] : [...held.turns, turn],
-    }));
+  /** Put the join in the conversation once, wherever it is missing: the
+   * judgment turn the record carries, and the row it ended at.
+   *
+   * **The turn rather than the row alone.** The procedure prompt and the
+   * calls that ran it lived in the session that left, so a client that did
+   * not watch the swap has no frames for them - the record is their only
+   * carrier. Both are keyed, so a live client that already drew the turn
+   * from its own frames lands on that row instead of a second copy. */
+  private seedHandoffJoin(handoff: HandoffRecord, where: 'ahead' | 'after'): void {
+    const row = handoffKey(handoff);
+    const judgment = judgmentTurnOf(handoff);
+    this.fold((held) => {
+      let turns = held.turns;
+      const added: Turn[] = [];
+      if (judgment !== null) {
+        // **The same turn can already be here under another name, and not
+        // necessarily as its opening row.** A client that attached while the
+        // judgment turn ran got it from a page keyed by the server's own name;
+        // worse, a procedure prompt that was QUEUED behind a running turn is
+        // folded into the turn above it, so that row opens on the interrupted
+        // work and carries the prompt somewhere inside. The prompt's id is the
+        // one fact both carriers keep, so it is what pairs them - searched
+        // through every message, not only the first.
+        const opening = uuidOf(judgment.messages[0]);
+        const at =
+          opening === null
+            ? turns.findIndex((turn) => turn.key === judgment.key)
+            : turns.findIndex((turn) =>
+                turn.messages.some((message) => uuidOf(message) === opening),
+              );
+        if (at === -1) {
+          added.push(judgment);
+        } else {
+          // **Only what the row lacks.** The held row may be the interrupted
+          // turn itself, opening on frames of its own; replacing its messages
+          // wholesale would drop them. The record's copy appends where it
+          // continues.
+          //
+          // **And the record settles the row.** The turn ended before the
+          // record was written, so nothing about it is still being written -
+          // a watching client that had it live would otherwise draw the
+          // running mark until a full reload, which is the class this cut
+          // exists to close. `record` is set for the same reason it is on a
+          // freshly seeded turn: no page of the successor's transcript can
+          // ever carry it, so it is no target for the walk.
+          const same = turns[at];
+          if (same !== undefined) {
+            const carried = new Frames(same.messages);
+            const grown = judgment.messages.filter((message) => !carried.carries(message));
+            const settled: Turn = {
+              ...same,
+              messages: grown.length > 0 ? [...same.messages, ...grown] : same.messages,
+              live: false,
+              running: false,
+              record: true,
+            };
+            if (grown.length > 0 || same.live || same.running === true || same.record !== true) {
+              turns = [...turns.slice(0, at), settled, ...turns.slice(at + 1)];
+            }
+          }
+        }
+      }
+      if (!turns.some((turn) => turn.key === row)) {
+        added.push({ key: row, messages: [handoffFrame(handoff)], live: false });
+      }
+      if (added.length === 0 && turns === held.turns) return held;
+      // **A live swap puts the join after the outgoing conversation**; a seed
+      // from a seat record puts it before the successor turns that are already
+      // held - the successor's transcript never carries either, so they are
+      // the head of what is drawn, not its tail.
+      return {
+        ...held,
+        turns: where === 'ahead' ? [...added, ...turns] : [...turns, ...added],
+      };
+    });
   }
 
   private replaced(occupant: string | null): void {
@@ -2952,10 +3219,10 @@ export class Chat {
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding
-    // an ask keeps holding it - the drain never fires, `shift` stays armed for
-    // the life of the seat, and the observer's restore never runs for a parked
-    // reader (measured: the offset left at 50 where the row above them had
-    // moved it to 290).
+    // an ask keeps holding it - the drain never fires, `compensating` stays on
+    // for the life of the seat, and the observer's restore never runs for a
+    // parked reader (measured: the offset left at 50 where the row above them
+    // had moved it to 290).
     if (held) this.forgot();
     this.clearRetry();
     // **And the empty-page beat goes with it.** The backoff belonged to the
@@ -3900,6 +4167,49 @@ const TURN_BYTES = new WeakMap<unknown[], number>();
  * re-cutting the objects the list and the fold hand back by identity.
  */
 const BLOCK = new WeakMap<object, number>();
+
+/**
+ * The turn lists whose HEAD moved when the fold built them.
+ *
+ * **A row list keys its measured heights by position**, so a change at the
+ * head hands every row its neighbour's height and the rows draw over one
+ * another until each re-measures. The list compensates only for a change it is
+ * told was a prepend, and it reads that as a fact about the change - which is
+ * why a flag describing a moment cannot stand in for it: held on for a page's
+ * whole flight, it marks every turn that opens at the tail inside it as a
+ * prepend too, and every row below lands on the row above's offset (Ved,
+ * 2026-10-28: two rows in one band, text over text, gone later in the same
+ * view). Stamped where the list is built, the flag says what the change was.
+ */
+const HEAD_MOVED = new WeakSet<readonly unknown[]>();
+
+/** Whether `turns` is a list whose head moved when the fold built it. */
+export function headMoved(turns: readonly unknown[]): boolean {
+  return HEAD_MOVED.has(turns);
+}
+
+/**
+ * Whether a change moved the list's head, which is what the mark says.
+ *
+ * **Every way the held rows move goes through `fold` or `stream`**, so marking
+ * there cannot be forgotten by one of them. What counts is the head itself
+ * moving - a page landing above, a trim that cuts the front, `dropEmptied`
+ * removing the row a cancelled prompt left (a retraction keeps its row, so it
+ * only moves the head when that row was the first) - while a turn opening at
+ * the tail is the one change that must not be read as the same fact.
+ * (`replaced`, the occupant swap, is the exception: it writes a whole new
+ * conversation rather than moving rows in the one already drawn.)
+ *
+ * **A list built from nothing is not a head move.** The first page has nothing
+ * above the reader to hold, and the list fills an empty one row by row.
+ */
+function movedHead(before: Conversation, next: Conversation): boolean {
+  return (
+    next.turns !== before.turns &&
+    before.turns.length > 0 &&
+    (next.turns[0]?.key ?? null) !== (before.turns[0]?.key ?? null)
+  );
+}
 
 /** The message JSON one turn holds. */
 function turnBytes(turn: { messages: unknown[] }): number {
