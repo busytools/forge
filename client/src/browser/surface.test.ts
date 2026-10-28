@@ -38,6 +38,7 @@ import {
   resizeBrowser,
   showBrowser,
   sizesAsWatcher,
+  takeControl as sendControl,
 } from './link';
 import {
   closeSurface,
@@ -72,6 +73,7 @@ beforeEach(() => {
   hostable.mockReset();
   hostable.mockReturnValue(true);
   resize.mockClear();
+  vi.mocked(sendControl).mockClear();
   vi.mocked(sizesAsWatcher).mockReturnValue(false);
   surface.viewer = null;
   surface.controller = null;
@@ -150,6 +152,7 @@ describe('the browser surface', () => {
     surface.viewer = 7;
     surface.controller = null;
     await takeControl(true);
+    expect(sendControl, 'the take is asked for on the wire').toHaveBeenCalledWith(true);
     expect(surface.controller, 'a refused take is not a role').toBeNull();
   });
 

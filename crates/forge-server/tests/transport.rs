@@ -8888,6 +8888,19 @@ async fn a_reattach_leaves_the_move_to_the_attach() {
         stub.detached.lock().expect("the stub's detaches"),
     );
 
+    // **A different tab is still the connection's to view**: leaving the move
+    // to the attach must not leave the old tab as the one it reports.
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(3), reply_to: None },
+    )
+    .await;
+    let ServerMessage::BrowserView { tab, .. } = next_server(&mut socket).await else {
+        panic!("the move answers")
+    };
+    assert_eq!(tab, 3, "the connection views the new tab");
+    let _ = next_server(&mut socket).await; // its nav state
+
     // A tab the host cannot attach still gives the viewer up.
     send(
         &mut socket,
@@ -8902,6 +8915,62 @@ async fn a_reattach_leaves_the_move_to_the_attach() {
         stub.detached.lock().expect("the stub's detaches").as_slice(),
         [viewer],
         "the refused attach gives the viewer up"
+    );
+}
+
+/// **A gesture and a take from a connection with no attach are answered**,
+/// and a pointer move is not: the surface can read as live over a page no
+/// gesture can reach, so the refusal has to reach it - except the move
+/// stream, whose refusal is the click's that follows.
+#[tokio::test]
+async fn an_unattached_gesture_and_take_are_answered() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserInput {
+            seq: 1,
+            event: forge_primitives::browser::BrowserInputEvent::Text { text: "x".to_owned() },
+        },
+    )
+    .await;
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("a text with no attach is refused")
+    };
+    assert_eq!(what, "browser_input");
+    assert!(why.contains("no browser attached"), "{why}");
+
+    send(&mut socket, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("a take with no attach is refused")
+    };
+    assert_eq!(what, "browser_control");
+    assert!(why.contains("no browser attached"), "{why}");
+
+    send(
+        &mut socket,
+        ClientMessage::BrowserInput {
+            seq: 2,
+            event: forge_primitives::browser::BrowserInputEvent::Mouse {
+                action: forge_primitives::browser::MouseAction::Move,
+                x: 10.0,
+                y: 20.0,
+                button: 0,
+                clicks: 0,
+                modifiers: forge_primitives::browser::InputModifiers::default(),
+            },
+        },
+    )
+    .await;
+    assert!(
+        next_server_within(&mut socket, 300).await.is_none(),
+        "a pointer move is a stream and its refusal is the click's",
     );
 }
 

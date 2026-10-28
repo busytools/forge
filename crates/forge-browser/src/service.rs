@@ -2406,6 +2406,15 @@ impl BrowserService {
         tab: Option<u16>,
     ) -> Result<Attachment, String> {
         self.note_live(seat);
+        let key = self.target(seat)?;
+        let was =
+            self.where_viewing.lock().unwrap_or_else(PoisonError::into_inner).get(&viewer).cloned();
+        // **A move to another profile lets the old one go before it opens.**
+        // `open` can start a cold host, and the old tab would otherwise keep
+        // this viewer, and the role it held there, warm for the whole wait.
+        if was.as_ref().is_some_and(|(was_key, _)| was_key != key.as_str()) {
+            self.detach(viewer).await;
+        }
         let profile = self.open(seat).await?;
         let tab = if let Some(tab) = tab {
             tab
@@ -2425,24 +2434,24 @@ impl BrowserService {
         // tab is not a move**: an open that lands twice, or a re-attach to
         // the tab already held, is one viewer on one page, so the role it
         // took there survives.
-        let was =
-            self.where_viewing.lock().unwrap_or_else(PoisonError::into_inner).get(&viewer).cloned();
         let staying =
             was.as_ref().is_some_and(|(key, viewing)| key == &profile.key && *viewing == tab);
         if !staying {
             self.detach(viewer).await;
         }
         // **A re-attach is where a role went missing without a line.** The
-        // entry names the tab the viewer was on and whether this attach kept
-        // the role, so a surface driving a tab it does not control - or no
-        // longer holding one it had - is answerable from the log.
+        // entry names the tab and profile the viewer was on and whether this
+        // attach is the same tab, so a surface driving a tab it does not
+        // control - or no longer holding one it had - is answerable from the
+        // log.
         tracing::debug!(
             event_name = "browser_attach",
             profile = %profile.key,
             tab,
             viewer,
+            was_profile = was.as_ref().map(|(was_key, _)| was_key.as_str()),
             was_tab = was.as_ref().map(|(_, viewing)| *viewing),
-            role_kept = staying,
+            same_tab = staying,
             "a viewer attached to a tab",
         );
         let frames = profile.frame_receiver(tab);
@@ -8554,6 +8563,53 @@ mod tests {
                 .get(&tab)
                 .is_some_and(|watchers| watchers.contains(&7)),
             "and the tab it left keeps no viewer of it",
+        );
+        assert!(
+            profile
+                .viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&2)
+                .is_some_and(|watchers| watchers.contains(&7)),
+            "the tab it moved to holds the viewer",
+        );
+        assert_eq!(profile.controller(2), None, "and nobody took its role yet");
+        assert_eq!(
+            service.where_viewing.lock().unwrap_or_else(PoisonError::into_inner).get(&7).cloned(),
+            Some((profile.key.clone(), 2)),
+            "and the viewer is known to be on the tab it moved to",
+        );
+
+        // **The same tab number in another profile is not the same tab.**
+        let other = SessionSlot::lead("OtherOrg", "proj");
+        service.install_fake(&other, FakeDriver::with_blank("T1")).await;
+        service
+            .call(&other, "browser_snapshot", json!({}))
+            .await
+            .expect("the other profile's tab is adopted");
+        let other_profile = service.find("OtherOrg/default").await.expect("the other profile");
+        service.attach(9, &seat, Some(tab)).await.expect("a viewer on the first profile");
+        service.take_control(&profile.key, tab, 9).await.expect("its take");
+        service.attach(9, &other, Some(1)).await.expect("the move across profiles");
+        assert_eq!(profile.controller(tab), None, "the first profile's role is released");
+        assert!(
+            !profile
+                .viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&tab)
+                .is_some_and(|watchers| watchers.contains(&9)),
+            "and the viewer left the first profile's tab",
+        );
+        assert_eq!(other_profile.controller(1), None, "the second profile holds no role yet");
+        assert!(
+            other_profile
+                .viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&1)
+                .is_some_and(|watchers| watchers.contains(&9)),
+            "and the viewer is on the second profile's tab 1",
         );
     }
 

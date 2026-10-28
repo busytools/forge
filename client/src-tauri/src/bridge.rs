@@ -204,6 +204,10 @@ pub struct Bridge {
     picking: std::sync::atomic::AtomicBool,
     /// The ask the open panel's answer belongs to.
     live_file: AtomicU64,
+    /// When a browser refusal was last logged, epoch milliseconds. **A
+    /// pointer move is a stream**: a surface with no role is refused one per
+    /// move, and the first of the burst is the record, not every frame.
+    refusal_logged_at: AtomicU64,
 }
 
 /// Clears the picker flag however the picker ends, a panic included.
@@ -268,6 +272,7 @@ impl Bridge {
             input_seq: AtomicU64::new(0),
             picking: std::sync::atomic::AtomicBool::new(false),
             live_file: AtomicU64::new(0),
+            refusal_logged_at: AtomicU64::new(0),
         })
     }
 
@@ -507,6 +512,21 @@ impl Bridge {
         if let Some(socket) = self.socket() {
             socket.browser_control(take);
         }
+    }
+
+    /// Whether this refusal is the first of its burst, so a refused pointer
+    /// move is one line rather than one per frame.
+    fn refusal_is_new(&self) -> bool {
+        const EVERY_MS: u64 = 1_000;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX));
+        let last = self.refusal_logged_at.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < EVERY_MS {
+            return false;
+        }
+        self.refusal_logged_at.store(now, Ordering::Relaxed);
+        true
     }
 
     /// Move through the page's history.
@@ -1285,6 +1305,11 @@ impl Bridge {
                 // is not an artifact anyone reads after the fact.
                 if let Some(what) = message.get("what").and_then(Value::as_str)
                     && what.starts_with("browser_")
+                    // **A refused gesture is a stream**: a surface with no
+                    // role is refused one per pointer move, so an input
+                    // refusal is recorded once a second; a refused take is
+                    // not a stream and always lands.
+                    && (what != "browser_input" || self.refusal_is_new())
                 {
                     tauri_plugin_log::log::info!(
                         "the browser refused a request (event_name client_browser_refused, \
@@ -1638,6 +1663,24 @@ mod tests {
     fn bridge() -> (Arc<Bridge>, mpsc::UnboundedReceiver<ClientEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Bridge::new(None, tx), rx)
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+    }
+
+    /// **A refused gesture is one line a second, not one a frame.** The
+    /// server withholds the pointer moves; the shell can only rate-limit, so
+    /// a burst of refusals is recorded by its first.
+    #[test]
+    fn a_refusal_burst_is_recorded_once_a_second() {
+        let (bridge, _rx) = bridge();
+        assert!(bridge.refusal_is_new(), "the first refusal is the record");
+        assert!(!bridge.refusal_is_new(), "the next in the same second is not");
+        bridge.refusal_logged_at.store(now_ms().saturating_sub(1_500), Ordering::Relaxed);
+        assert!(bridge.refusal_is_new(), "a later refusal is a new record");
     }
 
     /// What a bridge's ask notices went to, so a test can see a trigger fire.

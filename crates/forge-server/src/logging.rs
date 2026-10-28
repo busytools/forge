@@ -94,11 +94,11 @@ impl LoggingRuntime {
 /// one session's own work, not forge's health. They were demoted out of
 /// `WARN` for it, so they are named here to stay readable.
 ///
-/// `forge_browser` carries the browser's own records of a person driving a
-/// tab: a gesture refused before it reached the page, a controller role that
-/// moved or was let go. Each is that session's own work rather than forge's
-/// health, so they are `debug` - and without the directive a refused gesture
-/// leaves the client's send as the only line anywhere.
+/// `forge_browser` carries the browser service's own records of a viewer
+/// attaching and of a controller role being let go. Each is that session's
+/// own work rather than forge's health, so they are `debug`; the refusal of
+/// one gesture lives on `forge_server` (its `browser_input_refused`), which
+/// the directive above already keeps readable.
 ///
 /// The two `llama` targets are the dictation engine's own log bridge,
 /// which reaches tracing through the llama-cpp-2 crate under both its
