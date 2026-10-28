@@ -51,9 +51,9 @@
     notes?: string;
     take?: Take | null;
     /**
-     * What the take row is doing, read the way every box that draws a take row
-     * reads it (`takePhase`): **the page's own take counts, not only the
-     * record's**. The record's take is the socket's echo, so a take whose
+     * What the take row is doing, from `takePhase`: **the page's own take
+     * counts, not only the record's**. The record's take is the socket's echo,
+     * so a take whose
      * stream has not gone out yet - a socket still opening, or the round trip
      * of every press - has no record and would draw an empty field here while
      * the composer's own row already draws its card.
@@ -85,12 +85,14 @@
      */
     takeline?: { tone: string; text: string } | null;
     /**
-     * A take this page pressed is still opening its microphone.
+     * Whether the open has outlasted `OPEN_DRAWN_MS` - the composer's own
+     * `openingShown`: false for the first 180ms and never true for an open
+     * that lands inside it, so a quick press flashes nothing.
      *
-     * **Nothing else says so on this surface.** The card draws from this
-     * page's own take, which exists only once the capture has opened, so
-     * without this line the whole open draws nothing and the press reads as
-     * dead.
+     * **Nothing else on this surface says the open is running.** The card
+     * draws from this page's own take, which exists only once the capture has
+     * opened; until then the row keeps its field, mic and send and changes in
+     * no way, so the press reads as dead.
      */
     opening?: boolean;
     /** The reader typed in the row, which dismisses the line above it the way
@@ -260,9 +262,9 @@
   {/if}
   {#if feedbackOpen && onfeedback !== null}
     {#if opening}
-      <!-- The open itself, in the bar: the card comes from this page's own
-           take, which exists only once the capture has opened, so this is the
-           only thing on this surface that can say the press landed. -->
+      <!-- The open, in the bar and only past the wait the props doc names:
+           until this page's own take exists there is nothing else on the
+           surface that says the press landed. -->
       <div class="tb-line opening">
         <span class="ring" aria-hidden="true"></span>opening the microphone…
       </div>

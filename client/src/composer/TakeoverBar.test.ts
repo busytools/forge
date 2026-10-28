@@ -212,8 +212,13 @@ describe("the takeover bar's tab picker", () => {
 });
 
 /**
- * The one rule in the sheet whose selector list names `selector`, as its
+ * The first rule in the sheet whose selector list names `selector`, as its
  * selector list and its body - or `null` when no rule names it.
+ *
+ * **First, because one selector can appear in more than one rule** -
+ * `.takeline .tc` is in the line rule and again in its min-height rule - and a
+ * caller wants the first rule that names it, which is the one carrying the
+ * property it pins.
  *
  * **Membership, not text**: a rule's selectors are reordered and its body
  * re-wrapped by any hand that touches it, and a pin on the text would go red

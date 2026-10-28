@@ -2948,9 +2948,11 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 @container (max-width: 266px) { .tc .fr { display: none; } }
 @container (max-width: 195px) { .tc .kb { display: none; } }
 @container (max-width: 124px) { .tc .pace { display: none; } }
-/* The way out keeps a finger's target wherever the card ends up, and the target
-   is drawn rather than laid out: a 44px box centred on the glyph, so the pill's
-   width does not change with the pointer and the ladder's steps hold for both. */
+/* The way out keeps a finger's target, and the target is drawn rather than laid
+   out: a 44px box around the glyph, so the pill's width does not change with
+   the pointer and the ladder's steps hold for both. **On a card that sits in a
+   line of controls it hangs left from the glyph's right edge** (the rule
+   below), so it can never reach the button beside it. */
 @media (pointer: coarse) {
   .tc .x { position: relative; }
   .tc .x::after { content: ''; position: absolute; left: 50%; top: 50%;
