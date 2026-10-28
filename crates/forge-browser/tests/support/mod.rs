@@ -240,6 +240,71 @@ impl Drop for Host {
     }
 }
 
+/// One full click, written the way the server writes it.
+pub fn click(host: &mut Host, x: i32, y: i32) {
+    for action in [
+        forge_primitives::browser::MouseAction::Press,
+        forge_primitives::browser::MouseAction::Release,
+    ] {
+        host.input(&forge_browser::input::host_line(&forge_browser::input::HostInput::Mouse {
+            tab: 1,
+            action,
+            x,
+            y,
+            button: 0,
+            clicks: 1,
+            modifiers: forge_primitives::browser::InputModifiers::default(),
+        }));
+    }
+}
+
+/// Click the blank page until it has seen a pointer gesture.
+///
+/// **The first pointer event after a host starts is spent activating it, and
+/// under load more than one can be**, so the page's own count is what says a
+/// later click will land.
+pub async fn prime_clicks(
+    host: &mut Host,
+    cdp: &mut forge_browser::window::Cdp,
+    bound: std::time::Duration,
+) {
+    cdp.call(
+        "Runtime.evaluate",
+        serde_json::json!({
+            "expression": "window.__forge_downs = 0; \
+                document.addEventListener('mousedown', () => { window.__forge_downs += 1; }, true); 0",
+        }),
+        None,
+    )
+    .await
+    .expect("the page takes the gesture counter");
+    let deadline = std::time::Instant::now() + bound;
+    loop {
+        click(host, 600, 500);
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let reply = cdp
+            .call(
+                "Runtime.evaluate",
+                serde_json::json!({ "expression": "window.__forge_downs", "returnByValue": true }),
+                None,
+            )
+            .await
+            .expect("the page answers its gesture count");
+        if reply
+            .pointer("/result/value")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|downs| downs > 0)
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no priming click reached the page (log: {})",
+            host.log()
+        );
+    }
+}
+
 /// One HTTP GET over a plain socket.
 ///
 /// **A server that holds the socket open is an answer too**: the read is
