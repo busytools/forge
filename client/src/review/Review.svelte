@@ -246,13 +246,19 @@
    * mixed answer the base line exists to prevent. When the chain behind the
    * drawn diff moves, this page asks its own read again, debounced so a burst
    * of commits is one read.
+   *
+   * **A null chain is a value, not an absence.** A seat with no ahead layer
+   * (a fresh worktree branch, a detached or default checkout) and a branch
+   * that merges back to its base both draw a chain of nothing, so the value
+   * appearing or going is a move. Only a record that has not arrived is out
+   * of the comparison, because there is nothing this page drew yet.
    */
   let drawnAt: string | null = null;
   let drawnChain: string | null = null;
   $effect(() => {
     const at = subjectKey({ session: slot });
+    if (record === null) return;
     const chain = chainOf(record);
-    if (chain === null) return;
     const first = drawnAt !== at;
     if (!first && chain === drawnChain) return;
     drawnAt = at;
@@ -267,20 +273,22 @@
    * **A base can move without the chain moving**, and only the seat's own
    * watch refresh knows it: `record.git.base` is what that refresh measured,
    * `record.diff.base` is what this page's read did. A change in the former
-   * that this page's read does not already state asks the read again.
+   * that this page's read does not already state asks the read again. As with
+   * the chain, a null measurement is a value: the first one to arrive after
+   * this page's read is news, not the baseline.
    */
   let baseSeenAt: string | null = null;
   let seenBase: string | null = null;
   $effect(() => {
     const at = subjectKey({ session: slot });
-    const measured = baseOf(record?.git.base ?? null);
-    if (measured === null) return;
+    if (record === null) return;
+    const measured = baseOf(record.git.base);
     const first = baseSeenAt !== at;
     if (!first && measured === seenBase) return;
     baseSeenAt = at;
     seenBase = measured;
     if (first) return;
-    if (measured !== baseOf(record?.diff.base ?? null)) askAgainSoon();
+    if (measured !== baseOf(record.diff.base)) askAgainSoon();
   });
 
   // A page that goes away asks nothing: the intent is given back with the

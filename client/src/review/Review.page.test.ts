@@ -1574,6 +1574,49 @@ describe('the steppers', () => {
   });
 
   /**
+   * **A chain that appears or goes is a move, not a first sight.** A seat with
+   * no ahead layer - a freshly spawned worktree branch, a detached or default
+   * checkout - draws a count of nothing, and a branch that merges back to its
+   * base returns to it. Either move leaves the canvas on the diff the last
+   * read drew, so the page takes its baseline from the record its own read
+   * answered and compares a null chain as a value rather than stopping.
+   */
+  it('asks its own read again when the chain appears or goes', async () => {
+    // The page opens on a seat with no ahead layer at all.
+    await draw([], [], true, DIFF, [], 0, { state: 'current' });
+    vi.useFakeTimers();
+
+    // A commit lands: the picker has a count, the canvas has the opening diff.
+    push({
+      wire: record(IDLE, [], [], DIFF, [{ sha: 'aaaaaaa', subject: 'one' }], 1, {
+        state: 'current',
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the page waits a beat before asking').toEqual([]);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the count arriving asks its own read').toEqual([{ review: true }]);
+
+    // The branch merges back to its base: the chain goes.
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    // Past the floor the last ask started.
+    vi.advanceTimersByTime(10_001);
+    flushSync();
+    expect(seat.rereads, 'the chain going asks its own read again').toEqual([
+      { review: true },
+      { review: true },
+    ]);
+  });
+
+  /**
    * **A notice-driven answer does not switch the page's base tracking off.**
    * A worker replying to a thread has the page's re-read answered with an
    * ordinary record; the base LINE is provenance and hides for it, but the
@@ -1681,6 +1724,33 @@ describe('the steppers', () => {
     vi.advanceTimersByTime(2_001);
     flushSync();
     expect(seat.rereads, 'and an unchanged measurement asks nothing').toEqual([{ review: true }]);
+  });
+
+  /**
+   * **The first measurement after the page's read is a move too.** A seat
+   * whose watch has not measured yet answers `git.base` null, so what the
+   * page drew is "nothing measured"; the measurement that arrives afterwards
+   * is news when it disagrees with the base the diff was drawn against.
+   */
+  it('asks its own read when the first measurement arrives after it', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' }, 'main', true, null);
+    vi.useFakeTimers();
+
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'behind',
+        behind: 1,
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the page waits a beat before asking').toEqual([]);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the measurement disagrees with the drawn base').toEqual([
+      { review: true },
+    ]);
   });
 
   /**
