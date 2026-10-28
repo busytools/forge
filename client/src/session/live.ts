@@ -801,7 +801,15 @@ function createSeat(
       // this want, so it cannot serve it; the ask goes again when the answer
       // lands. Dropping it left a page that asked during a seat's own open
       // with a record it never asked for and no second ask coming.
-      seat.wanted = options ?? {};
+      // **A review want outranks an ordinary one.** A want is served at its
+      // stated scope, else the seat's own; either way the review read carries
+      // the record a notice wants as well, and served as an ordinary read the
+      // notice would spend the page's ask: an ordinary record, its base line
+      // hidden, until the next move.
+      const want = options ?? {};
+      const prior = seat.wanted;
+      const priorIsReview = prior !== null && (prior.review ?? seat.review);
+      if (!(priorIsReview && want.review === false)) seat.wanted = want;
       return;
     }
     seat.asking = true;

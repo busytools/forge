@@ -3867,6 +3867,34 @@ describe('the review read', () => {
   });
 
   /**
+   * **A notice's ordinary want does not spend the page's review want.** The
+   * page's own re-ask latched while one was in flight is the read it needs;
+   * a notice landing behind it wants the record too, and one review read
+   * serves both. Served as an ordinary read, the page would draw a record its
+   * own scope did not produce and its base line would stay hidden until the
+   * next move.
+   */
+  it('keeps a latched review want when a notice wants the record too', () => {
+    const connection = drivable();
+    const view = watchSession(connection, LEAD, true, { review: true });
+    const stop = view.subscribe(() => {});
+
+    // The page wants its own read while the open's answer is in flight.
+    rereadSeat(connection, LEAD, { review: true });
+    // A notice wants the record behind it.
+    connection.land(
+      updateOf({
+        review_activity_notice: { key: LEAD, branch: 'b', waiting: 1, message: 'x' },
+      }),
+    );
+    expect(connection.refreshes, 'nothing is asked behind the ask in flight').toEqual([]);
+
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
+    expect(connection.refreshes, 'the review read is the one asked').toEqual([{ review: true }]);
+    stop();
+  });
+
+  /**
    * **Letting the seat go crosses the transport, and it is not a read.** Left
    * unsaid, the transport's held scope would keep re-asking the review read
    * on every reconnect for a seat nobody is reviewing.
