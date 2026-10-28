@@ -28,6 +28,9 @@ const mockRestart = vi.mocked(restartApp);
 const mockPublished = vi.mocked(latestPublished);
 const mockIsTauri = vi.mocked(isTauri);
 
+/** The store's value at import, before any test resets it: the launch state. */
+const initial = get(updateState);
+
 /** The release after the one this build is, so the test outlives a bump. */
 function nextRelease(): string {
   const parts = versionParts(CLIENT_VERSION);
@@ -38,10 +41,28 @@ function nextRelease(): string {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  updateState.set({ stage: 'current' });
+  updateState.set({ stage: 'checking' });
 });
 
 describe('watchUpdate', () => {
+  /**
+   * The launch state is the check itself, not a build that is current: on the
+   * phone the check is an HTTP fetch, and a page that starts on `current` is
+   * silent for however long that fetch takes.
+   */
+  it('starts on the check rather than on a build that is current', () => {
+    expect(initial).toEqual({ stage: 'checking' });
+  });
+
+  it('stays on the check while it is in flight', () => {
+    mockIsTauri.mockReturnValue(true);
+    mockCheck.mockImplementation(() => new Promise(() => {}));
+
+    void watchUpdate();
+
+    expect(get(updateState)).toEqual({ stage: 'checking' });
+  });
+
   it('names the version an update would install, in a shell', async () => {
     mockIsTauri.mockReturnValue(true);
     mockCheck.mockResolvedValue('1.0.116');

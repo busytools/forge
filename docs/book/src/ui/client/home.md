@@ -144,7 +144,10 @@ seat's conversation), so its line is the words `a turn failed`.
   for it to appear at all, so a probe that answered one of them draws
   nothing rather than claiming an update it cannot see.
 - **This app's own update**: the header draws `↑ vX available` beside the
-  `client` pair when a newer release is published, checked once at launch. It
+  `client` pair when a newer release is published, checked once at launch.
+  The line starts as `checking for updates...` while that check is in flight
+  - on the phone it is a network fetch - and settles to the offer, to nothing
+  on a build that is current, or to the failure line below. It
   is a control, where the CLI notice beside it is not: clicking installs the
   update and the line
   becomes `ready - restart to finish`, which is the click that swaps into the

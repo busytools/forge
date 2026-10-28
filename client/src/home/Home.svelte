@@ -111,7 +111,11 @@
       <span class="build"><span class="k">client</span> <b>v{CLIENT_VERSION}</b></span>
       <!-- This app's own update is the half this window can act on, so it is
            the one drawn as a control. -->
-      {#if $updateState.stage === 'available'}
+      {#if $updateState.stage === 'checking'}
+        <!-- The launch check in flight: quiet text, because it is a fact
+             about now rather than an outcome to act on. -->
+        <span>checking for updates...</span>
+      {:else if $updateState.stage === 'available'}
         <button
           class="upd"
           onclick={install}

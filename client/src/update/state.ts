@@ -11,6 +11,10 @@ import { latestPublished } from './web';
  * check at launch, the install a reader asks for, and the restart that
  * finishes it.
  *
+ * `checking` is where it starts: the launch check is a network fetch on the
+ * phone, and a page that began on `current` would draw no line for however
+ * long that fetch takes.
+ *
  * `current` is a build already current, and nothing else: a check that could
  * not run is its own stage, because "no update" and "could not check" must
  * not draw the same line.
@@ -22,6 +26,7 @@ import { latestPublished } from './web';
  * to keep and nothing to retry.
  */
 type UpdateState =
+  | { stage: 'checking' }
   | { stage: 'current' }
   | { stage: 'available'; version: string }
   | { stage: 'installing'; version: string }
@@ -31,14 +36,14 @@ type UpdateState =
   | { stage: 'check-failed'; detail: string }
   | { stage: 'web'; latest: string | null };
 
-export const updateState = writable<UpdateState>({ stage: 'current' });
+export const updateState = writable<UpdateState>({ stage: 'checking' });
 
 /** The launch check. The shell calls this once; a call of its own checks again. */
 export async function watchUpdate(): Promise<void> {
   if (isTauri()) {
     try {
       const version = await checkForUpdate();
-      if (version !== null) updateState.set({ stage: 'available', version });
+      updateState.set(version === null ? { stage: 'current' } : { stage: 'available', version });
     } catch (err) {
       updateState.set({
         stage: 'check-failed',
