@@ -336,11 +336,7 @@ fn transcript_row(value: &Value) -> Option<(SessionMessage, bool)> {
         Some("system")
             if value.get("subtype").and_then(Value::as_str) == Some("stop_hook_summary") =>
         {
-            let mut frame = value.clone();
-            if let Some(record) = frame.as_object_mut() {
-                record.insert("session_id".into(), Value::String(session_in_row(value)));
-            }
-            (SessionMessageKind::System, Some(frame))
+            (SessionMessageKind::System, Some(wire_session_frame(value)))
         }
         // **The system rows the live conversation draws.** A refusal, a
         // failed API call, an informational line, a notification and any
@@ -357,11 +353,7 @@ fn transcript_row(value: &Value) -> Option<(SessionMessage, bool)> {
                 .and_then(Value::as_str)
                 .is_none_or(|subtype| !SYSTEM_ROWS_DRAWN_ELSEWHERE.contains(&subtype)) =>
         {
-            let mut frame = value.clone();
-            if let Some(record) = frame.as_object_mut() {
-                record.insert("session_id".into(), Value::String(session_in_row(value)));
-            }
-            (SessionMessageKind::System, Some(frame))
+            (SessionMessageKind::System, Some(wire_session_frame(value)))
         }
         // **A top-level row this build has no kind for draws as itself.** The
         // row is kept whole and decoded by the same decoder the wire feeds -
@@ -419,6 +411,20 @@ fn session_in_row(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// A kept row carrying the session under the spelling the live frame sends.
+///
+/// **The CLI writes `sessionId` and the wire sends `session_id`.** Stamping
+/// the wire's spelling onto a clone that still held the CLI's put both in the
+/// frame, so the raw a reader opens showed the session twice (Ved, 2026-10-28).
+fn wire_session_frame(value: &Value) -> Value {
+    let mut frame = value.clone();
+    if let Some(record) = frame.as_object_mut() {
+        record.remove("sessionId");
+        record.insert("session_id".into(), Value::String(session_in_row(value)));
+    }
+    frame
 }
 
 /// Which of the facts the kept boundary frame reads the row did not yield -
@@ -2465,6 +2471,32 @@ mod tests {
             )),
             "and a subtype the client draws provisionally has its row",
         );
+    }
+
+    /// **One spelling of the session in a read frame.** The CLI writes
+    /// `sessionId` on a row and the wire sends `session_id`; a kept row that
+    /// carried both named the session twice, which is what a reader expanding
+    /// a provisional row saw raw (Ved, 2026-10-28). The scan drops the row's
+    /// own spelling, so the read frame is shaped like the live one.
+    #[test]
+    fn a_kept_system_row_carries_one_session_spelling() {
+        let jsonl = r#"{"type":"system","subtype":"api_error","error":{"message":"down"},"uuid":"e1","sessionId":"s1","timestamp":"2026-10-28T10:00:00.000Z"}
+{"type":"system","subtype":"stop_hook_summary","hookCount":0,"hookInfos":[],"hookErrors":[],"hasOutput":false,"level":"suggestion","preventedContinuation":false,"stopReason":"","toolUseID":"toolu_h","uuid":"h1","sessionId":"s1","timestamp":"2026-10-28T10:00:01.000Z"}
+"#;
+        let frames = messages_from_rows(parse_session_messages(jsonl.as_bytes()).messages, "s1");
+        assert_eq!(frames.len(), 2, "both kept system rows reach the frame");
+        for (at, frame) in frames.iter().enumerate() {
+            let wire = serde_json::to_value(frame).expect("a frame serialises").to_string();
+            assert!(
+                !wire.contains("\"sessionId\""),
+                "frame {at} carries the CLI's spelling as well as the wire's: {wire}",
+            );
+            assert_eq!(
+                wire.matches("\"session_id\"").count(),
+                1,
+                "frame {at} names the session exactly once: {wire}",
+            );
+        }
     }
 
     /// **One list, two consumers.** The scan and the client filter the same
