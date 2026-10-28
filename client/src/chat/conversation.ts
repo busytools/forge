@@ -723,33 +723,13 @@ function interleave(base: unknown[], other: unknown[]): unknown[] {
     const run = foldedRunMs(message);
     if (run !== null) otherCovers.push(run);
   }
-  const offeredByOther = (message: unknown): boolean => {
-    if (otherCovers.length === 0) return false;
-    const folded = foldedRunMs(message);
-    if (folded !== null) {
-      return otherCovers.some((run) => run.from <= folded.from && folded.through <= run.through);
-    }
-    return withinRuns(otherCovers, counterStampMs(message));
-  };
-  const offered = base.filter((message) => !offeredByOther(message));
+  const offered =
+    otherCovers.length === 0 ? base : base.filter((message) => !insideRun(otherCovers, message));
   // Where each offered frame the other side also carries sits. **The same
   // three faces `Frames` answers by** - id, the ending's envelope, then the
   // words - so a frame the other side carries under an id-less copy is
   // placed, not inserted beside itself.
-  const byId = new Map<string, number>();
-  const byEnding = new Map<string, number>();
-  const byWords = new Map<string, number>();
-  offered.forEach((message, index) => {
-    const id = uuidOf(message);
-    if (id !== null && !byId.has(id)) byId.set(id, index);
-    const ending = completionText(message);
-    if (ending !== null && !byEnding.has(ending)) byEnding.set(ending, index);
-    const words = wordsOf(message);
-    if (words.length > 0) {
-      const key = JSON.stringify(words);
-      if (!byWords.has(key)) byWords.set(key, index);
-    }
-  });
+  const whereOf = frameIndex(offered);
   /**
    * The stamp ranges the offered side's folded counter runs cover.
    *
@@ -762,14 +742,6 @@ function interleave(base: unknown[], other: unknown[]): unknown[] {
     const run = foldedRunMs(message);
     if (run !== null) covers.push(run);
   }
-  const whereOf = (message: unknown): number | undefined => {
-    const id = uuidOf(message);
-    if (id !== null) return byId.get(id);
-    const ending = completionText(message);
-    if (ending !== null) return byEnding.get(ending);
-    const words = wordsOf(message);
-    return words.length > 0 ? byWords.get(JSON.stringify(words)) : undefined;
-  };
   /** The other-only frames that follow the offered frame at a given index. */
   const after = new Map<number, unknown[]>();
   let anchor = -1;
@@ -830,6 +802,133 @@ function outsidePage(merged: unknown[], here: Frames, fromPage: Frames): unknown
   // Handing back the array itself when nothing went keeps a row the reader is
   // looking at the object it was.
   return kept.length === merged.length ? merged : kept;
+}
+
+/**
+ * Where a list answers a frame: its id, a task ending's envelope, then its
+ * words - the same three faces [`Frames`] carries a frame by.
+ */
+function frameIndex(frames: readonly unknown[]): (message: unknown) => number | undefined {
+  const byId = new Map<string, number>();
+  const byEnding = new Map<string, number>();
+  const byWords = new Map<string, number>();
+  frames.forEach((message, index) => {
+    const id = uuidOf(message);
+    if (id !== null && !byId.has(id)) byId.set(id, index);
+    const ending = completionText(message);
+    if (ending !== null && !byEnding.has(ending)) byEnding.set(ending, index);
+    const words = wordsOf(message);
+    if (words.length > 0) {
+      const key = JSON.stringify(words);
+      if (!byWords.has(key)) byWords.set(key, index);
+    }
+  });
+  return (message) => {
+    const id = uuidOf(message);
+    if (id !== null) return byId.get(id);
+    const ending = completionText(message);
+    if (ending !== null) return byEnding.get(ending);
+    const words = wordsOf(message);
+    return words.length > 0 ? byWords.get(JSON.stringify(words)) : undefined;
+  };
+}
+
+/** Whether a folded run counts this frame: a run by range, a counter by stamp. */
+function insideRun(runs: readonly FoldedRun[], message: unknown): boolean {
+  const folded = foldedRunMs(message);
+  if (folded !== null) {
+    return runs.some((run) => run.from <= folded.from && folded.through <= run.through);
+  }
+  return withinRuns(runs, counterStampMs(message));
+}
+
+/**
+ * `target` with the frames of `copy` it does not hold, each placed where the
+ * exchange's own order puts it.
+ *
+ * **The drawn row and the page row are two cuts of one exchange, so the turn's
+ * order is the only thing that anchors both.** `outsidePage` has already taken
+ * the frames this page carries in a later row out of the drawn row, which is
+ * what leaves the page row's own neighbours useless as anchors: its first frame
+ * has none, so it went to the front of the row before, and the end is the same
+ * mistake mirrored - a live frame that arrived after the page was read sits
+ * there, and the page's frames are older than it. So each frame the page adds
+ * goes after the last drawn frame that precedes it in `order`, before the first
+ * one that follows it, and at the end only when nothing drawn follows it. A
+ * frame the page carries that the turn never did follows the one before it in
+ * the page row.
+ *
+ * **The fold is `interleave`'s.** A page row's folded counter run replaces the
+ * drawn raw counters it covers here, and a drawn run counts the page's raw
+ * counters through `have` - the drawn row's own index - so neither is added
+ * beside the other.
+ */
+function rejoin(target: unknown[], copy: unknown[], order: readonly unknown[]): unknown[] {
+  const have = new Frames(target);
+  const runs: FoldedRun[] = [];
+  for (const message of copy) {
+    const run = foldedRunMs(message);
+    if (run !== null) runs.push(run);
+  }
+  const kept = runs.length === 0 ? target : target.filter((message) => !insideRun(runs, message));
+  const at = frameIndex(order);
+  const position = kept.map((message) => at(message) ?? null);
+  const drawnAt = frameIndex(kept);
+  /** Frames to place after one drawn index, ordered by where the turn had them. */
+  const buckets = new Map<number, Array<{ rank: number; message: unknown }>>();
+  const add = (after: number, rank: number, message: unknown): void => {
+    const bucket = buckets.get(after);
+    if (bucket === undefined) buckets.set(after, [{ rank, message }]);
+    else bucket.push({ rank, message });
+  };
+  /** The drawn index the page row has reached, which a frame with no order position follows. */
+  let last = -1;
+  /** The turn's position of the frame last placed, which one with none shares. */
+  let rank = -1;
+  for (const message of copy) {
+    // A frame the drawn row already holds keeps its place, and is the anchor
+    // the next one measures from.
+    if (have.carries(message)) {
+      const index = drawnAt(message);
+      if (index !== undefined) last = index;
+      continue;
+    }
+    // A page counter inside a run the drawn row holds is answered by `have`,
+    // top of this loop: its covers are a superset of any run kept here.
+    const want = at(message);
+    if (want !== undefined) rank = want;
+    let anchor = last;
+    if (want !== undefined) {
+      let before: number | null = null;
+      let following: number | undefined;
+      position.forEach((spot, index) => {
+        if (spot === null) return;
+        if (spot < want) before = index;
+        else if (following === undefined) following = index;
+      });
+      // A frame that leads the row goes before the first drawn frame that
+      // follows it; one nothing drawn follows goes at the end. **Leading every
+      // drawn frame is the defensive arm** - a later page row is a later slice
+      // of the turn, so it has no frame before the drawn row's first one - and
+      // it is kept so a cut the server sends still lands somewhere ordered
+      // rather than at the front of the row.
+      if (before === null) before = following === undefined ? kept.length - 1 : following - 1;
+      anchor = before;
+    }
+    add(anchor, rank, message);
+    last = anchor;
+  }
+  if (kept.length === target.length && buckets.size === 0) return target;
+  // Two frames can share an anchor; the turn's own order is what ranks them
+  // (a frame the turn never had keeps the rank of the one before it).
+  for (const bucket of buckets.values()) bucket.sort((one, other) => one.rank - other.rank);
+  const out: unknown[] = (buckets.get(-1) ?? []).map((entry) => entry.message);
+  kept.forEach((message, index) => {
+    out.push(message);
+    const bucket = buckets.get(index);
+    if (bucket !== undefined) out.push(...bucket.map((entry) => entry.message));
+  });
+  return out;
 }
 
 /**
@@ -2498,20 +2597,21 @@ export class Chat {
         const placedAt = placed.get(match);
         if (placedAt !== undefined) {
           // The same exchange cut again: its frames join the row already
-          // drawn rather than opening a second one.
+          // drawn rather than opening a second one - placed by the exchange's
+          // own order, so nothing drawn moves (see `rejoin`).
           const target = drawn[placedAt];
           if (target === undefined) continue;
-          const have = new Frames(target.messages);
-          const grown = copy.filter((message) => !have.carries(message));
+          const messages = pairHookRuns(rejoin(target.messages, copy, match.messages));
           const also = target.also ?? [];
           const later = also.includes(row.key) ? also : [...also, row.key];
-          drawn[placedAt] = {
-            ...target,
-            ...(grown.length > 0
-              ? { messages: pairHookRuns(interleave(target.messages, copy)) }
-              : {}),
-            ...(later === also ? {} : { also: later }),
-          };
+          drawn[placedAt] =
+            messages === target.messages && later === also
+              ? target
+              : {
+                  ...target,
+                  ...(messages === target.messages ? {} : { messages }),
+                  ...(later === also ? {} : { also: later }),
+                };
           continue;
         }
         placed.set(match, drawn.length);
