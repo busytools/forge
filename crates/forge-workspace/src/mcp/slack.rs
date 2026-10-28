@@ -616,7 +616,8 @@ impl Tool for Post {
          separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
          the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
          in the order they went out; slack__edit, slack__react and a reply each take one. Any \
-         session in the project may call this."
+         session in the project may call this. If this call fails, report the exact error and \
+         stop - never fall back to Slack's web API with the configured token."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1773,6 +1774,21 @@ mod tests {
         assert_eq!(json["conversation_name"], "granite-staging");
         assert_eq!(json["parts"], 2, "so a reader sees the text went out in two messages");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
+    }
+
+    /// A failed `slack__post` is the moment the configured token looks
+    /// like a way round it, so the description's closing sentence
+    /// forbids that and is pinned here: a trim that drops it fails
+    /// instead of shipping.
+    #[test]
+    fn slack_post_description_names_the_no_fallback_rule() {
+        let tool = Post { facade: Arc::new(MockSlackFacade::new()), slot: caller_slot() };
+        assert!(
+            tool.description()
+                .contains("never fall back to Slack's web API with the configured token"),
+            "the no-fallback sentence is pinned: {}",
+            tool.description()
+        );
     }
 
     #[test]

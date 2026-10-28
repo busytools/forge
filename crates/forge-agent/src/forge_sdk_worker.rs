@@ -276,7 +276,23 @@ launch a browser \
 to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the server's \
 browser, through this session's own tab. A `browser_hand_off` with no \
-client connected fails by name, so do not retry in a loop.";
+client connected fails by name, so do not retry in a loop.\n\
+\n\
+Slack is reached through the `slack__*` tools and no other way. Never \
+send Slack traffic by reading a `[[slack]]` token from forge.toml and \
+calling Slack's web API, by automating a browser, or through another \
+connector. Those tools hold a post for the user's decision before \
+anything is sent, and a direct call puts words in their name outside \
+that gate - holding the credential is not permission to use it. The \
+same holds for any other tool whose post is held for approval, Slack \
+attachments included. When a `slack__*` call fails, report its exact \
+error and stop. A refusal or an expired draft is the user's decision, \
+not yours: offer the text to whoever owns it (the user in a lead \
+session, your lead in a worker session) and wait. A partial post \
+resumes where it stopped. A workspace or argument error is the call's \
+or the config's to fix, by the error it names - fix that and retry. \
+Any other failure is a forge bug to report. Retrying the MCP call \
+while debugging is fine; the line is the out-of-band fallback.";
 
 /// Assemble the forge system-prompt append: server line, the peers
 /// paragraph when `has_peer_tools`, the trust block, the always-on
@@ -3480,6 +3496,74 @@ mod tests {
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
                 .contains("A `browser_hand_off` with no client connected fails by name"),
             "only the hand-off needs an attached client, and its failure is pinned",
+        );
+    }
+
+    /// The Slack tools are the only sanctioned route to Slack, and a
+    /// failed `slack__*` call is exactly when the out-of-band route
+    /// feels reasonable. Pinned on the rule's handle, the hold the
+    /// tools exist for, the scope of that hold, each failure kind's
+    /// own remedy, who receives the text, and the clause that draws
+    /// the line: the middle is where an unwritten remedy or a false
+    /// route hides.
+    #[test]
+    fn the_conduct_block_carries_the_slack_single_path_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Slack is reached through the `slack__*` tools and no other way"),
+            "the sanctioned path and its exclusivity are pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "Those tools hold a post for the user's decision before anything is sent"
+            ),
+            "the approval hold the tools exist for is pinned",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "any other tool whose post is held for approval, Slack attachments included"
+            ),
+            "the scope is other posts held for approval",
+        );
+        let (_, after_rule) = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+            .split_once("Slack is reached through the `slack__*` tools and no other way")
+            .expect("the Slack paragraph follows its opening rule");
+        let slack_rule = after_rule.split_once("\n\n").map_or(after_rule, |(body, _)| body);
+        assert!(
+            !slack_rule.to_lowercase().contains("gotify"),
+            "no Gotify route is named in the Slack paragraph: it has no post path",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("A refusal or an expired draft is the user's decision, not yours"),
+            "a refusal and an expiry are the user's decision, not the call's",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "offer the text to whoever owns it (the user in a lead session, your lead in a \
+                 worker session) and wait"
+            ),
+            "the decision's text goes to its owner, and the call waits",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("A partial post resumes where it stopped"),
+            "a partial post resumes instead of re-sending the whole text",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "A workspace or argument error is the call's or the config's to fix, by the error \
+                 it names - fix that and retry"
+            ),
+            "the config case fixes what its error names and retries, rather than offering text",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
+                .contains("Any other failure is a forge bug to report"),
+            "the catch-all is a residual, introduced by Any other failure",
+        );
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("the line is the out-of-band fallback"),
+            "the clause that forbids the fallback is pinned",
         );
     }
 
