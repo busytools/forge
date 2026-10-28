@@ -6451,56 +6451,49 @@ describe('the dock', () => {
   }
 
   /**
-   * **A word the bar took is not lost with the ask.** The retry can fail
-   * again; after the first failed open the surface holds no tab list, so the
-   * retry asks for none, and the ask still names tab 2 - the bar's line is no
-   * longer offered, so the words go back to the composer's draft, where the
-   * ask's resolution cannot clear them.
+   * **A failed page keeps the line, and the line keeps the words.** After the
+   * first failed open the surface holds no tab list, so the retry asks for
+   * none and the ask still names tab 2. A line that cannot answer still shows
+   * what was spoken into it - showing the words is not answering - and offers
+   * no send it could not honour.
    */
-  it("carries a bar take's words to the composer when the retry fails again", async () => {
+  it("keeps a bar take's words on the line when the retry fails again", async () => {
     const harness = await failedPageTaking();
     const { land } = retryHeld();
-    expect(surface.phase, 'the retry is opening the page').toBe('opening');
     landBarTake(harness);
-    expect(
-      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
-      'the words are on the line while the retry opens the page',
-    ).toBe('the words');
 
     land('the browser host exited again');
     await vi.waitFor(() => expect(surface.phase, 'the retry failed too').toBe('failed'));
     flushSync();
-    expect(
-      document.querySelector('.takeover-bar textarea'),
-      'the line is gone with the tab it did not open',
-    ).toBeNull();
 
-    harness.page.record = record({ pending_asks: [] });
-    flushSync();
-    expect(field().value, 'the words survived the ask resolving').toBe('the words');
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are still on the line',
+    ).toBe('the words');
+    expect(
+      document.querySelector('.takeover-bar .sendb'),
+      'and the line offers no send it cannot honour',
+    ).toBeNull();
   });
 
-  /** The same carry when the retry lands on a page the ask did not name. */
-  it("carries a bar take's words to the composer when the retry lands elsewhere", async () => {
+  /** The same when the retry lands on a page the ask did not name. */
+  it("keeps a bar take's words on the line when the retry lands elsewhere", async () => {
     const harness = await failedPageTaking();
     const { land } = retryHeld();
     landBarTake(harness);
-    expect(
-      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
-      'the words are on the line while the retry opens the page',
-    ).toBe('the words');
 
     land({ profile: 'job-hunt', tab: 3 });
     await vi.waitFor(() => expect(surface.phase, 'the retried page is up').toBe('live'));
     flushSync();
-    expect(
-      document.querySelector('.takeover-bar textarea'),
-      'the line is gone with the page the ask did not name',
-    ).toBeNull();
 
-    harness.page.record = record({ pending_asks: [] });
-    flushSync();
-    expect(field().value, 'the words survived the ask resolving').toBe('the words');
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are still on the line',
+    ).toBe('the words');
+    expect(
+      document.querySelector('.takeover-bar .sendb'),
+      'and the line offers no send it cannot honour',
+    ).toBeNull();
   });
 
   /** **The line is the ask's, not the phase's.** Another view answering the
@@ -6522,10 +6515,9 @@ describe('the dock', () => {
     );
   });
 
-  /** **Words about a page the ask did not name are the chat's.** A page left
-   *  for another tab before the take lands takes the line with it, so the
-   *  landing goes to the chat rather than to a line that is not drawn. */
-  it("sends a bar take's words to the composer when the reader is on another tab as they land", async () => {
+  /** **The line is the ask's, whatever tab is showing.** A reader on another
+   *  tab when the take lands still gets the words on the line, with no send. */
+  it("keeps a bar take's words on the line when the reader is on another tab as they land", async () => {
     await surfaceOn(SLOT, 2);
     const harness = open({
       dictation: true,
@@ -6541,19 +6533,34 @@ describe('the dock', () => {
     expect(surface.tab, 'the reader left the ask its tab').toBe(3);
 
     landBarTake(harness);
-    harness.page.record = record({ pending_asks: [] });
-    flushSync();
-    expect(field().value, "the words are the chat's").toBe('the words');
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are on the line',
+    ).toBe('the words');
+    expect(
+      document.querySelector('.takeover-bar .sendb'),
+      'and the line offers no send it cannot honour',
+    ).toBeNull();
   });
 
-  it("keeps a bar take's words when the reader goes back to chat, and leaks none when the ask answers", async () => {
+  /**
+   * **A lowered takeover hands its words to the chat, and the card says so.**
+   * The line goes with the page, so the carry joins the words into the
+   * composer's draft - and the composer is behind the hand-off's card until
+   * the ask is answered, so the card is where the person reads what happened.
+   * The line must not redraw them and send them a second time.
+   */
+  it("hands a lowered takeover's words to the chat, and the card says so", async () => {
     const harness = await failedPageTaking();
     landBarTake(harness);
     barAction('back to chat').click();
     await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
     flushSync();
+    expect(drawn(), 'the card says where the words went').toContain(
+      "What you said at the bar is in the chat's draft: the words",
+    );
 
-    // Retained: reopening before answering still shows the words.
+    // The line cannot redraw and re-send the same words.
     action('Open browser').click();
     await vi.waitFor(() => expect(surface.phase, 'the page is up again').toBe('live'));
     flushSync();
@@ -6561,15 +6568,62 @@ describe('the dock', () => {
     flushSync();
     expect(
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
-      'the reopen still shows the words',
-    ).toBe('the words');
+      'the line is empty: the words went to the chat',
+    ).toBe('');
 
-    // Answered: Done drops the ask, and the chat must not inherit them.
+    // Answering settles it: the composer shows what the card said it held.
     barAction('Done').click();
     await vi.waitFor(() => expect(surface.phase, 'the answer lowered it').toBe('closed'));
     harness.page.record = record({ pending_asks: [] });
     flushSync();
-    expect(field().value, 'no words leaked into the chat').toBe('');
+    expect(field().value, 'the words are in the chat, visible').toBe('the words');
+  });
+
+  /** **The carry joins, it does not clobber.** A draft the reader already had
+   *  keeps its words when the line's come in behind them. */
+  it('joins a carried line to the draft the reader already had', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
+    const harness = open({ dictation: true });
+    type('hello');
+    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
+    flushSync();
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+    landBarTake(harness);
+    barAction('back to chat').click();
+    await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
+    flushSync();
+
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+    expect(field().value, "the reader's own words come first").toBe('hello the words');
+  });
+
+  /** **A parked hand-off's words are the seat's.** A visit to another seat
+   *  must not release them; coming back, they are still there to read. */
+  it("keeps a parked hand-off's words across a visit to another seat", async () => {
+    const harness = await failedPageTaking();
+    landBarTake(harness);
+
+    harness.page.slot = ELSEWHERE;
+    flushSync();
+    harness.page.record = record({ slot: ELSEWHERE });
+    flushSync();
+    // The page shows this seat again before its record arrives, which is the
+    // frame the guard is for: the record in hand is still the other seat's.
+    harness.page.slot = SLOT;
+    flushSync();
+    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
+    flushSync();
+
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      "the words are still on the seat's line",
+    ).toBe('the words');
   });
 
   it('declines the hand-off on Escape, which the dock row promises', () => {

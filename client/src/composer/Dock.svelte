@@ -29,6 +29,7 @@
     silent = null,
     takeline = null,
     answered = false,
+    carried = null,
   }: {
     ask: Ask;
     /**
@@ -114,6 +115,13 @@
      * back live, with the reason.
      */
     answered?: boolean;
+    /**
+     * Words the takeover's line was holding when it was lowered, now in the
+     * chat's draft. **The composer is behind this card while the hand-off is
+     * parked**, so the card is where the person can read what happened to
+     * them.
+     */
+    carried?: string | null;
   } = $props();
 
   /**
@@ -1051,6 +1059,11 @@
       <!-- The reason verbatim: it is what the session needs, in its own words,
          and a summary of it would be the client guessing at the act. -->
       <div class="d-q">{ask.request.reason}</div>
+      {#if carried !== null}
+        <div class="desc">
+          What you said at the bar is in the chat's draft: {carried}
+        </div>
+      {/if}
       <div class="desc">
         {raiseFailed ??
           'Open browser shows the page the session prepared, exactly as it stands. The session waits, with no timeout, for your answer.'}
