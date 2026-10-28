@@ -77,7 +77,7 @@ async fn the_installed_veto_refuses_a_page_a_passkey_call() {
     // **The endpoint must be the child's before the veto is installed**: a
     // host still starting has no page target, and under a loaded suite the
     // install raced it.
-    forge_browser::spawn::wait_ready_for(host.pid(), port, &ring_name, &profile)
+    forge_browser::spawn::wait_ready_for(host.pid(), port, &ring_name)
         .await
         .unwrap_or_else(|why| panic!("the host never came ready: {why} (log: {})", host.log()));
 
