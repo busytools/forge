@@ -209,7 +209,8 @@ export function pendingAsk(record: ComposerRecord): Ask | null {
  * The order is the one a reader has to be told, kept from the view this client
  * replaced: a seat that is failing is told that first, a seat nothing has
  * started cannot tell whether a session is coming up or never will, and a
- * compaction is the more specific truth about a turn the reader sent.
+ * machine turn - forge's handoff or the CLI's compaction - is the more specific
+ * truth about a turn the reader sent.
  */
 interface Blocker {
   line: string;
@@ -284,8 +285,27 @@ export function blocked(
   if (seat.lifecycle === 'Spawning') {
     return { line: 'Waking up agent...', sub: null, bad: false, waiting: false, shimmer: true };
   }
-  if (composer.compacting) {
-    return { line: 'Compacting context...', sub: null, bad: false, waiting: true, shimmer: false };
+  // **A machine turn takes the box and says which one it is.** Both are turns
+  // the reader cannot type into: forge's own judgment prompt, which replaces
+  // the seat when it ends, and the CLI's compaction. The draft survives on the
+  // box's own state and comes back with the field.
+  if (composer.machine === 'handoff') {
+    return {
+      line: 'handing this session over',
+      sub: null,
+      bad: false,
+      waiting: true,
+      shimmer: false,
+    };
+  }
+  if (composer.machine === 'compacting') {
+    return {
+      line: 'compacting this session',
+      sub: null,
+      bad: false,
+      waiting: true,
+      shimmer: false,
+    };
   }
   if (command !== null) {
     return { line: `Running ${command}`, sub: null, bad: false, waiting: true, shimmer: false };

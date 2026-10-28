@@ -2,8 +2,8 @@
  * What the core sends the composer, narrowed once at the boundary.
  *
  * `crates/forge-server/src/transport/wire.rs` is the sender: `composer` carries
- * a compaction and a sign-in, and `pending_asks` carries the prompts the seat
- * is holding. The take and the notice are NOT on the record - a take belongs to
+ * the machine turn and a sign-in, and `pending_asks` carries the prompts the
+ * seat is holding. The take and the notice are NOT on the record - a take belongs to
  * the connection that started it - so this client builds them from its own
  * take's updates, which no other connection receives. Everything here is a
  * narrowing rather than a decision about how any of it looks - the gather into
@@ -12,6 +12,7 @@
 
 import { bindFrom, modeFrom, type Bind, type Mode } from './dictate-key';
 import { FALLBACK_FLOOR_DB } from './meter';
+import { machineTurn, type MachineTurn } from '../session/wire';
 
 /** What a take is doing, as `Phase` serialises. */
 export type TakePhase = 'recording' | 'transcribing';
@@ -87,7 +88,8 @@ export interface SignIn {
 export interface ComposerState {
   take: Take | null;
   notice: Notice | null;
-  compacting: boolean;
+  /** The machine turn running on the seat, or null when it takes input. */
+  machine: MachineTurn | null;
   signIn: SignIn | null;
   /** The push-to-talk key `forge.toml` configured, which is the one honoured. */
   bind: Bind;
@@ -215,7 +217,7 @@ export function composerFrom(value: unknown): ComposerState {
   return {
     take: takeFrom(held['take']),
     notice: noticeFrom(held['notice']),
-    compacting: held['compacting'] === true,
+    machine: machineTurn(held['machine']),
     signIn: signInFrom(held['sign_in']),
     bind: bindFrom(held['bind']),
     mode: modeFrom(held['mode']),
@@ -503,7 +505,7 @@ function list(value: unknown): unknown[] {
 export const NO_COMPOSER: ComposerState = {
   take: null,
   notice: null,
-  compacting: false,
+  machine: null,
   signIn: null,
   bind: 'right_cmd',
   mode: 'auto',

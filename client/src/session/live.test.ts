@@ -3401,7 +3401,7 @@ describe('the read, and the answer a frame has outrun', () => {
         composer: {
           take: { phase: 'recording', floor_db: -50, levels: [], peak_db: -50 },
           notice: { kind: 'landed', text: 'the words', truncated: false },
-          compacting: false,
+          machine: null,
           sign_in: null,
         },
       }),

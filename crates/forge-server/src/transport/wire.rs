@@ -510,7 +510,9 @@ pub struct SessionStateWire {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ComposerWire {
-    pub compacting: bool,
+    /// The machine turn running on the seat, which takes the composer away:
+    /// absent for a seat taking input.
+    pub machine: Option<crate::surface::MachineTurn>,
     pub sign_in: Option<SignIn>,
     /// The push-to-talk key and how a press maps onto a take, in the
     /// vocabulary `forge.toml` accepts.
@@ -2475,7 +2477,10 @@ async fn session(
             let live = crate::live::Live::lock(&state.live).snapshot();
             let composer = &live.composer;
             ComposerWire {
-                compacting: composer.compacting(slot),
+                machine: crate::surface::MachineTurn::of(
+                    surface.handoff_in_progress(slot),
+                    composer.compacting(slot),
+                ),
                 sign_in: composer.sign_in(slot).cloned(),
                 bind: surface.dictate_bind().label().to_owned(),
                 mode: surface.dictate_mode().label().to_owned(),

@@ -211,14 +211,25 @@ export interface Conversation {
  * this connection alone receives, fill it. `notice` IS on the record when the
  * words are the seat's - a landed take nobody has sent, re-handed so a page
  * that reloaded reads it back (#1360) - and is carried through as it came,
- * like `sign_in`, for the component that owns it. `compacting` is narrowed
+ * like `sign_in`, for the component that owns it. `machine` is narrowed
  * because the composer draws a line for it.
  */
 export interface ComposerState {
   take: unknown;
   notice: unknown;
-  compacting: boolean;
+  machine: MachineTurn | null;
   sign_in: unknown;
+}
+
+/**
+ * The machine turn running on the seat, which takes its composer away: forge's
+ * own handoff and the CLI's compaction.
+ */
+export type MachineTurn = 'handoff' | 'compacting';
+
+/** One of the machine turns this build draws, or `null` for a seat taking input. */
+export function machineTurn(value: unknown): MachineTurn | null {
+  return value === 'handoff' || value === 'compacting' ? value : null;
 }
 
 /**
@@ -834,7 +845,7 @@ function composerFrom(value: unknown): ComposerState {
     // them back to a page that reloaded in between.
     take: null,
     notice: held['notice'] ?? null,
-    compacting: held['compacting'] === true,
+    machine: machineTurn(held['machine']),
     sign_in: held['sign_in'] ?? null,
   };
 }

@@ -276,7 +276,7 @@ describe('axe over the rendered pages', () => {
       await idsOf(
         draw(
           record({
-            composer: { take: take(), notice: null, compacting: false, sign_in: null },
+            composer: { take: take(), notice: null, machine: null, sign_in: null },
           }),
         ),
       ),
@@ -289,7 +289,7 @@ describe('axe over the rendered pages', () => {
             composer: {
               take: take({ phase: 'transcribing', progress: [2, 6] }),
               notice: null,
-              compacting: false,
+              machine: null,
               sign_in: null,
             },
           }),

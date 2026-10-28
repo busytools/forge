@@ -88,7 +88,7 @@ function rowState(): string {
 
 /** A record in the given composer state, as the wire's frames leave it. */
 function held(composer: Record<string, unknown>): ComposerRecord {
-  return record({ composer: { compacting: false, sign_in: null, ...composer } });
+  return record({ composer: { machine: null, sign_in: null, ...composer } });
 }
 
 /** The bound key's own event, as the browser delivers it (jsdom reports no platform). */

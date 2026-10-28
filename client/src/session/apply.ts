@@ -90,7 +90,7 @@ export const HANDLERS: Record<string, Apply> = {
     const msg = payload['msg'];
     if (msg === undefined) return held;
     const conversation = appendFrame(held.conversation, msg);
-    const composer = compactingOf(held.composer, msg);
+    const composer = machineOf(held.composer, msg);
     const header = headerFrom(held.header, msg);
     if (
       conversation === held.conversation &&
@@ -814,14 +814,19 @@ function knownEffort(held: Effort, value: unknown): Effort {
 /**
  * The compaction a status frame announces and the null that clears it, which
  * is the only place either is said. Mirrors `crates/forge-server/src/composer.rs`,
- * where the same frame is folded for the record's own `composer.compacting`.
+ * where the same frame is folded for the record's own `composer.machine`.
+ *
+ * **A handoff is not a compaction.** The handoff comes off the record read and
+ * no frame carries it, so a settle clears only what the status frame set.
  */
-function compactingOf(held: ComposerState, message: unknown): ComposerState {
+function machineOf(held: ComposerState, message: unknown): ComposerState {
   const frame = record(message);
   if (frame['type'] !== 'system' || frame['subtype'] !== 'status') return held;
   const status = frame['status'];
-  if (status === 'compacting') return held.compacting ? held : { ...held, compacting: true };
-  if (status === null) return held.compacting ? { ...held, compacting: false } : held;
+  if (status === 'compacting') {
+    return held.machine === 'compacting' ? held : { ...held, machine: 'compacting' };
+  }
+  if (status === null) return held.machine === 'compacting' ? { ...held, machine: null } : held;
   return held;
 }
 

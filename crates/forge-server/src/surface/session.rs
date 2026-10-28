@@ -5,6 +5,33 @@ use std::path::{Path, PathBuf};
 use forge_primitives::SessionSlot;
 use forge_workspace::Workspace;
 
+use super::ViewSurface;
+
+/// The machine turn running on a seat, which takes its composer away.
+///
+/// Both are turns the person did not start and cannot type into: forge's own
+/// judgment prompt, and the CLI's compaction. A handoff outranks a compaction,
+/// because it is the one that replaces the seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineTurn {
+    Handoff,
+    Compacting,
+}
+
+impl MachineTurn {
+    /// The turn both halves name, or `None` for a seat taking input.
+    pub fn of(handoff: bool, compacting: bool) -> Option<Self> {
+        if handoff {
+            Some(Self::Handoff)
+        } else if compacting {
+            Some(Self::Compacting)
+        } else {
+            None
+        }
+    }
+}
+
 /// What a view reads about one session.
 pub struct SessionState {
     /// The seat this state belongs to.
@@ -19,6 +46,19 @@ pub struct SessionState {
     /// so a client attaching mid-queue would otherwise draw nothing until the
     /// next prompt moved. Held by the core, so two clients agree.
     pub queue: Vec<forge_workspace::protocol::QueuedPrompt>,
+}
+
+impl ViewSurface {
+    /// Whether a handoff owns this seat's next turn boundary.
+    ///
+    /// From the moment forge sends the judgment prompt until the swap or the
+    /// abort, the seat is mid-handover and its session is about to be
+    /// replaced - which is what tells the composer to stand down.
+    pub fn handoff_in_progress(&self, slot: &SessionSlot) -> bool {
+        self.workspace
+            .domain_session_for(slot)
+            .is_some_and(|domain| domain.lock().handoff.in_progress())
+    }
 }
 
 impl SessionState {
@@ -43,11 +83,73 @@ mod tests {
     use forge_primitives::{SessionSlot, WorkerLiveness};
     use forge_workspace::{WorkerEntry, Workspace};
 
+    use super::MachineTurn;
     use crate::surface::ViewSurface;
 
     fn stub_workspace() -> Arc<Workspace> {
         let (workspace, _updates) = Workspace::testing_stub();
         workspace
+    }
+
+    fn status_frame(slot: &SessionSlot, status: serde_json::Value) -> crate::SessionUpdate {
+        use forge_primitives::Message;
+        let msg: Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "session_id": "s1",
+            "subtype": "status",
+            "status": status,
+        }))
+        .expect("a status frame");
+        crate::SessionUpdate::ChatAppended {
+            key: slot.clone(),
+            msg,
+            origin: None,
+            source: None,
+        }
+    }
+
+    /// **A handoff owns the seat until the swap replaces it, and a
+    /// compaction until the CLI settles it.** The composer is taken away for
+    /// exactly that span, and a handoff outranks a compaction because it is
+    /// the one that replaces the seat.
+    #[test]
+    fn the_machine_turn_is_a_handoff_until_the_swap_and_a_compaction_until_it_settles() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let surface = ViewSurface::new(std::sync::Arc::clone(&workspace));
+        let seat = SessionSlot::lead("TestOrg", "forge");
+        workspace.register_domain_session(seat.clone(), None);
+        let mut composer = crate::composer::Composer::default();
+
+        let turn = |surface: &ViewSurface, composer: &crate::composer::Composer| {
+            MachineTurn::of(surface.handoff_in_progress(&seat), composer.compacting(&seat))
+        };
+
+        assert_eq!(turn(&surface, &composer), None, "an idle seat takes input");
+
+        composer.apply(&status_frame(&seat, serde_json::json!("compacting")));
+        assert_eq!(
+            turn(&surface, &composer),
+            Some(MachineTurn::Compacting),
+            "the CLI's status frame names the compaction",
+        );
+        composer.apply(&status_frame(&seat, serde_json::Value::Null));
+        assert_eq!(turn(&surface, &composer), None, "and its null settles it");
+
+        workspace.domain_session_for(&seat).expect("the domain").lock().handoff.awaiting = true;
+        assert_eq!(
+            turn(&surface, &composer),
+            Some(MachineTurn::Handoff),
+            "the judgment turn owns the seat",
+        );
+        composer.apply(&status_frame(&seat, serde_json::json!("compacting")));
+        assert_eq!(
+            turn(&surface, &composer),
+            Some(MachineTurn::Handoff),
+            "a handoff outranks a compaction begun beside it",
+        );
+        workspace.domain_session_for(&seat).expect("the domain").lock().handoff.awaiting = false;
+        composer.apply(&status_frame(&seat, serde_json::Value::Null));
+        assert_eq!(turn(&surface, &composer), None, "the swap and the settle clear both");
     }
 
     fn git_worker(slot: SessionSlot) -> WorkerEntry {

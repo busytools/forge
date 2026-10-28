@@ -22,7 +22,7 @@ export const SLOT: SessionSlot = { org: 'Busytools', project: 'forge', label: 'l
 export function record(over: Partial<ComposerRecord> = {}): ComposerRecord {
   return {
     slot: SLOT,
-    composer: { take: null, notice: null, compacting: false, sign_in: null },
+    composer: { take: null, notice: null, machine: null, sign_in: null },
     pending_asks: [],
     header: { turn_in_flight: false },
     slash_commands: [],

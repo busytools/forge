@@ -1024,12 +1024,25 @@ describe('applyUpdate', () => {
           msg: { type: 'system', subtype: 'status', status: 'compacting' },
         },
       });
-      expect(compacting.composer.compacting).toBe(true);
+      expect(compacting.composer.machine).toBe('compacting');
 
       const settled = applyUpdate(compacting, {
         chat_appended: { key: SLOT, msg: { type: 'system', subtype: 'status', status: null } },
       });
-      expect(settled.composer.compacting).toBe(false);
+      expect(settled.composer.machine).toBeNull();
+    });
+
+    it('leaves a handoff standing when a compaction settles beside it', () => {
+      // The handoff comes off the record read, which no frame carries - so a
+      // status null is news about the compaction and must not hand the
+      // composer back while the seat is still being replaced.
+      const held = empty();
+      const replacing = { ...held, composer: { ...held.composer, machine: 'handoff' as const } };
+
+      const settled = applyUpdate(replacing, {
+        chat_appended: { key: SLOT, msg: { type: 'system', subtype: 'status', status: null } },
+      });
+      expect(settled.composer.machine, 'the handoff is not a compaction').toBe('handoff');
     });
   });
 

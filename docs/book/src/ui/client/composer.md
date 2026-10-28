@@ -125,7 +125,8 @@ being refused as busy.
 | Running | the turn's figures leading the strip lane; `stop` beside the mic, and escape its key |
 | A question parked | the dock's lane in place of the field |
 | Sign-in needed | the box stays, with the sign-in line above it: the reader is told where, not blocked |
-| Compacting | `Compacting context...`, a ring, no field |
+| A handoff | `handing this session over`, a ring, no field |
+| Compacting | `compacting this session`, a ring, no field |
 | A command in flight | `Running <name>` for the slash command the turn is still working on |
 | Waking | `Waking up agent...` while the lead's seat comes up |
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
@@ -136,6 +137,12 @@ being refused as busy.
 order the states are read in is the one a reader has to be told: a failing
 seat first, then a seat nothing has started, then the more specific truth
 about a turn the reader caused.
+
+**A machine turn is one the reader cannot type into.** A handoff replaces the
+seat when its judgment turn ends, and a compaction is the CLI rewriting the
+context; both take the field, the send and the mic away and name themselves in
+the line. The draft is the reader's and stays on the seat, so the words come
+back with the field when the machine turn ends.
 
 ## The two widths
 

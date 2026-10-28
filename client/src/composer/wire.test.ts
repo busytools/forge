@@ -142,7 +142,7 @@ describe('the composer record', () => {
         generation: 7,
         carried: true,
       },
-      compacting: false,
+      machine: null,
       sign_in: null,
     });
     expect(composer.notice).toEqual({
@@ -155,8 +155,24 @@ describe('the composer record', () => {
   });
 
   it('reads no notice as none', () => {
-    const composer = composerFrom({ take: null, notice: null, compacting: false, sign_in: null });
+    const composer = composerFrom({ take: null, notice: null, machine: null, sign_in: null });
     expect(composer.notice).toBeNull();
+  });
+
+  /**
+   * **The machine turn narrows to one of the two this build draws, and a
+   * state a newer server sends reads as none** - the least-alarming reading:
+   * the composer stays usable rather than freezing on a word it cannot
+   * explain.
+   */
+  it('narrows the machine turn and reads a state it does not know as none', () => {
+    const at = (machine: unknown): unknown =>
+      composerFrom({ take: null, notice: null, machine, sign_in: null }).machine;
+
+    expect(at('handoff')).toBe('handoff');
+    expect(at('compacting')).toBe('compacting');
+    expect(at(null)).toBeNull();
+    expect(at('summarising'), 'a state this build does not draw is not a freeze').toBeNull();
   });
 
   /**
@@ -177,7 +193,7 @@ describe('the composer record', () => {
           carried: true,
           surface,
         },
-        compacting: false,
+        machine: null,
         sign_in: null,
       }).notice;
 

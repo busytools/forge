@@ -302,7 +302,7 @@ function record(
 const IDLE = {
   take: null,
   notice: null,
-  compacting: false,
+  machine: null,
   signIn: null,
   bind: 'right_cmd',
   mode: 'auto',

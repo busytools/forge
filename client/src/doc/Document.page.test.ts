@@ -909,7 +909,7 @@ describe("the block's own take", () => {
   const IDLE = {
     take: null,
     notice: null,
-    compacting: false,
+    machine: null,
     signIn: null,
     bind: 'right_cmd',
     mode: 'auto',
