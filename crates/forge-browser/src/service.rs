@@ -2426,6 +2426,15 @@ impl BrowserService {
         tab: Option<u16>,
     ) -> Result<Attachment, String> {
         self.note_live(seat);
+        let key = self.target(seat)?;
+        let was =
+            self.where_viewing.lock().unwrap_or_else(PoisonError::into_inner).get(&viewer).cloned();
+        // **A move to another profile lets the old one go before it opens.**
+        // `open` can start a cold host, and the old tab would otherwise keep
+        // this viewer, and the role it held there, warm for the whole wait.
+        if was.as_ref().is_some_and(|(was_key, _)| was_key != key.as_str()) {
+            self.detach(viewer).await;
+        }
         let profile = self.open(seat).await?;
         let tab = if let Some(tab) = tab {
             tab
@@ -2441,8 +2450,30 @@ impl BrowserService {
             return Err(format!("tab {tab} is not open"));
         }
         // **One tab at a time per viewer**: a surface that moved leaves the
-        // tab it was on, and a role it held there goes with it.
-        self.detach(viewer).await;
+        // tab it was on, and a role it held there goes with it. **The same
+        // tab is not a move**: an open that lands twice, or a re-attach to
+        // the tab already held, is one viewer on one page, so the role it
+        // took there survives.
+        let staying =
+            was.as_ref().is_some_and(|(key, viewing)| key == &profile.key && *viewing == tab);
+        if !staying {
+            self.detach(viewer).await;
+        }
+        // **A re-attach is where a role went missing without a line.** The
+        // entry names the profile and tab the viewer was on and whether this
+        // attach is the same surface - the same profile AND the same tab -
+        // so a surface driving a tab it does not control, or no longer
+        // holding a role it had, is answerable from the log.
+        tracing::debug!(
+            event_name = "browser_attach",
+            profile = %profile.key,
+            tab,
+            viewer,
+            was_profile = was.as_ref().map(|(was_key, _)| was_key.as_str()),
+            was_tab = was.as_ref().map(|(_, viewing)| *viewing),
+            same_surface = staying,
+            "a viewer attached to a tab",
+        );
         let frames = profile.frame_receiver(tab);
         let view = profile.view_for(tab).subscribe();
         let nav = profile.nav_receiver(tab);
@@ -2522,6 +2553,13 @@ impl BrowserService {
                     controls.remove(&tab);
                     left.insert(tab);
                     released = true;
+                    tracing::debug!(
+                        event_name = "browser_role_released",
+                        profile = %profile.key,
+                        tab,
+                        viewer,
+                        "a viewer gave the controller role up",
+                    );
                 }
             }
             if released {
@@ -2601,6 +2639,16 @@ impl BrowserService {
                 released
             };
             if released {
+                // **The one role change a person makes by hand.** A bar's
+                // release is the person's own act, and it is recorded here
+                // with the same fields a departure's release carries.
+                tracing::debug!(
+                    event_name = "browser_role_released",
+                    profile = %profile.key,
+                    tab,
+                    viewer,
+                    "a viewer gave the controller role up",
+                );
                 profile.cancel_files().await;
                 profile.publish_view(tab);
                 // The tab is nobody's to drive now, so it is idle again.
@@ -8701,6 +8749,206 @@ mod tests {
 
         let why = service.nav(&profile.key, tab, 8, true).await.expect_err("a watcher is refused");
         assert!(why.contains("not the browser's controller"), "{why}");
+    }
+
+    /// **A re-attach of the same viewer to the same tab keeps its role, and
+    /// a different viewer's take still moves it.** A surface that opens twice
+    /// (or asks again for the tab it is already on) is one viewer on one
+    /// page; dropping the role there left the person driving a tab whose
+    /// every gesture was refused. Keeping it must not make the role the
+    /// first taker's for good: a take is still what moves it, and the holder
+    /// it moved from is a watcher. A move to another tab leaves the role
+    /// behind with the tab.
+    #[tokio::test]
+    async fn a_reattach_of_the_same_viewer_keeps_its_role() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser");
+        let service = BrowserService::at(root.clone(), root.join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("TestOrg/default").await.expect("the profile");
+        let tab = 1;
+
+        service.attach(7, &seat, Some(tab)).await.expect("the first attach");
+        service.take_control(&profile.key, tab, 7).await.expect("the take");
+        assert_eq!(profile.controller(tab), Some(7), "the take lands");
+
+        service.attach(7, &seat, Some(tab)).await.expect("the re-attach");
+        assert_eq!(profile.controller(tab), Some(7), "the re-attach keeps the role");
+
+        // **A take still moves the role**, so keeping it across a re-attach
+        // did not make it the first taker's for good.
+        service.take_control(&profile.key, tab, 8).await.expect("another viewer's take");
+        assert_eq!(profile.controller(tab), Some(8), "a take moves the role");
+        let why = service
+            .input(
+                &profile.key,
+                tab,
+                7,
+                1,
+                &forge_primitives::browser::BrowserInputEvent::Text { text: "x".to_owned() },
+            )
+            .await
+            .expect_err("the holder it moved from is a watcher now");
+        assert!(why.contains("not the browser's controller"), "{why}");
+        service.take_control(&profile.key, tab, 7).await.expect("the role back");
+
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(2, seat.clone(), "T2", "T2", "", "about:blank")
+            .expect("tab 2");
+        service.attach(7, &seat, Some(2)).await.expect("the move");
+        assert_eq!(profile.controller(tab), None, "a move to another tab gives the role up");
+        assert!(
+            !profile
+                .viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&tab)
+                .is_some_and(|watchers| watchers.contains(&7)),
+            "and the tab it left keeps no viewer of it",
+        );
+        assert!(
+            profile
+                .viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&2)
+                .is_some_and(|watchers| watchers.contains(&7)),
+            "the tab it moved to holds the viewer",
+        );
+        assert_eq!(profile.controller(2), None, "and nobody took its role yet");
+        assert_eq!(
+            service.where_viewing.lock().unwrap_or_else(PoisonError::into_inner).get(&7).cloned(),
+            Some((profile.key.clone(), 2)),
+            "and the viewer is known to be on the tab it moved to",
+        );
+
+        // **The same tab number in another profile is not the same tab.**
+        let other = SessionSlot::lead("OtherOrg", "proj");
+        service.install_fake(&other, FakeDriver::with_blank("T1")).await;
+        service
+            .call(&other, "browser_snapshot", json!({}))
+            .await
+            .expect("the other profile's tab is adopted");
+        let other_profile = service.find("OtherOrg/default").await.expect("the other profile");
+        service.attach(9, &seat, Some(tab)).await.expect("a viewer on the first profile");
+        service.take_control(&profile.key, tab, 9).await.expect("its take");
+        service.attach(9, &other, Some(1)).await.expect("the move across profiles");
+        assert_eq!(profile.controller(tab), None, "the first profile's role is released");
+        assert!(
+            !profile
+                .viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&tab)
+                .is_some_and(|watchers| watchers.contains(&9)),
+            "and the viewer left the first profile's tab",
+        );
+        assert_eq!(other_profile.controller(1), None, "the second profile holds no role yet");
+        assert!(
+            other_profile
+                .viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&1)
+                .is_some_and(|watchers| watchers.contains(&9)),
+            "and the viewer is on the second profile's tab 1",
+        );
+    }
+
+    /// **A release is recorded once, for the role it actually held.** The
+    /// bar's release control is the one role change a person makes by hand,
+    /// and the record is the service's own: a release that held nothing is
+    /// not an event and writes nothing.
+    #[tokio::test]
+    async fn a_release_is_recorded_once_by_the_service() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser");
+        let service = BrowserService::at(root.clone(), root.join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("TestOrg/default").await.expect("the profile");
+        let tab = 1;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        let with = |caught: &Caught, event: &str| -> Vec<(tracing::Level, String)> {
+            let needle = format!("event_name=\"{event}\"");
+            records(caught).into_iter().filter(|(_, fields)| fields.contains(&needle)).collect()
+        };
+
+        service.attach(7, &seat, Some(tab)).await.expect("the attach");
+        let attaches = with(&caught, "browser_attach");
+        assert_eq!(attaches.len(), 1, "the attach is recorded: {attaches:?}");
+        assert!(
+            attaches[0].0 == tracing::Level::DEBUG,
+            "at the level the shipped directive keeps: {:?}",
+            attaches[0].0,
+        );
+        assert!(
+            attaches[0].1.contains("same_surface=false"),
+            "a first attach keeps no role: {}",
+            attaches[0].1,
+        );
+        // The same tab again is the same surface, and the record says so.
+        service.attach(7, &seat, Some(tab)).await.expect("the re-attach");
+        let reattached = with(&caught, "browser_attach");
+        assert!(
+            reattached[1].1.contains("same_surface=true") && reattached[1].1.contains("was_tab=1"),
+            "the re-attach names the surface it kept: {}",
+            reattached[1].1,
+        );
+
+        service.take_control(&profile.key, tab, 7).await.expect("the take");
+        assert!(!saw(&caught, "browser_role_released"), "a take is not a release");
+
+        let released = |caught: &Caught| -> Vec<(tracing::Level, String)> {
+            with(caught, "browser_role_released")
+        };
+        service.release_control(&profile.key, tab, 7).await;
+        let caught_release = released(&caught);
+        assert_eq!(caught_release.len(), 1, "the release is recorded once: {caught_release:?}");
+        assert!(
+            caught_release[0].0 == tracing::Level::DEBUG,
+            "at the level the shipped directive keeps: {:?}",
+            caught_release[0].0,
+        );
+        for needle in ["profile=TestOrg/default", "tab=1", "viewer=7"] {
+            assert!(
+                caught_release[0].1.contains(needle),
+                "the record carries `{needle}`: {}",
+                caught_release[0].1,
+            );
+        }
+
+        service.release_control(&profile.key, tab, 7).await;
+        assert_eq!(
+            released(&caught).len(),
+            1,
+            "a release that held nothing writes nothing: {:?}",
+            released(&caught),
+        );
+
+        // **A departure releases the role through the same record.** A
+        // viewer that goes takes the role with it, and the line is the
+        // service's, not the connection's.
+        service.attach(8, &seat, Some(tab)).await.expect("another viewer");
+        service.take_control(&profile.key, tab, 8).await.expect("its take");
+        service.detach(8).await;
+        let departed = released(&caught);
+        assert_eq!(departed.len(), 2, "the departure's release is recorded too: {departed:?}");
+        assert!(
+            departed[1].1.contains("viewer=8"),
+            "named by the viewer that left: {}",
+            departed[1].1,
+        );
+        drop(guard);
     }
 
     /// **A close ends the seat's own profile**, and the entry leaves the map.

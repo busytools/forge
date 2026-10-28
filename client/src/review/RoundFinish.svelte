@@ -1,10 +1,12 @@
 <script lang="ts">
   /**
    * The finish stack: the round's summary over the sealing button, each on
-   * its own row, the mic at the row's end - **one draw for the review page
-   * and the files rail** (the lead's gate, 2026-10-17: the rail reproduced
-   * the review's block for block). The page owns the words, the count and
-   * the write; this owns the arrangement.
+   * its own row, the mic before it - **one draw for the review page and the
+   * files rail** (the lead's gate, 2026-10-17: the rail reproduced the
+   * review's block for block). The pair sits flush right so the sealing
+   * button keeps the bottom-right corner the collapsed control has (Ved,
+   * 2026-10-28). The page owns the words, the count and the write; this owns
+   * the arrangement.
    */
   import DictateControl from '../composer/DictateControl.svelte';
   import DictationPanel from '../composer/DictationPanel.svelte';
@@ -26,6 +28,7 @@
     count,
     complete,
     busy,
+    held = false,
     onfinish,
     oncancel,
     onpress,
@@ -52,6 +55,8 @@
     /** Whether sealing is possible at all: the button's own gate. */
     complete: boolean;
     busy: boolean;
+    /** A take's words are still on their way to a box on this page. */
+    held?: boolean;
     /** Seal the round, with the summary as written. */
     onfinish: () => void;
     /** A live take's cancel, which may drop the page's landing arm too. */
@@ -83,19 +88,26 @@
           // nothing filed from sealing (Ved, 2026-10-15).
           if (event.key !== 'Enter' || event.shiftKey) return;
           event.preventDefault();
-          if (!busy && complete) onfinish();
+          // **A take's words seal nothing** (the seal closes the page, and
+          // words still in flight would go with it).
+          if (!busy && complete && phase === null && !held) onfinish();
         }}
         field={onfield}
       />
     {/if}
   </div>
   <div class="rv-finishacts">
-    <button class="rv-finish" type="button" disabled={busy || !complete} onclick={onfinish}>
-      {count > 0 ? `finish review (${count})` : 'finish review'}
-    </button>
     {#if voice.offered}
       <DictateControl dictate={voice.dictate} {onpress} {onhold} />
     {/if}
+    <button
+      class="rv-finish"
+      type="button"
+      disabled={busy || !complete || phase !== null || held}
+      onclick={onfinish}
+    >
+      {count > 0 ? `finish review (${count})` : 'finish review'}
+    </button>
     {#if panel}
       <DictationPanel
         connection={voice.connection}

@@ -81,6 +81,16 @@ export class Landing {
   }
 
   /**
+   * **Whether a take this page began has not landed yet.** Its words are
+   * still on their way, so a surface about to close under them must wait.
+   * Distinct from `holds`, which stays true after a landing this box placed:
+   * a page must not wait forever on words already in a box.
+   */
+  get armed(): boolean {
+    return this.#armed !== null;
+  }
+
+  /**
    * Whether this box is holding the notice's words: its own take's landing is
    * on its way, or the words were placed here and the notice is the one they
    * came from. The cut row reads this, and it has to read true on every read

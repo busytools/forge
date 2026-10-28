@@ -36,8 +36,9 @@
      */
     foldable?: boolean;
     /**
-     * A row's own glyph, drawn at 16px before its name. A caller that draws
-     * no icons (the review page) passes none, and its rows stay as they were.
+     * A row's own glyph, drawn at 16px before its name. Both pages that draw
+     * this tree pass the files view's own map, so a folder or a file reads
+     * the same in either; a caller that passes none gets the plain rows.
      */
     icon?: (row: TreeRow<unknown>) => string | null;
     /** The tree's own root: the project's name with its path beside it. */

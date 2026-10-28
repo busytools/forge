@@ -10,6 +10,7 @@
  */
 
 import { flushSync, mount, unmount } from 'svelte';
+import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mic = vi.hoisted(() => {
@@ -86,6 +87,8 @@ function push(read: unknown): void {
 import { installResizeObserver } from '../chat/testing/viewport';
 import { TAP_MS } from '../composer/dictate-key';
 import { TRUNCATED } from '../composer/view';
+import { fileIcon, folderIcon } from '../files/icons';
+import { currentRoute } from '../routes';
 import type { Connection } from '../socket';
 import type { SessionRecord } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
@@ -1548,14 +1551,19 @@ describe('the files half finishes the round too', () => {
   });
 
   /**
-   * **The reader finishes without leaving the diff** (Ved, 2026-10-16): a
+   * **A press opens the round's row, and the seal returns the reader to the
+   * seat's chat** (Ved, 2026-10-16; the landing 2026-10-28): a
    * `finish review (N)` control in the files half opens the page's own
    * finish row in place, the summary field takes the caret, and Enter seals
-   * the round - after which the row collapses back to its control.
+   * the round - after which the page closes onto the seat's conversation,
+   * the way a hand-off's Done does.
    */
   it('opens the row on a press, takes the caret, and seals on Enter', async () => {
     await draw();
     await draft();
+    // A route the seal must move off, so the landing assertion below is this
+    // seal's to prove and not a value an earlier case left behind.
+    currentRoute.set({ name: 'home' });
 
     const button = document.querySelector<HTMLButtonElement>('.rv-finishbar .rv-finish');
     expect(button, 'the files half drew its finish control').not.toBeNull();
@@ -1567,6 +1575,13 @@ describe('the files half finishes the round too', () => {
     expect(document.activeElement, 'the field a press opened takes the caret').toBe(
       document.querySelector('.rv-finishbar .rv-txarea'),
     );
+    // **The sealing button keeps the row's right edge** (Ved, 2026-10-28):
+    // the acts row's last control is the button, so the second press lands in
+    // the corner the collapsed control had.
+    expect(
+      document.querySelector('.rv-finishbar .rv-finishacts')?.lastElementChild,
+      'the button holds the row-end, not the mic',
+    ).toBe(document.querySelector('.rv-finishbar .rv-finish'));
 
     sent = [];
     const field = document.querySelector<HTMLTextAreaElement>('.rv-finishbar .rv-txarea');
@@ -1586,6 +1601,59 @@ describe('the files half finishes the round too', () => {
       document.querySelector('.rv-finishbar .rv-finish'),
       'and the row collapsed back to its control',
     ).not.toBeNull();
+    expect(get(currentRoute), 'the sealed round leaves the reader with the agent').toEqual({
+      name: 'session',
+      slot: SLOT,
+    });
+  });
+
+  /**
+   * **A live take seals nothing** (Ved, 2026-10-28): the seal closes the
+   * page, so words the take is still carrying would close with it and never
+   * reach the box. The button waits for the take to settle.
+   */
+  it('will not seal while the summary take is still running', async () => {
+    await draw();
+    await draft();
+    document.querySelector<HTMLButtonElement>('.rv-finishbar .rv-finish')?.click();
+    await settle(() => document.querySelector('.rv-finishbar .rv-txarea') !== null);
+
+    micIn('.rv-finishbar').click();
+    await opened();
+    push({ wire: record(TAKE), refused: null });
+    flushSync();
+
+    expect(
+      document.querySelector<HTMLButtonElement>('.rv-finishbar .rv-finish')?.disabled,
+      'a take is still carrying words into the box the seal would close',
+    ).toBe(true);
+  });
+});
+
+describe("the diff half draws the files view's own glyphs", () => {
+  /**
+   * **One tree, one set of marks** (Ved, 2026-10-28): the diff half's file
+   * tree is the files page's own rows, so a reader recognises a folder and a
+   * file by the same glyph in both places. A tree drawn without icons makes
+   * the same paths read as two different listings.
+   */
+  it('gives a folder row and a file row their icons', async () => {
+    await draw();
+    const dir = document.querySelector('.rv-files .rv-dir');
+    const file = document.querySelector('.rv-files .rv-frow');
+    expect(dir, 'the fixture drew no folder row').not.toBeNull();
+    expect(file, 'the fixture drew no file row').not.toBeNull();
+    // **Each row's own kind decides its glyph**, so the two maps are asserted
+    // separately: a row drawn with the wrong kind's icon reads as a folder
+    // that opens a file.
+    expect(
+      dir?.querySelector('img.rv-icon')?.getAttribute('src'),
+      "a folder row draws the folder map's own glyph",
+    ).toBe(folderIcon('src', true));
+    expect(
+      file?.querySelector('img.rv-icon')?.getAttribute('src'),
+      "a file row draws the file map's own glyph",
+    ).toBe(fileIcon('src/a.rs'));
   });
 });
 

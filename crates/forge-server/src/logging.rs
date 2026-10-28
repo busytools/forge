@@ -94,6 +94,12 @@ impl LoggingRuntime {
 /// one session's own work, not forge's health. They were demoted out of
 /// `WARN` for it, so they are named here to stay readable.
 ///
+/// `forge_browser` carries the browser service's own records of a viewer
+/// attaching and of a controller role being let go. Each is that session's
+/// own work rather than forge's health, so they are `debug`; the refusal of
+/// one gesture lives on `forge_server` (its `browser_input_refused`), which
+/// the directive above already keeps readable.
+///
 /// The two `llama` targets are the dictation engine's own log bridge,
 /// which reaches tracing through the llama-cpp-2 crate under both its
 /// hyphenated target and its module path. What it reports is the model
@@ -115,6 +121,7 @@ const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::output_tail=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
+    forge_browser=debug,\
     forge_workspace::mcp=debug,\
     forge_agent::mcp=debug,\
     forge_workspace::dictate=debug,\
@@ -468,6 +475,11 @@ mod tests {
         // call is the session's own work. Without the directive the call
         // record lands nowhere at all.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::browser=debug"));
+        // `forge_browser` records what happened to a person's gesture and to
+        // the controller role that is supposed to carry it. Both are the
+        // session's own work, demoted to `debug` - so without the directive
+        // the records land nowhere and a dead page keeps its silence.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_browser=debug"));
         // `forge_workspace::mcp` records the tool surface a spawn hands its
         // child and `forge_agent::mcp` records the surface the CLI's boot
         // init frame reports. The list is fixed once the child starts, so
