@@ -39,7 +39,7 @@ pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
 /// caller then DOES with it differs (the headless server starts that
 /// project's sessions).
 ///
-/// Not `async`: every step is a spawn or a store write, and the await on
+/// Not `async`: every step is a spawn, a store write or the skill install, and the await on
 /// anything that actually does I/O belongs to `serve_socket`. Nothing here
 /// needs a `LocalSet` either - every task in this wave is a plain
 /// `tokio::spawn`, verified by the headless boot test exercising it

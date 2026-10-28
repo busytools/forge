@@ -14,9 +14,9 @@ pub enum ForgePrompt {
     /// exists.
     ResumeSession { session_id: String },
     /// `/handoff`: hand the seat over to a fresh session that continues from
-    /// a brief. One of the two entries, beside the fill trigger; the
-    /// `agents__handoff` call is the exit inside the handoff turn, never a
-    /// way in.
+    /// a brief. One of the two entries, beside the automatic trigger (fill or
+    /// compaction); the `agents__handoff` call is the exit inside the handoff
+    /// turn, never a way in.
     Handoff,
     /// `/mode <id>`: switch the session's permission mode.
     SetMode { mode: String },

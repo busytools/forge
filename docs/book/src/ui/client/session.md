@@ -60,9 +60,10 @@ read as one system.
 - **A forge call** draws a card for its family - tasks, agents, cron,
   documents, gotify, handoff, review, slack - and the System One decisions
   draw as their own family, so a reader scanning for what the session decided
-  does not find the three mixed among its cron and peer calls. The handoff's
-  exit call is its own family: its row says handoff, wears the handoff mark
-  rather than the workers one, and carries the note it handed over.
+  does not find the three decision calls mixed among its cron and peer calls.
+  The handoff's exit call is its own family: its family is handoff, it wears
+  the handoff mark rather than the workers one, and it carries the note it
+  handed over.
 - **A browser call** is the browser's, whatever server name carried it.
 - **A peer message** draws a card saying which way it went: `sent to` and
   `from` name the counterparty and its org, `failed` carries the

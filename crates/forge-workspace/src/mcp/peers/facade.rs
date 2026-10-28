@@ -69,20 +69,21 @@ pub trait WorkspaceFacade: Send + Sync {
         wrapped: WrappedPrompt,
     ) -> Result<(), DeliverError>;
 
-    /// The exit call: `Some(note)` is accepted only while a handoff is
-    /// running on the caller's own seat. The tool never sends `None`; a
-    /// handoff starts at `/handoff` or at the fill threshold, which dispatch
-    /// the command directly.
-    fn handoff(&self, caller: &SessionSlot, brief: Option<String>) -> Result<(), HandoffError>;
+    /// The exit call: the note is accepted only while a handoff is running on
+    /// the caller's own seat. A handoff starts at `/handoff` or at the
+    /// automatic trigger (fill or compaction), which dispatch the command
+    /// directly; no caller starts one through here.
+    fn handoff(&self, caller: &SessionSlot, note: String) -> Result<(), HandoffError>;
 }
 
-/// Why a handoff could not be asked for.
+/// Why a handoff could not be started or completed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HandoffError {
     #[error("the seat {slot} is not running; a handoff needs a live session to hand over")]
     SessionGone { slot: String },
     #[error(
-        "no handoff is running on {slot}; a handoff starts at /handoff or at the fill threshold"
+        "no handoff is running on {slot}; a handoff starts at /handoff or at the automatic trigger \
+         (fill or compaction)"
     )]
     NotInAHandoff { slot: String },
 }
@@ -199,17 +200,17 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         Ok(())
     }
 
-    fn handoff(&self, caller: &SessionSlot, brief: Option<String>) -> Result<(), HandoffError> {
+    fn handoff(&self, caller: &SessionSlot, note: String) -> Result<(), HandoffError> {
         let Some(ws) = self.0.upgrade() else {
             return Err(HandoffError::SessionGone { slot: caller.display() });
         };
         // **An exit is only the end of a handoff already running.** The gate
         // opens at the entry and closes on the swap, so it is the authority
         // on whether this call has a turn to belong to.
-        if brief.is_some() && !ws.swap_in_progress(caller) {
+        if !ws.swap_in_progress(caller) {
             return Err(HandoffError::NotInAHandoff { slot: caller.display() });
         }
-        ws.dispatch(Command::Handoff { key: caller.clone(), brief })
+        ws.dispatch(Command::Handoff { key: caller.clone(), brief: Some(note) })
             .map_err(|_| HandoffError::SessionGone { slot: caller.display() })
     }
 }
@@ -229,7 +230,7 @@ pub struct MockWorkspaceFacade {
     /// failure surface.
     pub force_deliver_error: parking_lot::Mutex<Option<DeliverError>>,
     /// Captured calls to `handoff`.
-    pub handoff_calls: parking_lot::Mutex<Vec<(SessionSlot, Option<String>)>>,
+    pub handoff_calls: parking_lot::Mutex<Vec<(SessionSlot, String)>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -278,8 +279,8 @@ impl WorkspaceFacade for MockWorkspaceFacade {
         Ok(())
     }
 
-    fn handoff(&self, caller: &SessionSlot, brief: Option<String>) -> Result<(), HandoffError> {
-        self.handoff_calls.lock().push((caller.clone(), brief));
+    fn handoff(&self, caller: &SessionSlot, note: String) -> Result<(), HandoffError> {
+        self.handoff_calls.lock().push((caller.clone(), note));
         Ok(())
     }
 }
@@ -595,7 +596,7 @@ mod lead_resolution_tests {
         let slot = SessionSlot::worker("Busytools", "forge", "handoff-cut");
         ws.begin_swap(&slot);
 
-        facade.handoff(&slot, Some("Now: the cut is in.".to_owned())).expect("accepted");
+        facade.handoff(&slot, "Now: the cut is in.".to_owned()).expect("accepted");
 
         let routed = ws.drain_test_dispatch_buffer();
         assert!(
@@ -619,11 +620,12 @@ mod lead_resolution_tests {
         let slot = SessionSlot::worker("Busytools", "forge", "handoff-cut");
 
         let error = facade
-            .handoff(&slot, Some("Now: the cut is in.".to_owned()))
+            .handoff(&slot, "Now: the cut is in.".to_owned())
             .expect_err("no handoff is running on this seat");
         assert_eq!(error, HandoffError::NotInAHandoff { slot: slot.display() });
         assert!(
-            error.to_string().contains("/handoff") && error.to_string().contains("fill threshold"),
+            error.to_string().contains("/handoff")
+                && error.to_string().contains("automatic trigger"),
             "the refusal names both doors: {error}",
         );
     }

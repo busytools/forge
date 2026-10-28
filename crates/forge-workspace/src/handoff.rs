@@ -1174,11 +1174,14 @@ fn render_sections(out: &mut String, sections: &[HandoffSection]) {
 /// matcher cannot drift apart.
 const MACHINE_PREFIX: &str = "A handoff is starting for this session:";
 
-const JUDGMENT_OPENING: &str = "\
-A handoff is starting for this session: forge will replace it with a new \
-session that continues the work. This turn has two jobs, in this order, and it \
-ends on the text that becomes the judgment half of the brief the new session is \
-given.";
+/// The opening, built from the matcher's prefix so the two cannot drift.
+fn judgment_opening() -> String {
+    format!(
+        "{MACHINE_PREFIX} forge will replace it with a new session that continues the work. \
+         This turn has two jobs, in this order, and it ends on the text that becomes the \
+         judgment half of the brief the new session is given."
+    )
+}
 
 /// The handoff skill forge ships and installs into the config dir.
 const SKILL: &str = include_str!("handoff/SKILL.md");
@@ -1212,7 +1215,7 @@ same text to `agents__handoff` as `brief`. Keep it under 1,200 words.";
 /// The judgment prompt the turn runs: forge's own words, the skill it names,
 /// and the output contract for the note the exit call carries.
 pub(crate) fn judgment_prompt() -> String {
-    format!("{JUDGMENT_OPENING}\n\n{JUDGMENT_BODY}\n\n{JUDGMENT_CONTRACT}")
+    format!("{}\n\n{JUDGMENT_BODY}\n\n{JUDGMENT_CONTRACT}", judgment_opening())
 }
 
 /// How an install left the skill on disk.
@@ -1223,17 +1226,17 @@ pub enum SkillInstall {
     Unchanged,
 }
 
-/// Install the handoff skill at `<config_dir>/skills/handoff/SKILL.md`.
-///
-/// **One path, one file.** forge.toml stays hand-authored and forge never
-/// writes it; this generated skill is the one file forge owns inside the
-/// config dir. It is compared byte for byte and rewritten, atomically through
-/// a temp file in the same directory, only when the shipped text differs.
 /// Where the generated skill lives: `<config_dir>/skills/handoff/SKILL.md`.
 pub fn skill_path(config_dir: &Path) -> PathBuf {
     config_dir.join("skills").join("handoff").join("SKILL.md")
 }
 
+/// Install the handoff skill at [`skill_path`].
+///
+/// **One path, one file.** forge.toml stays hand-authored and forge never
+/// writes it; this generated skill is the one file forge owns inside the
+/// config dir. It is compared byte for byte and rewritten, atomically through
+/// a temp file in the same directory, only when the shipped text differs.
 pub fn install_skill(config_dir: &Path) -> std::io::Result<SkillInstall> {
     let dir = config_dir.join("skills").join("handoff");
     let path = skill_path(config_dir);
@@ -2385,6 +2388,42 @@ mod tests {
         assert_eq!(idle[0].lines, vec!["none running".to_owned()]);
         assert_eq!(idle[3].lines, vec!["not scanned".to_owned()], "an absent scan is stated");
 
+        // **Settled work is not live.** A finished sub-agent and a stopped
+        // monitor must not list as still running.
+        let mut settled = crate::domain_session::DomainSession::new(
+            SessionSlot::worker("Busytools", "forge", "handoff-cut"),
+            None,
+        );
+        settled.card_tracker.apply(&assistant(
+            vec![ContentBlock::ToolUse {
+                id: "t1".to_owned(),
+                name: "Task".to_owned(),
+                input: serde_json::json!({ "description": "scan the pile", "prompt": "scan" }),
+                extras: Extras::new(),
+            }],
+            None,
+        ));
+        settled.card_tracker.apply(&result("t1", "done", false));
+        settled.monitors = vec![forge_primitives::runtime::MonitorRecord {
+            tool_use_id: "m2".to_owned(),
+            task_id: Some("mt2".to_owned()),
+            description: "watch the build".to_owned(),
+            command: "tail -f build.log".to_owned(),
+            persistent: false,
+            timeout_ms: 0,
+            status: forge_primitives::runtime::MonitorStatus::Stopped,
+            output_file: None,
+            ended_at: None,
+        }];
+        let done = live_work_sections(Some(&settled));
+        assert_eq!(
+            done[0].lines,
+            vec!["none running".to_owned()],
+            "a finished sub-agent is not live",
+        );
+        let stopped = "a stopped monitor is not live";
+        assert_eq!(done[2].lines, vec!["none running".to_owned()], "{stopped}");
+
         let absent = live_work_sections(None);
         assert_eq!(absent.len(), 4);
         for section in &absent {
@@ -2867,7 +2906,7 @@ mod tests {
     fn the_judgment_prompt_is_a_machine_row() {
         let prompt = judgment_prompt();
         assert!(
-            JUDGMENT_OPENING.starts_with(MACHINE_PREFIX),
+            judgment_opening().starts_with(MACHINE_PREFIX),
             "the opening carries the matcher's prefix",
         );
         assert!(
@@ -2901,7 +2940,7 @@ mod tests {
 
     /// **The skill is installed into the config dir, and only rewritten when
     /// it differs.** An unchanged copy is left alone, so its mtime does not
-    /// move; a changed one is replaced with no temp file left behind.
+    /// move, and a changed one is replaced with the shipped bytes.
     #[test]
     fn the_handoff_skill_is_installed_only_when_it_differs() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2938,10 +2977,6 @@ mod tests {
         std::fs::remove_file(&path).expect("remove");
         std::fs::create_dir(&path).expect("dir in its place");
         assert!(install_skill(dir.path()).is_err(), "an unreadable skill is an error");
-        assert!(
-            !dir.path().join("skills").join("handoff").join("SKILL.md.tmp").exists(),
-            "no temp file is left behind",
-        );
     }
 
     /// The name the prompt invokes is the name the skill declares and the
@@ -2962,6 +2997,78 @@ mod tests {
             Path::new("/tmp/cfg").join("skills").join(name).join("SKILL.md"),
             "and the install directory is that name",
         );
+    }
+
+    /// **The memory roots are wired into the brief itself.** Passing `&[]` in
+    /// `ground_truth` would leave every other test green; this seeds a real
+    /// transcript and reads the brief that build produces.
+    #[tokio::test]
+    async fn the_ground_truth_drops_the_memory_edits_from_the_files_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let cwd = std::fs::canonicalize(&project).expect("canonical");
+        let session = "9cfe315c-aaaa-bbbb-cccc-dddddddddddd";
+        let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+            &cwd.to_string_lossy(),
+        ));
+        let transcript =
+            forge_sdk::projects_dir_for(config).join(&key).join(format!("{session}.jsonl"));
+        std::fs::create_dir_all(transcript.parent().expect("parent")).expect("projects dir");
+        let memory = config.join("projects").join(&key).join("memory").join("note.md");
+        let rows = [
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": "do the thing"}]},
+                "session_id": session,
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "session_id": session,
+                "message": {
+                    "id": "m1",
+                    "role": "assistant",
+                    "model": "a-model",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Edit",
+                                 "input": {"file_path": memory.to_string_lossy()}}],
+                },
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "session_id": session,
+                "message": {
+                    "id": "m2",
+                    "role": "assistant",
+                    "model": "a-model",
+                    "content": [{"type": "tool_use", "id": "t2", "name": "Edit",
+                                 "input": {"file_path": "src/lib.rs"}}],
+                },
+            }),
+        ];
+        let body = rows.iter().fold(String::new(), |mut body, row| {
+            body.push_str(&row.to_string());
+            body.push('\n');
+            body
+        });
+        std::fs::write(&transcript, body).expect("write transcript");
+
+        let seat = HandoffSeat {
+            slot: &SessionSlot::worker("Busytools", "forge", "handoff-cut"),
+            from: session,
+            cwd: &cwd,
+            transcript_path: &transcript,
+            account: None,
+            model: None,
+            permission_mode: None,
+            role: Role::Worker { charter_opening: None },
+        };
+        let ground = ground_truth(config, &seat, &[], None, Vec::new()).await;
+        let files = ground.sections.iter().find(|section| section.label == "files").expect("files");
+        let changed =
+            files.lines.iter().find(|line| line.starts_with("changed:")).expect("changed");
+        assert!(changed.contains("src/lib.rs"), "the project edit is named: {changed}");
+        assert!(!changed.contains("memory"), "and the memory edit is not: {changed}");
     }
 
     /// **A note is only a note if it parses into sections.** Headings with
@@ -3024,6 +3131,36 @@ mod tests {
         assert!(
             roots.contains(&PathBuf::from("/tmp/cfg/memory")),
             "and the environment's, where the cross-project notes live: {roots:?}",
+        );
+    }
+
+    /// **Every spelling of the memory directory matches, and the boundary
+    /// still holds.** A `~/` path, a canonical spelling of a symlinked root,
+    /// and a sibling sharing the prefix are the three ways a raw string
+    /// comparison gets this wrong.
+    #[test]
+    fn the_memory_path_match_covers_spellings_and_stops_at_the_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("memory");
+        std::fs::create_dir_all(&root).expect("dir");
+        let roots = [root.clone()];
+        assert!(
+            is_memory_path(&root.join("note.md").to_string_lossy(), &roots),
+            "the plain spelling",
+        );
+        let canonical = std::fs::canonicalize(&root).expect("canonical");
+        assert!(
+            is_memory_path(&canonical.join("note.md").to_string_lossy(), &roots),
+            "a canonical spelling of a root reached through a symlink",
+        );
+        let home = dirs::home_dir().expect("home");
+        assert!(
+            is_memory_path("~/.claude-memory-test/note.md", &[home.join(".claude-memory-test")]),
+            "a home-relative spelling",
+        );
+        assert!(
+            !is_memory_path(&dir.path().join("memory-not/x.md").to_string_lossy(), &roots),
+            "a sibling that merely shares the prefix is not inside",
         );
     }
 

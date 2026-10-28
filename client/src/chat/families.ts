@@ -33,11 +33,17 @@ export type Family =
  * One name per submodule of the `forge` server rather than a second list: the
  * family segment a tool name carries IS the family (`mcp__forge__tasks__update`
  * is tasks), so a family added on the server arrives here by being named.
+ *
+ * `agents__handoff` is the one exception, named in `forgeFamilyOf`: its verb
+ * ends a seat rather than acting on a worker, so its family is `handoff`.
  */
 export type ForgeFamily =
   'agents' | 'cron' | 'documents' | 'gotify' | 'handoff' | 'review' | 'slack' | 'tasks';
 
-/** The families a `forge` call draws a card for; `systemone` keeps its own kind. */
+/**
+ * The families a `forge` call's name segment yields; `systemone` keeps its own
+ * kind, and `handoff` comes from the exception in `forgeFamilyOf`.
+ */
 const FORGE_FAMILIES = new Set<string>([
   'agents',
   'cron',

@@ -153,7 +153,7 @@ impl Tool for Handoff {
     fn description(&self) -> &'static str {
         "Complete a running handoff by handing this seat to a fresh session that continues the \
          work. **This is the exit, never the entry**: a handoff starts at `/handoff` or at the \
-         fill threshold, and this call is the handoff skill's last act. \
+         automatic trigger (fill or compaction), and this call is the handoff skill's last act. \
          \
          forge writes the ground truth itself - the seat, the asks, the constraints quoted \
          verbatim, the files and the dirty list, the last gate and its verdict, the board rows \
@@ -192,11 +192,11 @@ impl Tool for Handoff {
         if note.is_empty() {
             return tool_error(
                 "agents__handoff completes a running handoff and carries its note; a handoff \
-                 starts at /handoff or at the fill threshold"
+                 starts at /handoff or at the automatic trigger (fill or compaction)"
                     .to_owned(),
             );
         }
-        match self.dispatcher.peers().handoff(&self.slot, Some(note)) {
+        match self.dispatcher.peers().handoff(&self.slot, note) {
             Ok(()) => json_output(&serde_json::json!({
                 "status": "handoff note accepted",
                 "runs": "after this turn ends",
@@ -1282,7 +1282,7 @@ mod tests {
             assert!(!output.is_error, "a handoff must not error: {:?}", output.blocks);
             assert_eq!(
                 host.peers.handoff_calls.lock().as_slice(),
-                &[(slot, Some("Now: the cut is half in.".to_owned()))],
+                &[(slot, "Now: the cut is half in.".to_owned())],
                 "the caller's own seat, with the note it wrote",
             );
         }
@@ -1299,7 +1299,7 @@ mod tests {
             assert!(output.is_error, "a handoff with no note is an error");
             let text = text_of(&output);
             assert!(
-                text.contains("/handoff") && text.contains("fill threshold"),
+                text.contains("/handoff") && text.contains("automatic trigger"),
                 "the refusal names both doors: {text}",
             );
             assert!(host.peers.handoff_calls.lock().is_empty(), "and nothing is dispatched");

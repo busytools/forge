@@ -1648,7 +1648,7 @@ impl SessionTask {
     /// The skill's last act: the note the successor's brief carries.
     ///
     /// **Only while this seat is already handing over.** The entry is
-    /// `/handoff` or the fill trigger; a call with no handoff in flight has no
+    /// `/handoff` or the automatic trigger; a call with no handoff in flight has no
     /// turn to belong to and is stated as refused, never turned into a start.
     fn complete_handoff(&mut self, note: String) {
         let mut domain = self.domain.lock();
@@ -1661,7 +1661,7 @@ impl SessionTask {
                 key: self.key.clone(),
                 severity: NoticeSeverity::Error,
                 text: "agents__handoff completes a running handoff; a handoff starts at /handoff \
-                       or at the fill threshold"
+                       or at the automatic trigger (fill or compaction)"
                     .to_owned(),
             });
             return;
@@ -5029,7 +5029,7 @@ mod tests {
         while let Ok(frame) = updates.try_recv() {
             if let SessionUpdate::Notice { text, .. } = frame.update
                 && text.contains("/handoff")
-                && text.contains("fill threshold")
+                && text.contains("automatic trigger")
             {
                 stated = true;
             }

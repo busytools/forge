@@ -57,6 +57,7 @@ describe('the row a call is summarised under', () => {
   it('keys a forge family tool to its own family and glyph', () => {
     // The family is the first segment under the server, read by name rather
     // than listed: a family the server grows arrives here by being called.
+    // `agents__handoff` is the one exception, named in `forgeFamilyOf`.
     for (const [name, family, glyph] of [
       ['mcp__forge__tasks__update', 'tasks', 'tasks'],
       ['mcp__forge__cron__create', 'cron', 'schedules'],

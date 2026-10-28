@@ -78,4 +78,5 @@ as: the state snapshot in Now, the next steps and open threads in Next, the proc
 Do not or Next, and the suggested skills in Next. Give the note the five headings, with the last
 line under Now naming what you recorded in memory and where. Write it where Step 2 says and pass
 the same text to `agents__handoff` as `brief` as the turn's last act. Do not call
-`agents__handoff` for any other reason - a handoff starts at `/handoff` or at the fill threshold.
+`agents__handoff` for any other reason - a handoff starts at `/handoff` or at the automatic
+trigger (fill or compaction).
