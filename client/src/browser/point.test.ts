@@ -39,4 +39,9 @@ describe('a tap on the picture', () => {
     const empty = { left: 0, top: 0, width: 0, height: 0 };
     expect(pagePoint(5, 5, empty, page)).toEqual({ x: 0, y: 0 });
   });
+
+  /** A frame that names no page has no point to send a gesture to. */
+  it('answers the page origin for a frame that names no page', () => {
+    expect(pagePoint(5, 5, box, { width: 0, height: 0 })).toEqual({ x: 0, y: 0 });
+  });
 });

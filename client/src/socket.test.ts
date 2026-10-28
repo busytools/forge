@@ -83,7 +83,7 @@ async function stubServer() {
       for (const socket of sockets) socket.send(JSON.stringify(message));
     },
     /** One relayed browser frame, as the server sends it: kind tag, the
-     *  host's 14-byte header, then the encoded pixels. */
+     *  host's 18-byte header, then the encoded pixels. */
     sendFrame(frame: {
       profile: number;
       tab: number;
@@ -91,9 +91,11 @@ async function stubServer() {
       width: number;
       height: number;
       key: boolean;
+      page_width: number;
+      page_height: number;
       bytes: Uint8Array;
     }) {
-      const bytes = Buffer.alloc(15 + frame.bytes.length);
+      const bytes = Buffer.alloc(19 + frame.bytes.length);
       bytes[0] = 1;
       bytes.writeUInt16LE(frame.profile, 1);
       bytes.writeUInt16LE(frame.tab, 3);
@@ -102,7 +104,9 @@ async function stubServer() {
       bytes.writeUInt16LE(frame.height, 11);
       bytes[13] = 1;
       bytes[14] = frame.key ? 1 : 0;
-      Buffer.from(frame.bytes).copy(bytes, 15);
+      bytes.writeUInt16LE(frame.page_width, 15);
+      bytes.writeUInt16LE(frame.page_height, 17);
+      Buffer.from(frame.bytes).copy(bytes, 19);
       for (const socket of sockets) socket.send(bytes);
     },
     /** One frame exactly as given, for a frame that is not JSON at all. */
@@ -1560,6 +1564,8 @@ describe('the browser viewer', () => {
       width: 800,
       height: 600,
       key: true,
+      page_width: 400,
+      page_height: 300,
       bytes: new Uint8Array([0x52, 0x49, 0x46, 0x46]),
     });
     await until(() => heard.length === 1, 'the frame to arrive');
@@ -1569,6 +1575,10 @@ describe('the browser viewer', () => {
     expect(frame?.seq).toBe(7);
     expect([frame?.width, frame?.height]).toEqual([800, 600]);
     expect(frame?.key).toBe(true);
+    expect(
+      [frame?.page_width, frame?.page_height],
+      'the page the pixels were painted from',
+    ).toEqual([400, 300]);
     expect([...(frame?.bytes ?? [])]).toEqual([0x52, 0x49, 0x46, 0x46]);
   });
 
