@@ -4707,6 +4707,7 @@ mod tests {
         let content = DiffContent {
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Populated(files),
+            base: Some(forge_primitives::git_diff::BaseState::Current),
             truncated: false,
         };
         let whole =
@@ -4911,6 +4912,7 @@ mod tests {
                     stats: GitDiffStats::default(),
                     time: 1_766_000_000,
                 }],
+                base: forge_primitives::git_diff::BaseState::Current,
             }),
             pr: Some(GitPrInfo {
                 number: 1249,

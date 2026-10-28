@@ -35,7 +35,8 @@ use std::time::{Duration, Instant};
 use super::git_command;
 use forge_primitives::git::{FileStatus, GitBranch, GitIssueRef, GitPrInfo};
 use forge_primitives::git_diff::{
-    GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, PrRefresh, RepoGate,
+    BaseState, GitBranchAhead, GitDiffFile, GitDiffSnapshot, GitDiffStats, LayerState, PrRefresh,
+    RepoGate,
 };
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -85,6 +86,25 @@ pub(super) fn stall_git_at(dir: &std::path::Path, bin: &std::path::Path) {
 
     let wrapper = bin.join("stalled-git");
     std::fs::write(&wrapper, "#!/bin/sh\n/bin/sleep 5\nexec git \"$@\"\n").expect("the wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+    crate::env::git_command::point_git_at(dir, &wrapper);
+}
+
+/// Point the repo at `dir` at a `git` whose `fetch` refuses and whose every
+/// other subcommand is the machine's own. A base refresh that cannot run while
+/// the remote can still be asked is the shape [`measure_lag`] reports: the
+/// remote tip is reachable, the local base is not refreshed.
+#[cfg(test)]
+pub(super) fn fail_fetch_at(dir: &std::path::Path, bin: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let wrapper = bin.join("fetchless-git");
+    std::fs::write(
+        &wrapper,
+        "#!/bin/sh\ncase \"$*\" in\n  *\" fetch \"*) echo 'fatal: forced fetch failure' >&2; \
+         exit 128 ;;\nesac\nexec git \"$@\"\n",
+    )
+    .expect("the wrapper");
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
     crate::env::git_command::point_git_at(dir, &wrapper);
 }
@@ -188,8 +208,8 @@ async fn rev_parse_gate(cwd: &Path, budget: Duration) -> Result<String, RepoGate
     classify_rev_parse(output, presence)
 }
 
-/// Minimum gap between background `git fetch` kicks for one repo. The
-/// scan piggybacks a fetch to keep `origin/<default>` fresh; this caps it
+/// Minimum gap between base refreshes for one repo. The scan fetches
+/// `origin/<default>` before it reads the branch-ahead layer; this caps it
 /// so a burst of scans (session switches, the walk's refresh cadence)
 /// fetches at most once per window.
 const FETCH_THROTTLE: Duration = Duration::from_secs(240);
@@ -213,45 +233,13 @@ const PUSHED_SHA_WALK_CAP: usize = 500;
 /// stable per-repo throttling.
 static LAST_FETCH: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
 
-/// Handles for the fetches kicked so far, so a test can settle an in-flight
-/// fetch before its fixture directory is removed. `scan` never awaits the
-/// fetch it kicks, so a fixture whose guard drops while `git fetch` is still
-/// writing into the tree aborts the removal part-way and leaves the rest of
-/// the directory behind.
-///
-/// Per process and never pruned, so under libtest's threaded runner one
-/// test's settle drains another's handle. nextest, which this repo runs, gives
-/// each test a process of its own.
-#[cfg(test)]
-static FETCH_TASKS: OnceLock<Mutex<Vec<tokio::task::JoinHandle<()>>>> = OnceLock::new();
+/// Per-repo answer of the last base refresh: what a scan inside the throttle
+/// window carries rather than fetching again. Keyed by the same cwd as
+/// [`LAST_FETCH`].
+static LAST_BASE: OnceLock<Mutex<HashMap<PathBuf, BaseState>>> = OnceLock::new();
 
-/// Await every background fetch kicked so far, and report how many that was.
-/// The count is the caller's guard against a silent no-op: a fixture that
-/// stops resolving a remote-tracking default, or a throttle that swallows the
-/// kick, would leave nothing to settle and the teardown racing an unseen
-/// child again.
-#[cfg(test)]
-async fn settle_background_fetches() -> usize {
-    let tasks = std::mem::take(&mut *FETCH_TASKS.get_or_init(|| Mutex::new(Vec::new())).lock());
-    let settled = tasks.len();
-    for task in tasks {
-        let _ = task.await;
-    }
-    settled
-}
-
-/// Hand a kicked fetch's handle to the test-only registry above. A
-/// production build discards it: the fetch is fire-and-forget, which is what
-/// [`scan`] promises its caller.
-fn track_background_fetch(fetch: tokio::task::JoinHandle<()>) {
-    #[cfg(test)]
-    FETCH_TASKS.get_or_init(|| Mutex::new(Vec::new())).lock().push(fetch);
-    #[cfg(not(test))]
-    drop(fetch);
-}
-
-/// Whether a background fetch is due: no prior fetch, or the last one is
-/// at least `window` old. Pure so the throttle is unit-testable.
+/// Whether a base refresh is due: no prior attempt, or the last one is at
+/// least `window` old. Pure so the throttle is unit-testable.
 fn should_fetch(last: Option<Instant>, now: Instant, window: Duration) -> bool {
     match last {
         None => true,
@@ -260,8 +248,8 @@ fn should_fetch(last: Option<Instant>, now: Instant, window: Duration) -> bool {
 }
 
 /// Claim a fetch slot for `key`: returns true (stamping `now`) when a
-/// fetch is due per [`should_fetch`], false when throttled. Stamp-on-
-/// claim so two racing scans can't both kick.
+/// refresh is due per [`should_fetch`], false when throttled. Stamp-on-
+/// claim so two racing scans can't both fetch.
 fn claim_fetch_slot(key: &Path, now: Instant, window: Duration) -> bool {
     let mut map = LAST_FETCH.get_or_init(|| Mutex::new(HashMap::new())).lock();
     let due = should_fetch(map.get(key).copied(), now, window);
@@ -271,69 +259,67 @@ fn claim_fetch_slot(key: &Path, now: Instant, window: Duration) -> bool {
     due
 }
 
-/// Kick a throttled, non-blocking `git fetch origin <default>` so the
-/// remote-tracking ref the branch-ahead diff compares against stays
-/// fresh. Only fires for a remote-tracking default (`origin/...`); a
-/// purely-local default has no remote to fetch. The scan never awaits
-/// it - this scan used the current `origin/<default>`; the fetch refreshes
-/// it for the NEXT scan. Failures (offline, auth, no remote) are
-/// logged at DEBUG and are a no-op: the machine's network is not
-/// forge's condition to report.
-fn kick_background_fetch(cwd: &Path, default_branch: Option<&str>, budget: Duration) {
-    let Some(remote_branch) = default_branch.and_then(|d| d.strip_prefix("origin/")) else {
-        return;
+/// Refresh the base the branch-ahead diff is about to be computed against,
+/// and say how current it is.
+///
+/// **Before the diff, not after it**: a base the remote has moved past moves
+/// the merge-base with HEAD back, folding main's own commits into the branch's
+/// diff (Granite, 2026-10-27). A fetch that could not run is reported as
+/// [`BaseState`] rather than hidden. Throttled to one attempt per
+/// [`FETCH_THROTTLE`], so a burst of scans reuses the last answer.
+async fn refresh_base(cwd: &Path, default_branch: &str, budget: Duration) -> BaseState {
+    let Some(remote_branch) = default_branch.strip_prefix("origin/") else {
+        return BaseState::Local;
     };
     if !claim_fetch_slot(cwd, Instant::now(), FETCH_THROTTLE) {
-        return;
+        return LAST_BASE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .get(cwd)
+            .copied()
+            .unwrap_or(BaseState::Local);
     }
-    let cwd = cwd.to_path_buf();
-    let remote_branch = remote_branch.to_owned();
-    track_background_fetch(tokio::spawn(async move {
-        let fetch = git_command::tokio_git_command(&cwd)
-            .arg("-C")
-            .arg(&cwd)
-            .args(["fetch", "origin", &remote_branch])
-            .kill_on_drop(true)
-            .output();
-        // A hung remote must not leak the child every throttle window;
-        // without the timeout neither kill_on_drop nor the task ever
-        // fires.
-        match timeout(budget, fetch).await {
-            Ok(Ok(out)) if out.status.success() => {}
-            Ok(Ok(out)) => {
-                tracing::debug!(
-                    target: crate::logging::targets::ENV_GIT,
-                    cwd = %cwd.display(),
-                    event_name = "git_background_fetch_nonzero_exit",
-                    message = "background git fetch exited non-zero",
-                    outcome = "failure",
-                    exit_code = out.status.code().unwrap_or(-1),
-                    branch = %remote_branch,
-                );
-            }
-            Ok(Err(err)) => {
-                tracing::debug!(
-                    target: crate::logging::targets::ENV_GIT,
-                    cwd = %cwd.display(),
-                    event_name = "git_background_fetch_failed",
-                    message = "background git fetch spawn/wait failed",
-                    outcome = "failure",
-                    error = %err,
-                    branch = %remote_branch,
-                );
-            }
-            Err(_) => {
-                tracing::debug!(
-                    target: crate::logging::targets::ENV_GIT,
-                    cwd = %cwd.display(),
-                    event_name = "git_background_fetch_timeout",
-                    message = "background git fetch exceeded the command timeout",
-                    outcome = "failure",
-                    branch = %remote_branch,
-                );
-            }
+    // `git fetch origin <branch>` updates `refs/remotes/origin/<branch>`,
+    // which is the ref the layer reads. A successful fetch writes progress to
+    // stderr and nothing to stdout, so both output shapes are one success.
+    let state = match run_git_within(cwd, &["fetch", "origin", remote_branch], budget).await {
+        GitOutput::Ok(_) | GitOutput::Empty => BaseState::Current,
+        GitOutput::Failed | GitOutput::Oversize => measure_lag(cwd, default_branch, budget).await,
+    };
+    LAST_BASE.get_or_init(|| Mutex::new(HashMap::new())).lock().insert(cwd.to_path_buf(), state);
+    state
+}
+
+/// Name how far behind the base is when the fetch failed but the remote can
+/// still be asked: the commits `origin/<default>` lacks, or
+/// [`BaseState::Unverified`] when neither step answers.
+async fn measure_lag(cwd: &Path, default_branch: &str, budget: Duration) -> BaseState {
+    let Some(remote_branch) = default_branch.strip_prefix("origin/") else {
+        return BaseState::Local;
+    };
+    let refname = format!("refs/heads/{remote_branch}");
+    let GitOutput::Ok(listing) =
+        run_git_within(cwd, &["ls-remote", "origin", &refname], budget).await
+    else {
+        return BaseState::Unverified;
+    };
+    let Some(tip) = listing.split_whitespace().next() else {
+        return BaseState::Unverified;
+    };
+    // A base already at the remote tip is current however the fetch failed. A
+    // base merely AHEAD of it (a force-push rewritten past us) is not behind,
+    // and claiming zero would read as fresh when the refs disagree.
+    match run_git_within(cwd, &["rev-parse", default_branch], budget).await {
+        GitOutput::Ok(local) if local.trim() == tip => return BaseState::Current,
+        GitOutput::Ok(_) => {}
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {
+            return BaseState::Unverified;
         }
-    }));
+    }
+    match commit_count_in_range(cwd, default_branch, tip, budget).await {
+        Some(behind) if behind > 0 => BaseState::Behind { behind },
+        _ => BaseState::Unverified,
+    }
 }
 
 /// Run the full scan sequence against `cwd` and return a snapshot.
@@ -449,9 +435,6 @@ async fn scan_within<S: std::hash::BuildHasher>(
     };
 
     let default_branch = resolve_default_branch(cwd, budget).await;
-    // Keep origin/<default> fresh for the NEXT scan without blocking this
-    // one - throttled, non-blocking, failure-tolerant.
-    kick_background_fetch(cwd, default_branch.as_deref(), budget);
     let on_default = checked_out_on_default(&raw_branch, default_branch.as_deref());
     let dirty_probe = is_worktree_dirty(cwd, budget).await;
 
@@ -492,6 +475,11 @@ async fn scan_within<S: std::hash::BuildHasher>(
     // carries the subprocess-error signal mirroring layer 1.
     let branch_ahead: LayerState<GitBranchAhead> = if !detached && !on_default {
         if let Some(default) = default_branch.as_deref() {
+            // **Refresh the base before reading the range.** A remote-tracking
+            // ref the remote has moved past makes the merge-base older and
+            // folds main's own new commits into the branch's diff, so the
+            // layer must not be computed first and refreshed afterwards.
+            let base = refresh_base(cwd, default, budget).await;
             let range = format!("{default}...HEAD");
             match numstat(cwd, &["diff", "--numstat", &range], budget).await {
                 Ok(stats) => match commit_count_in_range(cwd, default, "HEAD", budget).await {
@@ -525,7 +513,7 @@ async fn scan_within<S: std::hash::BuildHasher>(
                         let commits = commits_in_range(cwd, default, "HEAD", budget)
                             .await
                             .unwrap_or_default();
-                        LayerState::Populated(GitBranchAhead { commit_count, stats, commits })
+                        LayerState::Populated(GitBranchAhead { commit_count, stats, commits, base })
                     }
                 },
                 Err(_) => LayerState::ScanFailed,
@@ -2444,9 +2432,6 @@ mod tests {
         ]);
 
         scan_within(dir.path(), &env, None, PrRefresh::Fetch, budget).await;
-        // The scan also kicks a throttled background fetch; settle it so
-        // the fixture directory is not removed under a live child.
-        settle_background_fetches().await;
         std::fs::read_to_string(&seen).ok()
     }
 
@@ -2619,14 +2604,30 @@ mod tests {
 
     /// Full 40-hex sha of HEAD in the test repo.
     fn rev_parse_head(dir: &TempDir) -> String {
+        rev_parse(dir.path(), "HEAD")
+    }
+
+    /// The full sha `rev` names in `dir`.
+    fn rev_parse(dir: &Path, rev: &str) -> String {
         let out = StdCommand::new("git")
             .arg("-C")
-            .arg(dir.path())
-            .args(["rev-parse", "HEAD"])
+            .arg(dir)
+            .args(["rev-parse", rev])
             .output()
             .expect("git ok");
-        assert!(out.status.success(), "rev-parse HEAD failed");
+        assert!(out.status.success(), "rev-parse {rev} failed in {}", dir.display());
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// Run `git <args>` at `dir`, asserting it succeeded.
+    fn git_at(dir: &Path, args: &[&str]) {
+        let out = StdCommand::new("git").arg("-C").arg(dir).args(args).output().expect("git ok");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed in {}: {}",
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr),
+        );
     }
 
     /// `scan` carries cached PR data through the cache-hit path. Set
@@ -2796,6 +2797,148 @@ mod tests {
         );
     }
 
+    /// The stale-base shape: a bare remote, a checkout whose `origin/main`
+    /// sits one commit behind the remote, and a feature branch cut from the
+    /// remote's tip with one commit of its own. On the stale ref the range
+    /// folds the remote's commit in; on a refreshed one it is the branch's
+    /// own change alone.
+    fn stale_base_fixture() -> (TempDir, TempDir) {
+        let upstream = tempfile::tempdir().expect("bare remote");
+        git_at(upstream.path(), &["init", "-q", "--bare"]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "base.txt", "base\n");
+        commit_all(&dir, "X base");
+        let base = rev_parse_head(&dir);
+        git_at(dir.path(), &["remote", "add", "origin", &upstream.path().to_string_lossy()]);
+        git_at(dir.path(), &["push", "-q", "-u", "origin", "main"]);
+        // Upstream moves on: one commit main gained that the checkout has not
+        // fetched.
+        write_file(&dir, "upstream.txt", "upstream\n");
+        commit_all(&dir, "Y upstream");
+        git_at(dir.path(), &["push", "-q", "origin", "main"]);
+        // The feature branch is cut from upstream's tip, with one commit of
+        // its own.
+        git_at(dir.path(), &["checkout", "-q", "-b", "feature"]);
+        write_file(&dir, "feat.txt", "feat\n");
+        commit_all(&dir, "Z feat");
+        // The stale ref: the checkout's origin/main is still X even though the
+        // remote's main is Y.
+        git_at(dir.path(), &["update-ref", "refs/remotes/origin/main", &base]);
+        git_at(
+            dir.path(),
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        );
+        (upstream, dir)
+    }
+
+    /// **The base is refreshed before the diff is computed.**
+    ///
+    /// Ved's Granite case: the checkout's `origin/main` was stale while the
+    /// remote had moved on, so the merge-base with HEAD moved back and every
+    /// commit main had gained since the stale ref folded into the branch's
+    /// diff - a 3-commit branch read as 19 changed files. The scan must fetch
+    /// the base before it computes the branch-ahead layer, not after.
+    ///
+    /// The control below proves the stale ref really does inflate the range,
+    /// so the assertion cannot pass by the fixture being wrong.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_stale_origin_main_is_refreshed_before_the_branch_ahead_layer() {
+        let (upstream, dir) = stale_base_fixture();
+
+        // Control: on the stale ref the range really does fold upstream's
+        // commit into the branch's diff.
+        let stale = StdCommand::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["diff", "--name-only", "origin/main...HEAD"])
+            .output()
+            .expect("git ok");
+        assert!(stale.status.success(), "the control range reads");
+        let stale_files = String::from_utf8_lossy(&stale.stdout);
+        assert!(
+            stale_files.contains("upstream.txt") && stale_files.contains("feat.txt"),
+            "control: the stale base folds upstream's commit into the branch diff: {stale_files:?}",
+        );
+
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
+
+        let LayerState::Populated(ahead) = &snap.branch_ahead else {
+            panic!("the feature branch has one commit ahead of the refreshed base");
+        };
+        assert_eq!(ahead.commit_count, 1, "the branch's own commit alone");
+        assert_eq!(
+            ahead.stats.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+            vec!["feat.txt"],
+            "upstream's already-merged commit is not the branch's change",
+        );
+        assert_eq!(ahead.base, BaseState::Current, "the diff was taken from a refreshed base");
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            rev_parse(upstream.path(), "main"),
+            "the scan fetched the base it compared against",
+        );
+    }
+
+    /// A base the fetch could not refresh is still drawn, and the layer says
+    /// how far behind it is: the remote can be asked even when the fetch
+    /// would not run, and the count is the commits upstream has that the base
+    /// lacks.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_base_the_fetch_could_not_refresh_is_labelled_with_its_lag() {
+        let (_upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        fail_fetch_at(dir.path(), bin.path());
+
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        let LayerState::Populated(ahead) = &snap.branch_ahead else {
+            panic!("the branch-ahead layer is read from the ref it holds");
+        };
+        assert_eq!(
+            ahead.base,
+            BaseState::Behind { behind: 1 },
+            "the remote is one commit ahead of the base, and the layer says so",
+        );
+        assert_eq!(ahead.commit_count, 2, "the stale range still folds upstream's commit in");
+        assert!(
+            ahead.stats.files.iter().any(|file| file.path == "upstream.txt"),
+            "so the file list is the stale one - the label is what keeps it from reading as the \
+             branch's own change",
+        );
+    }
+
+    /// A base whose remote cannot be reached is neither refreshed nor
+    /// measured, and says exactly that rather than drawing silence.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_base_with_no_reachable_remote_is_unverified() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "base.txt", "base\n");
+        commit_all(&dir, "base");
+        git_at(dir.path(), &["remote", "add", "origin", "/nonexistent/forge-base.git"]);
+        git_at(dir.path(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git_at(
+            dir.path(),
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        );
+        git_at(dir.path(), &["checkout", "-q", "-b", "feature"]);
+        write_file(&dir, "feat.txt", "feat\n");
+        commit_all(&dir, "feat");
+
+        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
+
+        let LayerState::Populated(ahead) = &snap.branch_ahead else {
+            panic!("the branch has one commit ahead of the base it holds");
+        };
+        assert_eq!(
+            ahead.base,
+            BaseState::Unverified,
+            "an unreachable remote leaves the base unchecked, and the layer says so",
+        );
+    }
+
     /// A worker branch is cut from origin/main while local `main` lags
     /// origin/main (the usual state when the user only pulls merged
     /// PRs). The branch-ahead diff must compare against the remote-
@@ -2852,10 +2995,11 @@ mod tests {
             ahead.stats.files[0].path, "z.txt",
             "merged.txt (already on origin/main) is excluded from the branch-ahead diff",
         );
-        assert!(
-            settle_background_fetches().await >= 1,
-            "an origin-tracking scan kicks a fetch, so settling must have one to await",
-        );
+        // This fixture simulates origin/main with `update-ref` and configures
+        // no remote to refresh it from, so the base is reported unverified
+        // rather than drawn as current - the layer above is still the answer
+        // for the ref it holds.
+        assert_eq!(ahead.base, BaseState::Unverified);
     }
 
     /// On `main` with the default resolved to the remote-tracking ref
@@ -2885,10 +3029,6 @@ mod tests {
         assert!(
             matches!(snap.branch_ahead, LayerState::Clean),
             "on `main` the branch-ahead layer stays empty even when ahead of origin/main",
-        );
-        assert!(
-            settle_background_fetches().await >= 1,
-            "an origin-tracking scan kicks a fetch, so settling must have one to await",
         );
     }
 
@@ -2920,12 +3060,12 @@ mod tests {
         );
     }
 
-    /// A scan on an origin-tracking repo KICKS a throttled background
-    /// fetch (claims the slot) without awaiting it: the scan returns
-    /// with the current snapshot and the fetch refreshes origin for the
-    /// next scan. Observing the claimed slot proves the kick fired.
+    /// A scan on an origin-tracking repo refreshes the base before the
+    /// branch-ahead layer (claims the fetch slot). Observing the claimed slot
+    /// proves the attempt fired; what the attempt found is the base state's
+    /// own business.
     #[tokio::test(flavor = "current_thread")]
-    async fn scan_kicks_background_fetch_for_origin_tracking_default() {
+    async fn scan_refreshes_the_base_for_an_origin_tracking_default() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         let run = |args: &[&str]| {
@@ -2937,13 +3077,12 @@ mod tests {
         commit_all(&dir, "base");
         run(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
         run(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        run(&["checkout", "-q", "-b", "feature"]);
+        write_file(&dir, "feat.txt", "feat\n");
+        commit_all(&dir, "feat");
 
         let _ = scan_in_test(dir.path(), &HashMap::new(), None).await;
-        let kicked = LAST_FETCH.get().is_some_and(|m| m.lock().contains_key(dir.path()));
-        assert!(kicked, "a due scan on an origin-tracking repo claims (kicks) a background fetch");
-        assert!(
-            settle_background_fetches().await >= 1,
-            "an origin-tracking scan kicks a fetch, so settling must have one to await",
-        );
+        let claimed = LAST_FETCH.get().is_some_and(|m| m.lock().contains_key(dir.path()));
+        assert!(claimed, "a due scan on an origin-tracking repo refreshes the base");
     }
 }

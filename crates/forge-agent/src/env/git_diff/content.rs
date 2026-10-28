@@ -64,6 +64,9 @@ pub const MAX_FILES: usize = 100;
 pub struct DiffContent {
     pub worktree: LayerState<Vec<FileContent>>,
     pub branch_ahead: LayerState<Vec<FileContent>>,
+    /// How current the base the branch layer was read against is. `None` when
+    /// there is no branch layer to describe.
+    pub base: Option<forge_primitives::git_diff::BaseState>,
     /// Content this read withheld: a file cut by a cap, a file past the
     /// file cap, or a fetch that failed. The per-file flags say which.
     pub truncated: bool,
@@ -166,7 +169,11 @@ pub async fn scan_within<'a>(
         LayerState::Clean => LayerState::Clean,
         LayerState::ScanFailed => LayerState::ScanFailed,
     };
-    DiffContent { worktree, branch_ahead, truncated: caps.withheld }
+    let base = match &snapshot.branch_ahead {
+        LayerState::Populated(ahead) => Some(ahead.base),
+        LayerState::Clean | LayerState::ScanFailed => None,
+    };
+    DiffContent { worktree, branch_ahead, base, truncated: caps.withheld }
 }
 
 /// Read one layer: its file list, then one bounded fetch per file.
@@ -1022,7 +1029,36 @@ index 1111111..2222222 160000
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(matches!(content.branch_ahead, LayerState::Clean));
+        assert!(content.base.is_none(), "a layer with nothing to describe has no base state");
         assert!(!content.truncated);
+    }
+
+    /// The content read carries the base state of the layer it describes, so
+    /// the page can label a stale base beside the files it drew. A read that
+    /// dropped it would draw those files as the branch's own change.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_content_read_carries_the_bases_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "base.rs", "base\n");
+        commit_all(&dir, "base");
+        // An origin-tracking default with no remote behind it: the refresh
+        // cannot run, which is the state the read must report.
+        git(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&dir, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        git(&dir, &["checkout", "-q", "-b", "feat/x"]);
+        write_file(&dir, "feat.rs", "fn x() {}\n");
+        commit_all(&dir, "feat");
+
+        let snapshot = scan_stats(dir.path(), None).await;
+        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+
+        assert_eq!(populated(content.branch_ahead).len(), 1, "the branch's own file is read");
+        assert_eq!(
+            content.base,
+            Some(forge_primitives::git_diff::BaseState::Unverified),
+            "the layer's own base state crosses beside its files",
+        );
     }
 
     /// Outside a repository both layers are empty, and the gate on the

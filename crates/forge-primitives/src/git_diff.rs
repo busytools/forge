@@ -146,6 +146,26 @@ pub struct GitDiffStats {
     pub total_removed: u32,
 }
 
+/// How current the base a branch-ahead diff was computed against is.
+///
+/// The base is a remote-tracking ref (`origin/main`), and how far the
+/// remote has moved past it is only knowable over the network. The scan
+/// fetches it before the diff, so a diff is never drawn from a stale base
+/// without saying so.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaseState {
+    /// A local base, or none resolved: no remote-tracking ref to lag behind.
+    #[default]
+    Local,
+    /// The base was fetched and matches the remote.
+    Current,
+    /// The fetch failed, and the remote is `behind` commits ahead of the base.
+    Behind { behind: u32 },
+    /// The fetch failed and the base could not be checked against the remote.
+    Unverified,
+}
+
 /// Layer 2 payload: how far the branch is ahead of the default
 /// branch, alongside the corresponding numstat.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -161,6 +181,10 @@ pub struct GitBranchAhead {
     /// the count above says how many there are, these say what they are.
     #[serde(default)]
     pub commits: Vec<crate::git::GitCommit>,
+    /// Whether the base above was refreshed before this layer was read, and
+    /// what the refresh found when it could not be.
+    #[serde(default)]
+    pub base: BaseState,
 }
 
 /// One file's diff stats. `added` / `removed` are git's `--numstat`
