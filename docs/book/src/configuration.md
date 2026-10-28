@@ -418,6 +418,15 @@ permission prompt, and the OS drops that notification while the prompt
 is up. So the first ask from a fresh install is silent, and every later
 alert arrives normally.
 
+A browser tab has no host process of its own, so the page asks the
+browser for its notification permission from the first click or keypress
+after an ask arrives - Firefox and Safari refuse a request made without
+one. A refusal is respected silently and never retried, and a page the
+browser offers no notifications to (an insecure origin, or a browser
+without the API) stays silent the same way. Either way the answer is
+outside forge: the browser's own site settings for the address the
+client is served from, or that address being https or `localhost`.
+
 There is no `[ui]` section either: the spinner and repaint keys the
 terminal drew with retired with the terminal crate, and no key replaced
 them. A `forge.toml` still carrying the
@@ -1010,7 +1019,8 @@ safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack
-subscriptions and the sweep watermarks beside them, the session
+subscriptions, the sweep watermarks and the own-post ledger beside them,
+the session
 identity per project and label - the lead's and every worker's, which is
 what brings a worker back after a restart - review
 threads, the

@@ -810,6 +810,29 @@ function interleave(base: unknown[], other: unknown[]): unknown[] {
 }
 
 /**
+ * `merged`, less the frames this landing's page carries in another of its rows.
+ *
+ * **The live fold and the page's fold can cut one turn at different rows** - a
+ * delivery's result ends a CLI turn where the transcript fold keeps one - so a
+ * held frame between the two cuts is already drawn by another row of the page,
+ * and adding it here draws that stretch twice.
+ *
+ * `here` is the row being merged, kept whatever the page says; everything else
+ * survives only if the page carries it nowhere, which is the frame no read can
+ * restore. An id-less frame is never dropped: its `carries` answer is its
+ * words, and two task endings can say the same words.
+ */
+function outsidePage(merged: unknown[], here: Frames, fromPage: Frames): unknown[] {
+  const kept = merged.filter((message) => {
+    if (here.carries(message)) return true;
+    return uuidOf(message) === null || !fromPage.carries(message);
+  });
+  // Handing back the array itself when nothing went keeps a row the reader is
+  // looking at the object it was.
+  return kept.length === merged.length ? merged : kept;
+}
+
+/**
  * The run a hook frame belongs to, as the only name both carriers share.
  *
  * **The ids never meet.** The CLI mints three for one run - the attachment
@@ -2280,12 +2303,16 @@ export class Chat {
           // carry a run's copy the held row has already adopted live, and the
           // ids never meet: without the pairing the run draws twice on an
           // ordinary reconnect or refresh.
-          const messages = pairHookRuns(
-            adds.length === 0
-              ? repeated.messages
-              : missed.length === 0
-                ? row.messages
-                : interleave(row.messages, repeated.messages),
+          const messages = outsidePage(
+            pairHookRuns(
+              adds.length === 0
+                ? repeated.messages
+                : missed.length === 0
+                  ? row.messages
+                  : interleave(row.messages, repeated.messages),
+            ),
+            page,
+            fromPage,
           );
           const settled = messages === repeated.messages ? repeated : { ...repeated, messages };
           named.push(settled);
@@ -2502,7 +2529,11 @@ export class Chat {
           // it lacks arrived after its read.
           drawn.push({
             ...match,
-            messages: pairHookRuns(interleave(copy, match.messages)),
+            messages: outsidePage(
+              pairHookRuns(interleave(copy, match.messages)),
+              carried,
+              fromPage,
+            ),
             also,
           });
           continue;
@@ -2525,7 +2556,11 @@ export class Chat {
             ? { ...row, key: match.key, also }
             : {
                 key: match.key,
-                messages: pairHookRuns(interleave(copy, match.messages)),
+                messages: outsidePage(
+                  pairHookRuns(interleave(copy, match.messages)),
+                  carried,
+                  fromPage,
+                ),
                 live: !settledRow(index),
                 also,
               },

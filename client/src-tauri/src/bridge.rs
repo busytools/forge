@@ -2339,6 +2339,68 @@ mod tests {
         assert_eq!(cleared["seat"], Value::Null, "nothing on screen crosses as null");
     }
 
+    /// **A showing is answered on the thread that dispatched it**, so two
+    /// rapid invokes stay in order and the last seat is the one recorded. An
+    /// `(async)` command hands its body to the runtime instead, and the
+    /// answer arrives from another thread after the dispatch has returned.
+    #[test]
+    fn a_showing_is_answered_on_the_dispatching_thread() {
+        use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let bridge = Bridge::new(None, tx);
+        let app = mock_builder()
+            .manage(Arc::clone(&bridge))
+            .invoke_handler(tauri::generate_handler![crate::commands::client_showing])
+            .build(mock_context(noop_assets()))
+            .expect("a mock app builds");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("a mock window builds")
+            .as_ref()
+            .clone();
+
+        let dispatch = std::thread::current().id();
+        let answered = Arc::new(Mutex::new(Vec::new()));
+        let send = |seat: Value| {
+            let answered = Arc::clone(&answered);
+            let responder: Box<tauri::ipc::OwnedInvokeResponder<MockRuntime>> =
+                Box::new(move |_webview, _cmd, _response, _callback, _error| {
+                    answered
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(std::thread::current().id());
+                });
+            webview.clone().on_message(
+                tauri::webview::InvokeRequest {
+                    cmd: "client_showing".into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "tauri://localhost".parse().expect("a local url"),
+                    body: tauri::ipc::InvokeBody::Json(json!({ "seat": seat })),
+                    headers: Default::default(),
+                    invoke_key: tauri::test::INVOKE_KEY.to_string(),
+                },
+                responder,
+            );
+        };
+
+        send(seat()["session"].clone());
+        assert_eq!(
+            bridge.lock().shown,
+            Some(SessionSlot::lead("Busytools", "forge")),
+            "the first showing landed before the second was dispatched",
+        );
+        send(Value::Null);
+
+        assert_eq!(
+            *answered.lock().unwrap_or_else(PoisonError::into_inner),
+            vec![dispatch, dispatch],
+            "each showing is answered before its dispatch returns, in arrival order",
+        );
+        assert_eq!(bridge.lock().shown, None, "the last showing is the seat recorded");
+    }
+
     /// **A relist asks again without counting a reader.** The page's store
     /// survived the drop, so only the wire's half went; counting a second
     /// reader here would leave an unsubscribe one short for the life of the

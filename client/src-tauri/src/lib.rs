@@ -32,6 +32,7 @@ use tauri::Manager as _;
 mod asks;
 pub mod bridge;
 pub mod browser;
+mod launch;
 #[cfg(test)]
 mod log_capture;
 #[cfg(all(target_os = "macos", feature = "look-driver"))]
@@ -130,11 +131,9 @@ mod commands {
 
     /// Which seat the page has on screen; null for none.
     ///
-    /// **`async`, though the body is sync**: a showing now re-evaluates the
-    /// notification rule, and the mobile permission request it can reach
-    /// waits for the platform - a sync command runs on the main thread, the
-    /// one that wait is waiting on.
-    #[tauri::command(async)]
+    /// **Sync on purpose**: two rapid invokes must land in order, and the
+    /// body only enqueues - the plugin work is the notify thread's.
+    #[tauri::command]
     pub fn client_showing(bridge: tauri::State<'_, Arc<Bridge>>, seat: Option<Value>) {
         bridge.showing(seat);
     }
@@ -482,6 +481,7 @@ pub fn run() {
             commands::client_mic_stop,
             commands::client_mic_devices,
             client_mic_state,
+            client_tap_seat,
             commands::client_read_document,
             commands::client_file_content,
             commands::client_commit_diff,
@@ -507,6 +507,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(android::init())
         .plugin(micstate::init())
+        .plugin(launch::init())
         .invoke_handler(tauri::generate_handler![
             browser::viewer::browser_surface_rect,
             browser::browser_takeover,
@@ -537,6 +538,7 @@ pub fn run() {
             commands::client_mic_stop,
             commands::client_mic_devices,
             client_mic_state,
+            client_tap_seat,
             commands::client_read_document,
             commands::client_file_content,
             commands::client_commit_diff,
@@ -651,6 +653,13 @@ async fn client_mic_state(app: tauri::AppHandle) -> Result<Option<crate::mic::Mi
             Ok(None)
         }
     }
+}
+
+/// The seat a notification tap launched the client on, asked once by the page
+/// that comes up. Every other launch, on every platform, answers `None`.
+#[tauri::command]
+async fn client_tap_seat(app: tauri::AppHandle) -> Option<forge_primitives::SessionSlot> {
+    crate::launch::take(&app).await
 }
 
 /// The version an update check found, or `None` when this build is current.
