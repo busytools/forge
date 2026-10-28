@@ -624,6 +624,49 @@ describe('the canvas viewer', () => {
     ]);
   });
 
+  /// **A finger's displacement is the page's too.** A scaled picture - an
+  /// agent's `browser_resize` under the controller, the case this surface's
+  /// mapping exists for - must move the page by its own CSS pixels: 10 px
+  /// over a half-size picture scrolls 20, not 10.
+  it("fits a swipe's displacement to the page the picture shows", async () => {
+    vi.stubGlobal('createImageBitmap', () =>
+      Promise.resolve({ width: 400, height: 200, close: () => {} }),
+    );
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection, listeners, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.id = 1;
+    flushSync();
+    // A 400x200 frame of a 290x146 page.
+    for (const listener of listeners) {
+      listener({ ...frame(0), width: 400, height: 200, page_width: 290, page_height: 146 });
+    }
+    await vi.waitFor(() => expect(canvas.width).toBe(400));
+    // The picture is drawn at half the page's size.
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 145,
+      bottom: 73,
+      width: 145,
+      height: 73,
+      toJSON: () => ({}),
+    });
+
+    canvas.dispatchEvent(finger('pointerdown', 60, 60));
+    canvas.dispatchEvent(finger('pointermove', 60, 50));
+    canvas.dispatchEvent(finger('pointerup', 60, 50));
+
+    const wheel = events.find((event) => event.kind === 'wheel');
+    if (wheel?.kind !== 'wheel') throw new Error('the swipe sent no wheel');
+    expect(wheel.delta_y, "the finger's 10 px is the page's 20").toBe(20);
+  });
+
   /// **The phone's keys and text reach the page.** The canvas has no fields,
   /// so a hidden one takes the keyboard while this surface holds control;
   /// named keys cross as key events and inserted text whole.
