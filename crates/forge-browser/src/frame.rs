@@ -1,9 +1,10 @@
 //! A painted frame as it leaves the host: a small header and encoded pixels.
 //!
 //! The wire form is `[profile u16][tab u16][seq u32][width u16][height u16]
-//! [format u8][key u8][bytes]` in little-endian, and [`crate::channel`]
-//! carries it with a length prefix. The bytes stay encoded end to end: the
-//! host is the only encoder, and the server relays them untouched.
+//! [format u8][key u8][page_width u16][page_height u16][bytes]` in
+//! little-endian, and [`crate::channel`] carries it with a length prefix. The
+//! bytes stay encoded end to end: the host is the only encoder, and the
+//! server relays them untouched.
 
 /// How a frame's pixels are encoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,7 +29,7 @@ impl Format {
 }
 
 /// The header's own length; the payload follows it.
-pub const HEADER_LEN: usize = 14;
+pub const HEADER_LEN: usize = 18;
 
 /// One encoded frame for one tab of one profile.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +45,11 @@ pub struct Frame {
     pub format: Format,
     /// A full-quality frame: the first of a surface, and every resize.
     pub key: bool,
+    /// The page's own viewport, the space a gesture's point is sent in. **Not
+    /// the frame's pixels divided by anything**: the raster between them is
+    /// the host's, and the encoded scale may change it too.
+    pub page_width: u16,
+    pub page_height: u16,
     pub bytes: Vec<u8>,
 }
 
@@ -58,6 +64,8 @@ impl Frame {
         out.extend_from_slice(&self.height.to_le_bytes());
         out.push(self.format.code());
         out.push(u8::from(self.key));
+        out.extend_from_slice(&self.page_width.to_le_bytes());
+        out.extend_from_slice(&self.page_height.to_le_bytes());
         out.extend_from_slice(&self.bytes);
         out
     }
@@ -79,6 +87,8 @@ impl Frame {
             1 => true,
             other => return Err(format!("the key flag is 0 or 1, got {other}")),
         };
+        let page_width = u16::from_le_bytes([bytes[14], bytes[15]]);
+        let page_height = u16::from_le_bytes([bytes[16], bytes[17]]);
         let payload = bytes[HEADER_LEN..].to_vec();
         if payload.is_empty() {
             return Err("a frame carries no encoded pixels".to_owned());
@@ -86,7 +96,23 @@ impl Frame {
         if width == 0 || height == 0 {
             return Err(format!("a frame has a size, got {width}x{height}"));
         }
-        Ok(Frame { profile, tab, seq, width, height, format, key, bytes: payload })
+        if page_width == 0 || page_height == 0 {
+            return Err(format!(
+                "a frame names the page it was laid out at, got {page_width}x{page_height}"
+            ));
+        }
+        Ok(Frame {
+            profile,
+            tab,
+            seq,
+            width,
+            height,
+            format,
+            key,
+            page_width,
+            page_height,
+            bytes: payload,
+        })
     }
 }
 
@@ -260,8 +286,9 @@ impl Sink {
     }
 
     /// Offer one painted view: encode it and write it. Called by the host's
-    /// frame worker, which has already picked the newest paint.
-    pub fn offer(&mut self, bgra: &[u8], width: u32, height: u32) {
+    /// frame worker, which has already picked the newest paint; `page` is the
+    /// viewport that paint was laid out at.
+    pub fn offer(&mut self, bgra: &[u8], width: u32, height: u32, page: (u32, u32)) {
         // **Nobody is watching: paint, but do not encode.** The paint itself
         // is CEF's and still happens; this is the WebP cost a viewer pays
         // for and an unwatched host does not.
@@ -280,6 +307,11 @@ impl Sink {
         let (Ok(width16), Ok(height16)) = (u16::try_from(width), u16::try_from(height)) else {
             return;
         };
+        let (Ok(page_width), Ok(page_height)) =
+            (u16::try_from(page.0.max(1)), u16::try_from(page.1.max(1)))
+        else {
+            return;
+        };
         let frame = Frame {
             profile: self.profile,
             tab: self.tab,
@@ -288,6 +320,8 @@ impl Sink {
             height: height16,
             format: Format::Webp,
             key,
+            page_width,
+            page_height,
             bytes,
         };
         if let Some(stream) = self.stream.as_mut() {
@@ -363,6 +397,8 @@ mod tests {
             height: 600,
             format: Format::Webp,
             key: seq == 0,
+            page_width: 400,
+            page_height: 300,
             bytes: vec![1, 2, 3, 4],
         }
     }
@@ -389,6 +425,8 @@ mod tests {
             height: 600,
             format: Format::Webp,
             key: true,
+            page_width: 400,
+            page_height: 300,
             bytes: vec![1, 2, 3],
         };
         let encoded = frame.encode();
@@ -401,7 +439,33 @@ mod tests {
         old.truncate(12);
         assert_eq!(
             Frame::decode(&old).expect_err("a short header is refused"),
-            "a frame is at least 14 bytes, got 12",
+            "a frame is at least 18 bytes, got 12",
+        );
+    }
+
+    /// **The page's own viewport crosses beside the frame's pixels**, and
+    /// the two are not the same number: a viewer maps a gesture through the
+    /// page, so a header that carried only the pixels left every click on a
+    /// rescaled or letterboxed picture at the wrong point.
+    #[test]
+    fn a_frame_names_the_page_its_pixels_were_painted_from() {
+        let mut frame = frame(1, 0);
+        frame.width = 2560;
+        frame.height = 1440;
+        frame.page_width = 1280;
+        frame.page_height = 720;
+        let encoded = frame.encode();
+        assert_eq!(u16::from_le_bytes([encoded[14], encoded[15]]), 1280, "the header's page width");
+        assert_eq!(u16::from_le_bytes([encoded[16], encoded[17]]), 720, "and its height");
+        let read = Frame::decode(&encoded).expect("a frame decodes");
+        assert_eq!((read.page_width, read.page_height), (1280, 720));
+        assert_eq!((read.width, read.height), (2560, 1440), "and its pixels are their own");
+
+        let mut unnamed = encoded.clone();
+        unnamed[14..16].copy_from_slice(&0_u16.to_le_bytes());
+        assert_eq!(
+            Frame::decode(&unnamed).expect_err("a frame with no page is refused"),
+            "a frame names the page it was laid out at, got 0x720",
         );
     }
 
@@ -435,12 +499,12 @@ mod tests {
 
         let mut sink = super::Sink::new(1, 1, path.clone(), 120, 80);
         sink.set_paused(true);
-        sink.offer(&bgra, 2, 1);
+        sink.offer(&bgra, 2, 1, (1, 1));
         listener.set_nonblocking(true).expect("a non-blocking listener");
         assert!(listener.accept().is_err(), "a paused sink writes no frame");
 
         sink.set_paused(false);
-        sink.offer(&bgra, 2, 1);
+        sink.offer(&bgra, 2, 1, (1, 1));
         let (mut stream, _) = listener.accept().expect("a frame connection");
         stream.set_read_timeout(Some(super::ONE_SECOND)).expect("a read bound");
         let crate::channel::Reception::Frame(frame) =
@@ -468,7 +532,7 @@ mod tests {
         // One frame a second, so every frame after the first is well inside
         // the interval and would have been dropped by the old rate limit.
         let mut sink = super::Sink::new(1, 1, path.clone(), 1, 80);
-        sink.offer(&two, 2, 1);
+        sink.offer(&two, 2, 1, (1, 1));
         let (mut stream, _) = listener.accept().expect("the first connection");
         stream.set_read_timeout(Some(super::ONE_SECOND)).expect("a read bound");
         let crate::channel::Reception::Frame(first) =
@@ -478,7 +542,7 @@ mod tests {
         };
         assert_eq!((first.width, first.height), (2, 1));
 
-        sink.offer(&four, 4, 1);
+        sink.offer(&four, 4, 1, (2, 1));
         let crate::channel::Reception::Frame(resized) =
             crate::channel::read(&mut stream).expect("the resized frame")
         else {
@@ -487,7 +551,7 @@ mod tests {
         assert_eq!((resized.width, resized.height), (4, 1));
         assert!(resized.key, "and the resize is a key frame");
 
-        sink.offer(&four, 4, 1);
+        sink.offer(&four, 4, 1, (2, 1));
         assert!(
             matches!(
                 crate::channel::read(&mut stream).expect("a same-size frame"),

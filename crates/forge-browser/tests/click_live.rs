@@ -23,6 +23,8 @@ mod support;
 
 use std::time::{Duration, Instant};
 
+use forge_browser::channel;
+use forge_browser::frame::Frame;
 use forge_browser::input::{HostInput, host_line};
 use forge_browser::osr::{MAX_HEIGHT, MAX_WIDTH, Ring};
 use forge_browser::window::Cdp;
@@ -111,12 +113,18 @@ struct Fixture {
     _events: tokio::sync::mpsc::UnboundedReceiver<Value>,
     ring: String,
     ring_handle: Option<Ring>,
+    /// The frames the host encoded, off its own socket.
+    frames: std::sync::mpsc::Receiver<Frame>,
+    frame_reader: Option<channel::Reader>,
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.ring_handle.take();
         Ring::unlink(&self.ring);
+        if let Some(reader) = self.frame_reader.take() {
+            reader.stop();
+        }
     }
 }
 
@@ -124,16 +132,34 @@ async fn fixture(name: &str) -> Fixture {
     let scratch = tempfile::tempdir().expect("a scratch dir");
     let exe = support::host_executable(scratch.path());
     let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let frames_path = channel::socket_path(&profile);
+    let (frames_tx, frames) = std::sync::mpsc::channel();
+    let frame_reader = channel::serve(&frames_path, move |message| {
+        if let channel::ChannelMessage::Frame(frame) = message {
+            let _ = frames_tx.send(frame);
+        }
+    })
+    .expect("the frame socket is served");
     let port = support::free_port();
     let ring = format!("/forge-click-{}-{name}", std::process::id());
     let log = scratch.path().join("host.log");
-    let host = support::Host::start(&exe, &profile, port, &ring, "1440x900", &[], &log);
+    let args = ["--frames".to_owned(), frames_path.display().to_string()];
+    let host = support::Host::start(&exe, &profile, port, &ring, "1440x900", &args, &log);
     let id = support::wait_for_page(port, &log, BOUND);
     let (cdp, events) = Cdp::connect_watch(port, &format!("/devtools/page/{id}"))
         .await
         .expect("the page's devtools endpoint accepts");
-    let mut fixture =
-        Fixture { _scratch: scratch, host, cdp, _events: events, ring, ring_handle: None };
+    let mut fixture = Fixture {
+        _scratch: scratch,
+        host,
+        cdp,
+        _events: events,
+        ring,
+        ring_handle: None,
+        frames,
+        frame_reader: Some(frame_reader),
+    };
     fixture.navigate(&grid_page()).await;
     fixture
 }
@@ -279,6 +305,32 @@ impl Fixture {
         println!("click {x},{y} -> {seen}");
         seen
     }
+
+    /// Let the host encode: a host nobody watches paints but writes nothing.
+    fn publish(&mut self) {
+        let ring = self.ring();
+        ring.pause(false);
+        ring.key();
+    }
+
+    /// The host's next encoded frame at `width`x`height`, off its socket.
+    fn next_frame(&mut self, width: u16, height: u16) -> Frame {
+        let deadline = Instant::now() + BOUND;
+        loop {
+            match self.frames.try_recv() {
+                Ok(frame) if (frame.width, frame.height) == (width, height) => return frame,
+                Ok(_) => {}
+                Err(_) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the host never painted {width}x{height} (log: {})",
+                        self.host.log()
+                    );
+                    std::thread::sleep(POLL_EVERY);
+                }
+            }
+        }
+    }
 }
 
 /// **With no viewport override, the frame budget never moves the page's
@@ -378,4 +430,69 @@ async fn a_surface_past_the_frame_budget_keeps_its_layout_size() {
     );
     let seen = phone.click_and_read(195, 700, 1).await;
     assert_click(&seen, 195, 700);
+}
+
+/// **The frame names the page its pixels were painted from, and a point
+/// measured in it is received there.** The page is laid out 1280x720 at 2x -
+/// a 2560x1440 frame - so a 1200x800 surface draws the picture 1200x675 at y
+/// 62.5: a press on the picture at (900, 500) is the page's (960, 466.7), and
+/// the page's own event log names that point when a click is sent at it.
+///
+/// **This is the host's wire and the page's log, not the client's mapping.**
+/// Both clicks travel the same server path, so what it pins is the viewport
+/// the header carries and that a point measured through it arrives. The
+/// client's own rule is pinned in the shell's `surface.rs` and in the
+/// canvas test.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_letterboxed_frame_names_the_page_a_click_is_sent_in() {
+    let mut at = fixture("letterbox").await;
+    at.publish();
+    let env = at.adopt(2560, 1440, 2.0, (1280, 720)).await;
+    let frame = at.next_frame(2560, 1440);
+    let page = (
+        env.get("innerWidth").and_then(Value::as_f64).expect("a width"),
+        env.get("innerHeight").and_then(Value::as_f64).expect("a height"),
+    );
+    assert_eq!(
+        (u32::from(frame.page_width), u32::from(frame.page_height)),
+        (1280, 720),
+        "the frame names the page's own viewport, not its pixels"
+    );
+
+    // The surface's box, and the rect the picture is drawn in: an
+    // aspect-preserving fit, as the desktop's layer and the phone's canvas
+    // both draw it.
+    let bounds = (1200.0_f64, 800.0_f64);
+    let fit = (bounds.0 / f64::from(frame.width)).min(bounds.1 / f64::from(frame.height));
+    let drawn = (f64::from(frame.width) * fit, f64::from(frame.height) * fit);
+    let origin = ((bounds.0 - drawn.0) / 2.0, (bounds.1 - drawn.1) / 2.0);
+    println!("the picture draws {drawn:?} at {origin:?} in the {bounds:?} box");
+
+    // A press on the picture at (900, 500) of the box is the page's (960, 466.7).
+    let pressed = (900.0_f64, 500.0_f64);
+    let shown =
+        ((pressed.0 - origin.0) / drawn.0 * page.0, (pressed.1 - origin.1) / drawn.1 * page.1);
+    assert!(
+        (shown.0 - pressed.0).abs() > 1.0 || (shown.1 - pressed.1).abs() > 1.0,
+        "the control: the picture's page point and the box's own point must differ, {shown:?}"
+    );
+
+    // The box's own point is what a 1:1 mapping sends; the page receives it,
+    // and it is the control that the two points really differ.
+    let seen = at.click_and_read(900, 500, 1).await;
+    assert_click(&seen, 900, 500);
+
+    // And the point the picture shows is received where the picture shows it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a whole-pixel page coordinate, far inside i32"
+    )]
+    let mapped = (shown.0.round() as i32, shown.1.round() as i32);
+    let seen = at.click_and_read(mapped.0, mapped.1, 2).await;
+    assert_click(&seen, mapped.0, mapped.1);
+    println!(
+        "the box's own point is ({:.1}, {:.1}) page px from the pixel the picture shows",
+        pressed.0 - shown.0,
+        pressed.1 - shown.1
+    );
 }

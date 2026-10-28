@@ -85,9 +85,7 @@ async fn every_advertised_browser_tool_is_answered() {
     )
     .expect("the host spawns");
     let _guard = HostGuard { pid, ring: ring.clone() };
-    forge_browser::spawn::wait_ready_for(pid, port, &ring, &profile)
-        .await
-        .expect("the host is ready");
+    forge_browser::spawn::wait_ready_for(pid, port, &ring).await.expect("the host is ready");
     let chooser = scratch.path().join("chooser.sock");
     let driver = Driver::start(
         &node_path(&stack),

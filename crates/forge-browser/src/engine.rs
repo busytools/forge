@@ -193,12 +193,18 @@ pub fn pump() {
 /// bundle into `/var/folders/.../X` per launch to keep a staged update's
 /// signature valid; a CEF host has no updater, and 172 test launches filled a
 /// disk. The rest are the keychain and windowless-browser rules above.
+///
+/// **One entry per switch**: a repeated switch keeps the last value, so a
+/// second `disable-blink-features` tuple would silently replace this one.
 pub(crate) const HOST_SWITCHES: &[(&str, Option<&str>)] = &[
     ("use-mock-keychain", None),
     ("password-store", Some("basic")),
     ("disable-renderer-backgrounding", None),
     ("disable-backgrounding-occluded-windows", None),
     ("disable-features", Some("MacAppCodeSignClone")),
+    // No platform authenticator here, so a site that sees WebAuthn offers a
+    // passkey path that cannot finish; the password form is the way in.
+    ("disable-blink-features", Some("WebAuth")),
 ];
 
 // The app rules every browser this host runs obeys, decided before CEF
@@ -243,5 +249,15 @@ mod tests {
             "without this every launch clones the app bundle into the temp tree",
         );
         assert!(HOST_SWITCHES.contains(&("use-mock-keychain", None)), "the keychain rule stays");
+    }
+
+    /// **The feature is Blink's `WebAuth`, not the API's class name**; a
+    /// switch naming `WebAuthn` matches nothing and the API comes back.
+    #[test]
+    fn the_host_offers_no_webauthn() {
+        assert!(
+            HOST_SWITCHES.contains(&("disable-blink-features", Some("WebAuth"))),
+            "a page that sees PublicKeyCredential takes a passkey path this host cannot finish",
+        );
     }
 }

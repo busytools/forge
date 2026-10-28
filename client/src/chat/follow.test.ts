@@ -1651,9 +1651,10 @@ describe('whether the column follows the newest end', () => {
   /**
    * **A size change with an ask in flight is the compensation's business.**
    * Near the top a page of older turns is asked for, and while that ask is out
-   * the restore stands aside - the list is holding the reader by its own shift,
-   * and a row above them growing is not theirs to compensate. (Before the
-   * guard this path restored anyway: the offset would read 250 here.)
+   * the restore stands aside - the list is holding the reader by its own
+   * compensation, and a row above them growing is not theirs to compensate.
+   * (Before the guard this path restored anyway: the offset would read 250
+   * here.)
    */
   it('leaves a prepend in flight to the list, not to the restore', async () => {
     const server = stub();
@@ -1688,9 +1689,9 @@ describe('whether the column follows the newest end', () => {
    * **And when the ask is gone, the restores come back.** A dropped socket
    * takes a page in flight with it and the reconnect asks again - so the
    * conversation says it forgot the ask, and the column's own count drains.
-   * Without that drain the count outlives the ask, `shift` stays on for the
-   * life of the seat, and this PR's own hold quietly stops working: the offset
-   * left at 50 where the row above the reader had moved it to 250.
+   * Without that drain the count outlives the ask, `compensating` stays on for
+   * the life of the seat, and this PR's own hold quietly stops working: the
+   * offset left at 50 where the row above the reader had moved it to 250.
    */
   it('drains a dropped ask, and the row holds the reader again', async () => {
     const server = stub();
@@ -1725,10 +1726,10 @@ describe('whether the column follows the newest end', () => {
    * **An occupant swap forgets an ask too, and has to say so.** The swap resets
    * the conversation (a page for it can name no occupant), and that reset
    * zeroes the count the column drains against - so without the swap reporting
-   * its forgotten ask, the column keeps holding one, `shift` stays armed for
-   * the life of the seat, and the observer's restore never runs for a parked
-   * reader (measured: the offset left at 50 where the row above them had moved
-   * it to 290).
+   * its forgotten ask, the column keeps holding one, `compensating` stays on
+   * for the life of the seat, and the observer's restore never runs for a
+   * parked reader (measured: the offset left at 50 where the row above them
+   * had moved it to 290).
    */
   it('reports the ask an occupant swap forgot, so the drain fires', async () => {
     const server = stub();

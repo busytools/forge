@@ -165,8 +165,8 @@ pub enum BrowserInputEvent {
 /// **The bytes stay encoded end to end.** The host is the only encoder; the
 /// server relays `encoded` untouched as one binary frame, and every client
 /// decodes the same host frame the server read. `encoded` is the host's own
-/// frame wire: the profile id, the tab, sequence, view size, format, key flag
-/// and the WebP payload.
+/// frame wire: the profile id, the tab, sequence, view size, format, key
+/// flag, the page's own viewport and the WebP payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowserFrame {
     /// The service's profile id: which surface the frame belongs to.

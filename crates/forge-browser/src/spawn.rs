@@ -154,8 +154,55 @@ pub fn spawn(
     encoding: (u16, u8),
     frames: &Path,
 ) -> Result<(u32, InputSender, EventReceiver), String> {
+    #[cfg(test)]
+    {
+        // **A test drives the launch's failure arms**, which the bundle's
+        // real host cannot be made to take on demand.
+        let hook = TEST_SPAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(hook) = hook {
+            return hook(TestSpawn {
+                profile: profile.to_path_buf(),
+                port,
+                ring: ring.to_owned(),
+                width,
+                height,
+                profile_id,
+                encoding,
+                frames: frames.to_path_buf(),
+            });
+        }
+    }
     let exe = crate::host_bundle::checked_executable()?;
     spawn_with(&exe, profile, port, ring, width, height, profile_id, encoding, frames)
+}
+
+/// The arguments a test's spawn stand-in receives.
+#[cfg(test)]
+pub(crate) struct TestSpawn {
+    pub(crate) profile: std::path::PathBuf,
+    pub(crate) port: u16,
+    pub(crate) ring: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) profile_id: u16,
+    pub(crate) encoding: (u16, u8),
+    pub(crate) frames: std::path::PathBuf,
+}
+
+/// One test's replacement for `spawn`.
+#[cfg(test)]
+type TestSpawnHook =
+    Box<dyn FnOnce(TestSpawn) -> Result<(u32, InputSender, EventReceiver), String> + Send>;
+
+/// The next spawn a test has replaced, taken once.
+#[cfg(test)]
+static TEST_SPAWN: std::sync::Mutex<Option<TestSpawnHook>> = std::sync::Mutex::new(None);
+
+/// Replace the next `spawn` a test drives, so `start_host`'s failure arms
+/// can be reached with a stand-in host.
+#[cfg(test)]
+pub(crate) fn set_test_spawn(hook: TestSpawnHook) {
+    *TEST_SPAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
 }
 
 /// The host's command line, without the pipes or the detachment: the spawn
@@ -295,8 +342,9 @@ pub fn spawn_with(
 }
 
 /// Wait for a host this server spawned, failing as soon as the child exits
-/// rather than after the blind timeout: the reason is the host log's own
-/// last words, which is what a refused launch is diagnosable by.
+/// rather than after the blind timeout. The caller records the host log's
+/// tail in `browser_host_ended`, which is what a refused launch is diagnosed
+/// by.
 ///
 /// **The endpoint answering is not proof the endpoint is ours.** The port is
 /// probed free and then bound by the child, and another host can take it in
@@ -304,7 +352,7 @@ pub fn spawn_with(
 /// ring closes that: only this pid writes its pid and `STATE_LIVE` into it,
 /// so the probe is trusted only once the ring says so. A child that cannot
 /// own the port never reads live, and the launch fails instead of crossing.
-pub async fn wait_ready_for(pid: u32, port: u16, ring: &str, profile: &Path) -> Result<(), String> {
+pub async fn wait_ready_for(pid: u32, port: u16, ring: &str) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
     loop {
         let live = owns(ring, pid);
@@ -312,12 +360,7 @@ pub async fn wait_ready_for(pid: u32, port: u16, ring: &str, profile: &Path) -> 
             return Ok(());
         }
         if !alive(pid) {
-            let tail = log_tail(profile);
-            return Err(if tail.is_empty() {
-                "the browser host exited before its endpoint answered".to_owned()
-            } else {
-                format!("the browser host exited before its endpoint answered: {tail}")
-            });
+            return Err("the browser host exited before its endpoint answered".to_owned());
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
@@ -335,19 +378,63 @@ fn owns(name: &str, pid: u32) -> bool {
         .is_ok_and(|mapped| mapped.pid() == pid && mapped.state() == crate::osr::STATE_LIVE)
 }
 
-/// The host log's last few lines, for a launch that failed.
+/// How much of the host log a tail keeps: the last few KiB, at most four
+/// lines, and a bounded prefix of each. **The log is append-only and never
+/// rotated**, so a host that has run for months must not make a record
+/// unbounded.
+const TAIL_BYTES: u64 = 4 * 1024;
+const TAIL_LINES: usize = 4;
+const TAIL_CHARS: usize = 512;
+
+/// The host log's last few lines, read from the file's own end. A seek can
+/// land mid-line, so the first kept line may be a fragment.
 pub(crate) fn log_tail(profile: &Path) -> String {
-    let Ok(body) = std::fs::read_to_string(profile.join("cef-host.log")) else {
+    use std::io::{Read as _, Seek as _};
+    let Ok(mut file) = std::fs::File::open(profile.join("cef-host.log")) else {
         return String::new();
     };
+    let len = file.metadata().map_or(0, |meta| meta.len());
+    if len > TAIL_BYTES {
+        let _ = file.seek(std::io::SeekFrom::Start(len - TAIL_BYTES));
+    }
+    let mut buf = Vec::with_capacity(usize::try_from(TAIL_BYTES).unwrap_or(usize::MAX));
+    // A seek can land inside a multibyte character, so the tail is read
+    // lossily rather than refused.
+    if (&mut file).take(TAIL_BYTES).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    let body = String::from_utf8_lossy(&buf);
     let lines: Vec<&str> = body.lines().filter(|line| !line.trim().is_empty()).collect();
-    lines[lines.len().saturating_sub(4)..].join(" | ")
+    let tail: Vec<&str> = lines[lines.len().saturating_sub(TAIL_LINES)..]
+        .iter()
+        .map(|line| {
+            let cut = line.char_indices().nth(TAIL_CHARS).map_or(line.len(), |(at, _)| at);
+            &line[..cut]
+        })
+        .collect();
+    tail.join(" | ")
 }
 
 /// Whether a pid names a process this server started that is still running.
 /// A child that exited is reaped here, so a zombie never reads as alive.
 pub fn alive(pid: u32) -> bool {
     exit(pid).is_none()
+}
+
+/// Whether `pid` has exited, **without taking its status**: a later
+/// [`exit`] still reads the cause. This is the liveness check for a path
+/// that leaves the death to the monitor.
+pub fn gone(pid: u32) -> bool {
+    let mut held = locked();
+    match held.get_mut(&pid) {
+        Some(child) => match child.try_wait() {
+            Ok(status) => status.is_some(),
+            // `exit` treats a status it cannot read as gone; the two
+            // liveness answers must agree.
+            Err(_) => !running(pid),
+        },
+        None => !running(pid),
+    }
 }
 
 /// A child's exit, when it went: `None` while it still runs. The status is
@@ -1071,5 +1158,47 @@ mod tests {
         drop(listener);
         end_verified(std::process::id(), port, Path::new("/tmp/forge-no-such-profile")).await;
         assert!(alive(std::process::id()), "the unrelated process is still running");
+    }
+
+    /// **The tail is bounded by bytes, lines and characters.** The host log is
+    /// append-only and never rotated, so a full read would grow with the
+    /// host's uptime and a long line would grow the record with it.
+    #[test]
+    fn the_log_tail_keeps_the_last_four_lines_and_caps_each() {
+        use std::fmt::Write as _;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut big = String::new();
+        for n in 0..1000 {
+            let _ = writeln!(big, "line {n}");
+        }
+        std::fs::write(dir.path().join("cef-host.log"), big).expect("the host log");
+        let tail = log_tail(dir.path());
+        assert!(tail.starts_with("line 996 | "), "the last four lines are kept: {tail}");
+        assert!(tail.ends_with("line 999"), "and the newest is the last: {tail}");
+
+        let long = "x".repeat(600);
+        std::fs::write(
+            dir.path().join("cef-host.log"),
+            format!("one\ntwo\nlong {long}\nthree\nfour\n"),
+        )
+        .expect("the host log");
+        let tail = log_tail(dir.path());
+        assert_eq!(tail.matches(" | ").count(), 3, "the four newest lines: {tail}");
+        assert!(tail.starts_with("two | "), "the oldest line is dropped: {tail}");
+        assert!(!tail.contains(&long), "the long line is cut at the cap: {tail}");
+        assert!(tail.chars().count() <= 4 * 512 + 12, "the tail cannot grow with a line: {tail}");
+
+        // Four lines wider than the byte window: the marker at the start of
+        // the oldest kept line is outside the window, so only its own tail
+        // is kept.
+        let mut wide = String::new();
+        for n in 0..4 {
+            let prefix = if n == 0 { "MARKER".to_owned() } else { format!("line{n}") };
+            let _ = writeln!(wide, "{prefix}-{}", "M".repeat(1_100));
+        }
+        std::fs::write(dir.path().join("cef-host.log"), wide).expect("the host log");
+        let tail = log_tail(dir.path());
+        assert!(!tail.contains("MARKER"), "a whole read keeps the marker: {tail}");
     }
 }
