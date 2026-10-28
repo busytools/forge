@@ -2421,8 +2421,30 @@ impl BrowserService {
             return Err(format!("tab {tab} is not open"));
         }
         // **One tab at a time per viewer**: a surface that moved leaves the
-        // tab it was on, and a role it held there goes with it.
-        self.detach(viewer).await;
+        // tab it was on, and a role it held there goes with it. **The same
+        // tab is not a move**: an open that lands twice, or a re-attach to
+        // the tab already held, is one viewer on one page, so the role it
+        // took there survives.
+        let was =
+            self.where_viewing.lock().unwrap_or_else(PoisonError::into_inner).get(&viewer).cloned();
+        let staying =
+            was.as_ref().is_some_and(|(key, viewing)| key == &profile.key && *viewing == tab);
+        if !staying {
+            self.detach(viewer).await;
+        }
+        // **A re-attach is where a role went missing without a line.** The
+        // entry names the tab the viewer was on and whether this attach kept
+        // the role, so a surface driving a tab it does not control - or no
+        // longer holding one it had - is answerable from the log.
+        tracing::debug!(
+            event_name = "browser_attach",
+            profile = %profile.key,
+            tab,
+            viewer,
+            was_tab = was.as_ref().map(|(_, viewing)| *viewing),
+            role_kept = staying,
+            "a viewer attached to a tab",
+        );
         let frames = profile.frame_receiver(tab);
         let view = profile.view_for(tab).subscribe();
         let nav = profile.nav_receiver(tab);
@@ -2502,6 +2524,13 @@ impl BrowserService {
                     controls.remove(&tab);
                     left.insert(tab);
                     released = true;
+                    tracing::debug!(
+                        event_name = "browser_role_released",
+                        profile = %profile.key,
+                        tab,
+                        viewer,
+                        "a viewer gave the controller role up",
+                    );
                 }
             }
             if released {
@@ -8464,6 +8493,48 @@ mod tests {
 
         let why = service.nav(&profile.key, tab, 8, true).await.expect_err("a watcher is refused");
         assert!(why.contains("not the browser's controller"), "{why}");
+    }
+
+    /// **A re-attach of the same viewer to the same tab keeps its role.**
+    /// A surface that opens twice (or asks again for the tab it is already
+    /// on) is the same viewer looking at the same page; dropping the role
+    /// there left the person driving a tab whose every gesture was refused.
+    /// A move to another tab still leaves the role behind with the tab.
+    #[tokio::test]
+    async fn a_reattach_of_the_same_viewer_keeps_its_role() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser");
+        let service = BrowserService::at(root.clone(), root.join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("TestOrg/default").await.expect("the profile");
+        let tab = 1;
+
+        service.attach(7, &seat, Some(tab)).await.expect("the first attach");
+        service.take_control(&profile.key, tab, 7).await.expect("the take");
+        assert_eq!(profile.controller(tab), Some(7), "the take lands");
+
+        service.attach(7, &seat, Some(tab)).await.expect("the re-attach");
+        assert_eq!(profile.controller(tab), Some(7), "the re-attach keeps the role");
+
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(2, seat.clone(), "T2", "T2", "", "about:blank")
+            .expect("tab 2");
+        service.attach(7, &seat, Some(2)).await.expect("the move");
+        assert_eq!(profile.controller(tab), None, "a move to another tab gives the role up");
+        assert!(
+            !profile
+                .viewers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&tab)
+                .is_some_and(|watchers| watchers.contains(&7)),
+            "and the tab it left keeps no viewer of it",
+        );
     }
 
     /// **A close ends the seat's own profile**, and the entry leaves the map.

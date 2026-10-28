@@ -8838,11 +8838,15 @@ async fn a_chooser_with_no_controller_is_cancelled() {
     );
 }
 
-/// **Re-attaching to another tab detaches the first.** A switch that left the
-/// old viewer attached kept that tab's viewer count wrong and its role held
-/// by a surface that moved away.
+/// **A re-attach leaves the move to the attach.** The host's `attach`
+/// resolves the profile and tab and is where a surface that moved lets the
+/// old tab go; un-attaching here first read as a move even for the tab the
+/// connection was already on, and it took the controller role with it - the
+/// person's second Open drove a tab whose every gesture was refused. A
+/// refused attach still gives the viewer up, so a failed surface leaves no
+/// phantom viewer behind.
 #[tokio::test]
-async fn a_reattach_to_another_tab_detaches_the_first() {
+async fn a_reattach_leaves_the_move_to_the_attach() {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     let stub = StubBrowser::new();
     fleet
@@ -8861,20 +8865,43 @@ async fn a_reattach_to_another_tab_detaches_the_first() {
     };
     assert_eq!(tab, 2);
     let _ = next_server(&mut socket).await; // its nav state
+    send(&mut socket, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::BrowserView { controller, .. } = next_server(&mut socket).await else {
+        panic!("the take republishes the viewer state")
+    };
+    assert_eq!(controller, Some(viewer), "the take lands");
+
     send(
         &mut socket,
-        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(3), reply_to: None },
+        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(2), reply_to: None },
     )
     .await;
-    let ServerMessage::BrowserView { tab, .. } = next_server(&mut socket).await else {
+    let ServerMessage::BrowserView { tab, controller, .. } = next_server(&mut socket).await else {
         panic!("the re-attach answers")
     };
-    assert_eq!(tab, 3, "the connection views the new tab");
+    assert_eq!(tab, 2, "the same tab");
+    assert_eq!(controller, Some(viewer), "and the role it took there survives");
     let _ = next_server(&mut socket).await; // its nav state
+    assert!(
+        stub.detached.lock().expect("the stub's detaches").is_empty(),
+        "the transport detached the viewer it was about to re-attach: {:?}",
+        stub.detached.lock().expect("the stub's detaches"),
+    );
+
+    // A tab the host cannot attach still gives the viewer up.
+    send(
+        &mut socket,
+        ClientMessage::BrowserView { seat: lead_seat(), tab: Some(9), reply_to: None },
+    )
+    .await;
+    let ServerMessage::Error { what, .. } = next_server(&mut socket).await else {
+        panic!("tab 9 is refused")
+    };
+    assert_eq!(what, "browser_view");
     assert_eq!(
         stub.detached.lock().expect("the stub's detaches").as_slice(),
         [viewer],
-        "the old tab gave its viewer up"
+        "the refused attach gives the viewer up"
     );
 }
 

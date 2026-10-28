@@ -1743,18 +1743,14 @@ where
             send(socket, ServerMessage::FileContent { session, path, sha, content }).await
         }
         ClientMessage::BrowserView { seat, tab, reply_to } => {
-            // **A re-attach is a switch**: the tab this connection was
-            // viewing gives its viewer up before the new one takes it, or
-            // the old tab keeps a phantom viewer and its controller role.
-            if viewing.is_some()
-                && let Some(host) = state.browser_host.as_ref()
-            {
-                host.detach(me).await;
-                *viewing = None;
-            }
-            // **An attach that cannot happen is answered.** A client that
-            // sent a `reply_to` learns the refusal through it and reaches its
-            // failed state; one that did not still gets the error frame.
+            // **The attach moves the viewer, it does not first drop it.**
+            // Un-attaching here and re-attaching below read as a move even
+            // when the request is the tab this connection is already on, and
+            // it took the controller role with it: the person's second Open
+            // left their surface driving a tab whose every gesture was
+            // refused. The move - old tab lets go, same tab keeps its role -
+            // is `BrowserHost::attach`'s own decision, where the resolved
+            // profile and tab are known.
             let Some(host) = state.browser_host.as_ref() else {
                 let why = "this server has no browser to view".to_owned();
                 return refuse_attach(socket, reply_to, &why, seat).await;
@@ -1831,7 +1827,15 @@ where
                         None => Ok(()),
                     }
                 }
-                Err(why) => refuse_attach(socket, reply_to, &why, seat).await,
+                Err(why) => {
+                    // **A refused attach takes the viewer off what it was
+                    // on.** The surface that asked has failed, so the tab it
+                    // was viewing keeps neither a phantom viewer nor the
+                    // role that viewer held.
+                    host.detach(me).await;
+                    *viewing = None;
+                    refuse_attach(socket, reply_to, &why, seat).await
+                }
             }
         }
         ClientMessage::BrowserDetach => {
@@ -1847,11 +1851,51 @@ where
         ClientMessage::BrowserInput { seq, event } => {
             let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
             else {
-                return Ok(());
+                // **A gesture from a connection with no attach is answered.**
+                // A surface can read as live over a page no gesture can
+                // reach, and dropping these in silence was that state with no
+                // trace anywhere.
+                let why = "this connection has no browser attached";
+                if !discrete_gesture(&event) {
+                    return Ok(());
+                }
+                tracing::debug!(
+                    event_name = "browser_input_unattached",
+                    viewer = me,
+                    has_browser = state.browser_host.is_some(),
+                    reason = why,
+                    event = ?event,
+                    "a gesture arrived from a connection with no attached tab",
+                );
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "browser_input".to_owned(),
+                        why: why.to_owned(),
+                        seat: None,
+                        dispatch_id: None,
+                    },
+                )
+                .await;
             };
             match host.input(&viewing.key, viewing.tab, me, seq, &event).await {
                 Ok(()) => Ok(()),
                 Err(why) => {
+                    // **The fate of a gesture that never reached the page.**
+                    // The client logs the send, and this is the line that
+                    // says it was refused, and why, with the profile, tab and
+                    // viewer it was refused for.
+                    if discrete_gesture(&event) {
+                        tracing::debug!(
+                            event_name = "browser_input_refused",
+                            profile = %viewing.key,
+                            tab = viewing.tab,
+                            viewer = me,
+                            reason = %why,
+                            event = ?event,
+                            "a gesture was refused before it reached the page",
+                        );
+                    }
                     send(
                         socket,
                         ServerMessage::Error {
@@ -1932,7 +1976,28 @@ where
         ClientMessage::BrowserControl { take } => {
             let (Some(host), Some(viewing)) = (state.browser_host.as_ref(), viewing.as_ref())
             else {
-                return Ok(());
+                // **A take that does not land is answered.** The person asked
+                // for the role and the page drew it as theirs; a silent drop
+                // left the bar claiming a role the server never gave.
+                let why = "this connection has no browser attached";
+                tracing::debug!(
+                    event_name = "browser_control_unattached",
+                    viewer = me,
+                    take,
+                    has_browser = state.browser_host.is_some(),
+                    reason = why,
+                    "a controller change arrived from a connection with no attached tab",
+                );
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "browser_control".to_owned(),
+                        why: why.to_owned(),
+                        seat: None,
+                        dispatch_id: None,
+                    },
+                )
+                .await;
             };
             let (key, tab) = (viewing.key.clone(), viewing.tab);
             let outcome = if take {
@@ -1942,8 +2007,29 @@ where
                 Ok(())
             };
             match outcome {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    tracing::debug!(
+                        event_name = "browser_control",
+                        profile = %key,
+                        tab,
+                        viewer = me,
+                        take,
+                        landed = true,
+                        "the controller role moved",
+                    );
+                    Ok(())
+                }
                 Err(why) => {
+                    tracing::debug!(
+                        event_name = "browser_control",
+                        profile = %key,
+                        tab,
+                        viewer = me,
+                        take,
+                        landed = false,
+                        reason = %why,
+                        "a controller change was refused",
+                    );
                     send(
                         socket,
                         ServerMessage::Error {
@@ -2176,6 +2262,19 @@ where
 fn mint_connection_id() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether one gesture is worth its own record: **a pointer move is a
+/// stream**, so its refusal is the click's that follows it and logging every
+/// move would bury the answer in it.
+fn discrete_gesture(event: &forge_primitives::browser::BrowserInputEvent) -> bool {
+    !matches!(
+        event,
+        forge_primitives::browser::BrowserInputEvent::Mouse {
+            action: forge_primitives::browser::MouseAction::Move,
+            ..
+        }
+    )
 }
 
 /// The frames a range ask is answered with once the seat's own window has shed

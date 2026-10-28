@@ -1274,6 +1274,19 @@ impl Bridge {
             // and a page that ignored it would sit under its bar with no
             // picture and no reason.
             "error" => {
+                // **A refusal is in this client's own log.** The shell already
+                // records the gesture leaving; without this line a refused
+                // one reads as sent and then nothing, and the page's console
+                // is not an artifact anyone reads after the fact.
+                if let Some(what) = message.get("what").and_then(Value::as_str)
+                    && what.starts_with("browser_")
+                {
+                    tauri_plugin_log::log::info!(
+                        "the browser refused a request (event_name client_browser_refused, \
+                         what {what}, why {})",
+                        message.get("why").and_then(Value::as_str).unwrap_or("no reason given"),
+                    );
+                }
                 if message.get("what").and_then(Value::as_str) == Some("browser_view")
                     && let Some(app) = &self.app
                 {
