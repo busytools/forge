@@ -143,7 +143,7 @@ async fn a_page_in_the_host_offers_no_webauthn() {
     let carried = format!("http://127.0.0.1:{page_port}/");
     let port = support::free_port();
     let mut host = support::Host::start(&exe, &profile, port, &ring_name, "800x600", &[], &log);
-    forge_browser::spawn::wait_ready_for(host.pid(), port, &ring_name, &profile)
+    forge_browser::spawn::wait_ready_for(host.pid(), port, &ring_name)
         .await
         .unwrap_or_else(|why| panic!("the host never came ready: {why} (log: {})", host.log()));
 
