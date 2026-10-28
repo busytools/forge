@@ -879,18 +879,6 @@
   });
 
   /**
-   * What the follow pass runs on: the seat and the turn count.
-   *
-   * **The seat travels in the key as consistency, not as the mechanism**:
-   * what re-runs the pass on a switch is the arriving conversation's own
-   * record being published to the column, which the effect watches (measured:
-   * six constructions tried, none where the key decides) - so the seat is in
-   * the key so two seats with the same number of turns cannot collide, belt
-   * and braces beside the publish that does the work (#1673).
-   */
-  const follows = $derived(held.turns.length === 0 ? null : `${seat}:${held.turns.length}`);
-
-  /**
    * The newest turn's own report row - the unit, and the figures in it -
    * folded the way the turn folds itself.
    *
@@ -986,6 +974,40 @@
       ? newestRow
       : null,
   );
+
+  /**
+   * What the follow pass runs on: the seat, the turn count, and every HEIGHT
+   * the end of the conversation moves with.
+   *
+   * **The seat travels in the key as consistency, not as the mechanism**:
+   * what re-runs the pass on a switch is the arriving conversation's own
+   * record being published to the column, which the effect watches (measured:
+   * six constructions tried, none where the key decides) - so the seat is in
+   * the key so two seats with the same number of turns cannot collide, belt
+   * and braces beside the publish that does the work (#1673).
+   *
+   * **The height term is #1759's other half.** A row measures after the frame
+   * that grew it has published, and the beat's hand-over moves the newest row
+   * with no publish at all - so the pass runs on the newest row's own measured
+   * height, which is an observer of a different node from the column's content
+   * and survives the notification a browser drops under load.
+   */
+  const follows = $derived(
+    held.turns.length === 0
+      ? null
+      : `${seat}:${held.turns.length}:${rowSizes.sizeOf(newest) ?? ''}`,
+  );
+
+  /**
+   * The beat's hand-over is a height no frame carries: effects run after the
+   * DOM update, so this lands on the layout the moved row made.
+   */
+  let wasBeating = false;
+  $effect(() => {
+    const now = beating;
+    if (wasBeating && !now && held.following) land();
+    wasBeating = now;
+  });
 
   // The composer's surface draws this row now, so the column publishes it: the
   // strip lane lives in the foot, and the fold that mints the row lives here.
