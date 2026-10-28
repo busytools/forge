@@ -1427,6 +1427,16 @@ pub enum SessionUpdate {
         key: SessionSlot,
         handoff: forge_primitives::HandoffRecord,
     },
+    /// The machine turn running on this seat changed: a handoff beginning or
+    /// ending, and `None` for a seat taking input.
+    ///
+    /// **A record read is not pushed.** The record carries the same fact for a
+    /// page that attaches mid-turn, but a page already open learns it here -
+    /// and its composer stands down for exactly that span.
+    MachineTurn {
+        key: SessionSlot,
+        machine: Option<forge_primitives::runtime::MachineTurn>,
+    },
     ConnectionFailed {
         key: SessionSlot,
         message: String,
@@ -2117,6 +2127,7 @@ impl SessionUpdate {
             | Self::CallOutput { key, .. }
             | Self::SessionReplaced { key, .. }
             | Self::Handoff { key, .. }
+            | Self::MachineTurn { key, .. }
             | Self::ConnectionFailed { key, .. }
             | Self::Releasing { key }
             | Self::AuthRequired { key, .. }
@@ -2216,6 +2227,11 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("pair", &handoff.pair())
                 .field("reason", &handoff.reason)
+                .finish_non_exhaustive(),
+            Self::MachineTurn { key, machine } => f
+                .debug_struct("MachineTurn")
+                .field("key", key)
+                .field("machine", machine)
                 .finish_non_exhaustive(),
             Self::ConnectionFailed { key, .. } => {
                 f.debug_struct("ConnectionFailed").field("key", key).finish_non_exhaustive()

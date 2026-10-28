@@ -50,6 +50,7 @@
     "Handoff": "handoff",
     "HistoryReplayed": "history_replayed",
     "HookObservation": "hook_observation",
+    "MachineTurn": "machine_turn",
     "McpOperationError": "mcp_operation_error",
     "McpSnapshot": "mcp_snapshot",
     "MonitorsChanged": "monitors_changed",

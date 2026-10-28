@@ -39,7 +39,7 @@ pub use forge_workspace::env::cli_version::CliVersionInfo;
 pub use forge_workspace::protocol::PendingAsk;
 pub use forge_workspace::{DictateFailure, DictateModelState, DictateOutcome, LoadingState};
 pub use roster::Roster;
-pub use session::{MachineTurn, SessionState};
+pub use session::{SessionState, machine_turn};
 pub use workers::{WorkerRef, Workers};
 
 /// A view's read handle on the core.

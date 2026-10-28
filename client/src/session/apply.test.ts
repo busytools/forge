@@ -1044,6 +1044,35 @@ describe('applyUpdate', () => {
       });
       expect(settled.composer.machine, 'the handoff is not a compaction').toBe('handoff');
     });
+
+    it('keeps a handoff over a compaction whose status frame arrives beside it', () => {
+      // A handoff outranks a compaction: the CLI's status frame may only raise
+      // the machine state from idle, so a compaction cannot hand the composer
+      // back under a handoff that owns the seat.
+      const held = empty();
+      const replacing = { ...held, composer: { ...held.composer, machine: 'handoff' as const } };
+
+      const live = applyUpdate(replacing, {
+        chat_appended: {
+          key: SLOT,
+          msg: { type: 'system', subtype: 'status', status: 'compacting' },
+        },
+      });
+      expect(live.composer.machine, 'a compaction does not displace the handoff').toBe('handoff');
+    });
+
+    it('takes the machine turn the core announces, both ways', () => {
+      // A page already open never re-reads the record for a handoff, so these
+      // two frames are the whole of what stands the composer down and hands
+      // it back.
+      const began = applyUpdate(empty(), {
+        machine_turn: { key: SLOT, machine: 'handoff' },
+      });
+      expect(began.composer.machine).toBe('handoff');
+
+      const ended = applyUpdate(began, { machine_turn: { key: SLOT, machine: null } });
+      expect(ended.composer.machine).toBeNull();
+    });
   });
 
   /**
@@ -1228,6 +1257,7 @@ const EVERY_VARIANT = [
   'call_output',
   'session_replaced',
   'handoff',
+  'machine_turn',
   'connection_failed',
   'releasing',
   'auth_required',
@@ -1353,9 +1383,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (71 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (72 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(71);
+    ).toBe(72);
   });
 
   it('classifies every variant the core can send', () => {

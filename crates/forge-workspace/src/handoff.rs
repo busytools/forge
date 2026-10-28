@@ -2816,8 +2816,7 @@ both gates green.";
                 .iter()
                 .flat_map(|section| &section.lines)
                 .any(|line| line.contains("in the transcript named above")),
-            "the cut is named: {:?}",
-            sections,
+            "the cut is named: {sections:?}",
         );
     }
 

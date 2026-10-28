@@ -512,7 +512,7 @@ pub struct SessionStateWire {
 pub struct ComposerWire {
     /// The machine turn running on the seat, which takes the composer away:
     /// absent for a seat taking input.
-    pub machine: Option<crate::surface::MachineTurn>,
+    pub machine: Option<forge_primitives::runtime::MachineTurn>,
     pub sign_in: Option<SignIn>,
     /// The push-to-talk key and how a press maps onto a take, in the
     /// vocabulary `forge.toml` accepts.
@@ -2477,8 +2477,8 @@ async fn session(
             let live = crate::live::Live::lock(&state.live).snapshot();
             let composer = &live.composer;
             ComposerWire {
-                machine: crate::surface::MachineTurn::of(
-                    surface.handoff_in_progress(slot),
+                machine: crate::surface::machine_turn(
+                    surface.handoff_awaiting(slot),
                     composer.compacting(slot),
                 ),
                 sign_in: composer.sign_in(slot).cloned(),

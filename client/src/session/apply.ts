@@ -26,6 +26,7 @@ import {
   monitorFrom,
   prFrom,
   processesFrom,
+  machineTurn,
   subagentCardFrom,
   workFrom,
   type ComposerState,
@@ -100,6 +101,21 @@ export const HANDLERS: Record<string, Apply> = {
       return held;
     }
     return { ...held, conversation, composer, header };
+  },
+
+  /**
+   * **The machine turn, as the core announces it.** The record carries the
+   * same fact for a page that attaches mid-turn, but a read is not pushed -
+   * so a page already open learns the handoff begin and end here.
+   *
+   * **This source wins over the CLI's status frame**, which is the same
+   * precedence the record's own fold states: a handoff displaces a compaction,
+   * and a compaction never displaces a handoff.
+   */
+  machine_turn: (held, payload) => {
+    const machine = machineTurn(payload['machine']);
+    if (machine === held.composer.machine) return held;
+    return { ...held, composer: { ...held.composer, machine } };
   },
 
   hook_observation: (held, payload) => {
@@ -816,15 +832,19 @@ function knownEffort(held: Effort, value: unknown): Effort {
  * is the only place either is said. Mirrors `crates/forge-server/src/composer.rs`,
  * where the same frame is folded for the record's own `composer.machine`.
  *
- * **A handoff is not a compaction.** The handoff comes off the record read and
- * no frame carries it, so a settle clears only what the status frame set.
+ * **A handoff outranks a compaction.** The status frame may only raise this
+ * state from idle, and a settle clears only what the status frame set - so
+ * neither arm can displace a handoff that owns the seat, which arrives on
+ * `machine_turn` instead. In practice the two do not overlap; where they do,
+ * the handoff wins until it ends, and if the compaction is still running then
+ * the next record read folds the CLI's status back in.
  */
 function machineOf(held: ComposerState, message: unknown): ComposerState {
   const frame = record(message);
   if (frame['type'] !== 'system' || frame['subtype'] !== 'status') return held;
   const status = frame['status'];
   if (status === 'compacting') {
-    return held.machine === 'compacting' ? held : { ...held, machine: 'compacting' };
+    return held.machine === null ? { ...held, machine: 'compacting' } : held;
   }
   if (status === null) return held.machine === 'compacting' ? { ...held, machine: null } : held;
   return held;

@@ -1763,10 +1763,18 @@ impl SessionTask {
             domain.handoff.judgment_uuid = Some(uuid.clone());
             domain.handoff.judgment_started = false;
         }
+        // **The seat stands down before its own prompt lands.** A page already
+        // open learns the handoff here; the record carries the same fact for a
+        // page that attaches after this frame.
+        self.emit(SessionUpdate::MachineTurn {
+            key: self.key.clone(),
+            machine: Some(forge_primitives::runtime::MachineTurn::Handoff),
+        });
         let text = handoff::judgment_prompt();
         let deadline_uuid = uuid.clone();
         if let Err(error) = workspace.dispatch_handoff_prompt(&self.key, text, uuid) {
             self.domain.lock().handoff = crate::domain_session::HandoffState::default();
+            self.emit(SessionUpdate::MachineTurn { key: self.key.clone(), machine: None });
             // Nothing is coming to hand over to, so the gate must not keep
             // holding prompts for it.
             let held = workspace.end_swap(&self.key);
@@ -1987,6 +1995,11 @@ impl SessionTask {
             // of every later trigger at the idle gate.
             guard.serve_turn();
         }
+        // **The seat takes input again.** Every abort lands here - a
+        // cancelled judgment prompt, one the CLI refused or discarded, and the
+        // deadline - and a composer left standing down for a handoff that
+        // ended is a seat nobody can type into.
+        let _ = update_tx.send(SessionUpdate::MachineTurn { key: key.clone(), machine: None });
         let held = workspace.end_swap(key);
         if !update_tx.send(SessionUpdate::Notice {
             key: key.clone(),
@@ -2189,7 +2202,10 @@ impl SessionTask {
         let Some(from) = from else {
             // Nothing to hand over: close the gate this beginning opened and
             // answer what it was holding, or the seat holds prompts for a
-            // successor nothing is bringing.
+            // successor nothing is bringing. **The seat keeps its session**, so
+            // the machine turn ends here as well - no successor arrives whose
+            // record would clear it.
+            self.emit(SessionUpdate::MachineTurn { key: self.key.clone(), machine: None });
             let held = workspace.end_swap(&self.key);
             for prompt in held {
                 if let Some(sender) = &prompt.sender {
@@ -2216,6 +2232,11 @@ impl SessionTask {
             });
             return;
         };
+        // **A successful swap emits no machine-turn frame on purpose.** The
+        // successor's `SessionReplaced` makes every client re-read the record,
+        // and the record answers `machine: null` because the handoff state was
+        // cleared above - so the seat stays down until its new occupant's own
+        // record lands, drawn under the spawn blocker rather than a stale line.
         let policy = workspace.handoff_policy_for(&self.key);
         let cwd = workspace.cwd_for_session(&self.key).unwrap_or_default();
         // Minted, not recorded: the id reaches the slot's row on Connected.
@@ -4234,9 +4255,12 @@ mod tests {
 
         assert!(!workspace.swap_in_progress(&key), "the gate is closed with the swap");
         let mut said = Vec::new();
+        let mut turns = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::Notice { text, .. } = frame.update {
-                said.push(text);
+            match frame.update {
+                SessionUpdate::Notice { text, .. } => said.push(text),
+                SessionUpdate::MachineTurn { machine, .. } => turns.push(machine),
+                _ => {}
             }
         }
         assert!(
@@ -4247,6 +4271,9 @@ mod tests {
             said.iter().any(|text| text.contains("this prompt waits no longer")),
             "and the held prompt is accounted for: {said:?}",
         );
+        // **The seat keeps its session, so it keeps its composer.** No
+        // successor arrives whose record read would clear the machine turn.
+        assert_eq!(turns, vec![None], "the machine turn ends with the handoff");
     }
 
     /// One handoff at a time: a swap already building takes the seat, so a
@@ -4356,6 +4383,61 @@ mod tests {
                 Command::PromptUnder { text, .. } if text == "sent during the swap"
             )),
             "the held prompt goes back to the session that continues: {dispatched:?}",
+        );
+    }
+
+    /// The machine-turn frames this run emitted, in order.
+    fn drain_machine_turns(
+        rx: &mut mpsc::UnboundedReceiver<SeatUpdate>,
+    ) -> Vec<Option<forge_primitives::runtime::MachineTurn>> {
+        let mut out = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+                out.push(machine);
+            }
+        }
+        out
+    }
+
+    /// **A handoff announces its machine turn both ways.** The record carries
+    /// the same fact for a page that attaches mid-turn, but a read is not
+    /// pushed - so a page already open hears the begin and the end here, and
+    /// without them the composer stays live through the handoff and locked
+    /// after an abort.
+    #[tokio::test]
+    async fn a_handoff_announces_its_machine_turn_both_ways() {
+        use forge_primitives::runtime::MachineTurn;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _workspace_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        // The fixture's task carries a fanout of its own, so this is the
+        // subscriber the run's frames reach.
+        let mut rx = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        task.begin_handoff();
+        assert_eq!(
+            drain_machine_turns(&mut rx),
+            vec![Some(MachineTurn::Handoff)],
+            "the seat stands down as the judgment prompt goes out",
+        );
+
+        {
+            let mut domain = task.domain.lock();
+            domain.lifecycle_frames = Some(true);
+            domain.handoff.judgment_started = true;
+            domain.pending_cancel = true;
+        }
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: "old-session-id".to_owned(),
+            msg: result_message("error_during_execution", true),
+        });
+        assert_eq!(
+            drain_machine_turns(&mut rx),
+            vec![None],
+            "the cancelled handoff hands the seat back",
         );
     }
 
