@@ -48,6 +48,7 @@ import { subjectKey, type ServerMessage } from '../protocol';
 import { onRefusal, type Refusal } from '../refusals';
 import type { BrowserFrame, Connection } from '../socket';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
+import { READ_BOUND_MS, REVIEW_READ_BOUND_MS } from '../read-bound';
 import { connectRust } from './rust';
 
 const slot: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -95,13 +96,19 @@ afterEach(() => {
 describe('what the shell is told', () => {
   it('a subscribe, an unsubscribe and a refresh each cross as their own command', async () => {
     const connection = await opened();
-    connection.subscribe(subject, { answering: true });
+    connection.subscribe(subject, { answering: true, review: true });
     expect(invoke).toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: true,
+      review: true,
     });
     connection.unsubscribe(subject);
     expect(invoke).toHaveBeenCalledWith('client_unsubscribe', { what: subject });
+    connection.refresh(subject, { review: true });
+    expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject, review: true });
+    // **A re-ask that says nothing keeps the shell's held scope.** The bound's
+    // retry for a store still loading has no page to ask, and the shell is
+    // what remembers which kind of read that store was.
     connection.refresh(subject);
     expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject });
   });
@@ -120,10 +127,11 @@ describe('what the shell is told', () => {
     expect(invoke).toHaveBeenCalledWith('client_showing', { seat: slot });
     connection.showing(null);
     expect(invoke).toHaveBeenCalledWith('client_showing', { seat: null });
-    connection.relist(subject, { answering: true });
+    connection.relist(subject, { answering: true, review: true });
     expect(invoke).toHaveBeenCalledWith('client_relist', {
       what: subject,
       answering: true,
+      review: true,
     });
 
     connection.subscribe(subject);
@@ -434,6 +442,7 @@ describe('frames from the bridge', () => {
     expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: false,
+      review: false,
     });
 
     vi.advanceTimersByTime(1_000);
@@ -453,6 +462,36 @@ describe('frames from the bridge', () => {
   });
 
   /**
+   * **A review read's deadline comes from the caller.** The server bounds that
+   * read itself for longer than an ordinary one, so the ordinary pass would
+   * presume it lost inside the window and ask a second whole review read under
+   * the first. This drives the caller rather than arming the bound by hand, so
+   * a call site reverted to the short pass reds here.
+   */
+  it('gives a review read the longer pass before asking again', async () => {
+    vi.useFakeTimers();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      return Promise.resolve(undefined);
+    });
+    const connection = connectRust('ws://127.0.0.1:7777/socket');
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    connection.subscribe(subject, { review: true });
+    invoke.mockClear();
+
+    vi.advanceTimersByTime(5_000);
+    expect(invoke, 'the ordinary pass does not end a review read').not.toHaveBeenCalledWith(
+      'client_refresh',
+      { what: subject },
+    );
+
+    vi.advanceTimersByTime(7_000);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+  });
+
+  /**
    * **A read bound while the socket is still down owes a retry once it opens.**
    * The bound fired before the connection did, so its refresh could not go and
    * the timer died. The subscribe was queued in the Rust half and goes out when
@@ -466,6 +505,7 @@ describe('frames from the bridge', () => {
     expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: false,
+      review: false,
     });
 
     // The bound fires while connecting: the refresh cannot go, so the timer dies.
@@ -490,6 +530,46 @@ describe('frames from the bridge', () => {
       expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
     );
     expect(store.state(), 'nothing has answered it').toEqual({ kind: 'loading' });
+  });
+
+  /**
+   * **A review read re-armed on open keeps its own pass.** The desktop drops
+   * every timer on `closed` and re-arms what is still loading on `open`; armed
+   * with the plain pass, a review read's retry lands inside the server's own
+   * bounds and buys the second whole review read that deadline exists to
+   * prevent. The scope is the connection's to remember.
+   */
+  it('re-arms a review read with its own pass when the connection opens', async () => {
+    vi.useFakeTimers();
+    const connection = await opened({ status: 'connecting', greeting: null });
+    connection.subscribe(subject, { review: true });
+    invoke.mockClear();
+
+    // The review pass fires while connecting: the refresh cannot go, so the
+    // timer dies with the ask still unanswered.
+    vi.advanceTimersByTime(REVIEW_READ_BOUND_MS);
+    await vi.waitFor(() =>
+      expect(invoke).not.toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') {
+        return Promise.resolve({ status: 'open', generation: 1, greeting: null });
+      }
+      return Promise.resolve(undefined);
+    });
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    vi.advanceTimersByTime(READ_BOUND_MS);
+    expect(invoke, 'the ordinary pass ended a review read').not.toHaveBeenCalledWith(
+      'client_refresh',
+      { what: subject },
+    );
+    vi.advanceTimersByTime(REVIEW_READ_BOUND_MS - READ_BOUND_MS);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
   });
 
   /**

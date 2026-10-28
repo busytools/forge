@@ -109,8 +109,13 @@ mod commands {
     }
 
     #[tauri::command]
-    pub fn client_subscribe(bridge: tauri::State<'_, Arc<Bridge>>, what: Value, answering: bool) {
-        bridge.subscribe(what, answering);
+    pub fn client_subscribe(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        what: Value,
+        answering: bool,
+        review: bool,
+    ) {
+        bridge.subscribe(what, answering, review);
     }
 
     #[tauri::command]
@@ -119,8 +124,19 @@ mod commands {
     }
 
     #[tauri::command]
-    pub fn client_refresh(bridge: tauri::State<'_, Arc<Bridge>>, what: Value) {
-        bridge.refresh(&what);
+    pub fn client_refresh(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        what: Value,
+        review: Option<bool>,
+    ) {
+        bridge.refresh(&what, review);
+    }
+
+    /// Change a subject's held declaration without asking the server for
+    /// anything: the page's own scope, said before a reconnect re-asks it.
+    #[tauri::command]
+    pub fn client_declare(bridge: tauri::State<'_, Arc<Bridge>>, what: Value, review: bool) {
+        bridge.declare(what, review);
     }
 
     /// Give a subject back entirely: every reader and every server entry.
@@ -141,8 +157,13 @@ mod commands {
     /// Ask again for a subject the page still holds, adding no reader: the
     /// page's half of a resume after a drop.
     #[tauri::command]
-    pub fn client_relist(bridge: tauri::State<'_, Arc<Bridge>>, what: Value, answering: bool) {
-        bridge.relist(what, answering);
+    pub fn client_relist(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        what: Value,
+        answering: bool,
+        review: bool,
+    ) {
+        bridge.relist(what, answering, review);
     }
 
     /// Older turns of a conversation; false means no socket is open and no
@@ -523,6 +544,7 @@ pub fn run() {
             commands::client_refresh,
             commands::client_showing,
             commands::client_relist,
+            commands::client_declare,
             commands::client_release,
             commands::client_more,
             commands::client_seat_range,
@@ -581,6 +603,7 @@ pub fn run() {
             commands::client_refresh,
             commands::client_showing,
             commands::client_relist,
+            commands::client_declare,
             commands::client_release,
             commands::client_more,
             commands::client_seat_range,

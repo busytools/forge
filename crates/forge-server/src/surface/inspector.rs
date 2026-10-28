@@ -131,7 +131,14 @@ impl ViewSurface {
     /// arbitrarily old scan would put its hunks beside a row the first pass
     /// has since moved, so a store past the window is re-read here rather
     /// than carried.
-    pub async fn work(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
+    pub async fn work(
+        &self,
+        slot: &SessionSlot,
+        cwd: &std::path::Path,
+        // Whether this is the review page's own read, which fetches the base
+        // itself a moment later.
+        review: bool,
+    ) -> WorkSnapshot {
         // **The record's read never waits on the PR lookup.** A
         // lookup past its window is a TLS + API round trip (~0.9 s here) and
         // it sat inside the open a client waits for; the seat's loop scans
@@ -143,8 +150,90 @@ impl ViewSurface {
         }
         // A seat with no session has no store to hold a read, and its record
         // still answers the tree it stands in - so there is nothing cached to
-        // serve and no loop to refresh it either: this read fetches.
+        // serve and no loop to refresh it either: this read fetches. **The
+        // review read fetches the base itself**, so its scan takes none of the
+        // background kick: one read, one fetch, and nothing of forge's queued
+        // ahead of that fetch on the shared repository gate.
+        if review {
+            return self.workspace.scan_work_at_without_base_fetch(slot, cwd).await;
+        }
         self.workspace.scan_work_at(slot, cwd, PrRefresh::Fetch).await
+    }
+
+    /// Refresh the base the seat's drawn branch diff is measured against,
+    /// under the display read's own budget.
+    ///
+    /// `None` when no branch layer is drawn: the default branch, a detached
+    /// HEAD, or no resolved default. Only the read that draws the diff calls
+    /// this, so a state it reports belongs to the moment that diff was read
+    /// rather than to an earlier scan.
+    pub async fn refresh_diff_base(
+        &self,
+        held: &WorkSnapshot,
+    ) -> Option<forge_workspace::env::git_diff::BaseRefresh> {
+        if !held.diff.branch_ahead.is_populated() {
+            return None;
+        }
+        let default = held.diff.default_branch.as_deref()?;
+        Some(forge_workspace::env::git_diff::refresh_base_for_display(&held.cwd, default).await)
+    }
+
+    /// The scan a drawing read must take: pinned to the base revision the
+    /// refresh resolved, and gate-awaited so it cannot serve a store written
+    /// before the base moved. Local only.
+    ///
+    /// `None` when the scan could not be taken - no session behind the seat,
+    /// or its gate held past the read's bound (which `scan_work_pinned` logs
+    /// with the slot and the wait). **The caller must then re-read locally**
+    /// ([`Self::work_pinned_local`]) at the same sha: the store's count
+    /// predates the base the refresh moved, and a scan against the ref's name
+    /// cannot be paired with content read at the sha this read resolved.
+    ///
+    /// The refresh's state rides the stored row, so the `base` beside a pinned
+    /// `ahead` is that base's own measurement rather than the last watch's.
+    pub async fn diff_scan(
+        &self,
+        slot: &SessionSlot,
+        cwd: &std::path::Path,
+        refresh: &forge_workspace::env::git_diff::BaseRefresh,
+    ) -> Option<WorkSnapshot> {
+        match self
+            .workspace
+            .scan_work_pinned(slot, cwd, refresh.base_ref.as_deref(), Some(refresh.state))
+            .await
+        {
+            Ok(held) => Some(held),
+            Err(why) => {
+                // DEBUG: the read answers a correct scan either way, and the
+                // no-session case is this door's own reason - the only one
+                // that would otherwise reach the caller as a bare `None`.
+                tracing::debug!(
+                    target: "forge_workspace::work",
+                    event_name = "review_diff_scan_refused",
+                    slot = %slot.display(),
+                    outcome = "no_data",
+                    error = %why,
+                    "the pinned scan could not be taken; the read re-reads locally",
+                );
+                None
+            }
+        }
+    }
+
+    /// The local re-read a drawing read takes when its pin could not be: the
+    /// count and the chain must describe the ref the content is read at, and
+    /// that ref is the one the refresh just left. **Pinned to the same sha the
+    /// content read takes**, so a fetch that moves the ref between the two
+    /// cannot straddle two bases; the refresh's own state rides it, so the
+    /// row's `base` and the diff's agree. Never fetches, and takes no gate.
+    pub async fn work_pinned_local(
+        &self,
+        slot: &SessionSlot,
+        cwd: &std::path::Path,
+        base: Option<&str>,
+        measured: Option<forge_primitives::git_diff::BaseState>,
+    ) -> WorkSnapshot {
+        self.workspace.scan_work_at_pinned_local(slot, cwd, base, measured).await
     }
 
     /// Store a scan's answer, which is the write half of [`Self::work`].

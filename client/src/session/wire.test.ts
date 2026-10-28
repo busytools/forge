@@ -63,6 +63,7 @@ describe('a git record a server never sent', () => {
     expect(gitFrom(undefined), 'no git at all').toEqual({
       defaultBranch: null,
       worktree: null,
+      base: null,
       ahead: null,
     });
   });
@@ -273,6 +274,55 @@ describe('the diff parse', () => {
       state: 'unknown',
       raw: 'absent',
     });
+  });
+
+  it('reads the base state, and names a lag with its count', () => {
+    // **These are the server's own spellings**, pinned there by
+    // `the_base_states_wire_spellings` in forge-primitives: serde's external
+    // tagging nests a struct variant under its name, so `behind` arrives as
+    // `{"behind": {"behind": 3}}`. A flat read answered unknown, which drew
+    // no caveat at all - exactly the silence the reviewer reported.
+    const drawn = (base: unknown): unknown =>
+      diffFrom({ branch_ahead: { populated: [] }, base }).base;
+    expect(drawn('current')).toEqual({ state: 'current' });
+    expect(drawn('local')).toEqual({ state: 'local' });
+    expect(drawn('unverified')).toEqual({ state: 'unverified' });
+    expect(drawn({ behind: { behind: 3 } })).toEqual({ state: 'behind', behind: 3 });
+    expect(diffFrom({}).base, 'an absent base claims nothing').toBeNull();
+    expect(drawn('lagging'), 'and an unnamed state is kept as itself').toEqual({
+      state: 'unknown',
+      raw: 'lagging',
+    });
+  });
+
+  /**
+   * **The seat row's own base measurement** is what a page compares against
+   * its read's: absent means an older server that never measured one, which
+   * is not a state a page may read as `unknown`.
+   */
+  it("reads the seat row's base measurement, absent as none", () => {
+    expect(gitFrom({}).base, 'an older server measured nothing').toBeNull();
+    expect(gitFrom({ base: null }).base).toBeNull();
+    expect(gitFrom({ base: 'current' }).base).toEqual({ state: 'current' });
+    expect(gitFrom({ base: { behind: { behind: 2 } } }).base).toEqual({
+      state: 'behind',
+      behind: 2,
+    });
+  });
+
+  /**
+   * **An absent base over a drawn branch layer is an unread base, not a fresh
+   * one.** A client newer than its server gets a v14 record with no `base` at
+   * all; reading that as nothing drew the same silence as "the base is fine",
+   * which is the one claim nobody checked.
+   */
+  it('reads an absent base over a drawn branch layer as unknown', () => {
+    const skew = diffFrom({ branch_ahead: { populated: [] } });
+    expect(skew.base?.state, 'the older server never checked, so the page says so').toBe('unknown');
+    expect(
+      diffFrom({ branch_ahead: 'clean' }).base,
+      'a layer with nothing to describe carries no base claim',
+    ).toBeNull();
   });
 });
 

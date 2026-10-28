@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Stores } from './stores';
-import { READ_BOUND_MS, ReadBounds, SLOW_RETRY_MS } from './read-bound';
+import { READ_BOUND_MS, REVIEW_READ_BOUND_MS, ReadBounds, SLOW_RETRY_MS } from './read-bound';
 import type { Subject } from './protocol';
 
 const HOME: Subject = 'home';
@@ -29,6 +29,31 @@ function bounded(boundMs = READ_BOUND_MS, slowMs = SLOW_RETRY_MS) {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe('the pass a read gets', () => {
+  /**
+   * **A review read gets the longer pass**, because the server bounds that
+   * read itself: up to three seconds refreshing the base, up to three more
+   * waiting for a scan in flight, then the encode. The ordinary pass would
+   * land inside that window and ask a second whole review read under the
+   * first. Reverting either caller to `arm(what)` reds this.
+   */
+  it('holds a review read for the longer pass, then asks once', () => {
+    vi.useFakeTimers();
+    const { stores, bounds, asked } = bounded();
+    const store = stores.open(HOME);
+    bounds.arm(HOME, REVIEW_READ_BOUND_MS);
+
+    vi.advanceTimersByTime(READ_BOUND_MS);
+    expect(asked, 'the ordinary pass does not end a review read').toEqual([]);
+
+    vi.advanceTimersByTime(REVIEW_READ_BOUND_MS - READ_BOUND_MS);
+    expect(asked, 'the longer pass does').toEqual([HOME]);
+
+    store.set({ fleet: [] });
+    bounds.clear(HOME);
+  });
 });
 
 describe('a read that is not answered', () => {

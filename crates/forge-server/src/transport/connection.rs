@@ -1146,7 +1146,7 @@ where
         .await;
     };
     match client {
-        ClientMessage::Subscribe { what, answering } => {
+        ClientMessage::Subscribe { what, answering, review } => {
             // **The open path's own clock (#2374).** From this message being
             // read to the snapshot being written - the span a client's seat
             // switch waits on this half for, whatever subject it names; the
@@ -1199,7 +1199,7 @@ where
             // The subscribe's own opening: the client line, the browser
             // role's answer and the seat set a first declaration carries.
             let prelude_ms = queued_at.saturating_duration_since(open_at).as_secs_f64() * 1000.0;
-            match encode_subject_timed(state, &what).await {
+            match encode_subject_timed(state, &what, review).await {
                 Ok((data, timings)) => {
                     // Watched only once the subject is one this server can
                     // answer for: a refused subscribe leaves nothing to hear,
@@ -1277,6 +1277,8 @@ where
                             page_ms = timings.page_ms,
                             cards_ms = timings.cards_ms,
                             work_ms = timings.work_ms,
+                            base_ms = timings.base_ms,
+                            rescan_ms = timings.rescan_ms,
                             content_ms = timings.content_ms,
                             reviews_ms = timings.reviews_ms,
                             tree_reviews_ms = timings.tree_reviews_ms,
@@ -1292,8 +1294,9 @@ where
                              roster and its asks, header the seat's header, catch_up the \
                              copy's wait, seed the transcript read a cold seat pays, \
                              conversation the copy's arrival, page its cut and fold, cards \
-                             the subagent cards, work the tree scan, content the diff's \
-                             changed files, reviews and tree_reviews the review reads, state \
+                             the subagent cards, work the tree scan, base the review read's base \
+                             refresh, rescan the scan pinned to the sha it resolved, content the \
+                             diff's changed files, reviews and tree_reviews the review reads, state \
                              the seat's own state, index the file walk, resume the `/resume` \
                              list's read, tail the process read \
                              and the \
@@ -3617,6 +3620,7 @@ mod tests {
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Usage,
                     answering: false,
+                    review: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),
@@ -5174,6 +5178,7 @@ mod tests {
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Home,
                     answering: false,
+                    review: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),
@@ -5195,6 +5200,7 @@ mod tests {
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Home,
                     answering: false,
+                    review: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),
@@ -5258,6 +5264,7 @@ mod tests {
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Session(slot.clone()),
                     answering: false,
+                    review: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),
@@ -5554,6 +5561,7 @@ mod tests {
                 serde_json::to_string(&ClientMessage::Subscribe {
                     what: Subject::Home,
                     answering: false,
+                    review: false,
                 })
                 .expect("the subscribe encodes")
                 .into(),

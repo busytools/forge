@@ -10,7 +10,7 @@
  * refilling on every blip.
  */
 
-import { READ_BOUND_MS, ReadBounds } from './read-bound';
+import { READ_BOUND_MS, REVIEW_READ_BOUND_MS, ReadBounds } from './read-bound';
 import { refused } from './refusals';
 import { StreamGate } from './session/stream';
 import {
@@ -58,7 +58,7 @@ export interface Connection {
    * subscribes to one subject are two subscriptions, and one unsubscribe must
    * not take the seat out of the set the other is still watching.
    */
-  subscribe(what: Subject, options?: { answering?: boolean }): Store;
+  subscribe(what: Subject, options?: { answering?: boolean; review?: boolean }): Store;
   unsubscribe(what: Subject): void;
   /**
    * Ask again for a subject this connection already holds.
@@ -73,7 +73,12 @@ export interface Connection {
    * has nothing to ask on, and a bound must not re-arm for a read it did not
    * ask.
    */
-  refresh(what: Subject): boolean;
+  /**
+   * Ask for a subject again. `review` is the review page's own read: the
+   * server refreshes the branch diff's base before it encodes the record,
+   * which every other read does not wait on.
+   */
+  refresh(what: Subject, options?: { review?: boolean }): boolean;
   /**
    * Tell the server which seat is on screen.
    *
@@ -91,7 +96,18 @@ export interface Connection {
    * from the server's. This re-asks with the role the subject already
    * declared, and puts it back in the list a reconnect re-asks.
    */
-  relist(what: Subject, options?: { answering?: boolean }): void;
+  relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void;
+  /**
+   * Change a subject's held declaration **without asking the server for
+   * anything at all**.
+   *
+   * The scope belongs to the page holding the seat, and a page that lets its
+   * review read go has to say so: a plain re-ask would put a declaration on
+   * the wire, and left unsaid the transport would keep re-asking as the
+   * review read long after the page went - one base fetch and pinned scan per
+   * reviewed seat, on every reconnect nobody asked for.
+   */
+  declare(what: Subject, options: { review: boolean }): void;
   /**
    * Give a subject back entirely: every store reader this side holds for it,
    * and every subscription the server holds for it.
@@ -469,8 +485,15 @@ export function connect(
    * a wait with nothing behind it.
    */
   const bounds = new ReadBounds(stores, (what) => refresh(what), boundMs);
-  /** What to ask for again on a reconnect, in the order it was first asked. */
-  const held = new Map<string, { subject: Subject; answering: boolean }>();
+  /**
+   * What to ask for again on a reconnect, in the order it was first asked.
+   *
+   * `review` rides here for the same reason the role does: the read a page
+   * wanted must survive the drop, and a review open that reconnects as an
+   * ordinary record would label its base unverified for a check it never
+   * asked for.
+   */
+  const held = new Map<string, { subject: Subject; answering: boolean; review: boolean }>();
   const listeners = new Set<(message: ServerMessage) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
@@ -608,14 +631,17 @@ export function connect(
   const subscribed = new Map<string, number>();
 
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
-  function askFor(what: Subject, answering: boolean): void {
-    sendNow({ kind: 'subscribe', what, answering });
+  function askFor(what: Subject, answering: boolean, review = false): void {
+    sendNow({ kind: 'subscribe', what, answering, review });
     const key = subjectKey(what);
     awaiting.push(key);
     subscribed.set(key, (subscribed.get(key) ?? 0) + 1);
     // The read this ask owes is bounded from here: nothing else would ask
-    // again for a snapshot that simply never came.
-    bounds.arm(what);
+    // again for a snapshot that simply never came. A review read gets the
+    // longer pass: the server's own bounds for it are longer than a healthy
+    // read, and the ordinary one would ask a second whole record under the
+    // first.
+    bounds.arm(what, review ? REVIEW_READ_BOUND_MS : undefined);
   }
 
   /** A subject the server has answered, which is no longer outstanding. */
@@ -748,7 +774,7 @@ export function connect(
       subscribed.clear();
       move('open');
       retryDelay = RETRY_MS;
-      for (const { subject, answering } of [...held.values()]) {
+      for (const { subject, answering, review } of [...held.values()]) {
         // **A seat here was opened while the socket was DOWN.** `onclose`
         // takes the seats the old connection carried out of this list, so a
         // visited seat is never re-asked by a resume - `session/live.ts`
@@ -765,7 +791,7 @@ export function connect(
         // again.
         const already = subscribed.get(subjectKey(subject)) ?? 0;
         for (let remaining = stores.count(subject) - already; remaining > 0; remaining -= 1) {
-          askFor(subject, answering);
+          askFor(subject, answering, review);
         }
       }
       if (shown !== null) sendNow({ kind: 'showing', seat: shown });
@@ -897,7 +923,7 @@ export function connect(
     retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
   }
 
-  function subscribe(what: Subject, options?: { answering?: boolean }): Store {
+  function subscribe(what: Subject, options?: { answering?: boolean; review?: boolean }): Store {
     if (status === 'closed') {
       // Nothing replays a subscribe made after the socket went, so a live
       // store here would promise a snapshot that is never coming.
@@ -905,21 +931,28 @@ export function connect(
     }
 
     const answering = options?.answering ?? false;
+    const review = options?.review ?? false;
     const key = subjectKey(what);
     const store = stores.open(what);
 
     const existing = held.get(key);
     if (existing === undefined) {
-      held.set(key, { subject: what, answering });
-    } else if (answering) {
-      // The core's stream only ever escalates, so a later answering
-      // subscribe raises the role the reconnect re-establishes.
-      existing.answering = true;
+      held.set(key, { subject: what, answering, review });
+    } else {
+      if (answering) {
+        // The core's stream only ever escalates, so a later answering
+        // subscribe raises the role the reconnect re-establishes.
+        existing.answering = true;
+      }
+      // **The review read follows the page, so it is last-ask-wins.** A page
+      // that let its review read go must be able to take the declaration
+      // back; the role only rises, this one does not.
+      existing.review = review;
     }
 
     if (isOpen()) {
       const declaration = held.get(key);
-      askFor(what, declaration?.answering ?? answering);
+      askFor(what, declaration?.answering ?? answering, declaration?.review ?? review);
     }
     return store;
   }
@@ -993,16 +1026,23 @@ export function connect(
    * from the server's. This re-asks with the role the seat already declared,
    * and puts the subject back in the list a reconnect re-asks.
    */
-  function relist(what: Subject, options?: { answering?: boolean }): void {
+  function relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void {
     const key = subjectKey(what);
     const existing = held.get(key);
     const answering = existing?.answering === true || options?.answering === true;
-    held.set(key, { subject: what, answering });
-    if (isOpen()) askFor(what, answering);
+    const review = options?.review === true;
+    held.set(key, { subject: what, answering, review });
+    if (isOpen()) askFor(what, answering, review);
+  }
+
+  /** The held declaration only: nothing on the wire, no store, no reader. */
+  function declare(what: Subject, options: { review: boolean }): void {
+    const existing = held.get(subjectKey(what));
+    if (existing !== undefined) existing.review = options.review;
   }
 
   /** `true` when the pair went, which is what a bound re-arms on. */
-  function refresh(what: Subject): boolean {
+  function refresh(what: Subject, options?: { review?: boolean }): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
     if (!isOpen()) return false;
@@ -1020,7 +1060,12 @@ export function connect(
       else subscribed.set(key, open - 1);
     }
     const declaration = held.get(key);
-    askFor(what, declaration?.answering ?? false);
+    // **A re-ask that states no scope keeps the held one.** The bound's
+    // retry for a store still loading says nothing, and turning it into an
+    // ordinary record would undo the review read it is retrying.
+    const review = options?.review ?? declaration?.review ?? false;
+    if (declaration !== undefined) declaration.review = review;
+    askFor(what, declaration?.answering ?? false, review);
     return true;
   }
 
@@ -1101,6 +1146,7 @@ export function connect(
     refresh,
     showing,
     relist,
+    declare,
     release,
     dispatch,
     browserView(seat, tab) {

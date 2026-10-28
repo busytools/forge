@@ -128,6 +128,7 @@ function fakeConnection() {
     },
     showing() {},
     relist() {},
+    declare() {},
     release() {},
     browserInput: () => false,
     onBrowserFrame: () => () => {},

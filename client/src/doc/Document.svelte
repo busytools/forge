@@ -211,7 +211,7 @@
    * notice a landing arrives on are the record's, and this page reads one for
    * exactly that - the words a take leaves reach a page only through it.
    */
-  let session = $state<SessionRead>({ wire: null, refused: null });
+  let session = $state<SessionRead>({ wire: null, refused: null, review: false });
   $effect(() => {
     return watchSession(connection, slot, false).subscribe(($next) => {
       session = $next;

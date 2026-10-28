@@ -15,11 +15,12 @@
   import { Landing } from '../composer/landing';
   import { noticeLine, joined } from '../composer/view';
   import { ago } from '../components/age';
+  import { subjectKey } from '../protocol';
   import { goTo, hrefForSlot } from '../routes';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
-  import { watchSession, type SessionRead } from '../session/live';
-  import type { ReviewThreadRecord, SessionRecord } from '../session/wire';
+  import { clearReview, rereadSeat, watchSession, type SessionRead } from '../session/live';
+  import type { BaseStateRecord, ReviewThreadRecord, SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Canvas from './Canvas.svelte';
@@ -83,12 +84,91 @@
     dictation: boolean;
   } = $props();
 
-  let read = $state<SessionRead>({ wire: null, refused: null });
+  let read = $state<SessionRead>({ wire: null, refused: null, review: false });
 
+  /**
+   * How long a moved chain waits before the page asks again: long enough that
+   * a burst of commits, or the watch's own scan landing twice, is one read.
+   */
+  const DRIFT_REASK_MS = 2_000;
+
+  /**
+   * The floor between two of this page's own reads.
+   *
+   * A branch under a rebase or a burst of commits can move a chain faster than
+   * a read answers, and each read is a whole record plus a base fetch: the
+   * debounce alone has no ceiling, so this is the one that bounds the rate.
+   */
+  const REASK_FLOOR_MS = 10_000;
+
+  /**
+   * What the branch-ahead chain says now, as one value to compare: the count
+   * and the newest commit cover a commit being added, amended or a base fetch
+   * moving the range underneath.
+   */
+  function chainOf(held: SessionRecord | null): string | null {
+    const ahead = held?.git.ahead;
+    if (ahead === null || ahead === undefined) return null;
+    return `${ahead.count}:${ahead.commits[0]?.sha ?? ''}`;
+  }
+
+  /**
+   * What the seat's last watch refresh measured for the base, as one value to
+   * compare. **The field that catches a base-only move**: the range is
+   * `base..HEAD`, so an upstream advance the branch does not contain moves
+   * `origin/main` while the count and the chain stay as they were, and only
+   * this says so.
+   */
+  function baseOf(base: BaseStateRecord | null | undefined): string | null {
+    if (base === null || base === undefined) return null;
+    return base.state === 'behind' ? `behind:${base.behind}` : base.state;
+  }
+
+  /** One pending re-ask, debounced, with [`REASK_FLOOR_MS`] between reads. */
+  let askTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastAskAt = 0;
+
+  function askAgainSoon(): void {
+    if (askTimer !== null) clearTimeout(askTimer);
+    const floorLeft = Math.max(0, lastAskAt + REASK_FLOOR_MS - Date.now());
+    askTimer = setTimeout(
+      () => {
+        askTimer = null;
+        lastAskAt = Date.now();
+        rereadSeat(connection, slot, { review: true });
+      },
+      Math.max(DRIFT_REASK_MS, floorLeft),
+    );
+  }
+
+  function cancelAsk(): void {
+    if (askTimer === null) return;
+    clearTimeout(askTimer);
+    askTimer = null;
+  }
+
+  /**
+   * **The page's read is its own, for as long as it holds the seat.** The
+   * record it opens on may have been read for whichever page asked last, and
+   * its base may be hours old; the all-changes diff is drawn from a read that
+   * refreshes that base first. The intent lives on the seat, so the open
+   * itself carries it and every re-ask after it does too - an outrun, a
+   * replacement frame, a reconnect. The cleanup takes it back, so a page
+   * mounting the seat afterwards asks an ordinary read.
+   *
+   * **Keyed to the slot**, because the same page can be handed another seat:
+   * stepping to a second review must ask for that seat's read, not inherit
+   * the first one's spent ask.
+   */
   $effect(() => {
-    return watchSession(connection, slot, false).subscribe(($next) => {
+    const at = slot;
+    const stop = watchSession(connection, at, false, { review: true }).subscribe(($next) => {
       read = $next;
     });
+    return () => {
+      stop();
+      clearReview(connection, at);
+    };
   });
 
   const record: SessionRecord | null = $derived(read.wire);
@@ -119,6 +199,101 @@
   const commits = $derived(record?.git.ahead?.commits.toReversed() ?? []);
   const scopeCommit = $derived(scopeIdx === 0 ? null : (commits[scopeIdx - 1]?.sha ?? null));
   const diffLayer = $derived(record?.diff.branchAhead ?? { state: 'clean' as const });
+
+  /**
+   * What the page says about the base the All changes diff was taken against,
+   * or null when it is current. The server fetches the base before the diff;
+   * when that fetch could not run it says so, and a stale base must never
+   * read as the branch's own change.
+   */
+  const baseNote = $derived.by(() => {
+    // **Only a record this page's own read produced may say what the refresh
+    // found.** A record read by any other page has not checked its base at
+    // all, and drawing "could not be refreshed" off it names a refresh that
+    // never ran - the false caveat every open used to flash while its own
+    // read was in flight.
+    if (!read.review) return null;
+    const base = record?.diff.base ?? null;
+    // The wire names the remote-tracking ref; the reader knows it as `main`.
+    const name = (record?.git.defaultBranch ?? 'the base').replace(/^origin\//, '');
+    if (base?.state === 'behind') {
+      const n = base.behind;
+      return `${name} is ${n} commit${n === 1 ? '' : 's'} behind upstream, so this diff may include work already on ${name}.`;
+    }
+    if (base?.state === 'unverified') {
+      return `${name} could not be refreshed, so this diff may include work already on ${name}.`;
+    }
+    if (base?.state === 'unknown') {
+      // The server answered a state this build cannot name. Drawing nothing
+      // would read as "the base is fine", which is the one claim it cannot make.
+      return `the base ${name} could not be read, so this diff may include work already on ${name}.`;
+    }
+    return null;
+  });
+
+  /**
+   * **The page's interest in the base belongs to the page being mounted, not
+   * to the last answer's scope.** A record that answered from another scope -
+   * a notice-driven read after a comment, say - is still drawn by a page that
+   * holds this seat as its review, so tracking must not switch off with it;
+   * only the base LINE is provenance (`read.review`), and a later read of
+   * this page's own restores it.
+   *
+   * **A diff read once goes old under a live record.** `work_changed` moves
+   * the count and the chain while the diff - and the base beside it - stay
+   * where the last read left them, so a page left open would draw a fresh
+   * "N commits" beside the file list of an older base, labelled current: the
+   * mixed answer the base line exists to prevent. When the chain behind the
+   * drawn diff moves, this page asks its own read again, debounced so a burst
+   * of commits is one read.
+   *
+   * **A null chain is a value, not an absence.** A seat with no ahead layer
+   * (a fresh worktree branch, a detached or default checkout) and a branch
+   * that merges back to its base both draw a chain of nothing, so the value
+   * appearing or going is a move. Only a record that has not arrived is out
+   * of the comparison, because there is nothing this page drew yet.
+   */
+  let drawnAt: string | null = null;
+  let drawnChain: string | null = null;
+  $effect(() => {
+    const at = subjectKey({ session: slot });
+    if (record === null) return;
+    const chain = chainOf(record);
+    const first = drawnAt !== at;
+    if (!first && chain === drawnChain) return;
+    drawnAt = at;
+    drawnChain = chain;
+    // The answer that opened this page is what set the chain it drew; only a
+    // chain that moved afterwards is worth a read of its own.
+    if (first) return;
+    askAgainSoon();
+  });
+
+  /**
+   * **A base can move without the chain moving**, and only the seat's own
+   * watch refresh knows it: `record.git.base` is what that refresh measured,
+   * `record.diff.base` is what this page's read did. A change in the former
+   * that this page's read does not already state asks the read again. As with
+   * the chain, a null measurement is a value: the first one to arrive after
+   * this page's read is news, not the baseline.
+   */
+  let baseSeenAt: string | null = null;
+  let seenBase: string | null = null;
+  $effect(() => {
+    const at = subjectKey({ session: slot });
+    if (record === null) return;
+    const measured = baseOf(record.git.base);
+    const first = baseSeenAt !== at;
+    if (!first && measured === seenBase) return;
+    baseSeenAt = at;
+    seenBase = measured;
+    if (first) return;
+    if (measured !== baseOf(record.diff.base)) askAgainSoon();
+  });
+
+  // A page that goes away asks nothing: the intent is given back with the
+  // seat, and a pending read would refresh a base nobody is drawing.
+  $effect(() => () => cancelAsk());
 
   /** The threads this sitting has drafted or replied on, unfiled: what a
    *  `finish` seals into a round. */
@@ -1190,6 +1365,9 @@
         footer={convFooter}
       />
     {:else}
+      {#if scopeCommit === null && baseNote !== null}
+        <p class="rv-base">{baseNote}</p>
+      {/if}
       <div class="rv-body rv-filesbody">
         <Canvas
           {connection}
@@ -1376,6 +1554,15 @@
     font-size: var(--fs-data);
     color: var(--bad);
     padding: 2px 2px 8px;
+  }
+  /* The stale-base line: the diff is drawn, and this says the base behind it
+     may be old. Its own line rather than a hover, because a caveat nobody
+     hovers is not a label. */
+  .rv-base {
+    font-family: var(--mono);
+    font-size: var(--fs-data);
+    color: var(--warn);
+    padding: 2px 2px 6px;
   }
   /* Narrow: the scope control drops to its own line under the tabs rather
      than being clipped at the edge - it is the door to every commit, and a

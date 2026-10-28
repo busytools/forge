@@ -90,6 +90,10 @@ struct Watch {
     what: Value,
     readers: usize,
     answering: bool,
+    /// Whether the last read asked for this subject was the review page's
+    /// own. Follows the page holding the seat, so a review open that drops
+    /// comes back as the read it was rather than as an ordinary record.
+    review: bool,
 }
 
 /// A live takeover's viewer, as the attach asked for it.
@@ -580,7 +584,7 @@ impl Bridge {
         // what keeps a stale `Status::Open` from bumping the page's
         // generation or writing to the fresh connection's state.
         let socket_id = mint_socket_id();
-        let wanted: Vec<(Value, bool, usize)> = {
+        let wanted: Vec<(Value, bool, bool, usize)> = {
             let mut state = self.lock();
             // **The park outlives the connection it was kept across**: a
             // page away when the socket drops is still away, so the held
@@ -614,17 +618,17 @@ impl Bridge {
                     if !watch.what.is_string() {
                         continue;
                     }
-                    wanted.push((watch.what.clone(), watch.answering, watch.readers));
+                    wanted.push((watch.what.clone(), watch.answering, watch.review, watch.readers));
                 }
             }
             wanted
         };
-        for (what, answering, readers) in wanted {
+        for (what, answering, review, readers) in wanted {
             // Once per OPEN subscription: the server counts, and the new
             // socket starts at zero - a subject two page readers hold has to
             // be asked for twice, or the first unsubscribe silences it.
             for _ in 0..readers {
-                socket.subscribe(what.clone(), answering);
+                socket.subscribe(what.clone(), answering, review);
             }
         }
         self.emit(ClientEvent::Connection);
@@ -640,7 +644,7 @@ impl Bridge {
     /// Watch one subject, as one page reader more. The wire frame is passed
     /// through per call - the server counts subscriptions, so two readers are
     /// two frames and the record's lifetime is this side's own count.
-    pub fn subscribe(&self, what: Value, answering: bool) {
+    pub fn subscribe(&self, what: Value, answering: bool, review: bool) {
         let key = records::subject_key(&what);
         if key.is_empty() {
             return;
@@ -650,14 +654,15 @@ impl Bridge {
             Some(watch) => {
                 watch.readers += 1;
                 watch.answering |= answering;
+                watch.review = review;
             }
             None => {
                 state.order.push(key.clone());
-                state.held.insert(key, Watch { what: what.clone(), readers: 1, answering });
+                state.held.insert(key, Watch { what: what.clone(), readers: 1, answering, review });
             }
         }
         if let Some(socket) = &state.socket {
-            socket.subscribe(what, answering);
+            socket.subscribe(what, answering, review);
         }
     }
 
@@ -713,12 +718,32 @@ impl Bridge {
     /// Ask again for a subject the page still holds, **without counting a
     /// reader**: the record and the page's store both survived the drop, and
     /// only the server's subscription went with the socket.
-    pub fn relist(&self, what: Value, answering: bool) {
-        let state = self.lock();
+    pub fn relist(&self, what: Value, answering: bool, review: bool) {
+        let mut state = self.lock();
         let key = records::subject_key(&what);
         let held_answering = state.held.get(&key).map(|watch| watch.answering).unwrap_or(false);
+        // **The declaration is the held one, with this ask's own review
+        // scope**: the role only rises while the connection lives, and the
+        // review read follows the page that last held the seat.
+        if let Some(watch) = state.held.get_mut(&key) {
+            watch.review = review;
+        }
         if let Some(socket) = &state.socket {
-            socket.relist(what, held_answering || answering);
+            socket.relist(what, held_answering || answering, review);
+        }
+    }
+
+    /// Change a subject's held declaration without asking the server for
+    /// anything: the scope a page holds, said so a later reconnect does not
+    /// re-ask it as a review read nobody wanted.
+    pub fn declare(&self, what: Value, review: bool) {
+        let mut state = self.lock();
+        let key = records::subject_key(&what);
+        if let Some(watch) = state.held.get_mut(&key) {
+            watch.review = review;
+        }
+        if let Some(socket) = &state.socket {
+            socket.declare(what, review);
         }
     }
 
@@ -748,12 +773,25 @@ impl Bridge {
     /// a snapshot, which replaces the record whole. **The declaration is the
     /// held one**: a refresh with flags of its own would escalate a seat
     /// watched without them, and the core parks turns on whatever answered.
-    pub fn refresh(&self, what: &Value) {
-        let state = self.lock();
+    pub fn refresh(&self, what: &Value, review: Option<bool>) {
+        let mut state = self.lock();
         let key = records::subject_key(what);
-        let answering = state.held.get(&key).map(|watch| watch.answering).unwrap_or(false);
+        // **A refresh that states no scope keeps the held one.** The page's
+        // own re-ask says which read it wants; a bound's retry for a store
+        // still loading says nothing, and turning it into an ordinary record
+        // would undo the review read it is retrying.
+        if let Some(review) = review
+            && let Some(watch) = state.held.get_mut(&key)
+        {
+            watch.review = review;
+        }
+        let (answering, held_review) = state
+            .held
+            .get(&key)
+            .map(|watch| (watch.answering, watch.review))
+            .unwrap_or((false, review.unwrap_or(false)));
         if let Some(socket) = &state.socket {
-            records::refresh(socket, what, answering);
+            records::refresh(socket, what, answering, held_review);
         }
     }
 
@@ -826,7 +864,8 @@ impl Bridge {
             return;
         }
         if self.lock().held.contains_key("home") {
-            self.refresh(&json!("home"));
+            // A roster refresh states no scope: the held declaration decides.
+            self.refresh(&json!("home"), None);
         }
     }
 
@@ -984,7 +1023,7 @@ impl Bridge {
         for (key, watch) in &state.held {
             let Some(session) = watch.what.get("session") else {
                 if let Some(socket) = &state.socket {
-                    records::refresh(socket, &watch.what, watch.answering);
+                    records::refresh(socket, &watch.what, watch.answering, watch.review);
                 }
                 continue;
             };
@@ -1421,9 +1460,9 @@ impl Bridge {
                 continue;
             }
             let Some(watch) = state.held.get(&key) else { continue };
-            let (what, answering) = (watch.what.clone(), watch.answering);
+            let (what, answering, review) = (watch.what.clone(), watch.answering, watch.review);
             if let Some(socket) = &state.socket {
-                records::refresh(socket, &what, answering);
+                records::refresh(socket, &what, answering, review);
             }
         }
     }
@@ -1884,6 +1923,55 @@ mod tests {
         assert_eq!(seen["payload"]["a"], json!(1));
     }
 
+    /// **The desktop shell's own subscribe frame carries the review scope.**
+    /// The page's review open reaches the server through this frame; a Bridge
+    /// that dropped the flag while keeping its own bookkeeping right would
+    /// leave every desktop review read ordinary.
+    #[tokio::test]
+    async fn the_bridge_subscribe_frame_carries_the_review_scope() {
+        let mut stub = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(stub.url.clone());
+        connected(&bridge).await;
+
+        bridge.subscribe(seat(), false, true);
+        let frame = stub.heard_until(|value| value["kind"] == "subscribe").await;
+        assert_eq!(frame["what"], seat(), "the seat's subscribe went");
+        assert_eq!(frame["review"], json!(true), "carrying the page's review scope");
+    }
+
+    /// **The review scope crosses the Bridge, not only the socket.** The
+    /// page's first read, a relink and the read bound's retry all come
+    /// through these calls, so a Bridge that dropped the flag would turn them
+    /// into ordinary reads while every socket test stayed green.
+    #[tokio::test]
+    async fn the_review_scope_survives_every_bridge_ask() {
+        let (bridge, _rx) = bridge();
+        let key = crate::records::subject_key(&seat());
+        let review = |bridge: &Arc<Bridge>| {
+            bridge.lock().held.get(&key).map(|watch| watch.review).unwrap_or(false)
+        };
+
+        bridge.subscribe(seat(), true, true);
+        assert!(review(&bridge), "a subscribe carries the page's scope");
+
+        // The bound's retry says nothing and must keep the held scope.
+        bridge.refresh(&seat(), None);
+        assert!(review(&bridge), "a scopeless refresh keeps the held scope");
+
+        // The page lets the seat go: the declaration crosses without an ask.
+        bridge.declare(seat(), false);
+        assert!(!review(&bridge), "a declaration takes it back");
+        bridge.refresh(&seat(), None);
+        assert!(!review(&bridge), "and the unscoped re-ask uses it");
+
+        // A relink states its own scope, which is the one a reconnect re-asks.
+        bridge.relist(seat(), true, false);
+        assert!(!review(&bridge), "a relist's own scope wins");
+        bridge.relist(seat(), true, true);
+        assert!(review(&bridge), "and raises it again");
+    }
+
     /// A parked page's frames stop being emitted (the records still take
     /// them), and the first heartbeat after the spell answers with the
     /// catch-up: the held record as its own snapshot, and the newest page its
@@ -1893,7 +1981,7 @@ mod tests {
         let (bridge, mut rx) = bridge();
         let server = stub().await;
         bridge.connect(server.url.clone());
-        bridge.subscribe(seat(), true);
+        bridge.subscribe(seat(), true, false);
         sent(
             &bridge,
             snapshot(json!({
@@ -1956,7 +2044,7 @@ mod tests {
         let (bridge, mut rx) = bridge();
         let server = stub().await;
         bridge.connect(server.url.clone());
-        bridge.subscribe(seat(), true);
+        bridge.subscribe(seat(), true, false);
         sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
         event(&mut rx, is_inbound()).await;
         park(&bridge);
@@ -1989,8 +2077,8 @@ mod tests {
         let mut server = stub().await;
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(seat(), true);
-        bridge.subscribe(seat(), true);
+        bridge.subscribe(seat(), true, false);
+        bridge.subscribe(seat(), true, false);
         sent(&bridge, snapshot(json!({ "a": 1 })));
         event(&mut rx, is_inbound()).await;
         // Both readers reached the wire as their own subscribe.
@@ -2057,7 +2145,7 @@ mod tests {
         let (bridge, mut rx) = bridge();
         let server = stub().await;
         bridge.connect(server.url.clone());
-        bridge.subscribe(seat(), true);
+        bridge.subscribe(seat(), true, false);
         sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
         event(&mut rx, is_inbound()).await;
         park(&bridge);
@@ -2077,7 +2165,7 @@ mod tests {
         let mut server = stub().await;
         let (bridge, mut rx) = bridge();
         bridge.connect(server.url.clone());
-        bridge.subscribe(seat(), false);
+        bridge.subscribe(seat(), false, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         sent(&bridge, snapshot(json!({ "a": 1 })));
         event(&mut rx, is_inbound()).await;
@@ -2106,7 +2194,7 @@ mod tests {
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         // A beat this instant is what the page's timer wrote before the
         // display slept - and the page is already frozen behind it.
@@ -2182,7 +2270,7 @@ mod tests {
         let mut server = stub().await;
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
 
         // The launch's own read seeds and announces nothing.
@@ -2210,7 +2298,7 @@ mod tests {
         let mut server = stub().await;
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         bridge.showing(Some(json!({ "org": "Busytools", "project": "forge", "label": "lead" })));
 
@@ -2239,7 +2327,7 @@ mod tests {
         let mut server = stub().await;
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         bridge.showing(Some(json!({ "org": "Busytools", "project": "forge", "label": "lead" })));
 
@@ -2268,7 +2356,7 @@ mod tests {
         let mut server = stub().await;
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         bridge.showing(Some(json!({ "org": "Busytools", "project": "forge", "label": "lead" })));
 
@@ -2294,8 +2382,8 @@ mod tests {
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), true);
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
+        bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         bridge.connect(server.url.clone());
@@ -2351,7 +2439,7 @@ mod tests {
         let (bridge, mut rx) = bridge();
         let old = bridge.connect(first.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
         let _ = first.heard_until(|v| v["kind"] == "subscribe").await;
         first
             .say
@@ -2375,7 +2463,7 @@ mod tests {
         bridge.connect(second.url.clone());
         connected(&bridge).await;
         bridge.close(old);
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
 
         let mut subscribed = 0;
         let read_by = tokio::time::Instant::now() + Duration::from_secs(2);
@@ -2430,7 +2518,7 @@ mod tests {
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(seat(), true);
+        bridge.subscribe(seat(), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
 
         bridge.connect(server.url.clone());
@@ -2535,10 +2623,10 @@ mod tests {
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(seat(), true);
+        bridge.subscribe(seat(), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
 
-        bridge.relist(seat(), false);
+        bridge.relist(seat(), false, false);
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], seat(), "the relist asked for the same subject");
         assert_eq!(again["answering"], true, "the held declaration was not raised into the relist",);
@@ -2562,10 +2650,10 @@ mod tests {
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(seat(), false);
+        bridge.subscribe(seat(), false, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         // A relist asks once more on the wire while the reader count stays 1.
-        bridge.relist(seat(), false);
+        bridge.relist(seat(), false, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
 
         bridge.release(&seat());
@@ -2586,7 +2674,7 @@ mod tests {
         let (bridge, _rx) = bridge();
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), true);
+        bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         park(&bridge);
         bridge.heartbeat();
@@ -2603,7 +2691,7 @@ mod tests {
         let (bridge, mut rx) = bridge();
         let server = stub().await;
         bridge.connect(server.url.clone());
-        bridge.subscribe(seat(), true);
+        bridge.subscribe(seat(), true, false);
         sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
         event(&mut rx, is_inbound()).await;
         bridge.heartbeat();
@@ -2774,7 +2862,7 @@ mod tests {
         let mut server = stub().await;
         bridge.connect(server.url.clone());
         connected(&bridge).await;
-        bridge.subscribe(json!("home"), false);
+        bridge.subscribe(json!("home"), false, false);
         let opening = tokio::spawn({
             let bridge = Arc::clone(&bridge);
             async move { bridge.browser_view(seat(), Some(4)).await }

@@ -286,6 +286,7 @@
   },
   "git": {
     "default_branch": "main",
+    "base": null,
     "worktree": {
       "files": [
         {
@@ -458,6 +459,7 @@
         }
       ]
     },
+    "base": "unverified",
     "truncated": false
   }
 }

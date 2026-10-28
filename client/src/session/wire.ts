@@ -430,6 +430,14 @@ interface GitStatsRecord {
 export interface GitWorkRecord {
   defaultBranch: string | null;
   worktree: GitStatsRecord | null;
+  /**
+   * What the seat's last watch refresh measured for the base the chain is
+   * measured against. **The only field that moves on a base-only move**: the
+   * range is `base..HEAD`, so an upstream advance the branch does not contain
+   * leaves the count and the chain alone, and a review page watching only
+   * those would keep a `current` label nobody re-checked.
+   */
+  base: BaseStateRecord | null;
   ahead: {
     count: number;
     commits: {
@@ -1017,6 +1025,10 @@ export function gitFrom(value: unknown): GitWorkRecord {
   return {
     defaultBranch: text(held['default_branch']),
     worktree: gitStatsFrom(held['worktree']),
+    // **Absent is "no measurement", not `unknown`.** This field rides the
+    // seat's row, and a record read from an older server simply has none; a
+    // page must not read that as a measured state.
+    base: held['base'] === undefined ? null : baseStateFrom(held['base']),
     ahead:
       ahead === null || ahead === undefined
         ? null
@@ -1096,11 +1108,25 @@ export interface DiffFileRecord {
   hunks: DiffHunkRecord[];
 }
 
+/**
+ * How current the base the branch layer was read against is. A remote-tracking
+ * base can only be as fresh as the last fetch, so a page says when it could
+ * not be refreshed rather than drawing the diff as the branch's own change.
+ */
+export type BaseStateRecord =
+  | { state: 'local' }
+  | { state: 'current' }
+  | { state: 'behind'; behind: number }
+  | { state: 'unverified' }
+  | { state: 'unknown'; raw: unknown };
+
 /** The working tree's bounded content: the uncommitted layer, the branch's
- *  own, and whether the read withheld anything. */
+ *  own, whether the read withheld anything, and how fresh the branch's base
+ *  was. `null` when there is no branch layer to describe. */
 export interface DiffRecord {
   worktree: DiffLayerRecord;
   branchAhead: DiffLayerRecord;
+  base: BaseStateRecord | null;
   truncated: boolean;
 }
 
@@ -1177,11 +1203,37 @@ function diffFileFrom(entry: unknown): DiffFileRecord {
   };
 }
 
+/**
+ * The base's own state, as the record carried it. `null` is the wire's own
+ * null; a key this build does not know is `unknown`, never nothing.
+ *
+ * **serde's external tagging nests a struct variant under the variant name**,
+ * so `Behind { behind }` arrives as `{"behind": {"behind": 3}}`, not as a flat
+ * object. Reading the outer key with `number()` answers null, which used to
+ * turn the one labelled-lag state into `unknown` and draw nothing at all.
+ */
+function baseStateFrom(value: unknown): BaseStateRecord | null {
+  if (value === undefined) return { state: 'unknown', raw: undefined };
+  if (value === null) return null;
+  if (value === 'local') return { state: 'local' };
+  if (value === 'current') return { state: 'current' };
+  if (value === 'unverified') return { state: 'unverified' };
+  const behind = number(record(record(value)['behind'])['behind']);
+  if (behind !== null) return { state: 'behind', behind };
+  return { state: 'unknown', raw: value };
+}
+
 export function diffFrom(value: unknown): DiffRecord {
   const held = record(value);
+  const branchAhead = diffLayerFrom(held['branch_ahead']);
   return {
     worktree: diffLayerFrom(held['worktree']),
-    branchAhead: diffLayerFrom(held['branch_ahead']),
+    branchAhead,
+    // **Only a drawn branch layer carries a base claim**, and an absent key
+    // over one is an unread base, not a fresh one: a server older than the
+    // field answers no `base` at all, and reading that as nothing drew the
+    // same silence as "the base is fine" - the one claim nobody checked.
+    base: branchAhead.state === 'populated' ? baseStateFrom(held['base']) : null,
     truncated: held['truncated'] === true,
   };
 }

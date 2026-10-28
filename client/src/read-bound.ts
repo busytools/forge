@@ -67,6 +67,19 @@ export const READ_BOUND_MS = 5_000;
  */
 export const SLOW_RETRY_MS = 60_000;
 
+/**
+ * The pass a review-scoped read gets before it is presumed lost.
+ *
+ * **The server bounds that read itself, and its bounds are longer than a
+ * healthy one**: up to three seconds refreshing the base, then up to three
+ * more waiting for a scan already in flight (and, when that wait runs out, a
+ * local re-read of the tree against the refreshed base), then the record's
+ * own encode. The ordinary pass would land inside that window and ask for a
+ * second whole review read - another fetch and another scan - under the first
+ * one still on its way.
+ */
+export const REVIEW_READ_BOUND_MS = READ_BOUND_MS + 7_000;
+
 export class ReadBounds {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -90,8 +103,8 @@ export class ReadBounds {
    * it waits [`SLOW_RETRY_MS`], which is the whole policy: an answer ends the
    * bound, and a read still unanswered after its pass is presumed slow.
    */
-  arm(what: Subject): void {
-    this.schedule(what, this.boundMs);
+  arm(what: Subject, afterMs: number = this.boundMs): void {
+    this.schedule(what, afterMs);
   }
 
   /** An answer landed for `what` - a snapshot, or a refusal in its own words. */
@@ -120,13 +133,18 @@ export class ReadBounds {
    * timer standing, and a loading page can wait up to the beat; asking sooner
    * would buy an extra whole record per reconnect on exactly the slow link
    * this bound stopped feeding.
+   *
+   * **The pass is the read's own**, which the caller holds: a review read
+   * re-armed with the plain pass would land its retry inside the server's
+   * longer bounds and buy the second whole review read that deadline exists
+   * to prevent.
    */
-  rearmLoading(): void {
+  rearmLoading(passFor: (what: Subject) => number = () => this.boundMs): void {
     for (const subject of this.stores.subjects()) {
       const key = subjectKey(subject);
       if (this.timers.has(key)) continue;
       if (this.stores.get(subject)?.state().kind === 'loading') {
-        this.arm(subject);
+        this.arm(subject, passFor(subject));
       }
     }
   }
