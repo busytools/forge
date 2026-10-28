@@ -230,7 +230,7 @@ describe('the compensation the list is handed', () => {
     expect(after[after.length - 1], 'the row is the same element').toBe(row);
   });
 
-  it('is armed before an older page arrives, and off again after it lands', async () => {
+  it('arms the change that prepends, and no ask at all', async () => {
     const server = stub();
     draw(server);
     // Two turns, so the fresh open's fill has nothing of its own to ask for
@@ -238,23 +238,47 @@ describe('the compensation the list is handed', () => {
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
-    // The reader reaches the top, which asks for what is above. The
-    // compensation has to be on for the rows that answer is about to add: it
-    // is applied AS they change, so a page that armed it when the answer
-    // arrived would be arming after the change it exists for.
+    // The reader reaches the top, which asks for what is above. The ask is
+    // not a change to the list, so nothing is armed for it: the compensation
+    // belongs to the landing, which is the change that moves the head.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     expect(server.asks, 'the ask went').toHaveLength(1);
 
-    expect(last(), 'armed as the ask goes out').toEqual({ length: 2, shift: true });
-
     server.page([turn('t0'), turn('t2')], null);
     const grew = firstGrowth();
     expect(grew, 'the list gained a row').toBeDefined();
-    expect(grew?.shift, 'with the compensation already on').toBe(true);
+    expect(grew?.shift, 'and the change that moved the head is compensated').toBe(true);
+  });
 
+  it('does not compensate a turn that opens at the tail', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
     await tick();
-    expect(last()?.shift, 'and off again once the list has taken it').toBe(false);
+
+    // A page is on its way, which is the window the compensation used to be
+    // armed for the whole of: a turn opening at the tail inside it went
+    // through the prepend path, and every row below landed on the row above's
+    // offset until it re-measured (Ved, 2026-10-28: two rows in one band).
+    list()?.scrolledTo(0, 500, 320);
+    flushSync();
+
+    // A prompt that opens a turn of its own below the reader - the arrival
+    // that made this a defect: a cron's words landing while a page was read.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-tail',
+          message: { role: 'user', content: [{ type: 'text', text: 'the chore' }] },
+        },
+      },
+    });
+    await frame();
+    expect(last()?.length, 'the prompt opened a row').toBe(3);
+    expect(last()?.shift, 'a turn arriving below the reader is not a prepend').toBe(false);
   });
 
   it('is not armed by an ask the socket refused', async () => {
@@ -267,39 +291,53 @@ describe('the compensation the list is handed', () => {
     list()?.scrolledTo(0, 500, 320);
     flushSync();
 
-    // Nothing was sent, so no page is coming and there is nothing to
-    // compensate for. Armed here, the flag stays on: the next turn appended
-    // below the reader goes through the prepend path, which moves them AND
-    // leaves the list's measured sizes attributed to the wrong rows.
-    expect(last()?.shift, 'an ask that never went arms nothing').toBe(false);
-
-    server.append();
-    expect(last()?.shift, 'and the turn that arrives below it is not compensated').toBe(false);
+    // Nothing was sent, so no page is coming - and the turn below it is the
+    // one the refusal must not become a prepend for.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-refused',
+          message: { role: 'user', content: [{ type: 'text', text: 'after the refusal' }] },
+        },
+      },
+    });
+    await frame();
+    expect(last()?.shift, 'the turn that arrives below it is not compensated').toBe(false);
   });
 
-  it('is held while a second ask is still in flight', async () => {
+  it('arms each landing on its own change', async () => {
     const server = stub();
     draw(server);
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
+    // A second ask is the ordinary case: the landing's own compensation fires
+    // a scroll, and a reader's reach can follow it inside the same window.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     server.page([turn('t1'), turn('t2')], '1');
-    // The compensation is applied by scrolling the list, which fires a scroll
-    // event of its own - so a second ask inside this window is the ordinary
-    // case, not a contrived one.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     expect(server.asks, 'two asks are out').toHaveLength(2);
-    expect(last()?.shift, 'still armed for the second').toBe(true);
-
-    await tick();
-    expect(last()?.shift, 'and one landing does not disarm the other').toBe(true);
 
     server.page([turn('t0'), turn('t1')], null);
-    await tick();
-    expect(last()?.shift, 'both landed, so off').toBe(false);
+    const grew = firstGrowth();
+    expect(grew?.shift, 'the landing that moved the head is compensated').toBe(true);
+
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-after',
+          message: { role: 'user', content: [{ type: 'text', text: 'after the landing' }] },
+        },
+      },
+    });
+    await frame();
+    expect(last()?.shift, 'and the turn opening below it after that is not').toBe(false);
   });
 });
 

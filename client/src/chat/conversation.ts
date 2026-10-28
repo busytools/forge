@@ -298,12 +298,13 @@ export interface Conversation {
   /**
    * How many pages of OLDER turns have landed.
    *
-   * A count rather than a flag because the list has to know when one change
-   * differs from the last, and a flag that goes back to `false` reads the same
-   * twice. It is what tells the list to compensate for a prepend and not for
-   * anything else: the compensation is written for rows arriving ABOVE the
-   * reader, and applying it to a turn appended below them moves them by that
-   * row's height, which is the one thing this page must not do.
+   * A count rather than a flag because one landing has to be told from the
+   * next, and a flag that goes back to `false` reads the same twice. It is what
+   * settles one of the column's asks - **not** what the list is told: the
+   * compensation is written for rows arriving ABOVE the reader, and applying
+   * it to a turn appended below them moves them by that row's height, which is
+   * the one thing this page must not do. The list reads the change itself (see
+   * `HEAD_MOVED`).
    */
   prepends: number;
   /**
@@ -1548,14 +1549,34 @@ export class Chat {
    * writes a read's answer (`session/live.ts`).
    */
   private fold(fn: (held: Conversation) => Conversation): void {
-    this.held = fn(this.held);
+    this.held = this.applied(fn);
     this.flush();
   }
 
   /** Apply one STREAM frame, whose draw lands on the next painted frame. */
   private stream(fn: (held: Conversation) => Conversation): void {
-    this.held = fn(this.held);
+    this.held = this.applied(fn);
     this.soon();
+  }
+
+  /**
+   * Apply a change and mark the list it built, when the change moved the head.
+   *
+   * Every way the held rows move goes through here, so the mark cannot be
+   * forgotten by one of them - a page landing, a trim and a retraction are the
+   * same fact to the list, and a turn opening at the tail is the one that must
+   * not be read as the same fact.
+   */
+  private applied(fn: (held: Conversation) => Conversation): Conversation {
+    const before = this.held;
+    const next = fn(before);
+    if (
+      next.turns !== before.turns &&
+      (next.turns[0]?.key ?? null) !== (before.turns[0]?.key ?? null)
+    ) {
+      HEAD_MOVED.add(next.turns);
+    }
+    return next;
   }
 
   /**
@@ -3900,6 +3921,26 @@ const TURN_BYTES = new WeakMap<unknown[], number>();
  * re-cutting the objects the list and the fold hand back by identity.
  */
 const BLOCK = new WeakMap<object, number>();
+
+/**
+ * The turn lists whose HEAD moved when the fold built them.
+ *
+ * **A row list keys its measured heights by position**, so a change at the
+ * head hands every row its neighbour's height and the rows draw over one
+ * another until each re-measures. The list compensates only for a change it is
+ * told was a prepend, and it reads that as a fact about the change - which is
+ * why a flag describing a moment cannot stand in for it: held on for a page's
+ * whole flight, it marks every turn that opens at the tail inside it as a
+ * prepend too, and every row below lands on the row above's offset (Ved,
+ * 2026-10-28: two rows in one band, text over text, gone later in the same
+ * view). Stamped where the list is built, the flag says what the change was.
+ */
+const HEAD_MOVED = new WeakSet<readonly unknown[]>();
+
+/** Whether `turns` is a list whose head moved when the fold built it. */
+export function headMoved(turns: readonly unknown[]): boolean {
+  return HEAD_MOVED.has(turns);
+}
 
 /** The message JSON one turn holds. */
 function turnBytes(turn: { messages: unknown[] }): number {

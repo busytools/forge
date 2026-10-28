@@ -10,10 +10,10 @@
    *
    * **The compensation is read once, as the row count changes.** `virtua`
    * reads `shift` from an effect that runs before the DOM update and consults
-   * it nowhere else, which is why the timing of arming it is the whole defect
-   * and why nothing in a browser can pin it: the difference between armed and
-   * not is one frame, and one frame of a jump is not something a screenshot
-   * holds.
+   * it nowhere else, so what has to be pinned is WHICH change carries it: a
+   * list handed a flag that describes a moment compensates the next turn that
+   * opens at the tail as though it had been prepended, and every row below
+   * lands on the row above's offset.
    */
   let {
     data = [],
