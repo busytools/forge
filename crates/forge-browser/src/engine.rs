@@ -13,7 +13,6 @@
 )]
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use cef::*;
 
@@ -124,11 +123,11 @@ pub fn initialize(profile: &std::path::Path, port: u16, app: &mut App, args: &ar
 /// CEF's own null guard, so the process dies. CEF names turning autofill off
 /// as the workaround, and an agent-driven host has nobody to fill a form for.
 /// **The password manager is untouched**: it gates on its own preferences.
+///
+/// **Called once, from `on_context_initialized`**: CEF fires that once per
+/// process, so a failure here is terminal for this host - the refusal line is
+/// the record, and `autofill_live` is what catches a regression.
 fn turn_off_autofill() {
-    static OFF: AtomicBool = AtomicBool::new(false);
-    if OFF.load(Ordering::Acquire) {
-        return;
-    }
     let Some(context) = request_context_get_global_context() else {
         eprintln!(
             "cef host: the global request context was not there, so autofill stays on \
@@ -139,10 +138,15 @@ fn turn_off_autofill() {
     // **A refusal is logged, not fatal**: a renamed preference would leave
     // autofill on with nothing failing, and `autofill_live` is what catches
     // that - the host dies on its card form with the original fault.
+    let mut stated = Vec::new();
     let mut all_set = true;
     for name in ["autofill.credit_card_enabled", "autofill.profile_enabled"] {
         let Some(mut value) = value_create() else {
             all_set = false;
+            eprintln!(
+                "cef host: an autofill preference did not take (event_name \
+                 cef_autofill_off_refused, pref {name}, why no value could be created)"
+            );
             continue;
         };
         value.set_bool(0);
@@ -165,11 +169,15 @@ fn turn_off_autofill() {
                  cef_autofill_off_refused, pref {name}, write {applied}, stored {stored:?}, \
                  error {error})"
             );
+            continue;
         }
+        // **Each preference is named with its stored value**: one aggregate
+        // sentence let a renamed entry pass while the line still claimed it
+        // was off, and the card form cannot exercise the profile path.
+        stated.push(format!("pref {name}={}", stored.unwrap_or_default()));
     }
     if all_set {
-        OFF.store(true, Ordering::Release);
-        eprintln!("cef host: autofill for cards and profiles is off (event_name cef_autofill_off)");
+        eprintln!("cef host: autofill is off (event_name cef_autofill_off, {})", stated.join(", "));
     }
 }
 

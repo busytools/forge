@@ -9,6 +9,11 @@
 //! browser but not this tab, so the host turns the autofill prefs off instead -
 //! the workaround CEF names for the crash class - and this test holds it.
 //!
+//! **Measured control**: the same flow against a host built from `origin/main`'s
+//! engine, autofill on, SIGSEGV'd about 6 ms after the click with `/submitted`
+//! never requested; the fixed host submits and stays alive. That is the half a
+//! future editor has to keep honest.
+//!
 //! **These need the real bundle**: they stage the workspace's own host the way
 //! the server ships it, then drive it as the server does.
 
@@ -71,36 +76,37 @@ impl Page {
         let recorded = Arc::clone(&hits);
         let thread = std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
-                let mut request = Vec::new();
-                let mut chunk = [0_u8; 1024];
-                loop {
-                    match stream.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => {
-                            request.extend_from_slice(&chunk[..read]);
-                            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                                break;
-                            }
-                        }
+                let Ok(mut stream) = stream else { return };
+                // **One connection at a time stalls a preconnect.** A browser
+                // opens a spare socket with no request on it, and a server
+                // that read every accepted stream in turn would wait on that
+                // socket while the real request sat unread; each connection is
+                // served on its own thread, and only a request line counts.
+                let recorded = Arc::clone(&recorded);
+                let page = page.clone();
+                std::thread::spawn(move || {
+                    let mut request = [0_u8; 4096];
+                    let Ok(read) = stream.read(&mut request) else { return };
+                    if read == 0 {
+                        return;
                     }
-                }
-                let request = String::from_utf8_lossy(&request);
-                let path = request
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .unwrap_or("/")
-                    .to_owned();
-                recorded.lock().expect("the page's hits").push(path.clone());
-                let body = if path.starts_with("/pay") { page.clone() } else { "ok".to_owned() };
-                let answer = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(answer.as_bytes());
-                let _ = stream.flush();
+                    let request = String::from_utf8_lossy(&request[..read]);
+                    let path = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or("/")
+                        .to_owned();
+                    recorded.lock().expect("the page's hits").push(path.clone());
+                    let body = if path.starts_with("/pay") { page } else { "ok".to_owned() };
+                    let answer = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(answer.as_bytes());
+                    let _ = stream.flush();
+                });
             }
         });
         Self { url: format!("http://127.0.0.1:{port}/pay"), hits, _thread: thread }
@@ -150,7 +156,7 @@ async fn type_into(cdp: &mut Cdp, field: &str, text: &str) {
 async fn pay_point(cdp: &mut Cdp, host: &support::Host) -> (i32, i32) {
     let deadline = Instant::now() + BOUND;
     loop {
-        let point = evaluate(
+        let point = try_evaluate(
             cdp,
             "(() => { \
              if (document.readyState !== 'complete') return null; \
@@ -163,7 +169,8 @@ async fn pay_point(cdp: &mut Cdp, host: &support::Host) -> (i32, i32) {
              return hit === button || (hit !== null && button.contains(hit)) ? { x, y } : null; \
              })()",
         )
-        .await;
+        .await
+        .unwrap_or(Value::Null);
         if let Some(x) = point.get("x").and_then(Value::as_i64)
             && let Some(y) = point.get("y").and_then(Value::as_i64)
         {
@@ -175,19 +182,6 @@ async fn pay_point(cdp: &mut Cdp, host: &support::Host) -> (i32, i32) {
             host.log()
         );
         tokio::time::sleep(POLL_EVERY).await;
-    }
-}
-
-/// One trusted press and release at `x`, `y`, the way a driver clicks.
-async fn click(cdp: &mut Cdp, x: i32, y: i32) {
-    for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
-        cdp.call(
-            "Input.dispatchMouseEvent",
-            json!({ "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1 }),
-            None,
-        )
-        .await
-        .expect("the click is dispatched");
     }
 }
 
@@ -229,6 +223,10 @@ async fn a_submitted_card_form_does_not_kill_the_host() {
         tokio::time::sleep(POLL_EVERY).await;
     }
 
+    // **The host spends the first pointer event or two activating itself**
+    // (#2640), so a blank-point prime comes before the click that matters; the
+    // page's own hit test keeps the point honest.
+    support::prime_clicks(&mut host, &mut cdp, (20, 860), Instant::now() + BOUND).await;
     type_into(&mut cdp, "#cc", "4111111111111111").await;
     type_into(&mut cdp, "#name", "Test Person").await;
     type_into(&mut cdp, "#exp", "12/2030").await;
@@ -244,12 +242,19 @@ async fn a_submitted_card_form_does_not_kill_the_host() {
         if page.requested("/submitted") || host.try_wait().is_some() || Instant::now() >= deadline {
             break;
         }
+        // **The button's own click, not any event**: the priming click is
+        // already in the page's list, so "something happened" is always true
+        // and would skip the click that matters.
         let landed = try_evaluate(&mut cdp, "window.__events")
             .await
-            .and_then(|events| events.as_array().map(Vec::is_empty))
-            .is_some_and(|empty| !empty);
+            .and_then(|events| {
+                events
+                    .as_array()
+                    .map(|all| all.iter().any(|event| event.as_str() == Some("click:submit")))
+            })
+            .unwrap_or(false);
         if !landed && clicks < 3 {
-            click(&mut cdp, x, y).await;
+            support::click(&mut host, x, y);
             clicks = clicks.saturating_add(1);
         }
         tokio::time::sleep(POLL_EVERY).await;
@@ -261,9 +266,9 @@ async fn a_submitted_card_form_does_not_kill_the_host() {
             host.log()
         );
     }
-    // **The crash's task is posted behind the submission**, so the host is
-    // watched for a moment after the request rather than judged on the
-    // instant it lands.
+    // **The crash lands on the click itself**: the in-loop check above is the
+    // one that sees the host go; this settle is only a backstop for a host
+    // that dies just after the request.
     let deadline = Instant::now() + SETTLE;
     while Instant::now() < deadline {
         if let Some(status) = host.try_wait() {
@@ -281,12 +286,19 @@ async fn a_submitted_card_form_does_not_kill_the_host() {
          log: {})",
         host.log(),
     );
-    // **The fix's own evidence**: the crash path is gone because the host
-    // turned it off, not because the form missed autofill's heuristics.
+    // **Each preference is asserted by name and stored value.** One aggregate
+    // sentence passed with a renamed profile entry still on, and this card
+    // form cannot exercise the profile path; these fail on that edit.
+    let log = host.log();
     assert!(
-        host.log().contains("autofill for cards and profiles is off (event_name cef_autofill_off)"),
-        "the host never turned autofill off, so the crash path is still reachable (log: {})",
-        host.log(),
+        log.contains("event_name cef_autofill_off"),
+        "the host never turned autofill off, so the crash path is still reachable (log: {log})"
     );
+    for pref in ["pref autofill.credit_card_enabled=0", "pref autofill.profile_enabled=0"] {
+        assert!(
+            log.contains(pref),
+            "the host did not report {pref}; that kind's autofill is still on (log: {log})"
+        );
+    }
     println!("the card form submitted and the host stayed up");
 }
