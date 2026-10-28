@@ -111,7 +111,11 @@
       <span class="build"><span class="k">client</span> <b>v{CLIENT_VERSION}</b></span>
       <!-- This app's own update is the half this window can act on, so it is
            the one drawn as a control. -->
-      {#if $updateState.stage === 'available'}
+      {#if $updateState.stage === 'checking'}
+        <!-- The launch check in flight: quiet text, because it is a fact
+             about now rather than an outcome to act on. -->
+        <span>checking for updates...</span>
+      {:else if $updateState.stage === 'available'}
         <button
           class="upd"
           onclick={install}
@@ -142,6 +146,10 @@
           aria-label={`client v${$updateState.version} - update failed, retry`}
           >v{$updateState.version} - update failed, retry</button
         >
+      {:else if $updateState.stage === 'check-failed'}
+        <!-- Text rather than a control: there is no version to retry, and the
+             shell's words are what tells "no update" from "could not check". -->
+        <span class="upd">update check failed - {$updateState.detail}</span>
       {:else if $updateState.stage === 'web' && $updateState.latest}
         <!-- The browser build, when the image it was served with carries a
              manifest naming a newer release: text rather than a control,

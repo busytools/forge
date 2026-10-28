@@ -11,29 +11,45 @@ import { latestPublished } from './web';
  * check at launch, the install a reader asks for, and the restart that
  * finishes it.
  *
- * `current` is also the unknown state - a build already current, and a check
- * that could not run - because neither is something the header can offer.
+ * `checking` is where it starts: the launch check is a network fetch on the
+ * phone, and a page that began on `current` would draw no line for however
+ * long that fetch takes.
+ *
+ * `current` is a build already current, and nothing else: a check that could
+ * not run is its own stage, because "no update" and "could not check" must
+ * not draw the same line.
  *
  * `failed` carries the shell's own words for what went wrong, which the line
  * keeps on the control: a permanent failure and a transient one draw the same
  * sentence, and the reason is what tells a reader which they have.
+ * `check-failed` carries them for a launch check, where there is no version
+ * to keep and nothing to retry.
  */
 type UpdateState =
+  | { stage: 'checking' }
   | { stage: 'current' }
   | { stage: 'available'; version: string }
   | { stage: 'installing'; version: string }
   | { stage: 'restart'; version: string }
   | { stage: 'install'; version: string }
   | { stage: 'failed'; version: string; detail: string }
+  | { stage: 'check-failed'; detail: string }
   | { stage: 'web'; latest: string | null };
 
-export const updateState = writable<UpdateState>({ stage: 'current' });
+export const updateState = writable<UpdateState>({ stage: 'checking' });
 
 /** The launch check. The shell calls this once; a call of its own checks again. */
 export async function watchUpdate(): Promise<void> {
   if (isTauri()) {
-    const version = await checkForUpdate();
-    if (version !== null) updateState.set({ stage: 'available', version });
+    try {
+      const version = await checkForUpdate();
+      updateState.set(version === null ? { stage: 'current' } : { stage: 'available', version });
+    } catch (err) {
+      updateState.set({
+        stage: 'check-failed',
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
     return;
   }
   // A browser installs nothing: what it can say is which build it is - the
