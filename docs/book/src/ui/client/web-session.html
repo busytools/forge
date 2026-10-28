@@ -43,7 +43,11 @@
      thinking - so traffic, reasoning and work read as one system rather than
      three. A nudge is one as well (details.leaf.nudge): the machinery's own
      words under the board's mark, never .mine, opening on the whole of what
-     it said where the summary line clamps it. */
+     it said where the summary line clamps it. The handoff's procedure is one
+     with its own mark (details.leaf.procedure): forge's prompt that opens the
+     judgment turn, naming itself and holding the whole procedure, so the
+     turn the handoff row ended is read from the record rather than lost with
+     the transcript that ran it. */
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
     --r: 10px;
@@ -2580,6 +2584,24 @@ docs: The sprite a row draws, by the class it belongs to.</div>
         </summary>
         <div class="cpbody">trigger <b>auto</b> &#183; <b>154,013</b> tokens read before the cut, <b>4,712</b> carried after it</div>
       </details>
+
+      <!-- The handoff's own turn: the procedure prompt forge wrote, then the
+           calls the handing-over session made, the exit call among them. It
+           is drawn from the handoff record, not from the successor's
+           transcript - the turn ran in the session that left - so a client
+           that attaches after the swap still reads the work the row ended. -->
+      <div class="leaves">
+        <details class="leaf procedure">
+          <summary><svg class="ic gl"><use href="#i-handoff"/></svg><span class="k">handoff procedure</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body"><div class="prose">
+            <p>A handoff is starting for this session: forge will replace it with a new session that continues the work. Invoke the handoff skill and follow it: it completes this session's learnings into memory, stops what is still running, then calls <code>agents__handoff</code> with the note.</p>
+          </div></div>
+        </details>
+        <details class="leaf">
+          <summary><svg class="ic gl ok"><use href="#i-mcp"/></svg><span class="tn">mcp__forge__agents__handoff</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body"><div class="prose"><p>handed the seat over</p></div></div>
+        </details>
+      </div>
 
       <!-- The handoff row: where this seat's occupant was replaced by a
            fresh session that continued from a brief. Open, which is the
