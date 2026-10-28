@@ -2178,6 +2178,9 @@ impl BrowserService {
             if let Some(reader) = reader {
                 reader.stop();
             }
+            // **A crashed host's staged files go with it**: the monitor
+            // cannot clear them once the state no longer names the host.
+            let _ = std::fs::remove_dir_all(profile.dir.join("uploads"));
             return DeadHost::AlreadyGone;
         }
         if let Some(monitor) = host.monitor {
@@ -4251,7 +4254,7 @@ impl Profile {
         }
         // A host that died is replaced; a live one keeps its ring.
         if let Some(host) = state.host.as_ref()
-            && !spawn::alive(host.pid)
+            && spawn::gone(host.pid)
         {
             self.teardown(state, None, "").await;
         }
@@ -4370,12 +4373,18 @@ impl Profile {
                 // exit code mean different things to whoever reads it, and
                 // the surface's sentence carries the same words.
                 let cause = death_cause(status);
+                // **The host's own last words are the diagnosis here too.**
+                // The read is bounded, and the monitor holds no profile lock.
+                let tail = profile
+                    .upgrade()
+                    .map_or_else(String::new, |profile| spawn::log_tail(&profile.dir));
                 tracing::warn!(
                     event_name = "browser_host_died",
                     profile = %key,
                     pid,
                     port,
                     cause = %cause,
+                    log_tail = %tail,
                     "a browser host exited under its profile"
                 );
                 // **A dead host's chooser and its staged files go with it**:
@@ -4777,6 +4786,9 @@ impl Profile {
                 if let Some(reader) = reader {
                     reader.stop();
                 }
+                // **A crashed host's staged files go with it**: the monitor
+                // cannot clear them once the state no longer names the host.
+                let _ = std::fs::remove_dir_all(self.dir.join("uploads"));
                 self.clear_host_trail(host.port);
                 return;
             }
@@ -10351,6 +10363,18 @@ mod server_guards {
         pid: u32,
         port: u16,
     ) -> (super::HostIdentity, String) {
+        install_host_with_monitor(profile, dir, pid, port, None).await
+    }
+
+    /// A host standing on the profile with the monitor the test gives it, so
+    /// a teardown can be shown to leave a dead host's monitor alive.
+    async fn install_host_with_monitor(
+        profile: &Arc<Profile>,
+        dir: &std::path::Path,
+        pid: u32,
+        port: u16,
+        monitor: Option<tokio::task::JoinHandle<()>>,
+    ) -> (super::HostIdentity, String) {
         let ring_name = format!("/forge-guard-{pid}-{port}");
         let generation = {
             let mut state = profile.state.lock().await;
@@ -10364,7 +10388,7 @@ mod server_guards {
                 profile: dir.join(format!("host-{port}")),
                 input,
                 reader: None,
-                monitor: None,
+                monitor,
             });
             generation
         };
@@ -10617,9 +10641,13 @@ mod server_guards {
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
+        // **The capture is live**: the absence below is only as good as the
+        // layer that would have seen a record.
+        tracing::info!(event_name = "test_sentinel", "the capture is live");
         let host = service.end_dead_host(&profile, identity, "a listing timed out").await;
         drop(guard);
 
+        assert!(saw(&caught, "test_sentinel"), "the capture is not seeing records");
         assert!(matches!(host, super::DeadHost::AlreadyGone), "a gone host is not ended: {host:?}");
         assert!(ended(&caught).is_empty(), "a gone host was recorded as an end: {caught:?}");
         crate::osr::Ring::unlink(&ring);
@@ -10720,9 +10748,10 @@ mod server_guards {
     }
 
     /// **A host that never became usable is a warning with its reason and its
-    /// tail.** The call sites in `start_host` are not driven here: the only
-    /// test that reaches a real `start_host` is the ignored bundle test, and
-    /// it starts a host that comes up.
+    /// tail.** The call sites themselves are driven by
+    /// `a_host_that_never_came_ready_is_recorded_at_its_call_site` and
+    /// `a_host_whose_ring_vanished_is_recorded_at_its_call_site`; this pins
+    /// the record's shape.
     #[tokio::test]
     async fn a_never_ready_host_is_a_warning_with_its_reason_and_tail() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -10815,9 +10844,10 @@ mod server_guards {
         let (old_pid, old_port) = spawn_stub(&stub, &profile, dir.path());
         let (_, old_ring) = install_host_with_pid(&profile, dir.path(), old_pid, old_port).await;
 
-        // The successor installs after the old host is gone.
+        // The successor installs after the old host is gone, on the same
+        // port: the guard has to know the pid too.
         let (_, successor_ring) =
-            install_host_with_pid(&profile, dir.path(), std::process::id(), 18).await;
+            install_host_with_pid(&profile, dir.path(), std::process::id(), old_port).await;
         profile.up.store(true, Ordering::Release);
         profile
             .tabs
@@ -10993,6 +11023,124 @@ mod server_guards {
         assert_eq!(*level, tracing::Level::INFO, "a stop is not a warning: {fields}");
         assert!(fields.contains("cause=forge stopped"), "{fields}");
         assert!(fields.contains(&format!("profile={}", profile.key())), "{fields}");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A teardown that finds a dead host leaves its monitor to write the
+    /// death.** The monitor is in the host the state holds, and collapsing
+    /// the abort to the live branch would drop `browser_host_died`.
+    #[tokio::test(start_paused = true)]
+    async fn a_teardown_of_a_dead_host_leaves_the_monitor_its_death() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let stub = dir.path().join("dead-host.sh");
+        write_exec(&stub, "#!/bin/sh\nexit 0\n");
+        let (pid, port) = spawn_stub(&stub, &profile, dir.path());
+        let monitor = profile.watch_host(pid, port);
+        let (_, ring) =
+            install_host_with_monitor(&profile, dir.path(), pid, port, Some(monitor)).await;
+        // Let the monitor take its first tick before the clock moves.
+        tokio::task::yield_now().await;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        let mut state = profile.state.lock().await;
+        profile.teardown(&mut state, Some(super::HostEnd::Closed), "").await;
+        drop(state);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        let caught_records = records(&caught);
+        let died = caught_records
+            .iter()
+            .filter(|(_, fields)| fields.contains("event_name=\"browser_host_died\""))
+            .count();
+        assert_eq!(died, 1, "the monitor's death is lost: {caught_records:?}");
+        assert!(!saw(&caught, "browser_host_ended"), "a dead host is not an end");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **An end that finds a host gone leaves its monitor to write the
+    /// death.** The same guard, on the call path.
+    #[tokio::test(start_paused = true)]
+    async fn an_end_of_a_gone_host_leaves_the_monitor_its_death() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let stub = dir.path().join("gone-host-2.sh");
+        write_exec(&stub, "#!/bin/sh\nexit 0\n");
+        let (pid, port) = spawn_stub(&stub, &profile, dir.path());
+        let monitor = profile.watch_host(pid, port);
+        let (identity, ring) =
+            install_host_with_monitor(&profile, dir.path(), pid, port, Some(monitor)).await;
+        // Let the monitor take its first tick before the clock moves.
+        tokio::task::yield_now().await;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        let host = service.end_dead_host(&profile, identity, "a listing timed out").await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        assert!(matches!(host, super::DeadHost::AlreadyGone), "a gone host is not ended: {host:?}");
+        let caught_records = records(&caught);
+        let died = caught_records
+            .iter()
+            .filter(|(_, fields)| fields.contains("event_name=\"browser_host_died\""))
+            .count();
+        assert_eq!(died, 1, "the monitor's death is lost: {caught_records:?}");
+        assert!(!saw(&caught, "browser_host_ended"), "a dead host is not an end");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **An ensure that finds a dead host reaps nothing**: the monitor's
+    /// death keeps its signal, and the teardown still clears the host.
+    #[tokio::test(start_paused = true)]
+    async fn an_ensure_that_finds_a_dead_host_leaves_the_monitor_its_cause() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let stub = dir.path().join("dead-ensure.sh");
+        write_exec(&stub, "#!/bin/sh\nkill -9 $$\n");
+        let (pid, port) = spawn_stub(&stub, &profile, dir.path());
+        let monitor = profile.watch_host(pid, port);
+        let (_, ring) =
+            install_host_with_monitor(&profile, dir.path(), pid, port, Some(monitor)).await;
+        tokio::task::yield_now().await;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        // The ensure starts a host after the teardown; the stand-in fails it
+        // before a launch record can stand in for the death under test.
+        crate::spawn::set_test_spawn(Box::new(|_args| Err("the test has no host".to_owned())));
+        let mut state = profile.state.lock().await;
+        let _ = profile.ensure_locked(&mut state, dir.path(), &dir.path().join("stack")).await;
+        drop(state);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        let caught_records = records(&caught);
+        let died = caught_records
+            .iter()
+            .filter(|(_, fields)| fields.contains("event_name=\"browser_host_died\""))
+            .collect::<Vec<_>>();
+        assert_eq!(died.len(), 1, "one death, one record: {caught_records:?}");
+        assert!(
+            died[0].1.contains("cause=signal 9"),
+            "the status was taken before the monitor read it: {}",
+            died[0].1
+        );
+        assert!(!saw(&caught, "browser_host_ended"), "a dead host is not an end");
         crate::osr::Ring::unlink(&ring);
     }
 }

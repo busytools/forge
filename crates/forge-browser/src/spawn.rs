@@ -427,7 +427,12 @@ pub fn alive(pid: u32) -> bool {
 pub fn gone(pid: u32) -> bool {
     let mut held = locked();
     match held.get_mut(&pid) {
-        Some(child) => child.try_wait().is_ok_and(|status| status.is_some()),
+        Some(child) => match child.try_wait() {
+            Ok(status) => status.is_some(),
+            // `exit` treats a status it cannot read as gone; the two
+            // liveness answers must agree.
+            Err(_) => !running(pid),
+        },
         None => !running(pid),
     }
 }
