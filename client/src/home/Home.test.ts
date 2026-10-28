@@ -473,6 +473,21 @@ describe("the client's own update", () => {
     expect(draw()).toContain('ready - install it');
   });
 
+  it('draws a check that could not run as a labelled line, with the reason', () => {
+    updateState.set({
+      stage: 'check-failed',
+      detail: 'No command check found for plugin FileNamePlugin',
+    });
+
+    const body = draw();
+    expect(body).toContain(
+      'update check failed - No command check found for plugin FileNamePlugin',
+    );
+    expect(body, 'a failed check drew a control it cannot use').not.toMatch(
+      /<button[^>]*>[^<]*update check failed/,
+    );
+  });
+
   it('draws a failed install with a retry, and its reason on the control', () => {
     updateState.set({ stage: 'failed', version: '9.9.9', detail: 'the signature did not match' });
 

@@ -61,6 +61,31 @@ describe('watchUpdate', () => {
   });
 
   /**
+   * "No update" and "could not check" must not draw identically: a check
+   * that failed carries the shell's own words to the header.
+   */
+  it("draws a check that could not run, in the shell's words", async () => {
+    mockIsTauri.mockReturnValue(true);
+    mockCheck.mockRejectedValue('No command check found for plugin FileNamePlugin');
+
+    await watchUpdate();
+
+    expect(get(updateState)).toEqual({
+      stage: 'check-failed',
+      detail: 'No command check found for plugin FileNamePlugin',
+    });
+  });
+
+  it('carries a non-string rejection the same way', async () => {
+    mockIsTauri.mockReturnValue(true);
+    mockCheck.mockRejectedValue(new Error('offline'));
+
+    await watchUpdate();
+
+    expect(get(updateState)).toEqual({ stage: 'check-failed', detail: 'offline' });
+  });
+
+  /**
    * A browser tab installs nothing: it draws which build it is and, when the
    * app it was served with carries a manifest naming a newer release, that
    * release - which is only a fact, because the next load carries it.

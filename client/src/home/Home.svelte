@@ -142,6 +142,10 @@
           aria-label={`client v${$updateState.version} - update failed, retry`}
           >v{$updateState.version} - update failed, retry</button
         >
+      {:else if $updateState.stage === 'check-failed'}
+        <!-- Text rather than a control: there is no version to retry, and the
+             shell's words are what tells "no update" from "could not check". -->
+        <span class="upd">update check failed - {$updateState.detail}</span>
       {:else if $updateState.stage === 'web' && $updateState.latest}
         <!-- The browser build, when the image it was served with carries a
              manifest naming a newer release: text rather than a control,

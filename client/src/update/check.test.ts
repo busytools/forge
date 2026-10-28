@@ -40,11 +40,16 @@ describe('checkForUpdate', () => {
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
-  it('answers null when the check itself fails', async () => {
+  /**
+   * A check that failed is not a current build, and the header owns the two
+   * sentences: swallowing the shell's words here is what makes them draw the
+   * same, so the reason is raised rather than turned into `null`.
+   */
+  it("raises the shell's words when the check itself fails", async () => {
     mockIsTauri.mockReturnValue(true);
-    mockInvoke.mockRejectedValue(new Error('offline'));
+    mockInvoke.mockRejectedValue('No command check found for plugin FileNamePlugin');
 
-    await expect(checkForUpdate()).resolves.toBeNull();
+    await expect(checkForUpdate()).rejects.toBe('No command check found for plugin FileNamePlugin');
   });
 });
 

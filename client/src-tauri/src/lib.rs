@@ -506,6 +506,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(android::init())
+        .plugin(android::init_file_names())
         .plugin(micstate::init())
         .plugin(launch::init())
         .invoke_handler(tauri::generate_handler![
@@ -750,6 +751,16 @@ mod android {
             .setup(|app, api| {
                 let handle = api.register_android_plugin("dev.vedhavyas.forge", "UpdatePlugin")?;
                 app.manage(Updater(handle, Mutex::new(None)));
+                Ok(())
+            })
+            .build()
+    }
+
+    /// The name lookup's plugin, named apart: tauri keys Android plugins by
+    /// the builder's name, so two classes under one name replace each other.
+    pub fn init_file_names<R: Runtime>() -> TauriPlugin<R> {
+        Builder::new("androidfilenames")
+            .setup(|app, api| {
                 let names = api.register_android_plugin("dev.vedhavyas.forge", "FileNamePlugin")?;
                 app.manage(FileName(names));
                 Ok(())
