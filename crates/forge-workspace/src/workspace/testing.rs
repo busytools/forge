@@ -486,11 +486,14 @@ impl Workspace {
             slack_subs: Mutex::new(Vec::new()),
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_inflight: Mutex::new(std::collections::HashMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            pending_seq: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(false),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
@@ -592,17 +595,29 @@ impl Workspace {
     /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
     pub fn seed_test_project(&self, name: &str, path: &str) {
-        self.seed_test_project_inner(name, path, None);
+        self.seed_test_project_inner(name, path, None, None);
+    }
+
+    /// [`Workspace::seed_test_project`] with a Slack binding, so a facade
+    /// test can drive the slot-to-workspace resolution. Test-only.
+    pub fn seed_test_project_with_slack_workspace(&self, name: &str, path: &str, workspace: &str) {
+        self.seed_test_project_inner(name, path, None, Some(workspace));
     }
 
     /// [`Workspace::seed_test_project`] with the project's
     /// `max_workers` override, so facade tests can
     /// exercise the override arm of the capacity read. Test-only.
     pub fn seed_test_project_with_max_workers(&self, name: &str, path: &str, max_workers: usize) {
-        self.seed_test_project_inner(name, path, Some(max_workers));
+        self.seed_test_project_inner(name, path, Some(max_workers), None);
     }
 
-    fn seed_test_project_inner(&self, name: &str, path: &str, max_workers: Option<usize>) {
+    fn seed_test_project_inner(
+        &self,
+        name: &str,
+        path: &str,
+        max_workers: Option<usize>,
+        slack_workspace: Option<&str>,
+    ) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
@@ -620,6 +635,7 @@ impl Workspace {
             browser_profile: forge_primitives::browser::ProfileKey::from_parts_for_test(
                 "TestOrg", "default",
             ),
+            slack_workspace: slack_workspace.map(str::to_owned),
         });
     }
 

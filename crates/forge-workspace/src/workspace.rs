@@ -216,10 +216,10 @@ pub enum SessionChipState {
 
 /// What a session is waiting on a person for. The kind a needs-you row
 /// names, since "asked you a question" and "a permission prompt is
-/// waiting" are different asks with the same mark - and a document
-/// hand-off is a third, parked in the workspace's own registry rather
-/// than in the session's pending set (Ved, the look: the hand-off must
-/// ride the same needs-you machinery as every ask).
+/// waiting" are different asks with the same mark - and a hand-off (a
+/// document's or the browser's) is the third, parked in the workspace's
+/// own registries rather than in the session's pending set (Ved, the look:
+/// the hand-off must ride the same needs-you machinery as every ask).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingInteractionKind {
@@ -716,6 +716,15 @@ pub struct Workspace {
     /// Per-workspace pump liveness for the Inspector's SLACK section.
     /// Keyed by label for the same reason.
     pub(crate) slack_connected: Mutex<std::collections::BTreeMap<String, bool>>,
+    /// Conversations forge has a post in flight into, keyed
+    /// `(workspace, the resolved conversation)`, each entry a stamp per
+    /// live call: one post call with its ledger write, or one upload's
+    /// shares read. The sweep skips a conversation while any stamp is
+    /// within budget, because the message can reach history before its ts
+    /// is ledgered; a stamp past the request timeout is expired, never
+    /// obeyed, so a stalled call cannot silence the conversation.
+    pub(crate) slack_inflight:
+        Mutex<std::collections::HashMap<(String, String), Vec<crate::slack::SlackPostStamp>>>,
     /// The authenticated user's id per workspace, resolved once by the
     /// boot `auth.test` and needed to recognise `<@U...>` mentions.
     pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
@@ -725,6 +734,11 @@ pub struct Workspace {
     /// `(workspace, user id)` pairs whose failed lookup has been reported, so
     /// a persistent failure says so once rather than on every tick.
     pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
+    /// Conversations whose own-post ledger could not be read this run,
+    /// keyed `(workspace, conversation)`. The read is retried on every
+    /// message; this only decides whether the failure is worth a line a
+    /// reader sees, once rather than per message.
+    pub(crate) slack_ledger_failures: Mutex<std::collections::HashSet<(String, String)>>,
     /// Composed Slack messages held for the user's decision, keyed by
     /// draft id and carrying the session that asked. The owner is stored
     /// beside it so an answer is only ever applied by the session it was
@@ -736,6 +750,10 @@ pub struct Workspace {
     /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
     /// for as long as the person takes.
     pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
+    /// How many asks have ever arrived for a seat. **The ask's identity on the
+    /// wire**: one ask replacing another reads as a different ask, and
+    /// answering one of several leaves the number where it was.
+    pending_seq: Mutex<HashMap<SessionSlot, u64>>,
     /// Slack messages handed to a session recently, keyed by
     /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
     /// whenever a 429 lands mid-sweep, a watermark write fails, or the
@@ -2014,11 +2032,14 @@ impl Workspace {
             slack_subs: Mutex::new(slack_subs),
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_inflight: Mutex::new(std::collections::HashMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            pending_seq: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
@@ -3970,11 +3991,26 @@ impl Workspace {
 
     /// The project `slot` names, if `forge.toml` still declares it.
     pub(crate) fn project_for_slot(&self, slot: &SessionSlot) -> Option<LoadedProject> {
-        self.config_arc()
-            .projects
-            .iter()
-            .find(|project| project.org == slot.org() && project.name == slot.project())
-            .cloned()
+        let config = self.config_arc();
+        let find =
+            |project: &LoadedProject| project.org == slot.org() && project.name == slot.project();
+        if let Some(project) = config.projects.iter().find(|project| find(project)) {
+            return Some(project.clone());
+        }
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(project) = self.test_extra_projects.lock().iter().find(|project| find(project))
+        {
+            return Some(project.clone());
+        }
+        None
+    }
+
+    /// The Slack workspace bound to `slot`'s project: the project's own
+    /// binding, else its org's. `None` when the slot names no configured
+    /// project or nothing binds one - both leave the Slack tools refusing
+    /// with the key to add.
+    pub(crate) fn slack_workspace_for_slot(&self, slot: &SessionSlot) -> Option<String> {
+        self.project_for_slot(slot).and_then(|project| project.slack_workspace)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -7203,11 +7239,11 @@ impl Workspace {
     /// What the session at `slot` is waiting on a person for, or `None`
     /// when it can advance on its own.
     pub fn pending_interaction(&self, slot: &SessionSlot) -> Option<PendingInteractionKind> {
-        // The document hand-offs first: one parks in the workspace's own
-        // registry rather than in the session's set, so a seat with no
-        // domain can still be holding one - and it is a prompt a person
-        // must act on exactly like the other two.
-        if self.has_document_handoff(slot) {
+        // The hand-offs first: one parks in the workspace's own registries
+        // rather than in the session's set, so a seat with no domain can
+        // still be holding one - and both are prompts a person must act on
+        // exactly like the other two.
+        if self.has_document_handoff(slot) || self.has_browser_hand_off(slot) {
             return Some(PendingInteractionKind::HandOff);
         }
         let domain = self.domain_session_for(slot)?;
@@ -7233,10 +7269,30 @@ impl Workspace {
     /// view showing one of them can say how many wait behind it.
     pub fn pending_interaction_depth(&self, slot: &SessionSlot) -> usize {
         let parked = self.document_handoffs.lock().values().filter(|h| &h.seat == slot).count();
+        let handed =
+            self.browser_handoffs.lock().values().filter(|(owner, _, _)| owner == slot).count();
         parked
+            + handed
             + self
                 .domain_session_for(slot)
                 .map_or(0, |domain| domain.lock().pending_interactions.len())
+    }
+
+    /// Note that an ask arrived for `slot`.
+    ///
+    /// **The number is the ask's identity on the wire.** A client announces a
+    /// new ask by it, so a re-read of the roster is not news, an ask replacing
+    /// another at the same depth is, and an answer that shrinks a batch is
+    /// not.
+    pub(crate) fn note_ask(&self, slot: &SessionSlot) {
+        let mut held = self.pending_seq.lock();
+        let next = held.entry(slot.clone()).or_insert(0);
+        *next = next.saturating_add(1);
+    }
+
+    /// How many asks have ever arrived for `slot`, zero when none has.
+    pub fn pending_request_seq(&self, slot: &SessionSlot) -> u64 {
+        self.pending_seq.lock().get(slot).copied().unwrap_or(0)
     }
 
     /// Record a fatal error, so a view that was not attached when it fired
@@ -9988,6 +10044,7 @@ mod account_stamp_tests {
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
                 .expect("a profile key"),
+            slack_workspace: None,
         }
     }
 
@@ -15896,6 +15953,27 @@ mod worker_activity_tests {
         );
     }
 
+    /// **The sequence is the ask's identity, and a read never moves it.**
+    /// Two asks on one seat are two numbers; reading the roster is not an
+    /// ask, so a client can tell the first from the second without seeing
+    /// the depth move and be fooled by an answer that shrinks the batch.
+    #[test]
+    fn every_ask_gets_its_own_number() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("w-numbered");
+        assert_eq!(ws.pending_request_seq(&seat), 0, "a seat nothing asked is zero");
+
+        ws.note_ask(&seat);
+        assert_eq!(ws.pending_request_seq(&seat), 1);
+        ws.note_ask(&seat);
+        assert_eq!(ws.pending_request_seq(&seat), 2, "a second ask is a second number");
+        assert_eq!(
+            ws.pending_request_seq(&SessionSlot::from_str_for_test("w-quiet")),
+            0,
+            "another seat's asks are not this seat's",
+        );
+    }
+
     /// **A parked browser hand-off is in the READ as well as on the stream**:
     /// a view that attached after it landed has nothing else to draw the dock
     /// from, and the dock is the only place its answer can come from.
@@ -16387,6 +16465,13 @@ mod worker_activity_tests {
             L::Attention,
             "a held hand-off is a person's to answer, not a running turn's",
         );
+        assert_eq!(
+            ws.pending_interaction(&seat),
+            Some(crate::workspace::PendingInteractionKind::HandOff),
+            "and the roster says what the seat is waiting on",
+        );
+        assert_eq!(ws.pending_interaction_depth(&seat), 1, "with the ask it holds");
+        assert_eq!(ws.pending_request_seq(&seat), 1, "and the ask has its own identity");
 
         let bystander = SessionSlot::from_str_for_test("w-bystander2");
         let other = ws.register_domain_session(bystander.clone(), None);

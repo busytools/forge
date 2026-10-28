@@ -291,6 +291,12 @@ export interface AgentRow {
   has_background_work: boolean;
   pending: PendingKind | null;
   pending_depth: number;
+  /**
+   * How many asks have ever arrived for the seat - **the ask's identity**,
+   * so a client announces a new one once and an answer that shrinks the
+   * batch is not news. Zero on a server that predates the field.
+   */
+  pending_seq: number;
   last_activity: WireTime | null;
   reason: string | null;
   /**
@@ -513,6 +519,12 @@ export interface HomeWire {
   /** The forge build serving the socket, drawn as the header's `server` pair. */
   forge_version: string;
   forge_version_short: string;
+  /**
+   * The server run's own identity, minted once per process. **An ask's
+   * number restarts with the process**, so a mark scoped by this cannot be
+   * matched by a different run's ask. Empty on a server that predates it.
+   */
+  boot_id: string;
   /**
    * The service status the core holds, which the home draws above the band -
    * `null` when it holds none. It is the probe's own report reaching a late
@@ -745,6 +757,10 @@ function waitingFrom(raw: unknown): WaitingWire | null {
 export function homeFrom(data: HomeWire): HomeWire {
   return {
     ...data,
+    // A server older than the epoch states none: an empty scope, which no
+    // real boot id can equal, so its asks read as news only after the first
+    // read seeds them.
+    boot_id: typeof data.boot_id === 'string' ? data.boot_id : '',
     // Absent, or carrying nothing wordable, reads as no report: the banner
     // must not draw a line it cannot word, and a severity outside the two is
     // the warning every producer defaults to.
@@ -757,6 +773,7 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
+      pending_seq: typeof agent['pending_seq'] === 'number' ? agent['pending_seq'] : 0,
       // A server old enough not to state the failure leaves the field out,
       // and it must read as `null` rather than as a failure.
       failed_turn: agent.failed_turn ?? null,

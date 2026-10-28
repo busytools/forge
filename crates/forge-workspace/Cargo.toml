@@ -65,6 +65,9 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 # --all-features) resolves `new_for_test` and the other gated helpers.
 forge-workspace = { path = ".", features = ["testing", "test-helpers"] }
 forge-agent = { workspace = true, features = ["testing"] }
+# The registered tools' input schemas, so a family test can pin the surface
+# the Slack tools advertise.
+forge-sdk = { workspace = true, features = ["testing"] }
 # `test-helpers` exposes `SessionSlot::from_str_for_test` cross-crate;
 # without this dev-dep override the workspace's own lib tests fail to
 # compile because they reach the feature-gated constructor from

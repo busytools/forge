@@ -265,7 +265,7 @@ describe('one turn folded into the units a view draws', () => {
       refused(
         'mcp__forge__slack__list',
         {},
-        'several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines',
+        'no Slack workspace is bound to Granite/core-v1; add [orgs.slack] workspace = "<label>" to the org, or [orgs.projects.slack] workspace = "<label>" to the project in forge.toml',
       ),
     );
 
@@ -274,7 +274,7 @@ describe('one turn folded into the units a view draws', () => {
     expect(
       call?.leaf.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join(''),
       'and the reason is there for the row and the body',
-    ).toContain('several Slack workspaces are configured');
+    ).toContain('no Slack workspace is bound to Granite/core-v1');
   });
 
   it('titles a successful forge call by the card own subject, not the family own noun', () => {

@@ -3418,7 +3418,7 @@ provider = "anthropic"
         }
     }
 
-    use forge_primitives::slack::SlackFile;
+    use forge_primitives::slack::{SlackFile, SlackFileShares};
 
     fn slack_msg(text: &str) -> SlackMessage {
         SlackMessage {
@@ -5514,6 +5514,7 @@ provider = "anthropic"
             id: "F1".to_owned(),
             name: "notes.txt".to_owned(),
             url_private: "https://files.slack.com/x".to_owned(),
+            shares: SlackFileShares::default(),
         }];
 
         let prose = fresh_prose(&[message]);
@@ -5677,8 +5678,8 @@ provider = "anthropic"
     }
 
     /// The name the connector resolved is what the block shows. The raw id
-    /// stays on the message for the own-message filter, and the block drops
-    /// it, so the resolved name is the only one that reaches a reader.
+    /// stays on the message and the block drops it, so the resolved name is
+    /// the only one that reaches a reader.
     #[test]
     fn a_bundle_prefers_the_resolved_author_over_the_id() {
         let mut message = slack_msg_at("1.1", "U0ATEK2EAGP", "hi");
@@ -9560,6 +9561,28 @@ mod lead_charter_tests {
                  cut down"
             ),
             "the user-decision half is pinned",
+        );
+    }
+
+    /// Mid-turn delivery had no written duty of its own in this charter, so the
+    /// bullet that adds one is pinned sentence by sentence.
+    #[test]
+    fn the_charter_answers_a_mid_turn_message() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "- **A message from the user that arrives mid-turn is still owed an answer.**"
+            ),
+            "the bullet's own lead-in, so folding it into another bullet fails here",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("Answer it in that same turn, before you start the next piece of work"),
+            "the duty falls due in the same turn, before the next piece of work",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("a question left unanswered is a dropped message, not a deferred one"),
+            "the failure is named, so the line cannot be read as permission to defer",
         );
     }
 

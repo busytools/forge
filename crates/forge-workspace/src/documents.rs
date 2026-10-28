@@ -62,6 +62,7 @@ impl Workspace {
             self.document_handoffs.lock().remove(&id);
             return None;
         }
+        self.note_ask(seat);
         Some((id, receiver))
     }
 
@@ -195,6 +196,7 @@ mod tests {
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("TestOrg", "default")
                 .expect("a profile key"),
+            slack_workspace: None,
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(
             PathBuf::from("/tmp/forge-vault-roots-test"),

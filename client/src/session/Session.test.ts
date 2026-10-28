@@ -205,6 +205,7 @@ describe('the session shell as it draws', () => {
       has_background_work: false,
       pending: 'permission',
       pending_depth: 1,
+      pending_seq: 1,
       last_activity: null,
       reason: null,
       failed_turn: null,
