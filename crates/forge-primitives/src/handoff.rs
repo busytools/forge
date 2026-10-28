@@ -107,8 +107,8 @@ pub struct HandoffRecord {
     /// **Carried because the transcript that holds it belongs to a session a
     /// view has left.** A client attaching after the swap reads the
     /// successor's history and would draw only the row; the turn's own frames
-    /// come from here. Empty for a handover whose brief was supplied without
-    /// a procedure turn.
+    /// come from here. Empty when the predecessor's transcript could not be
+    /// read, or when no procedure prompt is in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub judgment_turn: Vec<Message>,
     /// The handover's transcript, which holds everything the brief does not.
