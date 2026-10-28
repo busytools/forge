@@ -414,6 +414,20 @@ mod commands {
     }
 }
 
+/// The client logger's demoted-but-readable targets: a line about a session's
+/// own work rather than forge's stays in `forge.log` here (rule 20), which is
+/// the client's half of the server's default directives.
+pub(crate) const DEBUG_TARGETS: &[&str] = &[mic::LOG_TARGET];
+
+/// The client's logger under those directives: `Info` for the crate, and
+/// `debug` for [`DEBUG_TARGETS`].
+fn client_logger() -> tauri_plugin_log::Builder {
+    DEBUG_TARGETS.iter().fold(
+        tauri_plugin_log::Builder::new().level(tauri_plugin_log::log::LevelFilter::Info),
+        |logger, target| logger.level_for(*target, tauri_plugin_log::log::LevelFilter::Debug),
+    )
+}
+
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -421,9 +435,7 @@ pub fn run() {
     let context = tauri::generate_context!();
     let log_file = log_file(&context.config().identifier);
 
-    let builder = tauri::Builder::default().plugin(
-        tauri_plugin_log::Builder::new().level(tauri_plugin_log::log::LevelFilter::Info).build(),
-    );
+    let builder = tauri::Builder::default().plugin(client_logger().build());
 
     // The updater plugin stops at the desktop; the phone's fetch, download,
     // signer check and installer handoff live in its own Kotlin plugin. Both
