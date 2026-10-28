@@ -6097,6 +6097,62 @@ describe('the dock', () => {
     ).toContain('the microphone was refused');
   });
 
+  /** **The open itself is the bar's to say.** The card draws from the record,
+   *  which has no take until the capture has opened and the stream has gone
+   *  out, and the composer's own band is behind the picture while the takeover
+   *  is up - so an open that takes seconds drew nothing at all, and the press
+   *  read as dead (measured live: a 4s open showed no card, no line and no
+   *  status on this surface, while the composer's band said it within 200ms). */
+  it('says in the bar that a take pressed there is still opening', async () => {
+    vi.useFakeTimers();
+    mic.held.gated = true;
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+
+      action('Open browser').click();
+      flushSync();
+      barAction('something').click();
+      flushSync();
+      const button = document.querySelector('.takeover-bar .micb');
+      if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+      button.click();
+      flushSync();
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'a quick open is the press itself, not a state to flash',
+      ).not.toContain('opening the microphone');
+
+      vi.advanceTimersByTime(200);
+      flushSync();
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'the band the composer draws is behind the picture, so this row says it',
+      ).toContain('opening the microphone');
+      expect(
+        document.querySelector('.tb-feedback .tc'),
+        'and no card claims a take that does not exist yet',
+      ).toBeNull();
+
+      mic.held.release?.();
+      await opened();
+      expect(commands(harness), 'the open lands, and the take goes out').toMatchObject([
+        { dictate_stream: { key: SLOT } },
+      ]);
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'and the line goes with it',
+      ).not.toContain('opening the microphone');
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      vi.useRealTimers();
+    }
+  });
+
   /** **Words that never left are not a message to read.** A send the socket
    *  refused used to answer `feedback` anyway, telling the session to read a
    *  prompt nobody sent and ending the park on nothing; the dock stays live,

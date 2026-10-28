@@ -84,6 +84,16 @@
   .tc .fr, .tc .kb { color: var(--dim); }
   .tc .pace { color: var(--ok); }
   .tc .x { color: var(--dim); }
+  /* What a take pressed from the bar is doing, above the row its mic lives
+     in: the composer's own band is behind the picture. */
+  .tb-line { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+    border-top: 1px solid var(--line); background: var(--s2); font-size: var(--fs-data); }
+  .tb-line.opening { color: var(--muted); }
+  .tb-line.bad { color: var(--bad); }
+  .tb-line .ring { width: 9px; height: 9px; flex: none; border-radius: 50%;
+    border: 2px solid var(--s3); border-top-color: var(--accent);
+    animation: tbload 1s linear infinite; }
+  @keyframes tbload { to { transform: rotate(360deg); } }
 
   /* The page area: the page itself, no browser chrome. */
   .stage { position: relative; flex: 1; min-height: 340px; background: #fdfbf7;
@@ -356,6 +366,37 @@
     the line: it grows to everything the mic leaves and its graph takes that room, so what the
     take is doing is the row's meter rather than a pill in an otherwise empty row. The mic is
     the press that ends the take, and the card's <b>&#10005;</b> abandons it without sending.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap"><b>a take still opening</b> - the press landed, and nothing else would say so</div>
+    <div class="takeover" style="min-height: 0;">
+      <div class="bar">
+        <span class="bt d">back to chat</span>
+        <span class="bnav">
+          <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+          <span class="bt arrow" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+        </span>
+        <span class="btitle">browser hand-off &middot; tab 2</span>
+        <span class="bt bpick" title="the profile's tabs">2 &middot; Senior Rust engineer &middot; Busytools/forge/lead
+          <span class="car">&#9662;</span></span>
+        <span class="bacts">
+          <span class="bt">Done</span>
+          <span class="bt d">something's wrong&hellip;</span>
+          <span class="bt d">Not now</span>
+        </span>
+      </div>
+      <div class="tb-line opening"><span class="ring" aria-hidden="true"></span>opening the microphone&hellip;</div>
+      <div class="feedback">
+        <input class="fld" value="the upload form rejected the file" aria-label="feedback">
+        <span class="micb" aria-label="dictate the feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        <span class="sendb" aria-label="send the feedback and end the hand-off"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
+      </div>
+    </div>
+    <div class="tnote">the card draws from the record, which has no take until the capture has
+    opened and the stream has gone out, so a slow open would otherwise draw nothing at all and
+    the press would read as dead. The line is drawn only once the open outlasts a quick one -
+    a fast press is not a state to flash - and it goes when the card arrives.</div>
   </div>
 
   <h2>Before Open, and the strip</h2>

@@ -8,6 +8,9 @@
    * so the bar sits at the window's top above the native page layer. The
    * feedback line is the dock's own words row - the same Field, TakeCard and
    * mic - so dictation here is the composer's, not a second implementation.
+   * **What the take is doing is the bar's to say**: the composer's band and
+   * notice rows are behind the picture while the takeover is up, so the open
+   * and a refusal draw above this row.
    */
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
@@ -28,6 +31,7 @@
     onmic = () => {},
     dictation = false,
     takeline = null,
+    opening = false,
     ondone = null,
     onnotnow = null,
     onback,
@@ -58,6 +62,15 @@
      * refusal routed there would be invisible exactly when the mic was pressed.
      */
     takeline?: { tone: string; text: string } | null;
+    /**
+     * A take this page pressed is still opening its microphone.
+     *
+     * **Nothing else says so on this surface.** The card draws from the
+     * record, which only has a take once the capture has opened and the
+     * stream has gone out, so without this line the whole open draws nothing
+     * and the press reads as dead.
+     */
+    opening?: boolean;
     /** The hand-off's answers; null once no ask is parked, leaving back-to-chat. */
     ondone?: (() => void) | null;
     onnotnow?: (() => void) | null;
@@ -213,11 +226,18 @@
     </span>
   </div>
   {#if feedbackOpen && onfeedback !== null}
-    {#if takeline !== null}
+    {#if opening}
+      <!-- The open itself, in the bar: the record has no take until the
+           capture has opened and the stream has gone out, so this is the only
+           thing on this surface that can say the press landed. -->
+      <div class="tb-line opening">
+        <span class="ring" aria-hidden="true"></span>opening the microphone…
+      </div>
+    {:else if takeline !== null}
       <!-- The reason a take pressed here did not open, in the bar: the
            composer's own row is behind the picture, so a line drawn there is
            a press that looks dead. -->
-      <div class="tb-refusal">{takeline.text}</div>
+      <div class="tb-line bad">{takeline.text}</div>
     {/if}
     <div class="tb-feedback">
       {#if take !== null}
