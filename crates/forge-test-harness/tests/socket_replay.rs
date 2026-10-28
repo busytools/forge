@@ -1605,7 +1605,7 @@ fn binary_frame_record() -> Value {
     );
 
     // **The two server-sent shapes a client parses by hand.** Its Rust half
-    // splits a 14-byte browser-frame header and a 13-byte audio header; this
+    // splits an 18-byte browser-frame header and a 13-byte audio header; this
     // record pins the exact bytes, so a header that grows moves the contract
     // instead of silently shifting every scanline a client reads.
     let mut server_frame = vec![frame::Kind::BrowserFrame.tag()];
@@ -1616,6 +1616,8 @@ fn binary_frame_record() -> Value {
     server_frame.extend_from_slice(&720u16.to_le_bytes()); // height
     server_frame.push(1); // format: WebP
     server_frame.push(1); // key
+    server_frame.extend_from_slice(&640u16.to_le_bytes()); // the page's own width
+    server_frame.extend_from_slice(&360u16.to_le_bytes()); // and height
     server_frame.extend_from_slice(&[9, 8, 7]); // the encoded payload
 
     let mut server_audio = vec![frame::Kind::BrowserAudio.tag()];
@@ -1642,13 +1644,13 @@ fn binary_frame_record() -> Value {
             // here from the documented header layout, so a field renamed or
             // reordered fails this fixture; the host's own round-trip tests
             // cover what its encoder really writes.
-            // 1 tag byte, then the client's 14-byte header, then the payload.
+            // 1 tag byte, then the client's 18-byte header, then the payload.
             "browser_frame_from_server": {
                 "hex": hex_of(&server_frame),
-                "header_bytes": 15,
+                "header_bytes": 19,
                 "fields": {
                     "profile": 5, "tab": 2, "seq": 7, "width": 1280, "height": 720,
-                    "format": 1, "key": true,
+                    "format": 1, "key": true, "page_width": 640, "page_height": 360,
                 },
             },
             // 1 tag byte, then the client's 13-byte header, then samples.

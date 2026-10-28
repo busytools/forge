@@ -6,9 +6,9 @@
 //! - [`Kind::Dictation`] - a client's mono PCM at [`SAMPLE_RATE`], the rate
 //!   the dictation models read. The server decodes this one.
 //! - [`Kind::BrowserFrame`] - the server's relay of one encoded browser
-//!   frame: the profile id, sequence, view size, format, key flag and the
-//!   WebP payload, exactly as the host encoded it. **The bytes are never
-//!   re-encoded or decoded here**; the server only moves them.
+//!   frame: the profile id, sequence, view size, format, key flag, the page's
+//!   own viewport and the WebP payload, exactly as the host encoded it. **The
+//!   bytes are never re-encoded or decoded here**; the server only moves them.
 //!
 //! **The kind tag is why the shape can grow**: a third kind is a variant here
 //! plus a line in the recorded contract, not a new message type.

@@ -25,6 +25,8 @@ fn frame(seq: u32, profile: u16, width: u16, height: u16) -> Frame {
         height,
         format: Format::Webp,
         key: seq == 0,
+        page_width: width / 2,
+        page_height: height / 2,
         bytes: vec![42; 64],
     }
 }
@@ -241,6 +243,11 @@ fn the_host_encodes_frames_to_its_socket() {
     let first = rx.recv_timeout(Duration::from_secs(45)).expect("a painted frame arrives");
     assert_eq!(first.profile, 9, "the frame names the server's profile id");
     assert_eq!((first.width, first.height), (800, 600), "the frame is the requested view");
+    assert_eq!(
+        (first.page_width, first.page_height),
+        (800, 600),
+        "and it names the page it was painted from"
+    );
     assert!(first.key, "a surface's first frame is full quality");
     assert_eq!(&first.bytes[..4], b"RIFF", "the payload is an image container");
     assert_eq!(&first.bytes[8..12], b"WEBP", "and it is WebP");
@@ -281,6 +288,11 @@ fn the_host_encodes_frames_to_its_socket() {
         }
     };
     assert!(resized.key, "a resize draws a key frame");
+    assert_eq!(
+        (resized.page_width, resized.page_height),
+        (400, 300),
+        "and the resized frame names the view it was laid out at"
+    );
 
     let status = host.terminate(Duration::from_secs(15));
     assert!(status.success(), "the host exited cleanly: {status} (log: {})", host.log());

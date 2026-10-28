@@ -104,6 +104,8 @@ interface ShellFrame {
   height: number;
   format: number;
   key: boolean;
+  page_width: number;
+  page_height: number;
   bytes: string;
 }
 
@@ -124,7 +126,9 @@ function frameOf(payload: ShellFrame): BrowserFrame | null {
     typeof payload.tab !== 'number' ||
     typeof payload.bytes !== 'string' ||
     typeof payload.width !== 'number' ||
-    typeof payload.height !== 'number'
+    typeof payload.height !== 'number' ||
+    typeof payload.page_width !== 'number' ||
+    typeof payload.page_height !== 'number'
   ) {
     return null;
   }
@@ -138,6 +142,8 @@ function frameOf(payload: ShellFrame): BrowserFrame | null {
     width: payload.width,
     height: payload.height,
     key: payload.key === true,
+    page_width: payload.page_width,
+    page_height: payload.page_height,
     bytes,
   };
 }

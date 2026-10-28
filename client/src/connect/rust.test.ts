@@ -46,7 +46,7 @@ vi.mock('../perf', async (importOriginal) => {
 import { noteSnapshot, noteSubscribeWritten } from '../perf';
 import { subjectKey, type ServerMessage } from '../protocol';
 import { onRefusal, type Refusal } from '../refusals';
-import type { Connection } from '../socket';
+import type { BrowserFrame, Connection } from '../socket';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { connectRust } from './rust';
 
@@ -571,6 +571,56 @@ describe("the connection's own facts", () => {
 
     fire('client://written', { key: subjectKey(subject), declared: false, waited_ms: 12.5 });
     expect(noteSubscribeWritten).toHaveBeenCalledWith('Busytools/forge/lead', false, 12.5);
+  });
+
+  /**
+   * **A relayed frame reaches the page's canvas with the viewport it was
+   * painted from.** The shell hands it over as base64 with the header's
+   * fields; a frame that names no page has nowhere to map a gesture, so it
+   * is dropped rather than painted under a size this page would guess.
+   */
+  it('hands a relayed frame to the canvas with the page it was painted from', async () => {
+    const connection = await opened();
+    const heard: BrowserFrame[] = [];
+    connection.onBrowserFrame((frame) => heard.push(frame));
+    const bytes = btoa(String.fromCharCode(0x52, 0x49, 0x46, 0x46));
+
+    fire('client://browser-frame', {
+      profile: 5,
+      tab: 2,
+      seq: 7,
+      width: 2560,
+      height: 1440,
+      format: 1,
+      key: true,
+      page_width: 1280,
+      page_height: 720,
+      bytes,
+    });
+    expect(heard, 'the frame reaches the canvas').toHaveLength(1);
+    expect(heard[0], 'with the page it was painted from').toMatchObject({
+      profile: 5,
+      tab: 2,
+      width: 2560,
+      height: 1440,
+      page_width: 1280,
+      page_height: 720,
+    });
+    expect([...(heard[0]?.bytes ?? [])], 'and the pixels it carried').toEqual([
+      0x52, 0x49, 0x46, 0x46,
+    ]);
+
+    fire('client://browser-frame', {
+      profile: 5,
+      tab: 2,
+      seq: 8,
+      width: 2560,
+      height: 1440,
+      format: 1,
+      key: true,
+      bytes,
+    });
+    expect(heard, 'a frame with no page is not painted').toHaveLength(1);
   });
 
   it('a status move reaches onStatus', async () => {

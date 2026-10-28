@@ -432,15 +432,16 @@ impl Drop for Ring {
     }
 }
 
-/// One painted view, as the host hands it on: the BGRA buffer, its size, and
-/// whether the frame is a state change the stream must not coalesce.
+/// One painted view, as the host hands it on: the BGRA buffer, its size,
+/// whether the frame is a state change the stream must not coalesce, and the
+/// page's own viewport a gesture's point is expressed in.
 ///
 /// **A popup's frame is not a repaint of the view.** The host's frame stream
 /// drops paints that arrive inside one frame interval, which is right for a
 /// page animating faster than the encoder: the next paint subsumes the last.
 /// A popup paint is the ONE frame that carries the menu - CEF then paints the
 /// view without it - so a coalesced popup is a menu nobody ever sees.
-pub type PaintSink = Arc<dyn Fn(&[u8], u32, u32, bool) + Send + Sync>;
+pub type PaintSink = Arc<dyn Fn(&[u8], u32, u32, bool, (u32, u32)) + Send + Sync>;
 
 /// The last view paint, kept so a popup can be drawn over it.
 #[derive(Default)]
@@ -561,23 +562,46 @@ fn blit_popup(view: &mut [u8], width: u32, height: u32, popup: &PopupPaint) {
 /// Hand the composed frame to the ring and to the server's stream.
 ///
 /// `distinct` marks a frame the stream must not coalesce: a popup appearing,
-/// moving or closing.
+/// moving or closing. `size` is the tab's own layout, when it has one.
 fn emit(
     ring: &Ring,
     sink: Option<&PaintSink>,
     state: &mut PaintState,
     dirty: Option<&[Rect]>,
     distinct: bool,
-    expected: Option<(u32, u32)>,
+    size: Option<&Arc<ViewSize>>,
 ) {
     let Some((pixels, width, height)) = state.frame() else { return };
     // The composed buffer is a BGRA view of exactly width*height.
-    paint(ring, dirty, pixels.as_ptr(), width, height, expected);
+    paint(ring, dirty, pixels.as_ptr(), width, height, expected_of(size));
     // **The frame stream and the ring see the same frame.** A size the ring
     // would refuse is still a frame with its own dimensions on the wire.
     if let Some(sink) = sink {
-        sink(pixels, width, height, distinct);
+        sink(pixels, width, height, distinct, page_of(ring, size));
     }
+}
+
+/// The request this handler's tab is laid out at: the tab's own size when it
+/// has one, the profile's otherwise.
+fn request_of(ring: &Ring, size: Option<&Arc<ViewSize>>) -> (u32, u32, u32) {
+    if let Some(size) = size {
+        return size.get();
+    }
+    // SAFETY: the header is mapped for this process's whole life.
+    let header = unsafe { &*ring.header() };
+    (
+        header.request_width.load(Ordering::Relaxed),
+        header.request_height.load(Ordering::Relaxed),
+        header.request_scale_milli.load(Ordering::Relaxed),
+    )
+}
+
+/// The page's own viewport for this handler's tab: what a gesture's point is
+/// expressed in, and never the painted pixels.
+fn page_of(ring: &Ring, size: Option<&Arc<ViewSize>>) -> (u32, u32) {
+    let (request_w, request_h, scale_milli) = request_of(ring, size);
+    let (width, height) = view_size(request_w, request_h, scale_milli);
+    (u32::try_from(width).unwrap_or(1).max(1), u32::try_from(height).unwrap_or(1).max(1))
 }
 
 /// One tab's view size, in the ring's own units: device pixels and the
@@ -661,17 +685,7 @@ cef::wrap_render_handler! {
             // dividing that by the request's scale would inflate the page and
             // stale every later frame. A tab's own size wins while it is
             // recorded; every other tab reads the ring's request.
-            let (request_w, request_h, scale_milli) = if let Some(size) = &self.size {
-                size.get()
-            } else {
-                // SAFETY: the header is mapped for this process's whole life.
-                let header = unsafe { &*self.ring.header() };
-                (
-                    header.request_width.load(Ordering::Relaxed),
-                    header.request_height.load(Ordering::Relaxed),
-                    header.request_scale_milli.load(Ordering::Relaxed),
-                )
-            };
+            let (request_w, request_h, scale_milli) = request_of(&self.ring, self.size.as_ref());
             let (width, height) = view_size(request_w, request_h, scale_milli);
             rect.width = width;
             rect.height = height;
@@ -683,17 +697,7 @@ cef::wrap_render_handler! {
             info: Option<&mut ScreenInfo>,
         ) -> i32 {
             let Some(info) = info else { return 0 };
-            let (request_w, request_h, scale_milli) = if let Some(size) = &self.size {
-                size.get()
-            } else {
-                // SAFETY: the header is mapped for this process's whole life.
-                let header = unsafe { &*self.ring.header() };
-                (
-                    header.request_width.load(Ordering::Relaxed),
-                    header.request_height.load(Ordering::Relaxed),
-                    header.request_scale_milli.load(Ordering::Relaxed),
-                )
-            };
+            let (request_w, request_h, scale_milli) = request_of(&self.ring, self.size.as_ref());
             info.device_scale_factor = screen_scale(scale_milli);
             info.depth = 24;
             info.depth_per_component = 8;
@@ -714,7 +718,7 @@ cef::wrap_render_handler! {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.popup = None;
             state.bounds = None;
-            emit(&self.ring, self.paint.as_ref(), &mut state, None, true, expected_of(self.size.as_ref()));
+            emit(&self.ring, self.paint.as_ref(), &mut state, None, true, self.size.as_ref());
         }
 
         fn on_popup_size(&self, _browser: Option<&mut Browser>, rect: Option<&Rect>) {
@@ -757,7 +761,7 @@ cef::wrap_render_handler! {
                         &mut state,
                         dirty_rects,
                         false,
-                        expected_of(self.size.as_ref()),
+                        self.size.as_ref(),
                     );
                 }
                 PaintElementType::POPUP => {
@@ -765,7 +769,14 @@ cef::wrap_render_handler! {
                     // A popup paint is a full composite - the view's dirty
                     // rects are not the popup's - and the one frame that
                     // carries the menu, so the stream must not coalesce it.
-                    emit(&self.ring, self.paint.as_ref(), &mut state, None, true, expected_of(self.size.as_ref()));
+                    emit(
+                        &self.ring,
+                        self.paint.as_ref(),
+                        &mut state,
+                        None,
+                        true,
+                        self.size.as_ref(),
+                    );
                 }
                 _ => {}
             }
@@ -1522,18 +1533,19 @@ mod tests {
     /// must reach the server's stream, at the view's size.
     #[test]
     fn a_popup_paint_is_composited_over_the_view() {
-        type Captured = (Vec<u8>, u32, u32, bool);
+        type Captured = (Vec<u8>, u32, u32, bool, (u32, u32));
         let name = "/forge-cef-test-popup";
         let ring = Arc::new(Ring::create(name, 8, 8).expect("a test ring"));
         ring.request(8, 8, 1.0);
         let frames: Arc<Mutex<Vec<Captured>>> = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&frames);
-        let sink: PaintSink = Arc::new(move |pixels, width, height, distinct| {
+        let sink: PaintSink = Arc::new(move |pixels, width, height, distinct, page| {
             captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((
                 pixels.to_vec(),
                 width,
                 height,
                 distinct,
+                page,
             ));
         });
         let handler = OsrRenderHandler {
@@ -1553,8 +1565,9 @@ mod tests {
 
         let frames = frames.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(frames.len(), 2, "the view and the popup are both frames");
-        let (pixels, width, height, distinct) = &frames[1];
+        let (pixels, width, height, distinct, page) = &frames[1];
         assert_eq!((*width, *height), (8, 8), "the composite is the view's size");
+        assert_eq!(*page, (8, 8), "and it names the page the ring is laid out at");
         assert!(*distinct, "the popup's frame is never coalesced: it is the one carrying the menu");
         let at = |x: usize, y: usize| pixels[(y * 8 + x) * 4];
         assert_eq!(at(2, 2), 255, "the popup's top-left is drawn where the bounds say");
@@ -1669,22 +1682,58 @@ mod tests {
         Ring::unlink(&name);
     }
 
+    /// **A tab laid out apart from the profile keeps its own page.** A take
+    /// records one tab at its own size while the profile's request stays put;
+    /// the frame's page must be the tab's viewport, or every gesture on that
+    /// surface maps into the size the other tabs are laid out at.
+    #[test]
+    fn a_tab_laid_out_apart_names_its_own_page() {
+        use super::{PaintState, ViewSize, emit};
+
+        let name = format!("/forge-cef-test-page-{}", std::process::id());
+        let ring = Ring::create(&name, 4, 4).expect("a test ring");
+        ring.request(1440, 900, 1.0);
+        let take = ViewSize::of_ring(&ring);
+        take.set(1280, 720, 1.0);
+
+        let pages: Arc<Mutex<Vec<(u32, u32)>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&pages);
+        let sink: PaintSink = Arc::new(move |_, _, _, _, page| {
+            captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(page);
+        });
+        let pixels = vec![0_u8; 1280 * 720 * 4];
+        let mut state = PaintState::default();
+        state.take_view(&pixels, 1280, 720);
+        emit(&ring, Some(&sink), &mut state, None, false, Some(&take));
+
+        let mut other = PaintState::default();
+        other.take_view(&pixels, 1280, 720);
+        emit(&ring, Some(&sink), &mut other, None, false, None);
+
+        let pages = pages.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(pages[0], (1280, 720), "the take's tab names its own page");
+        assert_eq!(pages[1], (1440, 900), "and a handler with no tab reads the ring's");
+        Ring::unlink(&name);
+    }
+
     /// **`emit` carries the tab's own size through to the ring gate.** The
     /// handler's expected size is the only thing that lets a take's 1280x720
     /// frame into a ring whose profile request is 1440x900, and it is also
     /// what refuses that frame for a tab still laid out at the request.
     #[test]
     fn the_emitted_frame_is_gated_by_the_tabs_own_size() {
-        use super::{PaintState, emit, painted_size};
+        use super::{PaintState, ViewSize, emit};
 
         let name = format!("/forge-cef-test-emit-{}", std::process::id());
         let ring = Ring::create(&name, 4, 4).expect("a test ring");
         ring.request(1440, 900, 1.0);
         let pixels = vec![0_u8; 1280 * 720 * 4];
 
+        let recorded_size = ViewSize::of_ring(&ring);
+        recorded_size.set(1280, 720, 1.0);
         let mut recorded = PaintState::default();
         recorded.take_view(&pixels, 1280, 720);
-        emit(&ring, None, &mut recorded, None, false, Some(painted_size(1280, 720, 1_000)));
+        emit(&ring, None, &mut recorded, None, false, Some(&recorded_size));
         // SAFETY: the header is this test's mapped ring.
         let header = unsafe { &*ring.header() };
         assert_eq!(
@@ -1693,9 +1742,10 @@ mod tests {
             "the take's frame is written",
         );
 
+        let other_size = ViewSize::of_ring(&ring);
         let mut other = PaintState::default();
         other.take_view(&pixels, 1280, 720);
-        emit(&ring, None, &mut other, None, false, Some(painted_size(1440, 900, 1_000)));
+        emit(&ring, None, &mut other, None, false, Some(&other_size));
         assert_eq!(
             (header.width.load(Ordering::Relaxed), header.height.load(Ordering::Relaxed)),
             (1280, 720),

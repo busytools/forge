@@ -9109,10 +9109,10 @@ async fn a_slow_viewer_does_not_stop_a_second_viewers_frames() {
         let frames = stub.frames.clone();
         tokio::spawn(async move {
             for seq in 1..=40_u32 {
-                // The host's encoded bytes begin with the client's 14-byte
+                // The host's encoded bytes begin with the client's 18-byte
                 // header; the stub carries that shape so the reader below can
                 // name the sequence it drew.
-                let mut encoded = Vec::with_capacity(14 + 200 * 1024);
+                let mut encoded = Vec::with_capacity(18 + 200 * 1024);
                 encoded.extend_from_slice(&5_u16.to_le_bytes());
                 encoded.extend_from_slice(&2_u16.to_le_bytes());
                 encoded.extend_from_slice(&seq.to_le_bytes());
@@ -9120,6 +9120,8 @@ async fn a_slow_viewer_does_not_stop_a_second_viewers_frames() {
                 encoded.extend_from_slice(&720_u16.to_le_bytes());
                 encoded.push(1);
                 encoded.push(1);
+                encoded.extend_from_slice(&640_u16.to_le_bytes());
+                encoded.extend_from_slice(&360_u16.to_le_bytes());
                 encoded.extend(std::iter::repeat_n(7_u8, 200 * 1024));
                 frames.send_replace(Some(forge_primitives::browser::BrowserFrame {
                     profile: 5,

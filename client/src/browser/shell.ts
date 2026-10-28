@@ -98,12 +98,14 @@ function shellLink(): BrowserLink {
       try {
         const raw = await invokeShell<Record<string, unknown> | null>('browser_kept_frame');
         if (raw === null || typeof raw !== 'object') return null;
-        const { profile, tab, seq, width, height, bytes } = raw;
+        const { profile, tab, seq, width, height, page_width, page_height, bytes } = raw;
         if (
           typeof profile !== 'number' ||
           typeof tab !== 'number' ||
           typeof width !== 'number' ||
           typeof height !== 'number' ||
+          typeof page_width !== 'number' ||
+          typeof page_height !== 'number' ||
           typeof bytes !== 'string'
         ) {
           return null;
@@ -114,6 +116,8 @@ function shellLink(): BrowserLink {
           seq: typeof seq === 'number' ? seq : 0,
           width,
           height,
+          page_width,
+          page_height,
           key: raw.key === true,
           bytes: bytesOf(bytes),
         };
