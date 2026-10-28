@@ -9,11 +9,11 @@
  * has paged in and asks for more when the reader reaches the top.
  *
  * **A row's key is the turn's own, assigned once and never recomputed.** A
- * key derived at read time would change when older turns are prepended - and
- * `virtua` stores its measured sizes PER KEY, so a key that shifts throws away
- * what it learned and re-measures the list, taking the reader's place with it.
- * That is why a turn the fold could not name is named here at ingest, from its
- * own content, rather than being derived by whoever draws it.
+ * key derived at read time would change when older turns are prepended, and a
+ * changed key remounts the row - which draws at the list's estimate until it
+ * measures again, and moves everything below it (the list's heights are stored
+ * by POSITION). That is why a turn the fold could not name is named here at
+ * ingest, from its own content, rather than being derived by whoever draws it.
  *
  * **A page may repeat a row the client already holds.** The server errs toward
  * repeating rather than toward a gap, because a turn the client was never sent
@@ -309,12 +309,13 @@ export interface Conversation {
   /**
    * How many pages of OLDER turns have landed.
    *
-   * A count rather than a flag because the list has to know when one change
-   * differs from the last, and a flag that goes back to `false` reads the same
-   * twice. It is what tells the list to compensate for a prepend and not for
-   * anything else: the compensation is written for rows arriving ABOVE the
-   * reader, and applying it to a turn appended below them moves them by that
-   * row's height, which is the one thing this page must not do.
+   * A count rather than a flag because one landing has to be told from the
+   * next, and a flag that goes back to `false` reads the same twice. It is what
+   * settles one of the column's asks - **not** what the list is told: the
+   * compensation is written for rows arriving ABOVE the reader, and applying
+   * it to a turn appended below them moves them by that row's height, which is
+   * the one thing this page must not do. The list reads the change itself (see
+   * `HEAD_MOVED`).
    */
   prepends: number;
   /**
@@ -1359,6 +1360,8 @@ export class Chat {
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
   private watchdog: ReturnType<typeof setTimeout> | null = null;
+  /** The tick a hidden page's landing waits on, so a publish can drop it. */
+  private deferred: ReturnType<typeof setTimeout> | null = null;
   /**
    * When the waiting publish was armed, by the wall clock - `0` when none is.
    *
@@ -1620,8 +1623,18 @@ export class Chat {
       clearTimeout(this.watchdog);
       this.watchdog = null;
     }
+    if (this.deferred !== null) {
+      clearTimeout(this.deferred);
+      this.deferred = null;
+    }
     this.armedAt = 0;
-    this.inner.set(this.held);
+    const written = this.held;
+    this.inner.set(written);
+    // **A mark is spent by the publish it was made for.** Cleared after the
+    // write and on the next microtask, because the readers that write wakes
+    // read `shift` as the rows change - which Svelte does on that microtask -
+    // and a mark cleared first would be gone before the list saw it.
+    if (headMoved(written.turns)) queueMicrotask(() => HEAD_MOVED.delete(written.turns));
   }
 
   /**
@@ -1634,7 +1647,9 @@ export class Chat {
    * published or armed, and nothing else clears that.
    */
   private wake(): void {
-    if (this.queued !== null) this.flush();
+    // A hidden page's landing waits on a tick rather than a frame, and a
+    // suspended page can lose that tick the same way it loses a frame.
+    if (this.queued !== null || this.deferred !== null) this.flush();
   }
 
   /**
@@ -1679,13 +1694,50 @@ export class Chat {
    * writes a read's answer (`session/live.ts`).
    */
   private fold(fn: (held: Conversation) => Conversation): void {
-    this.held = fn(this.held);
-    this.flush();
+    const before = this.held;
+    const next = fn(before);
+    const moved = movedHead(before, next);
+    if (moved) HEAD_MOVED.add(next.turns);
+    // **A value waiting for its publish is spent, never replaced.** The list
+    // reads the compensation per change, so a change that overwrote the
+    // waiting one would hand it a single update in which the head moved and
+    // the tail grew - the whole delta compensated as a prepend. A marked
+    // value not yet published, and any armed draw (which this change would be
+    // merged into), go out first; this change follows on the next paint,
+    // because two writes in one task coalesce before Svelte renders.
+    const waiting = this.queued !== null || headMoved(before.turns);
+    if (waiting) this.flush();
+    this.held = next;
+    if (!waiting && !(moved && cannotPaint())) {
+      this.flush();
+      return;
+    }
+    // A page that cannot paint has no frame to wait for, and a write in the
+    // same task as the one above would coalesce with it - so it waits a tick.
+    if (cannotPaint()) this.deferred = setTimeout(() => this.flush(), 0);
+    else this.soon();
   }
 
   /** Apply one STREAM frame, whose draw lands on the next painted frame. */
   private stream(fn: (held: Conversation) => Conversation): void {
-    this.held = fn(this.held);
+    const before = this.held;
+    const next = fn(before);
+    const moved = movedHead(before, next);
+    if (moved) HEAD_MOVED.add(next.turns);
+    // A marked value not yet published is spent first, and a frame that moves
+    // the head is never merged into a draw already armed. Any other frame may
+    // ride the draw it meets: appends are the burst the paint coalesces.
+    const spent = headMoved(before.turns) || (moved && this.queued !== null);
+    if (spent) this.flush();
+    this.held = next;
+    // **A spent publish and a head move both owe a boundary of their own.** On
+    // a visible page the next frame is that boundary; a page that cannot paint
+    // has no frame, so it takes a tick - without which this frame would merge
+    // with the one just spent and the landing's mark would be lost.
+    if (cannotPaint() && (moved || spent)) {
+      this.deferred = setTimeout(() => this.flush(), 0);
+      return;
+    }
     this.soon();
   }
 
@@ -3167,10 +3219,10 @@ export class Chat {
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding
-    // an ask keeps holding it - the drain never fires, `shift` stays armed for
-    // the life of the seat, and the observer's restore never runs for a parked
-    // reader (measured: the offset left at 50 where the row above them had
-    // moved it to 290).
+    // an ask keeps holding it - the drain never fires, `compensating` stays on
+    // for the life of the seat, and the observer's restore never runs for a
+    // parked reader (measured: the offset left at 50 where the row above them
+    // had moved it to 290).
     if (held) this.forgot();
     this.clearRetry();
     // **And the empty-page beat goes with it.** The backoff belonged to the
@@ -4115,6 +4167,49 @@ const TURN_BYTES = new WeakMap<unknown[], number>();
  * re-cutting the objects the list and the fold hand back by identity.
  */
 const BLOCK = new WeakMap<object, number>();
+
+/**
+ * The turn lists whose HEAD moved when the fold built them.
+ *
+ * **A row list keys its measured heights by position**, so a change at the
+ * head hands every row its neighbour's height and the rows draw over one
+ * another until each re-measures. The list compensates only for a change it is
+ * told was a prepend, and it reads that as a fact about the change - which is
+ * why a flag describing a moment cannot stand in for it: held on for a page's
+ * whole flight, it marks every turn that opens at the tail inside it as a
+ * prepend too, and every row below lands on the row above's offset (Ved,
+ * 2026-10-28: two rows in one band, text over text, gone later in the same
+ * view). Stamped where the list is built, the flag says what the change was.
+ */
+const HEAD_MOVED = new WeakSet<readonly unknown[]>();
+
+/** Whether `turns` is a list whose head moved when the fold built it. */
+export function headMoved(turns: readonly unknown[]): boolean {
+  return HEAD_MOVED.has(turns);
+}
+
+/**
+ * Whether a change moved the list's head, which is what the mark says.
+ *
+ * **Every way the held rows move goes through `fold` or `stream`**, so marking
+ * there cannot be forgotten by one of them. What counts is the head itself
+ * moving - a page landing above, a trim that cuts the front, `dropEmptied`
+ * removing the row a cancelled prompt left (a retraction keeps its row, so it
+ * only moves the head when that row was the first) - while a turn opening at
+ * the tail is the one change that must not be read as the same fact.
+ * (`replaced`, the occupant swap, is the exception: it writes a whole new
+ * conversation rather than moving rows in the one already drawn.)
+ *
+ * **A list built from nothing is not a head move.** The first page has nothing
+ * above the reader to hold, and the list fills an empty one row by row.
+ */
+function movedHead(before: Conversation, next: Conversation): boolean {
+  return (
+    next.turns !== before.turns &&
+    before.turns.length > 0 &&
+    (next.turns[0]?.key ?? null) !== (before.turns[0]?.key ?? null)
+  );
+}
 
 /** The message JSON one turn holds. */
 function turnBytes(turn: { messages: unknown[] }): number {

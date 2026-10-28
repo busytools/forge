@@ -43,6 +43,32 @@ const turn = (key: string): unknown => ({
 });
 
 /**
+ * One handoff record, as the wire carries it, with the judgment turn a
+ * catching-up client joins the conversation on.
+ */
+const handoffRecord = (prompt: string): unknown => ({
+  slot: LEAD,
+  from: 'old',
+  to: 'new',
+  reason: 'fill',
+  fill_percent: 85,
+  total_tokens: 850_000,
+  max_tokens: 1_000_000,
+  compaction_count: 0,
+  at_percent: 85,
+  brief: { ground_truth: [], judgment: [] },
+  judgment_turn: [
+    {
+      type: 'user',
+      uuid: prompt,
+      message: { role: 'user', content: [{ type: 'text', text: 'A handoff is starting.' }] },
+    },
+  ],
+  transcript_path: '/tmp/old.jsonl',
+  at: '2026-10-24T08:00:00Z',
+});
+
+/**
  * A connection a test drives by hand, with a switch for whether it sends.
  *
  * `more` answering `false` is what a socket that is not open does, and the
@@ -120,16 +146,27 @@ function stub() {
       }
       flushSync();
     },
-    /** One turn arriving below the reader, the way a live turn does. */
-    append(): void {
+    /**
+     * Messages delivered in ONE task with no paint between them, which is the
+     * burst a socket produces and the order every boundary pin is about.
+     */
+    burst(...messages: ServerMessage[]): void {
+      for (const fn of listeners) for (const message of messages) fn(message);
+      flushSync();
+    },
+    /**
+     * The seat's own snapshot, which is the one frame that says whether a turn
+     * is running - and so the one that lets a turn's ending mean anything - and
+     * the carrier of a handoff record a catching-up client joins on.
+     */
+    snapshot(turns: unknown[], running: boolean, handoff: unknown = null): void {
       for (const fn of listeners) {
         fn({
-          kind: 'update',
-          update: {
-            chat_appended: {
-              key: LEAD,
-              msg: { type: 'assistant', uuid: 'live', message: { content: [] } },
-            },
+          kind: 'snapshot',
+          subject: { session: LEAD },
+          data: {
+            header: { turn_in_flight: running },
+            conversation: { turns, cursor: null, compaction_count: 0, handoff },
           },
         });
       }
@@ -230,7 +267,7 @@ describe('the compensation the list is handed', () => {
     expect(after[after.length - 1], 'the row is the same element').toBe(row);
   });
 
-  it('is armed before an older page arrives, and off again after it lands', async () => {
+  it('compensates the landing that moved the head', async () => {
     const server = stub();
     draw(server);
     // Two turns, so the fresh open's fill has nothing of its own to ask for
@@ -238,68 +275,447 @@ describe('the compensation the list is handed', () => {
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
-    // The reader reaches the top, which asks for what is above. The
-    // compensation has to be on for the rows that answer is about to add: it
-    // is applied AS they change, so a page that armed it when the answer
-    // arrived would be arming after the change it exists for.
+    // The list built from nothing is not a head move: there was no row above
+    // the reader to hold, so filling an empty one is a plain growth.
+    expect(records[0], 'the first page is not a prepend').toEqual({ length: 2, shift: false });
+
+    // The reader reaches the top, which asks for what is above. The ask is
+    // not a change to the list, so nothing is armed for it: the compensation
+    // belongs to the landing, which is the change that moves the head.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     expect(server.asks, 'the ask went').toHaveLength(1);
 
-    expect(last(), 'armed as the ask goes out').toEqual({ length: 2, shift: true });
-
     server.page([turn('t0'), turn('t2')], null);
     const grew = firstGrowth();
     expect(grew, 'the list gained a row').toBeDefined();
-    expect(grew?.shift, 'with the compensation already on').toBe(true);
-
-    await tick();
-    expect(last()?.shift, 'and off again once the list has taken it').toBe(false);
+    expect(grew?.shift, 'and the change that moved the head is compensated').toBe(true);
   });
 
-  it('is not armed by an ask the socket refused', async () => {
+  it('does not compensate a turn that opens at the tail', async () => {
     const server = stub();
     draw(server);
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
-    server.shut();
+    // A page is on its way, which is the window the compensation used to be
+    // armed for the whole of: a turn opening at the tail inside it went
+    // through the prepend path, and every row below landed on the row above's
+    // offset until it re-measured (Ved, 2026-10-28: two rows in one band).
     list()?.scrolledTo(0, 500, 320);
     flushSync();
+    expect(server.asks, 'the page is in flight').toHaveLength(1);
 
-    // Nothing was sent, so no page is coming and there is nothing to
-    // compensate for. Armed here, the flag stays on: the next turn appended
-    // below the reader goes through the prepend path, which moves them AND
-    // leaves the list's measured sizes attributed to the wrong rows.
-    expect(last()?.shift, 'an ask that never went arms nothing').toBe(false);
-
-    server.append();
-    expect(last()?.shift, 'and the turn that arrives below it is not compensated').toBe(false);
+    // A prompt that opens a turn of its own below the reader - the arrival
+    // that made this a defect: a cron's words landing while a page was read.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-tail',
+          message: { role: 'user', content: [{ type: 'text', text: 'the chore' }] },
+        },
+      },
+    });
+    await frame();
+    expect(last()?.length, 'the prompt opened a row').toBe(3);
+    expect(last()?.shift, 'a turn arriving below the reader is not a prepend').toBe(false);
   });
 
-  it('is held while a second ask is still in flight', async () => {
+  it('does not compensate a page that grows the tail', async () => {
     const server = stub();
     draw(server);
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
+    // **An ask in flight, which is what the old flag read.** The pin has to be
+    // armed here or it cannot tell this fix from the window it replaced: with
+    // nothing outstanding the moment flag was false anyway.
+    list()?.scrolledTo(0, 500, 320);
+    flushSync();
+    expect(server.asks, 'the page is in flight').toHaveLength(1);
+
+    // A catch-up or reconnect page: the newest read repeats the held tail and
+    // carries one more turn below it. Nothing moved at the head, so the rows
+    // above the reader are where they were and the new row is a plain append.
+    server.page([turn('t1'), turn('t2'), turn('t3')], null);
+    await tick();
+    expect(last()?.length, 'the newest page grew the tail').toBe(3);
+    expect(last()?.shift, 'a page that grows the tail is not a prepend').toBe(false);
+  });
+
+  it('draws a pending frame and a landing as two changes', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // **The order a socket burst produces.** A frame opens a turn at the tail
+    // and the page lands before the frame's paint; one merged update would
+    // carry the page's rows above and the frame's row below as a single
+    // growth, and the list would compensate the whole net delta as a prepend.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-burst',
+          message: { role: 'user', content: [{ type: 'text', text: 'the burst' }] },
+        },
+      },
+    });
+    server.page([turn('t0'), turn('t1'), turn('t2')], null);
+    await frame();
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the frame, then the landing',
+    ).toEqual([
+      [3, false],
+      [4, true],
+    ]);
+  });
+
+  it('spends the landing on the paint, not on the next frame that meets it', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // **Three writes, and the landing's paint still in the future.** The
+    // helpers each render before returning, so the first two are separate
+    // tasks; the third lands in the same task as the landing's deferred draw,
+    // which is the window that matters. (All three in one task coalesce in
+    // Svelte before any render, so the boundary there is the hidden pin's.)
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-first',
+          message: { role: 'user', content: [{ type: 'text', text: 'the burst' }] },
+        },
+      },
+    });
+    server.page([turn('t0'), turn('t1'), turn('t2')], null);
+    // A catch-up page one turn longer: an appended frame that opens a row is
+    // held as `unturned` once a page's row is the newest, so a page is the
+    // write the harness can build that still moves the list.
+    server.page([turn('t0'), turn('t1'), turn('t2'), turn('t3')], null);
+    await frame();
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the frame, the landing, the frame',
+    ).toEqual([
+      [3, false],
+      [4, true],
+      [5, false],
+    ]);
+  });
+
+  it('keeps the landing marked when a turn ends in the same window', async () => {
+    const server = stub();
+    draw(server);
+    // The seat's own snapshot is what says a turn is running, which is the
+    // only way a turn's ending changes anything.
+    server.snapshot([turn('t1'), turn('t2')], true);
+    await tick();
+    const handed = records.length;
+
+    // A frame joining the running turn arms a draw; the page lands before it;
+    // then the turn ends, a change that rebuilds the rows without moving the
+    // head. It used to publish at once, replacing the landing's marked value
+    // before its paint and handing the list one unmarked growth.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'assistant',
+          uuid: 'a-open',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'still going' }] },
+        },
+      },
+    });
+    server.page([turn('t0'), turn('t1'), turn('t2')], null);
+    server.update({ turn_cancelled: {} });
+    await frame();
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the landing keeps its mark',
+    ).toEqual([[3, true]]);
+  });
+
+  it('publishes a frame that spends a mark on its own tick when the page cannot paint', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // **The reverse order, hidden.** The landing comes first and the frame
+    // second, both in one task; the frame spends the landing's mark, and a
+    // page that cannot paint has no frame to put between the two publishes.
+    // Without the tick the frame replaces the marked value and the prepend is
+    // never compensated.
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    try {
+      server.burst(
+        {
+          kind: 'page',
+          conversation: LEAD,
+          turns: [turn('t0'), turn('t1'), turn('t2')],
+          cursor: null,
+        },
+        {
+          kind: 'update',
+          update: {
+            chat_appended: {
+              key: LEAD,
+              msg: {
+                type: 'user',
+                uuid: 'u-reverse',
+                message: { role: 'user', content: [{ type: 'text', text: 'after the page' }] },
+              },
+            },
+          },
+        },
+      );
+      await tick();
+    } finally {
+      if (hidden !== undefined) Object.defineProperty(document, 'hidden', hidden);
+    }
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the landing, then the frame',
+    ).toEqual([
+      [3, true],
+      [4, false],
+    ]);
+  });
+
+  it('spends a waiting mark before a frame whose turns differ', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // Frame, landing, then a frame that only joins the newest row: no row is
+    // added, but the turns are rebuilt, so the landing's unpublished mark is
+    // spent by that write rather than replaced by it. The first two render
+    // before returning; the last lands while the landing's draw is deferred.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-head',
+          message: { role: 'user', content: [{ type: 'text', text: 'the burst' }] },
+        },
+      },
+    });
+    server.page([turn('t0'), turn('t1'), turn('t2')], null);
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'assistant',
+          uuid: 'a-tail',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'and more' }] },
+        },
+      },
+    });
+    await frame();
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the frame, then the landing marked, then the frame',
+    ).toEqual([
+      [3, false],
+      [4, true],
+    ]);
+  });
+
+  it('keeps a landing marked when a turn ends on a page that cannot paint', async () => {
+    const server = stub();
+    draw(server);
+    // A running turn, so its ending rebuilds the rows.
+    server.snapshot([turn('t1'), turn('t2')], true);
+    await tick();
+    const handed = records.length;
+
+    // The landing is deferred to a tick (no frame to publish on) and the turn
+    // ends before that tick. The ending does not move the head, so only the
+    // unpublished mark tells the column to spend it first.
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    try {
+      server.burst(
+        {
+          kind: 'page',
+          conversation: LEAD,
+          turns: [turn('t0'), turn('t1'), turn('t2')],
+          cursor: null,
+        },
+        { kind: 'update', update: { turn_cancelled: {} } },
+      );
+      await tick();
+    } finally {
+      if (hidden !== undefined) Object.defineProperty(document, 'hidden', hidden);
+    }
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the landing keeps its mark through the ending',
+    ).toEqual([[3, true]]);
+  });
+
+  // **A composition pin, not a fix pin.** It holds on the round-2 code too:
+  // it says #2639's handoff row goes through the same funnel and therefore
+  // gets the same boundary, not that this cut changed it.
+  it('joins a mid-handoff prepend as a change of its own', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // A frame arms a draw; then the seat's record arrives carrying a handoff
+    // whose judgment turn is joined AHEAD of the held rows - a client catching
+    // up mid-handoff. A prepend above the reader is exactly the change that
+    // must be published on its own, and #2639 put it through the same funnel.
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-mid',
+          message: { role: 'user', content: [{ type: 'text', text: 'while away' }] },
+        },
+      },
+    });
+    server.snapshot([turn('t1'), turn('t2')], false, handoffRecord('forge_nudge_handoff_mid'));
+    await frame();
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the frame, then the handoff turn and row above it',
+    ).toEqual([
+      [3, false],
+      [5, true],
+    ]);
+  });
+
+  it('publishes a landing on its own tick when the page cannot paint', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // **No frame is coming, so the boundary is a tick.** A hidden page flushes
+    // writes at once, which puts the frame and the landing in one task and one
+    // render - the merge again, by the other door.
+    const hidden = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    try {
+      server.burst(
+        {
+          kind: 'update',
+          update: {
+            chat_appended: {
+              key: LEAD,
+              msg: {
+                type: 'user',
+                uuid: 'u-hidden',
+                message: { role: 'user', content: [{ type: 'text', text: 'hidden' }] },
+              },
+            },
+          },
+        },
+        {
+          kind: 'page',
+          conversation: LEAD,
+          turns: [turn('t0'), turn('t1'), turn('t2')],
+          cursor: null,
+        },
+      );
+      await tick();
+    } finally {
+      if (hidden !== undefined) Object.defineProperty(document, 'hidden', hidden);
+    }
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the frame, then the landing on its own tick',
+    ).toEqual([
+      [3, false],
+      [4, true],
+    ]);
+  });
+
+  it('compensates a second landing on its own change, and the turn after it not at all', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+
+    // A second ask is the ordinary case: the landing's own compensation fires
+    // a scroll, and a reader's reach can follow it inside the same window.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     server.page([turn('t1'), turn('t2')], '1');
-    // The compensation is applied by scrolling the list, which fires a scroll
-    // event of its own - so a second ask inside this window is the ordinary
-    // case, not a contrived one.
     list()?.scrolledTo(0, 500, 320);
     flushSync();
     expect(server.asks, 'two asks are out').toHaveLength(2);
-    expect(last()?.shift, 'still armed for the second').toBe(true);
-
-    await tick();
-    expect(last()?.shift, 'and one landing does not disarm the other').toBe(true);
 
     server.page([turn('t0'), turn('t1')], null);
-    await tick();
-    expect(last()?.shift, 'both landed, so off').toBe(false);
+    const grew = firstGrowth();
+    expect(grew?.shift, 'the landing that moved the head is compensated').toBe(true);
+
+    server.update({
+      chat_appended: {
+        key: LEAD,
+        msg: {
+          type: 'user',
+          uuid: 'u-after',
+          message: { role: 'user', content: [{ type: 'text', text: 'after the landing' }] },
+        },
+      },
+    });
+    await frame();
+    expect(last()?.shift, 'and the turn opening below it after that is not').toBe(false);
   });
 });
 
