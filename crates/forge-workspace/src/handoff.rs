@@ -227,33 +227,36 @@ fn judgment_turn(messages: &[Message]) -> Vec<Message> {
 /// **The cut is stated, never silent.** The reader sees a turn that ends with
 /// an omission row pointing at the transcript, rather than a short turn that
 /// reads as the whole of what the old session did.
+///
+/// **The weight is the serialized ARRAY**, separators included, because that
+/// is what the record carries and what the wire measures. A message that will
+/// not serialize counts as the whole ceiling rather than as nothing, so a
+/// failure can only shorten the turn, never overflow it. A prompt that is
+/// itself past the ceiling is carried alone: dropping the row the turn is
+/// recognised by would cost more than the bound is worth.
 fn cap_turn(turn: &[Message]) -> Vec<Message> {
-    let weigh = |message: &Message| serde_json::to_string(message).map_or(0, |json| json.len());
-    let total: usize = turn.iter().map(weigh).sum();
-    if total <= JUDGMENT_TURN_CAP {
+    let weigh = |messages: &[Message]| {
+        serde_json::to_string(messages).map_or(usize::MAX, |json| json.len())
+    };
+    if weigh(turn) <= JUDGMENT_TURN_CAP {
         return turn.to_vec();
     }
     let Some(prompt) = turn.first() else { return Vec::new() };
-    // The omission row's own cost is reserved up front, at its widest count,
-    // so the turn the record carries is inside the ceiling with the line.
-    let reserve = weigh(&omission(usize::MAX));
-    let mut budget = JUDGMENT_TURN_CAP.saturating_sub(weigh(prompt)).saturating_sub(reserve);
-    let mut kept: Vec<Message> = Vec::new();
-    for message in turn.iter().skip(1).rev() {
-        let cost = weigh(message);
-        if cost > budget {
-            break;
+    let rest = &turn[1..];
+    // Keep the newest messages that fit, dropping from the oldest end. The
+    // common case is a step or two; a turn with many large messages pays one
+    // serialization each, once per handoff.
+    let mut take = rest.len();
+    loop {
+        let mut capped = Vec::with_capacity(take + 2);
+        capped.push(prompt.clone());
+        capped.extend(rest[rest.len() - take..].iter().cloned());
+        capped.push(omission(rest.len() - take));
+        if weigh(&capped) <= JUDGMENT_TURN_CAP || take == 0 {
+            return capped;
         }
-        budget -= cost;
-        kept.push(message.clone());
+        take -= 1;
     }
-    kept.reverse();
-    let dropped = turn.len() - 1 - kept.len();
-    let mut capped = Vec::with_capacity(kept.len() + 2);
-    capped.push(prompt.clone());
-    capped.extend(kept);
-    capped.push(omission(dropped));
-    capped
 }
 
 /// The row a capped turn ends on: a notice, so the fold draws it as the
@@ -3152,11 +3155,8 @@ mod tests {
             turn.last(),
         );
         assert!(
-            turn.iter()
-                .map(|message| serde_json::to_string(message).map_or(0, |json| json.len()))
-                .sum::<usize>()
-                <= JUDGMENT_TURN_CAP,
-            "and the whole of it stays at the ceiling",
+            serde_json::to_string(turn).map_or(usize::MAX, |json| json.len()) <= JUDGMENT_TURN_CAP,
+            "and the carried array, separators included, stays at the ceiling",
         );
     }
 
