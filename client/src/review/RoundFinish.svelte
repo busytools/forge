@@ -85,7 +85,9 @@
           // nothing filed from sealing (Ved, 2026-10-15).
           if (event.key !== 'Enter' || event.shiftKey) return;
           event.preventDefault();
-          if (!busy && complete) onfinish();
+          // **A live take seals nothing** (the seal closes the page, and the
+          // words it is still carrying would go with it).
+          if (!busy && complete && phase === null) onfinish();
         }}
         field={onfield}
       />
@@ -95,7 +97,12 @@
     {#if voice.offered}
       <DictateControl dictate={voice.dictate} {onpress} {onhold} />
     {/if}
-    <button class="rv-finish" type="button" disabled={busy || !complete} onclick={onfinish}>
+    <button
+      class="rv-finish"
+      type="button"
+      disabled={busy || !complete || phase !== null}
+      onclick={onfinish}
+    >
       {count > 0 ? `finish review (${count})` : 'finish review'}
     </button>
     {#if panel}

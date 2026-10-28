@@ -304,8 +304,8 @@
   .rv-finishbox { background: var(--s1); color: var(--dim); border: 1px solid var(--line);
     border-radius: 7px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px;
     min-height: 58px; }
-  .rv-finishacts { display: flex; gap: 9px; align-items: center;
-    justify-content: flex-end; }
+  .rv-finishacts { display: flex; gap: 9px; align-items: center; }
+  .rv-finishacts .mic { margin-left: auto; }
   .rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     background: var(--s3); border: 0; border-radius: 8px; padding: 6px 14px; }
 
@@ -433,17 +433,17 @@
       <h2>Files <span class="n">17</span></h2>
       <div class="rv-dir" style="--d:0">
         <span class="rv-arw open">&#9656;</span>
-        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#039be5" d="m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232"/><path fill="#b3e5fc" d="m15 6-7.5.004a.5.5 0 0 0-.5.5V12H5v2h6v-2H8V7.004h7zm-2.5 2a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-5a.5.5 0 0 0-.5-.5zm.5 1h2v3h-2z"/></svg>
+        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#039be5" d="M14.483 6H4.721a1 1 0 0 0-.949.684L2 12V5h12a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232l-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h11l2.403-5.606A1 1 0 0 0 14.483 6"/><path fill="#b3e5fc" d="m15 6-7.5.004a.5.5 0 0 0-.5.5V12H5v2h6v-2H8V7.004h7zm-2.5 2a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-5a.5.5 0 0 0-.5-.5zm.5 1h2v3h-2z"/></svg>
         <span class="rv-dirname">client/</span><span class="rv-dircount">8</span>
       </div>
       <div class="rv-dir" style="--d:1">
         <span class="rv-arw open">&#9656;</span>
-        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#4caf50" d="m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232"/><path fill="#c8e6c9" d="M9.225 15a.5.5 0 0 1-.12-.014.57.568 0 0 1-.414-.661l1.549-7.872a.566.565 0 0 1 .254-.372.53.53 0 0 1 .4-.067.57.57 0 0 1 .415.662l-1.552 7.872a.56.56 0 0 1-.253.371.53.53 0 0 1-.28.081m3.105-1h-.038a.54.54 0 0 1-.382-.206.583.582 0 0 1 .057-.774l2.664-2.483-2.653-2.312a.583.582 0 0 1-.08-.772.54.54 0 0 1 .377-.218.53.53 0 0 1 .406.129l3.126 2.727a.579.578 0 0 1 .002.862l-3.114 2.904a.536.535 0 0 1-.365.144zm-4.661 0a.536.535 0 0 1-.365-.146L4.186 10.95a.58.58 0 0 1-.005-.846l.01-.01 3.128-2.726a.516.515 0 0 1 .4-.13.54.54 0 0 1 .38.218.583.582 0 0 1-.08.773l-2.65 2.31 2.663 2.482a.579.578 0 0 1 .056.774.536.535 0 0 1-.381.206z"/></svg>
+        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#4caf50" d="M14.483 6H4.721a1 1 0 0 0-.949.684L2 12V5h12a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232l-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h11l2.403-5.606A1 1 0 0 0 14.483 6"/><path fill="#c8e6c9" d="M9.225 15a.5.5 0 0 1-.12-.014.57.568 0 0 1-.414-.661l1.549-7.872a.566.565 0 0 1 .254-.372.53.53 0 0 1 .4-.067.57.57 0 0 1 .415.662l-1.552 7.872a.56.56 0 0 1-.253.371.53.53 0 0 1-.28.081m3.105-1h-.038a.54.54 0 0 1-.382-.206.583.582 0 0 1 .057-.774l2.664-2.483-2.653-2.312a.583.582 0 0 1-.08-.772.54.54 0 0 1 .377-.218.53.53 0 0 1 .406.129l3.126 2.727a.579.578 0 0 1 .002.862l-3.114 2.904a.536.535 0 0 1-.365.144zm-4.661 0a.536.535 0 0 1-.365-.146L4.186 10.95a.58.58 0 0 1-.005-.846l.01-.01 3.128-2.726a.516.515 0 0 1 .4-.13.54.54 0 0 1 .38.218.583.582 0 0 1-.08.773l-2.65 2.31 2.663 2.482a.579.578 0 0 1 .056.774.536.535 0 0 1-.381.206z"/></svg>
         <span class="rv-dirname">src/</span><span class="rv-dircount">5</span>
       </div>
       <div class="rv-dir" style="--d:2">
         <span class="rv-arw open">&#9656;</span>
-        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#2196f3" d="m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232"/><path fill="#bbdefb" d="M10.5 7C8.17 7 5.825 8.455 5 10.5c.825 2.045 3.17 3.5 5.5 3.5s4.675-1.455 5.5-3.5C15.175 8.455 12.83 7 10.5 7m.115 1.002A2.5 2.5 0 0 1 13 10.5a2.5 2.5 0 0 1-2.5 2.5 2.5 2.5 0 1 1 .115-4.998M10.5 9A1.5 1.5 0 0 0 9 10.5a1.5 1.5 0 0 0 1.5 1.5 1.5 1.5 0 0 0 1.5-1.5A1.5 1.5 0 0 0 10.5 9"/></svg>
+        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#2196f3" d="M14.483 6H4.721a1 1 0 0 0-.949.684L2 12V5h12a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232l-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h11l2.403-5.606A1 1 0 0 0 14.483 6"/><path fill="#bbdefb" d="M10.5 7C8.17 7 5.825 8.455 5 10.5c.825 2.045 3.17 3.5 5.5 3.5s4.675-1.455 5.5-3.5C15.175 8.455 12.83 7 10.5 7m.115 1.002A2.5 2.5 0 0 1 13 10.5a2.5 2.5 0 0 1-2.5 2.5 2.5 2.5 0 1 1 .115-4.998M10.5 9A1.5 1.5 0 0 0 9 10.5a1.5 1.5 0 0 0 1.5 1.5 1.5 1.5 0 0 0 1.5-1.5A1.5 1.5 0 0 0 10.5 9"/></svg>
         <span class="rv-dirname">review/</span><span class="rv-dircount">3</span>
       </div>
       <div class="rv-frow here" style="--d:3">
@@ -470,7 +470,7 @@
       </div>
       <div class="rv-dir" style="--d:2">
         <span class="rv-arw open">&#9656;</span>
-        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#90a4ae" d="m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232"/></svg>
+        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#90a4ae" d="M14.483 6H4.721a1 1 0 0 0-.949.684L2 12V5h12a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232l-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h11l2.403-5.606A1 1 0 0 0 14.483 6"/></svg>
         <span class="rv-dirname">session/</span><span class="rv-dircount">2</span>
       </div>
       <div class="rv-frow" style="--d:3">
