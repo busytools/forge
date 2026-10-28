@@ -356,15 +356,8 @@
 
   /**
    * Whether the change that built this list moved its head, which is the only
-   * change the list may compensate for.
-   *
-   * **Not "a page is in flight".** The list takes its flag as a fact about the
-   * change and reads it only as the rows change, so a window arms it for
-   * whatever happens inside the window - a turn that opens at the tail
-   * included - and every row below then lands on the row above's offset and
-   * draws over it until it re-measures (Ved, 2026-10-28: two rows in one band,
-   * text over text, gone later in the same view). The fold stamps the list it
-   * builds, so the flag says what the change was.
+   * change it may compensate for. The why is `movedHead` in `conversation.ts`;
+   * this is only the read.
    */
   const shift = $derived(headMoved(held.turns));
   /** This column's own memory of its rows' heights, kept out of a module global. */

@@ -1360,6 +1360,8 @@ export class Chat {
   private queued: number | null = null;
   /** The paint's own deadline, armed while `queued` is: see [`PAINT_WATCHDOG_MS`]. */
   private watchdog: ReturnType<typeof setTimeout> | null = null;
+  /** The tick a hidden page's landing waits on, so a publish can drop it. */
+  private deferred: ReturnType<typeof setTimeout> | null = null;
   /**
    * When the waiting publish was armed, by the wall clock - `0` when none is.
    *
@@ -1621,8 +1623,18 @@ export class Chat {
       clearTimeout(this.watchdog);
       this.watchdog = null;
     }
+    if (this.deferred !== null) {
+      clearTimeout(this.deferred);
+      this.deferred = null;
+    }
     this.armedAt = 0;
-    this.inner.set(this.held);
+    const written = this.held;
+    this.inner.set(written);
+    // **A mark is spent by the publish it was made for.** Cleared after the
+    // write and on the next microtask, because the readers that write wakes
+    // read `shift` as the rows change - which Svelte does on that microtask -
+    // and a mark cleared first would be gone before the list saw it.
+    if (headMoved(written.turns)) queueMicrotask(() => HEAD_MOVED.delete(written.turns));
   }
 
   /**
@@ -1684,34 +1696,43 @@ export class Chat {
     const next = fn(before);
     const moved = movedHead(before, next);
     if (moved) HEAD_MOVED.add(next.turns);
-    // **A head-moving change with a draw already waiting is published as its
-    // own change.** The list reads the compensation per change, so a landing
-    // that cancelled a pending frame's paint would hand it one update carrying
-    // both: the page's rows above AND the row that frame opened below arrive
-    // as a single growth, the tail row is counted at the head, and every
-    // cached size sits one position off (round 1). Two writes in one task
-    // coalesce before Svelte renders, so the landing's own publish goes on the
-    // next frame.
-    if (moved && this.queued !== null) {
+    // **A value waiting for its publish is spent, never replaced.** The list
+    // reads the compensation per change, so a change that overwrote the
+    // waiting one would hand it a single update in which the head moved and
+    // the tail grew - the whole delta compensated as a prepend. A marked
+    // value not yet published, and any armed draw (which this change would be
+    // merged into), go out first; this change follows on the next paint,
+    // because two writes in one task coalesce before Svelte renders.
+    const waiting = this.queued !== null || headMoved(before.turns);
+    if (waiting) this.flush();
+    this.held = next;
+    if (!waiting && !(moved && cannotPaint())) {
       this.flush();
-      this.held = next;
-      // A page that cannot paint has no frame to wait for, and a write in the
-      // same task as the one above would coalesce with it - so it waits a
-      // tick instead.
-      if (cannotPaint()) setTimeout(() => this.flush(), 0);
-      else this.soon();
       return;
     }
-    this.held = next;
-    this.flush();
+    // A page that cannot paint has no frame to wait for, and a write in the
+    // same task as the one above would coalesce with it - so it waits a tick.
+    if (cannotPaint()) this.deferred = setTimeout(() => this.flush(), 0);
+    else this.soon();
   }
 
   /** Apply one STREAM frame, whose draw lands on the next painted frame. */
   private stream(fn: (held: Conversation) => Conversation): void {
     const before = this.held;
     const next = fn(before);
-    if (movedHead(before, next)) HEAD_MOVED.add(next.turns);
+    const moved = movedHead(before, next);
+    if (moved) HEAD_MOVED.add(next.turns);
+    // A marked value not yet published is spent first, and a frame that moves
+    // the head is never merged into a draw already armed. Any other frame may
+    // ride the draw it meets: appends are the burst the paint coalesces.
+    if (headMoved(before.turns) || (moved && this.queued !== null)) this.flush();
     this.held = next;
+    // A frame that moves the head has to be seen on a write of its own, and a
+    // hidden page has no frame to make one of - so it takes a tick.
+    if (moved && cannotPaint()) {
+      this.deferred = setTimeout(() => this.flush(), 0);
+      return;
+    }
     this.soon();
   }
 
@@ -4166,11 +4187,12 @@ export function headMoved(turns: readonly unknown[]): boolean {
  * Whether a change moved the list's head, which is what the mark says.
  *
  * **Every way the held rows move goes through `fold` or `stream`**, so marking
- * there cannot be forgotten by one of them - a page landing, a trim and a
- * retraction are the same fact to the list, and a turn opening at the tail is
- * the one that must not be read as the same fact. (`replaced`, the occupant
- * swap, is the exception: it writes a whole new conversation rather than
- * moving rows in the one already drawn.)
+ * there cannot be forgotten by one of them. What counts is the head itself
+ * moving - a page landing above, a trim that cuts the front, a retraction that
+ * empties the first row - while a turn opening at the tail is the one change
+ * that must not be read as the same fact. (`replaced`, the occupant swap, is
+ * the exception: it writes a whole new conversation rather than moving rows in
+ * the one already drawn.)
  *
  * **A list built from nothing is not a head move.** The first page has nothing
  * above the reader to hold, and the list fills an empty one row by row.

@@ -8,12 +8,9 @@
    * A stand-in for `virtua`'s list, for tests that have to see what the column
    * HANDS it rather than what it draws.
    *
-   * **The compensation is read once, as the row count changes.** `virtua`
-   * reads `shift` from an effect that runs before the DOM update and consults
-   * it nowhere else, so what has to be pinned is WHICH change carries it: a
-   * list handed a flag that describes a moment compensates the next turn that
-   * opens at the tail as though it had been prepended, and every row below
-   * lands on the row above's offset.
+   * **The compensation is read once, as the row count changes** - and this
+   * records exactly there, so a test sees the pair `virtua` would. Which
+   * change carries it, and why, is `conversation.ts`'s `movedHead`.
    */
   let {
     data = [],
@@ -78,9 +75,12 @@
       .join(';');
   }
 
-  // Where virtua reads it: before the DOM updates, on the change itself.
+  // Where virtua reads it: before the DOM updates, on the change itself - and
+  // only when the count moved, since that is the one moment virtua consults it.
   $effect.pre(() => {
-    records.push({ length: data.length, shift });
+    const length = data.length;
+    if (records.at(-1)?.length === length) return;
+    records.push({ length, shift });
   });
 
   /**
