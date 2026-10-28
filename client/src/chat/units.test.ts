@@ -3912,10 +3912,10 @@ describe('a page seam that re-serves a result', () => {
  * Frames the CLI sends that the fold had no row for.
  *
  * **Every row here is provisional** (Ved, 2026-10-26): the frame draws as
- * itself, carrying a mark naming what it is, with its payload behind the
+ * itself, carrying a mark naming what it is, with its fields listed under the
  * open - so the shape is visible and can be decided later rather than being
- * dropped in silence. Each test asserts the ROW: its mark, what it says, and
- * that the raw payload is reachable.
+ * dropped in silence. Each test asserts the ROW: its mark, what it says, the
+ * facts its body lists, and that the raw payload stays reachable.
  */
 describe('the frames the fold had no row for', () => {
   const noticeOf = (unit: Unit | undefined): Notice | null =>
@@ -3932,7 +3932,11 @@ describe('the frames the fold had no row for', () => {
       'widget_state',
     );
     expect(notice?.text, 'the row says what arrived').toContain('widget_state');
-    expect(notice?.raw, "the payload is reachable behind the row's open").toContain('"counter"');
+    expect(notice?.fields, "the open body lists the frame's own fields, flattened").toEqual([
+      { label: 'widget.name', value: 'counter' },
+      { label: 'widget.value', value: '7' },
+    ]);
+    expect(notice?.raw, 'and the frame itself stays reachable').toContain('"counter"');
   });
 
   it('draws a content block the fold does not know, and still draws no result block', () => {
@@ -3948,7 +3952,10 @@ describe('the frames the fold had no row for', () => {
     const notice = noticeOf(units[0]);
     expect(notice?.mark, 'the block names itself').toBe('mystery_block');
     expect(notice?.text, 'the row says what arrived').toContain('mystery_block');
-    expect(notice?.raw, 'and carries the block').toContain('"payload"');
+    expect(notice?.fields, "the block's own fields are the body").toEqual([
+      { label: 'payload.n', value: '1' },
+    ]);
+    expect(notice?.raw, 'and the block itself stays reachable').toContain('"payload"');
   });
 
   it('draws a permission denial as an error and settles the call it refused', () => {
@@ -3973,7 +3980,13 @@ describe('the frames the fold had no row for', () => {
     expect(notice?.mark).toBe('permission_denied');
     expect(notice?.text, 'the tool and the reason').toContain('Bash');
     expect(notice?.text, 'the CLI said why').toContain('Contains simple_expansion');
-    expect(notice?.raw, 'the payload names the call it refused').toContain('toolu_denied');
+    expect(notice?.fields, 'the open body names the refused call and why').toEqual([
+      { label: 'tool', value: 'Bash' },
+      { label: 'call', value: 'toolu_denied' },
+      { label: 'reason', value: 'Contains simple_expansion' },
+      { label: 'decision', value: 'other' },
+    ]);
+    expect(notice?.raw, 'and the frame itself stays reachable').toContain('toolu_denied');
   });
 
   it('draws an api error with its status and retry, and an informational line at its level', () => {
@@ -4013,10 +4026,21 @@ describe('the frames the fold had no row for', () => {
     expect(failed?.text, 'and never draws the provider JSON').not.toContain('overloaded_error');
     expect(failed?.text, 'the status').toContain('502');
     expect(failed?.sub, 'and the retry delay').toContain('610ms');
+    expect(failed?.fields, 'the open body carries the incident as labelled facts').toEqual([
+      { label: 'message', value: '502 Durable Object is overloaded, retrying' },
+      { label: 'status', value: 'HTTP 502' },
+      { label: 'level', value: 'error' },
+      { label: 'attempt', value: '1 of 300' },
+      { label: 'retry in', value: '610ms' },
+    ]);
     const info = noticeOf(units[1]);
     expect(info?.severity, 'the informational line reads at its own level').toBe('warning');
     expect(info?.mark).toBe('informational');
     expect(info?.text).toBe('Goal cleared after an unrecoverable error');
+    expect(info?.fields).toEqual([
+      { label: 'content', value: 'Goal cleared after an unrecoverable error' },
+      { label: 'level', value: 'warning' },
+    ]);
 
     // An EMPTY `formatted` must not swallow the row: the first non-blank of
     // the two wins, or a 502 row would read as a bare status.
@@ -4051,8 +4075,15 @@ describe('the frames the fold had no row for', () => {
     expect(kinds(units), 'both draw').toEqual(['notice', 'notice']);
     expect(noticeOf(units[0])?.severity, 'an immediate one is a warning').toBe('warning');
     expect(noticeOf(units[0])?.text).toBe('a stop hook errored');
+    expect(noticeOf(units[0])?.fields).toEqual([
+      { label: 'text', value: 'a stop hook errored' },
+      { label: 'priority', value: 'immediate' },
+    ]);
     expect(noticeOf(units[1])?.severity, 'the ordinary one is informational').toBe('info');
     expect(noticeOf(units[1])?.mark).toBe('notification');
+    expect(noticeOf(units[1])?.fields, 'an absent priority draws no empty fact').toEqual([
+      { label: 'text', value: 'the queue drained' },
+    ]);
   });
 
   it('draws a system subtype it does not know, and stays silent for one drawn elsewhere', () => {
@@ -4060,6 +4091,20 @@ describe('the frames the fold had no row for', () => {
     expect(kinds(future), 'a subtype the CLI adds still draws').toEqual(['notice']);
     expect(noticeOf(future[0])?.mark).toBe('future_state');
     expect(noticeOf(future[0])?.text).toBe('unhandled frame: system/future_state');
+    expect(
+      noticeOf(future[0])?.fields,
+      'a frame carrying nothing but its identity draws no empty fact list',
+    ).toBeUndefined();
+
+    // An unmodelled subtype that DOES carry fields draws them as the body,
+    // named in words rather than left as the wire's spelling.
+    const timed = fold([
+      { type: 'system', subtype: 'turn_duration', durationMs: 4210, messageCount: 4, uuid: 't1' },
+    ]);
+    expect(noticeOf(timed[0])?.fields).toEqual([
+      { label: 'duration ms', value: '4210' },
+      { label: 'message count', value: '4' },
+    ]);
 
     const elsewhere = fold([
       { type: 'system', subtype: 'background_tasks_changed', tasks: [], uuid: 'b1' },

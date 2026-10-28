@@ -154,14 +154,17 @@ read as one system.
   provisional.** An unknown top-level frame and an unknown content block, and
   the CLI's own system lines for a permission refusal, an API error, an
   informational line and a notification, each draw as a notice whose mark is
-  the wire's own type, with the whole payload opening under the row - so the
-  frame is seen on the day it arrives and can be given a face later, rather
-  than being dropped. A refusal also settles the call it names, which no
-  result frame will ever settle, and an assistant question nobody answered
-  keeps its call row marked `unanswered` once the turn has closed. Until then
-  the dock is the question's row, so the mark waits for the close; after it,
-  the answer card never drew and the dock has cleared, and the call row is the
-  only trace left.
+  the wire's own type. The open body lists what the frame carried as one-line
+  labelled values - the tool and call a refusal names, an error's message,
+  status and retry, an unknown frame's fields - and the frame itself sits
+  behind a second control under them, so the payload stays reachable while
+  the row's face is the facts. The frame is seen the day it arrives and can
+  be given a real face later, rather than being dropped. A refusal also
+  settles the call it names, which no result frame will ever settle, and an
+  assistant question nobody answered keeps its call row marked `unanswered`
+  once the turn has closed. Until then the dock is the question's row, so the
+  mark waits for the close; after it, the answer card never drew and the dock
+  has cleared, and the call row is the only trace left.
 
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it

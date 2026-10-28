@@ -10,11 +10,12 @@
    * because a reader who cannot see the ground still has to know whether this
    * is a delivery or a failure.
    *
-   * **A provisional notice opens onto its payload.** A frame this build has
-   * no face for yet draws as itself, marked with its own type, and the whole
-   * frame sits behind the open - the Hook row's shape, so the decision about
-   * its real face is made from what arrived rather than from a description of
-   * it (Ved, 2026-10-26).
+   * **A provisional notice opens onto the frame's own facts.** A frame this
+   * build has no face for yet draws as itself, marked with its own type, and
+   * the open body lists what the frame carried as labelled values - the raw
+   * JSON was the first cut's face, and a reader asked for the facts instead
+   * (Ved, 2026-10-28). The frame itself stays one control further in, so the
+   * decision about its real face is still made from what arrived (rule 25).
    */
   let { notice }: { notice: Notice } = $props();
 
@@ -24,6 +25,9 @@
   const word = $derived(
     notice.severity === 'warning' ? 'Warning' : notice.severity === 'error' ? 'Error' : 'Info',
   );
+
+  /** The raw frame is only rendered once its own control is open. */
+  let rawOpen = $state(false);
 </script>
 
 {#snippet head()}
@@ -47,15 +51,25 @@
 {:else}
   <details class="notice {tone}">
     <summary>
-      {#if notice.chip !== undefined}
-        <span class="chip">{notice.chip}</span>
-      {/if}
       {@render head()}
       {#if notice.sub !== undefined}
         <span class="sub2">{notice.sub}</span>
       {/if}
+      {#if notice.chip !== undefined}
+        <span class="chip">{notice.chip}</span>
+      {/if}
       <Chevron />
     </summary>
-    <div class="rawbox"><pre>{notice.raw}</pre></div>
+    <div class="nbody">
+      {#each notice.fields ?? [] as field (field.label)}
+        <div class="nfact">
+          <span class="k">{field.label}</span><span class="v">{field.value}</span>
+        </div>
+      {/each}
+      <details class="raw" bind:open={rawOpen}>
+        <summary><Chevron />raw frame</summary>
+        {#if rawOpen}<pre>{notice.raw}</pre>{/if}
+      </details>
+    </div>
   </details>
 {/if}

@@ -903,20 +903,48 @@
   .conv .notice .chip { float: right; font-family: var(--mono); font-size: 11.5px;
     border: 1px solid rgba(201,161,59,.35); border-radius: 999px; padding: 1px 7px; margin-left: 10px; }
   .conv .notice .sub2 { display: block; color: var(--dim); font-size: 12.5px; margin-top: 2px; }
-  /* A provisional notice: the wire's own type as a visible mark, and the whole
-     frame behind the open. The word carries the signal, not the colour. */
+  /* A provisional notice: the wire's own type as a visible mark, and the
+     frame's fields behind the open. The word carries the signal, not the
+     colour. **The expander rides the header line**: the shared icon is a
+     block, so a summary without a row layout drops it onto a line of its own,
+     which read as an empty row under every notice and put the arrow below the
+     words once open (Ved, 2026-10-28). */
   .conv .notice .mark { font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
-    color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px;
-    margin-right: 7px; }
-  .conv details.notice > summary { list-style: none; cursor: pointer; }
+    color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
+  .conv details.notice > summary { list-style: none; cursor: pointer; display: flex;
+    align-items: center; gap: 7px; }
   .conv details.notice > summary::-webkit-details-marker { display: none; }
-  /* A provisional row's tail rides the line: the block rule above is for a
-     notice's own second line, and on a summary it would push the chevron down
-     under the row. */
-  .conv details.notice > summary .sub2 { display: inline; margin-top: 0; margin-left: 8px; }
-  .conv details.notice .rawbox { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
-  .conv details.notice .rawbox pre { margin: 0; font-family: var(--mono); font-size: 11.5px;
-    color: var(--text); white-space: pre-wrap; word-break: break-word; }
+  .conv details.notice > summary .mark,
+  .conv details.notice > summary .sev { flex: none; margin-right: 0; }
+  .conv details.notice > summary .sub2 { display: inline; margin: 0; color: var(--dim);
+    font-size: 12.5px; flex: none; }
+  .conv details.notice > summary .chip { float: none; margin-left: auto; flex: none; }
+  .conv details.notice > summary .arw { flex: none; margin-left: auto; color: var(--dim); }
+  /* With a chip present the chip takes the free space, so the arrow tucks in
+     behind it rather than splitting the gap with it. */
+  .conv details.notice > summary .chip + .arw { margin-left: 8px; }
+  .conv details.notice[open] > summary .arw { color: var(--accent); }
+  /* The open row's face: the frame's facts as the page's own label/value
+     lines, and the frame itself behind one more control - rule 25 keeps the
+     payload reachable without making JSON the row's face (Ved, 2026-10-28). */
+  .conv details.notice .nbody { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+  /* A provisional row's facts read as one line each. The page's shared `.kv`
+     pushes a label and its value to opposite ends of the box, which left a
+     fact reading as two unrelated ends rather than one (Ved, 2026-10-28). */
+  .conv details.notice .nfact { display: flex; gap: 6px; padding: 1px 0;
+    font-family: var(--mono); font-size: 12.5px; }
+  .conv details.notice .nfact .k { flex: none; color: var(--dim); }
+  .conv details.notice .nfact .k::after { content: ':'; }
+  .conv details.notice .nfact .v { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+  .conv details.notice details.raw { margin-top: 6px; }
+  .conv details.notice details.raw > summary { list-style: none; cursor: pointer; display: flex;
+    align-items: center; gap: 5px; font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  .conv details.notice details.raw > summary::-webkit-details-marker { display: none; }
+  .conv details.notice details.raw > summary .arw { flex: none; width: 11px; height: 11px; }
+  .conv details.notice details.raw[open] > summary .arw { color: var(--accent); }
+  .conv details.notice details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border: 1px solid var(--line);
+    border-radius: var(--r); background: var(--s1); font-family: var(--mono); font-size: 11.5px;
+    color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 
   /* The compaction point: the settled form of a compaction. A hint you open
      rather than a block that is already open. The in-flight form lives in the
@@ -2519,21 +2547,39 @@ docs: The sprite a row draws, by the class it belongs to.</div>
         <div class="notice warn"><span class="chip">attempt 2 / 4</span><span class="sev">Warning</span>API retry after server_error HTTP 529<span class="sub2">retrying in 1.5s</span></div>
         <div class="notice err"><span class="sev">Error</span>Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</div>
 
-        <!-- A frame the page has no face for yet draws as itself: the wire's
-             own type as the visible mark, the whole frame behind the open, so
-             it is seen on the day it arrives rather than dropped (rule 25).
-             This one also settles the call it refused, which no result will. -->
-        <details class="notice err">
+        <!-- A frame the page has no face for yet draws as itself, open here:
+             the wire's own type as the visible mark, the frame's fields as
+             labelled values under it, and the frame itself one control
+             further in (rule 25 keeps it reachable). This one also settles
+             the call it refused, which no result will. -->
+        <details class="notice err" open>
           <summary><span class="mark">permission_denied</span><span class="sev">Error</span>Bash refused: Contains simple_expansion<svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="rawbox"><pre>{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_denied","decision_reason_type":"other","decision_reason":"Contains simple_expansion","message":"Contains simple_expansion"}</pre></div>
+          <div class="nbody">
+            <div class="nfact"><span class="k">tool</span><span class="v">Bash</span></div>
+            <div class="nfact"><span class="k">call</span><span class="v">toolu_denied</span></div>
+            <div class="nfact"><span class="k">reason</span><span class="v">Contains simple_expansion</span></div>
+            <div class="nfact"><span class="k">decision</span><span class="v">other</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
         </details>
 
         <!-- An api error with its retry: the reader-facing `formatted` line,
              the attempt chip, and the delay riding the same line as the row -
-             a second line of its own would push the chevron under it. -->
+             a line of their own would push the chevron under the words. -->
         <details class="notice err">
-          <summary><span class="chip">attempt 1 / 300</span><span class="mark">api_error</span><span class="sev">Error</span>502 Durable Object is overloaded, retrying HTTP 502<span class="sub2">retrying in 610ms</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="rawbox"><pre>{"type":"system","subtype":"api_error","level":"error","error":{"message":"{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}","formatted":"502 Durable Object is overloaded, retrying","status":502},"retryInMs":610,"retryAttempt":1,"maxRetries":300}</pre></div>
+          <summary><span class="mark">api_error</span><span class="sev">Error</span>502 Durable Object is overloaded, retrying HTTP 502<span class="sub2">retrying in 610ms</span><span class="chip">attempt 1 / 300</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">message</span><span class="v">502 Durable Object is overloaded, retrying</span></div>
+            <div class="nfact"><span class="k">status</span><span class="v">HTTP 502</span></div>
+            <div class="nfact"><span class="k">level</span><span class="v">error</span></div>
+            <div class="nfact"><span class="k">attempt</span><span class="v">1 of 300</span></div>
+            <div class="nfact"><span class="k">retry in</span><span class="v">610ms</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
         </details>
 
         <details class="hooks">

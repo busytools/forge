@@ -172,11 +172,23 @@ export interface Notice {
    */
   mark?: string;
   /**
-   * The frame or block exactly as it arrived, behind the row's open. Set
-   * only on a provisional row, whose whole point is that the payload is
-   * reachable for the decision about what its real face should be.
+   * The frame's own fields, labelled for a reader, as the open body draws
+   * them. Set only on a provisional row: JSON under the open was the first
+   * cut's shape, and a reader asked for the facts instead (Ved, 2026-10-28).
+   */
+  fields?: NoticeField[];
+  /**
+   * The frame or block exactly as it arrived, behind its own control inside
+   * the open body. Set only on a provisional row, whose whole point is that
+   * the payload itself stays reachable (rule 25).
    */
   raw?: string;
+}
+
+/** One labelled fact under a provisional row's open. */
+export interface NoticeField {
+  label: string;
+  value: string;
 }
 
 /**
@@ -508,11 +520,95 @@ function obj(value: unknown): Record<string, unknown> {
  * A row for a frame or block this build draws but has no face for.
  *
  * **Visible on purpose** (rule 25, Ved 2026-10-26): the mark names the
- * wire's own type and the payload sits behind the row's open, so the gap
- * draws itself rather than reading as a frame that never arrived.
+ * wire's own type and the frame's fields sit labelled behind the row's
+ * open, so the gap draws itself rather than reading as a frame that never
+ * arrived - and the frame itself stays one control further in (Ved,
+ * 2026-10-28).
  */
-function provisional(mark: string, severity: NoticeSeverity, text: string, raw: unknown): Notice {
-  return { severity, text, mark, raw: JSON.stringify(raw) ?? '' };
+function provisional(
+  mark: string,
+  severity: NoticeSeverity,
+  text: string,
+  raw: unknown,
+  fields: NoticeField[] = [],
+): Notice {
+  return {
+    severity,
+    text,
+    mark,
+    raw: JSON.stringify(raw) ?? '',
+    ...(fields.length === 0 ? {} : { fields }),
+  };
+}
+
+/** One labelled fact, dropped when the frame carried nothing to say. */
+function fact(label: string, value: string | null): NoticeField | null {
+  return value === null || value === '' ? null : { label, value };
+}
+
+/** The facts that survived [`fact`], in the row's own order. */
+function facts(...rows: (NoticeField | null)[]): NoticeField[] {
+  return rows.filter((row): row is NoticeField => row !== null);
+}
+
+/**
+ * The frame's own identity and plumbing, which the row or the seat already
+ * carries: a reader deciding a face for the row's content is not helped by
+ * being shown which session said it or what its uuid was.
+ */
+const PROVISIONAL_PLUMBING: ReadonlySet<string> = new Set([
+  'type',
+  'subtype',
+  'uuid',
+  'session_id',
+  'sessionId',
+  'parent_tool_use_id',
+  'timestamp',
+  'cwd',
+]);
+
+/** A content block's own plumbing: its type is the row's mark. */
+const BLOCK_PLUMBING: ReadonlySet<string> = new Set(['type']);
+
+/**
+ * A frame or block this build has no schema for, flattened into labelled
+ * facts: what a reader gets instead of the payload's raw JSON.
+ *
+ * Dotted labels keep a nested object readable without pretending the build
+ * knows what it means (`widget.name`), and a list or a deeply nested value
+ * stays one compact value - it has no labels to split into.
+ */
+function payloadFacts(payload: unknown, skip: ReadonlySet<string>): NoticeField[] {
+  const rows: NoticeField[] = [];
+  const walk = (value: unknown, prefix: string, depth: number) => {
+    if (value === null || value === undefined) return;
+    if (typeof value === 'object' && !Array.isArray(value) && depth < 3) {
+      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+        if (prefix === '' && skip.has(key)) continue;
+        walk(child, prefix === '' ? key : `${prefix}.${key}`, depth + 1);
+      }
+      return;
+    }
+    rows.push({ label: words(prefix), value: brief(value) });
+  };
+  walk(payload, '', 0);
+  return rows;
+}
+
+/** A wire field's name as words: `durationMs` reads as `duration ms`. */
+function words(field: string): string {
+  return field
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .toLowerCase();
+}
+
+/** One value as a reader reads it: text as itself, anything else compact. */
+function brief(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null) return 'null';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value) ?? '';
 }
 
 /**
@@ -2291,6 +2387,12 @@ export function fold(
               'error',
               `${tool} refused${reason === '' ? '' : `: ${reason}`}`,
               frame,
+              facts(
+                fact('tool', str(frame, 'tool_name')),
+                fact('call', str(frame, 'tool_use_id')),
+                fact('reason', str(frame, 'decision_reason') ?? str(frame, 'message')),
+                fact('decision', str(frame, 'decision_reason_type')),
+              ),
             ),
           });
         }
@@ -2319,6 +2421,13 @@ export function fold(
             str(frame, 'level') === 'error' ? 'error' : 'warning',
             `${said}${status}`,
             frame,
+            facts(
+              fact('message', said),
+              fact('status', typeof error.status === 'number' ? `HTTP ${error.status}` : null),
+              fact('level', str(frame, 'level')),
+              fact('attempt', attempt === null || cap === null ? null : `${attempt} of ${cap}`),
+              fact('retry in', delay === null ? null : retryDelay(delay)),
+            ),
           ),
           ...(attempt === null || cap === null ? {} : { chip: `attempt ${attempt} / ${cap}` }),
           ...(delay === null ? {} : { sub: `retrying in ${retryDelay(delay)}` }),
@@ -2335,6 +2444,7 @@ export function fold(
             level === 'error' ? 'error' : level === 'warning' ? 'warning' : 'info',
             str(frame, 'content') ?? '',
             frame,
+            facts(fact('content', str(frame, 'content')), fact('level', level)),
           ),
         });
         continue;
@@ -2348,6 +2458,11 @@ export function fold(
             str(frame, 'priority') === 'immediate' ? 'warning' : 'info',
             str(frame, 'text') ?? '',
             frame,
+            facts(
+              fact('text', str(frame, 'text')),
+              fact('priority', str(frame, 'priority')),
+              fact('key', str(frame, 'key')),
+            ),
           ),
         });
         continue;
@@ -2366,6 +2481,7 @@ export function fold(
             'info',
             `unhandled frame: system${system === null ? '' : `/${system}`}`,
             frame,
+            payloadFacts(frame, PROVISIONAL_PLUMBING),
           ),
         });
       }
@@ -2482,6 +2598,7 @@ export function fold(
           'info',
           `unhandled frame: ${subtype === null ? kind : `${kind}/${subtype}`}`,
           frame,
+          payloadFacts(frame, PROVISIONAL_PLUMBING),
         ),
       });
       continue;
@@ -2851,7 +2968,13 @@ export function fold(
       push({
         kind: 'notice',
         key: keyOf(at, frame, blockAt),
-        notice: provisional(kind, 'info', `unhandled content block: ${kind}`, block),
+        notice: provisional(
+          kind,
+          'info',
+          `unhandled content block: ${kind}`,
+          block,
+          payloadFacts(block, BLOCK_PLUMBING),
+        ),
       });
     }
 
