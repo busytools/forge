@@ -136,6 +136,30 @@ pub(super) fn lock_fetch_at(dir: &std::path::Path, bin: &std::path::Path) {
     crate::env::git_command::point_git_at(dir, &wrapper);
 }
 
+/// Point the repo at `dir` at a `git` whose `fetch` refuses and whose
+/// `rev-list --count` first moves `origin/main` to `tip`: the ref moves
+/// between the read that judged the base and the read that counts its lag,
+/// which is exactly what counting by name would get wrong.
+#[cfg(test)]
+pub(super) fn stale_and_moving_at(dir: &std::path::Path, bin: &std::path::Path, tip: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let wrapper = bin.join("moving-git");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *\" fetch \"*) echo 'fatal: forced fetch failure' >&2; \
+             exit 128 ;;\n  *\" rev-list --count \"*) /usr/bin/git -C '{dir}' update-ref \
+             refs/remotes/origin/main '{tip}' ;;\nesac\nexec git \"$@\"\n",
+            dir = dir.display(),
+            tip = tip,
+        ),
+    )
+    .expect("the wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+    crate::env::git_command::point_git_at(dir, &wrapper);
+}
+
 /// Point the repo at `dir` at a `git` that cannot answer the `origin`
 /// question at all: both `remote get-url` and the repo-presence probe refuse,
 /// while every other subcommand is the machine's own.
@@ -327,16 +351,49 @@ pub const DISPLAY_REFRESH_BUDGET: Duration = Duration::from_secs(3);
 const WATCH_REFRESH_INTERVAL: Duration = Duration::from_secs(240);
 
 /// Per-repo last watch refresh, keyed by the scan cwd.
+///
+/// **The cadence is per checkout rather than per repository by choice**: a
+/// worktree's own watch pass is its own read, and two checkouts of one repo
+/// refreshing their shared ref twice a window is cheap. The fetch gate below
+/// is the one that must be per repository.
 static LAST_WATCH_REFRESH: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
 
-/// One base fetch at a time per checkout, in this process: see [`fetch_base`].
-static FETCH_GATES: OnceLock<Mutex<HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
-    OnceLock::new();
+/// One base fetch at a time per REPOSITORY, in this process: see [`fetch_base`].
+///
+/// Weak, so a repository nobody is fetching for leaves nothing behind; dead
+/// entries are pruned on the next look.
+static FETCH_GATES: OnceLock<
+    Mutex<HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+> = OnceLock::new();
 
-/// The gate for `cwd`'s base fetches, made on first use.
-fn fetch_gate(cwd: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+/// The gate for `key`'s base fetches, made on first use.
+fn fetch_gate(key: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     let mut gates = FETCH_GATES.get_or_init(|| Mutex::new(HashMap::new())).lock();
-    std::sync::Arc::clone(gates.entry(cwd.to_path_buf()).or_default())
+    gates.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(gate) = gates.get(key).and_then(std::sync::Weak::upgrade) {
+        return gate;
+    }
+    let gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    gates.insert(key.to_path_buf(), std::sync::Arc::downgrade(&gate));
+    gate
+}
+
+/// The repository a checkout belongs to, as the fetch gate's key: git's
+/// common dir, canonicalised.
+///
+/// **Keyed on the common dir rather than the scan cwd because linked
+/// worktrees share `refs/remotes/*`.** Two seats in `<repo>` and
+/// `<repo>/.claude/worktrees/x` - this project's normal layout - contend for
+/// one ref lock, so a gate keyed per cwd would let both fetch at once and
+/// misattribute the loser's refusal. A path git cannot answer for falls back
+/// to the cwd: a separate gate cannot deadlock, it only fails to serialise.
+async fn repo_key(cwd: &Path, budget: Duration) -> PathBuf {
+    let common = match run_git_within(cwd, &["rev-parse", "--git-common-dir"], budget).await {
+        GitOutput::Ok(path) => path.trim().to_owned(),
+        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => return cwd.to_path_buf(),
+    };
+    let joined = cwd.join(common);
+    joined.canonicalize().unwrap_or(joined)
 }
 
 /// Whether a watch refresh is due: none yet, or the last one is `window` old.
@@ -351,6 +408,9 @@ fn refresh_due(last: Option<Instant>, now: Instant, window: Duration) -> bool {
 /// passes cannot both fetch.
 fn claim_refresh_slot(key: &Path, now: Instant, window: Duration) -> bool {
     let mut map = LAST_WATCH_REFRESH.get_or_init(|| Mutex::new(HashMap::new())).lock();
+    // A checkout nobody has scanned for a window is not a slot to keep: the
+    // entry would outlive the project it names for the life of the process.
+    map.retain(|_, last| now.saturating_duration_since(*last) < window);
     let due = refresh_due(map.get(key).copied(), now, window);
     if due {
         map.insert(key.to_path_buf(), now);
@@ -365,14 +425,18 @@ fn claim_refresh_slot(key: &Path, now: Instant, window: Duration) -> bool {
 /// session row's "N commits" honest while no review page is open: the scan
 /// after it reads the ref this left. Throttled per checkout, so a burst of
 /// pokes is one fetch.
-pub async fn watch_refresh_base(cwd: &Path, default_branch: &str) {
+///
+/// Answers what this pass measured, which the seat's row carries: a base can
+/// move without the count or the chain moving, and that move is only news if
+/// the state rides the frame.
+pub async fn watch_refresh_base(cwd: &Path, default_branch: &str) -> Option<BaseRefresh> {
     if !default_branch.starts_with("origin/") {
-        return;
+        return None;
     }
     if !claim_refresh_slot(cwd, Instant::now(), WATCH_REFRESH_INTERVAL) {
-        return;
+        return None;
     }
-    let _ = refresh_base_for_display(cwd, default_branch).await;
+    Some(refresh_base_for_display(cwd, default_branch).await)
 }
 
 /// What one base refresh answered.
@@ -405,7 +469,8 @@ pub async fn refresh_base_for_display(cwd: &Path, default_branch: &str) -> BaseR
 async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration) -> BaseRefresh {
     let deadline = Instant::now() + budget;
     let (state, base_ref) = if let Some(remote_branch) = default_branch.strip_prefix("origin/") {
-        fetch_base(cwd, remote_branch, deadline).await;
+        let key = repo_key(cwd, remaining(deadline)).await;
+        fetch_base(cwd, remote_branch, deadline, &key).await;
         // **A fetch's exit 0 is not "the ref moved".** With a remote whose
         // `remote.origin.fetch` is not the conventional one, a fetch can
         // succeed and write nothing, so the claim is made against the remote's
@@ -419,18 +484,28 @@ async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration)
         let local = local_tip(cwd, default_branch, remaining(deadline)).await;
         let state = match origin_remote(cwd, deadline).await {
             OriginRemote::Present => BaseState::Unverified,
-            OriginRemote::Absent => BaseState::Local,
+            // **A base that tracks a remote of its own can lag behind it**,
+            // even with no `origin`: a local `main` whose upstream is
+            // `upstream/main` is stale exactly as an `origin/main` would be,
+            // and calling it local would be the same silence.
+            OriginRemote::Absent => {
+                match local_base_tracks_upstream(cwd, default_branch, deadline).await {
+                    Some(false) => BaseState::Local,
+                    Some(true) | None => BaseState::Unverified,
+                }
+            }
             // **A probe that never answered must not answer "no remote".**
             // That is the silent stale claim by another name: the base is
             // drawn as purely local while an `origin` it may lag behind sits
             // right there.
-            OriginRemote::Unanswered => {
+            OriginRemote::Unanswered(reason) => {
                 tracing::debug!(
                     target: crate::logging::targets::ENV_GIT,
                     cwd = %cwd.display(),
                     event_name = "git_base_origin_probe_unanswered",
                     message = "the origin probe could not answer, so a local base is not claimed",
                     outcome = "unverified",
+                    reason = %reason,
                     base = %default_branch,
                 );
                 BaseState::Unverified
@@ -447,13 +522,14 @@ async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration)
 /// `--no-auto-gc` so a killed child leaves no maintenance daemon behind;
 /// `--no-write-fetch-head` so their `FETCH_HEAD` is not clobbered on every
 /// open; and `--quiet` so progress never rides a captured stream.
-async fn fetch_base(cwd: &Path, remote_branch: &str, deadline: Instant) {
-    // **One forge fetch per checkout at a time.** The watch's pass and a
-    // review page's open can want the same base together, and the second
-    // `git fetch` would be refused by the first's ref lock - a refusal this
+async fn fetch_base(cwd: &Path, remote_branch: &str, deadline: Instant, key: &Path) {
+    // **One forge fetch per repository at a time.** The watch's pass and a
+    // review page's open can want the same base together - from the same
+    // checkout, or from two worktrees sharing one ref - and the second
+    // `git fetch` would be refused by the first's ref lock, a refusal this
     // side would then log as the user's own git holding it, which is the one
     // thing it is not.
-    let gate = fetch_gate(cwd);
+    let gate = fetch_gate(key);
     let Ok(_one_at_a_time) = timeout(remaining(deadline), gate.lock()).await else {
         tracing::debug!(
             target: crate::logging::targets::ENV_GIT,
@@ -573,7 +649,20 @@ async fn state_against_tip(
     // to; naming the ref again here lets it move between the two reads and
     // counts a range that is not the one just judged.
     match commit_count_in_range(cwd, &local, &tip, remaining(deadline)).await {
-        Some(behind) if behind > 0 => (BaseState::Behind { behind }, Some(local)),
+        Some(behind) if behind > 0 => {
+            // DEBUG: the base is stale because the fetch could not run - the
+            // environment's weather, and the record already carries the lag.
+            tracing::debug!(
+                target: crate::logging::targets::ENV_GIT,
+                cwd = %cwd.display(),
+                event_name = "git_base_behind",
+                message = "the base could not be refreshed and lags the remote",
+                outcome = "behind",
+                branch = %remote_branch,
+                behind,
+            );
+            (BaseState::Behind { behind }, Some(local))
+        }
         Some(_) => {
             // The refs disagree, but the remote has nothing this base lacks:
             // it was rewritten past us. Not behind, and not current.
@@ -634,8 +723,10 @@ enum OriginRemote {
     Present,
     Absent,
     /// git could not be run, or a sick checkout refused it. The question is
-    /// open, and an open question must not answer "no remote".
-    Unanswered,
+    /// open, and an open question must not answer "no remote". The reason is
+    /// what the line about it carries: a spent budget, a git that refused,
+    /// and an oversized answer are three different things to look at.
+    Unanswered(&'static str),
 }
 
 /// Ask whether `cwd` has an `origin` remote at all: a local base beside one is
@@ -653,17 +744,33 @@ enum OriginRemote {
 /// still reads as having nothing this read could refresh.
 async fn origin_remote(cwd: &Path, deadline: Instant) -> OriginRemote {
     if remaining(deadline).is_zero() {
-        return OriginRemote::Unanswered;
+        return OriginRemote::Unanswered("budget_spent");
     }
     match run_git_within(cwd, &["remote", "get-url", "origin"], remaining(deadline)).await {
         GitOutput::Ok(_) => OriginRemote::Present,
         GitOutput::Empty | GitOutput::Failed => {
             match repo_presence_within(cwd, remaining(deadline)).await {
                 RepoPresence::Present | RepoPresence::Absent => OriginRemote::Absent,
-                RepoPresence::Unusable => OriginRemote::Unanswered,
+                RepoPresence::Unusable => OriginRemote::Unanswered("git_refused"),
             }
         }
-        GitOutput::Oversize => OriginRemote::Unanswered,
+        GitOutput::Oversize => OriginRemote::Unanswered("oversize"),
+    }
+}
+
+/// Whether the local base itself tracks a remote (`main@{upstream}`): a base
+/// that does can be behind that remote exactly as an `origin/...` can, and
+/// nothing was fetched for it here. `None` when git could not answer, which
+/// the caller treats as unverified rather than as "nothing to lag behind".
+async fn local_base_tracks_upstream(cwd: &Path, base: &str, deadline: Instant) -> Option<bool> {
+    if remaining(deadline).is_zero() {
+        return None;
+    }
+    let spec = format!("{base}@{{upstream}}");
+    match run_git_within(cwd, &["rev-parse", "--abbrev-ref", &spec], remaining(deadline)).await {
+        GitOutput::Ok(_) => Some(true),
+        GitOutput::Empty | GitOutput::Failed => Some(false),
+        GitOutput::Oversize => None,
     }
 }
 
@@ -3278,13 +3385,30 @@ mod tests {
         let (_upstream, dir) = stale_base_fixture();
         let bin = tempfile::tempdir().expect("wrapper dir");
         fail_fetch_at(dir.path(), bin.path());
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            // No ANSI: the assertions read the fields, and the writer colours
+            // the separators, so `behind=1` arrives as three styled spans.
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
 
+        let guard = tracing::subscriber::set_default(subscriber);
         let base = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        drop(guard);
 
         assert_eq!(
             base.state,
             BaseState::Behind { behind: 1 },
             "the remote is one commit ahead of the base, and the refresh says so",
+        );
+        let log = String::from_utf8_lossy(&capture.0.lock().clone()).into_owned();
+        let named = log.contains("git_base_behind");
+        let counted = log.contains("behind=1");
+        assert!(
+            named && counted,
+            "the lag is a record of its own, naming the count: {log}",
         );
         // The scan is local, so the stale ref this case is about is exactly
         // what it reads.
@@ -3356,6 +3480,9 @@ mod tests {
         // weather, and the default filter has to be lowered to read it.
         let subscriber = tracing_subscriber::fmt()
             .with_writer(capture.clone())
+            // No ANSI: the assertions read the fields, and the writer colours
+            // the separators, so `behind=1` arrives as three styled spans.
+            .with_ansi(false)
             .with_max_level(tracing::Level::DEBUG)
             .finish();
 
@@ -3377,6 +3504,76 @@ mod tests {
         assert!(
             log.contains(&dir.path().display().to_string()),
             "and it names the checkout a reader has to look at: {log}",
+        );
+        assert!(log.contains("git_refused"), "and why the probe could not answer: {log}");
+    }
+
+    /// A local base whose own branch tracks a remote can lag behind it just
+    /// as an `origin/...` can, so it is not `local`: nothing was fetched for
+    /// that upstream here.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_local_base_that_tracks_an_upstream_is_unverified() {
+        let upstream = tempfile::tempdir().expect("bare remote");
+        git_at(upstream.path(), &["init", "-q", "--bare"]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "base.txt", "base\n");
+        commit_all(&dir, "base");
+        git_at(dir.path(), &["remote", "add", "upstream", &upstream.path().to_string_lossy()]);
+        git_at(dir.path(), &["push", "-q", "-u", "upstream", "main"]);
+
+        assert_eq!(
+            refresh_base_within(dir.path(), "main", TEST_GIT_BUDGET).await.state,
+            BaseState::Unverified,
+            "a base tracking a remote nobody fetched is not a local base",
+        );
+    }
+
+    /// **The lag is counted from the sha the base was judged at, not from the
+    /// ref's name.** The ref moves between the two reads here; counting by
+    /// name would read the moved ref as a rewound remote and answer
+    /// unverified instead of the lag it can still measure.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_lag_is_counted_from_the_sha_the_base_was_judged_at() {
+        let (upstream, dir) = stale_base_fixture();
+        let stale = rev_parse(dir.path(), "refs/remotes/origin/main");
+        let tip = rev_parse(upstream.path(), "main");
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        stale_and_moving_at(dir.path(), bin.path(), &tip);
+
+        let refresh = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(
+            refresh.state,
+            BaseState::Behind { behind: 1 },
+            "the lag is the judged base's, even after the ref moved",
+        );
+        assert_eq!(refresh.base_ref.as_deref(), Some(stale.as_str()));
+    }
+
+    /// **The fetch gate is keyed on the repository, not the checkout.** Two
+    /// linked worktrees share `refs/remotes/*`, so a gate keyed per cwd would
+    /// let both fetch at once and misattribute the loser's lock refusal.
+    #[tokio::test(flavor = "current_thread")]
+    async fn linked_worktrees_share_one_repository_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "base.txt", "base\n");
+        commit_all(&dir, "base");
+        let beside = tempfile::tempdir().expect("a second directory");
+        let linked = beside.path().join("wt");
+        git_at(
+            dir.path(),
+            &["worktree", "add", "-q", "-b", "linked", &linked.to_string_lossy()],
+        );
+
+        let main_key = repo_key(dir.path(), TEST_GIT_BUDGET).await;
+        let linked_key = repo_key(&linked, TEST_GIT_BUDGET).await;
+        assert_eq!(main_key, linked_key, "a worktree and its checkout share one ref store");
+        assert!(
+            std::sync::Arc::ptr_eq(&fetch_gate(&main_key), &fetch_gate(&linked_key)),
+            "so both fetches queue on one gate",
         );
     }
 
@@ -3407,7 +3604,8 @@ mod tests {
         let bin = tempfile::tempdir().expect("wrapper dir");
         lock_fetch_at(dir.path(), bin.path());
         let capture = LogCapture::default();
-        let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
+        let subscriber =
+            tracing_subscriber::fmt().with_writer(capture.clone()).with_ansi(false).finish();
         let guard = tracing::subscriber::set_default(subscriber);
 
         let _ = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;

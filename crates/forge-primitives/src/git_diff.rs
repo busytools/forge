@@ -155,10 +155,10 @@ pub struct GitDiffStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BaseState {
-    /// A local base in a repository with no `origin` remote, or none
-    /// resolved: nothing upstream to lag behind. A local base beside an
-    /// `origin` is `Unverified` instead - it can be arbitrarily behind one
-    /// nobody fetched.
+    /// A local base with nothing it could lag behind: no `origin` remote, and
+    /// no upstream of its own. A local base beside an `origin`, or one whose
+    /// branch tracks some remote (`main@{upstream}`), is `Unverified` instead
+    /// - it can be arbitrarily behind one nobody fetched.
     Local,
     /// The base was fetched and matches the remote.
     Current,
@@ -218,6 +218,12 @@ pub struct GitWorkView {
     pub worktree: Option<GitDiffStats>,
     /// The branch's chain ahead of its default.
     pub ahead: Option<GitBranchAhead>,
+    /// What the seat's last watch refresh found for the base the chain is
+    /// measured against, `None` until one has run. **A base can move without
+    /// the count or the chain moving** - an upstream commit the branch
+    /// already contains - so this is the only field that makes that news.
+    #[serde(default)]
+    pub base: Option<BaseState>,
 }
 
 #[cfg(test)]

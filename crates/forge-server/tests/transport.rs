@@ -5813,6 +5813,7 @@ fn a_scan(
         },
         cwd: cwd.to_path_buf(),
         read_at,
+        base: None,
     }
 }
 
@@ -5983,6 +5984,7 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
             diff: stored,
             cwd: repo,
             read_at: std::time::Instant::now(),
+            base: None,
         },
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -6013,6 +6015,22 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
         cached["git"]["ahead"]["commit_count"], 2,
         "the stale base folds upstream's commit into the count: {cached}",
     );
+    // **The ordinary read reached no network**: the ref is where the stale
+    // fixture left it, so the count above was that ref's and nothing fetched.
+    let refs = |at: &std::path::Path, what: &str| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(at)
+            .args(["rev-parse", what])
+            .output()
+            .expect("git rev-parse");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    assert_eq!(
+        refs(&state.surface.roster().cwd_for(&lead_seat()).expect("the seat's cwd"), "refs/remotes/origin/main"),
+        refs(upstream.path(), "main~1"),
+        "an ordinary read leaves the base ref where it stood",
+    );
 
     // The review page's own read: the base refreshed, the count with it.
     let mut review = connect(&url).await;
@@ -6036,6 +6054,97 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
         .expect("the branch layer is populated");
     let paths: Vec<&str> = files.iter().filter_map(|file| file["path"].as_str()).collect();
     assert_eq!(paths, vec!["feat.txt"], "only the branch's own file crosses: {fresh}");
+}
+
+/// **A refused pin is re-read locally, so the count and the files still share
+/// the base the refresh left.** The store's count predates the fetch; serving
+/// it beside content read at the post-fetch ref is the Granite symptom in the
+/// path meant to be the safe degradation.
+#[tokio::test]
+async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let mut stored = forge_workspace::env::git_diff::scan_serving_cached_pr(
+        &repo,
+        &std::collections::HashMap::new(),
+        None,
+    )
+    .await;
+    stored.pr_fetched_at = Some(std::time::SystemTime::now());
+    state.surface.store_work_snapshot(
+        &lead_seat(),
+        forge_server::surface::inspector::WorkSnapshot {
+            diff: stored,
+            cwd: repo,
+            read_at: std::time::Instant::now(),
+            base: None,
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    // The seat is held by a plain open first, and then its gate is held the
+    // way a watch pass holds it across its own scan.
+    let mut plain = connect(&url).await;
+    send(
+        &mut plain,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut plain).await;
+    // The bound is real time; the test's is short, and restored after.
+    forge_workspace::work::set_pinned_gate_wait(50);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+
+    let mut review = connect(&url).await;
+    send(
+        &mut review,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, fresh, _) = snapshot_answering(&mut review).await;
+    drop(in_flight);
+    forge_workspace::work::set_pinned_gate_wait(0);
+
+    assert_eq!(
+        fresh["diff"]["base"], "current",
+        "the refresh landed, so the base is the one it left: {fresh}",
+    );
+    assert_eq!(
+        fresh["git"]["ahead"]["commit_count"], 1,
+        "the local re-read is the post-fetch base, not the store's stale count: {fresh}",
+    );
+    let files = fresh["diff"]["branch_ahead"]["populated"]
+        .as_array()
+        .expect("the branch layer is populated");
+    let paths: Vec<&str> = files.iter().filter_map(|file| file["path"].as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["feat.txt"],
+        "and the files describe the same base the count does: {fresh}",
+    );
 }
 
 /// **An open announces nothing its snapshot already carried** (#2506 review).

@@ -25,7 +25,7 @@ use forge_agent::env::file_index::start_change_watch;
 use forge_agent::env::processes::SCAN_STALENESS;
 use forge_primitives::SessionSlot;
 use forge_primitives::git::{GitIssueRef, GitPrInfo};
-use forge_primitives::git_diff::{GitDiffSnapshot, GitWorkView, PrRefresh};
+use forge_primitives::git_diff::{BaseState, GitDiffSnapshot, GitWorkView, PrRefresh};
 
 use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
@@ -104,7 +104,13 @@ pub fn work_from_scan(diff: &GitDiffSnapshot, cwd: &Path) -> WorkState {
 /// the two layers a row draws, with `Clean` and `ScanFailed` both reading as
 /// nothing to state - which is what the layer means, and the row above still
 /// carries the gate that says which.
-pub fn git_work_view(diff: &GitDiffSnapshot) -> GitWorkView {
+///
+/// `base` is the state the seat's last watch refresh measured for the layer's
+/// base. **It rides the row so a base-only move is news**: an upstream commit
+/// the branch already contains moves `origin/main` without changing the count
+/// or the chain, and a review page drawing `current` over it would keep a
+/// label nobody re-checked.
+pub fn git_work_view(diff: &GitDiffSnapshot, base: Option<BaseState>) -> GitWorkView {
     let worktree = match &diff.worktree {
         forge_primitives::git_diff::LayerState::Populated(stats) => Some(stats.clone()),
         forge_primitives::git_diff::LayerState::Clean
@@ -115,7 +121,7 @@ pub fn git_work_view(diff: &GitDiffSnapshot) -> GitWorkView {
         forge_primitives::git_diff::LayerState::Clean
         | forge_primitives::git_diff::LayerState::ScanFailed => None,
     };
-    GitWorkView { default_branch: diff.default_branch.clone(), worktree, ahead }
+    GitWorkView { default_branch: diff.default_branch.clone(), worktree, ahead, base }
 }
 
 /// A seat's last scan of its working tree, and when it was taken.
@@ -131,6 +137,10 @@ pub struct WorkSnapshot {
     /// directory outside a repository is a fact about the path.
     pub cwd: PathBuf,
     pub read_at: Instant,
+    /// What the seat's last watch refresh measured for the base, carried
+    /// across scans that do not refresh. The row draws it, so a base that
+    /// moved without the count moving is still a frame.
+    pub base: Option<BaseState>,
 }
 
 /// How long a scan answers for: the staleness rule for the snapshot every
@@ -141,10 +151,34 @@ pub const SNAPSHOT_STALENESS: Duration = Duration::from_secs(10);
 ///
 /// The seat's gate is held across the watch's whole pass - its PR lookup and
 /// its base refresh included - so a review page's read that queued behind one
-/// would wait the watch's work rather than its own. Past this bound the store
-/// is served, and the read labels its base unverified: the store may predate
-/// the base this read refreshed.
+/// would wait the watch's work rather than its own. Past this bound the read
+/// is refused, and it re-reads the tree locally against the base it refreshed:
+/// the store may predate that base.
 pub const PINNED_GATE_WAIT: Duration = Duration::from_secs(3);
+
+/// A shorter gate wait for a test, in milliseconds; `0` restores production's.
+///
+/// The bound is real time by nature, and a suite that spends three seconds on
+/// it per case runs the gate on the clock rather than on what it pins.
+#[cfg(any(test, feature = "testing"))]
+pub fn set_pinned_gate_wait(ms: u64) {
+    TEST_PINNED_GATE_WAIT.store(ms, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(any(test, feature = "testing"))]
+static TEST_PINNED_GATE_WAIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The bound a drawing read uses: production's, or a test's shorter one.
+fn pinned_gate_wait() -> Duration {
+    #[cfg(any(test, feature = "testing"))]
+    {
+        let ms = TEST_PINNED_GATE_WAIT.load(std::sync::atomic::Ordering::Relaxed);
+        if ms > 0 {
+            return Duration::from_millis(ms);
+        }
+    }
+    PINNED_GATE_WAIT
+}
 
 /// How often a held seat looks at its tree.
 ///
@@ -198,7 +232,7 @@ impl Announced {
     fn of(held: &WorkSnapshot) -> Self {
         Self {
             work: work_from_scan(&held.diff, &held.cwd),
-            git: git_work_view(&held.diff),
+            git: git_work_view(&held.diff, held.base),
             pr: held.diff.pr.clone(),
             closes: held.diff.closes.clone(),
         }
@@ -549,6 +583,13 @@ impl Workspace {
         self.domain_session_for(slot)?.lock().file_index.clone()
     }
 
+    /// The seat's work gate, for a test that has to hold it across a read.
+    /// `None` when the seat is not held.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_work_gate(&self, slot: &SessionSlot) -> Option<Arc<tokio::sync::Mutex<()>>> {
+        self.held_work_seats.gate(slot)
+    }
+
     /// Store a scan for `slot`, as the seat's loop and a fixture both do.
     pub fn store_work_snapshot(&self, slot: &SessionSlot, snapshot: WorkSnapshot) {
         if let Some(domain) = self.domain_session_for(slot) {
@@ -634,14 +675,19 @@ impl Workspace {
             // refreshed; a record read never comes here with `Fetch` except a
             // sessionless seat's fallback, which has no store, no loop and
             // nothing to keep fresh.
+            let mut measured = None;
             if pr == PrRefresh::Fetch
                 && let Some(default) =
                     held.as_ref().and_then(|held| held.diff.default_branch.as_deref())
                 && held.as_ref().is_some_and(|held| held.diff.branch_ahead.is_populated())
             {
-                forge_agent::env::git_diff::watch_refresh_base(Path::new(&cwd), default).await;
+                measured = forge_agent::env::git_diff::watch_refresh_base(Path::new(&cwd), default)
+                    .await
+                    .map(|refresh| refresh.state);
             }
-            return Ok(self.scan_work_at(slot, Path::new(&cwd), pr).await);
+            return Ok(self
+                .scan_work_at_with_base(slot, Path::new(&cwd), pr, None, measured)
+                .await);
         }
         self.work_snapshot(slot).ok_or_else(|| format!("{} has no stored scan", slot.display()))
     }
@@ -657,34 +703,44 @@ impl Workspace {
         cwd: &Path,
         pr: PrRefresh,
     ) -> WorkSnapshot {
-        self.scan_work_at_with_base(slot, cwd, pr, None).await
+        self.scan_work_at_with_base(slot, cwd, pr, None, None).await
     }
 
     /// [`Self::scan_work_at`] pinned to one base revision: the branch-ahead
     /// layer is computed against `base` (a sha a drawing read resolved)
     /// rather than the ref's name.
+    ///
+    /// `measured` is what a watch pass just refreshed the base to; `None`
+    /// keeps the state the store last measured, so a scan that did not
+    /// refresh does not erase it.
     async fn scan_work_at_with_base(
         &self,
         slot: &SessionSlot,
         cwd: &Path,
         pr: PrRefresh,
         base: Option<&str>,
+        measured: Option<BaseState>,
     ) -> WorkSnapshot {
-        let previous = self.work_snapshot(slot).map(|held| held.diff);
+        let held = self.work_snapshot(slot);
+        let previous = held.as_ref().map(|held| &held.diff);
         let env = self.project_env(slot.project());
         let diff = match (pr, base) {
             (_, Some(base)) => {
-                forge_agent::env::git_diff::scan_pinned(cwd, &env, previous.as_ref(), base).await
+                forge_agent::env::git_diff::scan_pinned(cwd, &env, previous, base).await
             }
             (PrRefresh::Fetch, None) => {
-                forge_agent::env::git_diff::scan(cwd, &env, previous.as_ref()).await
+                forge_agent::env::git_diff::scan(cwd, &env, previous).await
             }
             (PrRefresh::ServeCached, None) => {
-                forge_agent::env::git_diff::scan_serving_cached_pr(cwd, &env, previous.as_ref())
-                    .await
+                forge_agent::env::git_diff::scan_serving_cached_pr(cwd, &env, previous).await
             }
         };
-        let held = WorkSnapshot { diff, cwd: cwd.to_path_buf(), read_at: Instant::now() };
+        let held = WorkSnapshot {
+            diff,
+            cwd: cwd.to_path_buf(),
+            read_at: Instant::now(),
+            base: measured.or_else(|| held.and_then(|held| held.base)),
+        };
         self.store_work_snapshot(slot, held.clone());
         held
     }
@@ -703,34 +759,37 @@ impl Workspace {
             return Err(format!("{} has no session to store a scan on", slot.display()));
         }
         let gate = self.held_work_seats.gate(slot);
+        let wait = pinned_gate_wait();
         let _one_at_a_time = match &gate {
             Some(gate) => {
                 // **A drawing read waits for a scan, but not for ever.** The
                 // gate is held across the watch's whole scan - its PR lookup
                 // and its base refresh included - and a reader that queued
                 // behind that would spend the page's open on a pass it never
-                // asked for. Past the bound the store is served instead, and
-                // the caller labels the base unverified, because that store
-                // was written before the base this read refreshed moved.
-                let Ok(held) = tokio::time::timeout(PINNED_GATE_WAIT, gate.lock()).await else {
-                    tracing::warn!(
+                // asked for. Past the bound the read is refused and re-reads
+                // locally against the base it refreshed.
+                let Ok(held) = tokio::time::timeout(wait, gate.lock()).await else {
+                    // DEBUG: the fallback is the design working, not a fault -
+                    // the read answers a correct scan either way, one bound
+                    // later, and a slow watch pass is the environment's.
+                    tracing::debug!(
                         target: "forge_workspace::work",
                         event_name = "work_scan_gate_overrun",
                         slot = %slot.display(),
-                        wait_ms = PINNED_GATE_WAIT.as_secs_f64() * 1000.0,
+                        wait_ms = wait.as_secs_f64() * 1000.0,
                         "a drawing read waited the whole bound for the seat's work gate",
                     );
                     return Err(format!(
                         "{}'s work gate was held past {}ms",
                         slot.display(),
-                        PINNED_GATE_WAIT.as_millis(),
+                        wait.as_millis(),
                     ));
                 };
                 Some(held)
             }
             None => None,
         };
-        Ok(self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base).await)
+        Ok(self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, None).await)
     }
 
     /// `project`'s own declared environment, `env_file` included, which
@@ -1120,6 +1179,7 @@ provider = "anthropic"
                     pr_fetched_at: Some(fetched_at),
                 },
                 cwd: self.repo.path().to_path_buf(),
+                base: None,
             }
         }
     }
@@ -1191,6 +1251,7 @@ provider = "anthropic"
             },
             cwd: cwd.to_path_buf(),
             read_at,
+            base: None,
         }
     }
 
@@ -1455,6 +1516,8 @@ provider = "anthropic"
     /// than spending the whole open on a scan it never asked for.
     #[tokio::test]
     async fn a_pinned_scan_gives_up_on_a_gate_held_past_its_bound() {
+        // The bound is real time; the test's is short, and restored after.
+        set_pinned_gate_wait(100);
         let dir = a_repo();
         let (workspace, _updates, _config) = a_workspace(dir.path());
         let seat = seat();
@@ -1466,7 +1529,7 @@ provider = "anthropic"
         let refused = workspace.scan_work_pinned(&seat, dir.path(), None).await;
         assert!(refused.is_err(), "a held gate past the bound refuses the read");
         assert!(
-            started.elapsed() >= PINNED_GATE_WAIT,
+            started.elapsed() >= Duration::from_millis(100),
             "and the read waits its bound first, not a moment less",
         );
 
@@ -1474,6 +1537,38 @@ provider = "anthropic"
         assert!(
             workspace.scan_work_pinned(&seat, dir.path(), None).await.is_ok(),
             "a free gate scans at once",
+        );
+        set_pinned_gate_wait(0);
+    }
+
+    /// **The watch's measurement rides the row.** A base can move without the
+    /// count or the chain moving, so the state the watch refreshed is carried
+    /// on the snapshot - and a scan that did not refresh keeps the last one
+    /// rather than erasing it.
+    #[tokio::test]
+    async fn the_watchs_measured_base_rides_the_row() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.store_work_snapshot(&seat, a_snapshot(Instant::now(), dir.path()));
+
+        let measured = workspace
+            .scan_work_at_with_base(&seat, dir.path(), PrRefresh::ServeCached, None, Some(
+                BaseState::Behind { behind: 2 },
+            ))
+            .await;
+        assert_eq!(measured.base, Some(BaseState::Behind { behind: 2 }), "the measurement lands");
+
+        let inherited = workspace.scan_work_at(&seat, dir.path(), PrRefresh::ServeCached).await;
+        assert_eq!(
+            inherited.base,
+            Some(BaseState::Behind { behind: 2 }),
+            "and a later local scan keeps it instead of erasing it",
+        );
+        assert_eq!(
+            git_work_view(&inherited.diff, inherited.base).base,
+            Some(BaseState::Behind { behind: 2 }),
+            "so the row a view draws says what the base is",
         );
     }
 

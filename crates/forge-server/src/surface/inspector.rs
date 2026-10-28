@@ -171,10 +171,10 @@ impl ViewSurface {
     ///
     /// `None` when the scan could not be taken - no session behind the seat,
     /// or its gate held past the read's bound (which `scan_work_pinned` logs
-    /// with the slot and the wait). **The caller must then serve the store it
-    /// holds and drop the pin**: a scan against the ref's name cannot be
-    /// paired with content read at the sha this read resolved, and a base it
-    /// never checked must not be labelled with one it did.
+    /// with the slot and the wait). **The caller must then re-read locally**
+    /// ([`Self::work_local`]) and drop the pin: the store's count predates the
+    /// base the refresh moved, and a scan against the ref's name cannot be
+    /// paired with content read at the sha this read resolved.
     pub async fn diff_scan(
         &self,
         slot: &SessionSlot,
@@ -182,6 +182,13 @@ impl ViewSurface {
         base: Option<&str>,
     ) -> Option<WorkSnapshot> {
         self.workspace.scan_work_pinned(slot, cwd, base).await.ok()
+    }
+
+    /// The local re-read a drawing read takes when its pin could not be: the
+    /// count and the chain must describe the ref the content is read at, and
+    /// that ref is the one the refresh just left. Never fetches.
+    pub async fn work_local(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
+        self.workspace.scan_work_at(slot, cwd, PrRefresh::ServeCached).await
     }
 
     /// Store a scan's answer, which is the write half of [`Self::work`].
