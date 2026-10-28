@@ -8876,25 +8876,52 @@ mod tests {
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
+        let with = |caught: &Caught, event: &str| -> Vec<(tracing::Level, String)> {
+            let needle = format!("event_name=\"{event}\"");
+            records(caught).into_iter().filter(|(_, fields)| fields.contains(&needle)).collect()
+        };
+
         service.attach(7, &seat, Some(tab)).await.expect("the attach");
+        let attaches = with(&caught, "browser_attach");
+        assert_eq!(attaches.len(), 1, "the attach is recorded: {attaches:?}");
+        assert!(
+            attaches[0].0 == tracing::Level::DEBUG,
+            "at the level the shipped directive keeps: {:?}",
+            attaches[0].0,
+        );
+        assert!(
+            attaches[0].1.contains("same_surface=false"),
+            "a first attach keeps no role: {}",
+            attaches[0].1,
+        );
+        // The same tab again is the same surface, and the record says so.
+        service.attach(7, &seat, Some(tab)).await.expect("the re-attach");
+        let reattached = with(&caught, "browser_attach");
+        assert!(
+            reattached[1].1.contains("same_surface=true") && reattached[1].1.contains("was_tab=1"),
+            "the re-attach names the surface it kept: {}",
+            reattached[1].1,
+        );
+
         service.take_control(&profile.key, tab, 7).await.expect("the take");
         assert!(!saw(&caught, "browser_role_released"), "a take is not a release");
 
-        let released = |caught: &Caught| -> Vec<String> {
-            records(caught)
-                .into_iter()
-                .map(|(_, fields)| fields)
-                .filter(|fields| fields.contains("event_name=\"browser_role_released\""))
-                .collect()
+        let released = |caught: &Caught| -> Vec<(tracing::Level, String)> {
+            with(caught, "browser_role_released")
         };
         service.release_control(&profile.key, tab, 7).await;
         let caught_release = released(&caught);
         assert_eq!(caught_release.len(), 1, "the release is recorded once: {caught_release:?}");
+        assert!(
+            caught_release[0].0 == tracing::Level::DEBUG,
+            "at the level the shipped directive keeps: {:?}",
+            caught_release[0].0,
+        );
         for needle in ["profile=TestOrg/default", "tab=1", "viewer=7"] {
             assert!(
-                caught_release[0].contains(needle),
+                caught_release[0].1.contains(needle),
                 "the record carries `{needle}`: {}",
-                caught_release[0],
+                caught_release[0].1,
             );
         }
 
@@ -8904,6 +8931,20 @@ mod tests {
             1,
             "a release that held nothing writes nothing: {:?}",
             released(&caught),
+        );
+
+        // **A departure releases the role through the same record.** A
+        // viewer that goes takes the role with it, and the line is the
+        // service's, not the connection's.
+        service.attach(8, &seat, Some(tab)).await.expect("another viewer");
+        service.take_control(&profile.key, tab, 8).await.expect("its take");
+        service.detach(8).await;
+        let departed = released(&caught);
+        assert_eq!(departed.len(), 2, "the departure's release is recorded too: {departed:?}");
+        assert!(
+            departed[1].1.contains("viewer=8"),
+            "named by the viewer that left: {}",
+            departed[1].1,
         );
         drop(guard);
     }

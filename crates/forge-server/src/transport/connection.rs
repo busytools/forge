@@ -3300,6 +3300,52 @@ mod tests {
             windows_vk: 13,
             modifiers: InputModifiers::default(),
         }));
+        assert!(discrete_gesture(&BrowserInputEvent::Key {
+            down: false,
+            key: "Enter".to_owned(),
+            code: "Enter".to_owned(),
+            windows_vk: 13,
+            modifiers: InputModifiers::default(),
+        }));
+    }
+
+    /// **Every arm names itself**: a record that said "gesture" for a wheel
+    /// and a key would leave the reader guessing which one the page missed.
+    #[test]
+    fn every_gesture_kind_names_itself() {
+        use forge_primitives::browser::InputModifiers;
+
+        let mouse = |action| BrowserInputEvent::Mouse {
+            action,
+            x: 1.0,
+            y: 2.0,
+            button: 0,
+            clicks: 1,
+            modifiers: InputModifiers::default(),
+        };
+        assert_eq!(gesture_kind(&mouse(MouseAction::Press)), "mouse press");
+        assert_eq!(gesture_kind(&mouse(MouseAction::Release)), "mouse release");
+        assert_eq!(gesture_kind(&mouse(MouseAction::Move)), "mouse move");
+        assert_eq!(
+            gesture_kind(&BrowserInputEvent::Wheel {
+                x: 1.0,
+                y: 2.0,
+                delta_x: 3.0,
+                delta_y: 4.0,
+                modifiers: InputModifiers::default(),
+            }),
+            "wheel",
+        );
+        let key = |down| BrowserInputEvent::Key {
+            down,
+            key: "Enter".to_owned(),
+            code: "Enter".to_owned(),
+            windows_vk: 13,
+            modifiers: InputModifiers::default(),
+        };
+        assert_eq!(gesture_kind(&key(true)), "key down");
+        assert_eq!(gesture_kind(&key(false)), "key up");
+        assert_eq!(gesture_kind(&BrowserInputEvent::Text { text: "x".to_owned() }), "text");
     }
 
     /// **A refused text is counted, never quoted.** The log's own record of a

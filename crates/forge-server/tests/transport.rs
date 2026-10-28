@@ -7929,6 +7929,13 @@ struct StubBrowser {
     /// Every file answer the server handed the fleet: id and file count.
     answers: Mutex<Vec<(u64, usize)>>,
     detached: Mutex<Vec<u64>>,
+    /// Whether the next take is refused, the way a host whose session ended
+    /// under it refuses.
+    refuse_take: Mutex<bool>,
+    /// The tab each viewer attached to, so the stub obeys the role rule
+    /// `BrowserHost::attach` states: a same-tab attach keeps the controller,
+    /// a move releases it.
+    viewing: Mutex<std::collections::HashMap<u64, u16>>,
 }
 
 impl StubBrowser {
@@ -7959,6 +7966,8 @@ impl StubBrowser {
             .0,
             answers: Mutex::new(Vec::new()),
             detached: Mutex::new(Vec::new()),
+            refuse_take: Mutex::new(false),
+            viewing: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -7995,16 +8004,32 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
         if tab == Some(9) {
             return Err("tab 9 is not open".to_owned());
         }
+        // **The stub obeys the role rule `BrowserHost::attach` states**: a
+        // same-tab attach keeps the viewer's controller role, and a move
+        // releases it.
+        let resolved = tab.unwrap_or(2);
+        let moved = self
+            .viewing
+            .lock()
+            .expect("the stub's tabs")
+            .insert(viewer, resolved)
+            .is_some_and(|was| was != resolved);
         // The real service counts its viewers; the stub does the same so a
         // detach can be seen in the state push.
         self.viewers.lock().expect("the stub's viewers").insert(viewer);
+        if moved {
+            let mut controller = self.controller.lock().expect("the stub's controller");
+            if *controller == Some(viewer) {
+                *controller = None;
+            }
+        }
         self.publish();
         Ok(forge_workspace::browser::BrowserAttachment {
             // **The stub resolves an omitted tab the way the service does**:
             // to a tab the profile has open.
             key: "TestOrg/default".to_owned(),
             id: 5,
-            tab: tab.unwrap_or(2),
+            tab: resolved,
             frames: self.frames.subscribe(),
             view: self.view.subscribe(),
             tabs: self.tabs.subscribe(),
@@ -8054,6 +8079,9 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
     }
 
     async fn take_control(&self, _profile: &str, _tab: u16, viewer: u64) -> Result<(), String> {
+        if std::mem::replace(&mut *self.refuse_take.lock().expect("the stub's refusal"), false) {
+            return Err("the session ended under this take".to_owned());
+        }
         *self.controller.lock().expect("the stub's controller") = Some(viewer);
         self.publish();
         Ok(())
@@ -8874,6 +8902,24 @@ async fn a_reattach_leaves_the_move_to_the_attach() {
     };
     assert_eq!(controller, Some(viewer), "the take lands");
 
+    // **The connection writes no release record**: the service owns that
+    // line, so a release is recorded once and never claimed twice.
+    let takes = caught(&written).matches("event_name=\"browser_control\"").count();
+    send(&mut socket, ClientMessage::BrowserControl { take: false }).await;
+    let _ = next_server(&mut socket).await; // the release's own push
+    assert_eq!(
+        caught(&written).matches("event_name=\"browser_control\"").count(),
+        takes,
+        "the connection wrote a release record: {}",
+        caught(&written),
+    );
+    // Take it back, so the same-tab re-attach below has a role to keep.
+    send(&mut socket, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::BrowserView { controller, .. } = next_server(&mut socket).await else {
+        panic!("the take answers")
+    };
+    assert_eq!(controller, Some(viewer), "the role is back");
+
     send(
         &mut socket,
         ClientMessage::BrowserView { seat: lead_seat(), tab: Some(2), reply_to: None },
@@ -8985,6 +9031,7 @@ async fn an_unattached_gesture_and_take_are_answered() {
         "the unattached take is recorded too: {records}",
     );
 
+    let unattached = caught(&written).matches("browser_input_unattached").count();
     send(
         &mut socket,
         ClientMessage::BrowserInput {
@@ -9004,6 +9051,50 @@ async fn an_unattached_gesture_and_take_are_answered() {
         next_server_within(&mut socket, 300).await.is_none(),
         "a pointer move is a stream and its refusal is the click's",
     );
+    assert_eq!(
+        caught(&written).matches("browser_input_unattached").count(),
+        unattached,
+        "and it writes no record on either path: {}",
+        caught(&written),
+    );
+}
+
+/// **A refused take is answered and recorded.** The host can refuse one - a
+/// session that ended under it - and the person's press would otherwise be a
+/// bar that never changes with no trace of why.
+#[tokio::test]
+async fn a_refused_take_is_answered_and_recorded() {
+    let (written, _guard) = catch_records();
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
+    let _ = next_server(&mut socket).await; // its view state
+    let _ = next_server(&mut socket).await; // its nav state
+
+    *stub.refuse_take.lock().expect("the stub's refusal") = true;
+    send(&mut socket, ClientMessage::BrowserControl { take: true }).await;
+    let ServerMessage::Error { what, why, .. } = next_server(&mut socket).await else {
+        panic!("a refused take answers")
+    };
+    assert_eq!(what, "browser_control");
+    assert!(why.contains("the session ended under this take"), "{why}");
+
+    let records = caught(&written);
+    let refusal = records
+        .lines()
+        .find(|line| {
+            line.contains("event_name=\"browser_control\"") && line.contains("landed=false")
+        })
+        .unwrap_or_else(|| panic!("the refused take is recorded: {records}"));
+    for needle in ["profile=TestOrg/default", "tab=2", "reason=the session ended under this take"] {
+        assert!(refusal.contains(needle), "the record carries `{needle}`: {refusal}");
+    }
 }
 
 /// **A refused gesture's record names its kind and never its text.** The

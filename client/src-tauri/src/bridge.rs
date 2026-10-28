@@ -1678,12 +1678,17 @@ mod tests {
 
     /// **A refused gesture is one line a second, not one a frame.** The
     /// server withholds the pointer moves; the shell can only rate-limit, so
-    /// a burst of refusals is recorded by its first.
+    /// a burst of refusals is recorded by its first - and a suppressed call
+    /// leaves the window where it was, or a steady stream would push it
+    /// forward for ever and never record again.
     #[test]
     fn a_refusal_burst_is_recorded_once_a_second() {
         let (bridge, _rx) = bridge();
+        let window = || *bridge.refusal_logged.lock().unwrap_or_else(PoisonError::into_inner);
         assert!(bridge.refusal_is_new(), "the first refusal is the record");
+        let kept = window().expect("the first refusal stamped the window");
         assert!(!bridge.refusal_is_new(), "the next in the same second is not");
+        assert_eq!(window(), Some(kept), "and the suppressed call left the window alone");
         *bridge.refusal_logged.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(Instant::now() - Duration::from_millis(1_500));
         assert!(bridge.refusal_is_new(), "a later refusal is a new record");
@@ -1700,6 +1705,45 @@ mod tests {
         assert!(refusal_is_recorded("browser_control", true));
         assert!(refusal_is_recorded("browser_view", false), "a refused attach always records");
         assert!(refusal_is_recorded("browser_file_answer", false));
+    }
+
+    /// **The refusal line is the record the artifact carries**, so it is
+    /// pinned through the frame path: a refused gesture writes it, a refused
+    /// take writes its own without spending the input burst's window, and an
+    /// error that is not the browser's writes nothing.
+    #[test]
+    fn a_refused_gesture_is_a_line_and_a_refused_take_costs_no_burst() {
+        let _held = crate::log_capture::capture();
+        let (bridge, _rx) = bridge();
+        let refusal = |what: &str| {
+            crate::log_capture::lines()
+                .into_iter()
+                .any(|line| line.contains("client_browser_refused") && line.contains(what))
+        };
+
+        sent(
+            &bridge,
+            json!({ "kind": "error", "what": "browser_control", "why": "no browser attached" }),
+        );
+        assert!(refusal("browser_control"), "the refused take is a line");
+        sent(
+            &bridge,
+            json!({ "kind": "error", "what": "browser_input", "why": "not the controller" }),
+        );
+        assert!(
+            refusal("browser_input"),
+            "the refused input follows it, so the take spent no burst: {:?}",
+            crate::log_capture::lines(),
+        );
+
+        let before = crate::log_capture::lines().len();
+        sent(&bridge, json!({ "kind": "error", "what": "subscribe", "why": "no such subject" }));
+        assert_eq!(
+            crate::log_capture::lines().len(),
+            before,
+            "an error that is not the browser's is not a refusal: {:?}",
+            crate::log_capture::lines(),
+        );
     }
 
     /// What a bridge's ask notices went to, so a test can see a trigger fire.
