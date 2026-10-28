@@ -154,8 +154,55 @@ pub fn spawn(
     encoding: (u16, u8),
     frames: &Path,
 ) -> Result<(u32, InputSender, EventReceiver), String> {
+    #[cfg(test)]
+    {
+        // **A test drives the launch's failure arms**, which the bundle's
+        // real host cannot be made to take on demand.
+        let hook = TEST_SPAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(hook) = hook {
+            return hook(TestSpawn {
+                profile: profile.to_path_buf(),
+                port,
+                ring: ring.to_owned(),
+                width,
+                height,
+                profile_id,
+                encoding,
+                frames: frames.to_path_buf(),
+            });
+        }
+    }
     let exe = crate::host_bundle::checked_executable()?;
     spawn_with(&exe, profile, port, ring, width, height, profile_id, encoding, frames)
+}
+
+/// The arguments a test's spawn stand-in receives.
+#[cfg(test)]
+pub(crate) struct TestSpawn {
+    pub(crate) profile: std::path::PathBuf,
+    pub(crate) port: u16,
+    pub(crate) ring: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) profile_id: u16,
+    pub(crate) encoding: (u16, u8),
+    pub(crate) frames: std::path::PathBuf,
+}
+
+/// One test's replacement for `spawn`.
+#[cfg(test)]
+type TestSpawnHook =
+    Box<dyn FnOnce(TestSpawn) -> Result<(u32, InputSender, EventReceiver), String> + Send>;
+
+/// The next spawn a test has replaced, taken once.
+#[cfg(test)]
+static TEST_SPAWN: std::sync::Mutex<Option<TestSpawnHook>> = std::sync::Mutex::new(None);
+
+/// Replace the next `spawn` a test drives, so `start_host`'s failure arms
+/// can be reached with a stand-in host.
+#[cfg(test)]
+pub(crate) fn set_test_spawn(hook: TestSpawnHook) {
+    *TEST_SPAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
 }
 
 /// The host's command line, without the pipes or the detachment: the spawn
@@ -339,7 +386,8 @@ const TAIL_BYTES: u64 = 4 * 1024;
 const TAIL_LINES: usize = 4;
 const TAIL_CHARS: usize = 512;
 
-/// The host log's last few lines, read from the file's own end.
+/// The host log's last few lines, read from the file's own end. A seek can
+/// land mid-line, so the first kept line may be a fragment.
 pub(crate) fn log_tail(profile: &Path) -> String {
     use std::io::{Read as _, Seek as _};
     let Ok(mut file) = std::fs::File::open(profile.join("cef-host.log")) else {
@@ -371,6 +419,17 @@ pub(crate) fn log_tail(profile: &Path) -> String {
 /// A child that exited is reaped here, so a zombie never reads as alive.
 pub fn alive(pid: u32) -> bool {
     exit(pid).is_none()
+}
+
+/// Whether `pid` has exited, **without taking its status**: a later
+/// [`exit`] still reads the cause. This is the liveness check for a path
+/// that leaves the death to the monitor.
+pub fn gone(pid: u32) -> bool {
+    let mut held = locked();
+    match held.get_mut(&pid) {
+        Some(child) => child.try_wait().is_ok_and(|status| status.is_some()),
+        None => !running(pid),
+    }
 }
 
 /// A child's exit, when it went: `None` while it still runs. The status is
@@ -1113,7 +1172,7 @@ mod tests {
         assert!(tail.starts_with("line 996 | "), "the last four lines are kept: {tail}");
         assert!(tail.ends_with("line 999"), "and the newest is the last: {tail}");
 
-        let long = "x".repeat(TAIL_CHARS + 100);
+        let long = "x".repeat(600);
         std::fs::write(
             dir.path().join("cef-host.log"),
             format!("one\ntwo\nlong {long}\nthree\nfour\n"),
@@ -1123,9 +1182,18 @@ mod tests {
         assert_eq!(tail.matches(" | ").count(), 3, "the four newest lines: {tail}");
         assert!(tail.starts_with("two | "), "the oldest line is dropped: {tail}");
         assert!(!tail.contains(&long), "the long line is cut at the cap: {tail}");
-        assert!(
-            tail.chars().count() <= 4 * TAIL_CHARS + 3 * 4,
-            "the tail cannot grow with a line: {tail}"
-        );
+        assert!(tail.chars().count() <= 4 * 512 + 12, "the tail cannot grow with a line: {tail}");
+
+        // Four lines wider than the byte window: the marker at the start of
+        // the oldest kept line is outside the window, so only its own tail
+        // is kept.
+        let mut wide = String::new();
+        for n in 0..4 {
+            let prefix = if n == 0 { "MARKER".to_owned() } else { format!("line{n}") };
+            let _ = writeln!(wide, "{prefix}-{}", "M".repeat(1_100));
+        }
+        std::fs::write(dir.path().join("cef-host.log"), wide).expect("the host log");
+        let tail = log_tail(dir.path());
+        assert!(!tail.contains("MARKER"), "a whole read keeps the marker: {tail}");
     }
 }
