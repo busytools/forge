@@ -302,6 +302,8 @@
   let dockOpen = $state(false);
   /** A take's words that landed in the dock, which is what brings its box the keyboard. */
   let dockLanded = $state<string | null>(null);
+  /** A landing the bar's line took, which the settle below carries if it goes. */
+  let barLanded = $state<string | null>(null);
 
   /**
    * The prompt the dock draws, which is the one the seat is parked on - unless
@@ -567,6 +569,7 @@
     ownKey = key;
     dockDraft = '';
     dockLanded = null;
+    barLanded = null;
   });
 
   /**
@@ -610,6 +613,15 @@
   );
 
   /**
+   * Whether the bar's line is where a take's words belong, and so whether the
+   * bar draws it: the takeover stands for this ask, and the page is up on its
+   * tab or on its way back. **Showing the words is not answering** - the
+   * doors stay on `answering` - and the line is the only box on screen while
+   * the page owns the window.
+   */
+  const barLineHolds = $derived(takeoverAsk !== null && (answering || surface.phase === 'opening'));
+
+  /**
    * Whether the dock is the box a landing belongs to.
    *
    * The prompt holding the slot is not enough on its own: the dock draws only
@@ -622,8 +634,9 @@
     // takeover stands for this seat's hand-off on the tab it shows: the only
     // text box on screen is the bar's, so a take started at it belongs there -
     // the same `notes` the dock binds. A page the ask did not name is the
-    // chat's box, and words about it are the chat's.
-    if (answering) return true;
+    // chat's box, and words about it are the chat's - except while a retry is
+    // still opening, where the line is what holds them until it settles.
+    if (barLineHolds) return true;
     const asking = dockAsk;
     if (asking === null || blocker !== null) return false;
     if (asking.kind === 'question') return true;
@@ -662,21 +675,16 @@
     // the reader's last touch wrote it into a draft nobody could see - and a
     // take begun in the composer keeps its words even when a prompt arrived
     // mid-flight.
-    // **A take begun at the bar stays the bar's while its takeover stands,**
-    // even with a retry opening the page under it - the words were spoken for
-    // that line, and the composer's draft is behind the picture. Read untracked
-    // so the effect still runs on the notice alone.
-    const barHolds = untrack(
-      () =>
-        box.tookFrom === 'dock' &&
-        (toDock() || (surface.phase === 'opening' && takeoverAsk !== null)),
-    );
+    // Read untracked so the effect still runs on the notice alone.
+    const barHolds = untrack(() => box.tookFrom === 'dock' && toDock());
+    const onBar = untrack(() => barLineHolds);
     if (barHolds) {
       dockDraft = joined(
         untrack(() => dockDraft),
         words,
       );
       dockLanded = words;
+      barLanded = onBar ? words : null;
       // **The memory is marked where the words went** (#1360): the dock's
       // row holds them now, so a carried re-hand on a later read must not
       // append them a second time.
@@ -691,6 +699,7 @@
         untrack(() => box.draft),
         words,
       );
+      barLanded = null;
     }
     box.beatAt = Date.now();
     // The words come with the keyboard, so an immediate Enter sends what just
@@ -699,6 +708,32 @@
     // the prompt replaced - destroyed with the box, so detached, and taking no
     // focus - and the dock brings its own box back from its `land`.
     field?.focus();
+  });
+
+  /**
+   * **Words held for the bar are never dropped under it.** A retry can settle
+   * on a page the ask did not name, which takes the line away while the ask
+   * is still parked - so what the line holds goes back to the composer's
+   * draft, where nothing the ask does can clear it.
+   */
+  function carryBarWords(): void {
+    if (barLanded === null) return;
+    box.draft = joined(
+      untrack(() => box.draft),
+      untrack(() => dockDraft),
+    );
+    dockDraft = '';
+    dockLanded = null;
+    barLanded = null;
+  }
+
+  $effect(() => {
+    // **Only while the ask is still parked.** When the ask itself resolves,
+    // the line's words go with the prompt that owned them, as any draft does;
+    // it is the line being taken away UNDER the ask that must not lose them.
+    if (barLanded === null || takeoverAsk === null) return;
+    if (barLineHolds) return;
+    carryBarWords();
   });
 
   /**
@@ -1304,7 +1339,8 @@
       onnotnow={answering ? () => takeoverAnswer('not_now') : null}
       onback={takeoverBack}
       onnav={takeoverNav}
-      onfeedback={answering ? takeoverFeedback : null}
+      onfeedback={barLineHolds ? takeoverFeedback : null}
+      cansend={answering}
       onretry={surface.phase === 'failed' ? takeoverRetry : null}
     />
   {/if}
