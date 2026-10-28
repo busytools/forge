@@ -88,6 +88,9 @@ popup asked for as that first document; the veto patches that document's world
 as soon as its context is reported, which is the out-of-band case a tab
 another client creates directly at a URL is already in.
 
+**The browser offers no passkeys**: its pages expose no `PublicKeyCredential`,
+so a site that offers a passkey asks for the password instead.
+
 **The old profile trees go once.** The first server that finds no marker
 deletes the client's old in-process CEF caches - `browser/cef-profile` and
 `browser/profiles/<name>/cef` under its bundle identifier - and the server's
