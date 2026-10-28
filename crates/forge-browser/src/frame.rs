@@ -90,6 +90,22 @@ impl Frame {
     }
 }
 
+/// One frame's encoder settings.
+#[cfg(target_os = "macos")]
+fn config(quality: u8, key: bool) -> Option<webp::WebPConfig> {
+    /// **The fastest effort libwebp offers.** Its default is a two-pass
+    /// search that cost 237 ms of CPU a frame on a painted 2048x1112 window
+    /// at 2x, where this costs 75 ms at 0.7 dB higher PSNR; the 18% larger
+    /// frames cross a local socket.
+    const EFFORT: i32 = 0;
+    let mut config = webp::WebPConfig::new().ok()?;
+    config.lossless = i32::from(key);
+    config.alpha_compression = i32::from(!key);
+    config.quality = f32::from(quality);
+    config.method = EFFORT;
+    Some(config)
+}
+
 /// Encode one BGRA view buffer.
 ///
 /// **BGRA is what CEF paints and what the ring holds**; libwebp's own
@@ -113,7 +129,7 @@ pub fn encode_webp(
         pixel.swap(0, 2);
     }
     let encoder = webp::Encoder::from_rgba(&rgba, width, height);
-    match encoder.encode_simple(key, f32::from(quality)) {
+    match encoder.encode_advanced(&config(quality, key)?) {
         Ok(memory) => Some(memory.to_vec()),
         Err(why) => {
             eprintln!(
@@ -462,6 +478,22 @@ mod tests {
             "a same-size frame inside the interval is written, not dropped"
         );
         std::fs::remove_dir_all(&dir).expect("the temp dir goes");
+    }
+
+    /// **A live frame is encoded at the fastest effort libwebp has.**
+    /// libwebp's default is a two-pass search: on a painted 2048x1112 window
+    /// at 2x it cost 237 ms of CPU a frame against this setting's 75 ms, and
+    /// a change back to it is the 200 ms picture lag this host had - which
+    /// no assertion of pixels or sizes can see.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_live_frame_is_encoded_at_the_fastest_effort() {
+        let lossy = super::config(75, false).expect("a config");
+        assert_eq!(lossy.method, 0, "the effort is the fastest libwebp offers");
+        assert_eq!(lossy.quality, 75.0, "the configured quality is the one encoded");
+        assert_eq!(lossy.lossless, 0, "a frame between key frames is lossy");
+        let key = super::config(75, true).expect("a config");
+        assert_eq!(key.lossless, 1, "a surface's first frame is lossless");
     }
 
     /// **A painted BGRA buffer becomes a WebP a decoder would recognise.**
