@@ -659,12 +659,54 @@ describe('the canvas viewer', () => {
     });
 
     canvas.dispatchEvent(finger('pointerdown', 60, 60));
-    canvas.dispatchEvent(finger('pointermove', 60, 50));
-    canvas.dispatchEvent(finger('pointerup', 60, 50));
+    canvas.dispatchEvent(finger('pointermove', 50, 50));
+    canvas.dispatchEvent(finger('pointerup', 50, 50));
 
     const wheel = events.find((event) => event.kind === 'wheel');
     if (wheel?.kind !== 'wheel') throw new Error('the swipe sent no wheel');
     expect(wheel.delta_y, "the finger's 10 px is the page's 20").toBe(20);
+    expect(wheel.delta_x, "and the width's 10 px is the page's 20").toBe(20);
+  });
+
+  /// **A wheel tick is an amount, not a displacement on the picture.** The
+  /// page scrolls as far whatever size the picture is drawn at, so the same
+  /// scaled picture must not fit the wheel's deltas the way it fits a finger's.
+  it('sends the wheel as an amount, not fitted to the picture', async () => {
+    vi.stubGlobal('createImageBitmap', () =>
+      Promise.resolve({ width: 400, height: 200, close: () => {} }),
+    );
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection, listeners, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+    surface.id = 1;
+    flushSync();
+    for (const listener of listeners) {
+      listener({ ...frame(0), width: 400, height: 200, page_width: 290, page_height: 146 });
+    }
+    await vi.waitFor(() => expect(canvas.width).toBe(400));
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 145,
+      bottom: 73,
+      width: 145,
+      height: 73,
+      toJSON: () => ({}),
+    });
+
+    canvas.dispatchEvent(
+      new WheelEvent('wheel', { deltaX: -30, deltaY: -40, bubbles: true, cancelable: true }),
+    );
+
+    const wheel = events.find((event) => event.kind === 'wheel');
+    if (wheel?.kind !== 'wheel') throw new Error('the wheel sent nothing');
+    expect(wheel.delta_x, "the wheel's own amount, not the picture's").toBe(30);
+    expect(wheel.delta_y, "the wheel's own amount, not the picture's").toBe(40);
   });
 
   /// **The phone's keys and text reach the page.** The canvas has no fields,
