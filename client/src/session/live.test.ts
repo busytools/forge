@@ -1789,6 +1789,8 @@ interface Driveable extends Omit<Connection, 'status'> {
   opens: { answering?: boolean; review?: boolean }[];
   /** Every re-ask's own options, in order. */
   refreshes: { review?: boolean }[];
+  /** Every declaration the page made, in order: nothing asked for. */
+  declarations: { review: boolean }[];
   /** How many subscriptions were given back. */
   unsubscribes(): number;
   /** The seat's session appears, so a later read answers with a record. */
@@ -1815,6 +1817,7 @@ function drivable(refusedAtFirst = false): Driveable {
   const ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[] = [];
   const opens: { answering?: boolean; review?: boolean }[] = [];
   const refreshes: { review?: boolean }[] = [];
+  const declarations: { review: boolean }[] = [];
 
   const seatState = (): StoreState =>
     refused ? { kind: 'refused', why: NO_SESSION } : { kind: 'ready' };
@@ -1858,6 +1861,9 @@ function drivable(refusedAtFirst = false): Driveable {
     },
     showing: () => undefined,
     relist: () => undefined,
+    declare: (_what, options) => {
+      declarations.push(options);
+    },
     release: () => {
       // One entry, which is what these cases hold: the seat's release gives
       // back what the connection holds for it.
@@ -1907,6 +1913,7 @@ function drivable(refusedAtFirst = false): Driveable {
     subscribes: () => subscribed,
     opens,
     refreshes,
+    declarations,
     unsubscribes: () => unsubscribed,
     ready: () => {
       refused = false;
@@ -3733,6 +3740,95 @@ describe('the review read', () => {
       { review: true },
     ]);
     stop();
+  });
+
+  /**
+   * **A review page opening a seat another page visited asks its own read.**
+   * The normal session-to-review navigation: the seat is already open and was
+   * read as an ordinary record, so the page's first sight of it must still be
+   * a review read.
+   */
+  it('asks its own read when it opens a seat another page is holding', () => {
+    const connection = drivable();
+    const visited = watchSession(connection, LEAD, true);
+    const stop = visited.subscribe(() => {});
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
+    expect(connection.refreshes, 'the ordinary page has asked nothing').toEqual([]);
+
+    const review = watchSession(connection, LEAD, false, { review: true });
+    const reviewStop = review.subscribe(() => {});
+    expect(connection.refreshes.at(-1), 'the visited seat is re-read as a review read').toEqual({
+      review: true,
+    });
+    reviewStop();
+    stop();
+  });
+
+  /**
+   * **Only an answer to a review ask is drawn as a review read.** The page
+   * uses this to say nothing about a base no read checked; a seat that kept
+   * the flag from an earlier review visit must not make an ordinary answer
+   * look like one.
+   */
+  it('marks a record with the scope of the ask that produced it', () => {
+    const connection = drivable();
+    const view = watchSession(connection, LEAD, true);
+    const seen: { read: SessionRead | null } = { read: null };
+    const stop = view.subscribe((next) => {
+      seen.read = next;
+    });
+
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
+    expect(seen.read?.review, 'an ordinary answer is not a review read').toBe(false);
+
+    rereadSeat(connection, LEAD, { review: true });
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 2 }));
+    expect(seen.read?.review, 'the review answer is').toBe(true);
+
+    rereadSeat(connection, LEAD, { review: false });
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 3 }));
+    expect(seen.read?.review, 'and the ordinary answer after it is not').toBe(false);
+    stop();
+  });
+
+  /**
+   * **Letting the seat go crosses the transport, and it is not a read.** Left
+   * unsaid, the transport's held scope would keep re-asking the review read
+   * on every reconnect for a seat nobody is reviewing.
+   */
+  it('tells the transport when the page lets the seat go', () => {
+    const connection = drivable();
+    const view = watchSession(connection, LEAD, true, { review: true });
+    const stop = view.subscribe(() => {});
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
+
+    clearReview(connection, LEAD);
+    expect(connection.declarations, 'the release crosses as a declaration').toEqual([
+      { review: false },
+    ]);
+    expect(connection.refreshes, 'and nothing is asked for').toEqual([]);
+    stop();
+  });
+
+  /** **One review read per open of a visited seat**, not one per mount and
+   *  one for the record it was already holding. */
+  it('asks one review read when it opens a seat it visited before', () => {
+    const connection = drivable();
+    const first = watchSession(connection, LEAD, true, { review: true });
+    const stopFirst = first.subscribe(() => {});
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
+    stopFirst();
+    clearReview(connection, LEAD);
+    connection.refreshes.splice(0);
+
+    const again = watchSession(connection, LEAD, true, { review: true });
+    const stopAgain = again.subscribe(() => {});
+    expect(connection.refreshes, 'the second open asks one read').toEqual([{ review: true }]);
+
+    // The answer lands and the held record moves on without another ask.
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 2 }));
+    expect(connection.refreshes, 'and the answer asks nothing more').toEqual([{ review: true }]);
+    stopAgain();
   });
 
   /** **The intent is the seat's own**, so one seat's release leaves another's

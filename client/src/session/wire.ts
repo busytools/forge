@@ -419,6 +419,14 @@ interface GitStatsRecord {
 export interface GitWorkRecord {
   defaultBranch: string | null;
   worktree: GitStatsRecord | null;
+  /**
+   * What the seat's last watch refresh measured for the base the chain is
+   * measured against. **The only field that moves on a base-only move**: an
+   * upstream commit the branch already contains leaves the count and the
+   * chain alone, so a review page watching only those would keep a `current`
+   * label nobody re-checked.
+   */
+  base: BaseStateRecord | null;
   ahead: {
     count: number;
     commits: {
@@ -1006,6 +1014,10 @@ export function gitFrom(value: unknown): GitWorkRecord {
   return {
     defaultBranch: text(held['default_branch']),
     worktree: gitStatsFrom(held['worktree']),
+    // **Absent is "no measurement", not `unknown`.** This field rides the
+    // seat's row, and a record read from an older server simply has none; a
+    // page must not read that as a measured state.
+    base: held['base'] === undefined ? null : baseStateFrom(held['base']),
     ahead:
       ahead === null || ahead === undefined
         ? null

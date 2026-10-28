@@ -304,6 +304,66 @@ describe('the connection', () => {
   });
 
   /**
+   * **The review scope rides every ask, not just a refresh.** A page's first
+   * open, a relink and the reconnect's own re-ask are frames the page did not
+   * choose; a socket that dropped the flag would turn them into ordinary
+   * reads that label their base unverified.
+   */
+  it('carries the review scope on subscribe, relist and the reconnect', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { review: true });
+    await until(() => server.received.length === 1, 'the subscribe');
+    expect(server.received[0]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      review: true,
+    });
+
+    conn.relist(HOME, { review: true });
+    await until(() => server.received.length === 2, 'the relist');
+    expect(server.received[1]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      review: true,
+    });
+
+    server.drop();
+    await until(() => server.received.length >= 3, 'the reconnect');
+    expect(server.received[2]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      review: true,
+    });
+  });
+
+  /**
+   * **A declaration moves the held scope with nothing on the wire.** The page
+   * letting its seat go is not a read, and the reconnect after it must ask
+   * an ordinary record.
+   */
+  it('takes a declaration without asking for anything', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { review: true });
+    await until(() => server.received.length === 1, 'the subscribe');
+
+    conn.declare(HOME, { review: false });
+    await quiet(ABSENCE_MS);
+    expect(server.received.slice(1), 'a declaration sends nothing').toEqual([]);
+
+    server.drop();
+    await until(() => server.received.length >= 2, 'the reconnect');
+    expect(server.received[1], 'and the reconnect asks the declared scope').toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      review: false,
+    });
+  });
+
+  /**
    * The declaration decides whether the core parks a turn on this client's
    * reply. Sending it as `false` on a client that draws a dock would make
    * every prompt it shows resolve `Cancelled` - the turn fails rather than

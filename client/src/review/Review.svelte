@@ -20,7 +20,7 @@
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
   import { clearReview, rereadSeat, watchSession, type SessionRead } from '../session/live';
-  import type { ReviewThreadRecord, SessionRecord } from '../session/wire';
+  import type { BaseStateRecord, ReviewThreadRecord, SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
   import Canvas from './Canvas.svelte';
@@ -93,6 +93,15 @@
   const DRIFT_REASK_MS = 2_000;
 
   /**
+   * The floor between two of this page's own reads.
+   *
+   * A branch under a rebase or a burst of commits can move a chain faster than
+   * a read answers, and each read is a whole record plus a base fetch: the
+   * debounce alone has no ceiling, so this is the one that bounds the rate.
+   */
+  const REASK_FLOOR_MS = 10_000;
+
+  /**
    * What the branch-ahead chain says now, as one value to compare: the count
    * and the newest commit cover a commit being added, amended or a base fetch
    * moving the range underneath.
@@ -101,6 +110,40 @@
     const ahead = held?.git.ahead;
     if (ahead === null || ahead === undefined) return null;
     return `${ahead.count}:${ahead.commits[0]?.sha ?? ''}`;
+  }
+
+  /**
+   * What the seat's last watch refresh measured for the base, as one value to
+   * compare. **The field that catches a base-only move**: an upstream commit
+   * the branch already contains moves `origin/main` without moving the count
+   * or the chain, and only this says so.
+   */
+  function baseOf(base: BaseStateRecord | null | undefined): string | null {
+    if (base === null || base === undefined) return null;
+    return base.state === 'behind' ? `behind:${base.behind}` : base.state;
+  }
+
+  /** One pending re-ask, debounced, with [`REASK_FLOOR_MS`] between reads. */
+  let askTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastAskAt = 0;
+
+  function askAgainSoon(): void {
+    if (askTimer !== null) clearTimeout(askTimer);
+    const floorLeft = Math.max(0, lastAskAt + REASK_FLOOR_MS - Date.now());
+    askTimer = setTimeout(
+      () => {
+        askTimer = null;
+        lastAskAt = Date.now();
+        rereadSeat(connection, slot, { review: true });
+      },
+      Math.max(DRIFT_REASK_MS, floorLeft),
+    );
+  }
+
+  function cancelAsk(): void {
+    if (askTimer === null) return;
+    clearTimeout(askTimer);
+    askTimer = null;
   }
 
   /**
@@ -209,9 +252,32 @@
     // The answer that opened this page is what set the chain it drew; only a
     // chain that moved afterwards is worth a read of its own.
     if (first) return;
-    const timer = setTimeout(() => rereadSeat(connection, slot, { review: true }), DRIFT_REASK_MS);
-    return () => clearTimeout(timer);
+    askAgainSoon();
   });
+
+  /**
+   * **A base can move without the chain moving**, and only the seat's own
+   * watch refresh knows it: `record.git.base` is what that refresh measured,
+   * `record.diff.base` is what this page's read did. A change in the former
+   * that this page's read does not already state asks the read again.
+   */
+  let baseSeenAt: string | null = null;
+  let seenBase: string | null = null;
+  $effect(() => {
+    const at = subjectKey({ session: slot });
+    const measured = read.review ? baseOf(record?.git.base ?? null) : null;
+    if (measured === null) return;
+    const first = baseSeenAt !== at;
+    if (!first && measured === seenBase) return;
+    baseSeenAt = at;
+    seenBase = measured;
+    if (first) return;
+    if (measured !== baseOf(record?.diff.base ?? null)) askAgainSoon();
+  });
+
+  // A page that goes away asks nothing: the intent is given back with the
+  // seat, and a pending read would refresh a base nobody is drawing.
+  $effect(() => () => cancelAsk());
 
   /** The threads this sitting has drafted or replied on, unfiled: what a
    *  `finish` seals into a round. */

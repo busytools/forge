@@ -270,6 +270,7 @@ export function fakeConnection() {
     },
     showing() {},
     relist() {},
+    declare() {},
     release() {},
     dispatch(command: Command) {
       dispatched.push(command);

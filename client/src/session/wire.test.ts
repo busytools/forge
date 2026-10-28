@@ -63,6 +63,7 @@ describe('a git record a server never sent', () => {
     expect(gitFrom(undefined), 'no git at all').toEqual({
       defaultBranch: null,
       worktree: null,
+      base: null,
       ahead: null,
     });
   });
@@ -300,6 +301,21 @@ describe('the diff parse', () => {
    * all; reading that as nothing drew the same silence as "the base is fine",
    * which is the one claim nobody checked.
    */
+  /**
+   * **The seat row's own base measurement** is what a page compares against
+   * its read's: absent means an older server that never measured one, which
+   * is not a state a page may read as `unknown`.
+   */
+  it("reads the seat row's base measurement, absent as none", () => {
+    expect(gitFrom({}).base, 'an older server measured nothing').toBeNull();
+    expect(gitFrom({ base: null }).base).toBeNull();
+    expect(gitFrom({ base: 'current' }).base).toEqual({ state: 'current' });
+    expect(gitFrom({ base: { behind: { behind: 2 } } }).base).toEqual({
+      state: 'behind',
+      behind: 2,
+    });
+  });
+
   it('reads an absent base over a drawn branch layer as unknown', () => {
     const skew = diffFrom({ branch_ahead: { populated: [] } });
     expect(skew.base?.state, 'the older server never checked, so the page says so').toBe('unknown');

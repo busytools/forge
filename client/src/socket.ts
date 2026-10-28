@@ -10,7 +10,7 @@
  * refilling on every blip.
  */
 
-import { READ_BOUND_MS, ReadBounds } from './read-bound';
+import { READ_BOUND_MS, REVIEW_READ_BOUND_MS, ReadBounds } from './read-bound';
 import { refused } from './refusals';
 import { StreamGate } from './session/stream';
 import {
@@ -97,6 +97,17 @@ export interface Connection {
    * declared, and puts it back in the list a reconnect re-asks.
    */
   relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void;
+  /**
+   * Change a subject's held declaration **without asking the server for
+   * anything at all**.
+   *
+   * The scope belongs to the page holding the seat, and a page that lets its
+   * review read go has to say so: a plain re-ask would put a declaration on
+   * the wire, and left unsaid the transport would keep re-asking as the
+   * review read long after the page went - one base fetch and pinned scan per
+   * reviewed seat, on every reconnect nobody asked for.
+   */
+  declare(what: Subject, options: { review: boolean }): void;
   /**
    * Give a subject back entirely: every store reader this side holds for it,
    * and every subscription the server holds for it.
@@ -620,8 +631,11 @@ export function connect(
     awaiting.push(key);
     subscribed.set(key, (subscribed.get(key) ?? 0) + 1);
     // The read this ask owes is bounded from here: nothing else would ask
-    // again for a snapshot that simply never came.
-    bounds.arm(what);
+    // again for a snapshot that simply never came. A review read gets the
+    // longer pass: the server's own bounds for it are longer than a healthy
+    // read, and the ordinary one would ask a second whole record under the
+    // first.
+    bounds.arm(what, review ? REVIEW_READ_BOUND_MS : undefined);
   }
 
   /** A subject the server has answered, which is no longer outstanding. */
@@ -1015,6 +1029,12 @@ export function connect(
     if (isOpen()) askFor(what, answering, review);
   }
 
+  /** The held declaration only: nothing on the wire, no store, no reader. */
+  function declare(what: Subject, options: { review: boolean }): void {
+    const existing = held.get(subjectKey(what));
+    if (existing !== undefined) existing.review = options.review;
+  }
+
   /** `true` when the pair went, which is what a bound re-arms on. */
   function refresh(what: Subject, options?: { review?: boolean }): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
@@ -1120,6 +1140,7 @@ export function connect(
     refresh,
     showing,
     relist,
+    declare,
     release,
     dispatch,
     browserView(seat, tab) {

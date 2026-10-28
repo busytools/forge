@@ -712,6 +712,20 @@ impl Bridge {
         }
     }
 
+    /// Change a subject's held declaration without asking the server for
+    /// anything: the scope a page holds, said so a later reconnect does not
+    /// re-ask it as a review read nobody wanted.
+    pub fn declare(&self, what: Value, review: bool) {
+        let mut state = self.lock();
+        let key = records::subject_key(&what);
+        if let Some(watch) = state.held.get_mut(&key) {
+            watch.review = review;
+        }
+        if let Some(socket) = &state.socket {
+            socket.declare(what, review);
+        }
+    }
+
     /// Give a subject back entirely: every page reader's subscription and
     /// the server's entries for it.
     ///
@@ -1788,6 +1802,38 @@ mod tests {
         };
         assert_eq!(seen["kind"], "something_new");
         assert_eq!(seen["payload"]["a"], json!(1));
+    }
+
+    /// **The review scope crosses the Bridge, not only the socket.** The
+    /// page's first read, a relink and the read bound's retry all come
+    /// through these calls, so a Bridge that dropped the flag would turn them
+    /// into ordinary reads while every socket test stayed green.
+    #[tokio::test]
+    async fn the_review_scope_survives_every_bridge_ask() {
+        let (bridge, _rx) = bridge();
+        let key = crate::records::subject_key(&seat());
+        let review = |bridge: &Arc<Bridge>| {
+            bridge.lock().held.get(&key).map(|watch| watch.review).unwrap_or(false)
+        };
+
+        bridge.subscribe(seat(), true, true);
+        assert!(review(&bridge), "a subscribe carries the page's scope");
+
+        // The bound's retry says nothing and must keep the held scope.
+        bridge.refresh(&seat(), None);
+        assert!(review(&bridge), "a scopeless refresh keeps the held scope");
+
+        // The page lets the seat go: the declaration crosses without an ask.
+        bridge.declare(seat(), false);
+        assert!(!review(&bridge), "a declaration takes it back");
+        bridge.refresh(&seat(), None);
+        assert!(!review(&bridge), "and the unscoped re-ask uses it");
+
+        // A relink states its own scope, which is the one a reconnect re-asks.
+        bridge.relist(seat(), true, false);
+        assert!(!review(&bridge), "a relist's own scope wins");
+        bridge.relist(seat(), true, true);
+        assert!(review(&bridge), "and raises it again");
     }
 
     /// A parked page's frames stop being emitted (the records still take

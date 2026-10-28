@@ -301,6 +301,8 @@ function record(
   total = commits.length,
   base: unknown = null,
   defaultBranch = 'main',
+  /** What the seat's watch last measured for the base (the row's `base`). */
+  watchBase: unknown = null,
 ): SessionRecord {
   return {
     slot: SLOT,
@@ -308,6 +310,7 @@ function record(
     work: { branch: 'b', dirt: 'clean' },
     git: {
       defaultBranch,
+      base: watchBase,
       ahead:
         commits.length === 0 && total === 0
           ? null
@@ -443,6 +446,8 @@ async function draw(
   defaultBranch = 'main',
   /** Whether the record pushed is the page's own (review-scoped) read. */
   review = true,
+  /** What the seat's watch last measured for the base (the row's `base`). */
+  watchBase: unknown = null,
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -459,7 +464,7 @@ async function draw(
   });
   flushSync();
   push({
-    wire: record(IDLE, threads, reviews, diff, commits, total, base, defaultBranch),
+    wire: record(IDLE, threads, reviews, diff, commits, total, base, defaultBranch, watchBase),
     refused: null,
     review,
   });
@@ -1563,6 +1568,89 @@ describe('the steppers', () => {
     vi.advanceTimersByTime(2_001);
     flushSync();
     expect(seat.rereads, 'an unmoved chain asks nothing').toEqual([{ review: true }]);
+  });
+
+  /**
+   * **A base can move without the chain moving**, and the page hears it only
+   * from the seat's own watch measurement: `git.base` moves, the count and the
+   * chain do not, and the diff's stated base is now behind it.
+   */
+  it('asks its own read again when the watch measures a moved base', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' }, 'main', true, { state: 'current' });
+    vi.useFakeTimers();
+    expect(seat.rereads, 'the first measurement is what the page drew').toEqual([]);
+
+    // The watch's next pass found the base one commit behind: a base-only move.
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'behind',
+        behind: 1,
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the debounce runs first').toEqual([]);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'then the page re-reads against the moved base').toEqual([
+      { review: true },
+    ]);
+
+    // The same measurement again is not news.
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'behind',
+        behind: 1,
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'and an unchanged measurement asks nothing').toEqual([{ review: true }]);
+  });
+
+  /**
+   * **A branch moving faster than a read answers is still one read at a
+   * time.** The debounce coalesces a burst, but a chain that moves again just
+   * after an answer would ask again at once; the floor is what bounds the
+   * rate to one whole record and one base fetch per window.
+   */
+  it('floors its own reads to one per window', async () => {
+    await draw([], [], true, DIFF, [{ sha: 'aaaaaaa', subject: 'one' }], 1, { state: 'current' });
+    vi.useFakeTimers();
+
+    const moved = (sha: string, subject: string, total: number): void => {
+      push({
+        wire: record(IDLE, [], [], DIFF, [{ sha, subject }], total, { state: 'current' }),
+        refused: null,
+        review: true,
+      });
+      flushSync();
+    };
+
+    // The first move asks after the debounce, and starts the window.
+    moved('bbbbbbb', 'two', 2);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the first moved chain is asked').toEqual([{ review: true }]);
+
+    // A second move one second later would ask at once under the debounce
+    // alone; the floor holds it to the window.
+    vi.advanceTimersByTime(1_000);
+    moved('ccccccc', 'three', 3);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'a move inside the floor window waits').toEqual([{ review: true }]);
+
+    vi.advanceTimersByTime(8_000);
+    flushSync();
+    expect(seat.rereads, 'and is asked once the window is past').toEqual([
+      { review: true },
+      { review: true },
+    ]);
   });
 
   /**

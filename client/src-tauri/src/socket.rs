@@ -177,6 +177,15 @@ fn relist(held: &mut Vec<Held>, what: Value, answering: bool, review: bool) -> O
     Some(key)
 }
 
+/// Change one held entry's declaration in place: no frame, no reader, and a
+/// subject this connection does not hold has nothing to declare.
+fn declare(held: &mut [Held], what: &Value, review: bool) {
+    let key = subject_key(what);
+    if let Some(entry) = held.iter_mut().find(|h| h.key == key) {
+        entry.review = review;
+    }
+}
+
 /// One subscription given back: the count comes off, and the entry - with
 /// the key still outstanding for a refusal - goes only with the last one.
 fn unhold(held: &mut Vec<Held>, awaiting: &mut Vec<String>, what: &Value) {
@@ -225,6 +234,13 @@ enum Outbound {
     Relist {
         what: Value,
         answering: bool,
+        review: bool,
+    },
+    /// The held declaration only: nothing is sent, no reader is counted. A
+    /// page that lets its review read go says so here, so the next reconnect
+    /// re-asks an ordinary record.
+    Declare {
+        what: Value,
         review: bool,
     },
     More {
@@ -401,6 +417,12 @@ impl Socket {
     /// and only the wire's subscription died with the socket.
     pub fn relist(&self, what: Value, answering: bool, review: bool) {
         let _ = self.tx.send(Outbound::Relist { what, answering, review });
+    }
+
+    /// Change a held subscription's declaration **without asking for
+    /// anything**: no frame, no boundary - only what a reconnect re-asks with.
+    pub fn declare(&self, what: Value, review: bool) {
+        let _ = self.tx.send(Outbound::Declare { what, review });
     }
 
     /// Ask for more turns of a conversation.
@@ -624,6 +646,10 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         // reader is counted - the reconnect then asks exactly what was held.
         Outbound::Relist { what, answering, review } => {
             relist(held, what, answering, review);
+            false
+        }
+        Outbound::Declare { what, review } => {
+            declare(held, &what, review);
             false
         }
         Outbound::Unsubscribe { what } => {
@@ -857,6 +883,11 @@ async fn run(
                                 }
                                 awaiting.push(key);
                             }
+                        }
+                        Outbound::Declare { what, review } => {
+                            // Only the held record moves: nothing is asked
+                            // for, and the reconnect's own re-ask carries it.
+                            declare(&mut held, &what, review);
                         }
                         Outbound::Relist { what, answering, review } => {
                             // **One frame, and no reader added**: the entry is
@@ -1739,26 +1770,25 @@ pub(crate) mod tests {
         assert_eq!(again["answering"], true, "the declaration is carried, not defaulted");
     }
 
-    /// **The kind of read rides the held record across a drop.** A review
-    /// page's open that reconnects as an ordinary record would label its base
-    /// unverified for a check it never asked for, so the re-ask carries the
-    /// flag the page last asked with.
+    /// **A seat's own asks carry the review scope.** A seat is never re-asked
+    /// by a resume (the page re-attaches it, so the flag would mean nothing
+    /// there), which leaves the two frames a page really sends for a seat: its
+    /// open and a relist. A frame that dropped the scope would turn a review
+    /// page's read into an ordinary record.
     #[tokio::test]
-    async fn a_reconnect_re_asks_a_review_read() {
+    async fn a_seat_frame_carries_the_review_scope() {
         let mut stub = stub().await;
-        let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true, true);
-        let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(first["review"], json!(true), "the first ask carries the page's read");
+        let (socket, _rx) = connected(&stub).await;
+        let seat = json!({ "session": { "org": "TestOrg", "project": "proj", "label": "lead" } });
 
-        stub.kill.send(()).expect("the stub drops its connections");
-        loop {
-            if let SocketEvent::Status(Status::Connecting) = next_event(&mut rx).await {
-                break;
-            }
-        }
-        let again = stub.heard_until(|v| v["kind"] == "subscribe").await;
-        assert_eq!(again["review"], json!(true), "and so does the reconnect's re-ask");
+        socket.subscribe(seat.clone(), false, true);
+        let opened = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(opened["what"], seat, "the seat's open went");
+        assert_eq!(opened["review"], json!(true), "carrying the page's own read");
+
+        socket.relist(seat, false, false);
+        let relisted = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(relisted["review"], json!(false), "and a relist's own scope wins");
     }
 
     /// **A seat is the page's own to re-open after a drop.** The subscription

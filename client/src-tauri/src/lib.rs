@@ -132,6 +132,13 @@ mod commands {
         bridge.refresh(&what, review);
     }
 
+    /// Change a subject's held declaration without asking the server for
+    /// anything: the page's own scope, said before a reconnect re-asks it.
+    #[tauri::command]
+    pub fn client_declare(bridge: tauri::State<'_, Arc<Bridge>>, what: Value, review: bool) {
+        bridge.declare(what, review);
+    }
+
     /// Give a subject back entirely: every reader and every server entry.
     #[tauri::command]
     pub fn client_release(bridge: tauri::State<'_, Arc<Bridge>>, what: Value) {
@@ -537,6 +544,7 @@ pub fn run() {
             commands::client_refresh,
             commands::client_showing,
             commands::client_relist,
+            commands::client_declare,
             commands::client_release,
             commands::client_more,
             commands::client_seat_range,
@@ -595,6 +603,7 @@ pub fn run() {
             commands::client_refresh,
             commands::client_showing,
             commands::client_relist,
+            commands::client_declare,
             commands::client_release,
             commands::client_more,
             commands::client_seat_range,

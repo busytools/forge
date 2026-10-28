@@ -42,7 +42,7 @@ import {
 } from '../protocol';
 import { playPacket } from '../browser/audio';
 import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
-import { READ_BOUND_MS, ReadBounds } from '../read-bound';
+import { READ_BOUND_MS, REVIEW_READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
 import { StreamGate } from '../session/stream';
 import { report, type BrowserFrame, type Connection, type ConnectionStatus } from '../socket';
@@ -467,8 +467,9 @@ class RustConnection implements Connection {
       report('a subscribe could not reach the shell', why);
     });
     // The read this ask owes is bounded from here: nothing else would ask
-    // again for a snapshot that simply never came.
-    this.bounds.arm(what);
+    // again for a snapshot that simply never came. A review read gets the
+    // longer pass, because the server's own bounds for it are longer.
+    this.bounds.arm(what, options?.review === true ? REVIEW_READ_BOUND_MS : undefined);
     return store;
   }
 
@@ -521,6 +522,13 @@ class RustConnection implements Connection {
     });
   }
 
+  /** The held declaration only: nothing on the wire, no store, no reader. */
+  declare(what: Subject, options: { review: boolean }): void {
+    void invoke('client_declare', { what, review: options.review }).catch((why: unknown) => {
+      report('a declaration could not reach the shell', why);
+    });
+  }
+
   /**
    * Give a subject back entirely: every store reader this page holds for it,
    * and every subscription the shell holds for it.
@@ -543,11 +551,11 @@ class RustConnection implements Connection {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
     if (this.state !== 'open') return false;
-    this.bounds.arm(what);
     // **A re-ask that states no scope keeps the shell's held one.** The
     // bound's retry for a store still loading says nothing, and the shell
     // knows which kind of read that store was asked as.
     const review = options?.review;
+    this.bounds.arm(what, review === true ? REVIEW_READ_BOUND_MS : undefined);
     const payload = review === undefined ? { what } : { what, review };
     void invoke('client_refresh', payload).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);

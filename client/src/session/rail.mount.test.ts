@@ -45,6 +45,7 @@ function recording(): Connection {
     refresh: refuse,
     showing: refuse,
     relist: refuse,
+    declare: refuse,
     release: refuse,
     dispatch: (command: Command) => {
       acted.push(command);

@@ -394,9 +394,14 @@ export function rereadSeat(
  * has gone, and the next ordinary read of that seat is an ordinary record.
  */
 export function clearReview(connection: Connection, slot: SessionSlot): void {
-  const seat = seats(connection).get(subjectKey({ session: slot }));
+  const subject: Subject = { session: slot };
+  const seat = seats(connection).get(subjectKey(subject));
   if (seat === undefined) return;
   seat.review = false;
+  // **The transports learn it too.** Their held declaration is what a
+  // reconnect re-asks with; left saying `review`, every reconnect would pay
+  // a base fetch and a pinned scan for a seat nobody is reviewing.
+  connection.declare(subject, { review: false });
 }
 
 /** Release a seat whose session has ended: no subscription outlives it. */
