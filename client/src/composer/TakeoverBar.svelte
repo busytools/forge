@@ -1,13 +1,15 @@
 <script lang="ts">
   /**
-   * The browser takeover's bar: back to chat, Done, Not now, and the feedback
-   * line for what did not work.
+   * The browser takeover's bar: back to chat, the parked ask's words, Done,
+   * Not now, and the feedback line for what did not work.
    *
    * **Drawn by the composer, outside its own container** (`.surf` is a
    * `container-type`, which makes it the containing block for fixed children),
-   * so the bar sits at the window's top above the native page layer. The
-   * feedback line is the dock's own words row - the same Field, TakeCard and
-   * mic - so dictation here is the composer's, not a second implementation.
+   * so the bar sits at the window's top above the native page layer. **The ask
+   * rides the bar** because its card is drawn in the chat behind the page: the
+   * words are here whenever the answers are. The feedback line is the dock's
+   * own words row - the same Field, TakeCard and mic - so dictation here is
+   * the composer's, not a second implementation.
    */
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
@@ -19,6 +21,7 @@
 
   let {
     title,
+    reason = null,
     notes = $bindable(''),
     take = null,
     wire = null,
@@ -35,6 +38,8 @@
     onretry = null,
   }: {
     title: string;
+    /** The parked ask's own words; null when no ask rides this seat's page. */
+    reason?: string | null;
     notes?: string;
     take?: Take | null;
     wire?: {
@@ -62,6 +67,8 @@
   } = $props();
 
   let feedbackOpen = $state(false);
+  /** The ask's words, or `null` when there are none: an empty reason draws no row. */
+  const askWords = $derived(reason === null || reason.trim() === '' ? null : reason);
   /** The tab picker's own select: **its value is set here rather than by the
    *  select's binding**, which does not take when the options arrive after
    *  the viewed tab does. */
@@ -204,6 +211,12 @@
       {/if}
     </span>
   </div>
+  {#if askWords !== null}
+    <!-- **The ask, on the bar that answers it.** The card carrying these
+         words is drawn in the chat behind the native page, so with the page up
+         this is the only place the person can read what is asked. -->
+    <div class="tb-ask">{askWords}</div>
+  {/if}
   {#if feedbackOpen && onfeedback !== null}
     <div class="tb-feedback">
       {#if take !== null}

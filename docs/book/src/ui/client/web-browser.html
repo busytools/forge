@@ -53,6 +53,11 @@
   .bt.off { opacity: .45; }
   .btitle { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
   .bacts { margin-left: auto; display: flex; gap: 8px; }
+  /* The parked ask's words, on the bar that answers it: the card carrying them
+     is behind the page, so this row is where they are read. */
+  .bask { padding: 5px 12px 8px; border-bottom: 1px solid var(--line);
+    background: var(--s2); color: var(--text); font-size: var(--fs-data);
+    white-space: pre-wrap; max-height: 6.5em; overflow-y: auto; }
   .feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
     border-bottom: 1px solid var(--line); background: var(--s2); }
   .fld { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
@@ -159,6 +164,7 @@
           <span class="bt d">Not now</span>
         </span>
       </div>
+      <div class="bask">The CV form is showing a CAPTCHA. Solve it, then pick Upload CV again.</div>
       <div class="stage">
         <div class="pagetop">
           <div class="kicker">hiring cafe</div>
@@ -181,7 +187,10 @@
     surface says take control rather than guessing. The gestures land as trusted input, and the person's own cursor is
     drawn by the page, not by the client. The two arrows are the page's own history: back was
     enabled by the link that reached this page, forward has nowhere to go yet, and Cmd+[ and
-    Cmd+] are their keys.</div>
+    Cmd+] are their keys. The ask's own words sit under the bar because the hand-off's card is
+    drawn in the chat behind this page; a page moved to another tab keeps the ask's name in the
+    bar and offers none of its answers, and a page raised for another seat is lowered when that
+    seat is left, so it never covers the seat whose ask is waiting.</div>
   </div>
 
   <h2>The phone</h2>
@@ -289,6 +298,7 @@
           <span class="bt d">Not now</span>
         </span>
       </div>
+      <div class="bask">The CV form is showing a CAPTCHA. Solve it, then pick Upload CV again.</div>
       <div class="feedback">
         <input class="fld" value="the upload form rejected the file" aria-label="feedback">
         <span class="micb" aria-label="dictate the feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
