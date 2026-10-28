@@ -182,8 +182,8 @@ impl Viewer {
 
 /// Say a relayed frame that did not fit its own header.
 ///
-/// **Info, not debug**: the client logger keeps `Info`, so a debug line here
-/// would never reach `forge.log`.
+/// **Info, not debug**: this module is not one of the default directives'
+/// named targets, so a debug line here would never reach `forge.log`.
 fn short_frame(bytes: usize) {
     tauri_plugin_log::log::info!(
         "a relayed frame did not fit its header (event_name client_browser_frame_undecodable, \
@@ -245,7 +245,8 @@ mod tests {
 
     /// **A frame the desktop viewer cannot read is said at a level the
     /// client keeps** - a short header and a decode failure alike. Both were
-    /// at `debug`, which the `Info` filter never writes to `forge.log`.
+    /// at `debug`, which the directives' `Info` baseline never writes to
+    /// `forge.log`.
     #[test]
     fn an_unreadable_relayed_frame_is_said_at_info() {
         let _held = crate::log_capture::capture();
