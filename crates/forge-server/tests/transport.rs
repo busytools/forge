@@ -237,6 +237,21 @@ async fn snapshot_answering(
     }
 }
 
+/// The ceiling on a direct answer, or an echo a test's own action caused: the
+/// server answers from what it already holds, so this is a wedge ceiling rather
+/// than a producer's budget.
+const DIRECT_WAIT: Duration = Duration::from_secs(5);
+
+/// The ceiling on the seat watch's push, derived from the window it runs on.
+///
+/// The correction rides the watch's next pass, and `forge_workspace::work`'s
+/// own test for this property bounds the same wait at `SNAPSHOT_STALENESS - 2
+/// s` "so the two cannot drift apart"; this reuses that expression rather than
+/// restating the subtraction. Well under nextest's slow period (30 s) and its
+/// 120 s kill, so a wedged watch reds by the assertion's own name.
+const WATCH_WAIT: Duration =
+    forge_workspace::work::SNAPSHOT_STALENESS.saturating_sub(Duration::from_secs(2));
+
 /// The next update satisfying `want`, with everything that is not it passed
 /// over, for the reason [`snapshot_answering`] gives.
 ///
@@ -247,12 +262,24 @@ async fn snapshot_answering(
 async fn update_until(
     socket: &mut Client,
     want: &str,
+    satisfies: impl FnMut(&SessionUpdate) -> bool,
+) -> SessionUpdate {
+    update_until_within(socket, DIRECT_WAIT, want, satisfies).await
+}
+
+/// [`update_until`] for a producer that answers on its own schedule rather than
+/// the request's.
+async fn update_until_within(
+    socket: &mut Client,
+    within: Duration,
+    want: &str,
     mut satisfies: impl FnMut(&SessionUpdate) -> bool,
 ) -> SessionUpdate {
+    let ms = u64::try_from(within.as_millis()).unwrap_or(u64::MAX);
     for _ in 0..64 {
         // Split rather than a `let-else`, so a message that arrived and was not
         // an update is not reported as silence.
-        let update = match next_server_within(socket, 5_000).await {
+        let update = match next_server_within(socket, ms).await {
             Some(ServerMessage::Update { update, .. }) => *update,
             Some(other) => {
                 panic!("waited for {want}, and a message that is not an update arrived: {other:?}")
@@ -5613,7 +5640,7 @@ async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
 
     // The watch's next pass is where the lookup runs; its push is what
     // corrects the row a reader is looking at.
-    update_until(&mut socket, "the watch's PR correction", |update| {
+    update_until_within(&mut socket, WATCH_WAIT, "the watch's PR correction", |update| {
         matches!(update, SessionUpdate::WorkChanged { pr: Some(pr), .. } if pr.number == 108)
     })
     .await;

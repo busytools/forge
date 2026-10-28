@@ -16,7 +16,9 @@ import {
 
 /** A forge that greets, which is all this file needs one to do. */
 async function stubServer(version = PROTOCOL_VERSION, release: string | null = null) {
-  const server = new WebSocketServer({ port: 0 });
+  // **A `::` listener can share a port with a v4 one**, and the page's v4 dial
+  // then lands on that process; bind the address the page dials.
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
   server.on('connection', (socket) => {
@@ -242,7 +244,7 @@ describe('one attempt', { timeout: SOCKET_SUITE_MS }, () => {
 
   /** A socket that opens and then says nothing is not one this client can draw. */
   it('gives up on a forge that accepts the socket and never greets', async () => {
-    const server = new WebSocketServer({ port: 0 });
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     await new Promise((resolve) => server.once('listening', resolve));
     const { port } = server.address() as AddressInfo;
     server.on('connection', () => undefined);
@@ -305,7 +307,7 @@ describe('one submit, as the screen sees it', { timeout: SOCKET_SUITE_MS }, () =
     const boom = () => Promise.reject(new Error('boom'));
     // A socket that never greets: the deadline is what makes the promise
     // settle at all, and the point of the test is that every arm settles.
-    const silent = new WebSocketServer({ port: 0 });
+    const silent = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     await new Promise((resolve) => silent.once('listening', resolve));
     const { port } = silent.address() as AddressInfo;
 
