@@ -6426,11 +6426,11 @@ describe('the dock', () => {
       'the page answers again, so the send is back',
     ).not.toBeNull();
 
-    // The ask resolves, and the words were placed once: the bar's line is the
-    // only box that held them, so the composer's draft stays empty.
+    // The ask resolves: the line goes with it, so the words land in the
+    // composer once - and no second copy stays behind.
     harness.page.record = record({ pending_asks: [] });
     flushSync();
-    expect(field().value, 'the words did not land a second time').toBe('');
+    expect(field().value, 'the words land in the composer, once').toBe('the words');
   });
 
   /** A page that fails its first open, with the feedback line open and a take
@@ -6577,6 +6577,59 @@ describe('the dock', () => {
     harness.page.record = record({ pending_asks: [] });
     flushSync();
     expect(field().value, 'the words are in the chat, visible').toBe('the words');
+  });
+
+  /** **An ask answered from elsewhere still hands the line's words over.**
+   *  The record can drop the ask before the surface is lowered, so the words
+   *  have to be in the seat's draft by then - and the composer draws them
+   *  once the card is gone. */
+  it("keeps a bar take's words when another view answers the ask", async () => {
+    const harness = await failedPageTaking();
+    landBarTake(harness);
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words are on the line',
+    ).toBe('the words');
+
+    // Another view answered: the record drops the ask first.
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+
+    expect(field().value, 'the words are in the composer once the card is gone').toBe('the words');
+  });
+
+  /** **An emptied line hands nothing over.** The words land, the reader
+   *  clears them, then lowers the takeover: the card must not claim words
+   *  that are not there, and a draft already in the chat gains no stray
+   *  space. */
+  it('hands nothing over when the reader emptied the line', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
+    const harness = open({ dictation: true });
+    type('hello');
+    harness.page.record = record({ pending_asks: [browserHandOffAsk()] });
+    flushSync();
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+    landBarTake(harness);
+
+    const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    line.value = '   ';
+    line.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    barAction('back to chat').click();
+    await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
+    flushSync();
+    expect(drawn(), 'the card claims no words').not.toContain('What you said at the bar');
+
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+    expect(field().value, 'the draft is the one the reader had, untouched').toBe('hello');
   });
 
   /** **The carry joins, it does not clobber.** A draft the reader already had

@@ -1059,7 +1059,7 @@
       <!-- The reason verbatim: it is what the session needs, in its own words,
          and a summary of it would be the client guessing at the act. -->
       <div class="d-q">{ask.request.reason}</div>
-      {#if carried !== null}
+      {#if carried !== null && carried.trim() !== ''}
         <div class="desc">
           What you said at the bar is in the chat's draft: {carried}
         </div>

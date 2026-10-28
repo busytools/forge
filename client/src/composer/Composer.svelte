@@ -564,6 +564,12 @@
     if (!owns) return;
     const key = ownKeyOf(ask);
     if (key === box.askKey) return;
+    // **Held words are not dropped with the ask that held them.** The record
+    // can drop the ask before the listener that lowers the surface runs (an
+    // answer from another view), and the line's words have to reach the
+    // seat's draft before the line's own state is cleared - the person still
+    // has to be able to read what they said.
+    carryBarWords();
     box.askKey = key;
     box.dockDraft = '';
     box.dockLanded = null;
@@ -718,11 +724,16 @@
   function carryBarWords(): void {
     if (box.barLanded === null) return;
     const held = untrack(() => box.dockDraft);
-    box.draft = joined(
-      untrack(() => box.draft),
-      held,
-    );
-    box.carried = held;
+    // **A line the reader emptied has nothing to hand over**: carrying an
+    // empty string would leave the card claiming words that are not there.
+    const speaks = held.trim() !== '';
+    if (speaks) {
+      box.draft = joined(
+        untrack(() => box.draft),
+        held,
+      );
+    }
+    box.carried = speaks ? held : null;
     box.dockDraft = '';
     box.dockLanded = null;
     box.barLanded = null;
