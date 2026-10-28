@@ -2977,14 +2977,27 @@ export class Chat {
           // **Only what the row lacks.** The held row may be the interrupted
           // turn itself, opening on frames of its own; replacing its messages
           // wholesale would drop them. The record's copy appends where it
-          // continues, and the row keeps every flag it had - `record`
-          // included, so a seeded turn cannot re-enter the walk.
+          // continues.
+          //
+          // **And the record settles the row.** The turn ended before the
+          // record was written, so nothing about it is still being written -
+          // a watching client that had it live would otherwise draw the
+          // running mark until a full reload, which is the class this cut
+          // exists to close. `record` is set for the same reason it is on a
+          // freshly seeded turn: no page of the successor's transcript can
+          // ever carry it, so it is no target for the walk.
           const same = turns[at];
           if (same !== undefined) {
             const carried = new Frames(same.messages);
             const grown = judgment.messages.filter((message) => !carried.carries(message));
-            if (grown.length > 0) {
-              const settled: Turn = { ...same, messages: [...same.messages, ...grown] };
+            const settled: Turn = {
+              ...same,
+              messages: grown.length > 0 ? [...same.messages, ...grown] : same.messages,
+              live: false,
+              running: false,
+              record: true,
+            };
+            if (grown.length > 0 || same.live || same.running === true || same.record !== true) {
               turns = [...turns.slice(0, at), settled, ...turns.slice(at + 1)];
             }
           }

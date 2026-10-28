@@ -4630,6 +4630,13 @@ describe('the conversation the chat draws', () => {
         (held.messages[0] as { uuid?: unknown } | null)?.uuid === 'forge_nudge_handoff_7_feedface',
     );
     expect(procedure, 'one turn, drawn once').toHaveLength(1);
+    const settled = procedure[0];
+    if (settled === undefined) throw new Error('the turn did not land');
+    expect(
+      beingWritten(settled),
+      'the record settles the row the frames had live - not still being written',
+    ).toBe(false);
+    expect(settled.record, 'and it is no target for the walk').toBe(true);
     expect(
       get(chat.value).turns.map((held) => held.key),
       'the row follows it',
@@ -4666,6 +4673,13 @@ describe('the conversation the chat draws', () => {
     expect(procedure[0]?.messages, "settled with the record's fuller copy").toHaveLength(
       judgmentTurn().length,
     );
+    const settled = procedure[0];
+    if (settled === undefined) throw new Error('the turn did not land');
+    expect(
+      beingWritten(settled),
+      'the record is the authority: the turn is settled, not still being written',
+    ).toBe(false);
+    expect(settled.record, 'and it is no target for the walk').toBe(true);
     stop();
   });
 
@@ -4730,6 +4744,48 @@ describe('the conversation the chat draws', () => {
       ),
       'one turn carries the prompt, not two',
     ).toHaveLength(1);
+    const carrier = carriers[0];
+    if (carrier === undefined) throw new Error('the row did not land');
+    expect(beingWritten(carrier), 'and the record settles it').toBe(false);
+    stop();
+  });
+
+  /**
+   * **The capped turn's cut line is one line, however often the record is
+   * seeded.** A seat's record is folded on every read and reconnect; a notice
+   * with no id is one nothing can pair, so each seed would append it again
+   * and the cut would multiply down the turn.
+   */
+  it("does not append the capped turn's cut line twice", () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const cut = {
+      type: 'system',
+      subtype: 'forge_notice',
+      uuid: 'forge_handoff_turn_cut',
+      severity: 'info',
+      text: '[cut; 2 earlier messages of this turn are in the previous session - resume it from the handoff row]',
+    };
+    const recordWithCut = handoffRecord('old', 'new', [...judgmentTurn(), cut]);
+    // The page's copy of the turn first, so the record is appended to a row
+    // rather than seeded whole.
+    server.send(record([{ key: 'srv-turn', messages: judgmentTurn().slice(0, 2) }]));
+    server.update({ handoff: { key: LEAD, handoff: recordWithCut } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'new' } });
+    // A reconnect's snapshot folds the same record again.
+    server.send(record([], null, recordWithCut));
+
+    const holder = get(chat.value).turns.filter((turn) =>
+      turn.messages.some(
+        (message) => (message as { uuid?: unknown } | null)?.uuid === 'forge_handoff_turn_cut',
+      ),
+    );
+    expect(holder, 'the turn holds the cut line').toHaveLength(1);
+    const lines = (holder[0]?.messages ?? []).filter(
+      (message) => (message as { uuid?: unknown } | null)?.uuid === 'forge_handoff_turn_cut',
+    );
+    expect(lines, 'and holds it once').toHaveLength(1);
     stop();
   });
 

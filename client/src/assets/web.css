@@ -1792,8 +1792,9 @@ details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
 /* A thought's expansion is reasoning, not the turn's own words: it reads as a
    quiet block off the column - a hairline and the muted tone - instead of more
-   prose. Both folds draw through this one row. A nudge's expansion is the same
-   block: the whole of what the machinery said, where the summary clamps it. */
+   prose. A nudge's expansion is the same block: the whole of what the
+   machinery said, where the summary clamps it, and so is the handoff
+   procedure's: the prompt that opened the turn, held whole. */
 details.leaf.think > .body, details.leaf.nudge > .body, details.leaf.procedure > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
 details.leaf.think > .body .prose, details.leaf.nudge > .body .prose, details.leaf.procedure > .body .prose { color: var(--muted); }
 /* A dispatch row's own fields, joined from the record's card: the agent type,
