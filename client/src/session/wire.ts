@@ -1085,11 +1085,25 @@ export interface DiffFileRecord {
   hunks: DiffHunkRecord[];
 }
 
+/**
+ * How current the base the branch layer was read against is. A remote-tracking
+ * base can only be as fresh as the last fetch, so a page says when it could
+ * not be refreshed rather than drawing the diff as the branch's own change.
+ */
+export type BaseStateRecord =
+  | { state: 'local' }
+  | { state: 'current' }
+  | { state: 'behind'; behind: number }
+  | { state: 'unverified' }
+  | { state: 'unknown'; raw: unknown };
+
 /** The working tree's bounded content: the uncommitted layer, the branch's
- *  own, and whether the read withheld anything. */
+ *  own, whether the read withheld anything, and how fresh the branch's base
+ *  was. `null` when there is no branch layer to describe. */
 export interface DiffRecord {
   worktree: DiffLayerRecord;
   branchAhead: DiffLayerRecord;
+  base: BaseStateRecord | null;
   truncated: boolean;
 }
 
@@ -1166,11 +1180,28 @@ function diffFileFrom(entry: unknown): DiffFileRecord {
   };
 }
 
+/**
+ * The base's own state, or null when the record carried none. An absent key
+ * is not a claim of freshness: it draws nothing, the same way a layer this
+ * build cannot name draws as unknown rather than as clean.
+ */
+export function baseStateFrom(value: unknown): BaseStateRecord | null {
+  if (value === undefined || value === null) return null;
+  if (value === 'local') return { state: 'local' };
+  if (value === 'current') return { state: 'current' };
+  if (value === 'unverified') return { state: 'unverified' };
+  const held = record(value);
+  const behind = number(held['behind']);
+  if (behind !== null) return { state: 'behind', behind };
+  return { state: 'unknown', raw: value };
+}
+
 export function diffFrom(value: unknown): DiffRecord {
   const held = record(value);
   return {
     worktree: diffLayerFrom(held['worktree']),
     branchAhead: diffLayerFrom(held['branch_ahead']),
+    base: baseStateFrom(held['base']),
     truncated: held['truncated'] === true,
   };
 }

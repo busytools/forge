@@ -120,6 +120,25 @@
   const scopeCommit = $derived(scopeIdx === 0 ? null : (commits[scopeIdx - 1]?.sha ?? null));
   const diffLayer = $derived(record?.diff.branchAhead ?? { state: 'clean' as const });
 
+  /**
+   * What the page says about the base the All changes diff was taken against,
+   * or null when it is current. The server fetches the base before the diff;
+   * when that fetch could not run it says so, and a stale base must never
+   * read as the branch's own change.
+   */
+  const baseNote = $derived.by(() => {
+    const base = record?.diff.base ?? null;
+    const name = record?.git.defaultBranch ?? 'the base';
+    if (base?.state === 'behind') {
+      const n = base.behind;
+      return `${name} is ${n} commit${n === 1 ? '' : 's'} behind upstream, so this diff may include work already on main.`;
+    }
+    if (base?.state === 'unverified') {
+      return `${name} could not be refreshed, so this diff may include work already on main.`;
+    }
+    return null;
+  });
+
   /** The threads this sitting has drafted or replied on, unfiled: what a
    *  `finish` seals into a round. */
   const drafts = new SvelteSet<string>();
@@ -1160,6 +1179,9 @@
         footer={convFooter}
       />
     {:else}
+      {#if scopeCommit === null && baseNote !== null}
+        <p class="rv-base">{baseNote}</p>
+      {/if}
       <div class="rv-body rv-filesbody">
         <Canvas
           {connection}
@@ -1346,6 +1368,15 @@
     font-size: var(--fs-data);
     color: var(--bad);
     padding: 2px 2px 8px;
+  }
+  /* The stale-base line: the diff is drawn, and this says the base behind it
+     may be old. Its own line rather than a hover, because a caveat nobody
+     hovers is not a label. */
+  .rv-base {
+    font-family: var(--mono);
+    font-size: var(--fs-data);
+    color: var(--warn);
+    padding: 2px 2px 6px;
   }
   /* Narrow: the scope control drops to its own line under the tabs rather
      than being clipped at the edge - it is the door to every commit, and a

@@ -278,6 +278,7 @@ function record(
   diff: unknown = DIFF,
   commits: { sha: string; subject: string; time?: number }[] = [],
   total = commits.length,
+  base: unknown = null,
 ): SessionRecord {
   return {
     slot: SLOT,
@@ -290,7 +291,7 @@ function record(
           ? null
           : { commit_count: total, count: total, commits, stats: null },
     },
-    diff: { branchAhead: diff },
+    diff: { branchAhead: diff, base },
     reviews: {
       threads: { outcome: 'read', value: threads },
       reviews: { outcome: 'read', value: reviews },
@@ -416,6 +417,7 @@ async function draw(
   diff: unknown = DIFF,
   commits: { sha: string; subject: string; time?: number }[] = [],
   total = commits.length,
+  base: unknown = null,
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -428,7 +430,7 @@ async function draw(
     props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
-  push({ wire: record(IDLE, threads, reviews, diff, commits, total), refused: null });
+  push({ wire: record(IDLE, threads, reviews, diff, commits, total, base), refused: null });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -1376,6 +1378,50 @@ describe('the steppers', () => {
     key({ key: 'a' });
     expect(scope(), 'a has nowhere to land').toBe('All changes');
     expect(place()).toBe('scope 1 of 1');
+  });
+
+  /**
+   * **A diff drawn from a stale base says so.** The server refreshes the base
+   * before it reads the branch layer; when that refresh could not run, the
+   * page names the lag beside the files rather than drawing them as the
+   * branch's own change - the silence Ved reported.
+   */
+  it('says how far behind a base the diff could not refresh is', async () => {
+    await draw([], [], true, DIFF, [FIRST_COMMIT], 1, { state: 'behind', behind: 3 });
+
+    expect(
+      document.querySelector('.rv-base')?.textContent,
+      'the all-changes scope names the base and its lag',
+    ).toContain('main is 3 commits behind upstream');
+
+    press('next scope');
+    expect(
+      document.querySelector('.rv-base'),
+      'a commit scope reads its own immutable tree, so it carries no base caveat',
+    ).toBeNull();
+  });
+
+  /** A base that could not be checked is said plainly, with no invented count. */
+  it('says an unrefreshed base was not checked, without a number', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'unverified' });
+
+    const text = document.querySelector('.rv-base')?.textContent ?? '';
+    expect(text, 'the page says the base could not be refreshed').toContain(
+      'could not be refreshed',
+    );
+    expect(text, 'and claims no count it does not have').not.toMatch(/\d+ commits? behind/);
+  });
+
+  /** A base the scan refreshed is not a caveat. */
+  it('draws no base caveat when the base is current', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' });
+    expect(document.querySelector('.rv-base'), 'a refreshed base draws nothing').toBeNull();
+  });
+
+  /** A local base has no upstream to lag behind, so nothing is drawn. */
+  it('draws no base caveat when the base is local', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'local' });
+    expect(document.querySelector('.rv-base'), 'a local base has no upstream to lag').toBeNull();
   });
 
   /**

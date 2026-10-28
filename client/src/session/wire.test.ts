@@ -274,6 +274,20 @@ describe('the diff parse', () => {
       raw: 'absent',
     });
   });
+
+  it('reads the base state, and names a lag with its count', () => {
+    // The plausible regression is dropping `base`, which draws a stale diff
+    // with no caveat at all - exactly the silence the reviewer reported.
+    expect(diffFrom({ base: 'current' }).base).toEqual({ state: 'current' });
+    expect(diffFrom({ base: 'local' }).base).toEqual({ state: 'local' });
+    expect(diffFrom({ base: 'unverified' }).base).toEqual({ state: 'unverified' });
+    expect(diffFrom({ base: { behind: 3 } }).base).toEqual({ state: 'behind', behind: 3 });
+    expect(diffFrom({}).base, 'an absent base claims nothing').toBeNull();
+    expect(diffFrom({ base: 'lagging' }).base, 'and an unnamed state is kept as itself').toEqual({
+      state: 'unknown',
+      raw: 'lagging',
+    });
+  });
 });
 
 /**
