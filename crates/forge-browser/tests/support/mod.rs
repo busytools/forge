@@ -258,38 +258,78 @@ pub fn click(host: &mut Host, x: i32, y: i32) {
     }
 }
 
-/// Click the blank page until it has seen a pointer gesture.
+/// Click the page at `at` until it has seen a pointer gesture.
 ///
 /// **The first pointer event after a host starts is spent activating it, and
 /// under load more than one can be**, so the page's own count is what says a
-/// later click will land.
+/// later click will land. **`at` must be the page itself**, which is checked
+/// rather than assumed: a point off the page would otherwise be blamed on the
+/// page. `deadline` bounds the devtools answers as well as the clicks, so a
+/// connected but mute endpoint cannot outlive it.
 pub async fn prime_clicks(
     host: &mut Host,
     cdp: &mut forge_browser::window::Cdp,
-    bound: std::time::Duration,
+    at: (i32, i32),
+    deadline: std::time::Instant,
 ) {
-    cdp.call(
-        "Runtime.evaluate",
-        serde_json::json!({
-            "expression": "window.__forge_downs = 0; \
-                document.addEventListener('mousedown', () => { window.__forge_downs += 1; }, true); 0",
-        }),
-        None,
+    let left = || {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .max(std::time::Duration::from_millis(100))
+    };
+    let setup = format!(
+        "(() => {{ \
+            const at = document.elementFromPoint({x}, {y}); \
+            if (at !== document.body && at !== document.documentElement) {{ \
+                return at ? at.tagName.toLowerCase() : 'nothing (off the page)'; \
+            }} \
+            window.__forge_downs = 0; \
+            document.addEventListener('mousedown', () => {{ window.__forge_downs += 1; }}, true); \
+            return null; \
+        }})()",
+        x = at.0,
+        y = at.1,
+    );
+    let reply = tokio::time::timeout(
+        left(),
+        cdp.call(
+            "Runtime.evaluate",
+            serde_json::json!({ "expression": setup, "returnByValue": true }),
+            None,
+        ),
     )
     .await
+    .expect("the devtools endpoint answers within the bound")
     .expect("the page takes the gesture counter");
-    let deadline = std::time::Instant::now() + bound;
+    let refusal = reply.pointer("/result/value").and_then(serde_json::Value::as_str);
+    assert!(
+        refusal.is_none(),
+        "the priming point ({}, {}) is not the blank page: {}",
+        at.0,
+        at.1,
+        refusal.unwrap_or(""),
+    );
     loop {
-        click(host, 600, 500);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no priming click reached the page at ({}, {}) (log: {})",
+            at.0,
+            at.1,
+            host.log()
+        );
+        click(host, at.0, at.1);
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let reply = cdp
-            .call(
+        let reply = tokio::time::timeout(
+            left(),
+            cdp.call(
                 "Runtime.evaluate",
                 serde_json::json!({ "expression": "window.__forge_downs", "returnByValue": true }),
                 None,
-            )
-            .await
-            .expect("the page answers its gesture count");
+            ),
+        )
+        .await
+        .expect("the devtools endpoint answers within the bound")
+        .expect("the page answers its gesture count");
         if reply
             .pointer("/result/value")
             .and_then(serde_json::Value::as_u64)
@@ -297,11 +337,6 @@ pub async fn prime_clicks(
         {
             return;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no priming click reached the page (log: {})",
-            host.log()
-        );
     }
 }
 

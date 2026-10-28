@@ -22,9 +22,13 @@ const BOUND: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(50);
 
 /// Wait for the host's answer that `wanted` accepts, failing with what it
-/// wrote otherwise.
-fn wait_event(host: &support::Host, wanted: impl Fn(&HostEvent) -> bool) -> HostEvent {
-    let deadline = Instant::now() + BOUND;
+/// wrote otherwise. The deadline is the caller's, so priming and the answer
+/// share one bound rather than each starting its own sixty seconds.
+fn wait_event(
+    host: &support::Host,
+    wanted: impl Fn(&HostEvent) -> bool,
+    deadline: Instant,
+) -> HostEvent {
     loop {
         if let Some(event) =
             host.events().iter().filter_map(|line| parse(line)).find(|event| wanted(event))
@@ -71,12 +75,14 @@ async fn a_page_file_chooser_is_answered_with_a_server_path() {
 
     // **The clicks that come first activate the window rather than reaching
     // the page**, so the one that means something waits on the page having
-    // seen a gesture.
-    support::prime_clicks(&mut host, &mut cdp, BOUND).await;
+    // seen a gesture. One deadline covers both halves, so priming cannot spend
+    // the answer's own bound.
+    let deadline = Instant::now() + BOUND;
+    support::prime_clicks(&mut host, &mut cdp, (600, 500), deadline).await;
     support::click(&mut host, 200, 120);
 
     let HostEvent::FileDialog { id: dialog, tab: _, multiple } =
-        wait_event(&host, |event| matches!(event, HostEvent::FileDialog { .. }))
+        wait_event(&host, |event| matches!(event, HostEvent::FileDialog { .. }), deadline)
     else {
         panic!("the answer is a file dialog event");
     };

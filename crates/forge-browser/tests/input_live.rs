@@ -110,7 +110,7 @@ async fn a_click_on_the_page_still_lands() {
     // The control: a click on the blank page is not the button's. **The
     // priming clicks reached the page** - the page's own count says so - and
     // still none of them hit the button.
-    support::prime_clicks(&mut at.host, &mut at.cdp, BOUND).await;
+    support::prime_clicks(&mut at.host, &mut at.cdp, (600, 500), Instant::now() + BOUND).await;
     assert_eq!(evaluate(&mut at, "window.__clicks").await, json!(0), "a click off the button");
 
     click(&mut at, 150, 130);
@@ -134,7 +134,7 @@ async fn a_click_on_a_popup_row_sets_the_select() {
 
     // **The window's first clicks focus it rather than opening a menu**, so
     // the menu's click comes after the page has seen one.
-    support::prime_clicks(&mut at.host, &mut at.cdp, BOUND).await;
+    support::prime_clicks(&mut at.host, &mut at.cdp, (600, 500), Instant::now() + BOUND).await;
 
     // The select sits at (20,20) 200x24: the menu opens under it at y=44,
     // with CEF's own 20-pixel rows. The second row's middle is (60,74).
