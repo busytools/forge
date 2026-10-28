@@ -73,7 +73,12 @@ export interface Connection {
    * has nothing to ask on, and a bound must not re-arm for a read it did not
    * ask.
    */
-  refresh(what: Subject): boolean;
+  /**
+   * Ask for a subject again. `review` is the review page's own read: the
+   * server refreshes the branch diff's base before it encodes the record,
+   * which every other read does not wait on.
+   */
+  refresh(what: Subject, options?: { review?: boolean }): boolean;
   /**
    * Tell the server which seat is on screen.
    *
@@ -602,8 +607,8 @@ export function connect(
   const subscribed = new Map<string, number>();
 
   /** One subscribe on the wire, remembered as outstanding until it is answered. */
-  function askFor(what: Subject, answering: boolean): void {
-    sendNow({ kind: 'subscribe', what, answering });
+  function askFor(what: Subject, answering: boolean, review = false): void {
+    sendNow({ kind: 'subscribe', what, answering, review });
     const key = subjectKey(what);
     awaiting.push(key);
     subscribed.set(key, (subscribed.get(key) ?? 0) + 1);
@@ -996,7 +1001,7 @@ export function connect(
   }
 
   /** `true` when the pair went, which is what a bound re-arms on. */
-  function refresh(what: Subject): boolean {
+  function refresh(what: Subject, options?: { review?: boolean }): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
     if (!isOpen()) return false;
@@ -1014,7 +1019,7 @@ export function connect(
       else subscribed.set(key, open - 1);
     }
     const declaration = held.get(key);
-    askFor(what, declaration?.answering ?? false);
+    askFor(what, declaration?.answering ?? false, options?.review === true);
     return true;
   }
 

@@ -279,6 +279,31 @@ describe('the connection', () => {
   });
 
   /**
+   * **The review page's own read carries its flag to the server.** It is the
+   * one subscribe that may wait on the network, so the flag has to ride the
+   * ask rather than be inferred from the subject.
+   */
+  it('asks a review-scoped read when the page says so', async () => {
+    const { server, conn } = await connected();
+    const seat: Subject = { session: LEAD };
+    conn.subscribe(seat);
+    await until(() => server.received.length === 1, 'the subscribe');
+
+    conn.refresh(seat, { review: true });
+    await until(() => server.received.length === 3, 'the refresh pair');
+    expect(server.received[1], 'the unsubscribe comes first').toEqual({
+      kind: 'unsubscribe',
+      what: seat,
+    });
+    expect(server.received[2]).toEqual({
+      kind: 'subscribe',
+      what: seat,
+      answering: false,
+      review: true,
+    });
+  });
+
+  /**
    * The declaration decides whether the core parks a turn on this client's
    * reply. Sending it as `false` on a client that draws a dock would make
    * every prompt it shows resolve `Cancelled` - the turn fails rather than
@@ -293,6 +318,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: true,
+      review: false,
     });
 
     // Off unless said otherwise, so a read-only client cannot hang a turn.
@@ -302,6 +328,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: 'usage',
       answering: false,
+      review: false,
     });
   });
 
@@ -347,6 +374,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: false,
+      review: false,
     });
   });
 
@@ -886,6 +914,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: false,
+      review: false,
     });
     // And the store is still holding what it had while the server answers.
     expect(conn.store(HOME)?.snapshot()).toEqual({ projects: ['a'] });
@@ -921,6 +950,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: true,
+      review: false,
     });
 
     // One entry is left, so exactly one re-ask: a second would mean the count

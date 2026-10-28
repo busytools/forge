@@ -165,6 +165,11 @@ interface Seat {
    * there is the DOM global, which is a blank tab rather than a subscribe.
    */
   open: () => void;
+  /**
+   * Ask for the record again, `review` for the review page's own read: see
+   * `reread`.
+   */
+  reread: (review?: boolean) => void;
 }
 
 /**
@@ -313,6 +318,24 @@ function seats(connection: Connection): Map<string, Seat> {
   return fresh;
 }
 
+/**
+ * Ask a visited seat for its record again, `review` for the review page's own
+ * read: that read is the one that refreshes the branch diff's base first, so
+ * a page opened hours after its seat's last read draws a diff whose base was
+ * checked at the moment it was drawn.
+ *
+ * A seat never opened has nothing to ask on; its first subscribe is its read.
+ */
+export function rereadSeat(
+  connection: Connection,
+  slot: SessionSlot,
+  options?: { review?: boolean },
+): void {
+  seats(connection)
+    .get(subjectKey({ session: slot }))
+    ?.reread(options?.review === true);
+}
+
 /** Release a seat whose session has ended: no subscription outlives it. */
 export function releaseSeat(connection: Connection, slot: SessionSlot): void {
   const held = SEATS.get(connection);
@@ -412,6 +435,7 @@ function createSeat(
     repairHeld: [],
     end,
     open,
+    reread,
   };
 
   /**
@@ -654,13 +678,13 @@ function createSeat(
    * never stopped for it, and the return no longer re-reads, so this is the
    * only ask a seat away from the reader has.
    */
-  function reread(): void {
+  function reread(review = false): void {
     if (seat.asking || seat.opened === 0) return;
     seat.asking = true;
     // Where the stream stood when the ask left, so the answer can be read
     // against what has arrived since.
     seat.askedAt = seat.seen;
-    connection.refresh(subject);
+    connection.refresh(subject, { review });
   }
 
   /** The beat a refused seat is asked again on, or `null` when none is armed. */

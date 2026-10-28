@@ -290,6 +290,12 @@ export type ClientMessage =
        * for the connection.
        */
       answering: boolean;
+      /**
+       * The review page's own read: the server refreshes the branch diff's
+       * base before it encodes the record. Every other read serves the stores
+       * and never waits on the network.
+       */
+      review: boolean;
     }
   | { kind: 'unsubscribe'; what: Subject }
   /**

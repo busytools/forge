@@ -18,7 +18,7 @@
   import { hrefForSlot } from '../routes';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
-  import { watchSession, type SessionRead } from '../session/live';
+  import { rereadSeat, watchSession, type SessionRead } from '../session/live';
   import type { ReviewThreadRecord, SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
@@ -92,6 +92,20 @@
   });
 
   const record: SessionRecord | null = $derived(read.wire);
+
+  /**
+   * **The page's read is its own.** The record it opens on was read for
+   * whichever page asked last, and its base may be hours old; the all-changes
+   * diff is drawn from a read that refreshes that base first. Asked once the
+   * first record has landed, because a read while the seat's own open is still
+   * in flight would be dropped rather than queued.
+   */
+  let reviewAsked = false;
+  $effect(() => {
+    if (reviewAsked || record === null) return;
+    reviewAsked = true;
+    rereadSeat(connection, slot, { review: true });
+  });
   const reviews = $derived(record === null ? null : record.reviews);
   const threads = $derived(reviews?.threads.outcome === 'read' ? reviews.threads.value : []);
   const rounds = $derived(
@@ -132,15 +146,15 @@
     const name = (record?.git.defaultBranch ?? 'the base').replace(/^origin\//, '');
     if (base?.state === 'behind') {
       const n = base.behind;
-      return `${name} is ${n} commit${n === 1 ? '' : 's'} behind upstream, so this diff may include work already on main.`;
+      return `${name} is ${n} commit${n === 1 ? '' : 's'} behind upstream, so this diff may include work already on ${name}.`;
     }
     if (base?.state === 'unverified') {
-      return `${name} could not be refreshed, so this diff may include work already on main.`;
+      return `${name} could not be refreshed, so this diff may include work already on ${name}.`;
     }
     if (base?.state === 'unknown') {
       // The server answered a state this build cannot name. Drawing nothing
       // would read as "the base is fine", which is the one claim it cannot make.
-      return `the base ${name} could not be read, so this diff may include work already on main.`;
+      return `the base ${name} could not be read, so this diff may include work already on ${name}.`;
     }
     return null;
   });

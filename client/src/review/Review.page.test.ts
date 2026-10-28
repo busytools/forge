@@ -64,7 +64,10 @@ vi.mock('@git-diff-view/svelte', async () => {
 
 /** The seat's read, as the page subscribes it: real enough to carry a record
  *  in, which is all this file needs of the one the socket serves. */
-const seat = vi.hoisted(() => ({ listeners: new Set<(read: unknown) => void>() }));
+const seat = vi.hoisted(() => ({
+  listeners: new Set<(read: unknown) => void>(),
+  rereads: [] as { review?: boolean }[],
+}));
 
 vi.mock('../session/live', () => ({
   watchSession: () => ({
@@ -76,6 +79,9 @@ vi.mock('../session/live', () => ({
     },
     hold: () => () => {},
   }),
+  rereadSeat: (_connection: unknown, _slot: unknown, options?: { review?: boolean }) => {
+    seat.rereads.push(options ?? {});
+  },
 }));
 
 /** Hand the page the record it would have folded out of a frame. */
@@ -427,6 +433,7 @@ async function draw(
   statusHearers.clear();
   viewer.built = [];
   scrolled = [];
+  seat.rereads = [];
   app = mount(Review, {
     target: document.body,
     props: { connection: connection(), slot: SLOT, dictation },
@@ -1455,6 +1462,22 @@ describe('the steppers', () => {
   it('draws no base caveat when the base is local', async () => {
     await draw([], [], true, DIFF, [], 0, { state: 'local' });
     expect(document.querySelector('.rv-base'), 'a local base has no upstream to lag').toBeNull();
+  });
+
+  /**
+   * **The page asks for its own read, once.** A record it opened on may have
+   * been read for whichever page asked last, so the diff's base is refreshed
+   * by a read this page asks for once its first record lands - and only once,
+   * or every update would re-encode the whole record.
+   */
+  it('asks the review-scoped read once its record lands', async () => {
+    await draw();
+
+    expect(seat.rereads, 'the page asked for one review-scoped read').toEqual([{ review: true }]);
+
+    push({ wire: record(IDLE), refused: null });
+    flushSync();
+    expect(seat.rereads, 'and a later update does not ask again').toEqual([{ review: true }]);
   });
 
   /**
