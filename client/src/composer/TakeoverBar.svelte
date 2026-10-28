@@ -142,6 +142,8 @@
   });
 
   function send(): void {
+    // The click and the Enter agree: a line that cannot answer sends nothing.
+    if (!cansend) return;
     const text = notes.trim();
     if (text === '' || onfeedback === null) return;
     onfeedback(text);

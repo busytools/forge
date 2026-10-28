@@ -728,9 +728,11 @@
   }
 
   $effect(() => {
-    // **Only while the ask is still parked.** When the ask itself resolves,
-    // the line's words go with the prompt that owned them, as any draft does;
-    // it is the line being taken away UNDER the ask that must not lose them.
+    // **Only while the ask is still parked.** When the ask itself resolves -
+    // or the reader answers it, which stands `dockAsk` down - the line's words
+    // go with the prompt that owned them, as any draft does; it is the line
+    // being taken away UNDER the ask (a page settling off its tab, the
+    // takeover lowered, a page still opening) that must not lose them.
     if (barLanded === null || takeoverAsk === null) return;
     if (barLineHolds) return;
     carryBarWords();
