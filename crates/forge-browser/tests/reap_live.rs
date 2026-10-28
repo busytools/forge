@@ -101,7 +101,7 @@ async fn a_host_this_process_started_survives_the_boot_reap() {
     )
     .expect("the host spawns");
     let _guard = Guard::new(pid, &ring);
-    spawn::wait_ready_for(pid, port, &ring, &profile).await.unwrap_or_else(|why| {
+    spawn::wait_ready_for(pid, port, &ring).await.unwrap_or_else(|why| {
         panic!("the host never came ready: {why} (log: {})", profile.join("cef-host.log").display())
     });
     spawn::write_record(&profile, &spawn::Record { pid, port, ring: ring.clone() })
@@ -146,7 +146,7 @@ async fn a_stale_host_is_ended_and_its_trail_cleared() {
     let _ring = RingOnly(ring.clone());
     spawn::write_record(&profile, &spawn::Record { pid: host.pid(), port, ring: ring.clone() })
         .expect("the record");
-    spawn::wait_ready_for(host.pid(), port, &ring, &profile).await.unwrap_or_else(|why| {
+    spawn::wait_ready_for(host.pid(), port, &ring).await.unwrap_or_else(|why| {
         panic!("the host never came ready: {why} (log: {})", profile.join("cef-host.log").display())
     });
     // **A process's path and arguments can trail its exec for a moment under
@@ -220,7 +220,7 @@ async fn a_host_whose_parent_was_sigkilled_closes_itself() {
     let extra = ["--parent".to_owned(), parent_pid.to_string()];
     let mut host = support::Host::start(&exe, &profile, port, &ring, "800x600", &extra, &log);
     let _ring = RingOnly(ring.clone());
-    spawn::wait_ready_for(host.pid(), port, &ring, &profile).await.unwrap_or_else(|why| {
+    spawn::wait_ready_for(host.pid(), port, &ring).await.unwrap_or_else(|why| {
         panic!("the host never came ready: {why} (log: {})", profile.join("cef-host.log").display())
     });
 
@@ -270,7 +270,7 @@ async fn a_host_named_only_by_its_singleton_survives_the_boot_reap() {
     )
     .expect("the host spawns");
     let _guard = Guard::new(pid, &ring);
-    spawn::wait_ready_for(pid, port, &ring, &profile).await.unwrap_or_else(|why| {
+    spawn::wait_ready_for(pid, port, &ring).await.unwrap_or_else(|why| {
         panic!("the host never came ready: {why} (log: {})", profile.join("cef-host.log").display())
     });
     // **No record**: the singleton is the only trail this test leaves.

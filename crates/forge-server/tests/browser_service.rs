@@ -409,9 +409,7 @@ async fn a_tab_listing_never_creates_a_page() {
     )
     .expect("the host spawns");
     let _guard = HostGuard { pid, ring: ring.clone() };
-    forge_browser::spawn::wait_ready_for(pid, port, &ring, &profile)
-        .await
-        .expect("the host is ready");
+    forge_browser::spawn::wait_ready_for(pid, port, &ring).await.expect("the host is ready");
     let chooser =
         std::path::PathBuf::from(format!("/tmp/forge-listing-{}.sock", std::process::id()));
     let driver = Driver::start(
