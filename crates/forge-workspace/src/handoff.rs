@@ -554,14 +554,6 @@ fn role_section(role: &Role) -> HandoffSection {
 fn ask_section(asks: &[(usize, String)]) -> HandoffSection {
     let mut lines = Vec::new();
     let recent = asks.len().saturating_sub(3);
-    // The first ask is the session's intent; when it is already inside the
-    // recent window it is not repeated.
-    if recent > 0
-        && let Some((ordinal, first)) = asks.first()
-    {
-        let (author, body) = prompt_author(first, *ordinal);
-        lines.push(format!("first ({author}): {}", clipped_verbatim(body, PROMPT_LINE_CAP)));
-    }
     for (ordinal, text) in &asks[recent..] {
         let (author, body) = prompt_author(text, *ordinal);
         lines.push(format!("#{ordinal} ({author}): {}", clipped_verbatim(body, PROMPT_LINE_CAP)));
@@ -2319,11 +2311,11 @@ mod tests {
         );
     }
 
-    /// The brief opens on the session's intent and carries the last three
-    /// prompts, so a successor sees the ask that started it and the words
-    /// that moved it since.
+    /// The brief carries the last three prompts and nothing older. A long
+    /// session's opener is not the intent by the time prompts 93-95 arrive,
+    /// so quoting it beside them states a starting point the work left.
     #[test]
-    fn the_ask_names_the_first_prompt_and_the_newest_three() {
+    fn the_ask_names_the_newest_three() {
         let messages: Vec<Message> =
             ["one", "two", "three", "four", "five"].iter().map(|text| user(text)).collect();
         let asks = user_prompts(&messages);
@@ -2331,12 +2323,11 @@ mod tests {
         assert_eq!(
             section.lines,
             vec![
-                "first (user prompt 1): one".to_owned(),
                 "#3 (user prompt 3): three".to_owned(),
                 "#4 (user prompt 4): four".to_owned(),
                 "#5 (user prompt 5): five".to_owned(),
             ],
-            "the first ask plus the newest three, oldest first",
+            "the newest three, oldest first, with no first-prompt line",
         );
     }
 
