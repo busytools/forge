@@ -1,5 +1,5 @@
 src/ui/client/board.md 2368
-src/ui/client/browser.md 3588
+src/ui/client/browser.md 3774
 src/ui/client/composer.md 1566
 src/ui/client/connect.md 1773
 src/ui/client/dictate-models.md 4020
@@ -10,4 +10,4 @@ src/ui/client/home.md 2786
 src/ui/client/index.md 713
 src/ui/client/queue.md 772
 src/ui/client/review.md 4609
-src/ui/client/session.md 3974
+src/ui/client/session.md 4272
