@@ -146,11 +146,11 @@ pub struct GitDiffStats {
     pub total_removed: u32,
 }
 
-/// How current the base a branch-ahead diff was computed against is.
+/// How current the base a drawn branch diff was measured against is.
 ///
-/// The base is a remote-tracking ref (`origin/main`), and how far the
-/// remote has moved past it is only knowable over the network. The scan
-/// fetches it before the diff, so a diff is never drawn from a stale base
+/// The base is a remote-tracking ref (`origin/main`), and how far the remote
+/// has moved past it is only knowable over the network. The read that draws
+/// the diff refreshes it first, so a diff is never shown from a stale base
 /// without saying so.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -160,9 +160,11 @@ pub enum BaseState {
     Local,
     /// The base was fetched and matches the remote.
     Current,
-    /// The fetch failed, and the remote is `behind` commits ahead of the base.
+    /// The base could not be fetched, and the remote has `behind` commits it
+    /// lacks.
     Behind { behind: u32 },
-    /// The fetch failed and the base could not be checked against the remote.
+    /// The base could not be fetched and could not be checked against the
+    /// remote either.
     Unverified,
 }
 
@@ -181,10 +183,6 @@ pub struct GitBranchAhead {
     /// the count above says how many there are, these say what they are.
     #[serde(default)]
     pub commits: Vec<crate::git::GitCommit>,
-    /// Whether the base above was refreshed before this layer was read, and
-    /// what the refresh found when it could not be.
-    #[serde(default)]
-    pub base: BaseState,
 }
 
 /// One file's diff stats. `added` / `removed` are git's `--numstat`
@@ -232,5 +230,31 @@ mod tests {
         assert!(!clean.is_populated());
         assert!(populated.is_populated());
         assert!(!failed.is_populated());
+    }
+
+    /// **The four states' wire spellings, as the client parser reads them.**
+    /// serde's external tagging nests a struct variant's fields under the
+    /// variant name (`{"behind": {"behind": 3}}`), which a parser written
+    /// against a flat object silently reads as unknown - the stale-base label
+    /// then never draws. The client's `diffFrom` test feeds these same shapes.
+    #[test]
+    fn the_base_states_wire_spellings() {
+        assert_eq!(
+            serde_json::to_value(BaseState::Local).expect("encodes"),
+            serde_json::json!("local")
+        );
+        assert_eq!(
+            serde_json::to_value(BaseState::Current).expect("encodes"),
+            serde_json::json!("current"),
+        );
+        assert_eq!(
+            serde_json::to_value(BaseState::Unverified).expect("encodes"),
+            serde_json::json!("unverified"),
+        );
+        assert_eq!(
+            serde_json::to_value(BaseState::Behind { behind: 3 }).expect("encodes"),
+            serde_json::json!({"behind": {"behind": 3}}),
+            "a struct variant nests its fields under the variant name",
+        );
     }
 }

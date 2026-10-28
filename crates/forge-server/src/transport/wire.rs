@@ -2290,6 +2290,30 @@ async fn session(
     let at = std::time::Instant::now();
     let held = surface.work(slot, cwd).await;
     timings.work_ms = slice_ms(at);
+    // **The read that draws the diff refreshes its base first.** A stored scan
+    // is as old as its last pass, so a base state carried on it could call the
+    // base current after the remote had moved on - the stale-diff defect
+    // itself. The refresh is bounded, and a refresh that moved the ref re-reads
+    // the stats locally so the count, the chain and the files describe one
+    // base: a count from one source beside files from another is exactly how
+    // this was first spotted.
+    let at = std::time::Instant::now();
+    let base = surface.refresh_diff_base(&held).await;
+    let held = match base {
+        // Only a fetch that landed can have moved the ref the stored scan was
+        // read against. A base that could not be refreshed (`unverified`) or
+        // was merely measured (`behind`) is the ref the stored scan already
+        // used, so its count and files stay one answer - both labelled stale.
+        Some(forge_primitives::git_diff::BaseState::Current) => {
+            surface.rescan_work(slot, &held.cwd).await
+        }
+        _ => held,
+    };
+    // The content read, beside the stats one: bounded, and taken here
+    // rather than stored with the row because a record read is a cold load,
+    // a reconnect or a seat swap - not a frame a moving tree pushes.
+    let diff = scan_content(&held.cwd, &held.diff, base).await;
+    timings.content_ms = slice_ms(at);
     timings.pr_age_s = held
         .diff
         .pr_fetched_at
@@ -2300,12 +2324,6 @@ async fn session(
     // the same constructor the pushed frame goes through - one derivation,
     // so a client that applies the update lands on the record's own answer.
     let git = git_work_view(&held.diff);
-    // The content read, beside the stats one: bounded, and taken here
-    // rather than stored with the row because a record read is a cold load,
-    // a reconnect or a seat swap - not a frame a moving tree pushes.
-    let at = std::time::Instant::now();
-    let diff = scan_content(&held.cwd, &held.diff).await;
-    timings.content_ms = slice_ms(at);
     let branch = work.branch.clone().unwrap_or_default();
     let at = std::time::Instant::now();
     let reviews = surface.reviews(slot.project(), &branch);
@@ -4912,7 +4930,6 @@ mod tests {
                     stats: GitDiffStats::default(),
                     time: 1_766_000_000,
                 }],
-                base: forge_primitives::git_diff::BaseState::Current,
             }),
             pr: Some(GitPrInfo {
                 number: 1249,

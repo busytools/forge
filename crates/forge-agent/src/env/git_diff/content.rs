@@ -13,15 +13,16 @@
 //! may carry an unbounded diff, and every cap has a flag beside it
 //! rather than a silence.
 //!
-//! Both layers the snapshot carries are read with the refs the stats
-//! scan used - `HEAD` for the worktree layer, `<default>...HEAD` for the
-//! branch-ahead one - so a file's row and its content describe one tree.
+//! Both layers the snapshot carries are read with the refs the caller has
+//! just established - `HEAD` for the worktree layer, and the base the drawing
+//! read refreshed for the branch-ahead one - so a file's row and its content
+//! describe one tree, with `base` saying how current that base is.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use forge_primitives::git_diff::{GitDiffSnapshot, LayerState};
+use forge_primitives::git_diff::{BaseState, GitDiffSnapshot, LayerState};
 
 use super::hunks::{
     FileStatus, Hunk, MAX_INFLIGHT_FETCHES, NameStatusEntry, parse_hunks, parse_name_status_entries,
@@ -66,7 +67,7 @@ pub struct DiffContent {
     pub branch_ahead: LayerState<Vec<FileContent>>,
     /// How current the base the branch layer was read against is. `None` when
     /// there is no branch layer to describe.
-    pub base: Option<forge_primitives::git_diff::BaseState>,
+    pub base: Option<BaseState>,
     /// Content this read withheld: a file cut by a cap, a file past the
     /// file cap, or a fetch that failed. The per-file flags say which.
     pub truncated: bool,
@@ -138,11 +139,20 @@ pub async fn scan_commit_within(cwd: &Path, sha: &str, budget: Duration) -> Comm
 
 /// Read both layers of `snapshot` for `cwd` into bounded content.
 ///
+/// `base` is what the read that draws this diff found when it refreshed the
+/// remote-tracking base first; it rides the answer so the page can label a
+/// base it could not refresh. It is carried only when there is a branch layer
+/// to describe.
+///
 /// Infallible like the stats scan: a layer's failure collapses to
 /// [`LayerState::ScanFailed`], a file's to its own `truncated` flag, and
 /// the read's to [`DiffContent::truncated`].
-pub async fn scan<'a>(cwd: &'a Path, snapshot: &'a GitDiffSnapshot) -> DiffContent {
-    scan_within(cwd, snapshot, COMMAND_TIMEOUT).await
+pub async fn scan<'a>(
+    cwd: &'a Path,
+    snapshot: &'a GitDiffSnapshot,
+    base: Option<BaseState>,
+) -> DiffContent {
+    scan_within(cwd, snapshot, base, COMMAND_TIMEOUT).await
 }
 
 /// [`scan`] with its command budget spelled; the budget bounds the
@@ -150,6 +160,7 @@ pub async fn scan<'a>(cwd: &'a Path, snapshot: &'a GitDiffSnapshot) -> DiffConte
 pub async fn scan_within<'a>(
     cwd: &'a Path,
     snapshot: &'a GitDiffSnapshot,
+    base: Option<BaseState>,
     budget: Duration,
 ) -> DiffContent {
     let mut caps = Caps::default();
@@ -170,7 +181,7 @@ pub async fn scan_within<'a>(
         LayerState::ScanFailed => LayerState::ScanFailed,
     };
     let base = match &snapshot.branch_ahead {
-        LayerState::Populated(ahead) => Some(ahead.base),
+        LayerState::Populated(_) => base,
         LayerState::Clean | LayerState::ScanFailed => None,
     };
     DiffContent { worktree, branch_ahead, base, truncated: caps.withheld }
@@ -732,7 +743,7 @@ index 1111111..2222222 160000
         git(&dir, &["add", "added.rs", "blob.bin"]);
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         assert!(
             matches!(content.branch_ahead, LayerState::Clean),
@@ -779,7 +790,7 @@ index 1111111..2222222 160000
         write_file(&dir, "base.rs", "base\nedited\n");
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         let worktree = populated(content.worktree);
         assert_eq!(worktree.len(), 1);
@@ -825,7 +836,7 @@ index 1111111..2222222 160000
 
         // A branch read would carry both; the commit read must not.
         let snapshot = scan_stats(dir.path(), None).await;
-        let whole = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let whole = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
         let LayerState::Populated(entries) = whole.branch_ahead else {
             panic!("the branch layer is populated");
         };
@@ -852,7 +863,7 @@ index 1111111..2222222 160000
             closes: Vec::new(),
             pr_fetched_at: None,
         };
-        assert_send(scan(std::path::Path::new("/"), &snapshot));
+        assert_send(scan(std::path::Path::new("/"), &snapshot, None));
     }
 
     /// The wire spellings `socket.md`'s `diff` row names: a client narrows
@@ -894,7 +905,7 @@ index 1111111..2222222 160000
         write_file(&dir, "long.rs", &format!("{}\n", edited.join("\n")));
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         let files = populated(content.worktree);
         let file = files.iter().find(|file| file.path == "long.rs").expect("long.rs");
@@ -921,7 +932,7 @@ index 1111111..2222222 160000
         write_file(&dir, "long.rs", &format!("{}\n", edited.join("\n")));
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         assert!(content.truncated, "the read says its content was withheld");
         let files = populated(content.worktree);
@@ -951,7 +962,7 @@ index 1111111..2222222 160000
         // Cleaned between the two reads, so the content read finds nothing.
         write_file(&dir, "kept.rs", "one\n");
 
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(!content.truncated);
@@ -985,7 +996,7 @@ index 1111111..2222222 160000
         git(&dir, &["add", "-A"]);
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         assert!(content.truncated, "the read says its content was withheld");
         let files = populated(content.worktree);
@@ -1025,7 +1036,7 @@ index 1111111..2222222 160000
         commit_all(&dir, "base");
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(matches!(content.branch_ahead, LayerState::Clean));
@@ -1033,8 +1044,8 @@ index 1111111..2222222 160000
         assert!(!content.truncated);
     }
 
-    /// The content read carries the base state of the layer it describes, so
-    /// the page can label a stale base beside the files it drew. A read that
+    /// The content read carries the base state its caller refreshed, so the
+    /// page can label a stale base beside the files it drew. A read that
     /// dropped it would draw those files as the branch's own change.
     #[tokio::test(flavor = "current_thread")]
     async fn the_content_read_carries_the_bases_state() {
@@ -1042,8 +1053,6 @@ index 1111111..2222222 160000
         init_repo(&dir, "main");
         write_file(&dir, "base.rs", "base\n");
         commit_all(&dir, "base");
-        // An origin-tracking default with no remote behind it: the refresh
-        // cannot run, which is the state the read must report.
         git(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
         git(&dir, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
         git(&dir, &["checkout", "-q", "-b", "feat/x"]);
@@ -1051,14 +1060,11 @@ index 1111111..2222222 160000
         commit_all(&dir, "feat");
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let base = Some(BaseState::Behind { behind: 2 });
+        let content = scan_within(dir.path(), &snapshot, base, TEST_GIT_BUDGET).await;
 
         assert_eq!(populated(content.branch_ahead).len(), 1, "the branch's own file is read");
-        assert_eq!(
-            content.base,
-            Some(forge_primitives::git_diff::BaseState::Unverified),
-            "the layer's own base state crosses beside its files",
-        );
+        assert_eq!(content.base, base, "the caller's base state crosses beside its files");
     }
 
     /// Outside a repository both layers are empty, and the gate on the
@@ -1069,7 +1075,7 @@ index 1111111..2222222 160000
 
         let snapshot = scan_stats(dir.path(), None).await;
         assert_eq!(snapshot.repo_gate, RepoGate::NotARepo);
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(matches!(content.branch_ahead, LayerState::Clean));
@@ -1094,7 +1100,7 @@ index 1111111..2222222 160000
             pr_fetched_at: None,
         };
 
-        let content = scan_within(dir.path(), &snapshot, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::ScanFailed), "a failed layer stays failed");
         assert!(matches!(content.branch_ahead, LayerState::Clean));

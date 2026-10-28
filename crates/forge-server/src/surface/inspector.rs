@@ -6,7 +6,7 @@
 //! rather than deriving anything: a view reads the session instead of
 //! folding the update stream a second time.
 
-use forge_primitives::git_diff::PrRefresh;
+use forge_primitives::git_diff::{BaseState, PrRefresh};
 use forge_primitives::runtime::AvailableModel;
 use forge_primitives::{
     CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionId, SessionSlot,
@@ -145,6 +145,34 @@ impl ViewSurface {
         // still answers the tree it stands in - so there is nothing cached to
         // serve and no loop to refresh it either: this read fetches.
         self.workspace.scan_work_at(slot, cwd, PrRefresh::Fetch).await
+    }
+
+    /// Refresh the base the seat's drawn branch diff is measured against,
+    /// under the display read's own budget.
+    ///
+    /// `None` when no branch layer is drawn: the default branch, a detached
+    /// HEAD, or no resolved default. Only the read that draws the diff calls
+    /// this, so a state it reports belongs to the moment that diff was read
+    /// rather than to an earlier scan.
+    pub async fn refresh_diff_base(&self, held: &WorkSnapshot) -> Option<BaseState> {
+        if !held.diff.branch_ahead.is_populated() {
+            return None;
+        }
+        let default = held.diff.default_branch.as_deref()?;
+        Some(forge_workspace::env::git_diff::refresh_base_for_display(&held.cwd, default).await)
+    }
+
+    /// Re-read the seat's tree because the drawing read moved the base under
+    /// the stored scan: the count, the chain and the files then describe one
+    /// base. Local only - the base was just refreshed, so this scan must not
+    /// reach the network again.
+    pub async fn rescan_work(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
+        match self.workspace.scan_work_if_stale(slot, true, PrRefresh::ServeCached).await {
+            Ok(held) => held,
+            // A seat with no store still reads the tree it stands in, the
+            // same fallback `work` takes.
+            Err(_) => self.workspace.scan_work_at(slot, cwd, PrRefresh::ServeCached).await,
+        }
     }
 
     /// Store a scan's answer, which is the write half of [`Self::work`].
