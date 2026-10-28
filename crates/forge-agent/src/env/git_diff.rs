@@ -3405,7 +3405,7 @@ mod tests {
         let log = String::from_utf8_lossy(&capture.0.lock().clone()).into_owned();
         let named = log.contains("git_base_behind");
         let counted = log.contains("behind=1");
-        assert!(named && counted, "the lag is a record of its own, naming the count: {log}",);
+        assert!(named && counted, "the lag is a record of its own, naming the count: {log}");
         // The scan is local, so the stale ref this case is about is exactly
         // what it reads.
         let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;

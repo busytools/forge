@@ -5479,7 +5479,7 @@ mod tests {
             timings.base_ms < 1.0,
             "no child runs for an ordinary read's base (a git call costs whole ms): {timings:?}",
         );
-        assert!(timings.rescan_ms < 1.0, "and nothing re-scans the tree for one: {timings:?}",);
+        assert!(timings.rescan_ms < 1.0, "and nothing re-scans the tree for one: {timings:?}");
     }
 
     /// The other half: a seat the transport holds nothing for pays the
