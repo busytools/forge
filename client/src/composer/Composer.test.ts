@@ -1328,8 +1328,9 @@ describe('the box', () => {
    * reader's, so they come back with the box rather than going with the turn.
    */
   it('keeps a draft through a machine turn and hands it back after', () => {
-    const harness = open();
+    const harness = open({ dictation: true });
     type('the next thing I want to say');
+    expect(document.querySelector('.mic'), 'the control is there before the turn').not.toBeNull();
 
     for (const [machine, line] of [
       ['handoff', 'handing this session over'],
@@ -1341,6 +1342,8 @@ describe('the box', () => {
       flushSync();
       expect(drawn(), 'the composer says what is running').toContain(line);
       expect(document.querySelector('textarea'), 'a machine turn takes the box').toBeNull();
+      expect(document.querySelector('.send'), 'and the send').toBeNull();
+      expect(document.querySelector('.mic'), 'and the mic').toBeNull();
     }
 
     harness.page.record = record({
