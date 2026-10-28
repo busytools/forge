@@ -125,8 +125,8 @@ impl Viewer {
     }
 
     /// One relayed frame, as the socket carried it: the host's own frame
-    /// wire - profile id, tab, sequence, view size, format and key flag,
-    /// then the encoded pixels.
+    /// wire - profile id, tab, sequence, view size, format, key flag and the
+    /// page's viewport, then the encoded pixels.
     pub fn on_frame(&self, bytes: &[u8]) {
         let Some(frame) = super::split_frame(bytes) else {
             // **A frame this viewer cannot read is said**, not dropped with
@@ -136,6 +136,7 @@ impl Viewer {
             return;
         };
         let (profile, tab, width, height) = (frame.profile, frame.tab, frame.width, frame.height);
+        let page = (u32::from(frame.page_width), u32::from(frame.page_height));
         let payload = frame.encoded;
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match belongs(state.id, state.tab, profile, tab) {
@@ -160,9 +161,14 @@ impl Viewer {
                 return;
             }
         }
-        let Some(frame) =
-            super::cef::surface::decode(profile, tab, payload, u32::from(width), u32::from(height))
-        else {
+        let Some(frame) = super::cef::surface::decode(
+            profile,
+            tab,
+            payload,
+            u32::from(width),
+            u32::from(height),
+            page,
+        ) else {
             undecodable_frame(profile, tab, width, height, payload.len());
             return;
         };

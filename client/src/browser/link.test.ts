@@ -207,6 +207,8 @@ describe('the wire link', () => {
       width: 10,
       height: 10,
       key: true,
+      page_width: 10,
+      page_height: 10,
       bytes: new Uint8Array([1]),
     };
     fake.frame(frame);
