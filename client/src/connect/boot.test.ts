@@ -8,7 +8,9 @@ import { rememberedAddress, rememberAddress } from './remembered';
 
 /** A forge that greets, which is all a launch needs one to do. */
 async function stubServer() {
-  const server = new WebSocketServer({ port: 0 });
+  // **A `::` listener can share a port with a v4 one**, and the page's v4 dial
+  // then lands on that process; bind the address the page dials.
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await new Promise((resolve) => server.once('listening', resolve));
   const { port } = server.address() as AddressInfo;
   server.on('connection', (socket) => {
@@ -100,7 +102,7 @@ describe('what the app opens on', () => {
    * both the address it tried and the reason it did not answer.
    */
   it('opens the door carrying the reason when the remembered address does not answer', async () => {
-    const silent = new WebSocketServer({ port: 0 });
+    const silent = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     await new Promise((resolve) => silent.once('listening', resolve));
     const { port } = silent.address() as AddressInfo;
     const address = `127.0.0.1:${port}`;
@@ -159,7 +161,7 @@ describe('what the app opens on', () => {
     servers.push(good);
     rememberAddress(good.address);
 
-    const silent = new WebSocketServer({ port: 0 });
+    const silent = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     await new Promise((resolve) => silent.once('listening', resolve));
     const { port } = silent.address() as AddressInfo;
     try {
