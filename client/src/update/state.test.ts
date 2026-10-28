@@ -60,6 +60,7 @@ describe('watchUpdate', () => {
 
     void watchUpdate();
 
+    expect(mockCheck, 'no check was ever asked for').toHaveBeenCalledTimes(1);
     expect(get(updateState)).toEqual({ stage: 'checking' });
   });
 
