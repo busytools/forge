@@ -1130,9 +1130,9 @@ async fn run(
 
 /// Say a binary frame this half cannot read.
 ///
-/// **Info, not debug**: the client logger keeps `Info`, so a debug line here
-/// would never reach `forge.log` - the refusal would be silent in the one
-/// place a reader looks.
+/// **Info, not debug**: this module is not one of the default directives'
+/// named targets, so a debug line here would never reach `forge.log` - the
+/// refusal would be silent in the one place a reader looks.
 fn unreadable_binary(kind: Option<u8>, bytes: usize) {
     tauri_plugin_log::log::info!(
         "a binary frame carried an unknown kind (event_name client_socket_binary_unknown, \
@@ -1238,9 +1238,10 @@ pub(crate) mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
-    /// **An unknown binary frame is said at a level the client keeps.** The
-    /// logger's filter is `Info`, so the line at `debug` never reached
-    /// `forge.log`; the level is the mutation this test reds.
+    /// **An unknown binary frame is said at a level the client keeps.** This
+    /// module is not a target the default directives name, so the line at
+    /// `debug` never reached `forge.log`; the level is the mutation this test
+    /// reds.
     #[test]
     fn an_unknown_binary_frame_is_said_at_info() {
         let _held = crate::log_capture::capture();

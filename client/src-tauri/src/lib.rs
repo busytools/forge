@@ -414,18 +414,59 @@ mod commands {
     }
 }
 
-/// The client logger's demoted-but-readable targets: a line about a session's
-/// own work rather than forge's stays in `forge.log` here (rule 20), which is
-/// the client's half of the server's default directives.
+/// The client logger's default directives, as data: `Info` for the crate, and
+/// `debug` for the targets whose demoted lines must stay readable (rule 20) -
+/// the client's half of the server's own directive table.
+const LOG_BASELINE: tauri_plugin_log::log::LevelFilter = tauri_plugin_log::log::LevelFilter::Info;
+const DEBUG_LEVEL: tauri_plugin_log::log::LevelFilter = tauri_plugin_log::log::LevelFilter::Debug;
+
+/// The targets kept at [`DEBUG_LEVEL`]: the mic's press line is a session's
+/// own work rather than forge's, and it is what a slow open is answered from.
 pub(crate) const DEBUG_TARGETS: &[&str] = &[mic::LOG_TARGET];
 
-/// The client's logger under those directives: `Info` for the crate, and
-/// `debug` for [`DEBUG_TARGETS`].
+/// The highest level any target is kept at. The logger's own facade filter
+/// must allow at least this much, or it drops a record [`keeps`] would keep -
+/// which with a `debug` target means every `debug!` body in the client now
+/// evaluates, a formatting call apiece for the ones the filter then drops.
+pub(crate) const LOG_MAX: tauri_plugin_log::log::LevelFilter = max_level(LOG_BASELINE, DEBUG_LEVEL);
+
+const fn max_level(
+    a: tauri_plugin_log::log::LevelFilter,
+    b: tauri_plugin_log::log::LevelFilter,
+) -> tauri_plugin_log::log::LevelFilter {
+    if a as u8 >= b as u8 { a } else { b }
+}
+
+/// Whether the client's logger keeps a record: [`LOG_BASELINE`] for the crate,
+/// [`DEBUG_LEVEL`] for a target [`DEBUG_TARGETS`] names or a module under one.
+///
+/// **The one policy both loggers read**: the shipped logger filters on it, and
+/// the tests' capture keeps by it, so a test cannot model a filter the app
+/// does not ship.
+pub(crate) fn keeps(level: tauri_plugin_log::log::Level, target: &str) -> bool {
+    level <= limit_for(target)
+}
+
+/// The level `target` is kept at: the most specific [`DEBUG_TARGETS`] entry
+/// naming it or a parent module of it, the baseline otherwise.
+fn limit_for(target: &str) -> tauri_plugin_log::log::LevelFilter {
+    let mut named = target;
+    loop {
+        if DEBUG_TARGETS.contains(&named) {
+            return DEBUG_LEVEL;
+        }
+        match named.rfind("::") {
+            Some(at) => named = &named[..at],
+            None => return LOG_BASELINE,
+        }
+    }
+}
+
+/// The client's logger under those directives.
 fn client_logger() -> tauri_plugin_log::Builder {
-    DEBUG_TARGETS.iter().fold(
-        tauri_plugin_log::Builder::new().level(tauri_plugin_log::log::LevelFilter::Info),
-        |logger, target| logger.level_for(*target, tauri_plugin_log::log::LevelFilter::Debug),
-    )
+    tauri_plugin_log::Builder::new()
+        .level(LOG_MAX)
+        .filter(|record| keeps(record.level(), record.target()))
 }
 
 /// The app, as a library: the Android target links it as a native library, and
@@ -868,5 +909,31 @@ mod tests {
         assert_eq!(attention(&tauri::WindowEvent::Focused(false)), Some(false));
         assert_eq!(attention(&tauri::WindowEvent::Focused(true)), Some(true));
         assert_eq!(attention(&tauri::WindowEvent::Destroyed), None);
+    }
+
+    /// **The one policy the shipped logger and the tests' capture share.** A
+    /// named target keeps `debug` and a module under it does too, since a
+    /// file that moves into a subdirectory is the same module's own line; an
+    /// unnamed target stops at `Info`, which is what keeps `forge.log`
+    /// readable.
+    #[test]
+    fn the_default_directives_keep_debug_for_their_own_targets() {
+        use super::{DEBUG_TARGETS, keeps};
+        use tauri_plugin_log::log::Level;
+
+        for target in DEBUG_TARGETS {
+            assert!(keeps(Level::Debug, target), "a named target keeps `debug`: {target}");
+            assert!(
+                keeps(Level::Debug, &format!("{target}::submodule")),
+                "a module under a named target keeps `debug` too: {target}",
+            );
+            assert!(keeps(Level::Info, target), "and `Info` is kept as well: {target}");
+        }
+        assert!(
+            !keeps(Level::Debug, "forge_client::socket"),
+            "an unnamed target stops at `Info`: debug is dropped",
+        );
+        assert!(keeps(Level::Warn, "forge_client::socket"), "a warning always crosses");
+        assert!(keeps(Level::Info, "forge_client::socket"), "so does `Info`");
     }
 }
