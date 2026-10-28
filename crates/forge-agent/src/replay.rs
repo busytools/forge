@@ -125,13 +125,24 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
             // shape this cannot currently take.
             "system" => match serde_json::from_value::<Message>(message_value.clone()) {
                 Ok(frame) => out.push(frame),
-                Err(err) => tracing::warn!(
-                    target: "agent.history",
-                    event_name = "replay_system_frame_undecoded",
-                    ?message_value,
-                    %err,
-                    "synthesize_replay_messages: failed to decode a system frame; entry skipped",
-                ),
+                // **A top-level type this build has no variant for arrives as
+                // itself**, the way the live decoder surfaces an unmodelled
+                // stream type. A malformed frame of a known `system` subtype
+                // still warns and is skipped: that is a decode this build
+                // should fix, not a frame to draw bare.
+                Err(err) => match message_value.get("type").and_then(Value::as_str) {
+                    Some(type_str) if type_str != "system" => out.push(Message::Unknown {
+                        type_str: type_str.to_owned(),
+                        raw: message_value.clone(),
+                    }),
+                    _ => tracing::warn!(
+                        target: "agent.history",
+                        event_name = "replay_system_frame_undecoded",
+                        ?message_value,
+                        %err,
+                        "synthesize_replay_messages: failed to decode a system frame; entry skipped",
+                    ),
+                },
             },
             _ => {}
         }

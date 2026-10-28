@@ -125,7 +125,12 @@ impl BrowserTool {
     /// the client's page state; the hand-off parks on the person, and the
     /// wait - with no timeout - is the answer.
     async fn hand_off(&self, args: Value) -> Result<Vec<BrowserPart>, String> {
-        let Some(reason) = args.get("reason").and_then(Value::as_str) else {
+        // **An ask with no words is no ask**: a blank reason parks on the
+        // person a prompt that says nothing, so it is refused here rather
+        // than drawn as an empty row.
+        let Some(reason) =
+            args.get("reason").and_then(Value::as_str).filter(|reason| !reason.trim().is_empty())
+        else {
             return Err("browser_hand_off needs `reason`: what the person should do".to_owned());
         };
         let Some(tab) = args.get("tab").and_then(Value::as_u64) else {
@@ -519,6 +524,25 @@ mod tests {
         assert!(out.is_error, "{:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
         assert!(text.contains("`tab`"), "{text}");
+        assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
+    }
+
+    /// A blank reason is no reason: it would park an ask that says nothing to
+    /// the person, so the call is refused before anything reaches them.
+    #[tokio::test]
+    async fn a_hand_off_with_a_blank_reason_is_refused() {
+        let mock = Arc::new(MockBrowserFacade::new());
+        let tool = BrowserTool {
+            spec: spec_named("browser_hand_off"),
+            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
+            slot: seat(),
+        };
+
+        let out = tool.call(ToolInput { value: json!({ "reason": "   ", "tab": 2 }) }).await;
+
+        assert!(out.is_error, "{:?}", out.blocks);
+        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
+        assert!(text.contains("`reason`"), "{text}");
         assert!(mock.hand_offs.lock().is_empty(), "and nothing was parked");
     }
 
