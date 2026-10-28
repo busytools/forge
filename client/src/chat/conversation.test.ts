@@ -4237,6 +4237,226 @@ describe('the conversation the chat draws', () => {
     }
   });
 
+  /**
+   * **A page can cut one running turn into several rows, and a later row never
+   * lands above what is drawn.**
+   *
+   * The fold opens a turn at the mid-turn prompt's own row, so one running turn
+   * arrives as the opening row and then a row per prompt with the frames that
+   * followed it. **The prompt here is a delivered-prompt frame**, which is the
+   * carrier the `placedAt` arm meets: a prompt hoisted as a `queued_command`
+   * attachment never reaches it, because `queuedPrompt` absorbs that row above
+   * and appends. The two-row page is the reduction of the three-row one (a
+   * `queued_command` row, then the delivered row, then the tail): the same
+   * cut, without the absorbed row in the middle. Both rows match the one live
+   * turn by the frames they share, so the second goes through the `placedAt`
+   * arm - and that arm placed its frames by their neighbour inside the page
+   * row, where the first frame has none. The page Ved watched put the row he
+   * had already seen back at the bottom: the first page row's frames jumped
+   * below the prompt's, and the earlier capacity answer drew as the newest row.
+   *
+   * Measured on a scratch forge: live frames opening a turn, a mid-turn prompt
+   * queued into it, then the newest page read with the fold's own cut. The
+   * drawn order was the same before and after the landing.
+   */
+  it('never moves a drawn row when a page cut at a mid-turn prompt lands', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(page([turn('t0', 'earlier')], null));
+      for (const frame of [typed('open'), said('call one')]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      // The reader queues a prompt into the running turn, and the CLI's own
+      // frames follow it in the transcript's order.
+      server.update({ chat_appended: { key: LEAD, msg: typed('mid') } });
+      server.update({ chat_appended: { key: LEAD, msg: said('call two') } });
+      const before = names(chat);
+      const rows = get(chat.value).turns.map((row) => row.key);
+
+      // The newest page, cut where the transcript folds a turn: one head at the
+      // prompt. Both rows are the one live turn, and the last frame is one the
+      // live fold never saw - the gap the page is here to fill.
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('open'), said('call one')] },
+            { key: null, messages: [typed('mid'), said('call two'), said('missed')] },
+          ],
+          null,
+        ),
+      );
+
+      expect(names(chat), 'the rows already drawn keep their order, the gap fills').toEqual([
+        ...before,
+        'a-missed',
+      ]);
+      expect(
+        get(chat.value).turns.map((row) => row.key),
+        'and the later page row joins the row already drawn, rather than opening a second one',
+      ).toEqual(rows);
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **A live frame that landed after the page was read sits at the row's end,
+   * and the page's frames never go below it.**
+   *
+   * It is the mirror of the case above, and it is always inside the window: the
+   * page is read, the turn writes on, then the page lands. The read cut through
+   * `call two`; `call three` was still arriving. Placing the later page row's
+   * frames at the row's end put them under `call three`, which is newer than
+   * the page's cut - the same reorder, one frame narrower.
+   */
+  it('keeps a live frame newer than the page cut at the row end', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(page([turn('t0', 'earlier')], null));
+      for (const frame of [typed('open'), said('call one'), typed('mid'), said('call two')]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      const rows = get(chat.value).turns.map((row) => row.key);
+      // The page was read here; the turn wrote one more frame after it.
+      server.update({ chat_appended: { key: LEAD, msg: said('call three') } });
+
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('open'), said('call one')] },
+            { key: null, messages: [typed('mid'), said('call two'), said('missed')] },
+          ],
+          null,
+        ),
+      );
+
+      expect(names(chat), 'the later page row lands where the turn had it').toEqual([
+        'u-earlier',
+        'u-open',
+        'a-call one',
+        'u-mid',
+        'a-call two',
+        'a-missed',
+        'a-call three',
+      ]);
+      expect(
+        get(chat.value).turns.map((row) => row.key),
+        'and the later page row joins the row already drawn, rather than opening a second one',
+      ).toEqual(rows);
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **A folded run the page carries in a later row still replaces the raw
+   * counters the drawn row holds.** Placing the row's frames by hand is easy to
+   * write as concatenation, and concatenation leaves the raw counters beside
+   * the page's rollup - the figure then counts the run twice. The fold
+   * reconciliation is `interleave`'s and the later row keeps it.
+   */
+  it('a folded run in a later page row replaces the counters the row holds', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      for (const frame of [typed('open'), clocked(1, 10), clocked(2, 10), typed('mid')]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      expect(figure(chat), 'the raw counters are the figure').toBe(20);
+
+      // The read's tail folds counters 1 and 2 into one frame of its own row.
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('open'), clocked(1, 10), clocked(2, 10)] },
+            { key: null, messages: [typed('mid'), folded(1, 2, 20)] },
+          ],
+          null,
+        ),
+      );
+
+      expect(names(chat), 'the rollup replaces the counters it covers').toEqual([
+        'u-open',
+        'thinking-2',
+        'u-mid',
+      ]);
+      expect(figure(chat), 'and the run is counted once, not twice').toBe(20);
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **The fold reconciliation runs the other way too.** The drawn row can hold
+   * the rollup while the page carries the raw counters it covers - a live
+   * flush folds a run the transcript keeps raw - and adding those counters
+   * beside the rollup counts the same tokens twice. The run here ends past the
+   * page's last counter so the two sides do not share an id: the guard, not
+   * the frame index, is what has to tell them apart.
+   */
+  it('a drawn folded run counts the page counters inside it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      for (const frame of [typed('open'), folded(1, 4, 40), typed('mid')]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      expect(figure(chat), 'the drawn run is the figure').toBe(40);
+
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('open')] },
+            { key: null, messages: [typed('mid'), clocked(1, 10), clocked(2, 10)] },
+          ],
+          null,
+        ),
+      );
+
+      expect(names(chat), 'the counters the drawn run covers are not added again').toEqual([
+        'u-open',
+        'thinking-4',
+        'u-mid',
+      ]);
+      expect(figure(chat), 'and the figure is the drawn run alone').toBe(40);
+    } finally {
+      stop();
+    }
+  });
+
+  /**
+   * **A page row that adds nothing keeps the frames the drawn row holds.** A
+   * page repeats the held tail, so a landing can carry a row every frame of
+   * which is already drawn - and handing that row a fresh copy of the array
+   * re-folds it under the reader, the same contract the named arm keeps by
+   * returning the array it was given.
+   */
+  it('a page row that adds nothing keeps the frames the drawn row had', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(page([turn('t1', 'open')], null));
+      const repeated = page([turn('t1', 'open'), { key: null, messages: [typed('open')] }], null);
+      server.send(repeated);
+      const kept = get(chat.value).turns[0]?.messages;
+      server.send(repeated);
+
+      expect(
+        get(chat.value).turns[0]?.messages,
+        'the page added no frame, so the row keeps the array it had',
+      ).toBe(kept);
+    } finally {
+      stop();
+    }
+  });
+
   it('replaces a turn whose opening frame carries no id', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
