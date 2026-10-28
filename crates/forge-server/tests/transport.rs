@@ -237,6 +237,14 @@ async fn snapshot_answering(
     }
 }
 
+/// The ceiling on a transport test's wait for a background push.
+///
+/// **Larger than the 5 s a direct answer gets**: the producer is a seat's own
+/// watch, which runs on its 1 s poke and spawns `gh` for the lookup. Still
+/// under nextest's 30 s slow-timeout, so a wedged watch reds by the
+/// assertion's own name rather than by the harness's kill.
+const WATCH_WAIT_MS: u64 = 30_000;
+
 /// The next update satisfying `want`, with everything that is not it passed
 /// over, for the reason [`snapshot_answering`] gives.
 ///
@@ -252,7 +260,7 @@ async fn update_until(
     for _ in 0..64 {
         // Split rather than a `let-else`, so a message that arrived and was not
         // an update is not reported as silence.
-        let update = match next_server_within(socket, 5_000).await {
+        let update = match next_server_within(socket, WATCH_WAIT_MS).await {
             Some(ServerMessage::Update { update, .. }) => *update,
             Some(other) => {
                 panic!("waited for {want}, and a message that is not an update arrived: {other:?}")
