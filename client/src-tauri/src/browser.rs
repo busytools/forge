@@ -306,8 +306,9 @@ pub fn frame(app: &tauri::AppHandle, bytes: &[u8]) {
         let Some(frame) = split_frame(bytes) else {
             // **A frame this half cannot read is said**, not dropped quietly:
             // the page's frames come through here and a missing one has no
-            // other trace. **Info, not debug**: the client logger keeps
-            // `Info`, so a debug line would never reach `forge.log`.
+            // other trace. **Info, not debug**: this module is not a target
+            // the default directives name, so a debug line would never reach
+            // `forge.log`.
             tauri_plugin_log::log::info!(
                 "a relayed frame did not fit its header (event_name \
                  client_browser_frame_undecodable, {} bytes)",
