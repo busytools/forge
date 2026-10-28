@@ -179,15 +179,21 @@ carries `{"ok": true, "profile": ..., "tab": ...}` with what it actually
 attached - a request that left the tab out is resolved to the seat's current
 one - and `{"ok": false, "why": ...}` when the server refused it, so a
 surface that could not open draws the reason instead of a dark page.
-Attaching again switches what this connection is viewing, and a connection
-that goes is detached with it. **A hand-off's tab is the tool call's own**:
+Attaching again moves what this connection is viewing: **a re-attach to the
+tab it is already on keeps the viewer and the controller role it holds
+there**, while another tab or another profile lets the old tab go - and the
+role with it - before the new one is attached. A refused attach drops
+whatever the connection was viewing and is recorded (`browser_attach_refused`
+with the tab asked for, what was left and why), and a connection that goes is
+detached with it. **A hand-off's tab is the tool call's own**:
 `browser_hand_off` requires it, the ask crosses as the seat's parked ask, and
 the surface's Open is this message naming that tab.
 
 **`browser_detach`** - stop viewing the attached tab. Lowering the takeover
 sends this: an attached viewer counts as a use, so a lowered surface gives
-its viewer up rather than keeping the profile warm, and a connection that
-switches tabs detaches from the old one first.
+its viewer up rather than keeping the profile warm. **A connection that
+switches tabs does not detach first**: the attach itself lets the old tab go,
+so a switch is one message rather than two.
 
 **`browser_resize {width, height, scale}`** - lay the viewed tab's page out
 to one viewer's surface: device pixels and the ratio they draw at. **A held
@@ -207,15 +213,24 @@ what turns it into `Input.dispatchMouseEvent` and its siblings. `seq` is the
 viewer's own ordering - the server drops an event at or below the last one
 the role carried, so a superseded gesture never lands late. Input from a
 viewer without the controller role is refused with an `error` naming
-`browser_input`.
+`browser_input`; **a gesture from a connection with no attach is refused the
+same way**, and a pointer move - a stream, whose refusal is the click's that
+follows - is dropped without one. **A refused gesture is recorded with its
+kind and, for typed text, only its character count** (`browser_input_refused`
+/ `browser_input_unattached`), never the characters: this browser signs
+people in.
 
 **`browser_control {take}`** - take the controller role, or give it back.
 There is no default controller and no override machinery: a surface starts
 controller-less, any attached client takes the role with an explicit
 control, and exactly one holds it at a time. A take moves the role to the
 caller; the previous holder becomes a watcher and its input is refused from
-that moment. Every viewer of the tab is sent the new state
-(`browser_view`), so the same truth is drawn everywhere.
+that moment. **A take that does not land** - no attach, or a tab that moved -
+is refused with an `error` naming `browser_control` and recorded
+(`browser_control` with `landed: false`), and a release gives the role up,
+recorded once when it actually held it (`browser_role_released`). Every
+viewer of the tab is sent the new state (`browser_view`), so the same truth
+is drawn everywhere.
 
 **`browser_nav {back}`** - move through the page's history, the takeover
 bar's arrows. **Only the controller's move lands**: a watcher's is refused

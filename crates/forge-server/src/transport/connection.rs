@@ -1830,6 +1830,21 @@ where
                     }
                 }
                 Err(why) => {
+                    // **A refused attach is answered and recorded.** It is
+                    // the failure that also drops whatever this connection
+                    // was viewing, so "my surface fell to failed when I
+                    // picked another tab" is answered by one line: the tab
+                    // asked for, the surface it left, and why.
+                    tracing::debug!(
+                        event_name = "browser_attach_refused",
+                        viewer = me,
+                        requested_tab = tab,
+                        was_profile = viewing.as_ref().map(|viewed| viewed.key.as_str()),
+                        was_tab = viewing.as_ref().map(|viewed| viewed.tab),
+                        dropped = viewing.is_some(),
+                        reason = %why,
+                        "an attach was refused",
+                    );
                     // **A refused attach takes the viewer off what it was
                     // on.** The surface that asked has failed, so the tab it
                     // was viewing keeps neither a phantom viewer nor the
@@ -1867,7 +1882,7 @@ where
                     has_browser = state.browser_host.is_some(),
                     reason = why,
                     gesture = gesture_kind(&event),
-                    text_chars = ?text_chars(&event),
+                    text_chars = text_chars(&event),
                     "a gesture arrived from a connection with no attached tab",
                 );
                 return send(
@@ -1900,7 +1915,7 @@ where
                             viewer = me,
                             reason = %why,
                             gesture = gesture_kind(&event),
-                            text_chars = ?text_chars(&event),
+                            text_chars = text_chars(&event),
                             "a gesture was refused before it reached the page",
                         );
                     }
@@ -2016,9 +2031,10 @@ where
             };
             match outcome {
                 Ok(()) => {
-                    // **A release is the service's own record.** It logs the
-                    // role it actually gave up, so a release that held
-                    // nothing is not claimed here as a role that moved.
+                    // **A release is recorded by the service**, which knows
+                    // whether it actually held the role; the connection says
+                    // nothing about it, so a release that held nothing is
+                    // never claimed as a role that moved.
                     if take {
                         tracing::debug!(
                             event_name = "browser_control",

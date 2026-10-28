@@ -2460,10 +2460,10 @@ impl BrowserService {
             self.detach(viewer).await;
         }
         // **A re-attach is where a role went missing without a line.** The
-        // entry names the tab and profile the viewer was on and whether this
-        // attach is the same tab, so a surface driving a tab it does not
-        // control - or no longer holding one it had - is answerable from the
-        // log.
+        // entry names the profile and tab the viewer was on and whether this
+        // attach is the same surface - the same profile AND the same tab -
+        // so a surface driving a tab it does not control, or no longer
+        // holding a role it had, is answerable from the log.
         tracing::debug!(
             event_name = "browser_attach",
             profile = %profile.key,
@@ -2471,7 +2471,7 @@ impl BrowserService {
             viewer,
             was_profile = was.as_ref().map(|(was_key, _)| was_key.as_str()),
             was_tab = was.as_ref().map(|(_, viewing)| *viewing),
-            same_tab = staying,
+            same_surface = staying,
             "a viewer attached to a tab",
         );
         let frames = profile.frame_receiver(tab);
@@ -2639,6 +2639,16 @@ impl BrowserService {
                 released
             };
             if released {
+                // **The one role change a person makes by hand.** A bar's
+                // release is the person's own act, and it is recorded here
+                // with the same fields a departure's release carries.
+                tracing::debug!(
+                    event_name = "browser_role_released",
+                    profile = %profile.key,
+                    tab,
+                    viewer,
+                    "a viewer gave the controller role up",
+                );
                 profile.cancel_files().await;
                 profile.publish_view(tab);
                 // The tab is nobody's to drive now, so it is idle again.
@@ -8846,6 +8856,56 @@ mod tests {
                 .is_some_and(|watchers| watchers.contains(&9)),
             "and the viewer is on the second profile's tab 1",
         );
+    }
+
+    /// **A release is recorded once, for the role it actually held.** The
+    /// bar's release control is the one role change a person makes by hand,
+    /// and the record is the service's own: a release that held nothing is
+    /// not an event and writes nothing.
+    #[tokio::test]
+    async fn a_release_is_recorded_once_by_the_service() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser");
+        let service = BrowserService::at(root.clone(), root.join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("TestOrg/default").await.expect("the profile");
+        let tab = 1;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        service.attach(7, &seat, Some(tab)).await.expect("the attach");
+        service.take_control(&profile.key, tab, 7).await.expect("the take");
+        assert!(!saw(&caught, "browser_role_released"), "a take is not a release");
+
+        let released = |caught: &Caught| -> Vec<String> {
+            records(caught)
+                .into_iter()
+                .map(|(_, fields)| fields)
+                .filter(|fields| fields.contains("event_name=\"browser_role_released\""))
+                .collect()
+        };
+        service.release_control(&profile.key, tab, 7).await;
+        let caught_release = released(&caught);
+        assert_eq!(caught_release.len(), 1, "the release is recorded once: {caught_release:?}");
+        for needle in ["profile=TestOrg/default", "tab=1", "viewer=7"] {
+            assert!(
+                caught_release[0].contains(needle),
+                "the record carries `{needle}`: {}",
+                caught_release[0],
+            );
+        }
+
+        service.release_control(&profile.key, tab, 7).await;
+        assert_eq!(
+            released(&caught).len(),
+            1,
+            "a release that held nothing writes nothing: {:?}",
+            released(&caught),
+        );
+        drop(guard);
     }
 
     /// **A close ends the seat's own profile**, and the entry leaves the map.

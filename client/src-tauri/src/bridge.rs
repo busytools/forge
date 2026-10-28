@@ -204,10 +204,12 @@ pub struct Bridge {
     picking: std::sync::atomic::AtomicBool,
     /// The ask the open panel's answer belongs to.
     live_file: AtomicU64,
-    /// When a browser refusal was last logged, epoch milliseconds. **A
-    /// pointer move is a stream**: a surface with no role is refused one per
-    /// move, and the first of the burst is the record, not every frame.
-    refusal_logged_at: AtomicU64,
+    /// When a browser refusal was last logged, **on the monotonic clock**:
+    /// a backwards system clock step would otherwise silence the record
+    /// until it caught up. A pointer move is a stream - a surface with no
+    /// role is refused one per move - and the first of the burst is the
+    /// record, not every frame.
+    refusal_logged: Mutex<Option<Instant>>,
 }
 
 /// Clears the picker flag however the picker ends, a panic included.
@@ -272,7 +274,7 @@ impl Bridge {
             input_seq: AtomicU64::new(0),
             picking: std::sync::atomic::AtomicBool::new(false),
             live_file: AtomicU64::new(0),
-            refusal_logged_at: AtomicU64::new(0),
+            refusal_logged: Mutex::new(None),
         })
     }
 
@@ -514,18 +516,17 @@ impl Bridge {
         }
     }
 
-    /// Whether this refusal is the first of its burst, so a refused pointer
-    /// move is one line rather than one per frame.
+    /// Whether this refusal is the first of its burst on the monotonic
+    /// clock, so a refused pointer move is one line rather than one per
+    /// frame.
     fn refusal_is_new(&self) -> bool {
-        const EVERY_MS: u64 = 1_000;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX));
-        let last = self.refusal_logged_at.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < EVERY_MS {
+        const EVERY: Duration = Duration::from_secs(1);
+        let now = Instant::now();
+        let mut last = self.refusal_logged.lock().unwrap_or_else(PoisonError::into_inner);
+        if last.is_some_and(|last| now.duration_since(last) < EVERY) {
             return false;
         }
-        self.refusal_logged_at.store(now, Ordering::Relaxed);
+        *last = Some(now);
         true
     }
 
@@ -1305,17 +1306,19 @@ impl Bridge {
                 // is not an artifact anyone reads after the fact.
                 if let Some(what) = message.get("what").and_then(Value::as_str)
                     && what.starts_with("browser_")
-                    // **A refused gesture is a stream**: a surface with no
-                    // role is refused one per pointer move, so an input
-                    // refusal is recorded once a second; a refused take is
-                    // not a stream and always lands.
-                    && (what != "browser_input" || self.refusal_is_new())
                 {
-                    tauri_plugin_log::log::info!(
-                        "the browser refused a request (event_name client_browser_refused, \
-                         what {what}, why {})",
-                        message.get("why").and_then(Value::as_str).unwrap_or("no reason given"),
-                    );
+                    // **Only a refused gesture can be a burst.** The
+                    // freshness is sampled for `browser_input` alone, so a
+                    // take or an attach refusal neither reads nor moves the
+                    // input burst's window.
+                    let fresh = what == "browser_input" && self.refusal_is_new();
+                    if refusal_is_recorded(what, fresh) {
+                        tauri_plugin_log::log::info!(
+                            "the browser refused a request (event_name client_browser_refused, \
+                             what {what}, why {})",
+                            message.get("why").and_then(Value::as_str).unwrap_or("no reason given"),
+                        );
+                    }
                 }
                 if message.get("what").and_then(Value::as_str) == Some("browser_view")
                     && let Some(app) = &self.app
@@ -1599,6 +1602,14 @@ fn take_attach(state: &mut State) -> Option<Attach> {
     state.attach.take()
 }
 
+/// Whether one browser refusal writes a line: **only a refused input can be
+/// a burst** - a surface with no role is refused one per pointer move - so
+/// its first is the record, while a refused take, attach or surface is one
+/// event and always is.
+fn refusal_is_recorded(what: &str, fresh: bool) -> bool {
+    what != "browser_input" || fresh
+}
+
 /// **A chosen file's own name, from the path or URI the picker answered.**
 /// A path is its basename; a URI's last segment is the fallback Android's
 /// resolver has not already named.
@@ -1665,12 +1676,6 @@ mod tests {
         (Bridge::new(None, tx), rx)
     }
 
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
-    }
-
     /// **A refused gesture is one line a second, not one a frame.** The
     /// server withholds the pointer moves; the shell can only rate-limit, so
     /// a burst of refusals is recorded by its first.
@@ -1679,8 +1684,22 @@ mod tests {
         let (bridge, _rx) = bridge();
         assert!(bridge.refusal_is_new(), "the first refusal is the record");
         assert!(!bridge.refusal_is_new(), "the next in the same second is not");
-        bridge.refusal_logged_at.store(now_ms().saturating_sub(1_500), Ordering::Relaxed);
+        *bridge.refusal_logged.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(Instant::now() - Duration::from_millis(1_500));
         assert!(bridge.refusal_is_new(), "a later refusal is a new record");
+    }
+
+    /// **A refused take, attach or surface is never suppressed by a refused
+    /// input's burst.** Only `browser_input` has a freshness to spend; every
+    /// other refusal always writes its line.
+    #[test]
+    fn only_a_refused_input_can_be_a_burst() {
+        assert!(refusal_is_recorded("browser_input", true), "the first of a burst");
+        assert!(!refusal_is_recorded("browser_input", false), "the rest of it");
+        assert!(refusal_is_recorded("browser_control", false), "a refused take always records");
+        assert!(refusal_is_recorded("browser_control", true));
+        assert!(refusal_is_recorded("browser_view", false), "a refused attach always records");
+        assert!(refusal_is_recorded("browser_file_answer", false));
     }
 
     /// What a bridge's ask notices went to, so a test can see a trigger fire.

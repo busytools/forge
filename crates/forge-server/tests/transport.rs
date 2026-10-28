@@ -8847,6 +8847,7 @@ async fn a_chooser_with_no_controller_is_cancelled() {
 /// phantom viewer behind.
 #[tokio::test]
 async fn a_reattach_leaves_the_move_to_the_attach() {
+    let (written, _guard) = catch_records();
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     let stub = StubBrowser::new();
     fleet
@@ -8916,6 +8917,18 @@ async fn a_reattach_leaves_the_move_to_the_attach() {
         [viewer],
         "the refused attach gives the viewer up"
     );
+    // **The refusal is recorded**, with the tab asked for, the surface it
+    // left and why, so "my surface fell to failed when I picked another tab"
+    // is answered by one line.
+    let records = caught(&written);
+    let refusal = records
+        .lines()
+        .find(|line| line.contains("browser_attach_refused"))
+        .unwrap_or_else(|| panic!("the refused attach is recorded: {records}"));
+    assert!(refusal.contains("requested_tab=9"), "the tab asked for: {refusal}");
+    assert!(refusal.contains("was_tab=3"), "what it was on: {refusal}");
+    assert!(refusal.contains("dropped=true"), "and that it dropped it: {refusal}");
+    assert!(refusal.contains("tab 9 is not open"), "and why: {refusal}");
 }
 
 /// **A gesture and a take from a connection with no attach are answered**,
@@ -8924,6 +8937,7 @@ async fn a_reattach_leaves_the_move_to_the_attach() {
 /// stream, whose refusal is the click's that follows.
 #[tokio::test]
 async fn an_unattached_gesture_and_take_are_answered() {
+    let (written, _guard) = catch_records();
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     let stub = StubBrowser::new();
     fleet
@@ -8936,7 +8950,9 @@ async fn an_unattached_gesture_and_take_are_answered() {
         &mut socket,
         ClientMessage::BrowserInput {
             seq: 1,
-            event: forge_primitives::browser::BrowserInputEvent::Text { text: "x".to_owned() },
+            event: forge_primitives::browser::BrowserInputEvent::Text {
+                text: "hunter2".to_owned(),
+            },
         },
     )
     .await;
@@ -8952,6 +8968,20 @@ async fn an_unattached_gesture_and_take_are_answered() {
     };
     assert_eq!(what, "browser_control");
     assert!(why.contains("no browser attached"), "{why}");
+
+    // **Both refusals are recorded, and the text is counted not quoted.**
+    let records = caught(&written);
+    let refusal = records
+        .lines()
+        .find(|line| line.contains("browser_input_unattached"))
+        .unwrap_or_else(|| panic!("the unattached gesture is recorded: {records}"));
+    assert!(refusal.contains("gesture=\"text\""), "the kind is named: {refusal}");
+    assert!(refusal.contains("text_chars=7"), "and the text counted: {refusal}");
+    assert!(!records.contains("hunter2"), "the typed text is never in the record: {records}");
+    assert!(
+        records.lines().any(|line| line.contains("browser_control_unattached")),
+        "the unattached take is recorded too: {records}",
+    );
 
     send(
         &mut socket,
@@ -8971,6 +9001,78 @@ async fn an_unattached_gesture_and_take_are_answered() {
     assert!(
         next_server_within(&mut socket, 300).await.is_none(),
         "a pointer move is a stream and its refusal is the click's",
+    );
+}
+
+/// **A refused gesture's record names its kind and never its text.** The
+/// record is the artifact a dead page is diagnosed from, and this browser
+/// signs people in: a typed text is a password as often as not. The capture
+/// is the shipped artifact's own shape, so a site that starts carrying the
+/// text fails here rather than in the field; the pointer-move gate is the
+/// record's other half - a stream writes none.
+#[tokio::test]
+async fn a_refused_gestures_record_names_its_kind_and_never_its_text() {
+    let (written, _guard) = catch_records();
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
+    let _ = next_server(&mut socket).await; // its view state
+    let _ = next_server(&mut socket).await; // its nav state
+
+    // A surface that attached and never took the role: its text is refused.
+    send(
+        &mut socket,
+        ClientMessage::BrowserInput {
+            seq: 1,
+            event: forge_primitives::browser::BrowserInputEvent::Text {
+                text: "hunter2".to_owned(),
+            },
+        },
+    )
+    .await;
+    let ServerMessage::Error { what, .. } = next_server(&mut socket).await else {
+        panic!("a watcher's text is refused")
+    };
+    assert_eq!(what, "browser_input");
+    let records = caught(&written);
+    let refusal = records
+        .lines()
+        .find(|line| line.contains("browser_input_refused"))
+        .unwrap_or_else(|| panic!("the refusal is recorded: {records}"));
+    assert!(refusal.contains("gesture=\"text\""), "the kind is named: {refusal}");
+    assert!(refusal.contains("text_chars=7"), "and the text counted: {refusal}");
+    assert!(!records.contains("hunter2"), "the typed text is never in the record: {records}");
+
+    // A pointer move is a stream: still answered, but with no record of its
+    // own - the click that follows carries its refusal.
+    let refused = caught(&written).matches("browser_input_refused").count();
+    send(
+        &mut socket,
+        ClientMessage::BrowserInput {
+            seq: 2,
+            event: forge_primitives::browser::BrowserInputEvent::Mouse {
+                action: forge_primitives::browser::MouseAction::Move,
+                x: 10.0,
+                y: 20.0,
+                button: 0,
+                clicks: 0,
+                modifiers: forge_primitives::browser::InputModifiers::default(),
+            },
+        },
+    )
+    .await;
+    let _ = next_server(&mut socket).await; // its refusal, still answered
+    assert_eq!(
+        caught(&written).matches("browser_input_refused").count(),
+        refused,
+        "a pointer move writes no record: {}",
+        caught(&written),
     );
 }
 
