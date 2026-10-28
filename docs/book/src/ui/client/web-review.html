@@ -122,7 +122,10 @@
     font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
     text-transform: uppercase; color: var(--dim); }
   /* The tree draws the scope's own hierarchy: a row per directory and per
-     file, indented by depth (--d, set per row), folders before files. */
+     file, indented by depth (--d, set per row), folders before files, each
+     row carrying the files view's own glyph for its kind. */
+  .rv-icon { flex: none; width: 16px; height: 16px; align-self: center; }
+  .rv-fname { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
   .rv-dir { display: flex; align-items: baseline; gap: 6px;
     padding: 6px 6px 3px calc(4px + var(--d, 0) * 12px); }
   .rv-arw { flex: none; width: 9px; text-align: center; font-size: 10px; color: var(--dim);
@@ -290,17 +293,19 @@
 
   .rv-quiet { font-size: var(--fs-base); color: var(--dim); padding: 0 2px 8px; }
   /* The finish stack, the piece all three surfaces draw (Ved, 2026-10-17):
-     the summary over the sealing button, each its own row, the mic at the
-     row's end. The bar is the diff half's: the collapsed control
-     right-aligned, the stack in its place once it opens. */
+     the summary over the sealing button, each its own row, the mic before
+     the button and the pair flush right, so the sealing button keeps the
+     corner the collapsed control has (Ved, 2026-10-28). The bar is the diff
+     half's: the collapsed control right-aligned, the stack in its place once
+     it opens. */
   .rv-finishbar { display: flex; align-items: center; justify-content: flex-end;
     gap: 9px; padding-top: 4px; }
   .rv-finishstack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .rv-finishbox { background: var(--s1); color: var(--dim); border: 1px solid var(--line);
     border-radius: 7px; font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px;
     min-height: 58px; }
-  .rv-finishacts { display: flex; gap: 9px; align-items: center; }
-  .rv-finishacts .mic { margin-left: auto; }
+  .rv-finishacts { display: flex; gap: 9px; align-items: center;
+    justify-content: flex-end; }
   .rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim);
     background: var(--s3); border: 0; border-radius: 8px; padding: 6px 14px; }
 
@@ -428,40 +433,59 @@
       <h2>Files <span class="n">17</span></h2>
       <div class="rv-dir" style="--d:0">
         <span class="rv-arw open">&#9656;</span>
+        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#039be5" d="m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232"/><path fill="#b3e5fc" d="m15 6-7.5.004a.5.5 0 0 0-.5.5V12H5v2h6v-2H8V7.004h7zm-2.5 2a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-5a.5.5 0 0 0-.5-.5zm.5 1h2v3h-2z"/></svg>
         <span class="rv-dirname">client/</span><span class="rv-dircount">8</span>
       </div>
       <div class="rv-dir" style="--d:1">
         <span class="rv-arw open">&#9656;</span>
+        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#4caf50" d="m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232"/><path fill="#c8e6c9" d="M9.225 15a.5.5 0 0 1-.12-.014.57.568 0 0 1-.414-.661l1.549-7.872a.566.565 0 0 1 .254-.372.53.53 0 0 1 .4-.067.57.57 0 0 1 .415.662l-1.552 7.872a.56.56 0 0 1-.253.371.53.53 0 0 1-.28.081m3.105-1h-.038a.54.54 0 0 1-.382-.206.583.582 0 0 1 .057-.774l2.664-2.483-2.653-2.312a.583.582 0 0 1-.08-.772.54.54 0 0 1 .377-.218.53.53 0 0 1 .406.129l3.126 2.727a.579.578 0 0 1 .002.862l-3.114 2.904a.536.535 0 0 1-.365.144zm-4.661 0a.536.535 0 0 1-.365-.146L4.186 10.95a.58.58 0 0 1-.005-.846l.01-.01 3.128-2.726a.516.515 0 0 1 .4-.13.54.54 0 0 1 .38.218.583.582 0 0 1-.08.773l-2.65 2.31 2.663 2.482a.579.578 0 0 1 .056.774.536.535 0 0 1-.381.206z"/></svg>
         <span class="rv-dirname">src/</span><span class="rv-dircount">5</span>
       </div>
       <div class="rv-dir" style="--d:2">
         <span class="rv-arw open">&#9656;</span>
+        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#2196f3" d="m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232"/><path fill="#bbdefb" d="M10.5 7C8.17 7 5.825 8.455 5 10.5c.825 2.045 3.17 3.5 5.5 3.5s4.675-1.455 5.5-3.5C15.175 8.455 12.83 7 10.5 7m.115 1.002A2.5 2.5 0 0 1 13 10.5a2.5 2.5 0 0 1-2.5 2.5 2.5 2.5 0 1 1 .115-4.998M10.5 9A1.5 1.5 0 0 0 9 10.5a1.5 1.5 0 0 0 1.5 1.5 1.5 1.5 0 0 0 1.5-1.5A1.5 1.5 0 0 0 10.5 9"/></svg>
         <span class="rv-dirname">review/</span><span class="rv-dircount">3</span>
       </div>
       <div class="rv-frow here" style="--d:3">
-        <span class="rv-fpath">Review.svelte</span>
+        <span class="rv-fname">
+          <svg class="rv-icon" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#ff5722" d="M175.94 24.328c-13.037.252-26.009 3.872-37.471 11.174L79.912 72.818a67.13 67.13 0 0 0-30.355 44.906 70.8 70.8 0 0 0 6.959 45.445 67.2 67.2 0 0 0-10.035 25.102 71.54 71.54 0 0 0 12.236 54.156c23.351 33.41 69.468 43.311 102.81 22.07l58.559-37.158a67.36 67.36 0 0 0 30.355-44.906 70.77 70.77 0 0 0-6.982-45.422 67.65 67.65 0 0 0 10.059-25.102 71.63 71.63 0 0 0-12.236-54.156v-.18c-15.324-21.925-40.453-33.727-65.342-33.246zm5.137 28.68a46.5 46.5 0 0 1 36.09 19.969 42.98 42.98 0 0 1 7.365 32.557 45 45 0 0 1-1.393 5.455l-1.123 3.37-2.986-2.247a75.9 75.9 0 0 0-22.902-11.45l-2.244-.651.201-2.246a13.16 13.16 0 0 0-2.379-8.711 13.99 13.99 0 0 0-14.953-5.412 12.8 12.8 0 0 0-3.594 1.572l-58.578 37.25a12.24 12.24 0 0 0-5.502 8.15 13.1 13.1 0 0 0 2.246 9.834 14.03 14.03 0 0 0 14.93 5.569 13.5 13.5 0 0 0 3.594-1.573l22.453-14.234a41.8 41.8 0 0 1 11.898-5.232 46.48 46.48 0 0 1 49.914 18.502 43.02 43.02 0 0 1 7.363 32.557 40.42 40.42 0 0 1-18.254 27.078l-58.58 37.316a43 43 0 0 1-11.898 5.23A46.545 46.545 0 0 1 82.81 227.14a42.98 42.98 0 0 1-7.341-32.557 38 38 0 0 1 1.39-5.41l1.102-3.37 3.008 2.246a75.9 75.9 0 0 0 22.836 11.361l2.244.65-.201 2.247a13.25 13.25 0 0 0 2.447 8.644 14.03 14.03 0 0 0 15.043 5.569 13.1 13.1 0 0 0 3.592-1.573l58.467-37.316a12.17 12.17 0 0 0 5.502-8.173 12.96 12.96 0 0 0-2.246-9.811 14.03 14.03 0 0 0-15.043-5.568 12.8 12.8 0 0 0-3.592 1.57l-22.453 14.258a42.9 42.9 0 0 1-11.877 5.209 46.52 46.52 0 0 1-49.846-18.5 43.02 43.02 0 0 1-7.297-32.557A40.42 40.42 0 0 1 96.798 96.98l58.646-37.316a42.8 42.8 0 0 1 11.811-5.21 46.5 46.5 0 0 1 13.822-1.444z"/></svg>
+          <span class="rv-fpath">Review.svelte</span>
+        </span>
         <span class="rv-fstat"><span class="rv-plus">+400</span></span>
         <span><span class="rv-ccnum">1</span></span>
       </div>
       <div class="rv-frow" style="--d:3">
-        <span class="rv-fpath">view.ts</span>
+        <span class="rv-fname">
+          <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#0288d1" d="M2 2v12h12V2zm4 6h3v1H8v4H7V9H6zm5 0h2v1h-2v1h1a1.003 1.003 0 0 1 1 1v1a1.003 1.003 0 0 1-1 1h-2v-1h2v-1h-1a1.003 1.003 0 0 1-1-1V9a1.003 1.003 0 0 1 1-1"/></svg>
+          <span class="rv-fpath">view.ts</span>
+        </span>
         <span class="rv-fstat"><span class="rv-plus">+125</span></span>
       </div>
       <div class="rv-frow" style="--d:3">
-        <span class="rv-fpath">view.test.ts</span>
+        <span class="rv-fname">
+          <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#0288d1" d="M2 2v12h12V2zm4 6h3v1H8v4H7V9H6zm5 0h2v1h-2v1h1a1.003 1.003 0 0 1 1 1v1a1.003 1.003 0 0 1-1 1h-2v-1h2v-1h-1a1.003 1.003 0 0 1-1-1V9a1.003 1.003 0 0 1 1-1"/></svg>
+          <span class="rv-fpath">view.test.ts</span>
+        </span>
         <span class="rv-fstat"><span class="rv-plus">+165</span></span>
       </div>
       <div class="rv-dir" style="--d:2">
         <span class="rv-arw open">&#9656;</span>
+        <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#90a4ae" d="m6.922 3.768-.644-.536A1 1 0 0 0 5.638 3H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7.562a1 1 0 0 1-.64-.232"/></svg>
         <span class="rv-dirname">session/</span><span class="rv-dircount">2</span>
       </div>
       <div class="rv-frow" style="--d:3">
-        <span class="rv-fpath">wire.ts</span>
+        <span class="rv-fname">
+          <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#0288d1" d="M2 2v12h12V2zm4 6h3v1H8v4H7V9H6zm5 0h2v1h-2v1h1a1.003 1.003 0 0 1 1 1v1a1.003 1.003 0 0 1-1 1h-2v-1h2v-1h-1a1.003 1.003 0 0 1-1-1V9a1.003 1.003 0 0 1 1-1"/></svg>
+          <span class="rv-fpath">wire.ts</span>
+        </span>
         <span class="rv-fstat"><span class="rv-plus">+163</span></span>
         <span><span class="rv-ccnum">1</span></span>
       </div>
       <div class="rv-frow" style="--d:3">
-        <span class="rv-fpath">wire.test.ts</span>
+        <span class="rv-fname">
+          <svg class="rv-icon" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#0288d1" d="M2 2v12h12V2zm4 6h3v1H8v4H7V9H6zm5 0h2v1h-2v1h1a1.003 1.003 0 0 1 1 1v1a1.003 1.003 0 0 1-1 1h-2v-1h2v-1h-1a1.003 1.003 0 0 1-1-1V9a1.003 1.003 0 0 1 1-1"/></svg>
+          <span class="rv-fpath">wire.test.ts</span>
+        </span>
         <span class="rv-fstat"><span class="rv-plus">+92</span> <span class="rv-minus">-1</span></span>
       </div>
     </nav>
@@ -734,8 +758,8 @@
     <div class="rv-finishstack">
       <div class="rv-finishbox">summary (optional)</div>
       <div class="rv-finishacts">
-        <span class="rv-finish">finish review (1)</span>
         <span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span>
+        <span class="rv-finish">finish review (1)</span>
       </div>
     </div>
   </section>

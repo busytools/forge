@@ -4229,8 +4229,8 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 /* The review half's bar keeps the stack filling it, wherever the stack is
    drawn from (its own component's scoped root). */
 .rv-finishbar .rv-finishstack { flex: 1; min-width: 0; }
-.rv-finishacts { display: flex; gap: 9px; align-items: center; position: relative; }
-.rv-finishacts .mic { margin-left: auto; }
+.rv-finishacts { display: flex; gap: 9px; align-items: center; position: relative;
+  justify-content: flex-end; }
 .rv-wordline { flex: 1; min-width: 0; }
 .rv-finish { font-family: var(--mono); font-size: var(--fs-data); color: var(--bg);
   background: var(--accent); border: 0; border-radius: 8px; padding: 6px 14px;

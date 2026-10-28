@@ -15,7 +15,7 @@
   import { Landing } from '../composer/landing';
   import { noticeLine, joined } from '../composer/view';
   import { ago } from '../components/age';
-  import { hrefForSlot } from '../routes';
+  import { goTo, hrefForSlot } from '../routes';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
   import { watchSession, type SessionRead } from '../session/live';
@@ -721,13 +721,14 @@
     if (sealed) {
       drafts.clear();
       summary = '';
-      // The files half's row collapses with the round: the reader is back to
-      // the diff with nothing of the round open.
+      // **A sealed round returns the reader to the seat's chat** (Ved,
+      // 2026-10-28): the page has nothing left to show, and the agent is
+      // waiting, so the close lands where a hand-off's Done does.
       finishOpen = false;
       summaryFocus = false;
       // **Done closes the round** (Ved, 2026-10-15): the boxes, the summary's
-      // panel and any take line go with it, so the page is back to the diff
-      // with nothing of the round left open.
+      // panel and any take line go with it, so no box of the sealed round is
+      // left open behind the reader.
       box.spot = null;
       box.line = null;
       box.draft = '';
@@ -739,6 +740,7 @@
       pressedIn = null;
       panelIn = null;
       dictate.panel = false;
+      goTo({ name: 'session', slot });
     }
   }
 

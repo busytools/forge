@@ -22,6 +22,7 @@
   import { VList, type VListHandle } from 'virtua/svelte';
   import FileTree from '../components/FileTree.svelte';
   import { toggleClosed, type TreeRow } from '../components/tree';
+  import { fileIcon, folderIcon } from '../files/icons';
   import type { Dictation } from '../composer/dictate.svelte';
   import type { Connection } from '../socket';
   import type { CommentBox, ReplyBox, TurnEditor, Voice } from './boxes';
@@ -1572,6 +1573,8 @@
   here={current}
   active={keyRow}
   renamed={(path) => (fileByPath.get(path)?.oldPath ?? null) !== null}
+  icon={(row: TreeRow<unknown>) =>
+    row.kind === 'file' ? fileIcon(row.path) : folderIcon(row.path, !closedDirs.has(row.path))}
   ondir={(path) => toggle(closedDirs, path)}
   onfile={jumpTo}
 >

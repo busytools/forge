@@ -26,11 +26,11 @@ file tree, and the diff with the threads on their lines.
 | Header        | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open`                                                                                               | the record's `work.branch`, and the two review halves              |
 | Tabs          | `Conversation` and `Files changed`, with the commit count                                                                                                                                                                                                                       | the record's git chain                                             |
 | Scope         | the scope on screen and its place (`scope 3 of 9`), a stepper whose ends stop, the keys, the unified/split picker, and the comments' stepper with its `N/M` count                                                                                                                | the record's git chain (the commit list), and the scope's own threads |
-| Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth; a directory carries the files beneath it, and the file whose region the reader is inside is marked as the current one                                    | the scope's diff, the threads in that scope, and the canvas's own scroll |
+| Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth, each row carrying the files view's own glyph for its kind; a directory carries the files beneath it, and the file whose region the reader is inside is marked as the current one                                    | the scope's diff, the threads in that scope, and the canvas's own scroll |
 | Canvas        | the scope's files as diffs, with each thread inserted under its own line, the composer under the line a comment is being written on, and GitHub's own gap strips between two hunks (above the first, below the last) that draw the lines the diff left out, a press at a time      | the scope's diff, the threads, the server's landing per thread, and the file's whole content read |
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
 | Rounds        | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                                                                                                              | the rounds half                                                    |
-| Finish        | the round's summary - a roomy, resizable box, present by default, its own mic - over `finish review (N)`, live once a comment is drafted; the conversation half's own section, and, on the diff half, a control under the canvas that opens the same stack in place and collapses again once the round seals | the page's own drafts                                              |
+| Finish        | the round's summary - a roomy, resizable box - over `finish review (N)`, the mic before it and the pair flush right so the button keeps the corner the collapsed control has, live once a comment is drafted; the conversation half's own section, and, on the diff half, a control under the canvas that opens the same stack in place; a seal returns the reader to the seat's chat | the page's own drafts                                              |
 | The chat line | the lines the view this client replaced sent, pushed into the reviewed seat's own chat: `Review #N ready - address it via the review MCP (review__list)` when a round seals, `Reopened a comment in review #N - take another look via the review MCP (review__get)` on a reopen | the page's own dispatch after the write                            |
 
 ## A scope, and where a thread draws
@@ -245,13 +245,16 @@ field takes the focus as the row mounts; a click on the line the box already
 sits on puts the caret back in it.
 
 **The diff half can finish the round where the reader is.** The row under
-the canvas carries a `finish review (N)` control while the round is open;
-a press opens the page's own finish stack in place - the same summary box,
-the same seal, one snippet drawn by both halves, the shape every surface
-that finishes a round draws (the files rail, the document's exit) - the
-field takes the caret, and Enter (or the button) seals the round and
-collapses it again. A reader never has to leave the diff to close a round,
-and the write path is the conversation half's own either way.
+the canvas carries a `finish review (N)` control at its right while the
+round is open; a press opens the page's own finish stack in place - the
+same summary box, the same seal, one snippet drawn by both halves, the
+shape every surface that finishes a round draws (the files rail, the
+document's exit) - the field takes the caret, and Enter (or the button)
+seals the round. The button keeps the row's right edge whether the stack is
+open or collapsed, so the second press lands where the first did. **A seal
+closes the page onto the seat's chat** (Ved, 2026-10-28), the way a
+hand-off's Done does: the round is filed and the agent is who the reader
+came from. The write path is the conversation half's own either way.
 
 **The finish nudges the seat the review belongs to.** A round that sealed
 also sends a `prompt_under` into the reviewed seat's own chat - one line,
