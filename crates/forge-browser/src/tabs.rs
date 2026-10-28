@@ -95,10 +95,18 @@ pub struct TabRegistry {
     /// orphans**: the prune closes nothing while one is unresolved, or a live
     /// document would be closed because its row could not be paired.
     unresolved: HashSet<u16>,
+    /// Numbers the host has reported ended, including ones no row ever
+    /// took. **A birth for one of these is not waiting for a page**: a popup
+    /// the host gave up closed before its page existed, and a birth kept for
+    /// it would be re-deferred for ever - a driver recovery on every pass.
+    closed: HashSet<u16>,
 }
 
 pub(crate) struct Tab {
     pub(crate) owner: SessionSlot,
+    /// The tab whose page opened this one; `None` for a tab a session owns
+    /// outright. A popup closing hands its session back here.
+    opener: Option<u16>,
     /// The page guid the driver names the tab by; stable across navigation.
     pub(crate) id: String,
     /// The page's current CDP target id; CEF swaps it on navigation.
@@ -133,6 +141,7 @@ impl TabRegistry {
             number,
             Tab {
                 owner,
+                opener: None,
                 id: id.to_owned(),
                 target: target.to_owned(),
                 title: title.to_owned(),
@@ -157,16 +166,47 @@ impl TabRegistry {
             .owner(opener)
             .cloned()
             .ok_or_else(|| format!("the popup's opener tab {opener} is not open"))?;
-        self.adopt(number, owner, id, target, title, url)
+        let adopted = self.adopt(number, owner, id, target, title, url)?;
+        if let Some(tab) = self.tabs.get_mut(&adopted) {
+            tab.opener = Some(opener);
+        }
+        Ok(adopted)
     }
 
     /// Remove one tab and answer the session that owned it. **The unresolved
     /// flag goes even for a row already gone**: a close landing between a
     /// listing and its mark must not leave the flag on a retired number.
+    ///
+    /// **A popup closing hands its session back to the opener.** An OAuth
+    /// popup closes itself the moment it is done, and a session left with no
+    /// tab would open a fresh blank page on its next call instead of the page
+    /// the sign-in started from.
     pub fn close(&mut self, tab: u16) -> Option<SessionSlot> {
         self.unresolved.remove(&tab);
+        // **The number is ended whether or not a row took it**, so a birth
+        // still waiting for this tab's page is dropped rather than deferred.
+        self.closed.insert(tab);
         let removed = self.tabs.remove(&tab)?;
-        self.current.retain(|_, number| *number != tab);
+        // **A popup opened by a popup keeps its chain.** The row that named
+        // this tab as its opener takes this tab's own opener, so a middle
+        // popup closing leaves the leaf pointing at the page still there
+        // rather than at a number nobody holds.
+        for other in self.tabs.values_mut() {
+            if other.opener == Some(tab) {
+                other.opener = removed.opener;
+            }
+        }
+        let opener = removed.opener.filter(|opener| self.tabs.contains_key(opener));
+        match opener {
+            Some(opener) => {
+                for number in self.current.values_mut() {
+                    if *number == tab {
+                        *number = opener;
+                    }
+                }
+            }
+            None => self.current.retain(|_, number| *number != tab),
+        }
         Some(removed.owner)
     }
 
@@ -182,6 +222,12 @@ impl TabRegistry {
     /// The tabs whose page a listing could not name.
     pub fn unresolved_tabs(&self) -> Vec<u16> {
         self.unresolved.iter().copied().collect()
+    }
+
+    /// Whether the host has reported this number ended. **A birth for one is
+    /// answered rather than kept**: nothing will ever list its page.
+    pub fn was_closed(&self, tab: u16) -> bool {
+        self.closed.contains(&tab)
     }
 
     pub fn close_owned(
@@ -571,6 +617,47 @@ mod tests {
         assert!(
             registry.create_under(99, 3, "p3", "t3", "three", "http://c/").is_err(),
             "an unknown opener is refused",
+        );
+    }
+
+    /// **A popup closing hands the session back to its opener**, and a popup
+    /// outlives the opener that closed while it was open. An OAuth popup
+    /// closes itself the moment it is done, and the next call must land on
+    /// the page the sign-in started from rather than a fresh blank tab.
+    #[test]
+    fn a_popup_closing_returns_the_session_to_its_opener() {
+        let worker = SessionSlot::worker("O", "p", "w");
+        let mut registry = TabRegistry::default();
+        let opener = registry.adopt(1, worker.clone(), "p1", "t1", "one", "u").expect("the opener");
+        let popup =
+            registry.create_under(opener, 2, "p2", "t2", "two", "http://b/").expect("the popup");
+        assert_eq!(registry.current(&worker), Some(popup), "the popup is where the session is");
+        registry.close(popup);
+        assert_eq!(registry.current(&worker), Some(opener), "the session is back on the opener");
+
+        let popup = registry
+            .create_under(opener, 3, "p3", "t3", "three", "http://c/")
+            .expect("a second popup");
+        registry.close(opener);
+        assert_eq!(registry.current(&worker), Some(popup), "the popup keeps its place");
+        assert_eq!(registry.owner(popup), Some(&worker), "and its owner");
+
+        // **A chain survives its middle.** A popup opened by a popup hands the
+        // session back past the one that has gone, not to a number nobody
+        // holds.
+        let root = registry.adopt(4, worker.clone(), "p4", "t4", "four", "u").expect("a root");
+        let middle =
+            registry.create_under(root, 5, "p5", "t5", "five", "http://e/").expect("the middle");
+        let leaf =
+            registry.create_under(middle, 6, "p6", "t6", "six", "http://f/").expect("the leaf");
+        assert_eq!(registry.current(&worker), Some(leaf), "the leaf is where the session is");
+        registry.close(middle);
+        assert_eq!(registry.current(&worker), Some(leaf), "the middle closing leaves the leaf");
+        registry.close(leaf);
+        assert_eq!(
+            registry.current(&worker),
+            Some(root),
+            "the leaf hands the session back past the middle",
         );
     }
 

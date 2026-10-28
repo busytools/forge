@@ -55,7 +55,18 @@ def stages_the_main_bundle(script: str) -> bool:
 
 
 def has_windowless(host: str) -> bool:
-    return any("windowless_rendering_enabled: 1" in line for line in code_lines(host, "//"))
+    """Every window info the host hands CEF carries the flag.
+
+    **Both sites, not one**: a tab is created with a struct literal, and a
+    page's popup gets the flag written onto the window info CEF hands its
+    callback. A pin that matched only the literal would let the popup's
+    assignment go and the host would create windowed browsers again.
+    """
+    code = "\n".join(code_lines(host, "//"))
+    return (
+        "windowless_rendering_enabled: 1" in code
+        and "info.windowless_rendering_enabled = 1" in code
+    )
 
 
 def claims_accessory(application: str) -> bool:
@@ -66,11 +77,17 @@ def claims_accessory(application: str) -> bool:
 
 
 def commented_out(source: str, needle: str, marker: str) -> str:
-    """`source` with the line carrying `needle` prefixed by `marker`."""
-    for line in source.splitlines(keepends=True):
-        if needle in line:
-            return source.replace(line, f"{marker}{line}", 1)
-    raise AssertionError(f"no line carrying {needle!r} to comment out")
+    """`source` with every line carrying `needle` prefixed by `marker`.
+
+    **Every line, not the first**: a flag the code sets in more than one place
+    is still one pin, and a control that silenced only one of them would pass
+    while a commented-out line kept the pin alive.
+    """
+    lines = source.splitlines(keepends=True)
+    marked = [f"{marker}{line}" if needle in line else line for line in lines]
+    if marked == lines:
+        raise AssertionError(f"no line carrying {needle!r} to comment out")
+    return "".join(marked)
 
 
 class BrowserHostFocusTest(unittest.TestCase):
@@ -89,8 +106,8 @@ class BrowserHostFocusTest(unittest.TestCase):
     def test_the_browser_is_created_windowless(self):
         self.assertTrue(
             has_windowless(HOST.read_text()),
-            "the host no longer creates CEF's browser windowless, so it has a "
-            "window to bring to the front",
+            "the host no longer creates every browser windowless - a tab's own "
+            "window info and a popup's - so it has a window to bring to the front",
         )
 
     def test_the_process_claims_the_accessory_policy(self):
@@ -110,9 +127,22 @@ class BrowserHostFocusTest(unittest.TestCase):
             stages_the_main_bundle(commented_out(script, 'write_plist "$MAIN" "$APP"', "#")),
             "a commented-out write_plist call satisfied the staging pin",
         )
+        # **One control per site.** The flag is set in two independent places
+        # - a tab's window info and a popup's - and a single control that
+        # silences both proves only that neither survives alone; each site is
+        # silenced on its own here, so a pin that stopped reading one of them
+        # fails.
         self.assertFalse(
-            has_windowless(commented_out(HOST.read_text(), "windowless_rendering_enabled", "//")),
-            "a commented-out windowless line satisfied the windowless pin",
+            has_windowless(
+                commented_out(HOST.read_text(), "info.windowless_rendering_enabled = 1", "//")
+            ),
+            "a commented-out popup window info satisfied the windowless pin",
+        )
+        self.assertFalse(
+            has_windowless(
+                commented_out(HOST.read_text(), "windowless_rendering_enabled: 1", "//")
+            ),
+            "a commented-out tab window info satisfied the windowless pin",
         )
         self.assertFalse(
             claims_accessory(

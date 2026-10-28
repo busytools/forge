@@ -70,10 +70,22 @@ segment's list is tabs rather than profiles.
 A tab carries the host's number, and the registry keeps its owner, its title
 and URL, and the session's current tab. A session's first page call creates
 its tab - or adopts the host's own boot tab - and every later call drives
-that tab; another session's calls never land on it. Three things close a tab
+that tab; another session's calls never land on it. **A page's `window.open` opens a
+tab of its own**, owned by the opener's session and made that session's current
+tab, so a sign-in popup is driven like any other page; a popup that closes
+itself hands the session back to the tab that opened it. Three things close a tab
 with its session: the sweep of dead seats, a `/new` or `/resume` on the slot,
 and the host ending - except a tab a parked hand-off still holds. Nothing
 outlives the host.
+
+**A popup's own document is the one the host starts.** Its target answers no
+page-domain command until it has a document, so the passkey veto - the script
+every other page starts with - cannot be registered on it before that first
+one, and a popup an attached client holds commits exactly one navigation, so
+its address cannot be preceded by a blank. The host starts the address the
+popup asked for as that first document; the veto patches that document's world
+as soon as its context is reported, which is the out-of-band case a tab
+another client creates directly at a URL is already in.
 
 **The old profile trees go once.** The first server that finds no marker
 deletes the client's old in-process CEF caches - `browser/cef-profile` and

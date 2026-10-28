@@ -38,7 +38,7 @@ fn seat() -> SessionSlot {
 
 /// A service on a scratch root, with the vendored stack checked first so a
 /// machine without it fails by name rather than inside the driver.
-fn service() -> (tempfile::TempDir, BrowserService) {
+fn service() -> (tempfile::TempDir, std::sync::Arc<BrowserService>) {
     let stack = stack();
     assert!(
         stack.join("node/bin/node").is_file(),

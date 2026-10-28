@@ -170,10 +170,8 @@ fn configure_fleet_profiles(workspace: &Workspace, fleet: &forge_browser::servic
 fn install_browser(
     workspace: &Arc<Workspace>,
 ) -> anyhow::Result<Arc<forge_browser::service::BrowserService>> {
-    let fleet = Arc::new(
-        forge_browser::service::BrowserService::installed()
-            .map_err(|why| anyhow::anyhow!("forge: {why}"))?,
-    );
+    let fleet = forge_browser::service::BrowserService::installed()
+        .map_err(|why| anyhow::anyhow!("forge: {why}"))?;
     // **The encoding and the idle clock are the `[browser]` keys**: a
     // profile nobody has touched closes after the bound.
     let browser = workspace.browser_settings();
@@ -183,6 +181,7 @@ fn install_browser(
     // its profile from `forge.toml` here, at boot, rather than naming one.
     configure_fleet_profiles(workspace, &fleet);
     fleet.start_idle();
+    fleet.start_pairing();
     // **A host an unclean exit left behind is reaped before any profile is
     // used.** It still holds the profile's singleton lock, and the first
     // call would wedge on it; the reaper checks the process is really this

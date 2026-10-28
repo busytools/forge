@@ -624,6 +624,12 @@ impl ViewSize {
             self.scale_milli.load(Ordering::Relaxed),
         )
     }
+
+    /// The DIP view CEF lays this tab out at.
+    pub fn dip(&self) -> (i32, i32) {
+        let (width, height, scale_milli) = self.get();
+        view_size(width, height, scale_milli)
+    }
 }
 
 /// The paint size a tab's own layout expects, when it has one.
