@@ -3592,9 +3592,7 @@ both gates green.";
     /// nothing under them are an empty shell, not the brief.
     #[test]
     fn a_headings_only_reply_is_not_a_note() {
-        assert!(!parses_as_note(
-            "Now:\nWhere it stood:\nPointers:\nNext:\nDone means:"
-        ));
+        assert!(!parses_as_note("Now:\nWhere it stood:\nPointers:\nNext:\nDone means:"));
         assert!(!parses_as_note("Memory updated."));
         assert!(parses_as_note("Now: the cut is in."));
     }
