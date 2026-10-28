@@ -61,8 +61,9 @@ impl std::fmt::Debug for SlackWorkspaces {
 }
 
 impl SlackWorkspaces {
-    /// Labels address workspaces in the MCP tools and the Inspector, so
-    /// they must be distinct and the token must be present.
+    /// Labels key the clients a project's binding resolves to and name the
+    /// workspace in the Inspector, so they must be distinct and the token
+    /// must be present.
     pub fn from_config(configs: &[SlackConfig], http: &reqwest::Client) -> Result<Self, String> {
         validate_configs(configs)?;
         let clients: BTreeMap<String, Arc<dyn SlackApi>> = configs

@@ -91,6 +91,13 @@ impl McpServer {
         self.tools.keys().map(String::as_str).collect()
     }
 
+    /// Every registered tool's name and input schema, so a test can pin the
+    /// surface a family advertises. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn tool_schemas(&self) -> Vec<(String, serde_json::Value)> {
+        self.tools.iter().map(|(name, tool)| (name.clone(), tool.input_schema())).collect()
+    }
+
     /// Dispatch one JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for JSON-RPC notifications (no `id`) - notifications

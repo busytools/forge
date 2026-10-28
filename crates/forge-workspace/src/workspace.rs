@@ -3991,11 +3991,26 @@ impl Workspace {
 
     /// The project `slot` names, if `forge.toml` still declares it.
     pub(crate) fn project_for_slot(&self, slot: &SessionSlot) -> Option<LoadedProject> {
-        self.config_arc()
-            .projects
-            .iter()
-            .find(|project| project.org == slot.org() && project.name == slot.project())
-            .cloned()
+        let config = self.config_arc();
+        let find =
+            |project: &LoadedProject| project.org == slot.org() && project.name == slot.project();
+        if let Some(project) = config.projects.iter().find(|project| find(project)) {
+            return Some(project.clone());
+        }
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(project) = self.test_extra_projects.lock().iter().find(|project| find(project))
+        {
+            return Some(project.clone());
+        }
+        None
+    }
+
+    /// The Slack workspace bound to `slot`'s project: the project's own
+    /// binding, else its org's. `None` when the slot names no configured
+    /// project or nothing binds one - both leave the Slack tools refusing
+    /// with the key to add.
+    pub(crate) fn slack_workspace_for_slot(&self, slot: &SessionSlot) -> Option<String> {
+        self.project_for_slot(slot).and_then(|project| project.slack_workspace)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
@@ -10029,6 +10044,7 @@ mod account_stamp_tests {
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
                 .expect("a profile key"),
+            slack_workspace: None,
         }
     }
 
