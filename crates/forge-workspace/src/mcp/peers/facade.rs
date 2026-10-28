@@ -69,9 +69,10 @@ pub trait WorkspaceFacade: Send + Sync {
         wrapped: WrappedPrompt,
     ) -> Result<(), DeliverError>;
 
-    /// Hand `caller`'s own seat over to a fresh session that continues the
-    /// work. `brief` is the caller's judgment half; `None` asks it of the
-    /// session at the next turn boundary.
+    /// The exit call: `Some(note)` is accepted only while a handoff is
+    /// running on the caller's own seat. The tool never sends `None`; a
+    /// handoff starts at `/handoff` or at the fill threshold, which dispatch
+    /// the command directly.
     fn handoff(&self, caller: &SessionSlot, brief: Option<String>) -> Result<(), HandoffError>;
 }
 
@@ -80,6 +81,10 @@ pub trait WorkspaceFacade: Send + Sync {
 pub enum HandoffError {
     #[error("the seat {slot} is not running; a handoff needs a live session to hand over")]
     SessionGone { slot: String },
+    #[error(
+        "no handoff is running on {slot}; a handoff starts at /handoff or at the fill threshold"
+    )]
+    NotInAHandoff { slot: String },
 }
 
 /// Production impl. Holds a `Weak<Workspace>` rather than
@@ -198,6 +203,12 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         let Some(ws) = self.0.upgrade() else {
             return Err(HandoffError::SessionGone { slot: caller.display() });
         };
+        // **An exit is only the end of a handoff already running.** The gate
+        // opens at the entry and closes on the swap, so it is the authority
+        // on whether this call has a turn to belong to.
+        if brief.is_some() && !ws.swap_in_progress(caller) {
+            return Err(HandoffError::NotInAHandoff { slot: caller.display() });
+        }
         ws.dispatch(Command::Handoff { key: caller.clone(), brief })
             .map_err(|_| HandoffError::SessionGone { slot: caller.display() })
     }
@@ -369,7 +380,7 @@ mod tests {
 /// `ProjectView` / `SessionView` constructors.
 #[cfg(all(test, feature = "test-helpers"))]
 mod lead_resolution_tests {
-    use super::{DeliverError, ProdWorkspaceFacade, lead_for};
+    use super::{DeliverError, HandoffError, ProdWorkspaceFacade, lead_for};
     use crate::mcp::peers::types::WrappedKind;
     use crate::target::ProjectKey;
     use crate::views::{ProjectView, SessionView};
@@ -570,6 +581,50 @@ mod lead_resolution_tests {
         assert_eq!(
             status.spawned_at, None,
             "a caller with no live-worker row is answered with no stamp, not the lead's",
+        );
+    }
+
+    /// **The accepting arm.** With a handoff running, the exit call is
+    /// dispatched with its note; a guard that refused whenever a brief was
+    /// present would close the only exit a handoff has.
+    #[test]
+    fn a_running_handoffs_exit_is_dispatched() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.enable_test_dispatch_intercept();
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+        let slot = SessionSlot::worker("Busytools", "forge", "handoff-cut");
+        ws.begin_swap(&slot);
+
+        facade.handoff(&slot, Some("Now: the cut is in.".to_owned())).expect("accepted");
+
+        let routed = ws.drain_test_dispatch_buffer();
+        assert!(
+            routed.iter().any(|command| matches!(
+                command,
+                crate::protocol::Command::Handoff { brief: Some(note), .. }
+                    if note == "Now: the cut is in."
+            )),
+            "the note rides the command: {routed:?}",
+        );
+    }
+
+    /// **An exit call with no handoff running is refused, naming the two
+    /// doors.** `agents__handoff` completes a handoff; it can never start
+    /// one, which is what keeps `/handoff` and the fill trigger the only
+    /// entries.
+    #[test]
+    fn a_cold_handoff_exit_is_refused() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+        let slot = SessionSlot::worker("Busytools", "forge", "handoff-cut");
+
+        let error = facade
+            .handoff(&slot, Some("Now: the cut is in.".to_owned()))
+            .expect_err("no handoff is running on this seat");
+        assert_eq!(error, HandoffError::NotInAHandoff { slot: slot.display() });
+        assert!(
+            error.to_string().contains("/handoff") && error.to_string().contains("fill threshold"),
+            "the refusal names both doors: {error}",
         );
     }
 }

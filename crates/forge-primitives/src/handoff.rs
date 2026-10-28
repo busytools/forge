@@ -13,7 +13,7 @@ pub enum HandoffReason {
     Fill,
     /// A compaction fired before a turn boundary could carry the handoff.
     Compaction,
-    /// A person, or the session itself, asked for one.
+    /// A person asked for one.
     #[default]
     Manual,
 }

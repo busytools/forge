@@ -58,9 +58,11 @@ read as one system.
   web, lsp, skill, tool search, config, worktree, tool, and the one
   mutation row every edit draws whatever tool it was.
 - **A forge call** draws a card for its family - tasks, agents, cron,
-  documents, gotify, review, slack - and the System One decisions draw as
-  their own family, so a reader scanning for what the session decided does
-  not find the three mixed among its cron and peer calls.
+  documents, gotify, handoff, review, slack - and the System One decisions
+  draw as their own family, so a reader scanning for what the session decided
+  does not find the three mixed among its cron and peer calls. The handoff's
+  exit call is its own family: its row says handoff, wears the handoff mark
+  rather than the workers one, and carries the note it handed over.
 - **A browser call** is the browser's, whatever server name carried it.
 - **A peer message** draws a card saying which way it went: `sent to` and
   `from` name the counterparty and its org, `failed` carries the
@@ -164,7 +166,10 @@ crossed, or the compaction that forced it (a manual ask says so). Opened, it
 carries both full session ids, each with the control that copies it - the
 recovery `/resume <old-id>` needs is on the row itself - and the brief the
 successor was given: the ground truth forge read off the transcript, git and
-the board, then the judgment the handing-over session wrote. **The brief is one
+the board - including what was still running when the seat changed: the live
+agents, background tasks, monitors and the session's process tree, so the
+successor knows what to resume - then the judgment the handing-over session
+wrote. **The brief is one
 table.** Each section takes its own labelled row, and the judgment's five
 headings sit on the same label column; the value takes the width the pane has
 and wraps inside its own row. The previous

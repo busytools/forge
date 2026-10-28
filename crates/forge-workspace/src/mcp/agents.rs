@@ -151,22 +151,19 @@ impl Tool for Handoff {
     }
 
     fn description(&self) -> &'static str {
-        "Hand this seat over to a fresh session that continues the work. forge writes the \
-         ground truth itself - the seat, the asks, the constraints quoted verbatim, the files \
-         and the dirty list, the last gate and its verdict, the board rows and the transcript \
-         path - and the new session gets it as its first turn, below a handoff row that keeps \
-         the previous conversation on screen. \
+        "Complete a running handoff by handing this seat to a fresh session that continues the \
+         work. **This is the exit, never the entry**: a handoff starts at `/handoff` or at the \
+         fill threshold, and this call is the handoff skill's last act. \
          \
-         The swap happens after the current turn ends, never in the middle of it. With no \
-         `brief`, forge asks for the judgment half as its own next turn and you write it then. \
-         Pass `brief` only when you have already written that half yourself, under the five \
-         headings forge asks for: Now, Tried and failed, Do not, Next, Done means. \
+         forge writes the ground truth itself - the seat, the asks, the constraints quoted \
+         verbatim, the files and the dirty list, the last gate and its verdict, the board rows \
+         and the transcript path - and the note you pass becomes the judgment half of the \
+         brief, delivered as the new session's first turn, below a handoff row that keeps the \
+         previous conversation on screen. The swap happens after the current turn ends, never \
+         in the middle of it, on the same order `/new` uses. \
          \
-         Use this when the context is nearly full and you want the work to continue cleanly \
-         rather than compact. A session is normally handed over automatically at 85% of its \
-         window, so a call here is for the cases that number does not know about: a task \
-         whose next step is expensive to get wrong, or a seat that has run long enough that \
-         a fresh start is worth the seam."
+         Pass the note the skill has you write, under the five headings: Now, Tried and \
+         failed, Do not, Next, Done means."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -175,7 +172,7 @@ impl Tool for Handoff {
             "properties": {
                 "brief": {
                     "type": "string",
-                    "description": "Optional. The judgment half, already written, under the headings Now, Tried and failed, Do not, Next and Done means. Omit it and forge asks for it in a turn of its own.",
+                    "description": "The handoff note the skill has you write, under the headings Now, Tried and failed, Do not, Next and Done means.",
                 },
             },
             "additionalProperties": false,
@@ -187,10 +184,21 @@ impl Tool for Handoff {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let brief = args.brief.filter(|brief| !brief.trim().is_empty());
-        match self.dispatcher.peers().handoff(&self.slot, brief) {
+        // **A cold call gets the explanation, not a schema error.** The
+        // likeliest cold call carries no arguments at all, so `brief` is
+        // optional here and a missing note lands on the same refusal that
+        // names the two doors.
+        let note = args.brief.unwrap_or_default().trim().to_owned();
+        if note.is_empty() {
+            return tool_error(
+                "agents__handoff completes a running handoff and carries its note; a handoff \
+                 starts at /handoff or at the fill threshold"
+                    .to_owned(),
+            );
+        }
+        match self.dispatcher.peers().handoff(&self.slot, Some(note)) {
             Ok(()) => json_output(&serde_json::json!({
-                "status": "handoff asked for",
+                "status": "handoff note accepted",
                 "runs": "after this turn ends",
             })),
             Err(err) => tool_error(err.to_string()),
@@ -1260,8 +1268,7 @@ mod tests {
     }
 
     /// `agents__handoff` is a shared verb: either kind hands its OWN seat
-    /// over, never another's, and the brief it passes rides through rather
-    /// than being re-asked for.
+    /// over, and the note it carries is the brief's judgment half.
     #[tokio::test]
     async fn handoff_hands_the_callers_own_seat_over() {
         for slot in [caller(), worker_caller()] {
@@ -1276,24 +1283,27 @@ mod tests {
             assert_eq!(
                 host.peers.handoff_calls.lock().as_slice(),
                 &[(slot, Some("Now: the cut is half in.".to_owned()))],
-                "the caller's own seat, with the brief it wrote",
+                "the caller's own seat, with the note it wrote",
             );
         }
     }
 
-    /// An empty brief is no brief: forge asks for one rather than swapping
-    /// on a blank judgment half.
+    /// A call with no note, or a blank one, gets the explanation that names
+    /// the two doors, not a schema error.
     #[tokio::test]
-    async fn a_blank_brief_is_an_ask() {
-        let host = host();
-        let tool = Handoff { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
-        let output = tool.call(ToolInput { value: serde_json::json!({ "brief": "   " }) }).await;
-        assert!(!output.is_error, "{:?}", output.blocks);
-        assert_eq!(
-            host.peers.handoff_calls.lock().as_slice(),
-            &[(caller(), None)],
-            "a blank half is the ask, not a supplied brief",
-        );
+    async fn a_call_without_a_note_is_refused_by_name() {
+        for value in [serde_json::json!({}), serde_json::json!({ "brief": "   " })] {
+            let host = host();
+            let tool = Handoff { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+            let output = tool.call(ToolInput { value }).await;
+            assert!(output.is_error, "a handoff with no note is an error");
+            let text = text_of(&output);
+            assert!(
+                text.contains("/handoff") && text.contains("fill threshold"),
+                "the refusal names both doors: {text}",
+            );
+            assert!(host.peers.handoff_calls.lock().is_empty(), "and nothing is dispatched");
+        }
     }
 
     async fn call_list(host: &Host, project_filter: Option<&str>) -> Vec<serde_json::Value> {

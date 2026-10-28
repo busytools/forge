@@ -30,9 +30,9 @@ const CONSTRAINT_LINE_CAP: usize = 300;
 const CONSTRAINT_BLOCK_CAP: usize = 6;
 const PROMPT_LINE_CAP: usize = 600;
 const MEASURED_LINE_CAP: usize = 200;
-/// The judgment half's ceiling. Long enough for the five headings written
-/// properly, short enough that the brief stays inside its 3-4k-token budget.
-const JUDGMENT_CAP: usize = 9_000;
+/// The judgment half's ceiling: room for the 1,200-word note the prompt asks
+/// for (about 3k tokens), and no more.
+const JUDGMENT_CAP: usize = 12_000;
 
 /// The parts of the judgment half forge asks for, in order.
 pub(crate) const JUDGMENT_HEADINGS: [&str; 5] =
@@ -90,6 +90,7 @@ pub(crate) async fn ground_truth(
     seat: &HandoffSeat<'_>,
     board: &[Task],
     prior: Option<&HandoffRecord>,
+    live: Vec<HandoffSection>,
 ) -> GroundTruth {
     let read = {
         let config_dir = config_dir.to_path_buf();
@@ -109,7 +110,12 @@ pub(crate) async fn ground_truth(
     let read_failed = read.is_err() || !seat.transcript_path.exists();
     let messages = read.map(|history| history.messages).unwrap_or_default();
     let git = forge_agent::env::git_state::probe(seat.cwd).await;
-    let mut truth = assemble(seat, &messages, &git, board, prior);
+    // **The handoff writes memory itself, so that directory is not the
+    // session's work.** Counting it in the files row would displace the
+    // project files the successor needs, and counting its reads would make
+    // the successor's re-read measurement measure the handoff's own cost.
+    let memory_roots = memory_roots(config_dir, seat.cwd);
+    let mut truth = assemble(seat, &messages, &git, board, prior, &memory_roots, live);
     if read_failed {
         // **An empty PART 1 is not a session with nothing in it.** Without
         // this line the successor reads a blank ground truth as a blank
@@ -137,6 +143,8 @@ pub(crate) fn assemble(
     git: &HandoffGitState,
     board: &[Task],
     prior: Option<&HandoffRecord>,
+    memory_roots: &[PathBuf],
+    live: Vec<HandoffSection>,
 ) -> GroundTruth {
     let asks = user_prompts(messages);
     let mut ask = ask_section(&asks);
@@ -175,11 +183,16 @@ pub(crate) fn assemble(
     sections.push(role_section(&seat.role));
     sections.push(ask);
     sections.push(constraints);
-    sections.push(files_section(messages, git));
+    sections.push(files_section(messages, git, memory_roots));
     sections.push(verify_section(messages));
     sections.push(board_section(seat.slot, board));
+    sections.extend(live);
     sections.push(record_section(seat));
-    GroundTruth { sections, cycle: cycle(messages, asks.len()), reads: read_set(messages) }
+    GroundTruth {
+        sections,
+        cycle: cycle(messages, asks.len()),
+        reads: read_set(messages, memory_roots),
+    }
 }
 
 /// A section's lines from a brief, by label. An older record's brief is the
@@ -192,8 +205,62 @@ fn section_lines(sections: &[HandoffSection], label: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The directories the handoff's own memory writes land in: the project's
+/// memory dir, and the environment's own where the cross-project notes live.
+///
+/// **Both, not only the project's.** Either one in the files row would
+/// displace the project files the successor needs, and either read would
+/// measure the handoff's own cost as the predecessor's.
+fn memory_roots(config_dir: &Path, cwd: &Path) -> Vec<PathBuf> {
+    let project = forge_agent::userdata::memory::project_memory_path(config_dir, cwd);
+    [project.parent().map(Path::to_path_buf), Some(config_dir.join("memory"))]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Whether `path` is inside one of the memory directories.
+///
+/// **The handoff turn writes memory itself.** Counting those paths would
+/// displace the project files the successor needs, and counting their reads
+/// would measure the successor against the handoff's own cost.
+fn is_memory_path(path: &str, memory_roots: &[PathBuf]) -> bool {
+    // **The same file can be spelled more than one way.** A `~/...` path and a
+    // symlinked root both name the directory the memory lives in, so every
+    // spelling on either side is compared.
+    let forms = |path: &Path| {
+        let spelled = path.to_string_lossy().into_owned();
+        let expanded = match spelled.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir().map_or_else(
+                || spelled.clone(),
+                |home| home.join(rest).to_string_lossy().into_owned(),
+            ),
+            None => spelled.clone(),
+        };
+        let canonical = std::fs::canonicalize(path)
+            .or_else(|_| std::fs::canonicalize(&expanded))
+            .map(|path| path.to_string_lossy().into_owned())
+            .ok();
+        let mut forms = vec![spelled, expanded];
+        if let Some(canonical) = canonical {
+            forms.push(canonical);
+        }
+        forms
+    };
+    let given = forms(Path::new(path));
+    memory_roots.iter().any(|root| {
+        let roots = forms(root);
+        roots.iter().any(|root| {
+            given.iter().any(|path| {
+                path == root
+                    || path.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('/'))
+            })
+        })
+    })
+}
+
 /// Every path the session read, in transcript order, deduped and capped.
-fn read_set(messages: &[Message]) -> Vec<String> {
+fn read_set(messages: &[Message], memory_roots: &[PathBuf]) -> Vec<String> {
     let mut reads: Vec<String> = Vec::new();
     for (_, name, input) in tool_uses(messages) {
         if !matches!(name, "Read" | "NotebookRead") {
@@ -203,6 +270,9 @@ fn read_set(messages: &[Message]) -> Vec<String> {
             continue;
         };
         let Some(path) = path.as_str() else { continue };
+        if is_memory_path(path, memory_roots) {
+            continue;
+        }
         if !reads.iter().any(|seen| seen == path) {
             reads.push(path.to_owned());
         }
@@ -464,7 +534,11 @@ fn states_a_rule(line: &str) -> bool {
         || lower.starts_with("always ")
 }
 
-fn files_section(messages: &[Message], git: &HandoffGitState) -> HandoffSection {
+fn files_section(
+    messages: &[Message],
+    git: &HandoffGitState,
+    memory_roots: &[PathBuf],
+) -> HandoffSection {
     let mut changed: Vec<String> = Vec::new();
     let mut read_paths: Vec<String> = Vec::new();
     for (_, name, input) in tool_uses(messages) {
@@ -472,6 +546,9 @@ fn files_section(messages: &[Message], git: &HandoffGitState) -> HandoffSection 
             continue;
         };
         let Some(path) = path.as_str() else { continue };
+        if is_memory_path(path, memory_roots) {
+            continue;
+        }
         let bucket = match name {
             "Edit" | "Write" | "NotebookEdit" | "MultiEdit" => &mut changed,
             "Read" | "NotebookRead" => &mut read_paths,
@@ -594,6 +671,68 @@ fn board_section(slot: &SessionSlot, board: &[Task]) -> HandoffSection {
     HandoffSection { label: "board".to_owned(), lines }
 }
 
+/// What is still running when the seat hands over: live sub-agents,
+/// background tasks, monitors and the process tree.
+///
+/// **The successor has to know what to resume.** The note is an index and may
+/// mention it, but the live set is a fact forge reads itself, so it rides in
+/// the brief whether or not the note names it.
+pub(crate) fn live_work_sections(
+    domain: Option<&crate::domain_session::DomainSession>,
+) -> Vec<HandoffSection> {
+    // **An absent domain is unknown, not empty.** Every row says the same
+    // thing rather than claiming nothing was running.
+    let Some(domain) = domain else {
+        return ["agents", "background", "monitors", "processes"]
+            .into_iter()
+            .map(|label| fact(label, "not read".to_owned()))
+            .collect();
+    };
+    let agents: Vec<String> = domain
+        .card_tracker
+        .cards()
+        .into_iter()
+        .filter(|card| card.running)
+        .map(|card| {
+            let kind = card.agent_type.unwrap_or_else(|| "agent".to_owned());
+            let backgrounded = if card.backgrounded { ", backgrounded" } else { "" };
+            format!("{kind}: {} ({} calls{backgrounded})", card.name, card.calls)
+        })
+        .collect();
+    let tasks: Vec<String> = domain
+        .background_tasks
+        .iter()
+        .map(|task| format!("{}: {} [{}]", task.task_type, task.description, task.task_id))
+        .collect();
+    let watching: Vec<String> = domain
+        .monitors
+        .iter()
+        .filter(|monitor| !monitor.status.is_terminal())
+        .map(|monitor| {
+            format!("{} [{}]: {}", monitor.description, monitor.tool_use_id, monitor.command)
+        })
+        .collect();
+    let ps: Vec<String> = match &domain.process_snapshot {
+        Some(snapshot) => snapshot
+            .processes
+            .iter()
+            .take(FILE_CAP)
+            .map(|process| format!("{} {}: {}", process.pid, process.name, process.command))
+            .collect(),
+        None => vec!["not scanned".to_owned()],
+    };
+    let section = |label: &str, lines: Vec<String>| HandoffSection {
+        label: label.to_owned(),
+        lines: if lines.is_empty() { vec!["none running".to_owned()] } else { lines },
+    };
+    vec![
+        section("agents", agents),
+        section("background", tasks),
+        section("monitors", watching),
+        section("processes", ps),
+    ]
+}
+
 fn record_section(seat: &HandoffSeat<'_>) -> HandoffSection {
     HandoffSection {
         label: "record".to_owned(),
@@ -677,7 +816,7 @@ fn is_machine_prompt(message: &Message) -> bool {
     let Some(text) = text_of(&envelope.content) else { return false };
     let text = text.trim_start();
     text.starts_with("HANDOFF - ")
-        || text.starts_with("A handoff is starting for this session:")
+        || text.starts_with(MACHINE_PREFIX)
         || crate::conversation_turns::is_task_notice(text)
         || crate::conversation_turns::is_interrupt_marker(text)
         // The CLI's own nudge after an empty response; the client draws it as
@@ -927,6 +1066,27 @@ pub(crate) fn parse_judgment(raw: &str) -> Vec<HandoffSection> {
     cap_judgment(sections)
 }
 
+/// Whether a reply is a note: it parses into at least one heading section.
+/// Anything else, including headings with no content under them, is prose or
+/// an empty shell, and neither is the brief.
+pub(crate) fn parses_as_note(raw: &str) -> bool {
+    parse_judgment(raw).iter().any(|section| JUDGMENT_HEADINGS.contains(&section.label.as_str()))
+}
+
+/// The judgment half when no exit note arrived. **Never the turn's prose
+/// dressed as the note**: the successor is told the note is missing and where
+/// the session's own account lives.
+pub(crate) fn missing_note() -> Vec<HandoffSection> {
+    vec![HandoffSection {
+        label: "note".to_owned(),
+        lines: vec![
+            "the handoff note did not arrive; this session's transcript is named in the record \
+             above, and anything it left is there"
+                .to_owned(),
+        ],
+    }]
+}
+
 /// The heading a line opens, and the rest of the line after its colon.
 fn judgment_heading(line: &str) -> Option<(&'static str, &str)> {
     let stripped = line.trim_start_matches(['#', '*', '-', ' ']);
@@ -1008,23 +1168,93 @@ fn render_sections(out: &mut String, sections: &[HandoffSection]) {
     }
 }
 
-/// The prompt forge sends for the judgment half. Shipped text: it names no
-/// skill, so a fresh install gets the same brief.
-pub(crate) const JUDGMENT_PROMPT: &str = "\
-A handoff is starting for this session: its context is nearly full, so forge \
-will replace it with a new session that continues the work. Write the judgment \
-half of the brief the new session will be given, as the text of this turn and \
-nothing else.\n\n\
-Use exactly these five headings, each starting its own line:\n\n\
-Now: what we are doing and why, in five sentences.\n\
+/// The prompt's opening. `is_machine_prompt` recognizes forge's own judgment
+/// prompt by this prefix, so whatever procedure the turn runs, it opens here.
+/// The prefix `is_machine_prompt` matches, shared so the prompt and the
+/// matcher cannot drift apart.
+const MACHINE_PREFIX: &str = "A handoff is starting for this session:";
+
+const JUDGMENT_OPENING: &str = "\
+A handoff is starting for this session: forge will replace it with a new \
+session that continues the work. This turn has two jobs, in this order, and it \
+ends on the text that becomes the judgment half of the brief the new session is \
+given.";
+
+/// The handoff skill forge ships and installs into the config dir.
+const SKILL: &str = include_str!("handoff/SKILL.md");
+
+/// What the turn is told to do: run the skill, then exit through the tool.
+const JUDGMENT_BODY: &str = "\
+Invoke the handoff skill and follow it. It completes this session's learnings \
+into memory, records and stops what is still running so the new session can \
+resume it, then calls `agents__handoff` with the note. If this environment has \
+no such skill, do those three steps from this prompt: memory first, then close \
+out what is running, then call `agents__handoff` with the note.";
+
+/// Forge's output contract for the note the exit call carries.
+const JUDGMENT_CONTRACT: &str = "\
+Write the note under exactly these five headings and no others, each alone at \
+the start of its own line:\n\n\
+Now: what we are doing and why, in five sentences. Say what is done and \
+verified, what is in flight, and what is unchanged. Its last line names what you \
+recorded in memory and where it lives.\n\
 Tried and failed: the dead ends, with the error that stopped each.\n\
 Do not: the things that look right and are not.\n\
-Next: the next concrete action, with the file or command it starts at.\n\
+Next: the next concrete action, with the file or command it starts at. Each open \
+thread names where its context lives instead of restating it.\n\
 Done means: the observable that ends this task.\n\n\
-Quote any constraint the user set verbatim. Name files, commands and numbers \
-exactly. Do not restate what is on disk: forge's own half of the brief already \
-carries the seat, the asks, the constraints, the files, the git state, the gate \
-and the board. Keep the whole reply under 600 words.";
+Do not restate what is on disk: forge's own half of the brief already carries \
+the seat, the asks, the constraints, the files, the git state, the gate and the \
+board. Never write a key, token, password or personal data into the note. This \
+note is Step 2's handoff document, written under these five headings; pass the \
+same text to `agents__handoff` as `brief`. Keep it under 1,200 words.";
+
+/// The judgment prompt the turn runs: forge's own words, the skill it names,
+/// and the output contract for the note the exit call carries.
+pub(crate) fn judgment_prompt() -> String {
+    format!("{JUDGMENT_OPENING}\n\n{JUDGMENT_BODY}\n\n{JUDGMENT_CONTRACT}")
+}
+
+/// How an install left the skill on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillInstall {
+    Created,
+    Replaced,
+    Unchanged,
+}
+
+/// Install the handoff skill at `<config_dir>/skills/handoff/SKILL.md`.
+///
+/// **One path, one file.** forge.toml stays hand-authored and forge never
+/// writes it; this generated skill is the one file forge owns inside the
+/// config dir. It is compared byte for byte and rewritten, atomically through
+/// a temp file in the same directory, only when the shipped text differs.
+/// Where the generated skill lives: `<config_dir>/skills/handoff/SKILL.md`.
+pub fn skill_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("skills").join("handoff").join("SKILL.md")
+}
+
+pub fn install_skill(config_dir: &Path) -> std::io::Result<SkillInstall> {
+    let dir = config_dir.join("skills").join("handoff");
+    let path = skill_path(config_dir);
+    let outcome = match std::fs::read(&path) {
+        Ok(existing) if existing == SKILL.as_bytes() => return Ok(SkillInstall::Unchanged),
+        Ok(_) => SkillInstall::Replaced,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SkillInstall::Created,
+        Err(error) => return Err(error),
+    };
+    std::fs::create_dir_all(&dir)?;
+    let temp = dir.join("SKILL.md.tmp");
+    // **Nothing half-written is left behind.** The temp sits in the config
+    // dir a sync daemon watches, so a failed write or rename removes it.
+    if let Err(error) =
+        std::fs::write(&temp, SKILL.as_bytes()).and_then(|()| std::fs::rename(&temp, &path))
+    {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    Ok(outcome)
+}
 
 /// A prompt held because the seat was swapping its occupant.
 #[derive(Debug, Clone)]
@@ -1363,7 +1593,14 @@ impl crate::Workspace {
         // it arrived by still holds them.
         let prior =
             self.handoff_for_successor(&request.slot, &request.from).map(|(record, _)| record);
-        let truth = ground_truth(self.config_dir(), &seat, &board, prior.as_ref()).await;
+        let live = {
+            let domain = self.domain_session_for(&request.slot);
+            match domain {
+                Some(domain) => live_work_sections(Some(&domain.lock())),
+                None => live_work_sections(None),
+            }
+        };
+        let truth = ground_truth(self.config_dir(), &seat, &board, prior.as_ref(), live).await;
         let reads = truth.reads.clone();
         let record = HandoffRecord {
             slot: request.slot.clone(),
@@ -1613,7 +1850,8 @@ mod tests {
     /// its own and reads as part of the label above it.
     #[test]
     fn the_seat_and_the_record_name_the_identity_and_the_transcript() {
-        let ground = assemble(&seat(), &[], &HandoffGitState::default(), &[], None);
+        let ground =
+            assemble(&seat(), &[], &HandoffGitState::default(), &[], None, &[], Vec::new());
         let labels: Vec<&str> = ground.sections.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(
             &labels[..6],
@@ -1641,7 +1879,7 @@ mod tests {
             head: Some("94cab2f20".to_owned()),
             ..HandoffGitState::default()
         };
-        let on_a_branch = assemble(&seat(), &[], &git, &[], None);
+        let on_a_branch = assemble(&seat(), &[], &git, &[], None, &[], Vec::new());
         assert_eq!(
             on_a_branch.sections[2].label, "branch",
             "the branch keeps its own row: {:?}",
@@ -1761,7 +1999,15 @@ mod tests {
             user("now finish the client row"),
         ];
 
-        let ground = assemble(&seat(), &messages, &HandoffGitState::default(), &[], Some(&prior));
+        let ground = assemble(
+            &seat(),
+            &messages,
+            &HandoffGitState::default(),
+            &[],
+            Some(&prior),
+            &[],
+            Vec::new(),
+        );
         let ask = ground.sections.iter().find(|section| section.label == "ask").expect("ask");
         assert!(
             ask.lines.iter().any(|line| line.contains("build the handoff row")),
@@ -1848,7 +2094,7 @@ mod tests {
             dirty_total: 60,
             diff: Vec::new(),
         };
-        let section = files_section(&[], &git);
+        let section = files_section(&[], &git, &[]);
         assert!(
             section
                 .lines
@@ -1947,7 +2193,7 @@ mod tests {
             dirty_total: 1,
             diff: vec![" src/handoff.rs | 10 +++++-----".to_owned()],
         };
-        let section = files_section(&messages, &git);
+        let section = files_section(&messages, &git, &[]);
         assert!(
             section.lines.contains(&"changed: src/handoff.rs, docs/handoff.md".to_owned()),
             "both edits are named: {:?}",
@@ -1984,7 +2230,7 @@ mod tests {
                 )
             })
             .collect();
-        let section = files_section(&messages, &HandoffGitState::default());
+        let section = files_section(&messages, &HandoffGitState::default(), &[]);
         let line = section.lines.first().expect("the changed line");
         assert!(line.contains("10 shown of 12 (2 omitted)"), "the omission is stated: {line}");
         assert!(line.contains("src/f0.rs"), "the first is kept: {line}");
@@ -2053,6 +2299,101 @@ mod tests {
             "another seat's row is not the successor's work: {:?}",
             section.lines,
         );
+    }
+
+    /// **PART 1 carries what is still running.** The successor has to know
+    /// what to resume; the note is an index and may mention it, but the live
+    /// set is a fact forge reads itself.
+    #[test]
+    fn the_live_work_sections_list_agents_background_monitors_and_processes() {
+        let mut domain = crate::domain_session::DomainSession::new(
+            SessionSlot::worker("Busytools", "forge", "handoff-cut"),
+            None,
+        );
+        domain.card_tracker.apply(&assistant(
+            vec![ContentBlock::ToolUse {
+                id: "t1".to_owned(),
+                name: "Task".to_owned(),
+                input: serde_json::json!({
+                    "description": "scan the pile",
+                    "subagent_type": "Explore",
+                    "prompt": "scan",
+                }),
+                extras: Extras::new(),
+            }],
+            None,
+        ));
+        domain.background_tasks = vec![forge_primitives::background::BackgroundTask {
+            task_id: "b1".to_owned(),
+            is_backgrounded: true,
+            task_type: "local_bash".to_owned(),
+            description: "cargo watch".to_owned(),
+            command: Some("cargo watch".to_owned()),
+            tool_use_id: None,
+        }];
+        domain.monitors = vec![forge_primitives::runtime::MonitorRecord {
+            tool_use_id: "m1".to_owned(),
+            task_id: Some("mt1".to_owned()),
+            description: "watch the build".to_owned(),
+            command: "tail -f build.log".to_owned(),
+            persistent: false,
+            timeout_ms: 0,
+            status: forge_primitives::runtime::MonitorStatus::Running,
+            output_file: None,
+            ended_at: None,
+        }];
+        domain.process_snapshot = Some(forge_agent::env::processes::ProcessSnapshot {
+            processes: vec![forge_agent::env::processes::ProcessEntry {
+                pid: 42,
+                parent_pid: 1,
+                name: "cargo".to_owned(),
+                command: "cargo nextest run".to_owned(),
+                memory_bytes: 1024,
+            }],
+            scanned_at: SystemTime::UNIX_EPOCH,
+        });
+
+        let sections = live_work_sections(Some(&domain));
+        let labels: Vec<&str> = sections.iter().map(|section| section.label.as_str()).collect();
+        assert_eq!(labels, ["agents", "background", "monitors", "processes"]);
+        assert!(
+            sections[0].lines[0].contains("Explore: scan the pile"),
+            "the live sub-agent: {:?}",
+            sections[0].lines,
+        );
+        assert!(
+            sections[1].lines[0].contains("local_bash: cargo watch [b1]"),
+            "the background task: {:?}",
+            sections[1].lines,
+        );
+        assert!(
+            sections[2].lines[0].contains("watch the build [m1]"),
+            "the monitor: {:?}",
+            sections[2].lines,
+        );
+        assert!(
+            sections[3].lines[0].contains("42 cargo: cargo nextest run"),
+            "the process: {:?}",
+            sections[3].lines,
+        );
+
+        let fresh = crate::domain_session::DomainSession::new(
+            SessionSlot::worker("Busytools", "forge", "handoff-cut"),
+            None,
+        );
+        let idle = live_work_sections(Some(&fresh));
+        assert_eq!(idle[0].lines, vec!["none running".to_owned()]);
+        assert_eq!(idle[3].lines, vec!["not scanned".to_owned()], "an absent scan is stated");
+
+        let absent = live_work_sections(None);
+        assert_eq!(absent.len(), 4);
+        for section in &absent {
+            assert_eq!(
+                section.lines,
+                vec!["not read".to_owned()],
+                "an absent domain is stated as unread, not as nothing running",
+            );
+        }
     }
 
     /// The cycle counts one request per assistant row that has a usage
@@ -2352,7 +2693,7 @@ mod tests {
             permission_mode: None,
             role: Role::Worker { charter_opening: None },
         };
-        let ground = ground_truth(dir.path(), &seat, &[], None).await;
+        let ground = ground_truth(dir.path(), &seat, &[], None, Vec::new()).await;
         assert_eq!(ground.sections[0].label, "note", "the failure leads the brief");
         assert!(
             ground.sections[0].lines[0].contains("could not be read"),
@@ -2399,6 +2740,351 @@ mod tests {
         assert!(at.fires(85), "exactly 85% is at it");
         let share_only = FillReading { percent: 85, total_tokens: 0, max_tokens: 0 };
         assert!(share_only.fires(85), "a share-only reading falls back to its share");
+    }
+
+    /// **The turn runs memory first and ends on the exit call.** The prompt
+    /// states the order, and the note's pointer has a home under Now.
+    #[test]
+    fn the_judgment_prompt_runs_memory_then_the_exit() {
+        let prompt = judgment_prompt();
+        assert!(
+            prompt.contains(
+                "memory first, then close out what is running, then call `agents__handoff`"
+            ),
+            "the order is stated: memory, close out, exit",
+        );
+        assert!(
+            prompt.find("Invoke the handoff skill").expect("the skill is named")
+                < prompt.find("Write the note").expect("the contract follows"),
+            "the skill runs before the note's contract",
+        );
+        let now = prompt.find("Now: what we are doing").expect("the Now heading");
+        let pointer =
+            prompt.find("Its last line names what you recorded in memory").expect("the pointer");
+        let tried = prompt.find("Tried and failed:").expect("the next heading");
+        assert!(
+            now < pointer && pointer < tried,
+            "the pointer sits under Now, before Tried and failed",
+        );
+        assert!(
+            prompt.contains("This note is Step 2's handoff document")
+                && prompt.contains("pass the same text to `agents__handoff` as `brief`"),
+            "the contract names the skill's document as the one note, not a separate file",
+        );
+    }
+
+    /// **The memory pointer lands under Now, not in a section of its own.**
+    /// Text before the first heading becomes a `judgment` section and text
+    /// after `Done means` joins that section, so the prompt has to place the
+    /// pointer inside a heading for the row to draw it where it belongs.
+    #[test]
+    fn the_memory_pointer_lands_under_now() {
+        let note = "Now: the cut is half in.\nRecorded in memory.md and its index.\n\
+                    Tried and failed: none.\nDo not: keep the row.\nNext: the client row.\n\
+                    Done means: the gates are green.";
+        let sections = parse_judgment(note);
+        assert_eq!(
+            sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            JUDGMENT_HEADINGS.to_vec(),
+            "the note is exactly the five, with no section before or after them",
+        );
+        assert!(
+            sections[0].lines.contains(&"Recorded in memory.md and its index.".to_owned()),
+            "the pointer rides under Now: {:?}",
+            sections[0].lines,
+        );
+    }
+
+    /// **The five headings are the note's LINES, exactly and in order.** A
+    /// presence check passes for an inline mention or a sixth heading; the
+    /// row's label column and the parser both read line starts.
+    #[test]
+    fn the_judgment_prompt_asks_for_exactly_the_five_headings() {
+        let prompt = judgment_prompt();
+        let labels: Vec<&str> = prompt
+            .lines()
+            .filter_map(|line| {
+                let (label, _) = line.split_once(": ")?;
+                let shaped = label.len() <= 21
+                    && label.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    && label.chars().all(|c| c.is_ascii_alphabetic() || c == ' ');
+                shaped.then_some(label)
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            JUDGMENT_HEADINGS.to_vec(),
+            "the prompt's heading lines are exactly the five, in the order the row draws",
+        );
+    }
+
+    /// **The shipped skill is Ved's handoff skill, verbatim, plus the forge
+    /// additions.** Nothing above the appended section is rewritten: the
+    /// memory step, the handoff document, its four parts and the index line
+    /// are his text.
+    #[test]
+    fn the_shipped_skill_keeps_the_whole_handoff_procedure() {
+        // Pinned on the words, not the wrap: the file is prose.
+        let flat = SKILL.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (clause, why) in [
+            ("## Step 1 - Memory first (REQUIRED, before any handoff text)", "his memory step"),
+            ("update it in place and delete superseded narration", "in-place updates"),
+            (
+                "Cross-project patterns or workarounds -> TIL files (`til/`), no need to ask.",
+                "TILs",
+            ),
+            ("Update the memory index (`MEMORY.md`) in the SAME edit", "index in the same edit"),
+            ("A learning that exists only in the handoff is not recorded", "memory over handoff"),
+            ("The file is `handoff.md` in that directory", "the document he writes"),
+            ("1. **State snapshot**", "part 1"),
+            ("2. **Next steps / open threads**", "part 2"),
+            ("3. **Process facts**", "part 3"),
+            ("4. **Suggested skills**", "part 4"),
+            ("Redact sensitive information (API keys, passwords, PII).", "redaction"),
+            ("SHIPPED / IN FLIGHT / BLOCKED", "the index token"),
+            ("## Forge: close out and exit", "the forge addition"),
+            ("record in memory what it is and how to resume it", "the close-out step"),
+            ("Leave nothing unfinished unrecorded", "unfinished work is named, not dropped"),
+            ("pass the same text to `agents__handoff` as `brief`", "the exit call"),
+            ("the state snapshot in Now", "part 1 maps onto Now"),
+            ("the next steps and open threads in Next", "part 2 maps onto Next"),
+            ("the process facts in Do not or Next", "part 3 maps onto Do not or Next"),
+            ("the suggested skills in Next", "part 4 maps onto Next"),
+        ] {
+            let clause = clause.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains(&clause), "the shipped skill drops '{clause}' ({why})");
+        }
+        let names = JUDGMENT_HEADINGS.join(", ");
+        let message = format!("the skill names forge's headings, in order: {names}");
+        assert!(flat.contains(&names), "{message}");
+    }
+
+    /// `is_machine_prompt` recognizes forge's own turn by this exact prefix;
+    /// a reworded opening would have the judgment prompt read back as the
+    /// newest ask, and its own instructions as a user constraint. The matcher
+    /// is exercised itself, not only the string it is supposed to match.
+    #[test]
+    fn the_judgment_prompt_is_a_machine_row() {
+        let prompt = judgment_prompt();
+        assert!(
+            JUDGMENT_OPENING.starts_with(MACHINE_PREFIX),
+            "the opening carries the matcher's prefix",
+        );
+        assert!(
+            is_machine_prompt(&user(&prompt)),
+            "the matcher recognises the real prompt as forge's own row",
+        );
+        assert!(
+            !prompt.contains("context is nearly full"),
+            "the opening is true for /handoff as well as the fill trigger",
+        );
+    }
+
+    /// The prompt ships to every install and names only forge's own things,
+    /// the skill and the tool. It carries no path from one machine's tree.
+    #[test]
+    fn the_judgment_prompt_names_no_path() {
+        let prompt = judgment_prompt();
+        assert!(
+            prompt.contains("Invoke the handoff skill"),
+            "the compiled-in prompt is the real one, not an empty string",
+        );
+        for (token, why) in [
+            ("CLAUDE", "one machine's instruction file"),
+            ("MEMORY.md", "one machine's memory index"),
+            ("~", "a home-relative path"),
+            ("/", "a path at all"),
+        ] {
+            assert!(!prompt.contains(token), "the judgment prompt names '{token}' ({why})");
+        }
+    }
+
+    /// **The skill is installed into the config dir, and only rewritten when
+    /// it differs.** An unchanged copy is left alone, so its mtime does not
+    /// move; a changed one is replaced with no temp file left behind.
+    #[test]
+    fn the_handoff_skill_is_installed_only_when_it_differs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("skills").join("handoff").join("SKILL.md");
+
+        assert_eq!(install_skill(dir.path()).expect("install"), SkillInstall::Created);
+        assert_eq!(
+            std::fs::read(&path).expect("read"),
+            SKILL.as_bytes(),
+            "byte-equal to the asset"
+        );
+
+        // The mtime is the unchanged detector's evidence: no write at all.
+        let before = std::fs::metadata(&path).expect("stat").modified().expect("mtime");
+        assert_eq!(install_skill(dir.path()).expect("install"), SkillInstall::Unchanged);
+        let after = std::fs::metadata(&path).expect("stat").modified().expect("mtime");
+        assert_eq!(before, after, "an identical skill is not rewritten");
+
+        // **One byte is a difference.** A length-only or prefix comparator
+        // would keep this copy and hand a fresh install an edited skill.
+        let mut bytes = std::fs::read(&path).expect("read");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        std::fs::write(&path, &bytes).expect("one byte off");
+        assert_eq!(install_skill(dir.path()).expect("install"), SkillInstall::Replaced);
+        assert_eq!(
+            std::fs::read(&path).expect("read"),
+            SKILL.as_bytes(),
+            "replaced with the asset"
+        );
+
+        // A directory where the file belongs is a read error, not "absent":
+        // the install refuses rather than writing through it.
+        std::fs::remove_file(&path).expect("remove");
+        std::fs::create_dir(&path).expect("dir in its place");
+        assert!(install_skill(dir.path()).is_err(), "an unreadable skill is an error");
+        assert!(
+            !dir.path().join("skills").join("handoff").join("SKILL.md.tmp").exists(),
+            "no temp file is left behind",
+        );
+    }
+
+    /// The name the prompt invokes is the name the skill declares and the
+    /// directory it installs under, so the three cannot drift apart.
+    #[test]
+    fn the_prompt_invokes_the_skill_by_its_shipped_name() {
+        let name = SKILL
+            .lines()
+            .find_map(|line| line.strip_prefix("name:"))
+            .map(str::trim)
+            .expect("the skill declares its name");
+        assert!(
+            judgment_prompt().contains(&format!("Invoke the {name} skill")),
+            "the prompt names '{name}', the frontmatter's own name",
+        );
+        assert_eq!(
+            skill_path(Path::new("/tmp/cfg")),
+            Path::new("/tmp/cfg").join("skills").join(name).join("SKILL.md"),
+            "and the install directory is that name",
+        );
+    }
+
+    /// **A note is only a note if it parses into sections.** Headings with
+    /// nothing under them are an empty shell, not the brief.
+    #[test]
+    fn a_headings_only_reply_is_not_a_note() {
+        assert!(!parses_as_note("Now:\nTried and failed:\nDo not:\nNext:\nDone means:"));
+        assert!(!parses_as_note("Memory updated."));
+        assert!(parses_as_note("Now: the cut is in."));
+    }
+
+    /// **A note at the length the prompt asks for is not truncated.** A later
+    /// lowering of the cap would cut a note that followed the prompt.
+    #[test]
+    fn a_compliant_note_fits_under_the_cap() {
+        // Realistic word lengths: at 3-5 letters a 1,200-word note fits under
+        // the old 9,000 ceiling and the cap test proves nothing.
+        let words = |n: usize, tag: &str| vec![tag; n].join(" ");
+        let note = format!(
+            "Now: {}\nTried and failed: {}\nDo not: {}\nNext: {}\nDone means: {}",
+            words(200, "morning"),
+            words(250, "abandon"),
+            words(250, "careful"),
+            words(250, "pending"),
+            words(250, "observes"),
+        );
+        assert!(
+            note.split_whitespace().count() >= 1_200,
+            "the fixture is at least the length the prompt asks for",
+        );
+        assert!(
+            note.chars().count() > 9_000,
+            "and long enough that the old ceiling would have cut it: {} chars",
+            note.chars().count(),
+        );
+        let sections = parse_judgment(&note);
+        assert_eq!(
+            sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            JUDGMENT_HEADINGS.to_vec(),
+            "a compliant note parses whole",
+        );
+        assert!(
+            sections
+                .iter()
+                .flat_map(|section| &section.lines)
+                .all(|line| !line.contains("the rest of this reply")),
+            "and the cap does not cut it",
+        );
+    }
+
+    /// Both memory roots are excluded: the project's and the environment's
+    /// own, where the cross-project notes live.
+    #[test]
+    fn the_memory_roots_cover_the_project_and_the_environment() {
+        let roots = memory_roots(Path::new("/tmp/cfg"), Path::new("/tmp/proj"));
+        assert!(
+            roots.contains(&PathBuf::from("/tmp/cfg/projects/-tmp-proj/memory")),
+            "the project's memory dir exactly, not its key dir: {roots:?}",
+        );
+        assert!(
+            roots.contains(&PathBuf::from("/tmp/cfg/memory")),
+            "and the environment's, where the cross-project notes live: {roots:?}",
+        );
+    }
+
+    /// **The memory the handoff writes is not the session's work.** Counting
+    /// it would displace the project files the successor needs.
+    #[test]
+    fn the_memory_the_handoff_writes_is_not_a_project_change() {
+        let roots =
+            [PathBuf::from("/tmp/cfg/projects/-tmp-proj/memory"), PathBuf::from("/tmp/cfg/memory")];
+        let messages = vec![
+            call(
+                "m1",
+                "Edit",
+                serde_json::json!({ "file_path": "/tmp/cfg/projects/-tmp-proj/memory/note.md" }),
+            ),
+            call("m2", "Edit", serde_json::json!({ "file_path": "src/handoff.rs" })),
+            call(
+                "m3",
+                "Read",
+                serde_json::json!({ "file_path": "/tmp/cfg/projects/-tmp-proj/memory/index.md" }),
+            ),
+            call("m4", "Read", serde_json::json!({ "file_path": "src/lib.rs" })),
+            call(
+                "m5",
+                "Edit",
+                serde_json::json!({ "file_path": "/tmp/cfg/memory/til/a-lesson.md" }),
+            ),
+        ];
+        let section = files_section(&messages, &HandoffGitState::default(), &roots);
+        assert!(
+            section.lines.contains(&"changed: src/handoff.rs".to_owned()),
+            "only the project edit is a change: {:?}",
+            section.lines,
+        );
+        assert!(
+            section.lines.contains(&"read: src/lib.rs".to_owned()),
+            "and only the project read is a read: {:?}",
+            section.lines,
+        );
+    }
+
+    /// The successor is measured against what its PREDECESSOR read; the
+    /// predecessor's own handoff writes are not that.
+    #[test]
+    fn the_memory_the_handoff_reads_is_not_a_predecessor_read() {
+        let roots =
+            [PathBuf::from("/tmp/cfg/projects/-tmp-proj/memory"), PathBuf::from("/tmp/cfg/memory")];
+        let messages = vec![
+            call(
+                "r1",
+                "Read",
+                serde_json::json!({ "file_path": "/tmp/cfg/projects/-tmp-proj/memory/index.md" }),
+            ),
+            call("r2", "Read", serde_json::json!({ "file_path": "src/lib.rs" })),
+            call(
+                "r3",
+                "Read",
+                serde_json::json!({ "file_path": "/tmp/cfg/memory/til/a-lesson.md" }),
+            ),
+        ];
+        assert_eq!(read_set(&messages, &roots), vec!["src/lib.rs".to_owned()]);
     }
 
     /// A line is "measured" only when it states a number in a unit: prose

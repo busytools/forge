@@ -152,6 +152,26 @@ describe('a forge call the page cannot dress', () => {
   });
 });
 
+describe('the handoff card', () => {
+  it('shows the note it carried, not the raw answer', () => {
+    const note = 'Now: the cut is in.\nNext: the PR.';
+    const card = forgeCardOf(
+      'mcp__forge__agents__handoff',
+      { brief: note },
+      result('{"status":"handoff note accepted","runs":"after this turn ends"}'),
+    );
+    expect(card?.title, 'its own wording, not the workers one').toBe('handed the seat over');
+    expect(card?.chips).toEqual([
+      { text: 'handoff note accepted', tone: 'info' },
+      { text: 'after this turn ends', tone: 'dim' },
+    ]);
+    expect(
+      card?.pieces.find((piece) => piece.kind === 'quote'),
+      'the note is the body a reader came for',
+    ).toEqual({ kind: 'quote', text: note });
+  });
+});
+
 describe('the tasks card', () => {
   it('names an update by the subject the echo carries, and says what moved', () => {
     const card = forgeCardOf(

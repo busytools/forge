@@ -103,6 +103,7 @@ pub use forge_gateway::{LoadingState, Unusable, UsageFetchStatus};
 pub use domain_session::{ContextUsage, DomainSession, McpServers, TurnLiveness, liveness_of};
 pub use error::WorkspaceError;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
+pub use handoff::{SkillInstall, install_skill, skill_path};
 pub use protocol::{
     Command, DictateOutcome, DispatchError, NoticeSeverity, PromptOrigin, PromptSource,
     SessionUpdate, TurnErrorClass,

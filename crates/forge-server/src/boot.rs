@@ -5,7 +5,7 @@
 //! function for a view and for no view alike, and so no view's removal can
 //! take the boot with it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_workspace::Workspace;
@@ -44,8 +44,8 @@ pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
 /// needs a `LocalSet` either - every task in this wave is a plain
 /// `tokio::spawn`, verified by the headless boot test exercising it
 /// without one.
-pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<Arc<Workspace>> {
-    let workspace = match Workspace::new(config_dir) {
+pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Arc<Workspace>> {
+    let workspace = match Workspace::new(config_dir.to_path_buf()) {
         Ok(w) => Arc::new(w),
         Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
     };
@@ -60,6 +60,7 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
         return Err(anyhow::anyhow!("forge: {err}"));
     }
 
+    install_handoff_skill(config_dir);
     start_subsystems(&workspace);
     #[cfg(target_os = "macos")]
     {
@@ -75,6 +76,42 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
     }
 
     Ok(workspace)
+}
+
+/// Install the generated handoff skill into the config dir.
+///
+/// **forge.toml is never written; this one file is.** The skill is forge's
+/// own text, compared byte for byte, so an upgrade refreshes it and a boot
+/// with an identical copy touches nothing.
+fn install_handoff_skill(config_dir: &Path) {
+    let path = forge_workspace::skill_path(config_dir);
+    match forge_workspace::install_skill(config_dir) {
+        Ok(forge_workspace::SkillInstall::Unchanged) => {}
+        Ok(outcome) => {
+            let action = match outcome {
+                forge_workspace::SkillInstall::Created => "created",
+                forge_workspace::SkillInstall::Replaced => "replaced",
+                forge_workspace::SkillInstall::Unchanged => return,
+            };
+            tracing::info!(
+                target: "forge_workspace::handoff",
+                event_name = "handoff_skill_installed",
+                path = %path.display(),
+                action,
+                "the handoff skill was written at boot",
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::handoff",
+                event_name = "handoff_skill_install_failed",
+                path = %path.display(),
+                %error,
+                "the handoff skill could not be installed; a handoff turn falls back to the \
+                 prompt's own steps",
+            );
+        }
+    }
 }
 
 /// Watch `forge.toml` for the process's life and apply each valid edit.

@@ -9,6 +9,12 @@ its credential is resolved per request, so a re-minted token reaches it.
 Everything a subsystem reads per use takes the new value, and the table
 below says what waits for a restart.
 
+One other file in the config directory belongs to forge: the generated
+handoff skill at `<config_dir>/skills/handoff/SKILL.md`. Forge installs
+it at boot, compares it byte for byte, and replaces it only when the
+shipped text differs, so an unchanged copy is left untouched. That file
+is forge's own; `forge.toml` stays yours.
+
 ## Where it lives
 
 ```

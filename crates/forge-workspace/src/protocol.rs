@@ -339,12 +339,12 @@ pub enum Command {
     },
     /// Hand this seat over to a new session that continues its work.
     ///
-    /// The brief's judgment half is asked of the session, unless the caller
-    /// supplied `brief`, which is used instead. The swap itself runs on the
-    /// same order `/new` does.
+    /// **Two halves of one handoff.** `brief: None` is the entry: the seat is
+    /// asked for the judgment half in the procedure turn. `brief: Some(note)`
+    /// is the exit: the turn's note, accepted only while a handoff is
+    /// running. Either way the successor is started the way `/new` starts one.
     Handoff {
         key: SessionSlot,
-        /// The caller's own judgment half. `None` asks the session for it.
         brief: Option<String>,
     },
     RespondPermission {
@@ -954,7 +954,7 @@ impl std::fmt::Debug for Command {
             Self::Handoff { key, brief } => f
                 .debug_struct("Handoff")
                 .field("key", key)
-                .field("brief", &brief.as_ref().map(|_| "supplied"))
+                .field("brief", &brief.as_ref().map(|_| "exit"))
                 .finish(),
             Self::RespondPermission { key, tool_id, .. } => f
                 .debug_struct("RespondPermission")
