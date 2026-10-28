@@ -2503,6 +2503,7 @@ mod tests {
             max_tokens: Some(1_000_000),
             at_percent: 85,
             brief: forge_primitives::HandoffBrief::default(),
+            judgment_turn: Vec::new(),
             transcript_path: "/tmp/old.jsonl".to_owned(),
             at: "2026-10-24T08:00:00Z".to_owned(),
             cycle: forge_primitives::HandoffCycle::default(),

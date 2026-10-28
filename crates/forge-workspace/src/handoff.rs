@@ -65,6 +65,8 @@ pub(crate) struct GroundTruth {
     /// Every path the handover read, which the successor's re-reads are
     /// measured against. Store-only: no view draws it.
     pub reads: Vec<String>,
+    /// The turn the procedure ran in, for a view attaching after the swap.
+    pub judgment_turn: Vec<Message>,
 }
 
 /// How many of the successor's turns are measured.
@@ -192,7 +194,35 @@ pub(crate) fn assemble(
         sections,
         cycle: cycle(messages, asks.len()),
         reads: read_set(messages, memory_roots),
+        judgment_turn: judgment_turn(messages),
     }
+}
+
+/// The turn the handing-over session ran the handoff procedure in.
+///
+/// **From the procedure prompt to the end of the transcript.** The prompt is
+/// forge's own row and everything after it is the turn. The LAST match is
+/// taken because a handoff that was abandoned still leaves its prompt in the
+/// transcript, and the turn a view draws is the one that actually handed
+/// over.
+fn judgment_turn(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .rposition(is_procedure_prompt)
+        .map_or_else(Vec::new, |at| messages[at..].to_vec())
+}
+
+/// Whether a row is the handoff procedure's own prompt: minted under the
+/// procedure's prefix and opening on the words the machinery matcher reads.
+///
+/// **Both halves, not the words alone.** A reader can type the opening as
+/// easily as the machinery writes it, and the id is the only fact about the
+/// sender the transcript keeps.
+fn is_procedure_prompt(message: &Message) -> bool {
+    let Message::User { uuid, message: envelope, .. } = message else { return false };
+    uuid.as_deref().is_some_and(|id| id.starts_with(forge_sdk::request_id::HANDOFF_PROMPT_PREFIX))
+        && text_of(&envelope.content)
+            .is_some_and(|text| text.trim_start().starts_with(MACHINE_PREFIX))
 }
 
 /// A section's lines from a brief, by label. An older record's brief is the
@@ -1604,7 +1634,7 @@ impl crate::Workspace {
             }
         };
         let truth = ground_truth(self.config_dir(), &seat, &board, prior.as_ref(), live).await;
-        let reads = truth.reads.clone();
+        let GroundTruth { sections, cycle, reads, judgment_turn } = truth;
         let record = HandoffRecord {
             slot: request.slot.clone(),
             from: request.from.clone(),
@@ -1614,10 +1644,11 @@ impl crate::Workspace {
             total_tokens: request.fill.map(|fill| fill.total_tokens),
             max_tokens: request.fill.map(|fill| fill.max_tokens),
             at_percent: request.at_percent,
-            brief: HandoffBrief { ground_truth: truth.sections, judgment: request.judgment },
+            brief: HandoffBrief { ground_truth: sections, judgment: request.judgment },
+            judgment_turn,
             transcript_path: transcript_path.display().to_string(),
             at: crate::install::rfc3339_now(),
-            cycle: truth.cycle,
+            cycle,
             successor: None,
         };
         let text = brief_text(&record.pair(), &record.brief);
@@ -1992,6 +2023,7 @@ mod tests {
                 ],
                 judgment: Vec::new(),
             },
+            judgment_turn: Vec::new(),
             transcript_path: "/tmp/older.jsonl".to_owned(),
             at: "2026-10-24T08:00:00Z".to_owned(),
             cycle: HandoffCycle::default(),
@@ -2896,6 +2928,85 @@ mod tests {
         let names = JUDGMENT_HEADINGS.join(", ");
         let message = format!("the skill names forge's headings, in order: {names}");
         assert!(flat.contains(&names), "{message}");
+    }
+
+    /// The judgment turn is what a view draws when it attaches after the
+    /// swap, and the transcript it lives in belongs to the session that left.
+    /// So the record carries it: from the procedure prompt the handing-over
+    /// session ran to the end of its transcript.
+    ///
+    /// **The last procedure prompt, not the first.** The brief a successor
+    /// arrives by is a machinery row too, and it does not open like the
+    /// procedure; and an abandoned handoff leaves an earlier prompt behind,
+    /// so the closing turn is the newest match.
+    #[test]
+    fn the_record_carries_the_judgment_turn_and_its_calls() {
+        let procedure = |marker: &str| {
+            let mut prompt = user(&format!("{MACHINE_PREFIX} {marker}"));
+            if let Message::User { uuid, .. } = &mut prompt {
+                *uuid = Some(forge_sdk::request_id::next_handoff_prompt_id());
+            }
+            prompt
+        };
+        let messages = vec![
+            user("ship the handoff"),
+            // A handoff that was abandoned leaves its own prompt behind; the
+            // turn the record carries is the one that actually handed over.
+            procedure("the abandoned one"),
+            assistant(vec![text("the handoff was cancelled")], None),
+            call("t1", "mcp__forge__memory_write", serde_json::json!({ "path": "/x" })),
+            result("t1", "ok", false),
+            procedure("the rest of it"),
+            assistant(vec![text("Now: done")], None),
+            call("t2", "mcp__forge__agents__handoff", serde_json::json!({ "brief": "Now: done" })),
+            result("t2", "{\"status\":\"handoff note accepted\"}", false),
+        ];
+        let ground =
+            assemble(&seat(), &messages, &HandoffGitState::default(), &[], None, &[], Vec::new());
+        assert_eq!(
+            ground.judgment_turn.len(),
+            4,
+            "the prompt, the call, the answer and the text: {:?}",
+            ground.judgment_turn,
+        );
+        assert!(
+            !ground.judgment_turn.iter().any(|message| matches!(
+                message,
+                Message::User { message, .. }
+                    if text_of(&message.content)
+                        .is_some_and(|text| text.ends_with("the abandoned one"))
+            )),
+            "the abandoned handoff's prompt is not the turn: {:?}",
+            ground.judgment_turn.first(),
+        );
+        assert!(
+            matches!(
+                ground.judgment_turn.first(),
+                Some(Message::User { uuid: Some(id), .. })
+                    if id.starts_with(forge_sdk::request_id::HANDOFF_PROMPT_PREFIX)
+            ),
+            "the turn opens on the procedure prompt itself: {:?}",
+            ground.judgment_turn.first(),
+        );
+        assert!(
+            !ground.judgment_turn.iter().any(|message| matches!(
+                message,
+                Message::User { message, .. }
+                    if text_of(&message.content).is_some_and(|text| text == "ship the handoff")
+            )),
+            "the work before the handoff is not part of it",
+        );
+    }
+
+    /// **A turn that never ran is not an empty turn.** The supplied-brief
+    /// exit path runs no procedure, so a record that carried a stub row would
+    /// draw a phantom turn on every seat that arrived by one.
+    #[test]
+    fn a_handoff_with_no_procedure_prompt_carries_no_turn() {
+        let messages = vec![user("ship it"), assistant(vec![text("done")], None)];
+        let ground =
+            assemble(&seat(), &messages, &HandoffGitState::default(), &[], None, &[], Vec::new());
+        assert!(ground.judgment_turn.is_empty(), "no prompt, no turn: {:?}", ground.judgment_turn);
     }
 
     /// `is_machine_prompt` recognizes forge's own turn by this exact prefix;
