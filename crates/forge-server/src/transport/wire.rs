@@ -809,6 +809,11 @@ async fn whole_files_for(
     threads: &[ReviewThread],
     content: &DiffContent,
     default_branch: Option<&str>,
+    // The revision the old side resolves against: the sha the diff was pinned
+    // to when the read refreshed its base, else the ref's name. A pinned diff
+    // read at the name's merge-base would place anchors against a base the
+    // diff does not describe.
+    base_rev: Option<&str>,
 ) -> WholeFiles {
     let files = match &content.branch_ahead {
         LayerState::Populated(files) => files.as_slice(),
@@ -839,7 +844,7 @@ async fn whole_files_for(
         let (rev, path) = match anchor.side {
             ReviewSide::New => ("HEAD".to_owned(), file.path.clone()),
             ReviewSide::Old => {
-                let Some(base) = default_branch else {
+                let Some(base) = base_rev.or(default_branch) else {
                     continue;
                 };
                 if old_rev.is_none() {
@@ -2339,24 +2344,38 @@ async fn session(
     // The refresh and the scan pinned to the sha it resolved are one read of
     // one base: the count, the chain and the files cannot describe two refs.
     let at = std::time::Instant::now();
-    let held = match &refresh {
+    let pinned = match &refresh {
         Some(refresh) => surface.diff_scan(slot, &held.cwd, refresh.base_ref.as_deref()).await,
-        None => held,
+        None => None,
     };
     timings.rescan_ms = slice_ms(at);
+    let scan_pinned = pinned.is_some();
+    let held = match pinned {
+        Some(pinned) => pinned,
+        None => held,
+    };
     // The content read, beside the stats one: bounded, and taken here
     // rather than stored with the row because a record read is a cold load,
     // a reconnect or a seat swap - not a frame a moving tree pushes.
-    let base = match &refresh {
-        Some(refresh) => Some(refresh.state),
+    let base = match (&refresh, scan_pinned) {
+        (Some(refresh), true) => Some(refresh.state),
+        // **A refresh whose pinned scan could not be taken proves nothing
+        // about the diff drawn.** The store's scan may predate the base the
+        // fetch moved, so the label must not carry the refresh's state.
+        (Some(_), false) => Some(forge_primitives::git_diff::BaseState::Unverified),
         // An ordinary read has not checked the base. Saying so is what keeps a
         // cached record from drawing its diff as current.
-        None if held.diff.branch_ahead.is_populated() => {
+        (None, _) if held.diff.branch_ahead.is_populated() => {
             Some(forge_primitives::git_diff::BaseState::Unverified)
         }
-        None => None,
+        (None, _) => None,
     };
-    let base_ref = refresh.as_ref().and_then(|refresh| refresh.base_ref.as_deref());
+    // **The pin goes with the scan.** A fallback scan read the ref's name, so
+    // pinning the content read to the fetched sha would pair two refs.
+    let base_ref = match scan_pinned {
+        true => refresh.as_ref().and_then(|refresh| refresh.base_ref.as_deref()),
+        false => None,
+    };
     let at = std::time::Instant::now();
     let diff = scan_content(&held.cwd, &held.diff, base, base_ref).await;
     timings.content_ms = slice_ms(at);
@@ -2384,6 +2403,9 @@ async fn session(
                 threads,
                 &diff,
                 held.diff.default_branch.as_deref(),
+                // The diff's own base: the sha it was pinned to, or the ref
+                // name when the read did not pin one.
+                base_ref.or(held.diff.default_branch.as_deref()),
             )
             .await
         }
@@ -4814,8 +4836,15 @@ mod tests {
             base: Some(forge_primitives::git_diff::BaseState::Current),
             truncated: false,
         };
-        let whole =
-            whole_files_for(repo.path(), 10 * 1024 * 1024, &threads, &content, Some("main")).await;
+        let whole = whole_files_for(
+            repo.path(),
+            10 * 1024 * 1024,
+            &threads,
+            &content,
+            Some("main"),
+            Some("main"),
+        )
+        .await;
         assert_eq!(whole.len(), 8, "the encode stops at its eight-file bound");
         assert!(
             !whole.contains_key(&("f9.txt".to_owned(), ReviewSide::New)),

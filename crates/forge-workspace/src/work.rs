@@ -137,6 +137,15 @@ pub struct WorkSnapshot {
 /// view draws, so all views live with one freshness.
 pub const SNAPSHOT_STALENESS: Duration = Duration::from_secs(10);
 
+/// How long a drawing read waits for a scan already in flight.
+///
+/// The seat's gate is held across the watch's whole pass - its PR lookup and
+/// its base refresh included - so a review page's read that queued behind one
+/// would wait the watch's work rather than its own. Past this bound the store
+/// is served, and the read labels its base unverified: the store may predate
+/// the base this read refreshed.
+pub const PINNED_GATE_WAIT: Duration = Duration::from_secs(3);
+
 /// How often a held seat looks at its tree.
 ///
 /// The poke is a timestamp check, and [`should_scan`] is what decides whether
@@ -620,6 +629,18 @@ impl Workspace {
             let Some(cwd) = self.cwd_for_session(slot) else {
                 return Err(format!("{} has no directory to read", slot.display()));
             };
+            // **The watch's pass is where the base fetch is paid.** Nobody
+            // waits on it, so the row it pushes is computed from a ref this
+            // refreshed; a record read never comes here with `Fetch` except a
+            // sessionless seat's fallback, which has no store, no loop and
+            // nothing to keep fresh.
+            if pr == PrRefresh::Fetch
+                && let Some(default) =
+                    held.as_ref().and_then(|held| held.diff.default_branch.as_deref())
+                && held.as_ref().is_some_and(|held| held.diff.branch_ahead.is_populated())
+            {
+                forge_agent::env::git_diff::watch_refresh_base(Path::new(&cwd), default).await;
+            }
             return Ok(self.scan_work_at(slot, Path::new(&cwd), pr).await);
         }
         self.work_snapshot(slot).ok_or_else(|| format!("{} has no stored scan", slot.display()))
@@ -683,7 +704,32 @@ impl Workspace {
         }
         let gate = self.held_work_seats.gate(slot);
         let _one_at_a_time = match &gate {
-            Some(gate) => Some(gate.lock().await),
+            Some(gate) => Some(
+                // **A drawing read waits for a scan, but not for ever.** The
+                // gate is held across the watch's whole scan - its PR lookup
+                // and its base refresh included - and a reader that queued
+                // behind that would spend the page's open on a pass it never
+                // asked for. Past the bound the store is served instead, and
+                // the caller labels the base unverified, because that store
+                // was written before the base this read refreshed moved.
+                match tokio::time::timeout(PINNED_GATE_WAIT, gate.lock()).await {
+                    Ok(held) => held,
+                    Err(_) => {
+                        tracing::warn!(
+                            target: "forge_workspace::work",
+                            event_name = "work_scan_gate_overrun",
+                            slot = %slot.display(),
+                            wait_ms = PINNED_GATE_WAIT.as_secs_f64() * 1000.0,
+                            "a drawing read waited the whole bound for the seat's work gate",
+                        );
+                        return Err(format!(
+                            "{}'s work gate was held past {}ms",
+                            slot.display(),
+                            PINNED_GATE_WAIT.as_millis(),
+                        ));
+                    }
+                },
+            ),
             None => None,
         };
         Ok(self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base).await)
@@ -1369,6 +1415,67 @@ provider = "anthropic"
             .await
             .is_err(),
             "a fetching scan is the one that queues on the gate in flight",
+        );
+    }
+
+    /// **A drawing read waits out a scan in flight and then reads the tree.**
+    /// The gate is the one the watch's scan holds, so a review read that took
+    /// the store instead would draw a scan written before the base it just
+    /// refreshed moved. The control is the store: it says "not a repo", which
+    /// is what a read that did not wait would serve.
+    #[tokio::test]
+    async fn a_pinned_scan_waits_out_a_scan_in_flight_and_answers_a_fresh_one() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat);
+        workspace.store_work_snapshot(&seat, a_snapshot(Instant::now(), dir.path()));
+        let gate = workspace.held_work_seats.gate(&seat).expect("a held seat has a gate");
+        let in_flight = gate.lock().await;
+
+        let scanning = Arc::clone(&workspace);
+        let at = dir.path().to_path_buf();
+        let seat_for_task = seat.clone();
+        let waiting =
+            tokio::spawn(async move { scanning.scan_work_pinned(&seat_for_task, &at, None).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiting.is_finished(), "the drawing read queues on the scan in flight");
+
+        drop(in_flight);
+        let fresh =
+            waiting.await.expect("the task joins").expect("the gate frees and the scan runs");
+        assert_eq!(
+            fresh.diff.repo_gate,
+            RepoGate::InRepo,
+            "the answer is the scan taken after the gate, not the stored non-repo",
+        );
+    }
+
+    /// **The wait is bounded.** A gate held past `PINNED_GATE_WAIT` - a watch
+    /// pass stuck on its own network work - answers the read with a refusal,
+    /// so the page serves its store and labels the base unverified rather
+    /// than spending the whole open on a scan it never asked for.
+    #[tokio::test]
+    async fn a_pinned_scan_gives_up_on_a_gate_held_past_its_bound() {
+        let dir = a_repo();
+        let (workspace, _updates, _config) = a_workspace(dir.path());
+        let seat = seat();
+        workspace.hold_seat(&seat);
+        let gate = workspace.held_work_seats.gate(&seat).expect("a held seat has a gate");
+        let in_flight = gate.lock().await;
+
+        let started = Instant::now();
+        let refused = workspace.scan_work_pinned(&seat, dir.path(), None).await;
+        assert!(refused.is_err(), "a held gate past the bound refuses the read");
+        assert!(
+            started.elapsed() >= PINNED_GATE_WAIT,
+            "and the read waits its bound first, not a moment less",
+        );
+
+        drop(in_flight);
+        assert!(
+            workspace.scan_work_pinned(&seat, dir.path(), None).await.is_ok(),
+            "a free gate scans at once",
         );
     }
 
