@@ -1181,9 +1181,8 @@ function diffFileFrom(entry: unknown): DiffFileRecord {
 }
 
 /**
- * The base's own state, or null when the record carried none. An absent key
- * is not a claim of freshness: it draws nothing, the same way a layer this
- * build cannot name draws as unknown rather than as clean.
+ * The base's own state, as the record carried it. `null` is the wire's own
+ * null; a key this build does not know is `unknown`, never nothing.
  *
  * **serde's external tagging nests a struct variant under the variant name**,
  * so `Behind { behind }` arrives as `{"behind": {"behind": 3}}`, not as a flat
@@ -1191,7 +1190,8 @@ function diffFileFrom(entry: unknown): DiffFileRecord {
  * turn the one labelled-lag state into `unknown` and draw nothing at all.
  */
 function baseStateFrom(value: unknown): BaseStateRecord | null {
-  if (value === undefined || value === null) return null;
+  if (value === undefined) return { state: 'unknown', raw: undefined };
+  if (value === null) return null;
   if (value === 'local') return { state: 'local' };
   if (value === 'current') return { state: 'current' };
   if (value === 'unverified') return { state: 'unverified' };
@@ -1202,10 +1202,15 @@ function baseStateFrom(value: unknown): BaseStateRecord | null {
 
 export function diffFrom(value: unknown): DiffRecord {
   const held = record(value);
+  const branchAhead = diffLayerFrom(held['branch_ahead']);
   return {
     worktree: diffLayerFrom(held['worktree']),
-    branchAhead: diffLayerFrom(held['branch_ahead']),
-    base: baseStateFrom(held['base']),
+    branchAhead,
+    // **Only a drawn branch layer carries a base claim**, and an absent key
+    // over one is an unread base, not a fresh one: a server older than the
+    // field answers no `base` at all, and reading that as nothing drew the
+    // same silence as "the base is fine" - the one claim nobody checked.
+    base: branchAhead.state === 'populated' ? baseStateFrom(held['base']) : null,
     truncated: held['truncated'] === true,
   };
 }

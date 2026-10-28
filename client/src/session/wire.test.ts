@@ -281,18 +281,32 @@ describe('the diff parse', () => {
     // tagging nests a struct variant under its name, so `behind` arrives as
     // `{"behind": {"behind": 3}}`. A flat read answered unknown, which drew
     // no caveat at all - exactly the silence the reviewer reported.
-    expect(diffFrom({ base: 'current' }).base).toEqual({ state: 'current' });
-    expect(diffFrom({ base: 'local' }).base).toEqual({ state: 'local' });
-    expect(diffFrom({ base: 'unverified' }).base).toEqual({ state: 'unverified' });
-    expect(diffFrom({ base: { behind: { behind: 3 } } }).base).toEqual({
-      state: 'behind',
-      behind: 3,
-    });
+    const drawn = (base: unknown): unknown =>
+      diffFrom({ branch_ahead: { populated: [] }, base }).base;
+    expect(drawn('current')).toEqual({ state: 'current' });
+    expect(drawn('local')).toEqual({ state: 'local' });
+    expect(drawn('unverified')).toEqual({ state: 'unverified' });
+    expect(drawn({ behind: { behind: 3 } })).toEqual({ state: 'behind', behind: 3 });
     expect(diffFrom({}).base, 'an absent base claims nothing').toBeNull();
-    expect(diffFrom({ base: 'lagging' }).base, 'and an unnamed state is kept as itself').toEqual({
+    expect(drawn('lagging'), 'and an unnamed state is kept as itself').toEqual({
       state: 'unknown',
       raw: 'lagging',
     });
+  });
+
+  /**
+   * **An absent base over a drawn branch layer is an unread base, not a fresh
+   * one.** A client newer than its server gets a v14 record with no `base` at
+   * all; reading that as nothing drew the same silence as "the base is fine",
+   * which is the one claim nobody checked.
+   */
+  it('reads an absent base over a drawn branch layer as unknown', () => {
+    const skew = diffFrom({ branch_ahead: { populated: [] } });
+    expect(skew.base?.state, 'the older server never checked, so the page says so').toBe('unknown');
+    expect(
+      diffFrom({ branch_ahead: 'clean' }).base,
+      'a layer with nothing to describe carries no base claim',
+    ).toBeNull();
   });
 });
 
