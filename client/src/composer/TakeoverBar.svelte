@@ -27,6 +27,7 @@
     onabandon = () => {},
     onmic = () => {},
     dictation = false,
+    takeline = null,
     ondone = null,
     onnotnow = null,
     onback,
@@ -50,6 +51,13 @@
     onabandon?: () => void;
     onmic?: () => void;
     dictation?: boolean;
+    /**
+     * What became of a take this page started, when the line is the bar's to
+     * say: the feedback row is this surface's words row, and the composer's
+     * own notice row is behind the picture while the takeover is up, so a
+     * refusal routed there would be invisible exactly when the mic was pressed.
+     */
+    takeline?: { tone: string; text: string } | null;
     /** The hand-off's answers; null once no ask is parked, leaving back-to-chat. */
     ondone?: (() => void) | null;
     onnotnow?: (() => void) | null;
@@ -205,6 +213,12 @@
     </span>
   </div>
   {#if feedbackOpen && onfeedback !== null}
+    {#if takeline !== null}
+      <!-- The reason a take pressed here did not open, in the bar: the
+           composer's own row is behind the picture, so a line drawn there is
+           a press that looks dead. -->
+      <div class="tb-refusal">{takeline.text}</div>
+    {/if}
     <div class="tb-feedback">
       {#if take !== null}
         <TakeCard {take} phase={take.phase} {wire} oncancel={onabandon} {silent} spread />

@@ -1240,6 +1240,7 @@
       onabandon={abandon}
       onmic={() => dictate.toggle()}
       {dictation}
+      takeline={box.dictateLine}
       ondone={takeoverAsk === null ? null : () => takeoverAnswer('done')}
       onnotnow={takeoverAsk === null ? null : () => takeoverAnswer('not_now')}
       onback={takeoverBack}

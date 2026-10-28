@@ -237,6 +237,22 @@ describe("the takeover bar's feedback controls", () => {
     }
   });
 
+  /// **The take card replaces the field, so it has to take the field's line.**
+  /// Outside the line rule the card sizes to its own content - 344px of a
+  /// 1576px row at 1600, measured on the dev stack - and a card that grows
+  /// keeps the row's readings readable while the take runs. jsdom draws no
+  /// layout, so what is pinned is the rule the sheet writes and the classes
+  /// that select it; the 1600 and 430 widths are the PR's.
+  it('gives the take card the line the feedback field gives up', () => {
+    const rule = /\.takeline \.tc, \.dock \.qrow \.tc, \.tb-feedback \.tc \{([^}]*)\}/.exec(SHEET);
+    expect(
+      rule,
+      "the bar's card is not in the line rule, so it sizes to its content",
+    ).not.toBeNull();
+    expect(rule?.[1], 'and the line rule is what makes the card grow').toMatch(/flex: 1 1 auto/);
+    expect(rule?.[1], 'and what lets it shrink below its content').toMatch(/min-width: 0/);
+  });
+
   /// **The rules reach the bar only through the class the markup wears**, and
   /// dropping one passes every rule pin above: the sheet would style a class
   /// no control carries.

@@ -1369,6 +1369,11 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 @media (pointer: coarse) { .tb-btn.nav { min-width: 44px; min-height: 44px; } }
 .tb-feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
   border-top: 1px solid var(--line); background: var(--s2); }
+/* A take that would not open is said in the bar, above the row its mic lives
+   in: the composer's own notice row is behind the picture while the takeover
+   is up, so a line drawn there is a press that looks dead. */
+.tb-refusal { padding: 7px 12px; border-top: 1px solid var(--line);
+  background: var(--s2); color: var(--bad); font-size: var(--fs-data); }
 .tb-field { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--s1); color: var(--text); }
 .takeover-page { position: absolute; inset: 0; display: flex;
@@ -2789,11 +2794,12 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   font-family: inherit; font-size: inherit; padding: 0 3px; line-height: 1; }
 .tc .x:hover { color: var(--text); }
 /* **The take takes the line, and the graph takes the line's room** (Ved,
-   2026-10-11): the draft's own line in the composer and the question's words
-   row in the dock both hand the card everything the controls leave, and the
-   card wears none of the pill's chrome - the surface's ring carries the state,
-   and the row is the one the words land in rather than something above it. */
-.takeline .tc, .dock .qrow .tc { align-self: center; margin: 0; border: 0; background: none;
+   2026-10-11): the draft's own line in the composer, the question's words row
+   in the dock and the takeover bar's feedback line all hand the card
+   everything the controls leave, and the card wears none of the pill's chrome
+   - the surface's ring carries the state, and the row is the one the words
+   land in rather than something above it. */
+.takeline .tc, .dock .qrow .tc, .tb-feedback .tc { align-self: center; margin: 0; border: 0; background: none;
   box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
 /* The graph inside the card takes whatever the readings leave: pinned at the
    pill's 116px it read as a bead between the counts rather than as the meter of

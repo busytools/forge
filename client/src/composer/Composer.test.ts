@@ -6032,6 +6032,71 @@ describe('the dock', () => {
     });
   });
 
+  /** **The bar's mic is the composer's take, not a second one.** The feedback
+   *  line draws the dock's own words row, take card and mic, so the press there
+   *  has to open the microphone exactly as the box's mic does - Ved, 2026-10-28:
+   *  the press in the takeover bar did nothing while the same press in the
+   *  composer worked. */
+  it('starts a take from the bar feedback line, and ends it there', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+
+      action('Open browser').click();
+      flushSync();
+      barAction('something').click();
+      flushSync();
+      const mic = document.querySelector('.takeover-bar .micb');
+      if (!(mic instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+      mic.click();
+      await opened();
+      expect(commands(harness), 'the press opens the microphone').toMatchObject([
+        { dictate_stream: { key: SLOT } },
+      ]);
+
+      mic.click();
+      settle();
+      expect(commands(harness).at(-1), 'and the second press submits it').toMatchObject({
+        dictate_stop: { key: SLOT, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** **A take that will not open says so where it was pressed.** The bar's
+   *  feedback row is the words row a take here belongs to, and the composer's
+   *  own notice row is behind the picture while the takeover is up - so a
+   *  refusal routed there was a press that looked dead, while the same press
+   *  in the box drew its line. */
+  it('says in the bar why a take pressed there did not open', async () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }), dictation: true });
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    const button = document.querySelector('.takeover-bar .micb');
+    if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+    mic.held.refuse = true;
+    try {
+      button.click();
+      await opened();
+    } finally {
+      mic.held.refuse = false;
+    }
+
+    expect(
+      document.querySelector('.takeover-bar')?.textContent,
+      'the bar names the refusal where the press was made',
+    ).toContain('the microphone was refused');
+  });
+
   /** **Words that never left are not a message to read.** A send the socket
    *  refused used to answer `feedback` anyway, telling the session to read a
    *  prompt nobody sent and ending the park on nothing; the dock stays live,
