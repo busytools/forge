@@ -88,6 +88,10 @@ popup asked for as that first document; the veto patches that document's world
 as soon as its context is reported, which is the out-of-band case a tab
 another client creates directly at a URL is already in.
 
+**The browser offers no WebAuthn**: its pages expose no `PublicKeyCredential`,
+so passkey and security-key sign-in stop working and a site that checks for the
+API asks for a password instead.
+
 **The old profile trees go once.** The first server that finds no marker
 deletes the client's old in-process CEF caches - `browser/cef-profile` and
 `browser/profiles/<name>/cef` under its bundle identifier - and the server's
