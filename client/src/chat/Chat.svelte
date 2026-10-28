@@ -18,6 +18,7 @@
     HISTORY_WINDOW_BYTES,
     NOTHING,
     beingWritten,
+    headMoved,
     runningAt,
     type Conversation,
     type Turn as HeldTurn,
@@ -300,11 +301,11 @@
   /**
    * Pages of older turns asked for and not yet answered.
    *
-   * **Counted rather than flagged, and armed by the ASK.** The compensation
-   * has to be on while a prepend lands and off for everything else, and both
-   * halves of that are edges: an ask the socket refused must not arm it at
-   * all, and a second ask still in flight must not be disarmed by the first
-   * page landing. One flag cannot tell those apart from the ordinary case.
+   * **It says a page is coming, never what the change will be** - which is why
+   * the list is told the change itself (see `shift` below) rather than this
+   * count. Counted rather than flagged because the asks are edges: an ask the
+   * socket refused arms nothing, and a second ask still in flight must not be
+   * disarmed by the first page landing.
    */
   let outstanding = $state(0);
   /**
@@ -319,7 +320,7 @@
   let entering = false;
   /** Which entry the hold belongs to, so only the newest one lifts it. */
   let entered = 0;
-  /** Whether the last prepend has landed but the list has not taken it yet. */
+  /** Whether the last prepend has landed but the layout has not settled yet. */
   let settling = $state(false);
   /** The prepend count this component has already accounted for. */
   let accounted = 0;
@@ -347,7 +348,18 @@
   /** The tick a settling compensation waits on, held so a later one can replace it. */
   let timer: ReturnType<typeof setTimeout> | null = null;
 
-  const shift = $derived(outstanding > 0 || settling);
+  /**
+   * Whether the list is holding the reader by a prepend's own compensation,
+   * which is what the column's passes stand aside for.
+   */
+  const compensating = $derived(outstanding > 0 || settling);
+
+  /**
+   * Whether the change that built this list moved its head, which is the only
+   * change it may compensate for. The why is `movedHead` in `conversation.ts`;
+   * this is only the read.
+   */
+  const shift = $derived(headMoved(held.turns));
   /** This column's own memory of its rows' heights, kept out of a module global. */
   const rowSizes = sizes();
   // The measured heights belong to the turns this conversation holds.
@@ -514,9 +526,9 @@
       // A reader away from the foot has a place of their own, and a size change
       // is one of the two ways it moves under them. **Not while the prepend
       // compensation is on**, same as the effect's own pass: that path holds
-      // the reader by the list's own shift as older turns arrive above them,
-      // and two hands on the scroll is one too many.
-      else if (!shift) {
+      // the reader by the list's own compensation as older turns arrive above
+      // them, and two hands on the scroll is one too many.
+      else if (!compensating) {
         restored += 1;
         restoreAnchor();
       }
@@ -715,9 +727,7 @@
       // incoming chat's trim.
       working?.following(true);
       // **And so were the asks this column is holding.** They belong to the
-      // conversation that is going, and their pages are not coming here: left
-      // standing they hold `shift` on, which is the guard that keeps the
-      // restore out of a prepend's way and would keep it out for good.
+      // conversation that is going, and their pages are not coming here.
       outstanding = 0;
       settling = false;
       // **And the hand is not this seat's.** A hold that outlived its press
@@ -831,9 +841,8 @@
   // turns the follow off and the column stays where they left it.
 
   // A page landing settles one ask, and the last one leaves the compensation on
-  // for one more tick: `virtua` applies it as the rows change, so a page that
-  // dropped it in the same update would be disarming before the change it was
-  // armed for.
+  // for one more tick: the landing's own layout pass is the one the column's
+  // restore must stand out of the way of.
   $effect(() => {
     const now = held.prepends;
     if (now === accounted) return;
@@ -854,11 +863,7 @@
 
   // **A forgotten ask drains the same count**, and no page is coming to do it:
   // a dropped socket takes the page in flight with it and a refusal answers
-  // with none. Without this the count outlives the ask it was armed for, and
-  // `shift` - the guard that keeps the restore out of a prepend's way - stays
-  // on for the life of the seat, which is the parked reader's hold quietly
-  // turning itself off (measured: the offset left at 50 where the row above the
-  // reader had moved it to 250, still 50 after the reconnect's own page).
+  // with none. Without this the count outlives the ask it was armed for.
   $effect(() => {
     const now = held.dropped;
     if (now === drained) return;
@@ -1349,12 +1354,12 @@
    * the observer's.)
    *
    * **Skipped while the prepend compensation is on**: that path holds the
-   * reader by the list's own shift as older turns arrive above them, and two
-   * hands on the scroll is one too many.
+   * reader by the list's own compensation as older turns arrive above them,
+   * and two hands on the scroll is one too many.
    */
   $effect(() => {
     const park = held;
-    const moving = shift;
+    const moving = compensating;
     if (anchor === null || park.following || !park.loaded || moving) {
       // No anchor parked, nothing owed: the next parked run schedules against
       // a clean slate rather than against an order from before the episode.
@@ -1554,16 +1559,10 @@
    * their pages land on the way to a place the reader asked to go and a small
    * page would turn a far jump into dozens of round trips.
    *
-   * The compensation is armed as the ask goes out rather than when the answer
-   * lands, because the list applies it AS the rows change: a page that waited
-   * for the answer would be arming after the change it exists for, which is a
-   * prepend that moves everything the reader is looking at.
-   *
-   * **And only when an ask actually went.** A socket that is down refuses the
-   * ask without sending anything, so arming on the call rather than on its
-   * answer leaves the compensation on with nothing coming - and the next turn
-   * appended below the reader then goes through the prepend path, which moves
-   * them AND leaves the list's measured sizes attributed to the wrong rows.
+   * **The count here is only what the loading line and the restore read.** The
+   * list is not handed it: the compensation belongs to the landing, the change
+   * that moves the head, and it comes with that change (see `shift`). An ask
+   * that never went arms nothing, because no change follows it.
    */
   function loadOlder(turns: number): boolean {
     if (working?.older(turns) !== true) return false;
