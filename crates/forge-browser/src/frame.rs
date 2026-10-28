@@ -122,12 +122,13 @@ impl Frame {
 /// `method` drives a different search on each path. On the lossy one, 0 sets
 /// `RD_OPT_NONE`, drops the token buffer and zeroes the SNS weighting in the
 /// quantiser matrices (`webp_enc.c`, `quant_enc.c`): a third of the CPU per
-/// frame of a 2048x1112 window at 2x, at the same quality and about 18%
-/// larger on the wire. On the lossless one, `vp8l_enc.c` reads 0 as
+/// frame of a 2048x1112 window at 2x, at the same quality setting and about
+/// 18% larger on the wire. On the lossless one, `vp8l_enc.c` reads 0 as
 /// `low_effort`, which skips `AnalyzeEntropy` and coarsens `histo_bits` from
 /// 3 to 7, and a flat page's key frame came out 69x the bytes and 2.4x the
-/// time. A key frame is one per attach, pause-resume and resize, and it is
-/// the frame a window drag emits.
+/// time. A key frame fires on attach, pause-resume and every resize, and
+/// `Sink::offer` keys on a size change, so a window drag emits one per
+/// painted size.
 #[cfg(target_os = "macos")]
 fn config(quality: u8, key: bool) -> Option<webp::WebPConfig> {
     /// **The fastest effort libwebp offers, where the search is the cost and
@@ -566,8 +567,8 @@ mod tests {
     /// libwebp's.** `method` 0 on the LOSSLESS path is `low_effort`
     /// (`vp8l_enc.c`): it skips `AnalyzeEntropy` and coarsens `histo_bits`,
     /// which made a flat page's key frame 69x the bytes at 2.4x the time.
-    /// **The call from `encode_webp` is guarded by the denied-warning lint,
-    /// not by this test**: a `config` nothing calls fails the build.
+    /// **`quality` is not a lossy-only setting**: on VP8L it drives the
+    /// hash-chain search, so a key frame keeps it too.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_lossy_frame_takes_the_fastest_effort_and_a_key_frame_does_not() {
@@ -577,28 +578,102 @@ mod tests {
         assert_eq!(lossy.method, 0, "a lossy frame takes the fastest effort");
         assert_eq!(lossy.quality, 83.0, "the configured quality is the one encoded");
         assert_eq!(lossy.lossless, 0, "a frame between key frames is lossy");
-        assert_eq!(lossy.alpha_compression, 1, "a lossy frame compresses alpha");
+        assert_eq!(lossy.alpha_compression, 1, "a lossy frame compresses alpha, as it always did");
         let key = super::config(83, true).expect("a config");
+        let libwebp = webp::WebPConfig::new().expect("a config");
         assert_eq!(key.lossless, 1, "a surface's first frame is lossless");
-        assert_eq!(key.method, 4, "a key frame keeps libwebp's default effort");
-        assert_eq!(key.alpha_compression, 0, "a lossless frame does not compress alpha");
+        assert_eq!(key.method, libwebp.method, "a key frame keeps libwebp's default effort");
+        assert_eq!(
+            key.quality, 83.0,
+            "a key frame keeps the configured quality: VP8L searches on it"
+        );
+        // VP8L codes the whole ARGB, so this is the crate's own legacy
+        // setting rather than a decision: it is what `encode_simple` gave a
+        // lossless frame, and the key-frame bytes stay identical to it.
+        assert_eq!(
+            key.alpha_compression, 0,
+            "a lossless frame keeps encode_simple's alpha setting"
+        );
     }
 
-    /// **A painted BGRA buffer becomes a WebP a decoder would recognise.**
-    /// The channel between two profiles is only bytes, so this pins the
-    /// encoder's own output shape: RIFF/WebP, and libwebp's `VP8`/`VP8L`
-    /// chunk for the lossy and lossless cases.
+    /// **A painted BGRA buffer becomes a WebP a decoder would recognise, and
+    /// a lossy frame is the fast-effort encode.** The channel between two
+    /// profiles is only bytes, so this pins the encoder's own output shape:
+    /// RIFF/WebP, and libwebp's `VP8`/`VP8L` chunk for the lossy and
+    /// lossless cases.
+    ///
+    /// **The oracle is the whole point.** `encode_webp`'s lossy branch is
+    /// one call, and reverting it to `encode_simple` - what a conflict
+    /// resolution or a "lossy needs no custom config" tidy writes - would
+    /// restore the 200 ms lag with every other test green. The control below
+    /// first proves the two efforts disagree on this buffer, so the equality
+    /// after it can fail.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_bgra_view_encodes_to_webp() {
-        // Two pixels: blue opaque, red opaque, in BGRA order.
-        let bgra = [255_u8, 0, 0, 255, 0, 0, 255, 255];
-        let lossy = super::encode_webp(&bgra, 2, 1, 80, false).expect("a lossy frame");
+        // A structured view: flat blocks, a colour shift per channel and
+        // bright rows. **Not the two-pixel pair**: the two efforts can emit
+        // identical bytes on a buffer that small, which would make the
+        // oracle blind.
+        const WIDTH: u32 = 128;
+        const HEIGHT: u32 = 80;
+        let mut bgra = vec![0_u8; (WIDTH * HEIGHT * 4) as usize];
+        for (at, pixel) in bgra.chunks_mut(4).enumerate() {
+            let x = u32::try_from(at).expect("an index") % WIDTH;
+            let y = u32::try_from(at).expect("an index") / WIDTH;
+            let base = if (x / 8 + y / 8).is_multiple_of(2) { 24 } else { 220 };
+            let value = if y.is_multiple_of(7) { 40 } else { base };
+            pixel[0] = value;
+            pixel[1] = value / 2;
+            pixel[2] = 255 - value;
+            pixel[3] = 255;
+        }
+        let mut rgba = bgra.clone();
+        for pixel in rgba.chunks_mut(4) {
+            pixel.swap(0, 2);
+        }
+        // The reference, built here rather than from `config`, or a
+        // `config` that still says "fast" would vouch for itself.
+        let at_effort = |method: i32| {
+            let mut reference = webp::WebPConfig::new().expect("a config");
+            reference.lossless = 0;
+            reference.alpha_compression = 1;
+            reference.quality = 83.0;
+            reference.method = method;
+            webp::Encoder::from_rgba(&rgba, WIDTH, HEIGHT)
+                .encode_advanced(&reference)
+                .expect("a reference encode")
+                .to_vec()
+        };
+        let fast = at_effort(0);
+        let default = at_effort(4);
+        // The control: an oracle that cannot tell the efforts apart proves
+        // nothing, and libwebp is deterministic at thread_level 0. **Byte
+        // lengths in the message, not the streams**: a failure here is read
+        // by a person, and the streams are kilobytes each.
+        assert!(
+            fast != default,
+            "the control: the efforts must disagree on this buffer, or the oracle is blind \
+             ({} B fast, {} B default)",
+            fast.len(),
+            default.len(),
+        );
+
+        let lossy = super::encode_webp(&bgra, WIDTH, HEIGHT, 83, false).expect("a lossy frame");
         assert_eq!(&lossy[..4], b"RIFF");
         assert_eq!(&lossy[8..12], b"WEBP");
         assert!(lossy.windows(4).any(|window| window == b"VP8 "), "lossy uses VP8");
-        let key = super::encode_webp(&bgra, 2, 1, 80, true).expect("a key frame");
+        assert!(
+            lossy == fast,
+            "the lossy frame is the fast-effort encode, not the default's \
+             ({} B encoded, {} B fast, {} B default)",
+            lossy.len(),
+            fast.len(),
+            default.len(),
+        );
+
+        let key = super::encode_webp(&bgra, WIDTH, HEIGHT, 83, true).expect("a key frame");
         assert!(key.windows(4).any(|window| window == b"VP8L"), "key frames are lossless");
-        assert!(super::encode_webp(&bgra, 0, 1, 80, false).is_none(), "no view, no frame");
+        assert!(super::encode_webp(&bgra, 0, 1, 83, false).is_none(), "no view, no frame");
     }
 }
