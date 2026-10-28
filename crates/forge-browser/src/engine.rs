@@ -135,6 +135,9 @@ fn turn_off_autofill() {
         );
         return;
     };
+    // **A refusal is logged, not fatal**: a renamed preference would leave
+    // autofill on with nothing failing, and `autofill_live` is what catches
+    // that - the host dies on its card form with the original fault.
     let mut all_set = true;
     for name in ["autofill.credit_card_enabled", "autofill.profile_enabled"] {
         let Some(mut value) = value_create() else {
