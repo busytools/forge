@@ -14,6 +14,24 @@ const wire = (extra: Record<string, unknown> = {}): unknown => ({
     ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead', 'cwd /tmp'] }],
     judgment: [{ label: 'Next', lines: ['the client row'] }],
   },
+  judgment_turn: [
+    {
+      type: 'user',
+      uuid: 'forge_nudge_handoff_4_aaaa',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'A handoff is starting for this session:' }],
+      },
+    },
+    {
+      type: 'assistant',
+      uuid: 'a-1',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'mcp__forge__agents__handoff', input: {} }],
+      },
+    },
+  ],
   ...extra,
 });
 
@@ -28,6 +46,28 @@ describe('the handoff record', () => {
       'cwd /tmp',
     ]);
     expect(record?.judgment[0]?.label, 'and the judgment by its heading').toBe('Next');
+  });
+
+  /**
+   * **The judgment turn is carried, not re-derived.** The transcript it lived
+   * in belongs to the session that left, so a client attaching after the swap
+   * draws the procedure and its calls from this record or not at all - and
+   * the frame the row is drawn from has to keep them too, or the row draws a
+   * turn's envelope with nothing in it.
+   */
+  it('keeps the judgment turn the row draws above it', () => {
+    const record = handoffOf(wire());
+    expect(record, 'a record to put on a frame').not.toBeNull();
+    if (record === null) return;
+    expect(record.judgment_turn, 'the turn narrows with the record').toHaveLength(2);
+    expect(
+      handoffOf(handoffFrame(record).handoff)?.judgment_turn,
+      'and survives the frame',
+    ).toEqual(record.judgment_turn);
+    expect(
+      handoffOf(wire({ judgment_turn: undefined }))?.judgment_turn,
+      'absent reads empty',
+    ).toEqual([]);
   });
 
   it('is nothing without the pair a row is addressed by', () => {
