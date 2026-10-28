@@ -91,18 +91,29 @@ impl Frame {
 }
 
 /// One frame's encoder settings.
+///
+/// **A lossy frame takes the fastest effort; a key frame keeps libwebp's.**
+/// `method` drives a different search on each path. On the lossy one, 0 sets
+/// `RD_OPT_NONE`, drops the token buffer and zeroes the SNS weighting in the
+/// quantiser matrices (`webp_enc.c`, `quant_enc.c`): a third of the CPU per
+/// frame of a 2048x1112 window at 2x, at the same quality and about 18%
+/// larger on the wire. On the lossless one, `vp8l_enc.c` reads 0 as
+/// `low_effort`, which skips `AnalyzeEntropy` and coarsens `histo_bits` from
+/// 3 to 7, and a flat page's key frame came out 69x the bytes and 2.4x the
+/// time. A key frame is one per attach, pause-resume and resize, and it is
+/// the frame a window drag emits.
 #[cfg(target_os = "macos")]
 fn config(quality: u8, key: bool) -> Option<webp::WebPConfig> {
-    /// **The fastest effort libwebp offers.** Its default is a two-pass
-    /// search that cost 237 ms of CPU a frame on a painted 2048x1112 window
-    /// at 2x, where this costs 75 ms at 0.7 dB higher PSNR; the 18% larger
-    /// frames cross a local socket.
-    const EFFORT: i32 = 0;
+    /// **The fastest effort libwebp offers, where the search is the cost and
+    /// not the answer**: it is the lossy path only, for the reason above.
+    const LOSSY_EFFORT: i32 = 0;
     let mut config = webp::WebPConfig::new().ok()?;
     config.lossless = i32::from(key);
     config.alpha_compression = i32::from(!key);
     config.quality = f32::from(quality);
-    config.method = EFFORT;
+    if !key {
+        config.method = LOSSY_EFFORT;
+    }
     Some(config)
 }
 
@@ -128,8 +139,15 @@ pub fn encode_webp(
     for pixel in rgba.chunks_mut(4) {
         pixel.swap(0, 2);
     }
+    let Some(config) = config(quality, key) else {
+        eprintln!(
+            "cef host: a frame was not encoded (event_name cef_frame_encode_failed, \
+             {width}x{height}): libwebp refused the encoder config"
+        );
+        return None;
+    };
     let encoder = webp::Encoder::from_rgba(&rgba, width, height);
-    match encoder.encode_advanced(&config(quality, key)?) {
+    match encoder.encode_advanced(&config) {
         Ok(memory) => Some(memory.to_vec()),
         Err(why) => {
             eprintln!(
@@ -480,20 +498,26 @@ mod tests {
         std::fs::remove_dir_all(&dir).expect("the temp dir goes");
     }
 
-    /// **A live frame is encoded at the fastest effort libwebp has.**
-    /// libwebp's default is a two-pass search: on a painted 2048x1112 window
-    /// at 2x it cost 237 ms of CPU a frame against this setting's 75 ms, and
-    /// a change back to it is the 200 ms picture lag this host had - which
-    /// no assertion of pixels or sizes can see.
+    /// **A lossy frame takes the fastest effort; a key frame keeps
+    /// libwebp's.** `method` 0 on the LOSSLESS path is `low_effort`
+    /// (`vp8l_enc.c`): it skips `AnalyzeEntropy` and coarsens `histo_bits`,
+    /// which made a flat page's key frame 69x the bytes at 2.4x the time.
+    /// **The call from `encode_webp` is guarded by the denied-warning lint,
+    /// not by this test**: a `config` nothing calls fails the build.
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_live_frame_is_encoded_at_the_fastest_effort() {
-        let lossy = super::config(75, false).expect("a config");
-        assert_eq!(lossy.method, 0, "the effort is the fastest libwebp offers");
-        assert_eq!(lossy.quality, 75.0, "the configured quality is the one encoded");
+    fn a_lossy_frame_takes_the_fastest_effort_and_a_key_frame_does_not() {
+        // A quality libwebp does not default to, so an assignment deleted by
+        // accident cannot pass on the sampled default.
+        let lossy = super::config(83, false).expect("a config");
+        assert_eq!(lossy.method, 0, "a lossy frame takes the fastest effort");
+        assert_eq!(lossy.quality, 83.0, "the configured quality is the one encoded");
         assert_eq!(lossy.lossless, 0, "a frame between key frames is lossy");
-        let key = super::config(75, true).expect("a config");
+        assert_eq!(lossy.alpha_compression, 1, "a lossy frame compresses alpha");
+        let key = super::config(83, true).expect("a config");
         assert_eq!(key.lossless, 1, "a surface's first frame is lossless");
+        assert_eq!(key.method, 4, "a key frame keeps libwebp's default effort");
+        assert_eq!(key.alpha_compression, 0, "a lossless frame does not compress alpha");
     }
 
     /// **A painted BGRA buffer becomes a WebP a decoder would recognise.**
