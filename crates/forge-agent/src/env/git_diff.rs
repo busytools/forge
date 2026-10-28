@@ -362,9 +362,8 @@ static LAST_WATCH_REFRESH: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock
 ///
 /// Weak, so a repository nobody is fetching for leaves nothing behind; dead
 /// entries are pruned on the next look.
-static FETCH_GATES: OnceLock<
-    Mutex<HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>,
-> = OnceLock::new();
+static FETCH_GATES: OnceLock<Mutex<HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
 
 /// The gate for `key`'s base fetches, made on first use.
 fn fetch_gate(key: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
@@ -3406,10 +3405,7 @@ mod tests {
         let log = String::from_utf8_lossy(&capture.0.lock().clone()).into_owned();
         let named = log.contains("git_base_behind");
         let counted = log.contains("behind=1");
-        assert!(
-            named && counted,
-            "the lag is a record of its own, naming the count: {log}",
-        );
+        assert!(named && counted, "the lag is a record of its own, naming the count: {log}",);
         // The scan is local, so the stale ref this case is about is exactly
         // what it reads.
         let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
@@ -3563,10 +3559,7 @@ mod tests {
         commit_all(&dir, "base");
         let beside = tempfile::tempdir().expect("a second directory");
         let linked = beside.path().join("wt");
-        git_at(
-            dir.path(),
-            &["worktree", "add", "-q", "-b", "linked", &linked.to_string_lossy()],
-        );
+        git_at(dir.path(), &["worktree", "add", "-q", "-b", "linked", &linked.to_string_lossy()]);
 
         let main_key = repo_key(dir.path(), TEST_GIT_BUDGET).await;
         let linked_key = repo_key(&linked, TEST_GIT_BUDGET).await;

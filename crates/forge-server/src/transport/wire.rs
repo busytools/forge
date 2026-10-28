@@ -4737,9 +4737,12 @@ mod tests {
         git_in(repo.path(), &["checkout", "-q", "worktree-pr"]);
         git_in(repo.path(), &["merge", "-q", "--no-edit", "-X", "theirs", "main"]);
 
-        let snapshot =
-            forge_workspace::env::git_diff::scan(repo.path(), &std::collections::HashMap::new(), None)
-                .await;
+        let snapshot = forge_workspace::env::git_diff::scan(
+            repo.path(),
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .await;
         let content =
             forge_workspace::env::git_diff::content::scan(repo.path(), &snapshot, None, None).await;
         let threads = vec![wide_thread(
@@ -5476,10 +5479,7 @@ mod tests {
             timings.base_ms < 1.0,
             "no child runs for an ordinary read's base (a git call costs whole ms): {timings:?}",
         );
-        assert!(
-            timings.rescan_ms < 1.0,
-            "and nothing re-scans the tree for one: {timings:?}",
-        );
+        assert!(timings.rescan_ms < 1.0, "and nothing re-scans the tree for one: {timings:?}",);
     }
 
     /// The other half: a seat the transport holds nothing for pays the

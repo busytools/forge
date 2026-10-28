@@ -6027,7 +6027,10 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     };
     assert_eq!(
-        refs(&state.surface.roster().cwd_for(&lead_seat()).expect("the seat's cwd"), "refs/remotes/origin/main"),
+        refs(
+            &state.surface.roster().cwd_for(&lead_seat()).expect("the seat's cwd"),
+            "refs/remotes/origin/main"
+        ),
         refs(upstream.path(), "main~1"),
         "an ordinary read leaves the base ref where it stood",
     );

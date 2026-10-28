@@ -728,9 +728,7 @@ impl Workspace {
             (_, Some(base)) => {
                 forge_agent::env::git_diff::scan_pinned(cwd, &env, previous, base).await
             }
-            (PrRefresh::Fetch, None) => {
-                forge_agent::env::git_diff::scan(cwd, &env, previous).await
-            }
+            (PrRefresh::Fetch, None) => forge_agent::env::git_diff::scan(cwd, &env, previous).await,
             (PrRefresh::ServeCached, None) => {
                 forge_agent::env::git_diff::scan_serving_cached_pr(cwd, &env, previous).await
             }
@@ -1553,9 +1551,13 @@ provider = "anthropic"
         workspace.store_work_snapshot(&seat, a_snapshot(Instant::now(), dir.path()));
 
         let measured = workspace
-            .scan_work_at_with_base(&seat, dir.path(), PrRefresh::ServeCached, None, Some(
-                BaseState::Behind { behind: 2 },
-            ))
+            .scan_work_at_with_base(
+                &seat,
+                dir.path(),
+                PrRefresh::ServeCached,
+                None,
+                Some(BaseState::Behind { behind: 2 }),
+            )
             .await;
         assert_eq!(measured.base, Some(BaseState::Behind { behind: 2 }), "the measurement lands");
 
