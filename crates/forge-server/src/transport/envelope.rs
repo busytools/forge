@@ -204,6 +204,16 @@ pub enum ClientMessage {
         /// case never arises while this client is attached.
         #[serde(default)]
         answering: bool,
+        /// The review page's own read: refresh the branch diff's base before
+        /// the record is encoded, and pin the stats and content reads to the
+        /// sha that refresh resolved.
+        ///
+        /// **Off for every other read.** The ordinary record read is the one
+        /// behind every seat page and must not wait on the network; a page
+        /// that draws a diff asks again with this set when it opens, so the
+        /// state beside that diff belongs to the moment it was read.
+        #[serde(default)]
+        review: bool,
     },
     Unsubscribe {
         what: Subject,
@@ -976,7 +986,7 @@ mod tests {
 
     #[test]
     fn a_subscribe_round_trips_through_json() {
-        let sent = ClientMessage::Subscribe { what: Subject::Home, answering: true };
+        let sent = ClientMessage::Subscribe { what: Subject::Home, answering: true, review: false };
         let json = serde_json::to_string(&sent).expect("encode");
         assert!(json.contains("\"kind\":\"subscribe\""), "{json}");
 

@@ -636,13 +636,29 @@ impl Workspace {
         cwd: &Path,
         pr: PrRefresh,
     ) -> WorkSnapshot {
+        self.scan_work_at_with_base(slot, cwd, pr, None).await
+    }
+
+    /// [`Self::scan_work_at`] pinned to one base revision: the branch-ahead
+    /// layer is computed against `base` (a sha a drawing read resolved)
+    /// rather than the ref's name.
+    async fn scan_work_at_with_base(
+        &self,
+        slot: &SessionSlot,
+        cwd: &Path,
+        pr: PrRefresh,
+        base: Option<&str>,
+    ) -> WorkSnapshot {
         let previous = self.work_snapshot(slot).map(|held| held.diff);
         let env = self.project_env(slot.project());
-        let diff = match pr {
-            PrRefresh::Fetch => {
+        let diff = match (pr, base) {
+            (_, Some(base)) => {
+                forge_agent::env::git_diff::scan_pinned(cwd, &env, previous.as_ref(), base).await
+            }
+            (PrRefresh::Fetch, None) => {
                 forge_agent::env::git_diff::scan(cwd, &env, previous.as_ref()).await
             }
-            PrRefresh::ServeCached => {
+            (PrRefresh::ServeCached, None) => {
                 forge_agent::env::git_diff::scan_serving_cached_pr(cwd, &env, previous.as_ref())
                     .await
             }
@@ -650,6 +666,27 @@ impl Workspace {
         let held = WorkSnapshot { diff, cwd: cwd.to_path_buf(), read_at: Instant::now() };
         self.store_work_snapshot(slot, held.clone());
         held
+    }
+
+    /// A scan a drawing read must take, pinned to one base revision: it
+    /// **awaits the seat's gate** rather than serving the store a concurrent
+    /// scan is replacing, so the count and chain it answers were read after
+    /// the base moved. Local only - the caller has already refreshed the base.
+    pub async fn scan_work_pinned(
+        &self,
+        slot: &SessionSlot,
+        cwd: &Path,
+        base: Option<&str>,
+    ) -> Result<WorkSnapshot, String> {
+        if self.domain_session_for(slot).is_none() {
+            return Err(format!("{} has no session to store a scan on", slot.display()));
+        }
+        let gate = self.held_work_seats.gate(slot);
+        let _one_at_a_time = match &gate {
+            Some(gate) => Some(gate.lock().await),
+            None => None,
+        };
+        Ok(self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base).await)
     }
 
     /// `project`'s own declared environment, `env_file` included, which

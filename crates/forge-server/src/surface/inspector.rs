@@ -6,7 +6,7 @@
 //! rather than deriving anything: a view reads the session instead of
 //! folding the update stream a second time.
 
-use forge_primitives::git_diff::{BaseState, PrRefresh};
+use forge_primitives::git_diff::PrRefresh;
 use forge_primitives::runtime::AvailableModel;
 use forge_primitives::{
     CurrentModel, EffortLevel, MonitorRecord, PermissionMode, SessionId, SessionSlot,
@@ -154,7 +154,10 @@ impl ViewSurface {
     /// HEAD, or no resolved default. Only the read that draws the diff calls
     /// this, so a state it reports belongs to the moment that diff was read
     /// rather than to an earlier scan.
-    pub async fn refresh_diff_base(&self, held: &WorkSnapshot) -> Option<BaseState> {
+    pub async fn refresh_diff_base(
+        &self,
+        held: &WorkSnapshot,
+    ) -> Option<forge_workspace::env::git_diff::BaseRefresh> {
         if !held.diff.branch_ahead.is_populated() {
             return None;
         }
@@ -162,12 +165,16 @@ impl ViewSurface {
         Some(forge_workspace::env::git_diff::refresh_base_for_display(&held.cwd, default).await)
     }
 
-    /// Re-read the seat's tree because the drawing read moved the base under
-    /// the stored scan: the count, the chain and the files then describe one
-    /// base. Local only - the base was just refreshed, so this scan must not
-    /// reach the network again.
-    pub async fn rescan_work(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
-        match self.workspace.scan_work_if_stale(slot, true, PrRefresh::ServeCached).await {
+    /// The scan a drawing read must take: pinned to the base revision the
+    /// refresh resolved, and gate-awaited so it cannot serve a store written
+    /// before the base moved. Local only.
+    pub async fn diff_scan(
+        &self,
+        slot: &SessionSlot,
+        cwd: &std::path::Path,
+        base: Option<&str>,
+    ) -> WorkSnapshot {
+        match self.workspace.scan_work_pinned(slot, cwd, base).await {
             Ok(held) => held,
             // A seat with no store still reads the tree it stands in, the
             // same fallback `work` takes.

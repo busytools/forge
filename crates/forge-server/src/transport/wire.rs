@@ -1761,6 +1761,11 @@ pub struct OpenTimings {
     pub catch_up_ms: f64,
     pub cards_ms: f64,
     pub work_ms: f64,
+    /// The review read's base refresh: the fetch and the tip it is checked
+    /// against, bounded by the display budget.
+    pub base_ms: f64,
+    /// The scan pinned to the sha that refresh resolved.
+    pub rescan_ms: f64,
     pub content_ms: f64,
     pub reviews_ms: f64,
     pub tree_reviews_ms: f64,
@@ -1794,7 +1799,7 @@ fn slice_ms(at: std::time::Instant) -> f64 {
 /// fields empty and a working tree read per read, since no held seat has a
 /// store to keep one in.
 pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result<Value> {
-    encode_subject_timed(state, subject).await.map(|(value, _)| value)
+    encode_subject_timed(state, subject, false).await.map(|(value, _)| value)
 }
 
 /// [`encode_subject`], carrying the session's own open timings.
@@ -1802,9 +1807,15 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
 /// **Split from the plain encode so the thirty readers that want only the
 /// value keep their call**: a session's timeline is the open path's own
 /// business, and it is the only arm that fills one.
+///
+/// `review` is the review page's own read: it refreshes the branch diff's
+/// base and pins the stats and content reads to the sha that refresh found.
+/// Every other read serves what the stores hold, so a record read never waits
+/// on the network.
 pub(crate) async fn encode_subject_timed(
     state: &TransportState,
     subject: &Subject,
+    review: bool,
 ) -> Result<(Value, OpenTimings)> {
     let surface = &state.surface;
     let mut timings = OpenTimings::default();
@@ -1824,7 +1835,7 @@ pub(crate) async fn encode_subject_timed(
             request_context_usage_if_unreported(surface, slot);
             request_mcp_snapshot_if_unreported(surface, slot);
             timings.prologue_ms = slice_ms(at);
-            let wire = session(state, surface, slot, &cwd, &mut timings).await?;
+            let wire = session(state, surface, slot, &cwd, &mut timings, review).await?;
             // The record's own serialisation, and nothing else: what the
             // measurement pass timed as the encode, so the numbers line up.
             let at = std::time::Instant::now();
@@ -2194,6 +2205,7 @@ async fn session(
     slot: &SessionSlot,
     cwd: &Path,
     timings: &mut OpenTimings,
+    review: bool,
 ) -> Result<SessionWire> {
     let at = std::time::Instant::now();
     let header = surface.header(slot);
@@ -2317,29 +2329,36 @@ async fn session(
     let at = std::time::Instant::now();
     let held = surface.work(slot, cwd).await;
     timings.work_ms = slice_ms(at);
-    // **The read that draws the diff refreshes its base first.** A stored scan
-    // is as old as its last pass, so a base state carried on it could call the
-    // base current after the remote had moved on - the stale-diff defect
-    // itself. The refresh is bounded, and a refresh that moved the ref re-reads
-    // the stats locally so the count, the chain and the files describe one
-    // base: a count from one source beside files from another is exactly how
-    // this was first spotted.
+    // **Only the review page's own read refreshes the base.** An ordinary
+    // record read serves the stores as they stand - a seat page never waits on
+    // the network - and the review read is the one that may, under
+    // `DISPLAY_REFRESH_BUDGET`, because it is the read that draws the diff.
     let at = std::time::Instant::now();
-    let base = surface.refresh_diff_base(&held).await;
-    let held = match base {
-        // Only a fetch that landed can have moved the ref the stored scan was
-        // read against. A base that could not be refreshed (`unverified`) or
-        // was merely measured (`behind`) is the ref the stored scan already
-        // used, so its count and files stay one answer - both labelled stale.
-        Some(forge_primitives::git_diff::BaseState::Current) => {
-            surface.rescan_work(slot, &held.cwd).await
-        }
-        _ => held,
+    let refresh = if review { surface.refresh_diff_base(&held).await } else { None };
+    timings.base_ms = slice_ms(at);
+    // The refresh and the scan pinned to the sha it resolved are one read of
+    // one base: the count, the chain and the files cannot describe two refs.
+    let at = std::time::Instant::now();
+    let held = match &refresh {
+        Some(refresh) => surface.diff_scan(slot, &held.cwd, refresh.base_ref.as_deref()).await,
+        None => held,
     };
+    timings.rescan_ms = slice_ms(at);
     // The content read, beside the stats one: bounded, and taken here
     // rather than stored with the row because a record read is a cold load,
     // a reconnect or a seat swap - not a frame a moving tree pushes.
-    let diff = scan_content(&held.cwd, &held.diff, base).await;
+    let base = match &refresh {
+        Some(refresh) => Some(refresh.state),
+        // An ordinary read has not checked the base. Saying so is what keeps a
+        // cached record from drawing its diff as current.
+        None if held.diff.branch_ahead.is_populated() => {
+            Some(forge_primitives::git_diff::BaseState::Unverified)
+        }
+        None => None,
+    };
+    let base_ref = refresh.as_ref().and_then(|refresh| refresh.base_ref.as_deref());
+    let at = std::time::Instant::now();
+    let diff = scan_content(&held.cwd, &held.diff, base, base_ref).await;
     timings.content_ms = slice_ms(at);
     timings.pr_age_s = held
         .diff
@@ -5096,7 +5115,7 @@ mod tests {
             ),
         );
 
-        let (value, _) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
+        let (value, _) = encode_subject_timed(&state, &Subject::Session(fixture_seat()), false)
             .await
             .expect("the seat encodes");
         let turns = value["conversation"]["turns"].as_array().expect("the page carries turns");
@@ -5329,7 +5348,7 @@ mod tests {
         let root = tempfile::tempdir().expect("a temp dir");
         let state = fixture_state(root.path()).await;
 
-        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
+        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()), false)
             .await
             .expect("the seat encodes");
 
@@ -5365,7 +5384,7 @@ mod tests {
             heartbeat: Heartbeat::default(),
         };
 
-        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
+        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()), false)
             .await
             .expect("the seat encodes");
 

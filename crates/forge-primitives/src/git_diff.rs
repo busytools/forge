@@ -152,11 +152,13 @@ pub struct GitDiffStats {
 /// has moved past it is only knowable over the network. The read that draws
 /// the diff refreshes it first, so a diff is never shown from a stale base
 /// without saying so.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BaseState {
-    /// A local base, or none resolved: no remote-tracking ref to lag behind.
-    #[default]
+    /// A local base in a repository with no `origin` remote, or none
+    /// resolved: nothing upstream to lag behind. A local base beside an
+    /// `origin` is `Unverified` instead - it can be arbitrarily behind one
+    /// nobody fetched.
     Local,
     /// The base was fetched and matches the remote.
     Current,
