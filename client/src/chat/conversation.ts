@@ -411,6 +411,26 @@ function messagesOf(turn: PageTurn): unknown[] {
 }
 
 /**
+ * The judgment turn a handoff record carries, as a turn the chat can hold.
+ *
+ * **Keyed the way the live frames named it** (`live:<the prompt's uuid>`), so
+ * a client that watched the swap keeps the row it already drew rather than a
+ * second copy of the same turn from the record. A turn whose prompt row lost
+ * its id falls back to a name of its own rather than to an empty one, which
+ * would make every such turn one row.
+ */
+function judgmentTurnOf(handoff: HandoffRecord): Turn | null {
+  const messages = handoff.judgment_turn;
+  if (messages.length === 0) return null;
+  const id = uuidOf(messages[0]);
+  return {
+    key: id !== null ? `live:${id}` : `live:judgment-${handoff.from}`,
+    messages: [...messages],
+    live: false,
+  };
+}
+
+/**
  * The newest stamp a run of frames carries, in ms, or `null` when none parses.
  *
  * A turn's END, for asking whether a newer one follows it: the stamps are the
@@ -1599,7 +1619,7 @@ export class Chat {
       handoff?: unknown;
     };
     const record = handoffOf(conversation.handoff);
-    if (record !== null) this.seedHandoffTurn(record, 'ahead');
+    if (record !== null) this.seedHandoffJoin(record, 'ahead');
     const rows = pageTurns(conversation.turns);
     if (rows.length === 0) return;
     const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
@@ -2110,7 +2130,7 @@ export class Chat {
           // carries**, because the successor's transcript never holds it and
           // the live frame it arrived on is long gone.
           const record = handoffOf(conversation.handoff);
-          if (record !== null) this.seedHandoffTurn(record, 'ahead');
+          if (record !== null) this.seedHandoffJoin(record, 'ahead');
           if (fresh) {
             const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
@@ -2879,7 +2899,7 @@ export class Chat {
    * describes.
    */
   private holdHandoff(handoff: HandoffRecord): void {
-    this.seedHandoffTurn(handoff, 'after');
+    this.seedHandoffJoin(handoff, 'after');
     // **The successor's id rides with the turns.** A swap that never lands
     // (a failed spawn, a dropped socket) leaves this set, and the next
     // `session_replaced` from anything else - a plain `/new` - must not read
@@ -2887,20 +2907,35 @@ export class Chat {
     this.carried = { turns: this.held.turns, to: handoff.to };
   }
 
-  /** Put the row in the conversation once, wherever it is missing: the live
-   * frame and a seat record's copy are the same row by its key. */
-  private seedHandoffTurn(handoff: HandoffRecord, where: 'ahead' | 'after'): void {
-    const key = handoffKey(handoff);
-    if (this.held.turns.some((turn) => turn.key === key)) return;
-    const turn: Turn = { key, messages: [handoffFrame(handoff)], live: false };
-    // **A live swap puts the row after the outgoing conversation**; a seed
-    // from a seat record puts it before the successor turns that are already
-    // held - the successor's transcript never carries the row, so it is the
-    // head of what is drawn, not its tail.
-    this.fold((held) => ({
-      ...held,
-      turns: where === 'ahead' ? [turn, ...held.turns] : [...held.turns, turn],
-    }));
+  /** Put the join in the conversation once, wherever it is missing: the
+   * judgment turn the record carries, and the row it ended at.
+   *
+   * **The turn rather than the row alone.** The procedure prompt and the
+   * calls that ran it lived in the session that left, so a client that did
+   * not watch the swap has no frames for them - the record is their only
+   * carrier. Both are keyed, so a live client that already drew the turn
+   * from its own frames lands on that row instead of a second copy. */
+  private seedHandoffJoin(handoff: HandoffRecord, where: 'ahead' | 'after'): void {
+    const row = handoffKey(handoff);
+    const judgment = judgmentTurnOf(handoff);
+    this.fold((held) => {
+      const added: Turn[] = [];
+      if (judgment !== null && !held.turns.some((turn) => turn.key === judgment.key)) {
+        added.push(judgment);
+      }
+      if (!held.turns.some((turn) => turn.key === row)) {
+        added.push({ key: row, messages: [handoffFrame(handoff)], live: false });
+      }
+      if (added.length === 0) return held;
+      // **A live swap puts the join after the outgoing conversation**; a seed
+      // from a seat record puts it before the successor turns that are already
+      // held - the successor's transcript never carries either, so they are
+      // the head of what is drawn, not its tail.
+      return {
+        ...held,
+        turns: where === 'ahead' ? [...added, ...held.turns] : [...held.turns, ...added],
+      };
+    });
   }
 
   private replaced(occupant: string | null): void {

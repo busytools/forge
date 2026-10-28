@@ -103,7 +103,7 @@ const record = (
 });
 
 /** One handoff record, as the wire carries it. */
-const handoffRecord = (from: string, to: string): unknown => ({
+const handoffRecord = (from: string, to: string, turn: unknown[] = []): unknown => ({
   slot: LEAD,
   from,
   to,
@@ -117,9 +117,40 @@ const handoffRecord = (from: string, to: string): unknown => ({
     ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
     judgment: [{ label: 'Next', lines: ['the client row'] }],
   },
+  judgment_turn: turn,
   transcript_path: '/tmp/old.jsonl',
   at: '2026-10-24T08:00:00Z',
 });
+
+/** The judgment turn the record carries: the procedure, then the exit call. */
+const judgmentTurn = (): unknown[] => [
+  {
+    type: 'user',
+    uuid: 'forge_nudge_handoff_7_feedface',
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: 'A handoff is starting for this session:' }],
+    },
+  },
+  {
+    type: 'assistant',
+    uuid: 'a-exit',
+    message: {
+      id: 'm-exit',
+      role: 'assistant',
+      model: 'm',
+      content: [{ type: 'tool_use', id: 'c-exit', name: 'mcp__forge__agents__handoff', input: {} }],
+    },
+  },
+  {
+    type: 'user',
+    uuid: 'r-exit',
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'c-exit', content: '{"status":"ok"}' }],
+    },
+  },
+];
 
 /** One live hook frame, as the stream sends a run's lifecycle. */
 const hook = (id: string, subtype: string): unknown => ({
@@ -4523,6 +4554,58 @@ describe('the conversation the chat draws', () => {
     expect(
       get(chat.value).turns.map((held) => held.key),
       'a client attaching after the swap draws the row from the record',
+    ).toContain('handoff:old:new');
+    stop();
+  });
+
+  /**
+   * **The turn that ran the handoff is the record's, because the transcript
+   * is not.** A client attaching after the swap reads the successor's
+   * history; the procedure prompt and the calls lived in the session that
+   * left, so they draw from the record - above the row they ended at.
+   */
+  it('draws the judgment turn the record carries, above its row', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    server.send(record([], null, handoffRecord('old', 'new', judgmentTurn())));
+
+    const turns = get(chat.value).turns;
+    expect(
+      turns.map((held) => held.key),
+      'the procedure turn leads, the row follows, then the successor',
+    ).toEqual(['live:forge_nudge_handoff_7_feedface', 'handoff:old:new']);
+    expect(
+      fold(turns[0]?.messages ?? [], null, false, true),
+      'and the turn folds to its rows',
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'leaves' })]));
+    stop();
+  });
+
+  /**
+   * The live path already drew the turn from its own frames; the record that
+   * arrives beside them must land on the same row, not a second copy of it.
+   */
+  it('does not draw the judgment turn twice on a swap a client watched', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([]));
+    for (const msg of judgmentTurn()) server.update({ chat_appended: { key: LEAD, msg } });
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new', judgmentTurn()) } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'new' } });
+
+    // By the prompt row itself, not the turn's key: a second copy drawn under
+    // another name would pass a keyed filter and still be the same turn twice.
+    const procedure = get(chat.value).turns.filter(
+      (held) =>
+        (held.messages[0] as { uuid?: unknown } | null)?.uuid === 'forge_nudge_handoff_7_feedface',
+    );
+    expect(procedure, 'one turn, drawn once').toHaveLength(1);
+    expect(
+      get(chat.value).turns.map((held) => held.key),
+      'the row follows it',
     ).toContain('handoff:old:new');
     stop();
   });

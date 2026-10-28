@@ -270,6 +270,20 @@ export interface NudgeLeaf {
 }
 
 /**
+ * The handoff's procedure prompt: forge's own text that opens the judgment
+ * turn, asking the handing-over session to run the handoff skill.
+ *
+ * It is the machinery's words, not the reader's, but it is the turn's own
+ * opening rather than a passing nudge - so it wears its own mark and holds
+ * the whole procedure behind its open.
+ */
+export interface ProcedureLeaf {
+  /** The frame and block it came from, which is what the row is keyed by. */
+  key: string;
+  text: string;
+}
+
+/**
  * One hook run as the work's rows hold it: a row of its own, or a run inside a
  * session start's row.
  */
@@ -310,7 +324,8 @@ export type WorkRow =
   | ({ tag: 'hook' } & HookLeaf)
   | ({ tag: 'hookgroup' } & HookGroupLeaf)
   | ({ tag: 'inbound' } & InboundLeaf)
-  | ({ tag: 'nudge' } & NudgeLeaf);
+  | ({ tag: 'nudge' } & NudgeLeaf)
+  | ({ tag: 'procedure' } & ProcedureLeaf);
 
 /** What one turn's hooks did. */
 export interface HookInfo {
@@ -573,6 +588,22 @@ const NUDGE_ID_PREFIX = 'forge_nudge_';
 /** Whether `id` is one forge's own machinery minted for its own prose. */
 function isNudgeId(id: string | null): boolean {
   return id !== null && id.startsWith(NUDGE_ID_PREFIX);
+}
+
+/**
+ * The longer prefix the handoff procedure's prompt is minted under
+ * (`next_handoff_prompt_id` in `crates/forge-sdk/src/request_id.rs`).
+ *
+ * **Under the machinery's prefix, not outside it.** Every check that tells the
+ * machinery's words from the reader's keeps answering the same way; this
+ * segment only picks the one prompt that opens the handoff turn, so a client
+ * that does not know it still draws the row as the machinery's own.
+ */
+const PROCEDURE_ID_PREFIX = 'forge_nudge_handoff_';
+
+/** Whether `id` is the handoff procedure's own prompt. */
+function isProcedureId(id: string | null): boolean {
+  return id !== null && id.startsWith(PROCEDURE_ID_PREFIX);
 }
 
 /**
@@ -2318,6 +2349,15 @@ export function fold(
           if (stripped.startsWith('HANDOFF - ') && isNudgeId(promptIdOf(frame, block))) {
             continue;
           }
+          // **The handoff's procedure prompt opens its turn.** It is forge's
+          // own text asking the session to run the handoff skill, read here
+          // before every other machinery claim because it is the turn's
+          // opening row rather than a nudge inside one - and the calls that
+          // follow it are the work it set going.
+          if (isProcedureId(promptIdOf(frame, block))) {
+            pending.push({ tag: 'procedure', key: keyOf(at, frame, blockAt), text: stripped });
+            continue;
+          }
           // A background task's end arrives as a user frame nobody typed -
           // the CLI's `<task-notification>` envelope - and draws as its own
           // summary line, never as the raw XML and never as the reader's turn
@@ -2555,6 +2595,14 @@ export function fold(
         // the way the text arm above strips them: one transform per row, or
         // the same words draw two ways depending on which carrier brought
         // them.
+        if (isProcedureId(promptIdOf(frame, block))) {
+          pending.push({
+            tag: 'procedure',
+            key: keyOf(at, frame, blockAt),
+            text: stripEscapes(words),
+          });
+          continue;
+        }
         if (isNudgeId(promptIdOf(frame, block))) {
           pending.push({
             tag: 'nudge',

@@ -13,6 +13,7 @@ import {
   type HookRun,
   type InboundLeaf,
   type NudgeLeaf,
+  type ProcedureLeaf,
   type PeerCard,
   type ThoughtLeaf,
   type Unit,
@@ -86,6 +87,10 @@ const inboundsOf = (unit: Unit | undefined): InboundLeaf[] =>
 /** The nudge rows of a unit, in the order they arrived. */
 const nudgesOf = (unit: Unit | undefined): NudgeLeaf[] =>
   rowsOf(unit).flatMap((row) => (row.tag === 'nudge' ? [row] : []));
+
+/** The handoff procedure rows of a unit, in the order they arrived. */
+const proceduresOf = (unit: Unit | undefined): ProcedureLeaf[] =>
+  rowsOf(unit).flatMap((row) => (row.tag === 'procedure' ? [row] : []));
 
 /** The hook runs a fold drew, in the order they arrived, grouped or not. */
 const runsOf = (units: Unit[]): HookLeaf[] =>
@@ -2782,6 +2787,44 @@ describe('one turn folded into the units a view draws', () => {
     expect(kinds(typed), "a typed prompt is still the reader's row").toEqual(['user']);
   });
 
+  /**
+   * **The handoff's procedure is the turn's opening row, not a nudge.**
+   * Forge mints its prompt under the machinery's prefix with a segment of its
+   * own, so it is still nobody's typed words - and it draws as the procedure,
+   * carrying the whole text the handing-over session was given.
+   */
+  it('draws the handoff procedure as its own row, live and reloaded alike', () => {
+    const ordinary = 'task board: worker w-1 holds no row - feed it or despawn it.';
+    const procedure = 'A handoff is starting for this session: run the skill, then exit.';
+    const id = 'forge_nudge_handoff_4_1a2b3c4d';
+
+    const live = fold([heard([text(procedure)], { uuid: id })]);
+    expect(kinds(live), "the procedure is work, not the reader's own turn").toEqual(['leaves']);
+    expect(
+      proceduresOf(live[0]).map((row) => row.text),
+      'the whole procedure is kept',
+    ).toEqual([procedure]);
+    expect(nudgesOf(live[0]), 'and it is not an ordinary nudge').toEqual([]);
+
+    const reloaded = fold([
+      heard(
+        [{ type: 'queued_command', commandMode: 'prompt', prompt: procedure, source_uuid: id }],
+        { uuid: 'c9351772-2ce7-4c28-88e1-6fcad33c0905' },
+      ),
+    ]);
+    expect(
+      proceduresOf(reloaded[0]).map((row) => row.text),
+      'the read draws it the same',
+    ).toEqual([procedure]);
+
+    const nudge = fold([heard([text(ordinary)], { uuid: 'forge_nudge_7_1a2b3c4d' })]);
+    expect(
+      nudgesOf(nudge[0]).map((row) => row.text),
+      'a plain nudge keeps its own row',
+    ).toEqual([ordinary]);
+    expect(proceduresOf(nudge[0]), 'and is not the procedure').toEqual([]);
+  });
+
   it('draws no line for a task the wire did not say outlives its turn', () => {
     // A foreground call's own result is already on the row, and a dispatched
     // agent's report is the row's own body: the harness's summary under either
@@ -3887,6 +3930,7 @@ describe('a page seam that re-serves a result', () => {
         at_percent: 85,
         ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
         judgment: [{ label: 'Next', lines: ['the client row'] }],
+        judgment_turn: [],
       }),
       said([{ type: 'text', text: 'picked up' }]),
     ]);

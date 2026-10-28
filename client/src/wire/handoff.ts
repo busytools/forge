@@ -23,6 +23,15 @@ export interface HandoffRecord {
   at_percent: number;
   ground_truth: HandoffSection[];
   judgment: HandoffSection[];
+  /**
+   * The turn the handing-over session ran the procedure in, as the wire
+   * carries its frames.
+   *
+   * **Raw frames, not narrowed.** The chat folds them the way it folds any
+   * turn, and a record shape would be a second vocabulary for rows the fold
+   * already reads.
+   */
+  judgment_turn: unknown[];
 }
 
 export function handoffOf(value: unknown): HandoffRecord | null {
@@ -41,6 +50,7 @@ export function handoffOf(value: unknown): HandoffRecord | null {
     at_percent: number(held['at_percent']) ?? 0,
     ground_truth: sectionsOf(brief['ground_truth']),
     judgment: sectionsOf(brief['judgment']),
+    judgment_turn: list(held['judgment_turn']),
   };
 }
 
@@ -72,6 +82,7 @@ export function handoffFrame(handoff: HandoffRecord): Record<string, unknown> {
       max_tokens: handoff.max_tokens,
       at_percent: handoff.at_percent,
       brief: { ground_truth: handoff.ground_truth, judgment: handoff.judgment },
+      judgment_turn: handoff.judgment_turn,
     },
   };
 }
