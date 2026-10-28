@@ -260,9 +260,9 @@
   {/if}
   {#if feedbackOpen && onfeedback !== null}
     {#if opening}
-      <!-- The open itself, in the bar: the record has no take until the
-           capture has opened and the stream has gone out, so this is the only
-           thing on this surface that can say the press landed. -->
+      <!-- The open itself, in the bar: the card comes from this page's own
+           take, which exists only once the capture has opened, so this is the
+           only thing on this surface that can say the press landed. -->
       <div class="tb-line opening">
         <span class="ring" aria-hidden="true"></span>opening the microphone…
       </div>
