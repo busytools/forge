@@ -9,7 +9,14 @@ import type { ClientMessage, ServerMessage, SessionUpdate, Subject } from '../pr
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import * as fleet from '../wire/fleet';
-import { Chat, Frames, HISTORY_WINDOW_BYTES, beingWritten, type PageTurn } from './conversation';
+import {
+  Chat,
+  Frames,
+  HISTORY_WINDOW_BYTES,
+  beingWritten,
+  headMoved,
+  type PageTurn,
+} from './conversation';
 import { PRE_RESUME, PRE_RESUME_OPEN, RESUME, RESUME_KEY } from './testing/resume-2503';
 import type { ToolLeaf } from './leaves';
 import { echoes } from './echoes.svelte';
@@ -1398,6 +1405,10 @@ describe('the conversation the chat draws', () => {
       't0',
     ]);
     expect(held.cursor, 'the oldest kept turn names the page above it').toBe('cursor-0');
+    // **A trim moves the head, and the list has to be told.** The row list
+    // keys its measured heights by position, so rows dropped from the front
+    // would otherwise leave every kept row on its dropped neighbour's size.
+    expect(headMoved(held.turns), 'the trim moved the list head').toBe(true);
 
     // The next page out would not fit, which is what stops the trim - not a
     // loop that happens to end, and not a trim down to one row.

@@ -9,11 +9,11 @@
  * has paged in and asks for more when the reader reaches the top.
  *
  * **A row's key is the turn's own, assigned once and never recomputed.** A
- * key derived at read time would change when older turns are prepended - and
- * `virtua` stores its measured sizes PER KEY, so a key that shifts throws away
- * what it learned and re-measures the list, taking the reader's place with it.
- * That is why a turn the fold could not name is named here at ingest, from its
- * own content, rather than being derived by whoever draws it.
+ * key derived at read time would change when older turns are prepended, and a
+ * changed key remounts the row - which draws at the list's estimate until it
+ * measures again, and moves everything below it (the list's heights are stored
+ * by POSITION). That is why a turn the fold could not name is named here at
+ * ingest, from its own content, rather than being derived by whoever draws it.
  *
  * **A page may repeat a row the client already holds.** The server errs toward
  * repeating rather than toward a gap, because a turn the client was never sent
@@ -1549,34 +1549,39 @@ export class Chat {
    * writes a read's answer (`session/live.ts`).
    */
   private fold(fn: (held: Conversation) => Conversation): void {
-    this.held = this.applied(fn);
+    const before = this.held;
+    const next = fn(before);
+    const moved = movedHead(before, next);
+    if (moved) HEAD_MOVED.add(next.turns);
+    // **A head-moving change with a draw already waiting is published as its
+    // own change.** The list reads the compensation per change, so a landing
+    // that cancelled a pending frame's paint would hand it one update carrying
+    // both: the page's rows above AND the row that frame opened below arrive
+    // as a single growth, the tail row is counted at the head, and every
+    // cached size sits one position off (round 1). Two writes in one task
+    // coalesce before Svelte renders, so the landing's own publish goes on the
+    // next frame.
+    if (moved && this.queued !== null) {
+      this.flush();
+      this.held = next;
+      // A page that cannot paint has no frame to wait for, and a write in the
+      // same task as the one above would coalesce with it - so it waits a
+      // tick instead.
+      if (cannotPaint()) setTimeout(() => this.flush(), 0);
+      else this.soon();
+      return;
+    }
+    this.held = next;
     this.flush();
   }
 
   /** Apply one STREAM frame, whose draw lands on the next painted frame. */
   private stream(fn: (held: Conversation) => Conversation): void {
-    this.held = this.applied(fn);
-    this.soon();
-  }
-
-  /**
-   * Apply a change and mark the list it built, when the change moved the head.
-   *
-   * Every way the held rows move goes through here, so the mark cannot be
-   * forgotten by one of them - a page landing, a trim and a retraction are the
-   * same fact to the list, and a turn opening at the tail is the one that must
-   * not be read as the same fact.
-   */
-  private applied(fn: (held: Conversation) => Conversation): Conversation {
     const before = this.held;
     const next = fn(before);
-    if (
-      next.turns !== before.turns &&
-      (next.turns[0]?.key ?? null) !== (before.turns[0]?.key ?? null)
-    ) {
-      HEAD_MOVED.add(next.turns);
-    }
-    return next;
+    if (movedHead(before, next)) HEAD_MOVED.add(next.turns);
+    this.held = next;
+    this.soon();
   }
 
   /**
@@ -2973,10 +2978,10 @@ export class Chat {
     this.flush();
     // **The swap forgot an ask too, and it has to say so.** The reset above
     // zeroes the count the column drains against, so a column that was holding
-    // an ask keeps holding it - the drain never fires, `shift` stays armed for
-    // the life of the seat, and the observer's restore never runs for a parked
-    // reader (measured: the offset left at 50 where the row above them had
-    // moved it to 290).
+    // an ask keeps holding it - the drain never fires, `compensating` stays on
+    // for the life of the seat, and the observer's restore never runs for a
+    // parked reader (measured: the offset left at 50 where the row above them
+    // had moved it to 290).
     if (held) this.forgot();
     this.clearRetry();
     // **And the empty-page beat goes with it.** The backoff belonged to the
@@ -3940,6 +3945,27 @@ const HEAD_MOVED = new WeakSet<readonly unknown[]>();
 /** Whether `turns` is a list whose head moved when the fold built it. */
 export function headMoved(turns: readonly unknown[]): boolean {
   return HEAD_MOVED.has(turns);
+}
+
+/**
+ * Whether a change moved the list's head, which is what the mark says.
+ *
+ * **Every way the held rows move goes through `fold` or `stream`**, so marking
+ * there cannot be forgotten by one of them - a page landing, a trim and a
+ * retraction are the same fact to the list, and a turn opening at the tail is
+ * the one that must not be read as the same fact. (`replaced`, the occupant
+ * swap, is the exception: it writes a whole new conversation rather than
+ * moving rows in the one already drawn.)
+ *
+ * **A list built from nothing is not a head move.** The first page has nothing
+ * above the reader to hold, and the list fills an empty one row by row.
+ */
+function movedHead(before: Conversation, next: Conversation): boolean {
+  return (
+    next.turns !== before.turns &&
+    before.turns.length > 0 &&
+    (next.turns[0]?.key ?? null) !== (before.turns[0]?.key ?? null)
+  );
 }
 
 /** The message JSON one turn holds. */

@@ -120,21 +120,6 @@ function stub() {
       }
       flushSync();
     },
-    /** One turn arriving below the reader, the way a live turn does. */
-    append(): void {
-      for (const fn of listeners) {
-        fn({
-          kind: 'update',
-          update: {
-            chat_appended: {
-              key: LEAD,
-              msg: { type: 'assistant', uuid: 'live', message: { content: [] } },
-            },
-          },
-        });
-      }
-      flushSync();
-    },
   };
 }
 
@@ -230,7 +215,7 @@ describe('the compensation the list is handed', () => {
     expect(after[after.length - 1], 'the row is the same element').toBe(row);
   });
 
-  it('arms the change that prepends, and no ask at all', async () => {
+  it('compensates the landing that moved the head', async () => {
     const server = stub();
     draw(server);
     // Two turns, so the fresh open's fill has nothing of its own to ask for
@@ -263,6 +248,7 @@ describe('the compensation the list is handed', () => {
     // offset until it re-measured (Ved, 2026-10-28: two rows in one band).
     list()?.scrolledTo(0, 500, 320);
     flushSync();
+    expect(server.asks, 'the page is in flight').toHaveLength(1);
 
     // A prompt that opens a turn of its own below the reader - the arrival
     // that made this a defect: a cron's words landing while a page was read.
@@ -281,30 +267,55 @@ describe('the compensation the list is handed', () => {
     expect(last()?.shift, 'a turn arriving below the reader is not a prepend').toBe(false);
   });
 
-  it('is not armed by an ask the socket refused', async () => {
+  it('does not compensate a page that grows the tail', async () => {
     const server = stub();
     draw(server);
     server.page([turn('t1'), turn('t2')], '2');
     await tick();
 
-    server.shut();
-    list()?.scrolledTo(0, 500, 320);
-    flushSync();
+    // A catch-up or reconnect page: the newest read repeats the held tail and
+    // carries one more turn below it. Nothing moved at the head, so the rows
+    // above the reader are where they were and the new row is a plain append.
+    server.page([turn('t1'), turn('t2'), turn('t3')], null);
+    await tick();
+    expect(last()?.length, 'the newest page grew the tail').toBe(3);
+    expect(last()?.shift, 'a page that grows the tail is not a prepend').toBe(false);
+  });
 
-    // Nothing was sent, so no page is coming - and the turn below it is the
-    // one the refusal must not become a prepend for.
+  it('draws a pending frame and a landing as two changes', async () => {
+    const server = stub();
+    draw(server);
+    server.page([turn('t1'), turn('t2')], '2');
+    await tick();
+    const handed = records.length;
+
+    // **The order a socket burst produces.** A frame opens a turn at the tail
+    // and the page lands before the frame's paint; one merged update would
+    // carry the page's rows above and the frame's row below as a single
+    // growth, and the list would compensate the whole net delta as a prepend.
     server.update({
       chat_appended: {
         key: LEAD,
         msg: {
           type: 'user',
-          uuid: 'u-refused',
-          message: { role: 'user', content: [{ type: 'text', text: 'after the refusal' }] },
+          uuid: 'u-burst',
+          message: { role: 'user', content: [{ type: 'text', text: 'the burst' }] },
         },
       },
     });
+    server.page([turn('t0'), turn('t1'), turn('t2')], null);
     await frame();
-    expect(last()?.shift, 'the turn that arrives below it is not compensated').toBe(false);
+
+    const changes = records
+      .slice(handed)
+      .filter((held, at, all) => at === 0 || held.length !== all[at - 1]?.length);
+    expect(
+      changes.map((held) => [held.length, held.shift]),
+      'the frame, then the landing',
+    ).toEqual([
+      [3, false],
+      [4, true],
+    ]);
   });
 
   it('arms each landing on its own change', async () => {

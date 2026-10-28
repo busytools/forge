@@ -1566,16 +1566,10 @@
    * their pages land on the way to a place the reader asked to go and a small
    * page would turn a far jump into dozens of round trips.
    *
-   * The compensation is armed as the ask goes out rather than when the answer
-   * lands, because the list applies it AS the rows change: a page that waited
-   * for the answer would be arming after the change it exists for, which is a
-   * prepend that moves everything the reader is looking at.
-   *
-   * **And only when an ask actually went.** A socket that is down refuses the
-   * ask without sending anything, so arming on the call rather than on its
-   * answer leaves the compensation on with nothing coming - and the next turn
-   * appended below the reader then goes through the prepend path, which moves
-   * them AND leaves the list's measured sizes attributed to the wrong rows.
+   * **The count here is only what the loading line and the restore read.** The
+   * list is not handed it: the compensation belongs to the landing, the change
+   * that moves the head, and it comes with that change (see `shift`). An ask
+   * that never went arms nothing, because no change follows it.
    */
   function loadOlder(turns: number): boolean {
     if (working?.older(turns) !== true) return false;
