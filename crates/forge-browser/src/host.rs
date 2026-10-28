@@ -570,22 +570,25 @@ struct BootNow<'a> {
 /// so it is offered while nothing is in flight and never over a load; a unit
 /// test pins that, and the give-up, rather than only a live host.
 fn boot_step(state: &BootNow<'_>) -> BootStep {
-    if state.now >= state.give_up_at {
-        return BootStep::GiveUp;
-    }
-    // **Where it was asked to be, or a document of its own.** A redirect
-    // leaves the committed URL different from the one the host issued, so any
-    // real document is a finish, never a reason to navigate back.
+    // **Done is done, whatever the clock says.** A popup that reached its
+    // document inside the last grace is not given up for being late.
     if state.started
         && (state.committed == state.target
             || (!state.committed.is_empty() && state.committed != "about:blank"))
     {
         return BootStep::Done;
     }
+    // **A load in flight is kept while it is in flight.** Closing a sign-in
+    // page because a clock ran out is worse than a tab still loading.
     if state.loading {
         return BootStep::Wait;
     }
-    if state.tries > 0 { BootStep::Address } else { BootStep::GiveUp }
+    // **The bound ends a popup with nothing in flight**: one that never
+    // started, or one whose offers are spent.
+    if state.now >= state.give_up_at || state.tries == 0 {
+        return BootStep::GiveUp;
+    }
+    BootStep::Address
 }
 
 /// One popup the gate admitted, before CEF has created its browser: the tab
@@ -644,6 +647,23 @@ struct PopupGate {
     places: Mutex<HashMap<(u16, i32), Arc<Place>>>,
     /// Popups whose first document is still the host's to start.
     boot: Mutex<Vec<PopupBoot>>,
+    /// Popup births taken while a tab is being created, and whether a create
+    /// holds them. **A create's browser is made inside a nested CEF loop**,
+    /// so a popup adopted during it would report before the tab the create
+    /// is making, and the service pairs births to pages by that order.
+    held_births: Mutex<Vec<crate::control::HostEvent>>,
+    holding_births: AtomicBool,
+}
+
+/// Ends a birth hold, flushing what it kept, however the create ended.
+struct BirthHold<'a> {
+    popups: &'a PopupGate,
+}
+
+impl Drop for BirthHold<'_> {
+    fn drop(&mut self) {
+        self.popups.flush_births();
+    }
 }
 
 impl PopupGate {
@@ -729,10 +749,17 @@ impl PopupGate {
             *held += 1;
         }
         let place = Arc::new(Place { opener, released: AtomicBool::new(false) });
-        self.places
+        // **A replaced place is released before its key is taken.** The ids
+        // CEF hands out are unique today, and a repeat would otherwise leak
+        // the replaced reservation for the host's whole life.
+        let replaced = self
+            .places
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert((opener, popup_id), Arc::clone(&place));
+        if let Some(replaced) = replaced {
+            self.release(&replaced);
+        }
         let tab = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).reserve();
         let parts = self.parts(tab);
         let admitted = AdmittedPopup {
@@ -822,12 +849,43 @@ impl PopupGate {
             Arc::clone(&self.paused),
             key,
         );
-        crate::control::emit(&crate::control::HostEvent::TabCreated {
+        self.emit_birth(crate::control::HostEvent::TabCreated {
             tab,
             opener: Some(opener),
             url,
             request: None,
         });
+    }
+
+    /// **A popup adopted while a tab is being created waits its turn.** The
+    /// create's browser is made inside a nested CEF loop, so this birth would
+    /// otherwise reach the server before the tab the create is making, and
+    /// the service counts births against pages in that order.
+    fn hold_births(&self) -> BirthHold<'_> {
+        self.holding_births.store(true, Ordering::Release);
+        BirthHold { popups: self }
+    }
+
+    /// Announce a tab's birth, or keep it while a create holds births.
+    fn emit_birth(&self, event: crate::control::HostEvent) {
+        if self.holding_births.load(Ordering::Acquire) {
+            self.held_births.lock().unwrap_or_else(PoisonError::into_inner).push(event);
+            return;
+        }
+        crate::control::emit(&event);
+    }
+
+    /// **The held births go after the create's own**, in the order they were
+    /// adopted, which is the order the engine made them.
+    fn flush_births(&self) {
+        self.holding_births.store(false, Ordering::Release);
+        let held = {
+            let mut held = self.held_births.lock().unwrap_or_else(PoisonError::into_inner);
+            std::mem::take(&mut *held)
+        };
+        for event in held {
+            crate::control::emit(&event);
+        }
     }
 
     /// Start a popup's own document when CEF has not.
@@ -974,6 +1032,11 @@ impl HostRuntime {
     /// popup can be admitted and take a number while this call is still
     /// running; reserving first is what keeps the two apart.
     fn create_tab(&self, url: &str, request: Option<u64>) -> bool {
+        // **A popup adopted inside this create reports after the tab it is
+        // making.** The create is synchronous and CEF runs a nested loop in
+        // it, so the popup's birth would otherwise reach the server first and
+        // the service would pair it with this tab's page.
+        let births = self.popups.hold_births();
         let tab = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).reserve();
         let parts = self.popups.parts(tab);
         let mut client = self.popups.client(tab, &parts, None);
@@ -1041,12 +1104,15 @@ impl HostRuntime {
             Arc::clone(&self.paused),
             parts.key,
         );
+        // **This birth goes out ahead of the popups the create held**, and it
+        // is sent directly rather than through the hold for that reason.
         crate::control::emit(&crate::control::HostEvent::TabCreated {
             tab,
             opener: None,
             url: url.to_owned(),
             request,
         });
+        drop(births);
         true
     }
 
@@ -1381,6 +1447,8 @@ pub fn run(args: &Args) -> ExitCode {
             live: Mutex::new(HashMap::new()),
             places: Mutex::new(HashMap::new()),
             boot: Mutex::new(Vec::new()),
+            held_births: Mutex::new(Vec::new()),
+            holding_births: AtomicBool::new(false),
         }),
         recording,
         paused,
@@ -1631,8 +1699,8 @@ cef::wrap_life_span_handler! {
         /// substituted for it never helps, because the page has already
         /// failed. The popup is given a client of its own and joins the
         /// profile's tabs once CEF has created it; its own document is the
-        /// host's to start, blank first and the address it asked for only
-        /// once the service has released it. See `PopupGate::bootstrap`.
+        /// host's to start, because CEF starts none while an auto-attached
+        /// client holds the target. See `PopupGate::bootstrap`.
         fn on_before_popup(
             &self,
             _browser: Option<&mut Browser>,
@@ -1754,6 +1822,8 @@ mod tests {
             live: std::sync::Mutex::new(std::collections::HashMap::new()),
             places: std::sync::Mutex::new(std::collections::HashMap::new()),
             boot: std::sync::Mutex::new(Vec::new()),
+            held_births: std::sync::Mutex::new(Vec::new()),
+            holding_births: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -1784,6 +1854,27 @@ mod tests {
             popups.admit(1, 100, "about:blank").is_some(),
             "an aborted popup's place is usable again"
         );
+        // **A repeated popup id does not double-count.** The ids CEF hands
+        // out are unique today; an overwritten entry would leak the replaced
+        // place for the host's life, and the cap would refuse a sign-in that
+        // has not used its places up.
+        let repeated = gate(&ring);
+        let mut fresh = Vec::new();
+        for _ in 0..2 {
+            fresh.push(repeated.admit(1, 0, "about:blank").expect("the same popup id"));
+        }
+        for id in 1..super::MAX_POPUP_TABS {
+            fresh.push(
+                repeated
+                    .admit(1, i32::try_from(id).expect("a popup id"), "about:blank")
+                    .expect("a place the leak would have taken"),
+            );
+        }
+        assert!(
+            repeated.admit(1, 99, "about:blank").is_none(),
+            "the repeated id counted once, so the cap is exactly full"
+        );
+        drop(fresh);
         drop(held);
         crate::osr::Ring::unlink(&name);
     }
@@ -1899,6 +1990,52 @@ mod tests {
             BootStep::GiveUp,
             "a popup that never gets there is given up at its deadline",
         );
+        let mut loading_late = state("", false, true, 8);
+        loading_late.now = 1_000;
+        assert_eq!(
+            boot_step(&loading_late),
+            BootStep::Wait,
+            "a load still in flight is kept past the deadline, not given up",
+        );
+        let mut done_late = state("https://auth/", true, false, 8);
+        done_late.now = 1_000;
+        assert_eq!(
+            boot_step(&done_late),
+            BootStep::Done,
+            "a popup that reached its document inside the last grace is not given up",
+        );
+    }
+
+    /// **A popup born inside a create waits for the create's own birth.** The
+    /// create's browser is made in a nested CEF loop, so a popup adopted
+    /// during it would report before the tab being created, and the service
+    /// pairs births to pages in that order.
+    #[test]
+    fn a_popup_birth_inside_a_create_waits_its_turn() {
+        use std::sync::atomic::Ordering;
+        let name = format!("/forge-cef-test-holds-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        let held = popups.hold_births();
+        popups.emit_birth(crate::control::HostEvent::TabCreated {
+            tab: 2,
+            opener: Some(1),
+            url: "u".to_owned(),
+            request: None,
+        });
+        assert_eq!(
+            popups.held_births.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(),
+            1,
+            "a birth taken during the create waits",
+        );
+        assert!(popups.holding_births.load(Ordering::Acquire), "the create holds births");
+        drop(held);
+        assert!(!popups.holding_births.load(Ordering::Acquire), "the hold ends with the create");
+        assert!(
+            popups.held_births.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
+            "the kept birth is flushed after the create's own",
+        );
+        crate::osr::Ring::unlink(&name);
     }
 
     /// **A pid the signal cannot name is refused.** `0` probes the caller's

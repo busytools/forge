@@ -232,6 +232,17 @@ struct AttachPlan {
     arm: Option<Arm>,
 }
 
+/// Whether an attached target can be armed on this report.
+///
+/// **A fresh tab with no document is not armable yet.** A page's popup
+/// reports as `other` with an empty url until its first document starts, and
+/// every page-domain call on that session times out: an arm attempt holds
+/// the installer's loop while other targets wait, and names a failure that is
+/// not one. It is armed on its page report, once it has a document.
+fn can_arm(kind: &str, url: &str) -> bool {
+    !(kind == "other" && url.is_empty())
+}
+
 /// The plan for one attached target: resume whatever is paused, and arm only
 /// a page or a fresh tab - a worker, an iframe or the engine's own UI has no
 /// document of its own to start.
@@ -355,6 +366,7 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
         // report would register the script twice; the script is idempotent,
         // but the conversation should not be.
         let mut armed: HashSet<String> = HashSet::new();
+        let mut attempted: HashMap<String, u8> = HashMap::new();
         let mut patched: HashSet<(String, i64)> = HashSet::new();
         while let Some(event) = events.recv().await {
             match event["method"].as_str() {
@@ -364,6 +376,7 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
                     let target =
                         event["params"]["targetInfo"]["targetId"].as_str().unwrap_or_default();
                     let kind = event["params"]["targetInfo"]["type"].as_str().unwrap_or_default();
+                    let url = event["params"]["targetInfo"]["url"].as_str().unwrap_or_default();
                     let paused = event["params"]["waitingForDebugger"].as_bool() == Some(true);
                     let plan = attach_plan(kind, paused);
                     tracing::debug!(
@@ -389,11 +402,14 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
                     if plan.resume {
                         resume(&mut cdp, &session, port, &profile).await;
                     }
-                    // **One arm per TARGET, not per session.**
-                    // `Target.attachToTarget` raises another attach report for
-                    // the same target, so a session-keyed guard re-attaches
-                    // for ever.
-                    if !armed.insert(target.to_owned()) {
+                    // **One arm per TARGET, not per session**, and **only a
+                    // target that has one.** `Target.attachToTarget` raises
+                    // another attach report for the same target, so a
+                    // session-keyed guard re-attaches for ever; a target
+                    // whose arm failed is tried again on its next report
+                    // rather than marked here, because a popup's page report
+                    // is the one that can be armed.
+                    if armed.contains(target) {
                         continue;
                     }
                     // **Only a page or a fresh tab has a document to start.**
@@ -408,12 +424,45 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
                         );
                         continue;
                     };
+                    // **A fresh tab with no document cannot be armed yet.**
+                    // A page's popup reports as `other` with an empty url
+                    // until its first document starts, and every page-domain
+                    // call on that session times out: the attempt holds this
+                    // loop while other targets wait - the stall #2534
+                    // forbids - and each timeout names a failure that is not
+                    // one. It is armed on its page report, once it has a
+                    // document.
+                    if !can_arm(kind, url) {
+                        tracing::debug!(
+                            "the passkey veto waits for a target's first document \
+                             (event_name cef_passkey_veto_unstarted, port {port}, type {kind})"
+                        );
+                        continue;
+                    }
+                    // **A fresh tab that failed twice is not tried again.** A
+                    // `PageSession` arm attaches, and that attach raises its
+                    // own report for the same target: without a bound, one
+                    // tab that cannot be armed would re-arm itself without
+                    // end. A page's own session arm never re-attaches, so its
+                    // failures are left to its next report.
+                    if choice == Arm::PageSession {
+                        let attempts = attempted.entry(target.to_owned()).or_default();
+                        if *attempts >= 2 {
+                            tracing::debug!(
+                                "the passkey veto gave a tab up (event_name \
+                                 cef_passkey_veto_unarmable, port {port}, type {kind})"
+                            );
+                            continue;
+                        }
+                        *attempts += 1;
+                    }
                     let arm_on = match choice {
                         Arm::Session => session,
                         Arm::PageSession => page_session(&mut cdp, target).await.unwrap_or(session),
                     };
                     let registered = arm(&mut cdp, &arm_on, port, &profile).await;
                     if registered {
+                        armed.insert(target.to_owned());
                         armed_on
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
@@ -447,7 +496,19 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Arm, PASSKEY_VETO, attach_plan};
+    use super::{Arm, PASSKEY_VETO, attach_plan, can_arm};
+
+    /// **A target with no document is not armed on that report.** Its
+    /// session answers no page-domain command, so the attempt holds the
+    /// installer's loop and names a failure that is not one; the popup's
+    /// page report is the one that carries a document to arm.
+    #[test]
+    fn a_fresh_tab_with_no_document_is_not_armed_yet() {
+        assert!(!can_arm("other", ""), "a popup with no document waits for its page report");
+        assert!(can_arm("other", "about:blank"), "a fresh tab that has a document is armable");
+        assert!(can_arm("page", ""), "a page is armable whatever url its report carries");
+        assert!(can_arm("page", "https://a/"), "a page with a url is armable");
+    }
 
     /// **A paused target is resumed whatever it is.** The veto arms only a
     /// page and a fresh tab, but CEF pauses every target the auto-attach

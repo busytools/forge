@@ -122,7 +122,7 @@ pub const VIEW_HEIGHT: u32 = 900;
 /// How long a creation waits for the host's own `TabCreated` line.
 const TAB_EVENT_BOUND: Duration = Duration::from_secs(10);
 
-/// The id a requested tab carries to its birth, so a popup queued beside it
+/// The id a requested tab carries to its birth, so a popup reported beside it
 /// cannot be mistaken for it.
 static TAB_REQUESTS: AtomicU64 = AtomicU64::new(1);
 
@@ -328,7 +328,16 @@ impl BrowserService {
                         state.host.as_ref().map(|host| host.port),
                     )
                 };
-                let (Some(driver), Some(port)) = (driver, port) else { continue };
+                // **A pass with no driver yet is retried**, or a birth that
+                // arrived while the profile was still coming up waits for a
+                // call that never comes.
+                let (Some(driver), Some(port)) = (driver, port) else {
+                    if tokio::time::Instant::now() < request.until {
+                        tokio::time::sleep(POPUP_PAIR_EVERY).await;
+                        let _ = service.pairing.send(request);
+                    }
+                    continue;
+                };
                 // **One turn per profile, like a call's**: a pairing pass and
                 // a call never pair against each other's listing.
                 let outcome = {
@@ -336,7 +345,12 @@ impl BrowserService {
                     tokio::time::timeout(PAIR_BOUND, service.reconcile(&profile, &driver, port))
                         .await
                 };
-                if outcome.is_err() {
+                let retry = if let Ok(listed) = outcome {
+                    // **A pass that could not list pairs nothing**, so its
+                    // birth is still the receiver's: it is retried exactly as
+                    // one still waiting in the deferred list is.
+                    !listed || popup_birth_waits(&profile)
+                } else {
                     tracing::debug!(
                         event_name = "browser_pair_slow",
                         profile = %key,
@@ -345,21 +359,14 @@ impl BrowserService {
                         url = %request.url,
                         "a popup's pairing pass outlasted its bound"
                     );
-                }
+                    true
+                };
                 // **A popup's page appears only once its first document has
                 // started.** The birth that asked for this pass may have
                 // arrived before the driver could list its page, so a birth
                 // still waiting is tried again rather than left for a call
                 // that a person clicking a sign-in button never makes.
-                let waiting = profile
-                    .deferred_tab_events
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .iter()
-                    .any(|(_, event)| {
-                        matches!(event, HostEvent::TabCreated { opener: Some(_), .. })
-                    });
-                if waiting && tokio::time::Instant::now() < request.until {
+                if retry && tokio::time::Instant::now() < request.until {
                     tokio::time::sleep(POPUP_PAIR_EVERY).await;
                     let _ = service.pairing.send(request);
                 }
@@ -1800,7 +1807,14 @@ impl BrowserService {
     /// targets neither the registry nor the boot tab knows: **a page the
     /// driver created on its own is not a host tab and must not shift the
     /// indices**.
-    async fn reconcile(&self, profile: &Arc<Profile>, driver: &Arc<dyn TabDriver>, port: u16) {
+    /// **Answers whether it got a listing.** A pass that could not list paired
+    /// nothing, so a caller retrying on a waiting birth knows to try again.
+    async fn reconcile(
+        &self,
+        profile: &Arc<Profile>,
+        driver: &Arc<dyn TabDriver>,
+        port: u16,
+    ) -> bool {
         // **A reconcile in flight across a host death must not write its
         // events back over the empty list** the death just made. The
         // generation names the host this pass is pairing for.
@@ -1812,7 +1826,7 @@ impl BrowserService {
                 "reconcile could not list the driver's tabs"
             );
             self.publish_rows(&profile.key).await;
-            return;
+            return false;
         };
         // **The events this pass takes are held, not owned.** The pairing pass
         // that runs here is bounded by a timeout, and a listing that never
@@ -1838,7 +1852,7 @@ impl BrowserService {
         let events = held.events.clone().unwrap_or_default();
         let mut unmatched = {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            pair_tab_events(&mut tabs, &listing, events.clone(), generation)
+            pair_tab_events(&mut tabs, &listing, events, generation)
         };
         if unmatched.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { .. })) {
             // **A CEF browser the host created after the driver attached is
@@ -1917,6 +1931,7 @@ impl BrowserService {
             "tabs reconciled"
         );
         self.publish_rows(&profile.key).await;
+        true
     }
 
     /// One tab's row list, in the words the tool returns.
@@ -4498,6 +4513,13 @@ impl Profile {
                         if let Some(profile) = profile.upgrade() {
                             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close(tab);
                             profile.forget_tab(tab);
+                            // **The strip hears it now**, not at the next
+                            // call: a popup that closes itself, or a tab the
+                            // host gave up, has no call behind it, and a row
+                            // left drawn points at a tab nothing runs.
+                            profile.rows.send_modify(|list| {
+                                list.rows.retain(|row| row.number != tab);
+                            });
                         }
                         let _ = tab_sender.send((generation, HostEvent::TabClosed { tab }));
                     }
@@ -5372,6 +5394,16 @@ fn defer_events(profile: &Profile, events: &mut Vec<(u64, HostEvent)>, skip: Opt
         return;
     }
     profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).extend(kept);
+}
+
+/// Whether a popup's birth is still waiting for its page.
+fn popup_birth_waits(profile: &Profile) -> bool {
+    profile
+        .deferred_tab_events
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|(_, event)| matches!(event, HostEvent::TabCreated { opener: Some(_), .. }))
 }
 
 /// **The events one reconcile took, put back if that pass is cancelled.**
@@ -8705,7 +8737,7 @@ mod tests {
 
     /// One tab on a profile a test made by hand, so the viewer and chooser
     /// tests can name the tab their roles and asks belong to.
-    fn seed_tab(profile: &Arc<Profile>, seat: &SessionSlot) -> u16 {
+    pub(crate) fn seed_tab(profile: &Arc<Profile>, seat: &SessionSlot) -> u16 {
         let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
         if tabs.target(1).is_some() {
             return 1;
@@ -8753,7 +8785,7 @@ mod tests {
             fake
         }
 
-        fn push_target(&self, target: &str) {
+        pub(crate) fn push_target(&self, target: &str) {
             let mut tabs = self.tabs.lock().expect("the tabs");
             let index = tabs.len();
             tabs.push(crate::tabs::DriverTab {
@@ -8790,7 +8822,7 @@ mod tests {
         }
 
         /// The fake's next listing answers the stale-page error once.
-        fn stale_once(&self) {
+        pub(crate) fn stale_once(&self) {
             self.stale_once.store(true, Ordering::Release);
         }
 
@@ -9706,7 +9738,7 @@ mod tests {
 /// re-read spares the same pages, so the branch was redundant.
 #[cfg(test)]
 mod server_guards {
-    use super::tests::FakeDriver;
+    use super::tests::{FakeDriver, seed_tab};
     use super::{BrowserService, Profile, pair_tab_events};
     use crate::control::HostEvent;
     use crate::driver::TabDriver;
@@ -9961,6 +9993,72 @@ mod server_guards {
             HostEvent::TabCreated { tab: 10, opener: Some(1), url: "u".to_owned(), request: None };
         let waiting = pair_tab_events(&mut tabs, &[], vec![(1, live.clone())], 1);
         assert_eq!(waiting, vec![(1, live)], "a birth with no page and no close waits");
+    }
+
+    /// **A pairing pass that could not list tries again.** The birth is still
+    /// the receiver's when the listing fails, so a retry keyed on the deferred
+    /// list alone would never fire and the popup would wait for a call that
+    /// never comes.
+    #[tokio::test]
+    async fn a_pairing_pass_that_could_not_list_tries_again() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        fake.stale_once();
+        fake.push_target("T2");
+        service.install_fake(&seat, fake).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        seed_tab(&profile, &seat);
+        let ring_name = format!("/forge-pair-retry-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, requests) = std::sync::mpsc::channel();
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: dir.path().join("pair-retry"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        let (births, taken) = tokio::sync::mpsc::unbounded_channel();
+        *profile.host_tab_events.lock().await = Some(taken);
+        births
+            .send((
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "about:blank".to_owned(),
+                    request: None,
+                },
+            ))
+            .expect("the birth is queued");
+        let _ = service.pairing.send(super::PairingRequest {
+            key: "O/default".to_owned(),
+            tab: 2,
+            opener: 1,
+            url: "about:blank".to_owned(),
+            until: tokio::time::Instant::now() + Duration::from_secs(5),
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let paired =
+                    profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).number_of("T2")
+                        == Some(2);
+                if paired {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("a pass that could not list tried again and paired the popup");
+        drop(requests);
+        crate::osr::Ring::unlink(&ring_name);
     }
 
     /// **The service starts its own pairing pass.** A birth with no call
