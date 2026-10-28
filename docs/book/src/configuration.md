@@ -949,7 +949,8 @@ safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack
-subscriptions and the sweep watermarks beside them, the session
+subscriptions, the sweep watermarks and the own-post ledger beside them,
+the session
 identity per project and label - the lead's and every worker's, which is
 what brings a worker back after a restart - review
 threads, the
