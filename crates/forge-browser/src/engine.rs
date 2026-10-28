@@ -28,6 +28,12 @@ cef::wrap_browser_process_handler! {
     struct PumpHandler {}
 
     impl BrowserProcessHandler {
+        /// **This runs once the global context's profile has initialized**,
+        /// which is what `SetPreference` checks before it writes.
+        fn on_context_initialized(&self) {
+            turn_off_autofill();
+        }
+
         fn on_schedule_message_pump_work(&self, _delay_ms: i64) {
             // **Pumped unconditionally instead.** Gating the pump on this
             // signal delayed CDP input: a click arriving while CEF's next
@@ -108,6 +114,71 @@ pub fn initialize(profile: &std::path::Path, port: u16, app: &mut App, args: &ar
     }
     CLOCK.get_or_init(std::time::Instant::now);
     true
+}
+
+/// **Autofill for cards and profiles is off in the host, not merely its save
+/// prompts.** A submitted card form reaches
+/// `SaveCardBubbleControllerImpl::DoShowBubble`, which dereferences the tab
+/// behind the WebContents; an alloy host has none and the fault lands before
+/// CEF's own null guard, so the process dies. CEF names turning autofill off
+/// as the workaround, and an agent-driven host has nobody to fill a form for.
+/// **The password manager is untouched**: it gates on its own preferences.
+///
+/// **Called once, from `on_context_initialized`**: CEF fires that once per
+/// process, so a failure here is terminal for this host - the refusal line is
+/// the record, and `autofill_live` is what catches a regression.
+fn turn_off_autofill() {
+    let Some(context) = request_context_get_global_context() else {
+        eprintln!(
+            "cef host: the global request context was not there, so autofill stays on \
+             (event_name cef_autofill_off_failed)"
+        );
+        return;
+    };
+    // **A refusal is logged, not fatal**: a renamed preference would leave
+    // autofill on with nothing failing, and `autofill_live` is what catches
+    // that - the host dies on its card form with the original fault.
+    let mut stated = Vec::new();
+    let mut all_set = true;
+    for name in ["autofill.credit_card_enabled", "autofill.profile_enabled"] {
+        let Some(mut value) = value_create() else {
+            all_set = false;
+            eprintln!(
+                "cef host: an autofill preference did not take (event_name \
+                 cef_autofill_off_refused, pref {name}, why no value could be created)"
+            );
+            continue;
+        };
+        value.set_bool(0);
+        // **Not `CefString::default()`**: that marshals to a null out-param,
+        // and CEF refuses the write before it reads the preference, so the
+        // refusal reads as an empty error.
+        let mut error = CefString::from("");
+        let applied = context.set_preference(
+            Some(&CefString::from(name)),
+            Some(&mut value),
+            Some(&mut error),
+        );
+        // **The stored value is the fact, not the write's return**: a write
+        // CEF accepted and did not keep leaves autofill on.
+        let stored = context.preference(Some(&CefString::from(name))).map(|value| value.bool());
+        if applied != 1 || stored != Some(0) {
+            all_set = false;
+            eprintln!(
+                "cef host: an autofill preference did not take (event_name \
+                 cef_autofill_off_refused, pref {name}, write {applied}, stored {stored:?}, \
+                 error {error})"
+            );
+            continue;
+        }
+        // **Each preference is named with its stored value**: one aggregate
+        // sentence let a renamed entry pass while the line still claimed it
+        // was off, and the card form cannot exercise the profile path.
+        stated.push(format!("pref {name}={}", stored.unwrap_or_default()));
+    }
+    if all_set {
+        eprintln!("cef host: autofill is off (event_name cef_autofill_off, {})", stated.join(", "));
+    }
 }
 
 /// One turn of CEF's work. **Called every iteration**, not on CEF's own

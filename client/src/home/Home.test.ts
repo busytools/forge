@@ -445,10 +445,28 @@ describe("the client's own update", () => {
     expect(body, 'the notice is text where it should be a control').toMatch(
       /<button[^>]*>[^<]*v9\.9\.9 available/,
     );
+    expect(body, 'an offer drew a failure beside it').not.toContain('update check failed');
   });
 
   it('draws none of it on a build that is current', () => {
-    expect(draw()).not.toContain('v9.9.9');
+    updateState.set({ stage: 'current' });
+
+    const body = draw();
+    expect(body).not.toContain('v9.9.9');
+    expect(body, 'a build that is current drew a failure').not.toContain('update check failed');
+  });
+
+  it('draws the launch check while it is still running', () => {
+    updateState.set({ stage: 'checking' });
+
+    const body = draw();
+    expect(body).toContain('checking for updates');
+    expect(body, 'the launch check claimed an outcome before one landed').not.toContain(
+      'update check failed',
+    );
+    expect(body, 'the check-in-flight state drew a control').not.toMatch(
+      /<button[^>]*>[^<]*checking for updates/,
+    );
   });
 
   it('draws the installing stage, offering nothing to press', () => {
@@ -471,6 +489,21 @@ describe("the client's own update", () => {
     updateState.set({ stage: 'install', version: '9.9.9' });
 
     expect(draw()).toContain('ready - install it');
+  });
+
+  it('draws a check that could not run as a labelled line, with the reason', () => {
+    updateState.set({
+      stage: 'check-failed',
+      detail: 'No command check found for plugin FileNamePlugin',
+    });
+
+    const body = draw();
+    expect(body).toContain(
+      '<span class="upd">update check failed - No command check found for plugin FileNamePlugin',
+    );
+    expect(body, 'a failed check drew a control it cannot use').not.toMatch(
+      /<button[^>]*>[^<]*update check failed/,
+    );
   });
 
   it('draws a failed install with a retry, and its reason on the control', () => {

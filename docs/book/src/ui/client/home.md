@@ -144,14 +144,21 @@ seat's conversation), so its line is the words `a turn failed`.
   for it to appear at all, so a probe that answered one of them draws
   nothing rather than claiming an update it cannot see.
 - **This app's own update**: the header draws `↑ vX available` beside the
-  `client` pair when a newer release is published, checked once at launch. It
+  `client` pair when a newer release is published, checked once at launch.
+  The line starts as `checking for updates...` while that check is in flight
+  - on the phone it is a network fetch - and settles to the offer, to nothing
+  on a build that is current, or to the failure line below. It
   is a control, where the CLI notice beside it is not: clicking installs the
   update and the line
   becomes `ready - restart to finish`, which is the click that swaps into the
   new build. On the phone the same click downloads and checks the APK and the
   line becomes `ready - install it`, which hands it to the system installer;
   tapping again re-opens that prompt from the checked file rather than
-  downloading twice. A failed install draws `- update failed, retry`.
+  downloading twice. A failed install draws `- update failed, retry`. A check
+  that could not run draws `update check failed - <reason>`, in the shell's
+  own words and as text rather than a control: a build that is current and a
+  check that failed are different facts, and the reason is what tells them
+  apart.
 - **A browser tab**: outside the shell there is nothing to install, so the
   header draws the two facts instead - `client vX`, the build it is serving,
   and `latest vY` when the app it was served with carries a manifest naming a

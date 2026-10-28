@@ -1375,6 +1375,13 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   white-space: pre-wrap; max-height: 6.5em; overflow-y: auto; }
 .tb-feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
   border-top: 1px solid var(--line); background: var(--s2); }
+/* What a take pressed from the bar is doing, above the row its mic lives in:
+   the composer's own band and notice rows are behind the picture while the
+   takeover is up, so a line drawn there is a press that looks dead. */
+.tb-line { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+  border-top: 1px solid var(--line); background: var(--s2); font-size: var(--fs-data); }
+.tb-line.bad { color: var(--bad); }
+.tb-line.opening { color: var(--muted); }
 .tb-field { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
   border: 1px solid var(--line); border-radius: 8px; background: var(--s1); color: var(--text); }
 .takeover-page { position: absolute; inset: 0; display: flex;
@@ -1798,10 +1805,11 @@ details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
 /* A thought's expansion is reasoning, not the turn's own words: it reads as a
    quiet block off the column - a hairline and the muted tone - instead of more
-   prose. Both folds draw through this one row. A nudge's expansion is the same
-   block: the whole of what the machinery said, where the summary clamps it. */
-details.leaf.think > .body, details.leaf.nudge > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
-details.leaf.think > .body .prose, details.leaf.nudge > .body .prose { color: var(--muted); }
+   prose. A nudge's expansion is the same block: the whole of what the
+   machinery said, where the summary clamps it, and so is the handoff
+   procedure's: the prompt that opened the turn, held whole. */
+details.leaf.think > .body, details.leaf.nudge > .body, details.leaf.procedure > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+details.leaf.think > .body .prose, details.leaf.nudge > .body .prose, details.leaf.procedure > .body .prose { color: var(--muted); }
 /* A dispatch row's own fields, joined from the record's card: the agent type,
    the background chip, and - once settled - the figures at the row's right.
    Namespaced `sg-` so no bare name of the sheet's other surfaces catches
@@ -2841,11 +2849,12 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
   font-family: inherit; font-size: inherit; padding: 0 3px; line-height: 1; }
 .tc .x:hover { color: var(--text); }
 /* **The take takes the line, and the graph takes the line's room** (Ved,
-   2026-10-11): the draft's own line in the composer and the question's words
-   row in the dock both hand the card everything the controls leave, and the
-   card wears none of the pill's chrome - the surface's ring carries the state,
-   and the row is the one the words land in rather than something above it. */
-.takeline .tc, .dock .qrow .tc { align-self: center; margin: 0; border: 0; background: none;
+   2026-10-11): the draft's own line in the composer, the question's words row
+   in the dock and the takeover bar's feedback line all hand the card
+   everything the controls leave, and the card wears none of the pill's chrome
+   - the surface's ring carries the state, and the row is the one the words
+   land in rather than something above it. */
+.takeline .tc, .dock .qrow .tc, .tb-feedback .tc { align-self: center; margin: 0; border: 0; background: none;
   box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
 /* The graph inside the card takes whatever the readings leave: pinned at the
    pill's 116px it read as a bead between the counts rather than as the meter of
@@ -2857,8 +2866,8 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    ladder hides the wave, in every phase. The takeline card reserves the
    field's own line box (measured offscreen in WebKit, 2026-10-15). */
 .takeline .tc { min-height: calc(1.5 * var(--fs-base)); }
-.takeline .tc .bar, .dock .qrow .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
-.takeline .tc .ticks, .dock .qrow .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
+.takeline .tc .bar, .dock .qrow .tc .bar, .tb-feedback .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
+.takeline .tc .ticks, .dock .qrow .tc .ticks, .tb-feedback .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
 /* **One smooth envelope, a deeper track for it** (Ved, 2026-10-11, on the
    stretched take): the pill's per-cell bars read as chunks once the graph has
    the row's width, and their 16px track made the readings look flat - the
@@ -2940,13 +2949,23 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 @container (max-width: 266px) { .tc .fr { display: none; } }
 @container (max-width: 195px) { .tc .kb { display: none; } }
 @container (max-width: 124px) { .tc .pace { display: none; } }
-/* The way out keeps a finger's target wherever the card ends up, and the target
-   is drawn rather than laid out: a 44px box centred on the glyph, so the pill's
-   width does not change with the pointer and the ladder's steps hold for both. */
+/* The way out keeps a finger's target, and the target is drawn rather than laid
+   out: a 44px box around the glyph, so the pill's width does not change with
+   the pointer and the ladder's steps hold for both. **On a card that sits in a
+   line of controls it hangs left from the glyph's right edge** (the rule
+   below), so it can never reach the button beside it. */
 @media (pointer: coarse) {
   .tc .x { position: relative; }
   .tc .x::after { content: ''; position: absolute; left: 50%; top: 50%;
     width: 44px; height: 44px; transform: translate(-50%, -50%); }
+  /* **On a card that sits in a line of controls, the halo grows left from the
+     glyph's right edge.** Centred, its 22px half reached through the row's gap
+     and over the mic beside it, and since it is positioned it painted and
+     hit-tested above that button: a tap on the mic's left edge could throw the
+     take away instead of stopping it. Anchored right, the target stays 44px
+     and stops at the card's edge. */
+  .takeline .tc .x::after, .dock .qrow .tc .x::after, .tb-feedback .tc .x::after {
+    left: auto; right: 0; transform: translate(0, -50%); }
 }
 
 /* A notice shares the row with the take and wins it. Each rule here is scoped
