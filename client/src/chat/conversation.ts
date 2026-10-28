@@ -107,6 +107,17 @@ export interface Turn {
    * trim only ever drops from the oldest end, where the page's own turns sit.
    */
   before?: string | null;
+  /**
+   * A turn that came from a record rather than from this conversation's
+   * transcript: the handoff's judgment turn, which ran in the session that
+   * left.
+   *
+   * **No page of THIS transcript can ever carry it**, so a walk toward it
+   * would fetch every page above the successor's head and never arrive - the
+   * same reason a forged notice is not a walk target. It draws where it was
+   * seeded and is never asked for again.
+   */
+  record?: boolean;
 }
 
 /**
@@ -427,6 +438,7 @@ function judgmentTurnOf(handoff: HandoffRecord): Turn | null {
     key: id !== null ? `live:${id}` : `live:judgment-${handoff.from}`,
     messages: [...messages],
     live: false,
+    record: true,
   };
 }
 
@@ -2690,10 +2702,15 @@ export class Chat {
       // is written here and nowhere else - no read restores it - so a tail of
       // nothing but notices has nothing to walk for, and targeting one would
       // fetch the whole history one page per landing for a turn no page will
-      // ever carry. The walk's own reach is the transcript-carried turns.
+      // ever carry. **A record turn is the same fact from the other
+      // transcript**: the handoff's judgment turn ran in the session that
+      // left, so no page of the successor's history names it, and walking to
+      // it would read that history to its top on every load. The walk's own
+      // reach is the transcript-carried turns.
       if (direction === 'newest' && !reachesHeld) {
-        const carriable = rest.filter((turn) =>
-          turn.messages.some((message) => !isForgeNotice(message)),
+        const carriable = rest.filter(
+          (turn) =>
+            turn.record !== true && turn.messages.some((message) => !isForgeNotice(message)),
         );
         walk.key = carriable.length > 0 ? (carriable[carriable.length - 1]?.key ?? null) : null;
         walk.below = walk.key === null ? null : new Set(rest.map((turn) => turn.key));
@@ -2770,6 +2787,16 @@ export class Chat {
           loose.push(turn);
         }
       }
+      // **The turns a newest page does not carry keep the order they were
+      // held in.** A settled turn and one still in play are not two ranks
+      // here: a watched swap leaves the judgment turn in play while its row
+      // is already settled, and placing every settled turn above every
+      // in-play one lifted the row over the turn it ends - within one
+      // successor turn (#2639). The seam is one stretch of held order.
+      const keptByKey = new Map([...rest, ...overtaken].map((turn) => [turn.key, turn]));
+      const aboveHeld = healed.turns
+        .map((turn) => keptByKey.get(turn.key))
+        .filter((turn): turn is Turn => turn !== undefined);
       const turns =
         direction === 'older'
           ? this.walkTo !== null && this.walkBelow !== null
@@ -2787,7 +2814,7 @@ export class Chat {
                 ...loose,
               ]
             : [...drawn, ...rest, ...loose]
-          : [...rest, ...overtaken, ...drawn, ...loose];
+          : [...aboveHeld, ...drawn, ...loose];
       // **The newest page is the trim's floor**: its first row is where the
       // window may stop, so no row of it is ever dropped. The seed is the
       // other floor - the one page `more` can never name again.
@@ -2919,21 +2946,44 @@ export class Chat {
     const row = handoffKey(handoff);
     const judgment = judgmentTurnOf(handoff);
     this.fold((held) => {
+      let turns = held.turns;
       const added: Turn[] = [];
-      if (judgment !== null && !held.turns.some((turn) => turn.key === judgment.key)) {
-        added.push(judgment);
+      if (judgment !== null) {
+        // **The same turn can already be here under another name.** A client
+        // that attached while the judgment turn ran got it from the snapshot
+        // page, keyed by the server's own name for it; the record's copy is
+        // then the SAME turn, and adding it beside that row would draw the
+        // procedure and its calls twice. The opening row's id is the one fact
+        // both carriers keep, so it is what pairs them - and the record's copy
+        // is the fuller one (the page was read mid-turn), so it settles that
+        // row in place, keeping its key so nothing the reader has open
+        // remounts.
+        const opening = uuidOf(judgment.messages[0]);
+        const at =
+          opening === null
+            ? turns.findIndex((turn) => turn.key === judgment.key)
+            : turns.findIndex((turn) => uuidOf(turn.messages[0]) === opening);
+        if (at === -1) {
+          added.push(judgment);
+        } else {
+          const same = turns[at];
+          if (same !== undefined && same.messages.length < judgment.messages.length) {
+            const settled: Turn = { ...same, messages: judgment.messages, live: false };
+            turns = [...turns.slice(0, at), settled, ...turns.slice(at + 1)];
+          }
+        }
       }
-      if (!held.turns.some((turn) => turn.key === row)) {
+      if (!turns.some((turn) => turn.key === row)) {
         added.push({ key: row, messages: [handoffFrame(handoff)], live: false });
       }
-      if (added.length === 0) return held;
+      if (added.length === 0 && turns === held.turns) return held;
       // **A live swap puts the join after the outgoing conversation**; a seed
       // from a seat record puts it before the successor turns that are already
       // held - the successor's transcript never carries either, so they are
       // the head of what is drawn, not its tail.
       return {
         ...held,
-        turns: where === 'ahead' ? [...added, ...held.turns] : [...held.turns, ...added],
+        turns: where === 'ahead' ? [...added, ...turns] : [...turns, ...added],
       };
     });
   }

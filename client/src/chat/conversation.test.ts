@@ -4610,6 +4610,104 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
+  /**
+   * **A client that attached MID-turn already holds that turn, under the
+   * server's own name for it.** The record's copy is the same turn - the
+   * opening row's id says so - and the fuller one, because the page was read
+   * while the turn still ran. Adding it beside the page's row drew the
+   * procedure and its calls twice, until a full reload.
+   */
+  it('settles the judgment turn a page already carried instead of drawing it twice', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // The subscribe's page: the judgment turn as far as it had got, under the
+    // server fold's name rather than the live frames'.
+    const partial = judgmentTurn().slice(0, 2);
+    server.send(record([{ key: 'srv-turn', messages: partial }]));
+
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new', judgmentTurn()) } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'new' } });
+
+    const held = get(chat.value).turns;
+    const procedure = held.filter(
+      (turn) =>
+        (turn.messages[0] as { uuid?: unknown } | null)?.uuid === 'forge_nudge_handoff_7_feedface',
+    );
+    expect(procedure, 'one turn, drawn once').toHaveLength(1);
+    expect(procedure[0]?.key, 'and it keeps the row the reader already has').toBe('srv-turn');
+    expect(procedure[0]?.messages, "settled with the record's fuller copy").toHaveLength(
+      judgmentTurn().length,
+    );
+    stop();
+  });
+
+  /**
+   * **The judgment turn is not a target for the walk.** It ran in the session
+   * that left, so no page of the successor's transcript can ever name it; a
+   * walk toward it reads that transcript to its top, one page per landing, on
+   * every load of the seat. It draws where it was seeded and stops there.
+   */
+  it('does not walk the successor history for the recorded turn', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+
+    // A page with a cursor above it and more than one row, so the fresh-fill's
+    // own single pull is not what asks: without the record turn this is the
+    // walk's next step, and a walk targeting the record turn would take it.
+    server.send(
+      record(
+        [turn('t1', 'picked up'), turn('t2', 'and on')],
+        'cursor-1',
+        handoffRecord('old', 'new', judgmentTurn()),
+      ),
+    );
+
+    expect(server.more(), 'a seeded seat asks for no page above it').toEqual([]);
+    stop();
+  });
+
+  /**
+   * **A page landing after a watched swap keeps the seam whole.** The
+   * judgment turn stays in play until its own page arrives while its row is
+   * already settled, so placing every settled turn above every in-play one
+   * lifted the row over the turn it ends.
+   */
+  it('keeps the judgment turn above its row when a page lands after the swap', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    // Two rows, so the fresh-fill's own pull does not leave an ask in flight:
+    // a page landing after the swap is the landing under test, not an answer.
+    server.send(record([turn('t0', 'the work so far'), turn('t0b', 'and more')], 'c0'));
+    for (const msg of judgmentTurn()) {
+      server.update({ chat_appended: { key: LEAD, msg: stamped(msg, '2026-10-27T10:00:00Z') } });
+    }
+    server.update({ handoff: { key: LEAD, handoff: handoffRecord('old', 'new', judgmentTurn()) } });
+    server.update({ session_replaced: { key: LEAD, session_id: 'new' } });
+
+    server.send({
+      kind: 'page',
+      conversation: LEAD,
+      turns: [
+        {
+          key: 'succ',
+          messages: [stamped(said('picked up'), '2026-10-27T10:05:00Z')],
+        },
+      ],
+      cursor: null,
+    });
+
+    const keys = get(chat.value).turns.map((held) => held.key);
+    const procedure = keys.findIndex((key) => key.startsWith('live:forge_nudge_handoff_'));
+    const row = keys.indexOf('handoff:old:new');
+    expect(procedure, 'the procedure is still held').toBeGreaterThanOrEqual(0);
+    expect(row, 'and its row too').toBeGreaterThanOrEqual(0);
+    expect(procedure, 'the turn stays above the row it ends').toBeLessThan(row);
+    stop();
+  });
+
   it('draws the recorded handoff row above the successor turns a page carries', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
