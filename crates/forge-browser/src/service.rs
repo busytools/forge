@@ -6524,9 +6524,9 @@ mod tests {
         let why = "a listing timed out";
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let guard = tracing::subscriber::set_default(subscriber);
         let host = service.end_dead_host(&profile, drove, why).await;
-        drop(_guard);
+        drop(guard);
         let answer = dead_host_answer(&profile, host, why);
 
         assert!(!answer.contains("was ended"), "the refused end is not claimed: {answer}");
@@ -10458,11 +10458,11 @@ mod server_guards {
 
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let guard = tracing::subscriber::set_default(subscriber);
         let host = service
             .end_dead_host(&profile, identity, "the driver's initializeServer timed out")
             .await;
-        drop(_guard);
+        drop(guard);
 
         assert!(matches!(host, super::DeadHost::Ended { .. }), "the host was not ended: {host:?}");
         let records = ended(&caught);
@@ -10499,11 +10499,11 @@ mod server_guards {
 
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let guard = tracing::subscriber::set_default(subscriber);
         let mut state = profile.state.lock().await;
         profile.teardown(&mut state, super::HostEnd::Closed, "").await;
         drop(state);
-        drop(_guard);
+        drop(guard);
 
         assert!(ended(&caught).is_empty(), "a dead host was recorded as an end: {caught:?}");
         crate::osr::Ring::unlink(&ring);
@@ -10523,9 +10523,9 @@ mod server_guards {
 
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let guard = tracing::subscriber::set_default(subscriber);
         service.idle_pass().await;
-        drop(_guard);
+        drop(guard);
 
         let records = ended(&caught);
         let (level, fields) =
