@@ -662,7 +662,7 @@ struct BirthHold<'a> {
 
 impl Drop for BirthHold<'_> {
     fn drop(&mut self) {
-        self.popups.flush_births();
+        let _ = self.popups.flush_births();
     }
 }
 
@@ -876,16 +876,19 @@ impl PopupGate {
     }
 
     /// **The held births go after the create's own**, in the order they were
-    /// adopted, which is the order the engine made them.
-    fn flush_births(&self) {
+    /// adopted, which is the order the engine made them. Answers what it
+    /// sent, so a test can hold it to sending rather than only to emptying
+    /// the buffer.
+    fn flush_births(&self) -> Vec<crate::control::HostEvent> {
         self.holding_births.store(false, Ordering::Release);
         let held = {
             let mut held = self.held_births.lock().unwrap_or_else(PoisonError::into_inner);
             std::mem::take(&mut *held)
         };
-        for event in held {
-            crate::control::emit(&event);
+        for event in &held {
+            crate::control::emit(event);
         }
+        held
     }
 
     /// Start a popup's own document when CEF has not.
@@ -2035,6 +2038,23 @@ mod tests {
             popups.held_births.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
             "the kept birth is flushed after the create's own",
         );
+        // **The flush hands the births to the sender**, not merely empties
+        // the buffer: a flush that took them and dropped them would leave the
+        // buffer empty and the popup unreported.
+        let held = popups.hold_births();
+        popups.emit_birth(crate::control::HostEvent::TabCreated {
+            tab: 3,
+            opener: Some(1),
+            url: "u".to_owned(),
+            request: None,
+        });
+        let flushed = popups.flush_births();
+        assert_eq!(flushed.len(), 1, "the flush hands the held birth on: {flushed:?}");
+        assert!(
+            matches!(flushed.first(), Some(crate::control::HostEvent::TabCreated { tab: 3, .. })),
+            "the birth it hands on is the one that was held: {flushed:?}",
+        );
+        drop(held);
         crate::osr::Ring::unlink(&name);
     }
 

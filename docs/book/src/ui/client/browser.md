@@ -78,6 +78,15 @@ with its session: the sweep of dead seats, a `/new` or `/resume` on the slot,
 and the host ending - except a tab a parked hand-off still holds. Nothing
 outlives the host.
 
+**A popup's own document is the one the host starts.** Its target answers no
+page-domain command until it has a document, so the passkey veto - the script
+every other page starts with - cannot be registered on it before that first
+one, and a popup an attached client holds commits exactly one navigation, so
+its address cannot be preceded by a blank. The host starts the address the
+popup asked for as that first document; the veto patches that document's world
+as soon as its context is reported, which is the out-of-band case a tab
+another client creates directly at a URL is already in.
+
 **The old profile trees go once.** The first server that finds no marker
 deletes the client's old in-process CEF caches - `browser/cef-profile` and
 `browser/profiles/<name>/cef` under its bundle identifier - and the server's
