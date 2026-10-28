@@ -302,10 +302,15 @@ impl OverlayView {
                     | BrowserInputEvent::Wheel { .. }
             );
             if streaming {
-                tauri_plugin_log::log::debug!(
-                    "the overlay sent a gesture (event_name client_browser_input_sent, {})",
-                    describe(&event)
-                );
+                // **The guard is the allocation**: the facade admits `debug`
+                // for the mic's target, so without it every move and wheel
+                // would build its line before the filter drops it.
+                if tauri_plugin_log::log::log_enabled!(tauri_plugin_log::log::Level::Debug) {
+                    tauri_plugin_log::log::debug!(
+                        "the overlay sent a gesture (event_name client_browser_input_sent, {})",
+                        describe(&event)
+                    );
+                }
             } else {
                 tauri_plugin_log::log::info!(
                     "the overlay sent a gesture (event_name client_browser_input_sent, {})",
