@@ -146,6 +146,30 @@ pub struct GitDiffStats {
     pub total_removed: u32,
 }
 
+/// How current the base a drawn branch diff was measured against is.
+///
+/// The base is a remote-tracking ref (`origin/main`), and how far the remote
+/// has moved past it is only knowable over the network. The read that draws
+/// the diff refreshes it first, so a diff is never shown from a stale base
+/// without saying so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaseState {
+    /// A local base with nothing it could lag behind: no `origin` remote, and
+    /// no upstream of its own. A local base beside an `origin`, or one whose
+    /// branch tracks some remote (`main@{upstream}`), is `Unverified` instead
+    /// - it can be arbitrarily behind one nobody fetched.
+    Local,
+    /// The base was fetched and matches the remote.
+    Current,
+    /// The base could not be fetched, and the remote has `behind` commits it
+    /// lacks.
+    Behind { behind: u32 },
+    /// The base could not be fetched and could not be checked against the
+    /// remote either.
+    Unverified,
+}
+
 /// Layer 2 payload: how far the branch is ahead of the default
 /// branch, alongside the corresponding numstat.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -194,6 +218,13 @@ pub struct GitWorkView {
     pub worktree: Option<GitDiffStats>,
     /// The branch's chain ahead of its default.
     pub ahead: Option<GitBranchAhead>,
+    /// What the seat's last watch refresh found for the base the chain is
+    /// measured against, `None` until one has run. **A base can move without
+    /// the count or the chain moving**: the range is `base..HEAD`, so an
+    /// upstream advance the branch does not contain leaves the branch's own
+    /// commits exactly as they were, and this is the only field that says so.
+    #[serde(default)]
+    pub base: Option<BaseState>,
 }
 
 #[cfg(test)]
@@ -208,5 +239,31 @@ mod tests {
         assert!(!clean.is_populated());
         assert!(populated.is_populated());
         assert!(!failed.is_populated());
+    }
+
+    /// **The four states' wire spellings, as the client parser reads them.**
+    /// serde's external tagging nests a struct variant's fields under the
+    /// variant name (`{"behind": {"behind": 3}}`), which a parser written
+    /// against a flat object silently reads as unknown - the stale-base label
+    /// then never draws. The client's `diffFrom` test feeds these same shapes.
+    #[test]
+    fn the_base_states_wire_spellings() {
+        assert_eq!(
+            serde_json::to_value(BaseState::Local).expect("encodes"),
+            serde_json::json!("local")
+        );
+        assert_eq!(
+            serde_json::to_value(BaseState::Current).expect("encodes"),
+            serde_json::json!("current"),
+        );
+        assert_eq!(
+            serde_json::to_value(BaseState::Unverified).expect("encodes"),
+            serde_json::json!("unverified"),
+        );
+        assert_eq!(
+            serde_json::to_value(BaseState::Behind { behind: 3 }).expect("encodes"),
+            serde_json::json!({"behind": {"behind": 3}}),
+            "a struct variant nests its fields under the variant name",
+        );
     }
 }

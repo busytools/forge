@@ -283,6 +283,91 @@ describe('the connection', () => {
   });
 
   /**
+   * **The review page's own read carries its flag to the server.** It is the
+   * one subscribe that may wait on the network, so the flag has to ride the
+   * ask rather than be inferred from the subject.
+   */
+  it('asks a review-scoped read when the page says so', async () => {
+    const { server, conn } = await connected();
+    const seat: Subject = { session: LEAD };
+    conn.subscribe(seat);
+    await until(() => server.received.length === 1, 'the subscribe');
+
+    conn.refresh(seat, { review: true });
+    await until(() => server.received.length === 3, 'the refresh pair');
+    expect(server.received[1], 'the unsubscribe comes first').toEqual({
+      kind: 'unsubscribe',
+      what: seat,
+    });
+    expect(server.received[2]).toEqual({
+      kind: 'subscribe',
+      what: seat,
+      answering: false,
+      review: true,
+    });
+  });
+
+  /**
+   * **The review scope rides every ask, not just a refresh.** A page's first
+   * open, a relink and the reconnect's own re-ask are frames the page did not
+   * choose; a socket that dropped the flag would turn them into ordinary
+   * reads that label their base unverified.
+   */
+  it('carries the review scope on subscribe, relist and the reconnect', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { review: true });
+    await until(() => server.received.length === 1, 'the subscribe');
+    expect(server.received[0]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      review: true,
+    });
+
+    conn.relist(HOME, { review: true });
+    await until(() => server.received.length === 2, 'the relist');
+    expect(server.received[1]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      review: true,
+    });
+
+    server.drop();
+    await until(() => server.received.length >= 3, 'the reconnect');
+    expect(server.received[2]).toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      review: true,
+    });
+  });
+
+  /**
+   * **A declaration moves the held scope with nothing on the wire.** The page
+   * letting its seat go is not a read, and the reconnect after it must ask
+   * an ordinary record.
+   */
+  it('takes a declaration without asking for anything', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME, { review: true });
+    await until(() => server.received.length === 1, 'the subscribe');
+
+    conn.declare(HOME, { review: false });
+    await quiet(ABSENCE_MS);
+    expect(server.received.slice(1), 'a declaration sends nothing').toEqual([]);
+
+    server.drop();
+    await until(() => server.received.length >= 2, 'the reconnect');
+    expect(server.received[1], 'and the reconnect asks the declared scope').toEqual({
+      kind: 'subscribe',
+      what: HOME,
+      answering: false,
+      review: false,
+    });
+  });
+
+  /**
    * The declaration decides whether the core parks a turn on this client's
    * reply. Sending it as `false` on a client that draws a dock would make
    * every prompt it shows resolve `Cancelled` - the turn fails rather than
@@ -297,6 +382,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: true,
+      review: false,
     });
 
     // Off unless said otherwise, so a read-only client cannot hang a turn.
@@ -306,6 +392,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: 'usage',
       answering: false,
+      review: false,
     });
   });
 
@@ -351,6 +438,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: false,
+      review: false,
     });
   });
 
@@ -890,6 +978,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: false,
+      review: false,
     });
     // And the store is still holding what it had while the server answers.
     expect(conn.store(HOME)?.snapshot()).toEqual({ projects: ['a'] });
@@ -925,6 +1014,7 @@ describe('the connection', () => {
       kind: 'subscribe',
       what: HOME,
       answering: true,
+      review: false,
     });
 
     // One entry is left, so exactly one re-ask: a second would mean the count

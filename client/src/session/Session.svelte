@@ -100,7 +100,7 @@
 
   // Raw: a read answers with a whole new record, so nothing here is mutated in
   // place, and `$state` would re-proxy the tree it is handed on every frame.
-  let read = $state.raw<SessionRead>({ wire: null, refused: null });
+  let read = $state.raw<SessionRead>({ wire: null, refused: null, review: false });
   $effect(() => {
     // Read here rather than through `$derived`, so a seat change subscribes the
     // seat it moved to - the seat it left keeps both its record and its

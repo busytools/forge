@@ -662,7 +662,7 @@ describe('the tree the strip draws', () => {
     over: Partial<SessionRecord> = {},
   ): SessionRecord => ({
     ...record,
-    git: { defaultBranch: 'main', worktree: null, ahead: null, ...git },
+    git: { defaultBranch: 'main', worktree: null, ahead: null, base: null, ...git },
     ...over,
   });
 
@@ -1775,7 +1775,7 @@ describe('the review rows the strip draws', () => {
   ): SessionRecord => ({
     ...record,
     work: { ...record.work, ...work },
-    git: { defaultBranch: 'main', worktree: null, ahead: null, ...git },
+    git: { defaultBranch: 'main', worktree: null, ahead: null, base: null, ...git },
     pr: null,
     closes: [],
     ...over,

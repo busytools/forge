@@ -27,6 +27,7 @@ function untouched(): Connection {
     refresh: refuse,
     showing: refuse,
     relist: refuse,
+    declare: refuse,
     release: refuse,
     dispatch: refuse,
     more: refuse,

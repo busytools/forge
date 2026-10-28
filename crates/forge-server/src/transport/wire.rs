@@ -809,6 +809,11 @@ async fn whole_files_for(
     threads: &[ReviewThread],
     content: &DiffContent,
     default_branch: Option<&str>,
+    // The revision the old side resolves against: the sha the diff was pinned
+    // to when the read refreshed its base, else the ref's name. A pinned diff
+    // read at the name's merge-base would place anchors against a base the
+    // diff does not describe.
+    base_rev: Option<&str>,
 ) -> WholeFiles {
     let files = match &content.branch_ahead {
         LayerState::Populated(files) => files.as_slice(),
@@ -839,7 +844,7 @@ async fn whole_files_for(
         let (rev, path) = match anchor.side {
             ReviewSide::New => ("HEAD".to_owned(), file.path.clone()),
             ReviewSide::Old => {
-                let Some(base) = default_branch else {
+                let Some(base) = base_rev.or(default_branch) else {
                     continue;
                 };
                 if old_rev.is_none() {
@@ -1761,6 +1766,11 @@ pub struct OpenTimings {
     pub catch_up_ms: f64,
     pub cards_ms: f64,
     pub work_ms: f64,
+    /// The review read's base refresh: the fetch and the tip it is checked
+    /// against, bounded by the display budget.
+    pub base_ms: f64,
+    /// The scan pinned to the sha that refresh resolved.
+    pub rescan_ms: f64,
     pub content_ms: f64,
     pub reviews_ms: f64,
     pub tree_reviews_ms: f64,
@@ -1794,7 +1804,7 @@ fn slice_ms(at: std::time::Instant) -> f64 {
 /// fields empty and a working tree read per read, since no held seat has a
 /// store to keep one in.
 pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result<Value> {
-    encode_subject_timed(state, subject).await.map(|(value, _)| value)
+    encode_subject_timed(state, subject, false).await.map(|(value, _)| value)
 }
 
 /// [`encode_subject`], carrying the session's own open timings.
@@ -1802,9 +1812,15 @@ pub async fn encode_subject(state: &TransportState, subject: &Subject) -> Result
 /// **Split from the plain encode so the thirty readers that want only the
 /// value keep their call**: a session's timeline is the open path's own
 /// business, and it is the only arm that fills one.
+///
+/// `review` is the review page's own read: it refreshes the branch diff's
+/// base and pins the stats and content reads to the sha that refresh found.
+/// Every other read serves what the stores hold, so a record read never waits
+/// on the network.
 pub(crate) async fn encode_subject_timed(
     state: &TransportState,
     subject: &Subject,
+    review: bool,
 ) -> Result<(Value, OpenTimings)> {
     let surface = &state.surface;
     let mut timings = OpenTimings::default();
@@ -1824,7 +1840,7 @@ pub(crate) async fn encode_subject_timed(
             request_context_usage_if_unreported(surface, slot);
             request_mcp_snapshot_if_unreported(surface, slot);
             timings.prologue_ms = slice_ms(at);
-            let wire = session(state, surface, slot, &cwd, &mut timings).await?;
+            let wire = session(state, surface, slot, &cwd, &mut timings, review).await?;
             // The record's own serialisation, and nothing else: what the
             // measurement pass timed as the encode, so the numbers line up.
             let at = std::time::Instant::now();
@@ -2194,6 +2210,7 @@ async fn session(
     slot: &SessionSlot,
     cwd: &Path,
     timings: &mut OpenTimings,
+    review: bool,
 ) -> Result<SessionWire> {
     let at = std::time::Instant::now();
     let header = surface.header(slot);
@@ -2315,8 +2332,69 @@ async fn session(
     // instant, so a branch switch cannot render a PR for a branch this record
     // does not name.
     let at = std::time::Instant::now();
-    let held = surface.work(slot, cwd).await;
+    let held = surface.work(slot, cwd, review).await;
     timings.work_ms = slice_ms(at);
+    // **Only the review page's own read refreshes the base.** An ordinary
+    // record read serves the stores as they stand - a seat page never waits on
+    // the network - and the review read is the one that may, under
+    // `DISPLAY_REFRESH_BUDGET`, because it is the read that draws the diff.
+    let at = std::time::Instant::now();
+    let refresh = if review { surface.refresh_diff_base(&held).await } else { None };
+    timings.base_ms = slice_ms(at);
+    // The refresh and the scan taken after it are one read of one base: the
+    // count, the chain and the files cannot describe two refs.
+    let at = std::time::Instant::now();
+    let pin = match &refresh {
+        Some(refresh) => surface
+            .diff_scan(slot, &held.cwd, refresh)
+            .await
+            .map(|scan| (scan, refresh.base_ref.as_deref())),
+        None => None,
+    };
+    // **A refused pin is re-read locally, never served from the pre-refresh
+    // store.** The refresh moved the base; the store's count predates it, and
+    // that count beside content read at the ref the fetch left is the
+    // two-commits answer this read exists to prevent. The re-read is pinned to
+    // the sha the refresh resolved and carries its state, so the count, the
+    // files and the row's `base` all describe that one base; only a refresh
+    // that resolved no sha falls back to the ref's name for both.
+    let (held, base_ref) = match pin {
+        Some((scan, base_ref)) => (scan, base_ref),
+        None => match &refresh {
+            Some(refresh) => (
+                surface
+                    .work_pinned_local(
+                        slot,
+                        &held.cwd,
+                        refresh.base_ref.as_deref(),
+                        Some(refresh.state),
+                    )
+                    .await,
+                refresh.base_ref.as_deref(),
+            ),
+            None => (held, None),
+        },
+    };
+    timings.rescan_ms = slice_ms(at);
+    // The content read, beside the stats one: bounded, and taken here
+    // rather than stored with the row because a record read is a cold load,
+    // a reconnect or a seat swap - not a frame a moving tree pushes.
+    let base = match &refresh {
+        // The drawn diff reads the ref the refresh left: the gate's pinned
+        // scan, or the local re-read at the same sha; only a refresh that
+        // resolved no sha reads by name. Either way the state the fetch found
+        // is this diff's state.
+        Some(refresh) => Some(refresh.state),
+        // An ordinary read has not checked the base. Saying so is what keeps a
+        // cached record from drawing its diff as current.
+        None if held.diff.branch_ahead.is_populated() => {
+            Some(forge_primitives::git_diff::BaseState::Unverified)
+        }
+        None => None,
+    };
+    let at = std::time::Instant::now();
+    let diff = scan_content(&held.cwd, &held.diff, base, base_ref).await;
+    timings.content_ms = slice_ms(at);
     timings.pr_age_s = held
         .diff
         .pr_fetched_at
@@ -2326,13 +2404,7 @@ async fn session(
     // The tree behind the row's depth, from the same held scan and through
     // the same constructor the pushed frame goes through - one derivation,
     // so a client that applies the update lands on the record's own answer.
-    let git = git_work_view(&held.diff);
-    // The content read, beside the stats one: bounded, and taken here
-    // rather than stored with the row because a record read is a cold load,
-    // a reconnect or a seat swap - not a frame a moving tree pushes.
-    let at = std::time::Instant::now();
-    let diff = scan_content(&held.cwd, &held.diff).await;
-    timings.content_ms = slice_ms(at);
+    let git = git_work_view(&held.diff, held.base);
     let branch = work.branch.clone().unwrap_or_default();
     let at = std::time::Instant::now();
     let reviews = surface.reviews(slot.project(), &branch);
@@ -2347,6 +2419,9 @@ async fn session(
                 threads,
                 &diff,
                 held.diff.default_branch.as_deref(),
+                // The sha this diff was pinned to, when the read refreshed and
+                // pinned one; the name stands in when it did not.
+                base_ref,
             )
             .await
         }
@@ -3586,6 +3661,7 @@ mod tests {
                 diff,
                 cwd: repo,
                 read_at: std::time::Instant::now(),
+                base: None,
             },
         );
 
@@ -4157,6 +4233,7 @@ mod tests {
                 diff,
                 cwd: repo.path().to_owned(),
                 read_at: std::time::Instant::now(),
+                base: None,
             },
         );
         let state = TransportState {
@@ -4227,6 +4304,7 @@ mod tests {
                 diff,
                 cwd: repo.path().to_owned(),
                 read_at: std::time::Instant::now(),
+                base: None,
             },
         );
         let thread = |id: &str,
@@ -4392,6 +4470,7 @@ mod tests {
                 diff,
                 cwd: repo.path().to_owned(),
                 read_at: std::time::Instant::now(),
+                base: None,
             },
         );
         let thread = |id: &str, side, text: &str, context: &[&str], commit: Option<&str>| {
@@ -4517,6 +4596,7 @@ mod tests {
                 diff,
                 cwd: repo.to_owned(),
                 read_at: std::time::Instant::now(),
+                base: None,
             },
         );
         let state = TransportState {
@@ -4628,6 +4708,82 @@ mod tests {
             landing(&encoded, "revealed-new"),
             serde_json::json!({"state": "placed", "line": 16, "moved_from": null}),
             "and the branch tip's line 16 is the new side's own: {encoded}",
+        );
+    }
+
+    /// **The old side resolves against the base the diff was pinned to, not
+    /// the ref's name.** The name can have moved to a commit the branch now
+    /// contains - the base-only move - and the merge-base resolved at that
+    /// name is a different commit from the one the diff was computed against.
+    #[tokio::test]
+    async fn the_old_side_reads_the_pinned_base_not_the_moved_name() {
+        let repo = tempfile::tempdir().expect("a repository directory");
+        init_repo(repo.path());
+        std::fs::write(repo.path().join("wide.txt"), wide_lines("wide 10")).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "base"]);
+        git_in(repo.path(), &["checkout", "-q", "-b", "worktree-pr"]);
+        std::fs::write(repo.path().join("wide.txt"), wide_lines("wide 10 changed")).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "branch"]);
+        let base = forge_workspace::env::git_diff::file::merge_base(repo.path(), "main")
+            .await
+            .expect("the fork point");
+        // The base advances with a line inserted at the top, which shifts every
+        // line number below it, and the branch then merges that advance: the
+        // committed-to name IS the branch's history, while the pinned base the
+        // diff was computed against is the fork.
+        git_in(repo.path(), &["checkout", "-q", "main"]);
+        let advanced: String = std::iter::once("wide 0\n".to_owned())
+            .chain((1..=20).map(|n| format!("wide {n}\n")))
+            .collect();
+        std::fs::write(repo.path().join("wide.txt"), advanced).expect("write");
+        git_in(repo.path(), &["add", "-A"]);
+        git_in(repo.path(), &["commit", "-qm", "advance"]);
+        let moved = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["rev-parse", "main"])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            .expect("git rev-parse");
+        git_in(repo.path(), &["checkout", "-q", "worktree-pr"]);
+        git_in(repo.path(), &["merge", "-q", "--no-edit", "-X", "theirs", "main"]);
+
+        let snapshot = forge_workspace::env::git_diff::scan(
+            repo.path(),
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .await;
+        let content =
+            forge_workspace::env::git_diff::content::scan(repo.path(), &snapshot, None, None).await;
+        let threads = vec![wide_thread(
+            "revealed-old",
+            ReviewSide::Old,
+            2,
+            "wide 2",
+            &["wide 1", "wide 3"],
+            None,
+        )];
+        let key = ("wide.txt".to_owned(), ReviewSide::Old);
+
+        let pinned =
+            whole_files_for(repo.path(), 1 << 20, &threads, &content, Some("main"), Some(&base))
+                .await;
+        assert!(pinned.contains_key(&key), "the pinned base places the anchor");
+        assert!(
+            pinned[&key].lines.iter().any(|line| line.as_str() == "wide 2"),
+            "and the file it read is the merge-base's",
+        );
+
+        let by_name =
+            whole_files_for(repo.path(), 1 << 20, &threads, &content, Some("main"), Some(&moved))
+                .await;
+        assert_eq!(
+            by_name[&key].lines.get(1).map(String::as_str),
+            Some("wide 1"),
+            "the moved base reads a shifted line 2, which is the anchor's own proof it moved",
         );
     }
 
@@ -4774,10 +4930,18 @@ mod tests {
         let content = DiffContent {
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Populated(files),
+            base: Some(forge_primitives::git_diff::BaseState::Current),
             truncated: false,
         };
-        let whole =
-            whole_files_for(repo.path(), 10 * 1024 * 1024, &threads, &content, Some("main")).await;
+        let whole = whole_files_for(
+            repo.path(),
+            10 * 1024 * 1024,
+            &threads,
+            &content,
+            Some("main"),
+            Some("main"),
+        )
+        .await;
         assert_eq!(whole.len(), 8, "the encode stops at its eight-file bound");
         assert!(
             !whole.contains_key(&("f9.txt".to_owned(), ReviewSide::New)),
@@ -4862,6 +5026,7 @@ mod tests {
                 diff: scanned(),
                 cwd: std::path::PathBuf::from(&cwd),
                 read_at: std::time::Instant::now(),
+                base: None,
             },
         );
         let work = Arc::new(WorkCache::new());
@@ -4907,6 +5072,7 @@ mod tests {
                 diff: scanned(),
                 cwd: std::path::PathBuf::from(&cwd),
                 read_at: std::time::Instant::now(),
+                base: None,
             },
         );
         let state = TransportState {
@@ -4920,7 +5086,7 @@ mod tests {
 
         let encoded =
             encode_subject(&state, &Subject::Session(seat.clone())).await.expect("encode");
-        let held = state.surface.work(&seat, std::path::Path::new(&cwd)).await;
+        let held = state.surface.work(&seat, std::path::Path::new(&cwd), false).await;
         let pushed = forge_workspace::work::work_from_scan(&held.diff, &held.cwd);
 
         assert_eq!(
@@ -4940,7 +5106,8 @@ mod tests {
         );
         assert_eq!(
             encoded["git"],
-            serde_json::to_value(forge_workspace::work::git_work_view(&held.diff)).expect("encode"),
+            serde_json::to_value(forge_workspace::work::git_work_view(&held.diff, None))
+                .expect("encode"),
             "and the tree behind the row's depth",
         );
     }
@@ -5078,7 +5245,7 @@ mod tests {
             ),
         );
 
-        let (value, _) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
+        let (value, _) = encode_subject_timed(&state, &Subject::Session(fixture_seat()), false)
             .await
             .expect("the seat encodes");
         let turns = value["conversation"]["turns"].as_array().expect("the page carries turns");
@@ -5311,13 +5478,21 @@ mod tests {
         let root = tempfile::tempdir().expect("a temp dir");
         let state = fixture_state(root.path()).await;
 
-        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
+        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()), false)
             .await
             .expect("the seat encodes");
 
         assert!(timings.page_ms > 0.0, "the page's cut is work on the path: {timings:?}");
         assert!(timings.encode_ms > 0.0, "the record's encode is work on the path: {timings:?}");
         assert_eq!(timings.seed_ms, 0.0, "a HELD copy pays no transcript read: {timings:?}");
+        // **An ordinary read neither refreshes the base nor re-scans for one.**
+        // Both slices are on the path and both are empty here; a read that
+        // reached the network or re-scanned would say so in them.
+        assert!(
+            timings.base_ms < 1.0,
+            "no child runs for an ordinary read's base (a git call costs whole ms): {timings:?}",
+        );
+        assert!(timings.rescan_ms < 1.0, "and nothing re-scans the tree for one: {timings:?}");
     }
 
     /// The other half: a seat the transport holds nothing for pays the
@@ -5347,7 +5522,7 @@ mod tests {
             heartbeat: Heartbeat::default(),
         };
 
-        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()))
+        let (_, timings) = encode_subject_timed(&state, &Subject::Session(fixture_seat()), false)
             .await
             .expect("the seat encodes");
 

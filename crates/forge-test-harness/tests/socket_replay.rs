@@ -856,7 +856,7 @@ fn frames_record() -> Value {
     // **Every variant**, because they are cheap and the client writes these
     // tags by hand: nothing else in the tree would notice one moving.
     let client_messages = [
-        ClientMessage::Subscribe { what: Subject::Home, answering: false },
+        ClientMessage::Subscribe { what: Subject::Home, answering: false, review: false },
         ClientMessage::Unsubscribe { what: Subject::Home },
         ClientMessage::Showing { seat: None },
         ClientMessage::Showing { seat: Some(seat.clone()) },
@@ -1735,7 +1735,7 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
     );
     sampled.insert(
         "Subscribe".to_owned(),
-        sample(ClientMessage::Subscribe { what: Subject::Home, answering: false }),
+        sample(ClientMessage::Subscribe { what: Subject::Home, answering: false, review: false }),
     );
     // The repair ask, for the subscribe's reason: a client writes these fields
     // by hand, and a rename fails nothing until a gap is never filled.

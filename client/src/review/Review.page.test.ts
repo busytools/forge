@@ -65,18 +65,39 @@ vi.mock('@git-diff-view/svelte', async () => {
 
 /** The seat's read, as the page subscribes it: real enough to carry a record
  *  in, which is all this file needs of the one the socket serves. */
-const seat = vi.hoisted(() => ({ listeners: new Set<(read: unknown) => void>() }));
+const seat = vi.hoisted(() => ({
+  listeners: new Set<(read: unknown) => void>(),
+  /** Every `watchSession` this page made, with the seat and intent it named. */
+  watched: [] as { slot: unknown; options: { review?: boolean } | undefined }[],
+  /** Every `clearReview`, which is the page letting its read go. */
+  cleared: [] as unknown[],
+  rereads: [] as { review?: boolean }[],
+}));
 
 vi.mock('../session/live', () => ({
-  watchSession: () => ({
-    subscribe: (fn: (read: unknown) => void) => {
-      seat.listeners.add(fn);
-      return () => {
-        seat.listeners.delete(fn);
-      };
-    },
-    hold: () => () => {},
-  }),
+  watchSession: (
+    _connection: unknown,
+    slot: unknown,
+    _answering: boolean,
+    options?: { review?: boolean },
+  ) => {
+    seat.watched.push({ slot, options });
+    return {
+      subscribe: (fn: (read: unknown) => void) => {
+        seat.listeners.add(fn);
+        return () => {
+          seat.listeners.delete(fn);
+        };
+      },
+      hold: () => () => {},
+    };
+  },
+  clearReview: (_connection: unknown, slot: unknown) => {
+    seat.cleared.push(slot);
+  },
+  rereadSeat: (_connection: unknown, _slot: unknown, options?: { review?: boolean }) => {
+    seat.rereads.push(options ?? {});
+  },
 }));
 
 /** Hand the page the record it would have folded out of a frame. */
@@ -281,19 +302,24 @@ function record(
   diff: unknown = DIFF,
   commits: { sha: string; subject: string; time?: number }[] = [],
   total = commits.length,
+  base: unknown = null,
+  defaultBranch = 'main',
+  /** What the seat's watch last measured for the base (the row's `base`). */
+  watchBase: unknown = null,
 ): SessionRecord {
   return {
     slot: SLOT,
     composer,
     work: { branch: 'b', dirt: 'clean' },
     git: {
-      defaultBranch: 'main',
+      defaultBranch,
+      base: watchBase,
       ahead:
         commits.length === 0 && total === 0
           ? null
           : { commit_count: total, count: total, commits, stats: null },
     },
-    diff: { branchAhead: diff },
+    diff: { branchAhead: diff, base },
     reviews: {
       threads: { outcome: 'read', value: threads },
       reviews: { outcome: 'read', value: reviews },
@@ -419,6 +445,12 @@ async function draw(
   diff: unknown = DIFF,
   commits: { sha: string; subject: string; time?: number }[] = [],
   total = commits.length,
+  base: unknown = null,
+  defaultBranch = 'main',
+  /** Whether the record pushed is the page's own (review-scoped) read. */
+  review = true,
+  /** What the seat's watch last measured for the base (the row's `base`). */
+  watchBase: unknown = null,
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -426,12 +458,19 @@ async function draw(
   statusHearers.clear();
   viewer.built = [];
   scrolled = [];
+  seat.rereads = [];
+  seat.watched = [];
+  seat.cleared = [];
   app = mount(Review, {
     target: document.body,
     props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
-  push({ wire: record(IDLE, threads, reviews, diff, commits, total), refused: null });
+  push({
+    wire: record(IDLE, threads, reviews, diff, commits, total, base, defaultBranch, watchBase),
+    refused: null,
+    review,
+  });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -1379,6 +1418,380 @@ describe('the steppers', () => {
     key({ key: 'a' });
     expect(scope(), 'a has nowhere to land').toBe('All changes');
     expect(place()).toBe('scope 1 of 1');
+  });
+
+  /**
+   * **A diff drawn from a stale base says so.** The server refreshes the base
+   * before it reads the branch layer; when that refresh could not run, the
+   * page names the lag beside the files rather than drawing them as the
+   * branch's own change - the silence Ved reported.
+   */
+  it('says how far behind a base the diff could not refresh is', async () => {
+    // The wire names the remote-tracking ref; the reader knows it as `main`.
+    await draw(
+      [],
+      [],
+      true,
+      DIFF,
+      [FIRST_COMMIT],
+      1,
+      { state: 'behind', behind: 3 },
+      'origin/main',
+    );
+
+    expect(
+      document.querySelector('.rv-base')?.textContent,
+      'the all-changes scope names the base and its lag, without the remote prefix',
+    ).toContain('main is 3 commits behind upstream');
+    expect(
+      document.querySelector('.rv-base')?.textContent,
+      'and not the ref spelling the socket uses',
+    ).not.toContain('origin/main');
+
+    press('next scope');
+    expect(
+      document.querySelector('.rv-base'),
+      'a commit scope reads its own immutable tree, so it carries no base caveat',
+    ).toBeNull();
+  });
+
+  /**
+   * **An unknown base state is drawn, never read as a healthy one** (rule 22,
+   * rule 25). A state this build cannot name is exactly the case a silent arm
+   * would hide, and it would hide the one warning the page exists to give.
+   */
+  it('draws an unknown base state rather than reading it as current', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'unknown', raw: 'sagging' });
+
+    expect(
+      document.querySelector('.rv-base')?.textContent,
+      'the page says it could not read the base rather than drawing nothing',
+    ).toContain('could not be read');
+  });
+
+  /** A base that could not be checked is said plainly, with no invented count. */
+  it('says an unrefreshed base was not checked, without a number', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'unverified' });
+
+    const text = document.querySelector('.rv-base')?.textContent ?? '';
+    expect(text, 'the page says the base could not be refreshed').toContain(
+      'could not be refreshed',
+    );
+    expect(text, 'and claims no count it does not have').not.toMatch(/\d+ commits? behind/);
+  });
+
+  /** A base the scan refreshed is not a caveat. */
+  it('draws no base caveat when the base is current', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' });
+    expect(document.querySelector('.rv-base'), 'a refreshed base draws nothing').toBeNull();
+  });
+
+  /** A local base has no upstream to lag behind, so nothing is drawn. */
+  it('draws no base caveat when the base is local', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'local' });
+    expect(document.querySelector('.rv-base'), 'a local base has no upstream to lag').toBeNull();
+  });
+
+  /**
+   * **The page opens the seat as its own read.** The record it opens on may
+   * have been read for whichever page asked last, so the intent is handed to
+   * the seat at open - which is where every later ask (an outrun, a
+   * reconnect, a replacement frame) reads it from - and taken back when the
+   * page lets the seat go.
+   */
+  it('opens the seat as a review read, and takes the intent back on leaving', async () => {
+    await draw();
+
+    expect(seat.watched, 'the page opened the seat as a review-scoped read').toEqual([
+      { slot: SLOT, options: { review: true } },
+    ]);
+    expect(seat.cleared, 'and nothing was given back while it is open').toEqual([]);
+
+    if (app !== null) await unmount(app);
+    app = null;
+    flushSync();
+    expect(
+      seat.cleared,
+      'leaving takes the intent back, so the next page asks an ordinary read',
+    ).toEqual([SLOT]);
+  });
+
+  /**
+   * **A record the page's own read did not produce says nothing about the
+   * base.** Drawing "could not be refreshed" off one names a refresh that
+   * never ran, which is the false caveat every open used to flash while its
+   * own read was in flight.
+   */
+  it('draws no base caveat off a record another read answered', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'behind', behind: 3 }, 'main', false);
+
+    expect(
+      document.querySelector('.rv-base'),
+      'the page waits for its own read before saying anything about the base',
+    ).toBeNull();
+  });
+
+  /**
+   * **A diff read once goes old under a live record.** `work_changed` moves
+   * the count and the chain while the diff stays where the last read left
+   * it, so a moved chain asks this page's own read again - debounced - rather
+   * than drawing a fresh count beside the file list of an older base.
+   */
+  it('asks its own read again when the chain behind the diff moves', async () => {
+    const first = { sha: 'aaaaaaa', subject: 'one' };
+    await draw([], [], true, DIFF, [first], 1, { state: 'current' });
+    // Armed after the draw: the page's own settle waits on real timers.
+    vi.useFakeTimers();
+
+    // A work_changed frame moves the chain; the diff itself is unchanged.
+    push({
+      wire: record(IDLE, [], [], DIFF, [first, { sha: 'bbbbbbb', subject: 'two' }], 2, {
+        state: 'current',
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the page waits a beat before asking').toEqual([]);
+
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'then asks its own read for the moved chain').toEqual([{ review: true }]);
+
+    // The answer lands with the chain it asked for, and the record moving on
+    // without the chain is not a second ask.
+    push({
+      wire: record(IDLE, [], [], DIFF, [first, { sha: 'bbbbbbb', subject: 'two' }], 2, {
+        state: 'current',
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'an unmoved chain asks nothing').toEqual([{ review: true }]);
+  });
+
+  /**
+   * **A chain that appears or goes is a move, not a first sight.** A seat with
+   * no ahead layer - a freshly spawned worktree branch, a detached or default
+   * checkout - draws a count of nothing, and a branch that merges back to its
+   * base returns to it. Either move leaves the canvas on the diff the last
+   * read drew, so the page takes its baseline from the record its own read
+   * answered and compares a null chain as a value rather than stopping.
+   */
+  it('asks its own read again when the chain appears or goes', async () => {
+    // The page opens on a seat with no ahead layer at all.
+    await draw([], [], true, DIFF, [], 0, { state: 'current' });
+    vi.useFakeTimers();
+
+    // A commit lands: the picker has a count, the canvas has the opening diff.
+    push({
+      wire: record(IDLE, [], [], DIFF, [{ sha: 'aaaaaaa', subject: 'one' }], 1, {
+        state: 'current',
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the page waits a beat before asking').toEqual([]);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the count arriving asks its own read').toEqual([{ review: true }]);
+
+    // The branch merges back to its base: the chain goes.
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    // Past the floor the last ask started.
+    vi.advanceTimersByTime(10_001);
+    flushSync();
+    expect(seat.rereads, 'the chain going asks its own read again').toEqual([
+      { review: true },
+      { review: true },
+    ]);
+  });
+
+  /**
+   * **A notice-driven answer does not switch the page's base tracking off.**
+   * A worker replying to a thread has the page's re-read answered with an
+   * ordinary record; the base LINE is provenance and hides for it, but the
+   * chain the page is watching belongs to the page being mounted, so the next
+   * move still asks - and that read is the page's own.
+   */
+  it('keeps watching the chain after a notice-driven ordinary answer', async () => {
+    const first = { sha: 'aaaaaaa', subject: 'one' };
+    await draw([], [], true, DIFF, [first], 1, { state: 'current' });
+    // The notice's answer: a record this page's own scope did not read.
+    push({
+      wire: record(IDLE, [], [], DIFF, [first], 1, { state: 'current' }),
+      refused: null,
+      review: false,
+    });
+    flushSync();
+    expect(
+      document.querySelector('.rv-base'),
+      'the ordinary record draws no base line of its own',
+    ).toBeNull();
+
+    vi.useFakeTimers();
+    push({
+      wire: record(IDLE, [], [], DIFF, [first, { sha: 'bbbbbbb', subject: 'two' }], 2, {
+        state: 'current',
+      }),
+      refused: null,
+      review: false,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the page stopped tracking the chain with the notice').toEqual([
+      { review: true },
+    ]);
+  });
+
+  /** The same gate for the base trigger: a notice-driven answer must not
+   *  stop the page hearing the watch's next measurement. */
+  it('keeps watching the measured base after a notice-driven ordinary answer', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' }, 'main', true, {
+      state: 'current',
+    });
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'current',
+      }),
+      refused: null,
+      review: false,
+    });
+    flushSync();
+
+    vi.useFakeTimers();
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'behind',
+        behind: 1,
+      }),
+      refused: null,
+      review: false,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the page stopped watching the measured base').toEqual([{ review: true }]);
+  });
+
+  /**
+   * **A base can move without the chain moving**, and the page hears it only
+   * from the seat's own watch measurement: `git.base` moves, the count and the
+   * chain do not, and the diff's stated base is now behind it.
+   */
+  it('asks its own read again when the watch measures a moved base', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' }, 'main', true, { state: 'current' });
+    vi.useFakeTimers();
+    expect(seat.rereads, 'the first measurement is what the page drew').toEqual([]);
+
+    // The watch's next pass found the base one commit behind: a base-only move.
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'behind',
+        behind: 1,
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the debounce runs first').toEqual([]);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'then the page re-reads against the moved base').toEqual([
+      { review: true },
+    ]);
+
+    // The same measurement again is not news.
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'behind',
+        behind: 1,
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'and an unchanged measurement asks nothing').toEqual([{ review: true }]);
+  });
+
+  /**
+   * **The first measurement after the page's read is a move too.** A seat
+   * whose watch has not measured yet answers `git.base` null, so what the
+   * page drew is "nothing measured"; the measurement that arrives afterwards
+   * is news when it disagrees with the base the diff was drawn against.
+   */
+  it('asks its own read when the first measurement arrives after it', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' }, 'main', true, null);
+    vi.useFakeTimers();
+
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'behind',
+        behind: 1,
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the page waits a beat before asking').toEqual([]);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the measurement disagrees with the drawn base').toEqual([
+      { review: true },
+    ]);
+  });
+
+  /**
+   * **A branch moving faster than a read answers is still one read at a
+   * time.** The debounce coalesces a burst, but a chain that moves again just
+   * after an answer would ask again at once; the floor is what bounds the
+   * rate to one whole record and one base fetch per window.
+   */
+  it('floors its own reads to one per window', async () => {
+    await draw([], [], true, DIFF, [{ sha: 'aaaaaaa', subject: 'one' }], 1, { state: 'current' });
+    vi.useFakeTimers();
+
+    const moved = (sha: string, subject: string, total: number): void => {
+      push({
+        wire: record(IDLE, [], [], DIFF, [{ sha, subject }], total, { state: 'current' }),
+        refused: null,
+        review: true,
+      });
+      flushSync();
+    };
+
+    // The first move asks after the debounce, and starts the window.
+    moved('bbbbbbb', 'two', 2);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the first moved chain is asked').toEqual([{ review: true }]);
+
+    // A second move one second later would ask at once under the debounce
+    // alone; the floor holds it to the window.
+    vi.advanceTimersByTime(1_000);
+    moved('ccccccc', 'three', 3);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'a move inside the floor window waits').toEqual([{ review: true }]);
+
+    vi.advanceTimersByTime(8_000);
+    flushSync();
+    expect(seat.rereads, 'and is asked once the window is past').toEqual([
+      { review: true },
+      { review: true },
+    ]);
   });
 
   /**

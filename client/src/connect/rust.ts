@@ -34,6 +34,7 @@ import {
   skewOf,
   slotOf,
   subjectFromKey,
+  subjectKey,
   type BrowserInputEvent,
   type Command,
   type ServerMessage,
@@ -42,7 +43,7 @@ import {
 } from '../protocol';
 import { playPacket } from '../browser/audio';
 import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
-import { READ_BOUND_MS, ReadBounds } from '../read-bound';
+import { READ_BOUND_MS, REVIEW_READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
 import { StreamGate } from '../session/stream';
 import { report, type BrowserFrame, type Connection, type ConnectionStatus } from '../socket';
@@ -235,9 +236,37 @@ class RustConnection implements Connection {
    */
   private readonly bounds: ReadBounds;
 
+  /**
+   * The scope each subject was last asked with, for the read bound's retry.
+   *
+   * **The retry says nothing on the invoke** - the shell keeps the held scope
+   * - but its deadline has to match the read it is retrying, and a review
+   * read's server-side bounds are longer than an ordinary one's.
+   */
+  private readonly scopes = new Map<string, boolean>();
+
+  /** The ordinary pass this connection bounds its reads with. */
+  private readonly boundMs: number;
+
   constructor(url: string, boundMs: number = READ_BOUND_MS) {
-    this.bounds = new ReadBounds(this.stores, (what) => this.refresh(what), boundMs);
+    this.boundMs = boundMs;
+    this.bounds = new ReadBounds(this.stores, (what) => this.refreshHeld(what), boundMs);
     void this.begin(url);
+  }
+
+  /** The pass a subject's read gets, from the scope it was last asked with. */
+  private passFor(what: Subject): number {
+    return this.scopes.get(subjectKey(what)) === true ? REVIEW_READ_BOUND_MS : this.boundMs;
+  }
+
+  /** One bound retry: no scope on the invoke, the held one's deadline. */
+  private refreshHeld(what: Subject): boolean {
+    if (this.state !== 'open') return false;
+    this.bounds.arm(what, this.passFor(what));
+    void invoke('client_refresh', { what }).catch((why: unknown) => {
+      report('a refresh could not reach the shell', why);
+    });
+    return true;
   }
 
   private async begin(url: string): Promise<void> {
@@ -360,8 +389,9 @@ class RustConnection implements Connection {
     }
     // A connection that opens after a bound fired owes its loading subjects a
     // fresh deadline: the subscribe went out when the socket opened, and a
-    // lost first answer would otherwise leave them loading forever.
-    if (next === 'open') this.bounds.rearmLoading();
+    // lost first answer would otherwise leave them loading forever. Each
+    // keeps the pass its own read was asked with.
+    if (next === 'open') this.bounds.rearmLoading((what) => this.passFor(what));
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
     // then `Showing`, and the web's `onopen` keeps the same one.
@@ -458,28 +488,32 @@ class RustConnection implements Connection {
     }
   }
 
-  subscribe(what: Subject, options?: { answering?: boolean }): Store {
+  subscribe(what: Subject, options?: { answering?: boolean; review?: boolean }): Store {
     if (this.state === 'closed') {
       // Nothing replays a subscribe made after the connection went, so a live
       // store here would promise a snapshot that is never coming.
       return this.stores.refused(what, 'this connection is closed');
     }
     const store = this.stores.open(what);
+    if (options?.review !== undefined) this.scopes.set(subjectKey(what), options.review);
     void invoke('client_subscribe', {
       what,
       answering: options?.answering ?? false,
+      review: options?.review === true,
     }).catch((why: unknown) => {
       report('a subscribe could not reach the shell', why);
     });
     // The read this ask owes is bounded from here: nothing else would ask
-    // again for a snapshot that simply never came.
-    this.bounds.arm(what);
+    // again for a snapshot that simply never came. A review read gets the
+    // longer pass, because the server's own bounds for it are longer.
+    this.bounds.arm(what, this.passFor(what));
     return store;
   }
 
   unsubscribe(what: Subject): void {
     if (this.stores.get(what) === undefined) return;
     const last = this.stores.close(what);
+    if (last) this.scopes.delete(subjectKey(what));
     void invoke('client_unsubscribe', { what }).catch((why: unknown) => {
       report('an unsubscribe could not reach the shell', why);
     });
@@ -516,12 +550,25 @@ class RustConnection implements Connection {
    * drift away from the server's. This re-asks with the role the seat already
    * declared.
    */
-  relist(what: Subject, options?: { answering?: boolean }): void {
+  relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void {
+    if (options?.review !== undefined) this.scopes.set(subjectKey(what), options.review);
     void invoke('client_relist', {
       what,
       answering: options?.answering ?? false,
+      review: options?.review === true,
     }).catch((why: unknown) => {
       report('a relist could not reach the shell', why);
+    });
+  }
+
+  /** The held declaration only: nothing on the wire, no store, no reader. */
+  declare(what: Subject, options: { review: boolean }): void {
+    // The bound's own retry reads this: a seat a page let go must not keep
+    // the review read's deadline for its next ordinary ask.
+    if (options.review) this.scopes.set(subjectKey(what), true);
+    else this.scopes.delete(subjectKey(what));
+    void invoke('client_declare', { what, review: options.review }).catch((why: unknown) => {
+      report('a declaration could not reach the shell', why);
     });
   }
 
@@ -534,6 +581,7 @@ class RustConnection implements Connection {
    */
   release(what: Subject): void {
     while (this.stores.get(what) !== undefined) this.stores.close(what);
+    this.scopes.delete(subjectKey(what));
     void invoke('client_release', { what }).catch((why: unknown) => {
       report('a release could not reach the shell', why);
     });
@@ -543,12 +591,20 @@ class RustConnection implements Connection {
   }
 
   /** `true` when the ask went, which is what a bound re-arms on. */
-  refresh(what: Subject): boolean {
+  refresh(what: Subject, options?: { review?: boolean }): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
     if (this.state !== 'open') return false;
-    this.bounds.arm(what);
-    void invoke('client_refresh', { what }).catch((why: unknown) => {
+    // **A re-ask that states no scope keeps the shell's held one**, and its
+    // deadline follows that held scope: a notice-driven read states nothing
+    // and still resolves to the review read the seat was asked as, so it gets
+    // the longer pass rather than presuming a lost read at five seconds.
+    const stated = options?.review;
+    const key = subjectKey(what);
+    if (stated !== undefined) this.scopes.set(key, stated);
+    this.bounds.arm(what, this.passFor(what));
+    const payload = stated === undefined ? { what } : { what, review: stated };
+    void invoke('client_refresh', payload).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);
     });
     return true;

@@ -111,6 +111,12 @@ struct Held {
     key: String,
     what: Value,
     answering: bool,
+    /// Whether the read this subscription was last asked with is the review
+    /// page's own. Kept on the record rather than on the ask, so a reconnect
+    /// re-asks the same kind of read the page wanted - a review open that
+    /// dropped must not come back as an ordinary record that labels its base
+    /// unverified.
+    review: bool,
     count: usize,
 }
 
@@ -121,6 +127,7 @@ impl Held {
                 "kind": "subscribe",
                 "what": self.what,
                 "answering": self.answering,
+                "review": self.review,
             })
             .to_string()
             .into(),
@@ -132,7 +139,7 @@ impl Held {
 /// flags in place and adds to its count, an unsubscribe takes one off. Both
 /// the connected loop and the disconnected wait fold through here, so their
 /// bookkeeping cannot drift.
-fn hold(held: &mut Vec<Held>, what: Value, answering: bool) -> Option<String> {
+fn hold(held: &mut Vec<Held>, what: Value, answering: bool, review: bool) -> Option<String> {
     let key = subject_key(&what);
     if key.is_empty() {
         return None;
@@ -140,9 +147,13 @@ fn hold(held: &mut Vec<Held>, what: Value, answering: bool) -> Option<String> {
     match held.iter_mut().find(|h| h.key == key) {
         Some(h) => {
             h.answering |= answering;
+            // **The last ask says what the held read is.** A page that lets
+            // its review read go must be able to take the declaration back;
+            // a role only rises, this one follows the page holding the seat.
+            h.review = review;
             h.count += 1;
         }
-        None => held.push(Held { key: key.clone(), what, answering, count: 1 }),
+        None => held.push(Held { key: key.clone(), what, answering, review, count: 1 }),
     }
     Some(key)
 }
@@ -151,16 +162,28 @@ fn hold(held: &mut Vec<Held>, what: Value, answering: bool) -> Option<String> {
 /// flags rise in place, and a subject this connection has not held yet (a
 /// fresh socket the page re-attaches on) starts at one - the one the page's
 /// own store is, not a second reader.
-fn relist(held: &mut Vec<Held>, what: Value, answering: bool) -> Option<String> {
+fn relist(held: &mut Vec<Held>, what: Value, answering: bool, review: bool) -> Option<String> {
     let key = subject_key(&what);
     if key.is_empty() {
         return None;
     }
     match held.iter_mut().find(|h| h.key == key) {
-        Some(h) => h.answering |= answering,
-        None => held.push(Held { key: key.clone(), what, answering, count: 1 }),
+        Some(h) => {
+            h.answering |= answering;
+            h.review = review;
+        }
+        None => held.push(Held { key: key.clone(), what, answering, review, count: 1 }),
     }
     Some(key)
+}
+
+/// Change one held entry's declaration in place: no frame, no reader, and a
+/// subject this connection does not hold has nothing to declare.
+fn declare(held: &mut [Held], what: &Value, review: bool) {
+    let key = subject_key(what);
+    if let Some(entry) = held.iter_mut().find(|h| h.key == key) {
+        entry.review = review;
+    }
 }
 
 /// One subscription given back: the count comes off, and the entry - with
@@ -184,6 +207,7 @@ enum Outbound {
     Subscribe {
         what: Value,
         answering: bool,
+        review: bool,
         /// When the page's command reached this half: the write's own wait is
         /// measured from here, so a subscribe queued behind a frame the loop
         /// is parsing is on the record (#2513).
@@ -210,6 +234,14 @@ enum Outbound {
     Relist {
         what: Value,
         answering: bool,
+        review: bool,
+    },
+    /// The held declaration only: nothing is sent, no reader is counted. A
+    /// page that lets its review read go says so here, so the next reconnect
+    /// re-asks an ordinary record.
+    Declare {
+        what: Value,
+        review: bool,
     },
     More {
         conversation: Value,
@@ -354,10 +386,11 @@ impl Socket {
     /// Watch a subject, declaring whether this client can answer its prompts.
     /// The flag only ever rises while the connection lives, and what is
     /// stated here is what a reconnect re-asks with.
-    pub fn subscribe(&self, what: Value, answering: bool) {
+    pub fn subscribe(&self, what: Value, answering: bool, review: bool) {
         let _ = self.tx.send(Outbound::Subscribe {
             what,
             answering,
+            review,
             queued: tokio::time::Instant::now(),
         });
     }
@@ -382,8 +415,14 @@ impl Socket {
     /// Ask again for a subject this half already holds, without counting a
     /// reader - the page's own store and this half's record are still here,
     /// and only the wire's subscription died with the socket.
-    pub fn relist(&self, what: Value, answering: bool) {
-        let _ = self.tx.send(Outbound::Relist { what, answering });
+    pub fn relist(&self, what: Value, answering: bool, review: bool) {
+        let _ = self.tx.send(Outbound::Relist { what, answering, review });
+    }
+
+    /// Change a held subscription's declaration **without asking for
+    /// anything**: no frame, no boundary - only what a reconnect re-asks with.
+    pub fn declare(&self, what: Value, review: bool) {
+        let _ = self.tx.send(Outbound::Declare { what, review });
     }
 
     /// Ask for more turns of a conversation.
@@ -592,12 +631,12 @@ fn subject_key(what: &Value) -> String {
 fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String>) -> bool {
     match next {
         Outbound::Close => true,
-        Outbound::Subscribe { what, answering, .. } => {
+        Outbound::Subscribe { what, answering, review, .. } => {
             // The key is NOT queued here: nothing is outstanding until the
             // frame really goes, which is the reconnect's own re-ask. Queuing
             // it here as well would push it twice, and the extra entry would
             // let one refusal pop the key belonging to the next ask.
-            hold(held, what, answering);
+            hold(held, what, answering, review);
             false
         }
         // The page re-sends its showing on the reconnect, so a frame taken
@@ -605,8 +644,12 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         Outbound::Showing { .. } => false,
         // The entry is already held; only its declaration rises, and no
         // reader is counted - the reconnect then asks exactly what was held.
-        Outbound::Relist { what, answering } => {
-            relist(held, what, answering);
+        Outbound::Relist { what, answering, review } => {
+            relist(held, what, answering, review);
+            false
+        }
+        Outbound::Declare { what, review } => {
+            declare(held, &what, review);
             false
         }
         Outbound::Unsubscribe { what } => {
@@ -823,8 +866,8 @@ async fn run(
                             let _ = writer.send(Message::Close(None)).await;
                             break;
                         }
-                        Outbound::Subscribe { what, answering, queued } => {
-                            if let Some(key) = hold(&mut held, what, answering) {
+                        Outbound::Subscribe { what, answering, review, queued } => {
+                            if let Some(key) = hold(&mut held, what, answering, review) {
                                 if let Some(h) = held.iter().find(|h| h.key == key)
                                     && writer.send(h.subscribe_frame()).await.is_ok()
                                 {
@@ -841,12 +884,17 @@ async fn run(
                                 awaiting.push(key);
                             }
                         }
-                        Outbound::Relist { what, answering } => {
+                        Outbound::Declare { what, review } => {
+                            // Only the held record moves: nothing is asked
+                            // for, and the reconnect's own re-ask carries it.
+                            declare(&mut held, &what, review);
+                        }
+                        Outbound::Relist { what, answering, review } => {
                             // **One frame, and no reader added**: the entry is
                             // held from the visit that opened it, or starts at
                             // one on a fresh connection, and counting again
                             // would leave an unsubscribe one short.
-                            let key = relist(&mut held, what, answering);
+                            let key = relist(&mut held, what, answering, review);
                             if let Some(key) = key
                                 && let Some(h) = held.iter().find(|h| h.key == key)
                             {
@@ -1264,7 +1312,7 @@ pub(crate) mod tests {
     async fn a_subscribe_write_is_reported_to_the_page() {
         let stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true, false);
         let SocketEvent::Written { key, declared, waited_ms } = event_of(&mut rx, "written").await
         else {
             unreachable!("filtered to written");
@@ -1473,7 +1521,7 @@ pub(crate) mod tests {
     async fn holds_a_subscribe_made_before_the_socket_opened() {
         let mut stub = stub().await;
         let (socket, _rx) = opened(&stub);
-        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true, false);
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
     }
@@ -1501,8 +1549,8 @@ pub(crate) mod tests {
     async fn declares_the_flags_it_was_given_and_attributes_a_refusal_to_the_oldest() {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true);
-        socket.subscribe(json!("usage"), true);
+        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("usage"), true, false);
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
         assert_eq!(first["answering"], true);
@@ -1706,7 +1754,7 @@ pub(crate) mod tests {
     async fn re_asks_every_held_subscription_after_a_drop() {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true, false);
         let first = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(first["what"], json!("home"));
         // Drop the connection under the socket; the listener lives on, so the
@@ -1722,6 +1770,27 @@ pub(crate) mod tests {
         assert_eq!(again["answering"], true, "the declaration is carried, not defaulted");
     }
 
+    /// **A seat's own asks carry the review scope.** A seat is never re-asked
+    /// by a resume (the page re-attaches it, so the flag would mean nothing
+    /// there), which leaves the two frames a page really sends for a seat: its
+    /// open and a relist. A frame that dropped the scope would turn a review
+    /// page's read into an ordinary record.
+    #[tokio::test]
+    async fn a_seat_frame_carries_the_review_scope() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let seat = json!({ "session": { "org": "TestOrg", "project": "proj", "label": "lead" } });
+
+        socket.subscribe(seat.clone(), false, true);
+        let opened = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(opened["what"], seat, "the seat's open went");
+        assert_eq!(opened["review"], json!(true), "carrying the page's own read");
+
+        socket.relist(seat, false, false);
+        let relisted = stub.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(relisted["review"], json!(false), "and a relist's own scope wins");
+    }
+
     /// **A seat is the page's own to re-open after a drop.** The subscription
     /// the page left behind is not re-asked by this half; the shown seat is
     /// re-attached by the page's own `relist`, and the rest wait for a click.
@@ -1729,10 +1798,11 @@ pub(crate) mod tests {
     async fn a_reconnect_re_asks_a_subject_but_never_a_seat() {
         let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true, false);
         socket.subscribe(
             json!({ "session": { "org": "TestOrg", "project": "proj", "label": "lead" } }),
             true,
+            false,
         );
         let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
         let _ = stub
@@ -1754,10 +1824,10 @@ pub(crate) mod tests {
     async fn a_relist_asks_once_without_raising_the_count() {
         let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), false);
+        socket.subscribe(json!("home"), false, false);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
 
-        socket.relist(json!("home"), true);
+        socket.relist(json!("home"), true, false);
         let relisted = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(relisted["what"], json!("home"));
         assert_eq!(relisted["answering"], true, "the relist's declaration rode the frame");
@@ -1785,7 +1855,7 @@ pub(crate) mod tests {
             }
         }
         let seat = json!({ "session": { "org": "TestOrg", "project": "proj", "label": "w1" } });
-        socket.subscribe(seat.clone(), true);
+        socket.subscribe(seat.clone(), true, false);
 
         let asked = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(asked["what"], seat, "a seat opened during the drop was never asked for");
@@ -1801,7 +1871,7 @@ pub(crate) mod tests {
         let (socket, _rx) = connected(&stub).await;
         let seat = json!({ "session": { "org": "TestOrg", "project": "proj", "label": "lead" } });
 
-        socket.relist(seat.clone(), true);
+        socket.relist(seat.clone(), true, false);
         let asked = stub.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(asked["what"], seat, "the relist asked for the seat");
         assert_eq!(asked["answering"], true, "with the declaration the page holds");
@@ -1837,7 +1907,7 @@ pub(crate) mod tests {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
         let seat = json!({ "session": { "org": "TestOrg", "project": "proj", "label": "w1" } });
-        socket.subscribe(seat.clone(), true);
+        socket.subscribe(seat.clone(), true, false);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
 
         stub.kill.send(()).expect("the stub drops its connections");
@@ -1859,8 +1929,8 @@ pub(crate) mod tests {
     async fn an_unsubscribe_drops_one_held_entry() {
         let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true);
-        socket.subscribe(json!("usage"), false);
+        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("usage"), false, false);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
         let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("usage")).await;
         socket.unsubscribe(json!("home"));
@@ -1878,15 +1948,18 @@ pub(crate) mod tests {
     async fn a_snapshot_takes_its_key_off_the_outstanding_list() {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true, false);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe" && v["what"] == json!("home")).await;
         stub.say
             .send(json!({ "kind": "snapshot", "subject": "home", "data": {} }))
             .expect("the stub answers");
         // The answer really landed before the second ask goes out.
         let _ = event_of(&mut rx, "message").await;
-        socket
-            .subscribe(json!({ "session": { "org": "a", "project": "b", "label": "lead" } }), true);
+        socket.subscribe(
+            json!({ "session": { "org": "a", "project": "b", "label": "lead" } }),
+            true,
+            false,
+        );
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         stub.say
             .send(json!({ "kind": "error", "what": "subscribe", "why": "no session there" }))
@@ -1908,8 +1981,8 @@ pub(crate) mod tests {
     async fn an_unsubscribe_gives_back_every_entry_the_server_holds() {
         let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), false);
-        socket.subscribe(json!("home"), false);
+        socket.subscribe(json!("home"), false, false);
+        socket.subscribe(json!("home"), false, false);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
 
@@ -1932,8 +2005,8 @@ pub(crate) mod tests {
     async fn a_subject_two_callers_hold_is_asked_for_twice() {
         let mut stub = stub().await;
         let (socket, _rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true);
-        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true, false);
         // Both went out, in order.
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
@@ -1984,7 +2057,7 @@ pub(crate) mod tests {
                 break;
             }
         }
-        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true, false);
         // The reconnect's re-ask is the ONE frame: the hold queued the
         // subscription, not an outstanding key as well.
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
@@ -2043,8 +2116,8 @@ pub(crate) mod tests {
     async fn one_snapshot_answers_one_of_a_subjects_asks() {
         let mut stub = stub().await;
         let (socket, mut rx) = connected(&stub).await;
-        socket.subscribe(json!("home"), true);
-        socket.subscribe(json!("home"), true);
+        socket.subscribe(json!("home"), true, false);
+        socket.subscribe(json!("home"), true, false);
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         let _ = stub.heard_until(|v| v["kind"] == "subscribe").await;
         stub.say
