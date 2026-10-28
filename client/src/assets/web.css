@@ -2813,8 +2813,8 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    ladder hides the wave, in every phase. The takeline card reserves the
    field's own line box (measured offscreen in WebKit, 2026-10-15). */
 .takeline .tc { min-height: calc(1.5 * var(--fs-base)); }
-.takeline .tc .bar, .dock .qrow .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
-.takeline .tc .ticks, .dock .qrow .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
+.takeline .tc .bar, .dock .qrow .tc .bar, .tb-feedback .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
+.takeline .tc .ticks, .dock .qrow .tc .ticks, .tb-feedback .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
 /* **One smooth envelope, a deeper track for it** (Ved, 2026-10-11, on the
    stretched take): the pill's per-cell bars read as chunks once the graph has
    the row's width, and their 16px track made the readings look flat - the

@@ -6032,127 +6032,6 @@ describe('the dock', () => {
     });
   });
 
-  /** **The bar's mic is the composer's take, not a second one.** The feedback
-   *  line draws the dock's own words row, take card and mic, so the press there
-   *  has to open the microphone exactly as the box's mic does - Ved, 2026-10-28:
-   *  the press in the takeover bar did nothing while the same press in the
-   *  composer worked. */
-  it('starts a take from the bar feedback line, and ends it there', async () => {
-    vi.useFakeTimers();
-    try {
-      const harness = open({
-        record: record({ pending_asks: [browserHandOffAsk()] }),
-        dictation: true,
-      });
-
-      action('Open browser').click();
-      flushSync();
-      barAction('something').click();
-      flushSync();
-      const mic = document.querySelector('.takeover-bar .micb');
-      if (!(mic instanceof HTMLElement)) throw new Error('the bar drew no mic');
-
-      mic.click();
-      await opened();
-      expect(commands(harness), 'the press opens the microphone').toMatchObject([
-        { dictate_stream: { key: SLOT } },
-      ]);
-
-      mic.click();
-      settle();
-      expect(commands(harness).at(-1), 'and the second press submits it').toMatchObject({
-        dictate_stop: { key: SLOT, submit: true },
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  /** **A take that will not open says so where it was pressed.** The bar's
-   *  feedback row is the words row a take here belongs to, and the composer's
-   *  own notice row is behind the picture while the takeover is up - so a
-   *  refusal routed there was a press that looked dead, while the same press
-   *  in the box drew its line. */
-  it('says in the bar why a take pressed there did not open', async () => {
-    open({ record: record({ pending_asks: [browserHandOffAsk()] }), dictation: true });
-
-    action('Open browser').click();
-    flushSync();
-    barAction('something').click();
-    flushSync();
-    const button = document.querySelector('.takeover-bar .micb');
-    if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
-
-    mic.held.refuse = true;
-    try {
-      button.click();
-      await opened();
-    } finally {
-      mic.held.refuse = false;
-    }
-
-    expect(
-      document.querySelector('.takeover-bar')?.textContent,
-      'the bar names the refusal where the press was made',
-    ).toContain('the microphone was refused');
-  });
-
-  /** **The open itself is the bar's to say.** The card draws from the record,
-   *  which has no take until the capture has opened and the stream has gone
-   *  out, and the composer's own band is behind the picture while the takeover
-   *  is up - so an open that takes seconds drew nothing at all, and the press
-   *  read as dead (measured live: a 4s open showed no card, no line and no
-   *  status on this surface, while the composer's band said it within 200ms). */
-  it('says in the bar that a take pressed there is still opening', async () => {
-    vi.useFakeTimers();
-    mic.held.gated = true;
-    try {
-      const harness = open({
-        record: record({ pending_asks: [browserHandOffAsk()] }),
-        dictation: true,
-      });
-
-      action('Open browser').click();
-      flushSync();
-      barAction('something').click();
-      flushSync();
-      const button = document.querySelector('.takeover-bar .micb');
-      if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
-
-      button.click();
-      flushSync();
-      expect(
-        document.querySelector('.takeover-bar')?.textContent,
-        'a quick open is the press itself, not a state to flash',
-      ).not.toContain('opening the microphone');
-
-      vi.advanceTimersByTime(200);
-      flushSync();
-      expect(
-        document.querySelector('.takeover-bar')?.textContent,
-        'the band the composer draws is behind the picture, so this row says it',
-      ).toContain('opening the microphone');
-      expect(
-        document.querySelector('.tb-feedback .tc'),
-        'and no card claims a take that does not exist yet',
-      ).toBeNull();
-
-      mic.held.release?.();
-      await opened();
-      expect(commands(harness), 'the open lands, and the take goes out').toMatchObject([
-        { dictate_stream: { key: SLOT } },
-      ]);
-      expect(
-        document.querySelector('.takeover-bar')?.textContent,
-        'and the line goes with it',
-      ).not.toContain('opening the microphone');
-    } finally {
-      mic.held.gated = false;
-      mic.held.release = null;
-      vi.useRealTimers();
-    }
-  });
-
   /** **Words that never left are not a message to read.** A send the socket
    *  refused used to answer `feedback` anyway, telling the session to read a
    *  prompt nobody sent and ending the park on nothing; the dock stays live,
@@ -6900,6 +6779,143 @@ describe('the dock', () => {
       document.querySelector('.dock .d-q')?.textContent,
       'and prose is drawn as prose rather than dressed as a command',
     ).toBe('Push the release tag once the wave lands');
+  });
+});
+
+/**
+ * The takeover bar's feedback line: the one words row the bar owns, and the
+ * only place a take pressed there can say what it is doing - the composer's
+ * band and notice rows are behind the picture while the takeover is up.
+ */
+describe("the takeover bar's feedback line", () => {
+  const commands = (harness: { sent: { command: Record<string, unknown> }[] }) =>
+    harness.sent.map((entry) => entry.command);
+
+  /** **The bar's mic is the composer's take, not a second one.** The feedback
+   *  line draws the dock's own words row, take card and mic, so the press there
+   *  has to open the microphone exactly as the box's mic does. The case passes
+   *  on the tree before this cut too: what it pins is the contract the fix
+   *  keeps, not the defect. */
+  it('starts a take from the bar feedback line, and ends it there', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+
+      action('Open browser').click();
+      flushSync();
+      barAction('something').click();
+      flushSync();
+      const micButton = document.querySelector('.takeover-bar .micb');
+      if (!(micButton instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+      micButton.click();
+      await opened();
+      expect(commands(harness), 'the press opens the microphone').toMatchObject([
+        { dictate_stream: { key: SLOT } },
+      ]);
+
+      micButton.click();
+      settle();
+      expect(commands(harness).at(-1), 'and the second press submits it').toMatchObject({
+        dictate_stop: { key: SLOT, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** **A take that will not open says so where it was pressed.** The bar's
+   *  feedback row is the words row a take here belongs to, and the composer's
+   *  own notice row is behind the picture while the takeover is up - so a
+   *  refusal routed there was a press that looked dead, while the same press
+   *  in the box drew its line. */
+  it('says in the bar why a take pressed there did not open', async () => {
+    open({ record: record({ pending_asks: [browserHandOffAsk()] }), dictation: true });
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    const button = document.querySelector('.takeover-bar .micb');
+    if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+    mic.held.refuse = true;
+    try {
+      button.click();
+      await opened();
+    } finally {
+      mic.held.refuse = false;
+    }
+
+    expect(
+      document.querySelector('.takeover-bar')?.textContent,
+      'the bar names the refusal where the press was made',
+    ).toContain('the microphone was refused');
+  });
+
+  /** **The open itself is the bar's to say.** The card draws from the record,
+   *  which has no take until the capture has opened and the stream has gone
+   *  out, and the composer's own band is behind the picture while the takeover
+   *  is up - so an open that takes seconds drew nothing at all, and the press
+   *  read as dead (measured live: a 4s open showed no card, no line and no
+   *  status on this surface, while the composer's band said it within 200ms).
+   *  **The wait is pinned at the 180ms `OPEN_DRAWN_MS` sets, not at whatever
+   *  the constant holds today**: the band's delay is what stops a fast press
+   *  flashing the state, and a "make it snappier" edit is the change it exists
+   *  to refuse. */
+  it('says in the bar that a take pressed there is still opening', async () => {
+    vi.useFakeTimers();
+    mic.held.gated = true;
+    try {
+      const harness = open({
+        record: record({ pending_asks: [browserHandOffAsk()] }),
+        dictation: true,
+      });
+
+      action('Open browser').click();
+      flushSync();
+      barAction('something').click();
+      flushSync();
+      const button = document.querySelector('.takeover-bar .micb');
+      if (!(button instanceof HTMLElement)) throw new Error('the bar drew no mic');
+
+      button.click();
+      flushSync();
+      vi.advanceTimersByTime(179);
+      flushSync();
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'an open inside the 180ms wait is the press itself, not a state to flash',
+      ).not.toContain('opening the microphone');
+
+      vi.advanceTimersByTime(1);
+      flushSync();
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'the band the composer draws is behind the picture, so this row says it',
+      ).toContain('opening the microphone');
+      expect(
+        document.querySelector('.tb-feedback .tc'),
+        'and no card claims a take that does not exist yet',
+      ).toBeNull();
+
+      mic.held.release?.();
+      await opened();
+      expect(commands(harness), 'the open lands, and the take goes out').toMatchObject([
+        { dictate_stream: { key: SLOT } },
+      ]);
+      expect(
+        document.querySelector('.takeover-bar')?.textContent,
+        'and the line goes with it',
+      ).not.toContain('opening the microphone');
+    } finally {
+      mic.held.gated = false;
+      mic.held.release = null;
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -151,6 +151,19 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
  */
 export const SILENT_NOTICE_MS = 3_000;
 
+/**
+ * How long an open may run before a surface draws it as a state.
+ *
+ * **The delay is the point.** An open that lands inside it is not a state, it
+ * is the press itself: the desktop's native capture is tens of milliseconds, so
+ * drawing its breath made the band flash between colours on every press (Ved,
+ * in the look: "the color changes, and then goes back to orange in a glitch
+ * like that", and "if we are running it on the Rust side ... I should not
+ * rightly be seeing any at all"). The composer's band and the takeover bar's
+ * line both wait it.
+ */
+export const OPEN_DRAWN_MS = 180;
+
 /** What the row says a capture it is hearing nothing from is doing. */
 const SILENT_HEAD = 'the capture is open and nothing is coming through it';
 

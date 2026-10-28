@@ -27,6 +27,7 @@
   import {
     bindPushToTalk,
     Dictation,
+    OPEN_DRAWN_MS,
     openCapture,
     takeCounts,
     takePhase,
@@ -270,19 +271,8 @@
     return beat ? 'done' : null;
   });
 
-  /**
-   * Whether the open has lasted long enough to draw on the band.
-   *
-   * **The delay is the point.** An open that lands inside it is not a state,
-   * it is the press itself: the desktop's native capture is tens of
-   * milliseconds, so drawing its breath made the band flash between colours
-   * on every press - Ved, in the look: "the color changes, and then goes back
-   * to orange in a glitch like that", and "if we are running it on the Rust
-   * side ... I should not rightly be seeing any at all". A browser's open is
-   * the permission round trip and the audio graph's start, which outlasts it
-   * and is what the state is for.
-   */
-  const OPEN_DRAWN_MS = 180;
+  /** Whether the open has lasted long enough to draw on the band; the wait
+   *  itself is {@link OPEN_DRAWN_MS}, shared with the takeover bar's line. */
   let openingShown = $state(false);
   $effect(() => {
     if (!dictate.opening) {
