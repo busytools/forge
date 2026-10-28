@@ -473,6 +473,11 @@ fn kick_background_fetch(cwd: &Path, default_branch: &str, budget: Duration) {
     }
     let cwd = cwd.to_path_buf();
     let remote_branch = remote_branch.to_owned();
+    // **A kicked fetch may not hold the per-repository gate longer than a
+    // display read's whole budget.** It shares that gate with the read that
+    // draws a diff, and a slow kick would otherwise make forge's own fetch
+    // the reason that read answers "could not be refreshed".
+    let budget = budget.min(DISPLAY_REFRESH_BUDGET);
     track_background_fetch(tokio::spawn(async move {
         let key = repo_key(&cwd, budget).await;
         fetch_base(&cwd, &remote_branch, Instant::now() + budget, &key).await;
@@ -900,7 +905,19 @@ pub async fn scan<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
     prev: Option<&GitDiffSnapshot>,
 ) -> GitDiffSnapshot {
-    scan_within(cwd, env, prev, None, PrRefresh::Fetch, COMMAND_TIMEOUT).await
+    scan_within(cwd, env, prev, None, PrRefresh::Fetch, true, COMMAND_TIMEOUT).await
+}
+
+/// [`scan`] for a read that will fetch the base itself a moment later: the
+/// same local scan with none of the background kick, so one read of a
+/// sessionless seat pays one fetch - its own - and never queues that fetch
+/// behind forge's on the shared per-repository gate.
+pub async fn scan_without_base_fetch<S: std::hash::BuildHasher>(
+    cwd: &Path,
+    env: &HashMap<String, String, S>,
+    prev: Option<&GitDiffSnapshot>,
+) -> GitDiffSnapshot {
+    scan_within(cwd, env, prev, None, PrRefresh::Fetch, false, COMMAND_TIMEOUT).await
 }
 
 /// [`scan`] for a read a client is waiting on: a PR cache past its window is
@@ -913,7 +930,7 @@ pub async fn scan_serving_cached_pr<S: std::hash::BuildHasher>(
     env: &HashMap<String, String, S>,
     prev: Option<&GitDiffSnapshot>,
 ) -> GitDiffSnapshot {
-    scan_within(cwd, env, prev, None, PrRefresh::ServeCached, COMMAND_TIMEOUT).await
+    scan_within(cwd, env, prev, None, PrRefresh::ServeCached, false, COMMAND_TIMEOUT).await
 }
 
 /// A read pinned to one base revision: the branch-ahead layer is computed
@@ -927,7 +944,7 @@ pub async fn scan_pinned<S: std::hash::BuildHasher>(
     prev: Option<&GitDiffSnapshot>,
     base: &str,
 ) -> GitDiffSnapshot {
-    scan_within(cwd, env, prev, Some(base), PrRefresh::ServeCached, COMMAND_TIMEOUT).await
+    scan_within(cwd, env, prev, Some(base), PrRefresh::ServeCached, false, COMMAND_TIMEOUT).await
 }
 
 /// [`scan`] with the scan's command budget spelled: the shell gives every
@@ -948,6 +965,9 @@ async fn scan_within<S: std::hash::BuildHasher>(
     prev: Option<&GitDiffSnapshot>,
     base: Option<&str>,
     pr_refresh: PrRefresh,
+    // Whether this scan kicks the throttled background fetch. A read that
+    // will fetch the base itself passes `false`.
+    kick: bool,
     budget: Duration,
 ) -> GitDiffSnapshot {
     let raw_branch = match rev_parse_gate(cwd, budget).await {
@@ -987,7 +1007,8 @@ async fn scan_within<S: std::hash::BuildHasher>(
     // inline and claims the same window, so one repository fetches at most
     // once per window whichever path gets there first - and a sessionless
     // seat, which has no loop to refresh for it, is covered here.
-    if pr_refresh == PrRefresh::Fetch
+    if kick
+        && pr_refresh == PrRefresh::Fetch
         && !detached
         && !on_default
         && let Some(default) = default_branch.as_deref()
@@ -2045,7 +2066,7 @@ mod tests {
         env: &HashMap<String, String>,
         prev: Option<&GitDiffSnapshot>,
     ) -> GitDiffSnapshot {
-        scan_within(cwd, env, prev, None, PrRefresh::Fetch, TEST_GIT_BUDGET).await
+        scan_within(cwd, env, prev, None, PrRefresh::Fetch, true, TEST_GIT_BUDGET).await
     }
 
     fn init_repo(dir: &TempDir, initial_branch: &str) {
@@ -2182,9 +2203,16 @@ mod tests {
         let bin = tempfile::tempdir().expect("tempdir");
         stall_git_at(dir.path(), bin.path());
 
-        let refused =
-            scan_within(dir.path(), &HashMap::new(), None, None, PrRefresh::Fetch, Duration::ZERO)
-                .await;
+        let refused = scan_within(
+            dir.path(),
+            &HashMap::new(),
+            None,
+            None,
+            PrRefresh::Fetch,
+            true,
+            Duration::ZERO,
+        )
+        .await;
         assert_eq!(
             refused.repo_gate,
             RepoGate::ScannerFailed,
@@ -2201,9 +2229,16 @@ mod tests {
         );
 
         crate::env::git_command::clear_git_point(dir.path());
-        let scanned =
-            scan_within(dir.path(), &HashMap::new(), None, None, PrRefresh::Fetch, TEST_GIT_BUDGET)
-                .await;
+        let scanned = scan_within(
+            dir.path(),
+            &HashMap::new(),
+            None,
+            None,
+            PrRefresh::Fetch,
+            true,
+            TEST_GIT_BUDGET,
+        )
+        .await;
         assert_eq!(scanned.repo_gate, RepoGate::InRepo, "and the tests' budget scans the repo");
         assert!(
             matches!(scanned.branch, GitBranch::Named(ref name) if name == "feature"),
@@ -3011,7 +3046,7 @@ mod tests {
             ("GH_TOKEN".to_owned(), "project-token".to_owned()),
         ]);
 
-        scan_within(dir.path(), &env, None, None, PrRefresh::Fetch, budget).await;
+        scan_within(dir.path(), &env, None, None, PrRefresh::Fetch, true, budget).await;
         std::fs::read_to_string(&seen).ok()
     }
 
@@ -4094,6 +4129,30 @@ mod tests {
             rev_parse(upstream.path(), "main"),
             "which leaves the ref fresh for the next read",
         );
+    }
+
+    /// **A read that fetches the base itself takes no background kick.** A
+    /// sessionless review read did both, and its own display fetch then
+    /// queued behind forge's on the shared repository gate - so the page said
+    /// "could not be refreshed" about a fetch forge itself was holding.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_scan_without_base_fetch_kicks_nothing() {
+        let (upstream, dir) = stale_base_fixture();
+        let before = rev_parse(dir.path(), "refs/remotes/origin/main");
+
+        let _ = scan_without_base_fetch(dir.path(), &HashMap::new(), None).await;
+
+        assert_eq!(
+            settle_background_fetches().await,
+            0,
+            "the quiet scan kicks no background fetch",
+        );
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            before,
+            "and the ref is where the caller's own fetch will find it",
+        );
+        assert_ne!(before, rev_parse(upstream.path(), "main"), "precondition: the base is stale");
     }
 
     /// **The watch's own refresh is where the fetch is paid.** Nobody waits on

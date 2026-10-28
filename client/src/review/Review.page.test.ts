@@ -1571,6 +1571,74 @@ describe('the steppers', () => {
   });
 
   /**
+   * **A notice-driven answer does not switch the page's base tracking off.**
+   * A worker replying to a thread has the page's re-read answered with an
+   * ordinary record; the base LINE is provenance and hides for it, but the
+   * chain the page is watching belongs to the page being mounted, so the next
+   * move still asks - and that read is the page's own.
+   */
+  it('keeps watching the chain after a notice-driven ordinary answer', async () => {
+    const first = { sha: 'aaaaaaa', subject: 'one' };
+    await draw([], [], true, DIFF, [first], 1, { state: 'current' });
+    // The notice's answer: a record this page's own scope did not read.
+    push({
+      wire: record(IDLE, [], [], DIFF, [first], 1, { state: 'current' }),
+      refused: null,
+      review: false,
+    });
+    flushSync();
+    expect(
+      document.querySelector('.rv-base'),
+      'the ordinary record draws no base line of its own',
+    ).toBeNull();
+
+    vi.useFakeTimers();
+    push({
+      wire: record(IDLE, [], [], DIFF, [first, { sha: 'bbbbbbb', subject: 'two' }], 2, {
+        state: 'current',
+      }),
+      refused: null,
+      review: false,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the page stopped tracking the chain with the notice').toEqual([
+      { review: true },
+    ]);
+  });
+
+  /** The same gate for the base trigger: a notice-driven answer must not
+   *  stop the page hearing the watch's next measurement. */
+  it('keeps watching the measured base after a notice-driven ordinary answer', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' }, 'main', true, {
+      state: 'current',
+    });
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'current',
+      }),
+      refused: null,
+      review: false,
+    });
+    flushSync();
+
+    vi.useFakeTimers();
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'current' }, 'main', {
+        state: 'behind',
+        behind: 1,
+      }),
+      refused: null,
+      review: false,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'the page stopped watching the measured base').toEqual([{ review: true }]);
+  });
+
+  /**
    * **A base can move without the chain moving**, and the page hears it only
    * from the seat's own watch measurement: `git.base` moves, the count and the
    * chain do not, and the diff's stated base is now behind it.

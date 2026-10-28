@@ -461,6 +461,36 @@ describe('frames from the bridge', () => {
   });
 
   /**
+   * **A review read's deadline comes from the caller.** The server bounds that
+   * read itself for longer than an ordinary one, so the ordinary pass would
+   * presume it lost inside the window and ask a second whole review read under
+   * the first. This drives the caller rather than arming the bound by hand, so
+   * a call site reverted to the short pass reds here.
+   */
+  it('gives a review read the longer pass before asking again', async () => {
+    vi.useFakeTimers();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      return Promise.resolve(undefined);
+    });
+    const connection = connectRust('ws://127.0.0.1:7777/socket');
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    connection.subscribe(subject, { review: true });
+    invoke.mockClear();
+
+    vi.advanceTimersByTime(5_000);
+    expect(invoke, 'the ordinary pass does not end a review read').not.toHaveBeenCalledWith(
+      'client_refresh',
+      { what: subject },
+    );
+
+    vi.advanceTimersByTime(7_000);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+  });
+
+  /**
    * **A read bound while the socket is still down owes a retry once it opens.**
    * The bound fired before the connection did, so its refresh could not go and
    * the timer died. The subscribe was queued in the Rust half and goes out when

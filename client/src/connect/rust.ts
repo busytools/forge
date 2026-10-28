@@ -554,6 +554,10 @@ class RustConnection implements Connection {
 
   /** The held declaration only: nothing on the wire, no store, no reader. */
   declare(what: Subject, options: { review: boolean }): void {
+    // The bound's own retry reads this: a seat a page let go must not keep
+    // the review read's deadline for its next ordinary ask.
+    if (options.review) this.scopes.set(subjectKey(what), true);
+    else this.scopes.delete(subjectKey(what));
     void invoke('client_declare', { what, review: options.review }).catch((why: unknown) => {
       report('a declaration could not reach the shell', why);
     });
@@ -582,13 +586,16 @@ class RustConnection implements Connection {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
     if (this.state !== 'open') return false;
-    // **A re-ask that states no scope keeps the shell's held one.** The
-    // bound's retry for a store still loading says nothing, and the shell
-    // knows which kind of read that store was asked as.
-    const review = options?.review;
-    if (review !== undefined) this.scopes.set(subjectKey(what), review);
-    this.bounds.arm(what, review === true ? REVIEW_READ_BOUND_MS : undefined);
-    const payload = review === undefined ? { what } : { what, review };
+    // **A re-ask that states no scope keeps the shell's held one**, and its
+    // deadline follows that held scope: a notice-driven read states nothing
+    // and still resolves to the review read the seat was asked as, so it gets
+    // the longer pass rather than presuming a lost read at five seconds.
+    const stated = options?.review;
+    const key = subjectKey(what);
+    if (stated !== undefined) this.scopes.set(key, stated);
+    const review = stated ?? this.scopes.get(key) ?? false;
+    this.bounds.arm(what, review ? REVIEW_READ_BOUND_MS : undefined);
+    const payload = stated === undefined ? { what } : { what, review: stated };
     void invoke('client_refresh', payload).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);
     });

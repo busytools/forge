@@ -3843,6 +3843,30 @@ describe('the review read', () => {
   });
 
   /**
+   * **A want is served as the read that was wanted.** A notice read landing
+   * behind one in flight must not become another fetch: the seat's intent is
+   * untouched by a one-shot request, and the want remembers it.
+   */
+  it('serves a want as the read that was wanted', () => {
+    const connection = drivable();
+    const view = watchSession(connection, LEAD, true, { review: true });
+    const stop = view.subscribe(() => {});
+    // The open's answer is in flight; a notice wants the record meanwhile.
+    connection.land(
+      updateOf({
+        review_activity_notice: { key: LEAD, branch: 'b', waiting: 1, message: 'x' },
+      }),
+    );
+    expect(connection.refreshes, 'nothing is asked behind the ask in flight').toEqual([]);
+
+    connection.land(snapshotOf(LEAD, {}, { epoch: 'e1', seq: 1 }));
+    expect(connection.refreshes, 'the want is served as the ordinary read it was').toEqual([
+      { review: false },
+    ]);
+    stop();
+  });
+
+  /**
    * **Letting the seat go crosses the transport, and it is not a read.** Left
    * unsaid, the transport's held scope would keep re-asking the review read
    * on every reconnect for a seat nobody is reviewing.

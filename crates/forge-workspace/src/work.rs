@@ -687,7 +687,7 @@ impl Workspace {
                     .map(|refresh| refresh.state);
             }
             return Ok(self
-                .scan_work_at_with_base(slot, Path::new(&cwd), pr, None, measured)
+                .scan_work_at_with_base(slot, Path::new(&cwd), pr, None, measured, false)
                 .await);
         }
         self.work_snapshot(slot).ok_or_else(|| format!("{} has no stored scan", slot.display()))
@@ -704,7 +704,32 @@ impl Workspace {
         cwd: &Path,
         pr: PrRefresh,
     ) -> WorkSnapshot {
-        self.scan_work_at_with_base(slot, cwd, pr, None, None).await
+        self.scan_work_at_with_base(slot, cwd, pr, None, None, false).await
+    }
+
+    /// A sessionless seat's fetching scan with **no background kick**: the
+    /// read that will fetch the base itself a moment later takes this, so its
+    /// own fetch is the only one and nothing of forge's can be queued ahead of
+    /// it on the shared per-repository gate.
+    pub async fn scan_work_at_without_base_fetch(
+        &self,
+        slot: &SessionSlot,
+        cwd: &Path,
+    ) -> WorkSnapshot {
+        self.scan_work_at_with_base(slot, cwd, PrRefresh::Fetch, None, None, true).await
+    }
+
+    /// A local scan pinned to `base`, taken **without the seat's gate**: the
+    /// drawing read's fallback when the gate is held past its bound. It writes
+    /// the store like any scan, and the caller has already refreshed the base.
+    pub async fn scan_work_at_pinned_local(
+        &self,
+        slot: &SessionSlot,
+        cwd: &Path,
+        base: Option<&str>,
+        measured: Option<BaseState>,
+    ) -> WorkSnapshot {
+        self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured, false).await
     }
 
     /// [`Self::scan_work_at`] pinned to one base revision: the branch-ahead
@@ -713,7 +738,8 @@ impl Workspace {
     ///
     /// `measured` is what a watch pass just refreshed the base to; `None`
     /// keeps the state the store last measured, so a scan that did not
-    /// refresh does not erase it.
+    /// refresh does not erase it. `quiet` suppresses the background kick on a
+    /// `Fetch` scan.
     async fn scan_work_at_with_base(
         &self,
         slot: &SessionSlot,
@@ -721,6 +747,7 @@ impl Workspace {
         pr: PrRefresh,
         base: Option<&str>,
         measured: Option<BaseState>,
+        quiet: bool,
     ) -> WorkSnapshot {
         let held = self.work_snapshot(slot);
         let previous = held.as_ref().map(|held| &held.diff);
@@ -728,6 +755,9 @@ impl Workspace {
         let diff = match (pr, base) {
             (_, Some(base)) => {
                 forge_agent::env::git_diff::scan_pinned(cwd, &env, previous, base).await
+            }
+            (PrRefresh::Fetch, None) if quiet => {
+                forge_agent::env::git_diff::scan_without_base_fetch(cwd, &env, previous).await
             }
             (PrRefresh::Fetch, None) => forge_agent::env::git_diff::scan(cwd, &env, previous).await,
             (PrRefresh::ServeCached, None) => {
@@ -789,7 +819,9 @@ impl Workspace {
             }
             None => None,
         };
-        Ok(self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured).await)
+        Ok(self
+            .scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured, false)
+            .await)
     }
 
     /// `project`'s own declared environment, `env_file` included, which
@@ -1560,6 +1592,7 @@ provider = "anthropic"
                 PrRefresh::ServeCached,
                 None,
                 Some(BaseState::Behind { behind: 2 }),
+                false,
             )
             .await;
         assert_eq!(measured.base, Some(BaseState::Behind { behind: 2 }), "the measurement lands");

@@ -6139,6 +6139,13 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
         fresh["git"]["ahead"]["commit_count"], 1,
         "the local re-read is the post-fetch base, not the store's stale count: {fresh}",
     );
+    // **The row's own base is the one this read measured.** The local re-read
+    // carries the refresh's state, so `git.base` and `diff.base` cannot
+    // contradict each other in one record.
+    assert_eq!(
+        fresh["git"]["base"], "current",
+        "the row's base is the state the refresh found: {fresh}",
+    );
     let files = fresh["diff"]["branch_ahead"]["populated"]
         .as_array()
         .expect("the branch layer is populated");

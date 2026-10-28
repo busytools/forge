@@ -131,7 +131,14 @@ impl ViewSurface {
     /// arbitrarily old scan would put its hunks beside a row the first pass
     /// has since moved, so a store past the window is re-read here rather
     /// than carried.
-    pub async fn work(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
+    pub async fn work(
+        &self,
+        slot: &SessionSlot,
+        cwd: &std::path::Path,
+        // Whether this is the review page's own read, which fetches the base
+        // itself a moment later.
+        review: bool,
+    ) -> WorkSnapshot {
         // **The record's read never waits on the PR lookup.** A
         // lookup past its window is a TLS + API round trip (~0.9 s here) and
         // it sat inside the open a client waits for; the seat's loop scans
@@ -143,7 +150,13 @@ impl ViewSurface {
         }
         // A seat with no session has no store to hold a read, and its record
         // still answers the tree it stands in - so there is nothing cached to
-        // serve and no loop to refresh it either: this read fetches.
+        // serve and no loop to refresh it either: this read fetches. **The
+        // review read fetches the base itself**, so its scan takes none of the
+        // background kick: one read, one fetch, and nothing of forge's queued
+        // ahead of that fetch on the shared repository gate.
+        if review {
+            return self.workspace.scan_work_at_without_base_fetch(slot, cwd).await;
+        }
         self.workspace.scan_work_at(slot, cwd, PrRefresh::Fetch).await
     }
 
@@ -209,9 +222,18 @@ impl ViewSurface {
 
     /// The local re-read a drawing read takes when its pin could not be: the
     /// count and the chain must describe the ref the content is read at, and
-    /// that ref is the one the refresh just left. Never fetches.
-    pub async fn work_local(&self, slot: &SessionSlot, cwd: &std::path::Path) -> WorkSnapshot {
-        self.workspace.scan_work_at(slot, cwd, PrRefresh::ServeCached).await
+    /// that ref is the one the refresh just left. **Pinned to the same sha the
+    /// content read takes**, so a fetch that moves the ref between the two
+    /// cannot straddle two bases; the refresh's own state rides it, so the
+    /// row's `base` and the diff's agree. Never fetches, and takes no gate.
+    pub async fn work_pinned_local(
+        &self,
+        slot: &SessionSlot,
+        cwd: &std::path::Path,
+        base: Option<&str>,
+        measured: Option<forge_primitives::git_diff::BaseState>,
+    ) -> WorkSnapshot {
+        self.workspace.scan_work_at_pinned_local(slot, cwd, base, measured).await
     }
 
     /// Store a scan's answer, which is the write half of [`Self::work`].

@@ -385,6 +385,7 @@ mod tests {
             prev,
             None,
             forge_primitives::git_diff::PrRefresh::Fetch,
+            true,
             super::super::TEST_GIT_BUDGET,
         )
         .await

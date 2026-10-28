@@ -2332,7 +2332,7 @@ async fn session(
     // instant, so a branch switch cannot render a PR for a branch this record
     // does not name.
     let at = std::time::Instant::now();
-    let held = surface.work(slot, cwd).await;
+    let held = surface.work(slot, cwd, review).await;
     timings.work_ms = slice_ms(at);
     // **Only the review page's own read refreshes the base.** An ordinary
     // record read serves the stores as they stand - a seat page never waits on
@@ -2354,12 +2354,24 @@ async fn session(
     // **A refused pin is re-read locally, never served from the pre-refresh
     // store.** The refresh moved the base; the store's count predates it, and
     // that count beside content read at the ref the fetch left is the
-    // two-commits answer this read exists to prevent. The local scan is
-    // ungated, so it and the content read resolve the same ref by name.
+    // two-commits answer this read exists to prevent. The re-read is pinned to
+    // the sha the refresh resolved and carries its state, so the count, the
+    // files and the row's `base` all describe that one base; only a refresh
+    // that resolved no sha falls back to the ref's name for both.
     let (held, base_ref) = match pin {
         Some((scan, base_ref)) => (scan, base_ref),
         None => match &refresh {
-            Some(_) => (surface.work_local(slot, &held.cwd).await, None),
+            Some(refresh) => (
+                surface
+                    .work_pinned_local(
+                        slot,
+                        &held.cwd,
+                        refresh.base_ref.as_deref(),
+                        Some(refresh.state),
+                    )
+                    .await,
+                refresh.base_ref.as_deref(),
+            ),
             None => (held, None),
         },
     };
@@ -2368,9 +2380,10 @@ async fn session(
     // rather than stored with the row because a record read is a cold load,
     // a reconnect or a seat swap - not a frame a moving tree pushes.
     let base = match &refresh {
-        // The drawn diff reads the ref the refresh left: pinned to its sha
-        // when the gate let the scan through, by name when it did not. Either
-        // way the state the fetch found is this diff's state.
+        // The drawn diff reads the ref the refresh left: the gate's pinned
+        // scan, or the local re-read at the same sha; only a refresh that
+        // resolved no sha reads by name. Either way the state the fetch found
+        // is this diff's state.
         Some(refresh) => Some(refresh.state),
         // An ordinary read has not checked the base. Saying so is what keeps a
         // cached record from drawing its diff as current.
@@ -5073,7 +5086,7 @@ mod tests {
 
         let encoded =
             encode_subject(&state, &Subject::Session(seat.clone())).await.expect("encode");
-        let held = state.surface.work(&seat, std::path::Path::new(&cwd)).await;
+        let held = state.surface.work(&seat, std::path::Path::new(&cwd), false).await;
         let pushed = forge_workspace::work::work_from_scan(&held.diff, &held.cwd);
 
         assert_eq!(

@@ -232,6 +232,13 @@
   });
 
   /**
+   * **The page's interest in the base belongs to the page being mounted, not
+   * to the last answer's scope.** A record that answered from another scope -
+   * a notice-driven read after a comment, say - is still drawn by a page that
+   * holds this seat as its review, so tracking must not switch off with it;
+   * only the base LINE is provenance (`read.review`), and a later read of
+   * this page's own restores it.
+   *
    * **A diff read once goes old under a live record.** `work_changed` moves
    * the count and the chain while the diff - and the base beside it - stay
    * where the last read left them, so a page left open would draw a fresh
@@ -244,7 +251,7 @@
   let drawnChain: string | null = null;
   $effect(() => {
     const at = subjectKey({ session: slot });
-    const chain = read.review ? chainOf(record) : null;
+    const chain = chainOf(record);
     if (chain === null) return;
     const first = drawnAt !== at;
     if (!first && chain === drawnChain) return;
@@ -266,7 +273,7 @@
   let seenBase: string | null = null;
   $effect(() => {
     const at = subjectKey({ session: slot });
-    const measured = read.review ? baseOf(record?.git.base ?? null) : null;
+    const measured = baseOf(record?.git.base ?? null);
     if (measured === null) return;
     const first = baseSeenAt !== at;
     if (!first && measured === seenBase) return;

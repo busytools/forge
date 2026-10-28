@@ -102,12 +102,16 @@ interface Seat {
   /** Whether the record in hand came from a review read. */
   readReview: boolean;
   /**
-   * A read wanted while one was already in flight.
+   * A read wanted while one was already in flight, with the one-shot scope it
+   * asked for (`{}` for the seat's own).
    *
    * An answer is the whole record and was encoded before this want, so it
-   * cannot serve it: the ask is made again when the answer lands.
+   * cannot serve it: the ask is made again when the answer lands - **as the
+   * read that was wanted**, because a notice-driven want is an ordinary
+   * record and re-issuing it as the seat's review read would put a fetch
+   * behind it that nobody asked for.
    */
-  wanted: boolean;
+  wanted: { review?: boolean } | null;
   /**
    * Whether an ask of ours is in flight.
    *
@@ -501,7 +505,7 @@ function createSeat(
     review,
     askingReview: false,
     readReview: false,
-    wanted: false,
+    wanted: null,
     asking: false,
     epoch: null,
     lastSeq: 0,
@@ -767,9 +771,10 @@ function createSeat(
    * review read exists to prevent - and would fire later as a stray read.
    */
   function serveWanted(): void {
-    if (!seat.wanted) return;
-    seat.wanted = false;
-    reread();
+    const wanted = seat.wanted;
+    if (wanted === null) return;
+    seat.wanted = null;
+    reread(wanted);
   }
 
   /**
@@ -791,12 +796,12 @@ function createSeat(
     // read, and that subscribe carries `seat.review`.
     if (seat.opened === 0) return;
     if (seat.asking) {
-      // **A wanted read is recorded, not dropped.** A whole encode is in
-      // flight and its answer was encoded before this want, so it cannot
-      // serve it; the ask goes again when the answer lands. Dropping it left
-      // a page that asked during a seat's own open with a record it never
-      // asked for and no second ask coming.
-      seat.wanted = true;
+      // **A wanted read is recorded, not dropped**, and it keeps its own
+      // scope: a whole encode is in flight and its answer was encoded before
+      // this want, so it cannot serve it; the ask goes again when the answer
+      // lands. Dropping it left a page that asked during a seat's own open
+      // with a record it never asked for and no second ask coming.
+      seat.wanted = options ?? {};
       return;
     }
     seat.asking = true;
@@ -1096,7 +1101,7 @@ function createSeat(
             // rather than keeping the record it read before the refusal.
             // A read wanted mid-flight is served by the refusal beat, which
             // asks again with the seat's own declaration.
-            seat.wanted = false;
+            seat.wanted = null;
             read();
           }
           return;
