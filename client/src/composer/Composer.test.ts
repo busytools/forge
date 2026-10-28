@@ -6898,12 +6898,12 @@ describe("the takeover bar's feedback line", () => {
     ).not.toContain('the microphone was refused');
   });
 
-  /** **The open itself is the bar's to say.** The card draws from the record,
-   *  which has no take until the capture has opened and the stream has gone
-   *  out, and the composer's own band is behind the picture while the takeover
-   *  is up - so an open that takes seconds drew nothing at all, and the press
-   *  read as dead (measured live: a 4s open showed no card, no line and no
-   *  status on this surface, while the composer's band said it within 200ms).
+  /** **The open itself is the bar's to say.** The card comes from this page's
+   *  own take, which exists only once the capture has opened, and the
+   *  composer's own band is behind the picture while the takeover is up - so
+   *  an open that takes seconds drew nothing at all, and the press read as
+   *  dead (measured live: a 4s open showed no card, no line and no status on
+   *  this surface, while the composer's band said it within 200ms).
    *  **The wait is pinned at the 180ms `OPEN_DRAWN_MS` sets, not at whatever
    *  the constant holds today**: the band's delay is what stops a fast press
    *  flashing the state, and a "make it snappier" edit is the change it exists

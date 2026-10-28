@@ -1238,7 +1238,12 @@
       {dictation}
       takeline={takeoverLine}
       opening={openingShown}
-      ondismiss={() => (box.dismissed = box.dictateLine?.text ?? null)}
+      ondismiss={() => {
+        // **Only a line that is there is dismissed.** Typing with no take
+        // line must not clear one the reader already typed away, or a
+        // composer notice can come back when the takeover lowers.
+        if (box.dictateLine !== null) box.dismissed = box.dictateLine.text;
+      }}
       ondone={takeoverAsk === null ? null : () => takeoverAnswer('done')}
       onnotnow={takeoverAsk === null ? null : () => takeoverAnswer('not_now')}
       onback={takeoverBack}

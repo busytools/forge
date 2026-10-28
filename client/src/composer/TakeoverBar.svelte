@@ -82,10 +82,10 @@
     /**
      * A take this page pressed is still opening its microphone.
      *
-     * **Nothing else says so on this surface.** The card draws from the
-     * record, which only has a take once the capture has opened and the
-     * stream has gone out, so without this line the whole open draws nothing
-     * and the press reads as dead.
+     * **Nothing else says so on this surface.** The card draws from this
+     * page's own take, which exists only once the capture has opened, so
+     * without this line the whole open draws nothing and the press reads as
+     * dead.
      */
     opening?: boolean;
     /** The reader typed in the row, which dismisses the line above it the way
