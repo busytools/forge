@@ -117,6 +117,11 @@
     border: 1px solid var(--line); border-left: 0; padding: 3px 8px; white-space: nowrap; }
 
   /* ---------- the diff half: the tree, then the canvas ---------- */
+  /* The stale-base line: the diff is drawn, and this says the base behind it
+     may be old. Its own line rather than a hover, because a caveat nobody
+     hovers is not a label. */
+  .rv-base { font-family: var(--mono); font-size: var(--fs-data); color: var(--warn);
+    padding: 2px 2px 6px; }
   .rv-body { display: grid; grid-template-columns: 296px minmax(0, 1fr); gap: 18px; }
   .rv-files h2 { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px;
     font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
@@ -330,7 +335,7 @@
     <span class="loop">1 reply to read<span class="sep">&#183;</span>1 open</span>
   </header>
 
-  <div class="fig">the Files changed half, all changes: the tree with the file being read marked, the comments' stepper, the diff, a thread on its line, the composer, a between-hunk control, and the half's own finish</div>
+  <div class="fig">the Files changed half, all changes: the tree with the file being read marked, the comments' stepper, the stale-base line where the refresh could not land, the diff, a thread on its line, the composer, a between-hunk control, and the half's own finish</div>
 
   <nav class="rv-tabs" aria-label="review sections">
     <span class="tab">Conversation</span>
@@ -422,6 +427,8 @@
       <span class="rv-menu-age">11m ago</span>
     </div>
   </div>
+
+  <p class="rv-base">main is 3 commits behind upstream, so this diff may include work already on main.</p>
 
   <div class="rv-body">
     <nav class="rv-files" aria-label="files in this scope">

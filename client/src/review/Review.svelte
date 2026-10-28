@@ -15,10 +15,11 @@
   import { Landing } from '../composer/landing';
   import { noticeLine, joined } from '../composer/view';
   import { ago } from '../components/age';
+  import { subjectKey } from '../protocol';
   import { hrefForSlot } from '../routes';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
   import { composerFrom } from '../composer/wire';
-  import { rereadSeat, watchSession, type SessionRead } from '../session/live';
+  import { clearReview, rereadSeat, watchSession, type SessionRead } from '../session/live';
   import type { ReviewThreadRecord, SessionRecord } from '../session/wire';
   import type { Connection } from '../socket';
   import type { SessionSlot } from '../wire/types';
@@ -83,29 +84,50 @@
     dictation: boolean;
   } = $props();
 
-  let read = $state<SessionRead>({ wire: null, refused: null });
+  let read = $state<SessionRead>({ wire: null, refused: null, review: false });
 
+  /**
+   * How long a moved chain waits before the page asks again: long enough that
+   * a burst of commits, or the watch's own scan landing twice, is one read.
+   */
+  const DRIFT_REASK_MS = 2_000;
+
+  /**
+   * What the branch-ahead chain says now, as one value to compare: the count
+   * and the newest commit cover a commit being added, amended or a base fetch
+   * moving the range underneath.
+   */
+  function chainOf(held: SessionRecord | null): string | null {
+    const ahead = held?.git.ahead;
+    if (ahead === null || ahead === undefined) return null;
+    return `${ahead.count}:${ahead.commits[0]?.sha ?? ''}`;
+  }
+
+  /**
+   * **The page's read is its own, for as long as it holds the seat.** The
+   * record it opens on may have been read for whichever page asked last, and
+   * its base may be hours old; the all-changes diff is drawn from a read that
+   * refreshes that base first. The intent lives on the seat, so the open
+   * itself carries it and every re-ask after it does too - an outrun, a
+   * replacement frame, a reconnect. The cleanup takes it back, so a page
+   * mounting the seat afterwards asks an ordinary read.
+   *
+   * **Keyed to the slot**, because the same page can be handed another seat:
+   * stepping to a second review must ask for that seat's read, not inherit
+   * the first one's spent ask.
+   */
   $effect(() => {
-    return watchSession(connection, slot, false).subscribe(($next) => {
+    const at = slot;
+    const stop = watchSession(connection, at, false, { review: true }).subscribe(($next) => {
       read = $next;
     });
+    return () => {
+      stop();
+      clearReview(connection, at);
+    };
   });
 
   const record: SessionRecord | null = $derived(read.wire);
-
-  /**
-   * **The page's read is its own.** The record it opens on was read for
-   * whichever page asked last, and its base may be hours old; the all-changes
-   * diff is drawn from a read that refreshes that base first. Asked once the
-   * first record has landed, because a read while the seat's own open is still
-   * in flight would be dropped rather than queued.
-   */
-  let reviewAsked = false;
-  $effect(() => {
-    if (reviewAsked || record === null) return;
-    reviewAsked = true;
-    rereadSeat(connection, slot, { review: true });
-  });
   const reviews = $derived(record === null ? null : record.reviews);
   const threads = $derived(reviews?.threads.outcome === 'read' ? reviews.threads.value : []);
   const rounds = $derived(
@@ -141,6 +163,12 @@
    * read as the branch's own change.
    */
   const baseNote = $derived.by(() => {
+    // **Only a record this page's own read produced may say what the refresh
+    // found.** A record read by any other page has not checked its base at
+    // all, and drawing "could not be refreshed" off it names a refresh that
+    // never ran - the false caveat every open used to flash while its own
+    // read was in flight.
+    if (!read.review) return null;
     const base = record?.diff.base ?? null;
     // The wire names the remote-tracking ref; the reader knows it as `main`.
     const name = (record?.git.defaultBranch ?? 'the base').replace(/^origin\//, '');
@@ -157,6 +185,32 @@
       return `the base ${name} could not be read, so this diff may include work already on ${name}.`;
     }
     return null;
+  });
+
+  /**
+   * **A diff read once goes old under a live record.** `work_changed` moves
+   * the count and the chain while the diff - and the base beside it - stay
+   * where the last read left them, so a page left open would draw a fresh
+   * "N commits" beside the file list of an older base, labelled current: the
+   * mixed answer the base line exists to prevent. When the chain behind the
+   * drawn diff moves, this page asks its own read again, debounced so a burst
+   * of commits is one read.
+   */
+  let drawnAt: string | null = null;
+  let drawnChain: string | null = null;
+  $effect(() => {
+    const at = subjectKey({ session: slot });
+    const chain = read.review ? chainOf(record) : null;
+    if (chain === null) return;
+    const first = drawnAt !== at;
+    if (!first && chain === drawnChain) return;
+    drawnAt = at;
+    drawnChain = chain;
+    // The answer that opened this page is what set the chain it drew; only a
+    // chain that moved afterwards is worth a read of its own.
+    if (first) return;
+    const timer = setTimeout(() => rereadSeat(connection, slot, { review: true }), DRIFT_REASK_MS);
+    return () => clearTimeout(timer);
   });
 
   /** The threads this sitting has drafted or replied on, unfiled: what a

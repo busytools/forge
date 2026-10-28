@@ -94,7 +94,7 @@
     dictation: boolean;
   } = $props();
 
-  let read = $state<SessionRead>({ wire: null, refused: null });
+  let read = $state<SessionRead>({ wire: null, refused: null, review: false });
 
   $effect(() => {
     return watchSession(connection, slot, false).subscribe(($next) => {

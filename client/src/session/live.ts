@@ -41,9 +41,17 @@ export interface SessionRead {
   wire: SessionRecord | null;
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
+  /**
+   * Whether the read that produced `wire` was the review page's own.
+   *
+   * **A record read by any other page has not checked its diff's base**, so a
+   * page that says "could not be refreshed" off one is naming a refresh that
+   * never ran. Only a record a review read answered may draw that line.
+   */
+  review: boolean;
 }
 
-const NOTHING: SessionRead = { wire: null, refused: null };
+const NOTHING: SessionRead = { wire: null, refused: null, review: false };
 
 /**
  * One seat, held by the client rather than by the page drawing it.
@@ -75,6 +83,31 @@ interface Seat {
   opened: number;
   /** What the seat is subscribed as: a later reader that can answer raises it. */
   answering: boolean;
+  /**
+   * Whether the reads this seat wants are the review page's own.
+   *
+   * **Held on the seat rather than asked once**, because a want is not one
+   * ask: a read dropped for one in flight, an outrun the frames caused, and a
+   * reconnect's own re-subscribe are all asks the page did not get to choose,
+   * and each must carry the same kind of read or the page ends up reporting a
+   * refresh that never ran. Keyed to the seat (and so to its slot), so a
+   * review page moving to another seat does not find its predecessor's want.
+   *
+   * A page that stops holding the seat clears it: the next ordinary ask then
+   * carries an ordinary read.
+   */
+  review: boolean;
+  /** Whether the ask in flight was a review read, for the answer to carry. */
+  askingReview: boolean;
+  /** Whether the record in hand came from a review read. */
+  readReview: boolean;
+  /**
+   * A read wanted while one was already in flight.
+   *
+   * An answer is the whole record and was encoded before this want, so it
+   * cannot serve it: the ask is made again when the answer lands.
+   */
+  wanted: boolean;
   /**
    * Whether an ask of ours is in flight.
    *
@@ -165,11 +198,8 @@ interface Seat {
    * there is the DOM global, which is a blank tab rather than a subscribe.
    */
   open: () => void;
-  /**
-   * Ask for the record again, `review` for the review page's own read: see
-   * `reread`.
-   */
-  reread: (review?: boolean) => void;
+  /** Ask for the record again: see `reread`. */
+  reread: () => void;
 }
 
 /**
@@ -287,15 +317,34 @@ export function watchSession(
    * cancelled at birth.
    */
   answering: boolean,
+  /**
+   * `review` holds the seat's reads as the review page's own for as long as
+   * this page does: the first subscribe carries it, every re-ask re-issues it
+   * (an outrun, a reconnect, a replacement frame), and the page's own cleanup
+   * takes it back with `clearReview`.
+   */
+  options?: { review?: boolean },
 ): { subscribe: Readable<SessionRead>['subscribe'] } {
   const subject: Subject = { session: slot };
   const key = subjectKey(subject);
   const visited = seats(connection);
   let seat = visited.get(key);
+  const review = options?.review === true;
 
   if (seat === undefined) {
-    seat = createSeat(visited, connection, subject, answering);
+    seat = createSeat(visited, connection, subject, answering, review);
     visited.set(key, seat);
+  } else if (review) {
+    // **A review page opening a visited seat asks for its own read**, whose
+    // base is checked now rather than when the seat was last read. The intent
+    // is set before any ask below, so the ask carries it.
+    seat.review = true;
+    if (answering && !seat.answering) {
+      seat.answering = true;
+      seat.open();
+    } else {
+      seat.reread();
+    }
   } else if (answering && !seat.answering) {
     // **The role only ever rises, and a page that can answer has to say so.**
     // A seat nothing has subscribed yet has no open to ride, so this IS its
@@ -324,16 +373,30 @@ function seats(connection: Connection): Map<string, Seat> {
  * a page opened hours after its seat's last read draws a diff whose base was
  * checked at the moment it was drawn.
  *
- * A seat never opened has nothing to ask on; its first subscribe is its read.
+ * The intent is set on the seat, not spent on this one ask: a read that has
+ * to wait for one in flight, an outrun the frames caused and a reconnect's
+ * own re-subscribe all carry it too. A seat never opened has nothing to ask
+ * on; its first subscribe carries the intent instead.
  */
 export function rereadSeat(
   connection: Connection,
   slot: SessionSlot,
   options?: { review?: boolean },
 ): void {
-  seats(connection)
-    .get(subjectKey({ session: slot }))
-    ?.reread(options?.review === true);
+  const seat = seats(connection).get(subjectKey({ session: slot }));
+  if (seat === undefined) return;
+  if (options?.review !== undefined) seat.review = options.review;
+  seat.reread();
+}
+
+/**
+ * Let a seat's review read go, with no ask of its own: the page that held it
+ * has gone, and the next ordinary read of that seat is an ordinary record.
+ */
+export function clearReview(connection: Connection, slot: SessionSlot): void {
+  const seat = seats(connection).get(subjectKey({ session: slot }));
+  if (seat === undefined) return;
+  seat.review = false;
 }
 
 /** Release a seat whose session has ended: no subscription outlives it. */
@@ -352,6 +415,7 @@ function createSeat(
   connection: Connection,
   subject: Subject,
   answering: boolean,
+  review: boolean,
 ): Seat {
   const key = subjectKey(subject);
   // The seat this factory is for, for the asks that address one: every caller
@@ -425,6 +489,10 @@ function createSeat(
     held: null,
     opened: 0,
     answering,
+    review,
+    askingReview: false,
+    readReview: false,
+    wanted: false,
     asking: false,
     epoch: null,
     lastSeq: 0,
@@ -500,7 +568,7 @@ function createSeat(
       watchdog = null;
     }
     armedAt = 0;
-    seat.view.set({ wire: seat.wire, refused: seat.refused });
+    seat.view.set({ wire: seat.wire, refused: seat.refused, review: seat.readReview });
   }
 
   /**
@@ -635,6 +703,9 @@ function createSeat(
   function publish(next: SessionRecord | null, refused: string | null): void {
     seat.wire = next;
     seat.refused = refused;
+    // A refusal has no record for a read to have produced, so it is no
+    // review answer either.
+    seat.readReview = next !== null && seat.askingReview;
     flush();
   }
 
@@ -665,6 +736,22 @@ function createSeat(
   }
 
   /**
+   * Take the answer in flight, then ask again for a read wanted while it was
+   * on its way.
+   *
+   * The answer was encoded before that want, so it is taken for what it is
+   * and the want is served by a second ask - never silently dropped, which
+   * is how a page that asked during a seat's own open ended up drawing a
+   * record it never asked for.
+   */
+  function answeredRead(): void {
+    read();
+    if (!seat.wanted) return;
+    seat.wanted = false;
+    reread();
+  }
+
+  /**
    * Ask the server for the record again.
    *
    * Nothing is asked while one ask is in flight - a full encode apiece, and a
@@ -678,13 +765,25 @@ function createSeat(
    * never stopped for it, and the return no longer re-reads, so this is the
    * only ask a seat away from the reader has.
    */
-  function reread(review = false): void {
-    if (seat.asking || seat.opened === 0) return;
+  function reread(): void {
+    // A seat never opened has nothing to ask on; its first subscribe is its
+    // read, and that subscribe carries `seat.review`.
+    if (seat.opened === 0) return;
+    if (seat.asking) {
+      // **A wanted read is recorded, not dropped.** A whole encode is in
+      // flight and its answer was encoded before this want, so it cannot
+      // serve it; the ask goes again when the answer lands. Dropping it left
+      // a page that asked during a seat's own open with a record it never
+      // asked for and no second ask coming.
+      seat.wanted = true;
+      return;
+    }
     seat.asking = true;
+    seat.askingReview = seat.review;
     // Where the stream stood when the ask left, so the answer can be read
     // against what has arrived since.
     seat.askedAt = seat.seen;
-    connection.refresh(subject, { review });
+    connection.refresh(subject, { review: seat.review });
   }
 
   /** The beat a refused seat is asked again on, or `null` when none is armed. */
@@ -737,13 +836,17 @@ function createSeat(
    */
   function open(): void {
     if (seat.held !== null && seat.opened === 0) {
-      connection.relist(subject, { answering: seat.answering });
+      connection.relist(subject, { answering: seat.answering, review: seat.review });
       seat.opened = 1;
     } else {
-      seat.held = connection.subscribe(subject, { answering: seat.answering });
+      seat.held = connection.subscribe(subject, {
+        answering: seat.answering,
+        review: seat.review,
+      });
       seat.opened += 1;
     }
     seat.asking = true;
+    seat.askingReview = seat.review;
     seat.askedAt = seat.seen;
   }
 
@@ -964,6 +1067,9 @@ function createSeat(
             seat.asking = false;
             // A refusal is the seat's own answer and a page draws why from it,
             // rather than keeping the record it read before the refusal.
+            // A read wanted mid-flight is served by the refusal beat, which
+            // asks again with the seat's own declaration.
+            seat.wanted = false;
             read();
           }
           return;
@@ -998,7 +1104,7 @@ function createSeat(
           seat.lastSeq = reach.seq === null ? 0 : reach.seq - 1;
           seat.seen = seat.lastSeq;
           seat.outrun = 0;
-          read();
+          answeredRead();
           return;
         }
         // **An answer the frames have outrun is not taken - but only when the
@@ -1045,7 +1151,7 @@ function createSeat(
           seat.lastSeq = reach.seq - 1;
           seat.seen = Math.max(seat.seen, seat.lastSeq);
         }
-        read();
+        answeredRead();
         return;
       }
       // A repaired stretch, in answer to a range ask this seat made: the

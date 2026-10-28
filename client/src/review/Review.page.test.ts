@@ -66,19 +66,34 @@ vi.mock('@git-diff-view/svelte', async () => {
  *  in, which is all this file needs of the one the socket serves. */
 const seat = vi.hoisted(() => ({
   listeners: new Set<(read: unknown) => void>(),
+  /** Every `watchSession` this page made, with the seat and intent it named. */
+  watched: [] as { slot: unknown; options: { review?: boolean } | undefined }[],
+  /** Every `clearReview`, which is the page letting its read go. */
+  cleared: [] as unknown[],
   rereads: [] as { review?: boolean }[],
 }));
 
 vi.mock('../session/live', () => ({
-  watchSession: () => ({
-    subscribe: (fn: (read: unknown) => void) => {
-      seat.listeners.add(fn);
-      return () => {
-        seat.listeners.delete(fn);
-      };
-    },
-    hold: () => () => {},
-  }),
+  watchSession: (
+    _connection: unknown,
+    slot: unknown,
+    _answering: boolean,
+    options?: { review?: boolean },
+  ) => {
+    seat.watched.push({ slot, options });
+    return {
+      subscribe: (fn: (read: unknown) => void) => {
+        seat.listeners.add(fn);
+        return () => {
+          seat.listeners.delete(fn);
+        };
+      },
+      hold: () => () => {},
+    };
+  },
+  clearReview: (_connection: unknown, slot: unknown) => {
+    seat.cleared.push(slot);
+  },
   rereadSeat: (_connection: unknown, _slot: unknown, options?: { review?: boolean }) => {
     seat.rereads.push(options ?? {});
   },
@@ -426,6 +441,8 @@ async function draw(
   total = commits.length,
   base: unknown = null,
   defaultBranch = 'main',
+  /** Whether the record pushed is the page's own (review-scoped) read. */
+  review = true,
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -434,6 +451,8 @@ async function draw(
   viewer.built = [];
   scrolled = [];
   seat.rereads = [];
+  seat.watched = [];
+  seat.cleared = [];
   app = mount(Review, {
     target: document.body,
     props: { connection: connection(), slot: SLOT, dictation },
@@ -442,6 +461,7 @@ async function draw(
   push({
     wire: record(IDLE, threads, reviews, diff, commits, total, base, defaultBranch),
     refused: null,
+    review,
   });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
@@ -1465,19 +1485,84 @@ describe('the steppers', () => {
   });
 
   /**
-   * **The page asks for its own read, once.** A record it opened on may have
-   * been read for whichever page asked last, so the diff's base is refreshed
-   * by a read this page asks for once its first record lands - and only once,
-   * or every update would re-encode the whole record.
+   * **The page opens the seat as its own read.** The record it opens on may
+   * have been read for whichever page asked last, so the intent is handed to
+   * the seat at open - which is where every later ask (an outrun, a
+   * reconnect, a replacement frame) reads it from - and taken back when the
+   * page lets the seat go.
    */
-  it('asks the review-scoped read once its record lands', async () => {
+  it('opens the seat as a review read, and takes the intent back on leaving', async () => {
     await draw();
 
-    expect(seat.rereads, 'the page asked for one review-scoped read').toEqual([{ review: true }]);
+    expect(seat.watched, 'the page opened the seat as a review-scoped read').toEqual([
+      { slot: SLOT, options: { review: true } },
+    ]);
+    expect(seat.cleared, 'and nothing was given back while it is open').toEqual([]);
 
-    push({ wire: record(IDLE), refused: null });
+    if (app !== null) await unmount(app);
+    app = null;
     flushSync();
-    expect(seat.rereads, 'and a later update does not ask again').toEqual([{ review: true }]);
+    expect(
+      seat.cleared,
+      'leaving takes the intent back, so the next page asks an ordinary read',
+    ).toEqual([SLOT]);
+  });
+
+  /**
+   * **A record the page's own read did not produce says nothing about the
+   * base.** Drawing "could not be refreshed" off one names a refresh that
+   * never ran, which is the false caveat every open used to flash while its
+   * own read was in flight.
+   */
+  it('draws no base caveat off a record another read answered', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'behind', behind: 3 }, 'main', false);
+
+    expect(
+      document.querySelector('.rv-base'),
+      'the page waits for its own read before saying anything about the base',
+    ).toBeNull();
+  });
+
+  /**
+   * **A diff read once goes old under a live record.** `work_changed` moves
+   * the count and the chain while the diff stays where the last read left
+   * it, so a moved chain asks this page's own read again - debounced - rather
+   * than drawing a fresh count beside the file list of an older base.
+   */
+  it('asks its own read again when the chain behind the diff moves', async () => {
+    const first = { sha: 'aaaaaaa', subject: 'one' };
+    await draw([], [], true, DIFF, [first], 1, { state: 'current' });
+    // Armed after the draw: the page's own settle waits on real timers.
+    vi.useFakeTimers();
+
+    // A work_changed frame moves the chain; the diff itself is unchanged.
+    push({
+      wire: record(IDLE, [], [], DIFF, [first, { sha: 'bbbbbbb', subject: 'two' }], 2, {
+        state: 'current',
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the page waits a beat before asking').toEqual([]);
+
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'then asks its own read for the moved chain').toEqual([{ review: true }]);
+
+    // The answer lands with the chain it asked for, and the record moving on
+    // without the chain is not a second ask.
+    push({
+      wire: record(IDLE, [], [], DIFF, [first, { sha: 'bbbbbbb', subject: 'two' }], 2, {
+        state: 'current',
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'an unmoved chain asks nothing').toEqual([{ review: true }]);
   });
 
   /**
