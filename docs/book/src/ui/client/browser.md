@@ -47,7 +47,7 @@ in-process node any more.
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
 | The engine line | the panel's own line when no close is scheduled: `the server's own Chromium`, on every client, or `nothing to run a page` | the tab list |
 | The states | `opening the browser…`, the server's sentence when it failed, the host's own death sentence - `the browser host exited (signal 9; pid 1234); the next call brings it back` - when a host dies under the surface (the cause is a signal or an exit code), and the page's own error page when a load fails | the page's surface state, and the server's failure frame |
-| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, or a page area that could not be placed | the attach's answer and the surface's failure frame |
+| A refusal | the server's own words: `tab N is not open`, the profile has no tab to show yet, the host is not answering, or a page area that could not be placed. **A take the bar's mic pressed and could not open says why above the feedback row**: the composer's own notice row is behind the picture while the takeover is up | the attach's answer, the surface's failure frame, and the take's own line |
 
 ## The rules
 
