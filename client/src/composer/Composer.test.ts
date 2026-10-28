@@ -6339,6 +6339,71 @@ describe('the dock', () => {
     expect(commands(harness), 'the hand-off is still parked, nothing answered it').toEqual([]);
   });
 
+  /**
+   * **A take begun at the bar stays the bar's while its takeover stands.**
+   * A failed page keeps the feedback line (the person can say the host died),
+   * and its retry puts the surface back into opening with the take still
+   * recording. The words were spoken for that line, so they land there: the
+   * composer's draft is behind the picture, where a press reads as dead.
+   */
+  it("keeps a bar take's words in the bar while a retry opens the page under it", async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [browserHandOffAsk()] }),
+    });
+
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+
+    barAction('something').click();
+    flushSync();
+    const micButton = document.querySelector('.takeover-bar .micb');
+    if (!(micButton instanceof HTMLElement)) throw new Error('the bar drew no mic');
+    micButton.click();
+    await opened();
+    expect(
+      harness.sent.some(({ command }) => command['dictate_stream'] !== undefined),
+      'the press began a take',
+    ).toBe(true);
+
+    // The reader presses the retry while the take still records.
+    let land: (answer: { profile: string; tab: number }) => void = () => {};
+    vi.mocked(showBrowser).mockReturnValueOnce(
+      new Promise((resolve) => {
+        land = resolve;
+      }),
+    );
+    barAction('try again').click();
+    flushSync();
+    expect(surface.phase, 'the retry is opening the page').toBe('opening');
+
+    // The take ends while the page is opening, and its words come back.
+    showTake(harness);
+    endTake(harness);
+    harness.page.record = record({
+      pending_asks: [browserHandOffAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'the words', truncated: false },
+        compacting: false,
+        sign_in: null,
+      },
+    });
+    flushSync();
+
+    // The page the retry asked for comes back, and the line with it.
+    land({ profile: 'job-hunt', tab: 2 });
+    await vi.waitFor(() => expect(surface.phase, 'the retried page is up').toBe('live'));
+    flushSync();
+    const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    expect(line.value, 'the words were held for the line the reader spoke them into').toBe(
+      'the words',
+    );
+  });
+
   it('declines the hand-off on Escape, which the dock row promises', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 

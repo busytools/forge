@@ -662,7 +662,16 @@
     // the reader's last touch wrote it into a draft nobody could see - and a
     // take begun in the composer keeps its words even when a prompt arrived
     // mid-flight.
-    if (box.tookFrom === 'dock' && untrack(() => toDock())) {
+    // **A take begun at the bar stays the bar's while its takeover stands,**
+    // even with a retry opening the page under it - the words were spoken for
+    // that line, and the composer's draft is behind the picture. Read untracked
+    // so the effect still runs on the notice alone.
+    const barHolds = untrack(
+      () =>
+        box.tookFrom === 'dock' &&
+        (toDock() || (surface.phase === 'opening' && takeoverAsk !== null)),
+    );
+    if (barHolds) {
       dockDraft = joined(
         untrack(() => dockDraft),
         words,
