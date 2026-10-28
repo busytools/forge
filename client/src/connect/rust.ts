@@ -245,16 +245,24 @@ class RustConnection implements Connection {
    */
   private readonly scopes = new Map<string, boolean>();
 
+  /** The ordinary pass this connection bounds its reads with. */
+  private readonly boundMs: number;
+
   constructor(url: string, boundMs: number = READ_BOUND_MS) {
+    this.boundMs = boundMs;
     this.bounds = new ReadBounds(this.stores, (what) => this.refreshHeld(what), boundMs);
     void this.begin(url);
+  }
+
+  /** The pass a subject's read gets, from the scope it was last asked with. */
+  private passFor(what: Subject): number {
+    return this.scopes.get(subjectKey(what)) === true ? REVIEW_READ_BOUND_MS : this.boundMs;
   }
 
   /** One bound retry: no scope on the invoke, the held one's deadline. */
   private refreshHeld(what: Subject): boolean {
     if (this.state !== 'open') return false;
-    const review = this.scopes.get(subjectKey(what)) ?? false;
-    this.bounds.arm(what, review ? REVIEW_READ_BOUND_MS : undefined);
+    this.bounds.arm(what, this.passFor(what));
     void invoke('client_refresh', { what }).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);
     });
@@ -381,8 +389,9 @@ class RustConnection implements Connection {
     }
     // A connection that opens after a bound fired owes its loading subjects a
     // fresh deadline: the subscribe went out when the socket opened, and a
-    // lost first answer would otherwise leave them loading forever.
-    if (next === 'open') this.bounds.rearmLoading();
+    // lost first answer would otherwise leave them loading forever. Each
+    // keeps the pass its own read was asked with.
+    if (next === 'open') this.bounds.rearmLoading((what) => this.passFor(what));
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
     // then `Showing`, and the web's `onopen` keeps the same one.
@@ -497,7 +506,7 @@ class RustConnection implements Connection {
     // The read this ask owes is bounded from here: nothing else would ask
     // again for a snapshot that simply never came. A review read gets the
     // longer pass, because the server's own bounds for it are longer.
-    this.bounds.arm(what, options?.review === true ? REVIEW_READ_BOUND_MS : undefined);
+    this.bounds.arm(what, this.passFor(what));
     return store;
   }
 
@@ -593,8 +602,7 @@ class RustConnection implements Connection {
     const stated = options?.review;
     const key = subjectKey(what);
     if (stated !== undefined) this.scopes.set(key, stated);
-    const review = stated ?? this.scopes.get(key) ?? false;
-    this.bounds.arm(what, review ? REVIEW_READ_BOUND_MS : undefined);
+    this.bounds.arm(what, this.passFor(what));
     const payload = stated === undefined ? { what } : { what, review: stated };
     void invoke('client_refresh', payload).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);

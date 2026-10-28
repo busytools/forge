@@ -133,13 +133,18 @@ export class ReadBounds {
    * timer standing, and a loading page can wait up to the beat; asking sooner
    * would buy an extra whole record per reconnect on exactly the slow link
    * this bound stopped feeding.
+   *
+   * **The pass is the read's own**, which the caller holds: a review read
+   * re-armed with the plain pass would land its retry inside the server's
+   * longer bounds and buy the second whole review read that deadline exists
+   * to prevent.
    */
-  rearmLoading(): void {
+  rearmLoading(passFor: (what: Subject) => number = () => this.boundMs): void {
     for (const subject of this.stores.subjects()) {
       const key = subjectKey(subject);
       if (this.timers.has(key)) continue;
       if (this.stores.get(subject)?.state().kind === 'loading') {
-        this.arm(subject);
+        this.arm(subject, passFor(subject));
       }
     }
   }
