@@ -2793,6 +2793,13 @@ export class Chat {
       // is already settled, and placing every settled turn above every
       // in-play one lifted the row over the turn it ends - within one
       // successor turn (#2639). The seam is one stretch of held order.
+      //
+      // **An older landing needs no such rule.** Its page is older than
+      // every held turn, so the recorded seam sits wholly below it; the one
+      // way an older landing can order the two is a record capped shorter
+      // than the page's copy (a turn past the ceiling), where the settle does
+      // not fire and the live turn outlives its row. That is bounded by the
+      // cap and left as the older landing's own order.
       const keptByKey = new Map([...rest, ...overtaken].map((turn) => [turn.key, turn]));
       const aboveHeld = healed.turns
         .map((turn) => keptByKey.get(turn.key))
@@ -2949,27 +2956,37 @@ export class Chat {
       let turns = held.turns;
       const added: Turn[] = [];
       if (judgment !== null) {
-        // **The same turn can already be here under another name.** A client
-        // that attached while the judgment turn ran got it from the snapshot
-        // page, keyed by the server's own name for it; the record's copy is
-        // then the SAME turn, and adding it beside that row would draw the
-        // procedure and its calls twice. The opening row's id is the one fact
-        // both carriers keep, so it is what pairs them - and the record's copy
-        // is the fuller one (the page was read mid-turn), so it settles that
-        // row in place, keeping its key so nothing the reader has open
-        // remounts.
+        // **The same turn can already be here under another name, and not
+        // necessarily as its opening row.** A client that attached while the
+        // judgment turn ran got it from a page keyed by the server's own name;
+        // worse, a procedure prompt that was QUEUED behind a running turn is
+        // folded into the turn above it, so that row opens on the interrupted
+        // work and carries the prompt somewhere inside. The prompt's id is the
+        // one fact both carriers keep, so it is what pairs them - searched
+        // through every message, not only the first.
         const opening = uuidOf(judgment.messages[0]);
         const at =
           opening === null
             ? turns.findIndex((turn) => turn.key === judgment.key)
-            : turns.findIndex((turn) => uuidOf(turn.messages[0]) === opening);
+            : turns.findIndex((turn) =>
+                turn.messages.some((message) => uuidOf(message) === opening),
+              );
         if (at === -1) {
           added.push(judgment);
         } else {
+          // **Only what the row lacks.** The held row may be the interrupted
+          // turn itself, opening on frames of its own; replacing its messages
+          // wholesale would drop them. The record's copy appends where it
+          // continues, and the row keeps every flag it had - `record`
+          // included, so a seeded turn cannot re-enter the walk.
           const same = turns[at];
-          if (same !== undefined && same.messages.length < judgment.messages.length) {
-            const settled: Turn = { ...same, messages: judgment.messages, live: false };
-            turns = [...turns.slice(0, at), settled, ...turns.slice(at + 1)];
+          if (same !== undefined) {
+            const carried = new Frames(same.messages);
+            const grown = judgment.messages.filter((message) => !carried.carries(message));
+            if (grown.length > 0) {
+              const settled: Turn = { ...same, messages: [...same.messages, ...grown] };
+              turns = [...turns.slice(0, at), settled, ...turns.slice(at + 1)];
+            }
           }
         }
       }

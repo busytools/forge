@@ -152,6 +152,33 @@ const judgmentTurn = (): unknown[] => [
   },
 ];
 
+/**
+ * The judgment turn where the procedure prompt was QUEUED behind a running
+ * turn: the same prompt and calls, but the opening row carries the id on the
+ * `queued_command` block's `source_uuid` and no words of its own.
+ */
+const queuedJudgmentTurn = (): unknown[] => {
+  const [, ...calls] = judgmentTurn();
+  return [
+    {
+      type: 'user',
+      uuid: 'queued-row',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'queued_command',
+            commandMode: 'prompt',
+            prompt: 'A handoff is starting for this session:',
+            source_uuid: 'forge_nudge_handoff_7_feedface',
+          },
+        ],
+      },
+    },
+    ...calls,
+  ];
+};
+
 /** One live hook frame, as the stream sends a run's lifecycle. */
 const hook = (id: string, subtype: string): unknown => ({
   type: 'system',
@@ -4639,6 +4666,70 @@ describe('the conversation the chat draws', () => {
     expect(procedure[0]?.messages, "settled with the record's fuller copy").toHaveLength(
       judgmentTurn().length,
     );
+    stop();
+  });
+
+  /**
+   * **A queued procedure prompt never opens the row it lands in.** The CLI
+   * writes a queued prompt inside the turn it interrupted, and the client
+   * folds that page row into the one above for the same reason - so the held
+   * row opens on the interrupted work and carries the prompt somewhere
+   * inside. Pairing on the opening row alone drew the prompt and its calls a
+   * second time; what pairs them is the id, searched through the row, and the
+   * record only appends what the row lacks - the interrupted turn keeps its
+   * own frames.
+   */
+  it('appends a queued procedure turn to the row that already carries it', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    const interrupted = {
+      type: 'assistant',
+      uuid: 'a-interrupted',
+      message: {
+        id: 'm-int',
+        role: 'assistant',
+        model: 'm',
+        content: [{ type: 'tool_use', id: 'c-int', name: 'Bash', input: { command: 'sleep 1' } }],
+      },
+    };
+    // The page's cut: the interrupted turn, then the queued prompt as its own
+    // row - which the fold joins back into the turn above.
+    server.send(
+      record([
+        { key: 'srv-a', messages: [interrupted] },
+        { key: 'srv-b', messages: [queuedJudgmentTurn()[0]] },
+      ]),
+    );
+
+    server.update({
+      handoff: { key: LEAD, handoff: handoffRecord('old', 'new', queuedJudgmentTurn()) },
+    });
+    server.update({ session_replaced: { key: LEAD, session_id: 'new' } });
+
+    const held = get(chat.value).turns;
+    const carriers = held.filter((turn) =>
+      turn.messages.some(
+        (message) => (message as { uuid?: unknown } | null)?.uuid === 'a-interrupted',
+      ),
+    );
+    expect(carriers, 'the interrupted row is the one that carries the turn').toHaveLength(1);
+    const messages = carriers[0]?.messages ?? [];
+    expect(messages[0], "and keeps the page's own opening frame").toEqual(interrupted);
+    expect(
+      messages.some((message) => JSON.stringify(message).includes('c-exit')),
+      "the record's exit call is appended",
+    ).toBe(true);
+    // The row's own frame embeds the record, so it names the id too; the
+    // conversation's turns are what must carry it once.
+    expect(
+      held.filter(
+        (turn) =>
+          turn.key !== 'handoff:old:new' &&
+          JSON.stringify(turn.messages).includes('forge_nudge_handoff_7_feedface'),
+      ),
+      'one turn carries the prompt, not two',
+    ).toHaveLength(1);
     stop();
   });
 
