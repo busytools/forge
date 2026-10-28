@@ -20,10 +20,8 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use forge_browser::input::{HostInput, host_line};
 use forge_browser::osr::Ring;
 use forge_browser::window::Cdp;
-use forge_primitives::browser::{InputModifiers, MouseAction};
 use serde_json::{Value, json};
 
 /// How long CEF is given to boot, paint and answer a gesture.
@@ -90,17 +88,7 @@ async fn wait_for(fixture: &mut Fixture, expression: &str, ok: impl Fn(&Value) -
 
 /// One full click on the page, written the way the server writes it.
 fn click(fixture: &mut Fixture, x: i32, y: i32) {
-    for action in [MouseAction::Press, MouseAction::Release] {
-        fixture.host.input(&host_line(&HostInput::Mouse {
-            tab: 1,
-            action,
-            x,
-            y,
-            button: 0,
-            clicks: 1,
-            modifiers: InputModifiers::default(),
-        }));
-    }
+    support::click(&mut fixture.host, x, y);
 }
 
 /// **A normal page click still lands.** The pointer path moved from the page
@@ -119,10 +107,10 @@ async fn a_click_on_the_page_still_lands() {
     )
     .await;
 
-    // The control: a click on the blank page is not the button's. The wait
-    // gives a wrongly-routed click the time to land before it is asserted.
-    click(&mut at, 600, 500);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The control: a click on the blank page is not the button's. **The
+    // priming clicks reached the page** - the page's own count says so - and
+    // still none of them hit the button.
+    support::prime_clicks(&mut at.host, &mut at.cdp, (600, 500), Instant::now() + BOUND).await;
     assert_eq!(evaluate(&mut at, "window.__clicks").await, json!(0), "a click off the button");
 
     click(&mut at, 150, 130);
@@ -144,30 +132,9 @@ async fn a_click_on_a_popup_row_sets_the_select() {
     )
     .await;
 
-    // **The window's first click focuses it rather than opening a menu**, so
-    // the fixture takes that click on the blank page before the select's.
-    // Activation can swallow more than one under load, so the priming click
-    // is repeated until the page has actually seen one.
-    evaluate(
-        &mut at,
-        "window.__downs = 0; document.addEventListener('mousedown', () => \
-         window.__downs = (window.__downs || 0) + 1, true); 0",
-    )
-    .await;
-    let deadline = Instant::now() + BOUND;
-    loop {
-        click(&mut at, 400, 400);
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let downs = evaluate(&mut at, "window.__downs || 0").await;
-        if downs.as_u64().is_some_and(|downs| downs > 0) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no priming click reached the page (log: {})",
-            at.host.log(),
-        );
-    }
+    // **The window's first clicks focus it rather than opening a menu**, so
+    // the menu's click comes after the page has seen one.
+    support::prime_clicks(&mut at.host, &mut at.cdp, (600, 500), Instant::now() + BOUND).await;
 
     // The select sits at (20,20) 200x24: the menu opens under it at y=44,
     // with CEF's own 20-pixel rows. The second row's middle is (60,74).
