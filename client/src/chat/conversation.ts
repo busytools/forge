@@ -1382,6 +1382,15 @@ export class Chat {
    */
   private drained = new Map<string, unknown>();
   /**
+   * The turn a pull emptied, by the id of the prompt it emptied it of.
+   *
+   * **The drain returns the row to that turn**, which is #1890's no-splice
+   * promise: a row the READ built carries neither `live` nor `running`, so the
+   * settled-turn test in `append` reads it as finished and would open a second
+   * row below, leaving a blank band (Ved, 2026-10-27).
+   */
+  private emptied = new Map<string, string>();
+  /**
    * The ids the drain drew plainly, whose own frame may still be on its way.
    *
    * The lifecycle frames and the dispatch's forged frame reach a view over
@@ -2640,11 +2649,15 @@ export class Chat {
         direction === 'older' ||
         healed.turns.some((turn) => turn.messages.some((message) => fromPage.carries(message)));
       // A row being written is not the page's to drop either way: `live` is a
-      // turn the frames built, and `running` is the newest row of a seat the
-      // core says has a turn in flight.
-      const rest = healed.turns.filter(
-        (turn) => !(turn.live || turn.running === true) && !inPage.has(turn.key),
-      );
+      // turn the frames built, `running` is the newest row of a seat the core
+      // says has a turn in flight, and a `held` row is the pile's own send
+      // waiting for its drain. **A held row has no frames for a page to match
+      // it by**, so `rest` would place it ABOVE a newest page - the reader's
+      // own send drifting to the oldest end of the window, where a trim can
+      // drop it.
+      const inPlay = (turn: Turn): boolean =>
+        turn.live || turn.running === true || turn.held === true;
+      const rest = healed.turns.filter((turn) => !inPlay(turn) && !inPage.has(turn.key));
       // **A newest page that does not reach the held state starts the walk.**
       // The held tail is never dropped for it (Ved, 2026-10-09): the compare
       // names the newest held turn no page has covered yet, the pages between
@@ -2728,7 +2741,7 @@ export class Chat {
       const loose: Turn[] = [];
       const overtaken: Turn[] = [];
       for (const turn of healed.turns) {
-        if (!(turn.live || turn.running === true) || inPage.has(turn.key)) continue;
+        if (!inPlay(turn) || inPage.has(turn.key)) continue;
         if (absorbed(turn)) continue;
         const end = newestStampMs(turn.messages);
         if (pageNewest !== null && end !== null && end < pageNewest) {
@@ -2906,6 +2919,7 @@ export class Chat {
     // included.
     this.waiting.clear();
     this.drained.clear();
+    this.emptied.clear();
     this.plainDrawn.clear();
     this.turnRunning = false;
     // Frames the last occupant's run left waiting for a turn go with it: they
@@ -3106,6 +3120,7 @@ export class Chat {
       this.releaseHeld();
       this.waiting.clear();
       this.drained.clear();
+      this.emptied.clear();
       this.plainDrawn.clear();
       // A fresh connect is its own occupant, not a handoff's successor.
       this.carried = null;
@@ -3131,6 +3146,7 @@ export class Chat {
     if (variant === 'connection_failed') {
       this.waiting.clear();
       this.drained.clear();
+      this.emptied.clear();
       this.plainDrawn.clear();
       // A handoff whose spawn failed has no successor: the conversation is
       // not carried by whatever replacement comes next.
@@ -3347,9 +3363,11 @@ export class Chat {
    */
   private release(uuid: string): void {
     const held = this.drained.get(uuid);
+    const into = this.emptied.get(uuid) ?? null;
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
-    if (held !== undefined) this.append(held);
+    this.emptied.delete(uuid);
+    if (held !== undefined) this.append(held, false, into);
   }
 
   /**
@@ -3383,12 +3401,13 @@ export class Chat {
    * Pull back a row the seat drew for a prompt the pile has just claimed, so
    * one prompt is not drawn by the chat and the pile at once.
    *
-   * A turn the retraction empties goes with it rather than standing as a row
-   * with nothing in it - the drain opens a fresh turn for the row when the
-   * prompt starts, which is the same turn the reader ends up seeing.
+   * A turn the retraction empties stays, marked held, and the drain fills that
+   * very turn when the prompt starts - the row the reader ends up seeing is
+   * the row the words left.
    */
   private retract(uuid: string): void {
     let pulled: unknown;
+    const emptied: { key: string | null } = { key: null };
     this.stream((held) => {
       let changed = false;
       const turns: Turn[] = [];
@@ -3404,11 +3423,35 @@ export class Chat {
         // **The emptied row stays, marked held.** Dropped, the list splices its
         // size away and the drain's re-add flashes (#1890); kept, the row holds
         // its measured space and the words land back in it.
+        if (messages.length === 0) emptied.key = turn.key;
         turns.push(messages.length > 0 ? { ...turn, messages } : { ...turn, messages, held: true });
       }
       return changed ? { ...held, turns, bytes: this.heldBytes(turns) } : held;
     });
-    if (pulled !== undefined) this.drained.set(uuid, pulled);
+    if (pulled === undefined) return;
+    this.drained.set(uuid, pulled);
+    if (emptied.key === null) this.emptied.delete(uuid);
+    else this.emptied.set(uuid, emptied.key);
+  }
+
+  /**
+   * Let go of a row a pull emptied, for a prompt whose words will never draw.
+   *
+   * A cancelled prompt reaches no turn, so nothing refills the row; nothing is
+   * spliced back in, so #1890's flash has no second half.
+   */
+  private dropEmptied(uuid: string): void {
+    const key = this.emptied.get(uuid);
+    this.emptied.delete(uuid);
+    if (key === undefined) return;
+    this.stream((held) => {
+      const at = held.turns.findIndex(
+        (turn) => turn.key === key && turn.held === true && turn.messages.length === 0,
+      );
+      if (at < 0) return held;
+      const turns = [...held.turns.slice(0, at), ...held.turns.slice(at + 1)];
+      return { ...held, turns, bytes: this.heldBytes(turns) };
+    });
   }
 
   /**
@@ -3440,6 +3483,7 @@ export class Chat {
       if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
       this.waiting.delete(uuid);
       this.drained.delete(uuid);
+      this.dropEmptied(uuid);
       return;
     }
     const entry = this.waiting.get(uuid);
@@ -3450,6 +3494,8 @@ export class Chat {
     if (!dropped && !drawn) return;
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
+    const into = this.emptied.get(uuid) ?? null;
+    this.emptied.delete(uuid);
     // **A trigger the queue alone carried draws from the announcement's own
     // words**: a prompt can start a turn with no frame forging it a row - the
     // CLI never echoes a stdin prompt, and forge's own chase dispatches one -
@@ -3463,7 +3509,7 @@ export class Chat {
     // carries them to the foot. The sender is the announcement's, kept in the
     // hold for this - the row it draws may be built from the announcement's
     // words alone, with no frame to read a source off.
-    this.append(dropped ? row : this.noted(row, waited), entry?.source === 'you');
+    this.append(dropped ? row : this.noted(row, waited), entry?.source === 'you', into);
   }
 
   /**
@@ -3595,7 +3641,7 @@ export class Chat {
     return { at: turns.length - 1, turn: adopted.turn, bytes: adopted.bytes };
   }
 
-  private append(message: unknown, own = false): void {
+  private append(message: unknown, own = false, into: string | null = null): void {
     this.stream((held) => {
       const last = held.turns[held.turns.length - 1];
       // What a row of its own would hold, asked of the fold rather than of the
@@ -3632,6 +3678,30 @@ export class Chat {
       // carries a parked reader to the foot for words that are nobody's
       // (#1614, #2198). Only the sender's own frame may arm it.
       const follow = held.following || (own && units.some((unit) => unit.kind === 'user'));
+      // **The drain returns to the row it was pulled from**, wherever that row
+      // sits: a row the READ built carries neither `live` nor `running`, so the
+      // settled-turn test below would open a second row under it and leave the
+      // emptied one drawing nothing (#1890's kept row, refilled nowhere).
+      //
+      // **The filled row is live**, the shape the append-open arm would have
+      // given it: the transcript never carries a stdin prompt back, so its
+      // frames are this client's, and a page that does not carry it must keep
+      // it at the tail rather than filing it above as another reach.
+      if (into !== null) {
+        const at = held.turns.findIndex(
+          (turn) => turn.key === into && turn.held === true && turn.messages.length === 0,
+        );
+        const target = at < 0 ? undefined : held.turns[at];
+        if (target !== undefined) {
+          const grown: Turn = { ...target, messages: [message], held: false, live: true };
+          return this.answered({
+            ...held,
+            following: follow,
+            bytes: held.bytes + messageBytes(message),
+            turns: [...held.turns.slice(0, at), grown, ...held.turns.slice(at + 1)],
+          });
+        }
+      }
       // **A skill's body belongs to the turn whose `Skill` call loaded it.**
       // The CLI injects the frame mid-turn, but it can arrive above a settled
       // turn, and a row of its own is a second telling of the same thing under
