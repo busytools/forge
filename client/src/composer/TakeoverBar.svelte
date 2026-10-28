@@ -72,6 +72,11 @@
      * say: the feedback row is this surface's words row, and the composer's
      * own notice row is behind the picture while the takeover is up, so a
      * refusal routed there would be invisible exactly when the mic was pressed.
+     *
+     * **The line is the seat's, not the row's**, and it draws here whichever
+     * row's press left it: the takeover covers the row that would have shown
+     * it, and a seat's last take did or did not open regardless of which of
+     * its mics was pressed.
      */
     takeline?: { tone: string; text: string } | null;
     /**
