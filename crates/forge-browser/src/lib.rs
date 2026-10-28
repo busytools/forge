@@ -19,7 +19,11 @@ pub mod tabs;
 #[cfg(target_os = "macos")]
 pub mod audio;
 #[cfg(target_os = "macos")]
+pub(crate) mod challenge;
+#[cfg(target_os = "macos")]
 pub mod client_application;
+#[cfg(target_os = "macos")]
+pub mod custom;
 #[cfg(target_os = "macos")]
 pub mod dialog;
 #[cfg(target_os = "macos")]

@@ -352,6 +352,16 @@ pub enum ClientMessage {
         path: String,
         sha: Option<String>,
     },
+    /// One page's own perf records, for a client with no shell to write them.
+    ///
+    /// **The records stay JSON, unparsed here**: they are the page's instrument
+    /// (`client/src/perf.ts`), and the server's part is the file - written
+    /// beside `forge.log` so a web client produces diagnostics like the shells
+    /// do. Nothing answers it; a batch that could not be written is a debug
+    /// record, not the client's failure.
+    ClientPerf {
+        records: Vec<serde_json::Value>,
+    },
 }
 
 /// One chosen file on the wire: its name and its bytes, base64.
@@ -939,6 +949,31 @@ mod tests {
         assert!(reviews.is_empty(), "and no review sets");
     }
 
+    /// **A page's perf batch crosses as its own message**, with the records
+    /// exactly as the page serialised them: the server writes them, it does
+    /// not re-shape them, so a field the page learned reaches the file.
+    #[test]
+    fn a_client_perf_batch_round_trips_with_its_records() {
+        let batch = ClientMessage::ClientPerf {
+            records: vec![serde_json::json!({
+                "schema": "forge-perf/v1",
+                "kind": "frame",
+                "run_id": "r",
+                "ts_ms": 3,
+                "ms": 120.5,
+            })],
+        };
+        let json = serde_json::to_string(&batch).expect("encode");
+        assert!(json.contains("\"kind\":\"client_perf\""), "{json}");
+        let ClientMessage::ClientPerf { records } = serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["kind"], "frame", "the page's own shape survives");
+        assert_eq!(records[0]["ms"], 120.5);
+    }
+
     #[test]
     fn a_subscribe_round_trips_through_json() {
         let sent = ClientMessage::Subscribe { what: Subject::Home, answering: true };
@@ -1365,5 +1400,44 @@ mod tests {
         assert_eq!(settings.theme.as_deref(), Some("dark"));
         assert_eq!(settings.font.as_deref(), Some("system"));
         assert_eq!(settings.dictate, axes, "and the axes a capturing client starts on");
+    }
+
+    /// **The page's own JSON answers a hand-off.** The client sends its answer
+    /// as `{ ending: { type }, source }`, and a shape serde accepts from Rust
+    /// but not from the page would answer nothing on a live socket - which is
+    /// a decline the person never gave, or worse, a park that never ends.
+    #[test]
+    fn a_hand_off_answer_decodes_from_the_clients_own_json() {
+        let sent = serde_json::json!({
+            "kind": "command",
+            "command": {
+                "respond_browser_hand_off": {
+                    "key": { "org": "TestOrg", "project": "proj", "label": "lead" },
+                    "id": "0192e1c0-0000-7000-8000-0000000000aa",
+                    "answer": { "ending": { "type": "feedback" }, "source": "feedback" },
+                },
+            },
+            "reply_to": null,
+        });
+
+        let ClientMessage::Command { command, .. } =
+            serde_json::from_value::<ClientMessage>(sent).expect("the client's own shape decodes")
+        else {
+            panic!("a command frame is a command");
+        };
+        let Command::RespondBrowserHandOff { answer, .. } = *command else {
+            panic!("the answer is the hand-off's");
+        };
+        assert_eq!(
+            answer.ending,
+            forge_primitives::browser::HandOffEnding::Feedback,
+            "the person spoke",
+        );
+        assert_eq!(
+            answer.source,
+            forge_primitives::browser::HandOffSource::Feedback,
+            "and the door that sent it is named",
+        );
+        assert_eq!(answer.client, None, "a client cannot know its own connection");
     }
 }

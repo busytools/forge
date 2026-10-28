@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { perfProbe, perfSurface, seatLabel, startPerfProbe, type PerfRecord } from './perf';
+import {
+  perfProbe,
+  perfSink,
+  perfSurface,
+  seatLabel,
+  setPerfSocket,
+  type PerfRecord,
+} from './perf';
 
 /**
  * The probe's clock and frame source, driven by the test.
@@ -90,6 +97,87 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
     },
   };
 }
+
+describe('the web page sink', () => {
+  function mark(ts: number): PerfRecord {
+    return { schema: 'forge-perf/v1', kind: 'frame', run_id: 'run', ts_ms: ts };
+  }
+
+  /// **A page with no shell posts its batch over the connection it has**:
+  /// one batch per turn, and the connection answers whether it went.
+  it('posts one batch per turn over the socket', async () => {
+    const posted: PerfRecord[][] = [];
+    setPerfSocket((records) => {
+      posted.push(records);
+      return true;
+    });
+    try {
+      const sink = perfSink();
+      sink([mark(1)]);
+      sink([mark(2)]);
+      await Promise.resolve();
+      expect(posted, 'a turn is one batch, not one write per record').toHaveLength(1);
+      expect(posted[0]?.map((record) => record.ts_ms)).toEqual([1, 2]);
+    } finally {
+      setPerfSocket(null);
+    }
+  });
+
+  /// **A batch posted while the connection is down is dropped, not queued**:
+  /// a page that hoards records through an outage measures its own backlog.
+  it('drops a batch the connection could not take', async () => {
+    const posted: PerfRecord[][] = [];
+    setPerfSocket((records) => {
+      posted.push(records);
+      return false;
+    });
+    try {
+      const sink = perfSink();
+      sink([mark(1)]);
+      await Promise.resolve();
+      sink([mark(2)]);
+      await Promise.resolve();
+      expect(posted, 'the refused batch is not carried into the next one').toEqual([
+        [mark(1)],
+        [mark(2)],
+      ]);
+    } finally {
+      setPerfSocket(null);
+    }
+  });
+
+  /// **No connection at all is silence**, never a throw into a render path.
+  it('drops a batch when no connection was ever set', async () => {
+    setPerfSocket(null);
+    expect(() => perfSink()([mark(1)])).not.toThrow();
+    await Promise.resolve();
+  });
+
+  /// **The run's own line is not a loss**: the probe starts at module load,
+  /// before any socket exists, so `run_started` waits for the first one and
+  /// a web log never opens mid-story.
+  it('holds the run line until a connection carries it', async () => {
+    const line: PerfRecord = {
+      schema: 'forge-perf/v1',
+      kind: 'run_started',
+      run_id: 'run',
+      ts_ms: 1,
+    };
+    setPerfSocket(null);
+    perfSink()([line]);
+    await Promise.resolve();
+    const posts: PerfRecord[][] = [];
+    try {
+      setPerfSocket((records) => {
+        posts.push(records);
+        return true;
+      });
+      expect(posts, 'the opening line goes with the connection').toEqual([[line]]);
+    } finally {
+      setPerfSocket(null);
+    }
+  });
+});
 
 describe('the frame probe', () => {
   it('opens its log with a run line carrying the boot reading', () => {
@@ -191,12 +279,6 @@ describe('the frame probe', () => {
     const summaries = h.records.flat().filter((record) => record.kind === 'summary');
     expect(summaries).toHaveLength(1);
     expect(summaries[0]?.frames, 'a partial window is not dropped').toBe(2);
-  });
-
-  it('starts nothing where there is no shell to write to', () => {
-    // The vitest page has no `isTauri`, which is the web build's own state:
-    // a record with nothing behind it would help no one.
-    expect(startPerfProbe()).toBeNull();
   });
 
   it('carries a long task with its own name', () => {

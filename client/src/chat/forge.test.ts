@@ -152,6 +152,26 @@ describe('a forge call the page cannot dress', () => {
   });
 });
 
+describe('the handoff card', () => {
+  it('shows the note it carried, not the raw answer', () => {
+    const note = 'Now: the cut is in.\nNext: the PR.';
+    const card = forgeCardOf(
+      'mcp__forge__agents__handoff',
+      { brief: note },
+      result('{"status":"handoff note accepted","runs":"after this turn ends"}'),
+    );
+    expect(card?.title, 'its own wording, not the workers one').toBe('handed the seat over');
+    expect(card?.chips).toEqual([
+      { text: 'handoff note accepted', tone: 'info' },
+      { text: 'after this turn ends', tone: 'dim' },
+    ]);
+    expect(
+      card?.pieces.find((piece) => piece.kind === 'quote'),
+      'the note is the body a reader came for',
+    ).toEqual({ kind: 'quote', text: note });
+  });
+});
+
 describe('the tasks card', () => {
   it('names an update by the subject the echo carries, and says what moved', () => {
     const card = forgeCardOf(
@@ -597,16 +617,17 @@ describe('the slack card', () => {
 
   it('names a post by its channel, with its parts and ts', () => {
     const posted = {
+      workspace: 'Trust Machines',
       ts: ['1790186552.442169', '1790186552.442170'],
       conversation_name: 'granite-staging',
       parts: 2,
     };
     const card = forgeCardOf(
       'mcp__forge__slack__post',
-      { conversation: 'C1', text: 'hi', workspace: 'Trust Machines' },
+      { conversation: 'C1', text: 'hi' },
       result(JSON.stringify(posted)),
     );
-    expect(card?.title, 'the workspace names where it landed').toBe(
+    expect(card?.title, 'the resolved workspace names where it landed').toBe(
       'posted to Trust Machines · #granite-staging',
     );
     expect(card?.chips).toEqual([{ text: '2 parts', tone: 'plain' }]);
@@ -657,16 +678,26 @@ describe('the slack card', () => {
   it('lists pins by their text and bookmarks by their title, either fallback to the link', () => {
     const pins = forgeCardOf(
       'mcp__forge__slack__pins',
-      { conversation: 'C1', workspace: 'acme' },
-      result(JSON.stringify([{ ts: '1.0', user: 'U1', text: 'standup at 9' }])),
+      { conversation: 'C1' },
+      result(
+        JSON.stringify({
+          workspace: 'acme',
+          pins: [{ ts: '1.0', user: 'U1', text: 'standup at 9' }],
+        }),
+      ),
     );
     expect(pins?.title).toBe('pins in C1 \u{b7} acme');
     expect(itemsOf(pins)[0]).toMatchObject({ text: 'standup at 9', when: 'U1' });
 
     const bookmarks = forgeCardOf(
       'mcp__forge__slack__bookmarks',
-      { conversation: 'C1', workspace: 'acme' },
-      result(JSON.stringify([{ id: 'B1', title: null, link: 'https://runbook' }])),
+      { conversation: 'C1' },
+      result(
+        JSON.stringify({
+          workspace: 'acme',
+          bookmarks: [{ id: 'B1', title: null, link: 'https://runbook' }],
+        }),
+      ),
     );
     expect(bookmarks?.title).toBe('bookmarks in C1 \u{b7} acme');
     expect(
@@ -881,17 +912,20 @@ describe('the reads that draw a list or a fact', () => {
   it('draws a Slack search as its hits, the query in the title', () => {
     const card = forgeCardOf(
       'mcp__forge__slack__search',
-      { query: 'smoke test', workspace: 'acme' },
+      { query: 'smoke test' },
       result(
-        JSON.stringify([
-          {
-            ts: '1.0',
-            text: 'smoke test passed on 1.0.115',
-            conversation: 'C1',
-            conversation_name: 'deploys',
-            username: 'bot',
-          },
-        ]),
+        JSON.stringify({
+          workspace: 'acme',
+          matches: [
+            {
+              ts: '1.0',
+              text: 'smoke test passed on 1.0.115',
+              conversation: 'C1',
+              conversation_name: 'deploys',
+              username: 'bot',
+            },
+          ],
+        }),
       ),
     );
     expect(card?.title, 'the query is the subject, the workspace follows').toBe(
@@ -908,9 +942,10 @@ describe('the reads that draw a list or a fact', () => {
   it('lists Slack conversations, marking the ones this session watches', () => {
     const card = forgeCardOf(
       'mcp__forge__slack__list',
-      { workspace: 'acme' },
+      {},
       result(
         JSON.stringify({
+          workspace: 'acme',
           conversations: [
             { id: 'C1', name: 'ops', kind: 'public', subscribed: true, subscription_ids: ['s1'] },
             // A DM's name falls back to the partner's user id, which is an id
@@ -949,7 +984,15 @@ describe('the reads that draw a list or a fact', () => {
     const card = forgeCardOf(
       'mcp__forge__slack__user',
       { user: 'U1' },
-      result(JSON.stringify({ id: 'U1', name: 'alex', real_name: 'Alex Doe', tz: 'Asia/Kolkata' })),
+      result(
+        JSON.stringify({
+          workspace: 'acme',
+          id: 'U1',
+          name: 'alex',
+          real_name: 'Alex Doe',
+          tz: 'Asia/Kolkata',
+        }),
+      ),
     );
     expect(card?.title, 'the handle the row knows it by').toBe('user alex');
     expect(pairsOf(card), 'and the facts the workspace reported').toEqual([
@@ -1104,12 +1147,10 @@ describe('the worker lifecycle cards', () => {
     // prompt nobody has answered is the one thing the row must not hide.
     const posting = forgeCardOf(
       'mcp__forge__slack__post',
-      { conversation: 'C1', workspace: 'Trust Machines', text: 'Deploy is green.' },
+      { conversation: 'C1', text: 'Deploy is green.' },
       undefined,
     );
-    expect(posting?.title, 'where it would land, from the id alone').toBe(
-      'posting to Trust Machines \u{b7} C1',
-    );
+    expect(posting?.title, 'where it would land, from the id alone').toBe('posting to C1');
     expect(posting?.chips).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
     expect(posting?.pieces, 'and the draft, which is what is being asked about').toEqual([
       { kind: 'quote', text: 'Deploy is green.' },

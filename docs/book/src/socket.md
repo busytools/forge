@@ -47,7 +47,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 12,
+  "version": 14,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -190,10 +190,15 @@ its viewer up rather than keeping the profile warm, and a connection that
 switches tabs detaches from the old one first.
 
 **`browser_resize {width, height, scale}`** - lay the viewed tab's page out
-to the controller's surface: device pixels and the ratio they draw at. **Only
-the controller's size applies**; a watcher's window never moves the page
-under the person driving it. The host adopts the size on its next pump and
-the next frame is a key frame at it.
+to one viewer's surface: device pixels and the ratio they draw at. **A held
+role owns the layout**: while a controller holds the tab only its size
+applies, so a watcher's window never moves the page under the person driving
+it. With nobody holding the role the layout belongs to the tab's
+longest-watching viewer, never to whoever asks - which is what lets a client
+with no shell lay out its view without taking control, while a second
+watcher cannot move the page under the first. A size the page already has
+asks nothing, so a re-attach or a re-measure does not move it. The host
+adopts the size on its next pump and the next frame is a key frame at it.
 
 **`browser_input {seq, event}`** - one input event from the controlling
 viewer. **The wire carries the person's gesture, not CDP**: a press, a
@@ -229,6 +234,13 @@ An empty list is a dismiss; past 16 files or 8 MiB the whole answer is a
 dismiss. The size is a chosen bound, not the wire's: 8 MiB of bytes encodes
 to about 10.7 MiB of base64, comfortably inside the 16 MiB inbound bound, so
 the cap is there to keep one answer from spending the socket.
+
+**`client_perf {records}`** - one page's own perf records, for a client with
+no shell to write them. The records cross as the page serialised them and
+are written to `forge-perf-web.log` beside the server's own `forge.log`,
+with one rolled copy; nothing answers the batch. A page with a shell writes
+the same records through its own invoke instead, so this is the web build's
+path only.
 
 **`browser_tabs {seat, reply_to}`** - the strip's rows for one seat: the tabs
 of the profile its org and project resolve to. **The answer rides the
@@ -630,13 +642,14 @@ facts a row is drawn from.
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `projects`                             | One row per project: `project` (name, org, path, sessions, `has_model`), `work` (branch, changed, gate) read at the project's own path, `would_bind`, and `chip` - the account the row binds and its state. The board's own detail - rows, schedules and connector sets - is the `board` subject's (#2517). |
 | `fleet`                                | One glance per project, for the home's own fleet row: how many seats are live against the project's cap, the queue (ready and unowned), the rows waiting on the user, the project's total row count, and the project's own misses by name.                                                                                                                                                                   |
-| `agents`                               | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on, when it was last active, why it failed if it did, `tree` (the seat's own directory, home-shortened, only when the worker runs somewhere other than its project's), and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project.                                                                                                                             |
+| `agents`                               | Every seat's row: slot, label, lifecycle, whether it has background work, what it is waiting on (the ask's kind, how many wait behind it, and the ask's own sequence), when it was last active, why it failed if it did, `tree` (the seat's own directory, home-shortened, only when the worker runs somewhere other than its project's), and `work` (branch, changed, gate) read at that seat's OWN directory, which for a worker is its worktree and not its project.                                                                                                                             |
 | `unseen`                               | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it.                                                                                                                                                                                                                                                                            |
 | `accounts`                             | Loading state per account, whether all of them settled, the gateway listener's ready state and port, and each account's cached usage snapshot.                                                                                                                                                                                                                                                              |
 | `connectors`                           | The connector liveness: Gotify's connection, Slack's workspaces and whether the stored subscription set failed to load. **What a project is subscribed to is not here** - those sets are per project and ride the `board` subject's project row.                                                                                                                                                            |
 | `dictate`                              | Whether dictation is on, the per-model fetch and load state, and where the models land.                                                                                                                                                                                                                                                                                                                      |
 | `cli_version`                          | The installed and latest `claude` versions.                                                                                                                                                                                                                                                                                                                                                                  |
 | `forge_version`, `forge_version_short` | Which forge build is serving the socket. A client draws it as the `server` build beside its own `client` build.                                                                                                                                                                                                                                                                                              |
+| `boot_id`                              | The server run's own identity, minted once per process. **An ask's sequence restarts with the run**, so a client scopes the asks it has announced by this - a mark from a dead run can never match a live one.                                                                                                                                                                                              |
 | `service_status`                       | The statuspage's last answer, `null` for healthy or unreachable.                                                                                                                                                                                                                                                                                                                                             |
 | `fatal_error`                          | The last fatal error the core held, `null` when there has been none.                                                                                                                                                                                                                                                                                                                                         |
 

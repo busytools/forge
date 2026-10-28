@@ -330,8 +330,8 @@ impl Workspace {
 
     /// Like `testing_stub_with_config_dir` but injects a caller-built
     /// `LoadedConfig` so tests can drive the project-resolution paths
-    /// (`project_for_target` / `default_project`) that read
-    /// `self.config.projects`, which the `test_extra_projects` overlay
+    /// (`project_for_target` / `default_project`) that read the live
+    /// config's `projects`, which the `test_extra_projects` overlay
     /// does not populate. Build the config via
     /// `crate::config::load_from_dir` on a tempdir `forge.toml` fixture;
     /// `db` stays `None`, so nothing touches the real machine store.
@@ -394,8 +394,9 @@ impl Workspace {
         let app_support = Some(config_dir.join("app-support"));
         let workspace = Self {
             config_dir,
-            config,
-            systemone,
+            config: parking_lot::RwLock::new(Arc::new(config)),
+            reload_generation: std::sync::atomic::AtomicU64::new(0),
+            systemone: parking_lot::RwLock::new(systemone),
             catalog: Arc::new(Mutex::new(HashMap::new())),
             app_support,
             pool: Mutex::new(HashMap::new()),
@@ -485,17 +486,21 @@ impl Workspace {
             slack_subs: Mutex::new(Vec::new()),
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_inflight: Mutex::new(std::collections::HashMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            pending_seq: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(false),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
+            cooling_crons: Mutex::new(std::collections::HashMap::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
             test_user_preferences: Mutex::new(None),
@@ -590,17 +595,29 @@ impl Workspace {
     /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
     pub fn seed_test_project(&self, name: &str, path: &str) {
-        self.seed_test_project_inner(name, path, None);
+        self.seed_test_project_inner(name, path, None, None);
+    }
+
+    /// [`Workspace::seed_test_project`] with a Slack binding, so a facade
+    /// test can drive the slot-to-workspace resolution. Test-only.
+    pub fn seed_test_project_with_slack_workspace(&self, name: &str, path: &str, workspace: &str) {
+        self.seed_test_project_inner(name, path, None, Some(workspace));
     }
 
     /// [`Workspace::seed_test_project`] with the project's
     /// `max_workers` override, so facade tests can
     /// exercise the override arm of the capacity read. Test-only.
     pub fn seed_test_project_with_max_workers(&self, name: &str, path: &str, max_workers: usize) {
-        self.seed_test_project_inner(name, path, Some(max_workers));
+        self.seed_test_project_inner(name, path, Some(max_workers), None);
     }
 
-    fn seed_test_project_inner(&self, name: &str, path: &str, max_workers: Option<usize>) {
+    fn seed_test_project_inner(
+        &self,
+        name: &str,
+        path: &str,
+        max_workers: Option<usize>,
+        slack_workspace: Option<&str>,
+    ) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
             path: std::path::PathBuf::from(path),
@@ -618,6 +635,7 @@ impl Workspace {
             browser_profile: forge_primitives::browser::ProfileKey::from_parts_for_test(
                 "TestOrg", "default",
             ),
+            slack_workspace: slack_workspace.map(str::to_owned),
         });
     }
 
@@ -1041,7 +1059,10 @@ mod tests {
         let (workspace, _rx) =
             Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
                 .expect("a valid systemone section builds");
-        assert!(workspace.systemone.is_some(), "a configured section must reach the workspace");
+        assert!(
+            workspace.systemone.read().is_some(),
+            "a configured section must reach the workspace"
+        );
     }
 
     #[test]
@@ -1052,6 +1073,6 @@ mod tests {
             LoadedConfig::empty_for_test(),
         )
         .expect("an empty config builds");
-        assert!(workspace.systemone.is_none(), "an absent section must not build a client");
+        assert!(workspace.systemone.read().is_none(), "an absent section must not build a client");
     }
 }

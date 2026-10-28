@@ -616,7 +616,7 @@ describe('the forge card row', () => {
           body: [
             {
               kind: 'text',
-              text: 'several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines',
+              text: 'no Slack workspace is bound to Granite/core-v1; add [orgs.slack] workspace = "<label>" to the org, or [orgs.projects.slack] workspace = "<label>" to the project in forge.toml',
             },
           ],
         }),
@@ -625,7 +625,7 @@ describe('the forge card row', () => {
     }).body;
 
     expect(drawn, 'the reason rides the row').toContain('fam-tail');
-    expect(drawn, 'in its own words').toContain('several Slack workspaces are configured');
+    expect(drawn, 'in its own words').toContain('no Slack workspace is bound to Granite/core-v1');
   });
 
   it('draws a card-supplied tail, which is a clean answer and not a failure', () => {

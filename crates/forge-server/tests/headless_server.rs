@@ -545,6 +545,17 @@ async fn headless_boot_serves_the_home_and_stops_clean() {
     let mut server = server_command(&home, &config).spawn().expect("the server spawns");
     wait_for_port(port, &mut server).await;
 
+    // **The boot installs the handoff skill.** The write is the boot's own
+    // act, so the binary is the only instrument that proves it happens; the
+    // expected bytes are whatever the installer writes into a scratch tree.
+    let scratch = tempfile::tempdir().expect("tempdir");
+    forge_workspace::install_skill(scratch.path()).expect("install the shipped skill");
+    let expected =
+        std::fs::read(forge_workspace::skill_path(scratch.path())).expect("read the shipped skill");
+    let skill = config.join("skills").join("handoff").join("SKILL.md");
+    let installed = std::fs::read(&skill).expect("the boot installs the handoff skill");
+    assert_eq!(installed, expected, "the installed skill is the shipped one, byte for byte");
+
     let url = format!("ws://127.0.0.1:{port}/socket");
     let transcript = walk("subscribe home\n", &url).await;
 

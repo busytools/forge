@@ -53,25 +53,6 @@ pub struct PendingAutoContinue {
     pub reason: String,
 }
 
-/// A handoff request that arrived while a turn was running.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParkedHandoff {
-    /// The caller supplied its own judgment half.
-    Supplied(String),
-    /// The judgment half is asked of the session at the boundary.
-    Ask,
-}
-
-impl ParkedHandoff {
-    /// The caller's own half, when it supplied one.
-    pub fn supplied(self) -> Option<String> {
-        match self {
-            Self::Supplied(text) => Some(text),
-            Self::Ask => None,
-        }
-    }
-}
-
 /// The handoff this session is running, if any.
 ///
 /// The request is parked rather than acted on while a turn runs: a handoff
@@ -81,7 +62,10 @@ impl ParkedHandoff {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandoffState {
     /// A request that arrived while a turn was running.
-    pub parked: Option<ParkedHandoff>,
+    pub parked: bool,
+    /// The note the running turn's exit call carried, which becomes the
+    /// brief's judgment half. `None` falls back to the turn's last text.
+    pub supplied: Option<String>,
     /// Why this handoff runs, which the row and the record both state.
     pub reason: Option<forge_primitives::HandoffReason>,
     /// A fill reading was asked for at the last turn boundary, and the
@@ -107,7 +91,7 @@ pub struct HandoffState {
 impl HandoffState {
     /// Whether a handoff owns this seat's next turn boundary.
     pub fn in_progress(&self) -> bool {
-        self.parked.is_some() || self.awaiting
+        self.parked || self.awaiting
     }
 }
 

@@ -1,10 +1,19 @@
 # forge.toml reference
 
 `forge.toml` is the only file forge reads for configuration. It is
-hand-authored, forge never writes to it, and it is read once, at
-startup. An edit therefore needs a forge restart to take effect: a
-session spawned later in the same run still sees the value forge loaded
-at boot.
+hand-authored, and forge never writes to it. A change is picked up while
+forge runs: the server watches this one file, re-reads it whole, and
+applies what can take effect without a restart. A running session keeps
+the account it spawned on, its model, mode, cwd and child environment;
+its credential is resolved per request, so a re-minted token reaches it.
+Everything a subsystem reads per use takes the new value, and the table
+below says what waits for a restart.
+
+One other file in the config directory belongs to forge: the generated
+handoff skill at `<config_dir>/skills/handoff/SKILL.md`. Forge installs
+it at boot, compares it byte for byte, and replaces it only when the
+shipped text differs, so an unchanged copy is left untouched. That file
+is forge's own; `forge.toml` stays yours.
 
 ## Where it lives
 
@@ -45,6 +54,7 @@ An array of tables. At least one is required, or the load fails with
 | `accounts`          | array of strings | yes      | Each entry must match an `[[accounts]]` `display_name`.             |
 | `fallback_accounts` | array of strings | no       | Accounts the walk reaches after the pinned ones. Absent means none. |
 | `browser_profile`   | string           | no       | The browser profile the org's projects drive unless they override it. Absent is `default`. |
+| `slack`             | table            | no       | Written as `[orgs.slack]` with `workspace = "<label>"`: the `[[slack]]` every project in the org acts in. A project's own binding overrides it. Absent means no project in the org has one unless it binds its own. |
 | `projects`          | array of tables  | yes      | Written as `[[orgs.projects]]`. An org with none fails the load.    |
 
 `browser_profile` names the browser every project in the org drives. The
@@ -81,7 +91,8 @@ the account the session started on. The live example is
 leaves it unset, both declare `glm-5.3-flash`, and OpenRouter rejects
 the beta shape the flag suppresses. A project declaring `glm-5.3-flash`
 in an org holding both would spawn on Zai and then fail every rotation
-onto OpenRouter, with a restart the only way out.
+onto OpenRouter; the way out is to change one of the two declarations
+and start that session again.
 
 ## `[[orgs.projects]]`
 
@@ -275,6 +286,7 @@ quietly applying nothing.
 | `vault_roots`     | array   | `[]`    | Extra roots the document read accepts beyond the session's own tree, so a project's documents can live outside its repo (a vault, a shared spec directory). Each entry is an absolute path, `~` or a `~/` path; a relative one fails the load. |
 | `handoff`         | table   | none    | Written as `[orgs.projects.handoff]` under its own entry. Sets this project's handoff trigger; every key is optional and falls back to the top-level `[handoff]` section above. |
 | `browser_profile` | string  | the org's | The browser profile's name inside this project's org: a project setting `work` under `Busytools` drives `Busytools/work`. Absent keeps the org's, and a bad name fails the load naming the key and the value. |
+| `slack`           | table   | the org's | Written as `[orgs.projects.slack]` with `workspace = "<label>"`: the `[[slack]]` this project's sessions act in. Absent keeps the org's binding. |
 
 `permission_mode` stamps a permission mode onto every session the
 project spawns, overriding the launcher's per-session default. A project
@@ -394,8 +406,8 @@ token is probed with a minimal billed messages call instead - its
 response headers carry the 5-hour and 7-day usage windows
 at roughly nine tokens per account per
 usage poll; a rejected token renders as an auth failure whose repair
-is a re-mint. Like every key, it is read once at boot, so
-replacing the token needs a restart.
+is a re-mint. A replaced token is read by the next probe and reaches a
+running session on its next request.
 
 Only key names, never values, are recorded in forge's per-spawn log
 line. These tables hold tokens.
@@ -406,6 +418,20 @@ Notifications are the client's own: a windowed client raises them
 through its host (a system banner, a dock badge, whatever the platform
 does), and there is no `forge.toml` key for any of it. The server
 raises nothing itself - it has no window to put a banner on.
+
+On macOS the first alert after install raises the system's notification
+permission prompt, and the OS drops that notification while the prompt
+is up. So the first ask from a fresh install is silent, and every later
+alert arrives normally.
+
+A browser tab has no host process of its own, so the page asks the
+browser for its notification permission from the first click or keypress
+after an ask arrives - Firefox and Safari refuse a request made without
+one. A refusal is respected silently and never retried, and a page the
+browser offers no notifications to (an insecure origin, or a browser
+without the API) stays silent the same way. Either way the answer is
+outside forge: the browser's own site settings for the address the
+client is served from, or that address being https or `localhost`.
 
 There is no `[ui]` section either: the spinner and repaint keys the
 terminal drew with retired with the terminal crate, and no key replaced
@@ -541,7 +567,7 @@ means the Slack connector stays dormant.
 
 | Key                | Type    | Default | Notes                                                                                                                                                                                                                       |
 | ------------------ | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workspace`        | string  | none    | Label for this workspace, distinct per entry. It addresses the workspace in `slack__list`.                                                                                                                                  |
+| `workspace`        | string  | none    | Label for this workspace, distinct per entry. An org or project binds to it with `workspace = "<label>"`; the Slack tools then act in it with no argument from the caller.                                                    |
 | `token`            | string  | none    | User token, `xoxp-...`.                                                                                                                                                                                                     |
 | `poll_seconds`     | integer | `5`     | Sweep interval for this workspace's conversations, in seconds.                                                                                                                                                              |
 | `dm_poll_seconds`  | integer | `150`   | Sweep interval for the DM class, in seconds. It covers every DM in the workspace rather than a list, so it costs one history call per DM per pass whatever the subscription count, and it is swept on its own slower clock. |
@@ -553,6 +579,69 @@ mistakes fail the load rather than booting a connector that cannot work:
 an empty `workspace`, an empty `token`, and two entries sharing a
 `workspace` label. An unknown key inside an entry is rejected, so a
 near-miss fails loudly.
+
+A workspace becomes a project's workspace only when a scope binds it:
+
+```toml
+[[orgs]]
+name = "Work"
+accounts = ["Work"]
+
+  # Every project in the org acts in this workspace.
+  [orgs.slack]
+  workspace = "Work Slack"
+
+  [[orgs.projects]]
+  name = "service"
+  path = "~/Projects/service"
+
+  # This project acts in a different one.
+  [orgs.projects.slack]
+  workspace = "Service Alerts"
+```
+
+Each `[orgs.projects.slack]` block attaches to the MOST RECENT
+`[[orgs.projects]]` header, like every other nested table there. A
+project's binding wins over its org's; a project with neither leaves the
+Slack tools refusing with the key to add, not asking for an argument.
+
+A binding that names no `[[slack]]` label fails the load, naming the
+label it asked for and the ones that exist:
+
+```
+forge.toml at <path> is otherwise invalid: [[orgs]] slack: no [[slack]] workspace named 'acme'; configured: Service Alerts, Work Slack
+forge.toml at <path> is otherwise invalid: [[orgs.projects]] slack: no [[slack]] workspace named 'acme'; configured: Service Alerts, Work Slack
+```
+
+A session whose project binds nothing (and whose org binds nothing)
+answers every Slack tool with the keys to add:
+
+```
+no Slack workspace is bound to Work/service; add [orgs.slack] workspace = "<label>" to the org, or [orgs.projects.slack] workspace = "<label>" to the project in forge.toml
+```
+
+A binding to a `[[slack]]` entry added since the last start has no token
+loaded yet, and names the way out instead of pretending the key is
+missing:
+
+```
+the [[slack]] workspace 'Work Slack' is bound but not live; a [[slack]] entry added or renamed since boot needs a forge restart
+```
+
+There is no default binding: a project that names nothing is left
+unbound rather than picking up the only configured workspace, because
+two orgs may share one Slack install and an implicit choice would post
+as the wrong one.
+
+A binding governs the tools, not delivery: a stored subscription keeps
+delivering into the project that created it, whatever the project later
+binds, because the record is the explicit statement of where those
+messages go. So removing a binding stops a project acting in that
+workspace without silencing what it already watches, and rebinding a
+project leaves the previous workspace's subscriptions delivering:
+`slack__list` shows only the newly bound workspace's records, while the
+old ones stay listed in the Inspector's Slack section for the project,
+where their ids are the handle `slack__unsubscribe` takes.
 
 The token is a credential, so it lives here rather than in the state
 store beside the subscriptions. forge proves it with `auth.test` at boot
@@ -761,6 +850,11 @@ accounts = ["Personal", "Scratch"]
 name = "Work"
 accounts = ["Work"]
 
+  # Every project in the org acts in this Slack workspace; a project's
+  # own [orgs.projects.slack] overrides it.
+  [orgs.slack]
+  workspace = "acme"
+
   [[orgs.projects]]
   name = "service"
   path = "~/Projects/service"
@@ -838,6 +932,52 @@ theme = "dark"
 max_size_mib = 10
 ```
 
+## Reloading an edit
+
+forge watches `<config_dir>/forge/forge.toml` itself, never the directory:
+nothing else in that tree can trigger a reload. An atomic save (a temporary
+file renamed over the path) and a sync tool's incoming change both count,
+because the watch is re-armed on the path after every event. About half a
+second after a burst of writes the server reads the whole file and validates
+it.
+
+A file that does not parse is rejected whole: one warning names the path and
+the error, and the last good config stays live. No partial application. Once
+a file is accepted, the config forge holds is the file; the table below says
+which parts a running forge adopts and which wait for a restart.
+
+| Table or key | Takes effect |
+| --- | --- |
+| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`, `slack`; `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile`, `slack` | Live. The server's roster, pins and next spawn read the new values. An added project with `auto_start = true` starts; toggling `auto_start` on a project that already exists applies the next time it starts. A removed project leaves the server's roster; sessions already running keep running. An open client sees the new roster on its next home read. A Slack binding to a label already in `[[slack]]` applies to the next tool call; an entry's `workspace`, `token`, `poll_seconds` and `dm_poll_seconds`, and adding a `[[slack]]` entry, are restart-only - the clients are built at boot. |
+| `[[accounts]]` - `display_name`, `provider`, `token`, `base_url`, `models`, `model_slugs`, `model_aliases`, `env` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
+| `[env]` | Live. Folded into each account's env at load, so the next spawn carries it. |
+| `[models."<name>"]` | Live. The next spawn stamps the new parameters. |
+| `[handoff]` | Live. The next handoff reads it. |
+| `[systemone]` | Live for new sessions. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
+| `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. A reload that moved these replaces the rotation numbers; one that did not leaves the live cooldowns and streaks alone. |
+| `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
+| `[server] tool_record_cap_kb`, `first_frame_cap_kb` | Live for pages and `more`; a connection already open keeps the cap it read when it opened. |
+| `[server] enabled`, `bind`, `port` | Restart-only. Stored and named in the log; forge never rebinds a live socket. |
+| `[browser]` `idle_minutes` | Live. The service reads the idle clock on every pass. |
+| `[browser]` `fps`, `quality` | Applies to the next browser host. A host already running keeps the encoding it was created with. |
+| `[client] mark`, `theme`, `font` | Applies to the next connection. A client snapshots these at its handshake and keeps them until it reconnects. |
+| `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
+| `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |
+| `[dictate]` `bind`, `mode` | Applies to the next seat read. The server reads them live, but a client's key handler holds the composer record it last read, so a reconnect or a new occupant refreshes it. |
+| `[dictate]` `styling`, `structure`, `context` | Applies to the next connection, which is when a client takes its capture axes. |
+| `[dictate]` `enabled`, `models_dir`, `language`, `normalizer`, `max_capture_minutes`, `transcribe_model`, `cleanup_model` | Restart-only. The preflight and the engine's own configuration are built once at boot; the log names it. |
+| `[[slack]]` `workspace`, `token`, `poll_seconds`, `dm_poll_seconds` | Restart-only. The client and its pump captured these when the subsystem started; the log names them. |
+| `[[slack]]` `thread_idle_days`, `stale_after_hours` | Live. `thread_idle_days` is read by each sweep and `stale_after_hours` when a block is drawn. |
+| `[gotify]` | Partly live. The `gotify__*` tools read the section on every call, and a section added while forge runs starts its pump when you subscribe. A stream already running keeps the connection it captured until it restarts. |
+| `[plugins]` `auto_update` | No reader yet. The edit is accepted and applies nothing. |
+
+**A running session is never reconfigured.** Its account (except when the
+gateway's own rotation moves it off an exhausted one), model, permission mode,
+cwd and child environment stay what they spawned with; the credential itself
+is resolved per request, so a re-minted token for that same account applies at
+once. To pick up a changed variable or account, close that session and start
+it again.
+
 ## What forge does at startup
 
 `forge <PROJECT>` opens the named project. The name must match a
@@ -863,8 +1003,9 @@ picks a session's account reads each one's state.
 the failure and the pollers keep re-probing it. The walk still keeps a
 bailed account as a last resort, and picks one when nothing else in the
 pin declares the project's model - which is why the project row stays
-clickable. Fix that account's auth, or remove its `[[accounts]]` block,
-then restart forge to pick the edit up. The screen names both.
+clickable. Fix that account's auth, or remove its `[[accounts]]` block; the
+edit applies to new work, and an auth repair reaches a running session on its
+next request. The screen names both.
 
 Every project carrying `auto_start = true` still spawns its lead session
 in the background, but none of them is focused: you pick one from the
@@ -879,11 +1020,13 @@ The socket comes up on `[server] bind:port` during the same boot, unless
 ## Config versus state
 
 `forge.toml` is the config half. It is read-only from forge's point of
-view, which makes it safe to sync between machines.
+view - forge re-reads it on a change but never writes it - which makes it
+safe to sync between machines.
 
 Everything mutable lives in a single embedded redb database at
 `<app-support>/db.redb`: durable crons, Gotify subscriptions, Slack
-subscriptions and the sweep watermarks beside them, the session
+subscriptions, the sweep watermarks and the own-post ledger beside them,
+the session
 identity per project and label - the lead's and every worker's, which is
 what brings a worker back after a restart - review
 threads, the

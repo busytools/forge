@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { handoffKey, handoffOf, shortId } from './handoff';
+import { handoffFrame, handoffKey, handoffOf, shortId } from './handoff';
 
 const wire = (extra: Record<string, unknown> = {}): unknown => ({
   from: '9cfe315c-1111-2222-3333-444444444444',
@@ -59,6 +59,18 @@ describe('the handoff record', () => {
       'only the section that names itself is drawn',
     ).toEqual(['seat']);
     expect(record?.judgment, 'a non-string label is no label either').toEqual([]);
+  });
+
+  /**
+   * **The chat mints the row's frame from a record it has already narrowed**,
+   * and the fold reads every frame back through this narrowing - so a frame
+   * written in the narrowed shape loses both halves.
+   */
+  it('round-trips a record through the frame the row is drawn from', () => {
+    const record = handoffOf(wire());
+    expect(record, 'a record to put on a frame').not.toBeNull();
+    if (record === null) return;
+    expect(handoffOf(handoffFrame(record).handoff), 'the frame narrows back to it').toEqual(record);
   });
 
   it('keys the row by the pair, so a reconnect lands on one row', () => {

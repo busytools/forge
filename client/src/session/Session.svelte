@@ -5,7 +5,7 @@
   import Brand from '../components/Brand.svelte';
   import Icon from '../components/Icon.svelte';
   import BrowserSurface from '../browser/BrowserSurface.svelte';
-  import { drawsSurface } from '../browser/host';
+  import { drawsSurface } from '../browser/link';
   import { surface } from '../browser/surface.svelte';
   import { subjectKey } from '../protocol';
   import { report, type Connection } from '../socket';
@@ -489,6 +489,9 @@
   $effect(() => {
     const onkey = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      // **A live takeover owns the keyboard**: Cmd+K belongs to the page
+      // under the bar while the surface is up, not to this page's palette.
+      if (surface.phase !== 'closed') return;
       const target = event.target;
       const typing =
         target instanceof HTMLInputElement ||

@@ -488,7 +488,9 @@ export function forgeCardOf(
               ? reviewCard(verbOf(name), input, answer)
               : family === 'documents'
                 ? documentsCard(verbOf(name), input)
-                : agentsCard(verbOf(name), input, answer);
+                : family === 'handoff'
+                  ? handoffCard(input, answer)
+                  : agentsCard(verbOf(name), input, answer);
   // A result that said more than the one block the card reads draws the rest
   // beside the card: the card replaces the body, and a block it swallowed
   // would be the one thing a reader could not find.
@@ -515,6 +517,7 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
   slack: 'conversations',
   review: 'reviews',
   agents: 'workers',
+  handoff: 'handoff',
 };
 
 /** The last segment of a path, which is the name a row calls a file by. */
@@ -550,7 +553,7 @@ export function forgeRowTitle(
   if (outcome === 'failed') {
     const written = acknowledgementCard(verb, input);
     if (written !== null) return written.title;
-    if (verb === 'post') return postTitle(str(held, 'workspace'), str(held, 'conversation'));
+    if (verb === 'post') return postTitle(null, str(held, 'conversation'));
     const spawned = verb === 'spawn' ? str(held, 'label') : null;
     if (spawned !== null && spawned.trim() !== '') return `spawned worker '${spawned}'`;
   } else {
@@ -606,7 +609,7 @@ function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCa
     if (channel === null || channel.trim() === '') return null;
     const said = str(held, 'text');
     return {
-      title: postTitle(str(held, 'workspace'), channel, 'posting'),
+      title: postTitle(null, channel, 'posting'),
       chips: [{ text: 'waiting for your approval', tone: 'warn' }],
       figure: null,
       pieces: said === null || said.trim() === '' ? [] : [{ kind: 'quote', text: said }],
@@ -920,6 +923,28 @@ function agentsCard(verb: string, input: unknown, answer: unknown): ForgeCard | 
 }
 
 /**
+ * The handoff's exit call: the note it carried is what a reader wants to see,
+ * and it lives in the call's input, not its answer.
+ */
+function handoffCard(input: unknown, answer: unknown): ForgeCard | null {
+  const note = str(obj(input), 'brief');
+  const held = obj(answer);
+  const status = str(held, 'status');
+  const runs = str(held, 'runs');
+  const hasNote = note !== null && note.trim() !== '';
+  if (!hasNote && status === null) return null;
+  const chips: ForgeChip[] = [];
+  if (status !== null && status.trim() !== '') chips.push({ text: status, tone: 'info' });
+  if (runs !== null && runs.trim() !== '') chips.push({ text: runs, tone: 'dim' });
+  const pieces: ForgePiece[] = [];
+  if (hasNote) {
+    pieces.push({ kind: 'tag', text: 'note' });
+    pieces.push({ kind: 'quote', text: note });
+  }
+  return { title: 'handed the seat over', chips, figure: null, pieces };
+}
+
+/**
  * A worker whose fields moved: the label and the field names the server says
  * it wrote. The values are not echoed - only the names - so the row chips the
  * names and says when they take effect rather than inventing what they became.
@@ -1067,7 +1092,8 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
     const held = obj(answer);
     const name = str(held, 'conversation_name');
     const parts = typeof held['parts'] === 'number' ? held['parts'] : null;
-    const workspace = str(obj(input), 'workspace');
+    // The resolved label rides the result: the call takes no workspace argument.
+    const workspace = str(held, 'workspace');
     const where = name === null ? null : channelName(name);
     return {
       title: postTitle(workspace, where),
@@ -1077,9 +1103,11 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
     };
   }
   if (verb === 'search') {
-    if (!Array.isArray(answer)) return null;
+    const found = obj(answer);
+    const matches = found['matches'];
+    if (!Array.isArray(matches)) return null;
     const items: ForgeListItem[] = [];
-    for (const held of answer) {
+    for (const held of matches) {
       const hit = obj(held);
       const text = str(hit, 'text');
       if (text === null) continue;
@@ -1096,14 +1124,15 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
     const query = str(obj(input), 'query');
     const what = query === null || query.trim() === '' ? 'search' : `search \u{b7} "${query}"`;
     return {
-      title: withWorkspace(what, str(obj(input), 'workspace')),
+      title: withWorkspace(what, str(found, 'workspace')),
       chips: [],
       figure: items.length === 0 ? null : `${items.length} hits`,
       pieces: listBody(items, 'no messages matched the search'),
     };
   }
   if (verb === 'list') {
-    const conversations = obj(answer)['conversations'];
+    const listed = obj(answer);
+    const conversations = listed['conversations'];
     if (!Array.isArray(conversations)) return null;
     const items: ForgeListItem[] = [];
     for (const held of conversations) {
@@ -1122,21 +1151,23 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
     // The class subscriptions - the DM class and the workspace mention target
     // - cover no single conversation, so they ride no row of the list; their
     // ids are what `slack__unsubscribe` takes, so the card names them.
-    const classes = classSubscriptions(obj(answer)['subscriptions']);
+    const classes = classSubscriptions(listed['subscriptions']);
     if (classes.length > 0) {
       pieces.push({ kind: 'kv', pairs: [['also watching', classes.join(', ')]] });
     }
     return {
-      title: withWorkspace('conversations', str(obj(input), 'workspace')),
+      title: withWorkspace('conversations', str(listed, 'workspace')),
       chips: [],
       figure: items.length === 0 ? null : `${items.length}`,
       pieces,
     };
   }
   if (verb === 'pins' || verb === 'bookmarks') {
-    if (!Array.isArray(answer)) return null;
+    const listed = obj(answer);
+    const kept = listed[verb];
+    if (!Array.isArray(kept)) return null;
     const items: ForgeListItem[] = [];
-    for (const held of answer) {
+    for (const held of kept) {
       const row = obj(held);
       const text = str(row, verb === 'pins' ? 'text' : 'title') ?? str(row, 'link');
       if (text === null) continue;
@@ -1151,7 +1182,7 @@ function slackCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
     const where = str(obj(input), 'conversation');
     const title = where === null ? verb : `${verb} in ${where}`;
     return {
-      title: withWorkspace(title, str(obj(input), 'workspace')),
+      title: withWorkspace(title, str(listed, 'workspace')),
       chips: [],
       figure: items.length === 0 ? null : `${items.length}`,
       pieces: listBody(items, `no ${verb} in this conversation`),
@@ -1203,7 +1234,7 @@ function channelName(name: string): string {
   return isSlackId(name) ? name : `#${name}`;
 }
 
-/** A read's title, naming the workspace the call went into when it named one. */
+/** A read's title, naming the workspace the result says it came from. */
 function withWorkspace(title: string, workspace: string | null): string {
   return workspace === null ? title : `${title} \u{b7} ${workspace}`;
 }

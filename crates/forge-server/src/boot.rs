@@ -5,7 +5,7 @@
 //! function for a view and for no view alike, and so no view's removal can
 //! take the boot with it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_workspace::Workspace;
@@ -39,13 +39,13 @@ pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
 /// caller then DOES with it differs (the headless server starts that
 /// project's sessions).
 ///
-/// Not `async`: every step is a spawn or a store write, and the await on
+/// Not `async`: every step is a spawn, a store write or the skill install, and the await on
 /// anything that actually does I/O belongs to `serve_socket`. Nothing here
 /// needs a `LocalSet` either - every task in this wave is a plain
 /// `tokio::spawn`, verified by the headless boot test exercising it
 /// without one.
-pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<Arc<Workspace>> {
-    let workspace = match Workspace::new(config_dir) {
+pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Arc<Workspace>> {
+    let workspace = match Workspace::new(config_dir.to_path_buf()) {
         Ok(w) => Arc::new(w),
         Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
     };
@@ -60,10 +60,130 @@ pub fn start_core(config_dir: PathBuf, project: Option<&str>) -> anyhow::Result<
         return Err(anyhow::anyhow!("forge: {err}"));
     }
 
+    install_handoff_skill(config_dir);
     start_subsystems(&workspace);
-    install_browser(&workspace)?;
+    #[cfg(target_os = "macos")]
+    {
+        let fleet = install_browser(&workspace)?;
+        start_config_watch(&workspace, move |workspace| {
+            refresh_browser(workspace, &fleet);
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        install_browser(&workspace);
+        start_config_watch(&workspace, |_workspace| {});
+    }
 
     Ok(workspace)
+}
+
+/// Install the generated handoff skill into the config dir.
+///
+/// **forge.toml is never written; this one file is.** The skill is forge's
+/// own text, compared byte for byte, so an upgrade refreshes it and a boot
+/// with an identical copy touches nothing.
+fn install_handoff_skill(config_dir: &Path) {
+    let path = forge_workspace::skill_path(config_dir);
+    match forge_workspace::install_skill(config_dir) {
+        Ok(forge_workspace::SkillInstall::Unchanged) => {}
+        Ok(outcome) => {
+            let action = match outcome {
+                forge_workspace::SkillInstall::Created => "created",
+                forge_workspace::SkillInstall::Replaced => "replaced",
+                forge_workspace::SkillInstall::Unchanged => return,
+            };
+            tracing::info!(
+                target: "forge_workspace::handoff",
+                event_name = "handoff_skill_installed",
+                path = %path.display(),
+                action,
+                "the handoff skill was written at boot",
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "forge_workspace::handoff",
+                event_name = "handoff_skill_install_failed",
+                path = %path.display(),
+                %error,
+                "the handoff skill could not be installed; a handoff turn falls back to the \
+                 prompt's own steps",
+            );
+        }
+    }
+}
+
+/// Watch `forge.toml` for the process's life and apply each valid edit.
+///
+/// The watch is a single file (`forge.toml`), never the config directory, so
+/// nothing else in that tree can trigger a reload. Each event is a whole-file
+/// read: a rejected file leaves the previous config live and logs one WARN,
+/// and an applied one logs the tables that moved and the keys that only a
+/// restart can take. `apply` runs for the subsystems the boot holds.
+fn start_config_watch<F>(workspace: &Arc<Workspace>, apply: F)
+where
+    F: Fn(&Workspace) + Send + 'static,
+{
+    let path = workspace.config_path();
+    let weak = Arc::downgrade(workspace);
+    let (changed, mut edits) = tokio::sync::mpsc::unbounded_channel();
+    let watch = match forge_workspace::env::config_watch::watch(path.clone(), changed) {
+        Ok(watch) => watch,
+        Err(error) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "config_watch_failed",
+                path = %path.display(),
+                error = %error,
+                "forge.toml is not being watched; an edit needs a restart this run",
+            );
+            return;
+        }
+    };
+    tokio::spawn(async move {
+        // The handle lives in this task, so the watch lives as long as the
+        // process (or, in a test, the runtime) without a handle outside.
+        let _watch = watch;
+        loop {
+            let _ = edits.recv().await;
+            let Some(workspace) = weak.upgrade() else { break };
+            match workspace.reload_config() {
+                Ok(reload) => {
+                    // A save that changed nothing is not an apply.
+                    if reload.changed.is_empty() && reload.restart_only.is_empty() {
+                        continue;
+                    }
+                    tracing::info!(
+                        target: crate::logging::targets::APP_LIFECYCLE,
+                        event_name = "config_reloaded",
+                        changed = ?reload.changed,
+                        restart_only = ?reload.restart_only,
+                        "forge.toml applied to the running forge",
+                    );
+                    apply(&workspace);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: crate::logging::targets::APP_LIFECYCLE,
+                        event_name = "config_reload_rejected",
+                        path = %workspace.config_path().display(),
+                        error = %error,
+                        "forge.toml was not applied; the last good config stays live",
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// Push the reloaded `[browser]` knobs and profile names into the fleet.
+#[cfg(target_os = "macos")]
+fn refresh_browser(workspace: &Workspace, fleet: &Arc<forge_browser::service::BrowserService>) {
+    let browser = workspace.browser_settings();
+    fleet.configure_encoding(browser.fps, browser.quality);
+    fleet.configure_idle(browser.idle_minutes);
+    configure_fleet_profiles(workspace, fleet);
 }
 
 /// Install the server's browser fleet: constructed here, one host and one
@@ -84,11 +204,11 @@ fn configure_fleet_profiles(workspace: &Workspace, fleet: &forge_browser::servic
 }
 
 #[cfg(target_os = "macos")]
-fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
-    let fleet = Arc::new(
-        forge_browser::service::BrowserService::installed()
-            .map_err(|why| anyhow::anyhow!("forge: {why}"))?,
-    );
+fn install_browser(
+    workspace: &Arc<Workspace>,
+) -> anyhow::Result<Arc<forge_browser::service::BrowserService>> {
+    let fleet = forge_browser::service::BrowserService::installed()
+        .map_err(|why| anyhow::anyhow!("forge: {why}"))?;
     // **The encoding and the idle clock are the `[browser]` keys**: a
     // profile nobody has touched closes after the bound.
     let browser = workspace.browser_settings();
@@ -98,22 +218,21 @@ fn install_browser(workspace: &Arc<Workspace>) -> anyhow::Result<()> {
     // its profile from `forge.toml` here, at boot, rather than naming one.
     configure_fleet_profiles(workspace, &fleet);
     fleet.start_idle();
+    fleet.start_pairing();
     // **A host an unclean exit left behind is reaped before any profile is
     // used.** It still holds the profile's singleton lock, and the first
     // call would wedge on it; the reaper checks the process is really this
     // bundle's host before it signals anything.
     let reaper = Arc::clone(&fleet);
     tokio::spawn(async move { reaper.reap_stale().await });
-    workspace.install_browser_host(Arc::new(HostedBrowser(fleet)));
-    Ok(())
+    workspace.install_browser_host(Arc::new(HostedBrowser(Arc::clone(&fleet))));
+    Ok(fleet)
 }
 
 /// A platform with no CEF host: the browser tools answer the no-host refusal
 /// rather than a server that pretends to have a fleet.
 #[cfg(not(target_os = "macos"))]
-fn install_browser(_workspace: &Arc<Workspace>) -> anyhow::Result<()> {
-    Ok(())
-}
+fn install_browser(_workspace: &Arc<Workspace>) {}
 
 /// The fleet behind the workspace's port.
 #[cfg(target_os = "macos")]
@@ -376,10 +495,7 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
     // Built from the workspace so every piece the socket needs is derived
     // where the workspace is in hand - the browser fleet above all, which
     // must be the one the sessions' own tools drive.
-    let state = Arc::new(crate::transport::TransportState::for_workspace(
-        workspace,
-        workspace.client_config(),
-    ));
+    let state = Arc::new(crate::transport::TransportState::for_workspace(workspace));
     match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => {
             let bound = listener.local_addr().unwrap_or(addr);
@@ -520,7 +636,9 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 mod tests {
     #[cfg(target_os = "macos")]
     use super::configure_fleet_profiles;
-    use super::{BOOT_WAVE_WAIT, start_subsystems, stop_result, wait_for_accounts};
+    use super::{
+        BOOT_WAVE_WAIT, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
+    };
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -589,6 +707,36 @@ port = {port}
         .expect("write forge.toml");
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
         (Arc::new(workspace), dir)
+    }
+
+    /// A write to the watched file applies to the running workspace, with no
+    /// restart and no call from the test: the watch is the only path.
+    #[tokio::test]
+    async fn a_config_edit_reaches_the_running_workspace() {
+        let (workspace, _dir) = boot_fixture();
+        let mut updates = workspace.subscribe();
+        start_config_watch(&workspace, |_workspace| {});
+
+        let path = workspace.config_path();
+        let raw = std::fs::read_to_string(&path).expect("read");
+        std::fs::write(&path, raw.replace("Stub", "Renamed")).expect("write");
+
+        let applied = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let frame = updates.recv().await.expect("the update stream stays open");
+                if matches!(frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. }) {
+                    break;
+                }
+            }
+        })
+        .await;
+
+        assert!(applied.is_ok(), "the watched file's edit applies without a restart");
+        assert_eq!(
+            workspace.list_projects()[0].accounts,
+            vec!["Renamed".to_owned()],
+            "the running workspace holds the edited org pin",
+        );
     }
 
     /// **The config's names are the fleet's maps.** The workspace's own

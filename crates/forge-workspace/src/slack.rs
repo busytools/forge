@@ -61,24 +61,18 @@ impl std::fmt::Debug for SlackWorkspaces {
 }
 
 impl SlackWorkspaces {
-    /// Labels address workspaces in the MCP tools and the Inspector, so
-    /// they must be distinct and the token must be present.
+    /// Labels key the clients a project's binding resolves to and name the
+    /// workspace in the Inspector, so they must be distinct and the token
+    /// must be present.
     pub fn from_config(configs: &[SlackConfig], http: &reqwest::Client) -> Result<Self, String> {
-        let mut clients: BTreeMap<String, Arc<dyn SlackApi>> = BTreeMap::new();
-        for config in configs {
-            let label = config.workspace.trim();
-            if label.is_empty() {
-                return Err("a [[slack]] entry has an empty workspace label".to_owned());
-            }
-            if config.token.trim().is_empty() {
-                return Err(format!("slack workspace '{label}' has an empty token"));
-            }
-            if clients.contains_key(label) {
-                return Err(format!("two [[slack]] entries share the label '{label}'"));
-            }
-            let client = Arc::new(SlackClient::new(http.clone(), config.token.clone()));
-            clients.insert(label.to_owned(), client);
-        }
+        validate_configs(configs)?;
+        let clients: BTreeMap<String, Arc<dyn SlackApi>> = configs
+            .iter()
+            .map(|config| {
+                let client = Arc::new(SlackClient::new(http.clone(), config.token.clone()));
+                (config.workspace.trim().to_owned(), client as Arc<dyn SlackApi>)
+            })
+            .collect();
         Ok(Self { clients })
     }
 
@@ -112,6 +106,26 @@ impl SlackWorkspaces {
         }
         out
     }
+}
+
+/// The semantic checks a `[[slack]]` list must pass. Shared by the boot's
+/// client build and the config loader, so a reload refuses what a restart
+/// refuses.
+pub(crate) fn validate_configs(configs: &[SlackConfig]) -> Result<(), String> {
+    let mut labels: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for config in configs {
+        let label = config.workspace.trim();
+        if label.is_empty() {
+            return Err("a [[slack]] entry has an empty workspace label".to_owned());
+        }
+        if config.token.trim().is_empty() {
+            return Err(format!("slack workspace '{label}' has an empty token"));
+        }
+        if !labels.insert(label) {
+            return Err(format!("two [[slack]] entries share the label '{label}'"));
+        }
+    }
+    Ok(())
 }
 
 /// The distinct projects a set of subscriptions belongs to, in the order the
@@ -343,6 +357,153 @@ impl Workspace {
         }
     }
 
+    /// Record a message forge posted, so the sweep refuses it by identity
+    /// rather than by author. forge posts as the user, so this is the only
+    /// thing that tells its own words from the ones Ved typed.
+    pub(crate) fn record_slack_own_post(&self, workspace: &str, conversation: &str, ts: &str) {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|now| now.as_secs())
+            .unwrap_or_default();
+        if let Err(error) =
+            crate::store::slack::record_own_post(db, workspace, conversation, ts, now)
+        {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                workspace,
+                conversation = %conversation,
+                %error,
+                "writing a Slack own-post ledger row failed",
+            );
+        }
+    }
+
+    /// Whether forge posted this message itself. A ledger that cannot be
+    /// read answers `false`: a self-post delivered once costs what a lost
+    /// ledger costs, while refusing would drop what the user wrote. The
+    /// failure is worth a line once, not once per message, because a
+    /// persistent fault would otherwise echo every post back to the agent.
+    pub(crate) fn slack_own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return false };
+        match crate::store::slack::own_post(db, workspace, conversation, ts) {
+            Ok(own) => {
+                // A read that works again ends the failure, so a later
+                // fault is a new line rather than silence.
+                self.slack_ledger_failures
+                    .lock()
+                    .remove(&(workspace.to_owned(), conversation.to_owned()));
+                own
+            }
+            Err(error) => {
+                let first = self
+                    .slack_ledger_failures
+                    .lock()
+                    .insert((workspace.to_owned(), conversation.to_owned()));
+                if first {
+                    tracing::warn!(
+                        target: "forge_workspace::slack",
+                        event_name = "slack_own_post_ledger_unreadable",
+                        workspace,
+                        conversation = %conversation,
+                        %error,
+                        "reading the Slack own-post ledger failed; own posts are treated as not ours until it reads",
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "forge_workspace::slack",
+                        workspace,
+                        conversation = %conversation,
+                        %error,
+                        "reading the Slack own-post ledger failed again",
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    /// Mark one call's post in flight until the guard drops, so a sweep
+    /// that runs mid-post skips the conversation instead of delivering a
+    /// message whose ts is not ledgered yet. A guard covers ONE call and
+    /// its ledger write: an operation of several calls takes one per call,
+    /// or a slow but healthy Slack would retire the mark mid-operation.
+    pub(crate) fn begin_slack_post(
+        self: &Arc<Self>,
+        workspace: &str,
+        conversation: &str,
+    ) -> SlackPostInFlight {
+        let key = (workspace.to_owned(), conversation.to_owned());
+        let id = NEXT_POST_STAMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.slack_inflight.lock().entry(key.clone()).or_default().push(SlackPostStamp {
+            id,
+            since: std::time::Instant::now(),
+            warned: false,
+        });
+        SlackPostInFlight { workspace: Arc::clone(self), key, id }
+    }
+
+    /// How long the oldest live post call in `conversation` has been in
+    /// flight, or `None`. A stamp past the request timeout is expired
+    /// rather than obeyed, so a stalled call cannot silence the
+    /// conversation. A stamp crossing half the budget says so once, on the
+    /// transition; both are forge's own problems, so both are warnings.
+    pub(crate) fn slack_post_in_flight(
+        &self,
+        workspace: &str,
+        conversation: &str,
+    ) -> Option<std::time::Duration> {
+        let mut inflight = self.slack_inflight.lock();
+        let mut empty: Vec<(String, String)> = Vec::new();
+        let mut stalled: Vec<(String, String, std::time::Duration)> = Vec::new();
+        let mut oldest: Option<std::time::Duration> = None;
+        for ((marked_workspace, marked_address), stamps) in inflight.iter_mut() {
+            stamps
+                .retain(|stamp| stamp.since.elapsed() <= forge_connectors::slack::REQUEST_TIMEOUT);
+            if stamps.is_empty() {
+                empty.push((marked_workspace.clone(), marked_address.clone()));
+                continue;
+            }
+            if marked_workspace != workspace || marked_address != conversation {
+                continue;
+            }
+            for stamp in stamps.iter_mut() {
+                let age = stamp.since.elapsed();
+                if age > forge_connectors::slack::REQUEST_TIMEOUT / 2 && !stamp.warned {
+                    stamp.warned = true;
+                    stalled.push((marked_workspace.clone(), marked_address.clone(), age));
+                }
+                if oldest.is_none_or(|current| age > current) {
+                    oldest = Some(age);
+                }
+            }
+        }
+        for key in empty {
+            inflight.remove(&key);
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                event_name = "slack_post_mark_expired",
+                workspace = %key.0,
+                conversation = %key.1,
+                "a post's in-flight mark outlived its request timeout; the conversation is swept again",
+            );
+        }
+        drop(inflight);
+        for (workspace, conversation, age) in stalled {
+            tracing::warn!(
+                target: "forge_workspace::slack",
+                event_name = "slack_post_in_flight_stalled",
+                workspace = %workspace,
+                conversation = %conversation,
+                age_ms = age.as_millis(),
+                "a post has been in flight for most of its request budget; the conversation is being skipped",
+            );
+        }
+        oldest
+    }
+
     /// Fill in the display name on this workspace's conversation
     /// subscriptions that have none. A durable record is written through
     /// the store; an ephemeral one is named in memory only. Only unnamed
@@ -506,7 +667,7 @@ impl Workspace {
     /// `[[slack]]` entry: the followed set is per workspace, so its window
     /// is too. A workspace whose entry is gone keeps the default.
     fn slack_thread_idle_days(&self, workspace: &str) -> u64 {
-        self.config
+        self.config_arc()
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -517,7 +678,7 @@ impl Workspace {
     /// `[[slack]]` entry. A workspace whose entry is gone keeps the default.
     pub(crate) fn slack_stale_after(&self, workspace: &str) -> Duration {
         let hours = self
-            .config
+            .config_arc()
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -1078,8 +1239,9 @@ impl Workspace {
             guard.insert(label.clone(), shutdown_tx);
             drop(guard);
 
+            let config = self.config_arc();
             let entry =
-                self.config.slack.iter().find(|config| config.workspace.trim() == label.as_str());
+                config.slack.iter().find(|config| config.workspace.trim() == label.as_str());
             let poll_seconds = entry.map_or(DEFAULT_POLL_SECONDS, |config| config.poll_seconds);
             // Clamped because the two clocks share one token's allowance: a
             // value below the floor is the overrun the key exists to prevent.
@@ -1130,6 +1292,39 @@ impl Workspace {
     }
 }
 
+/// One live post call in a conversation: its identity, when it started,
+/// and whether the stall line has been said for it.
+pub(crate) struct SlackPostStamp {
+    pub(crate) id: u64,
+    pub(crate) since: std::time::Instant,
+    pub(crate) warned: bool,
+}
+
+/// Stamps are identified by a process-wide counter, so a guard's `Drop`
+/// removes its own stamp even after its entry was expired and its key
+/// taken again by a later post.
+static NEXT_POST_STAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Clears one call's in-flight stamp however it ends, a failed call or a
+/// panic included. It removes only its own stamp, never a later call's.
+pub(crate) struct SlackPostInFlight {
+    workspace: Arc<Workspace>,
+    key: (String, String),
+    id: u64,
+}
+
+impl Drop for SlackPostInFlight {
+    fn drop(&mut self) {
+        let mut inflight = self.workspace.slack_inflight.lock();
+        if let Some(stamps) = inflight.get_mut(&self.key) {
+            stamps.retain(|stamp| stamp.id != self.id);
+            if stamps.is_empty() {
+                inflight.remove(&self.key);
+            }
+        }
+    }
+}
+
 /// The [`SlackHost`] one pump drives: a `Weak<Workspace>` behind the port,
 /// so the workspace can drop while a pump runs and every port call then
 /// degrades to a no-op.
@@ -1144,8 +1339,8 @@ impl SlackSubsystemHost {
 impl SlackHost for SlackSubsystemHost {
     fn client(&self, workspace: &str, timeout: Duration) -> Result<Arc<dyn SlackApi>, String> {
         let ws = self.0.upgrade().ok_or("the workspace is gone")?;
-        let config = ws
-            .config
+        let config = ws.config_arc();
+        let entry = config
             .slack
             .iter()
             .find(|config| config.workspace.trim() == workspace)
@@ -1154,7 +1349,7 @@ impl SlackHost for SlackSubsystemHost {
             forge_agent::http_trust::with_extra_roots(reqwest::Client::builder().timeout(timeout))
                 .build()
                 .map_err(|error| error.to_string())?;
-        Ok(Arc::new(SlackClient::new(http, config.token.clone())))
+        Ok(Arc::new(SlackClient::new(http, entry.token.clone())))
     }
 
     fn user_id(&self, workspace: &str) -> Option<String> {
@@ -1259,6 +1454,14 @@ impl SlackHost for SlackSubsystemHost {
             &message.ts,
             Some(&message.conversation_label),
         )
+    }
+
+    fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
+        self.0.upgrade().is_some_and(|ws| ws.slack_own_post(workspace, conversation, ts))
+    }
+
+    fn post_in_flight(&self, workspace: &str, conversation: &str) -> Option<Duration> {
+        self.0.upgrade().and_then(|ws| ws.slack_post_in_flight(workspace, conversation))
     }
 
     fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool {
@@ -1922,6 +2125,112 @@ mod tests {
         );
     }
 
+    /// The host hop is the whole read path for the ledger: a harness that
+    /// swapped the workspace and the conversation would leave every
+    /// connector test green.
+    #[test]
+    fn the_own_post_port_reads_the_ledger_by_workspace_and_conversation() {
+        let (host, ws, _dir) = host_with_c1_subscriber("forge", None);
+        ws.record_slack_own_post("acme", "C1", "1700000000.000100");
+
+        assert!(host.own_post("acme", "C1", "1700000000.000100"), "the recorded row is read back");
+        assert!(
+            !host.own_post("acme", "C2", "1700000000.000100"),
+            "another conversation's ledger does not answer for it",
+        );
+        assert!(
+            !host.own_post("beta", "C1", "1700000000.000100"),
+            "another workspace's ledger does not answer for it",
+        );
+    }
+
+    /// A post is addressed by whichever name the caller had: a DM by user
+    /// id, a channel by name. The sweep holds the conversation and asks
+    /// under each of its names.
+    #[test]
+    fn an_in_flight_mark_is_per_call_and_per_guard() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let host = SlackSubsystemHost::new(&ws);
+
+        // Two calls into one conversation at once: the first to finish
+        // does not clear the other's stamp.
+        let first = ws.begin_slack_post("acme", "C789");
+        let second = ws.begin_slack_post("acme", "C789");
+        assert!(host.post_in_flight("acme", "C789").is_some(), "both calls are in flight");
+        assert!(
+            host.post_in_flight("beta", "C789").is_none(),
+            "and only in the workspace that took the mark",
+        );
+        assert!(host.post_in_flight("acme", "C790").is_none(), "and only for that conversation");
+        drop(first);
+        assert!(
+            host.post_in_flight("acme", "C789").is_some(),
+            "one call finishing does not clear an overlapping one",
+        );
+        drop(second);
+        assert!(host.post_in_flight("acme", "C789").is_none(), "the last one clears the mark");
+    }
+
+    /// A mark past the request timeout is expired, not obeyed: a stalled
+    /// call must not silence the conversation, and the expired row is
+    /// dropped rather than re-checked forever.
+    #[test]
+    fn an_expired_in_flight_mark_is_not_obeyed() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let host = SlackSubsystemHost::new(&ws);
+        let stale = std::time::Instant::now()
+            .checked_sub(forge_connectors::slack::REQUEST_TIMEOUT)
+            .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
+            .expect("the clock is past the timeout");
+        ws.slack_inflight.lock().insert(
+            ("acme".to_owned(), "C789".to_owned()),
+            vec![SlackPostStamp { id: 1, since: stale, warned: false }],
+        );
+
+        assert!(
+            host.post_in_flight("acme", "C789").is_none(),
+            "an expired mark is expired, never obeyed",
+        );
+        assert!(
+            ws.slack_inflight.lock().is_empty(),
+            "and it is dropped, not left to be re-checked"
+        );
+    }
+
+    /// An old guard that outlived its stamp must not clear a newer call's
+    /// mark: `Drop` removes only the stamp it took.
+    #[test]
+    fn an_expired_guards_drop_leaves_a_newer_mark_alone() {
+        let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
+        let host = SlackSubsystemHost::new(&ws);
+
+        let old = ws.begin_slack_post("acme", "C789");
+        let stale = std::time::Instant::now()
+            .checked_sub(forge_connectors::slack::REQUEST_TIMEOUT)
+            .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
+            .expect("the clock is past the timeout");
+        ws.slack_inflight
+            .lock()
+            .get_mut(&("acme".to_owned(), "C789".to_owned()))
+            .expect("the old guard's entry")
+            .first_mut()
+            .expect("its stamp")
+            .since = stale;
+        assert!(
+            host.post_in_flight("acme", "C789").is_none(),
+            "the old stamp is expired and pruned",
+        );
+
+        let fresh = ws.begin_slack_post("acme", "C789");
+        drop(old);
+        assert!(
+            host.post_in_flight("acme", "C789").is_some(),
+            "the old guard's drop must not clear the newer call's mark",
+        );
+        drop(fresh);
+        assert!(host.post_in_flight("acme", "C789").is_none(), "and the newer one clears it");
+    }
+
     /// The workspace label the live test configures, and the project whose
     /// running lead receives the block.
     const LIVE_WORKSPACE: &str = "live-test";
@@ -1985,7 +2294,7 @@ mod tests {
         // Everything at or below this is old news, so the sweep's news is
         // exactly what is posted below.
         let watermark = user
-            .history(&conversation_id, None, 1, None)
+            .history(&conversation_id, None, None, 1, None)
             .await
             .expect("the user reads the channel")
             .messages
@@ -1999,8 +2308,9 @@ mod tests {
         let texts: Vec<String> = (1..=3).map(|n| format!("live bundle {n} {stamp}")).collect();
         let mut posted = Vec::new();
         for text in &texts {
-            posted
-                .push(bot.post_message(&conversation_id, text, None).await.expect("the bot posts"));
+            posted.push(
+                bot.post_message(&conversation_id, text, None).await.expect("the bot posts").ts,
+            );
         }
 
         let dir = tempfile::tempdir().expect("tempdir");

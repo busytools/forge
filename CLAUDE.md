@@ -114,9 +114,11 @@ and let a second instance start. `single_instance.rs` has the full
 reasoning.
 
 **Config vs state.** `forge.toml` (under `<config_dir>/forge/`) is the
-only file forge reads for config: read-only, hand-authored, safe to
-sync. All runtime state (durable crons, Gotify subs, Slack subs and
-sweep watermarks, dynamic workers, session ids, usage cache)
+only file forge reads for config: hand-authored, never written by forge,
+and safe to sync. A running forge watches this one file and re-reads it on
+a change, applying what can take effect without a restart and naming the
+keys that need one. All runtime state (durable crons, Gotify subs, Slack
+subs and sweep watermarks, dynamic workers, session ids, usage cache)
 lives in one machine-local redb DB beside the lock. None of it belongs
 in a synced config dir: the DB churns roughly once a minute, redb's
 binary file cannot be merged, and the lock's inode must stay put.
@@ -1059,3 +1061,15 @@ that build leaves off.
   `forge` under `/tmp` with its own config, ports and store, plus a dev
   client pointed at it, for feature-scale work the maintainer verifies
   before merge.
+
+  **A look door is not ready until the surface has been DRIVEN and the thing
+  the maintainer is meant to judge has been seen rendered.** A page returning
+  200 and a forge answering a WebSocket upgrade with 101 prove the transport
+  and nothing else: a scratch store starts empty, so the session page connects
+  perfectly and draws a blank conversation. Seed the stack with whatever the
+  feature needs (the skill's own step 8), open the route the person will open,
+  and confirm the content is there - the rows, the state, the brief - before
+  saying a door is up. Say which of the two you checked: "the ports are
+  listening" is not a door, "I opened it and the table draws both halves" is.
+  Ved, 2026-10-27, after two doors opened on blank pages: *"Do you not check
+  for yourself before you ask me to verify?"*

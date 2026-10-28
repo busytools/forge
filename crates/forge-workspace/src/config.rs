@@ -393,8 +393,20 @@ struct OrgEntry {
     /// The org's browser profile name; `<org>/<name>`. Absent is `default`.
     #[serde(default)]
     browser_profile: Option<String>,
+    /// The Slack workspace every project in the org inherits. Absent
+    /// leaves each project to bind its own or none.
+    #[serde(default)]
+    slack: Option<SlackBinding>,
     #[serde(default)]
     projects: Vec<ProjectEntry>,
+}
+
+/// `[orgs.slack]` or `[orgs.projects.slack]`: the one `[[slack]]` label a
+/// scope's sessions act in.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SlackBinding {
+    workspace: String,
 }
 
 #[derive(Deserialize)]
@@ -447,6 +459,10 @@ struct ProjectEntry {
     /// the org's.
     #[serde(default)]
     browser_profile: Option<String>,
+    /// This project's Slack workspace, overriding the org's. Absent keeps
+    /// the org's binding.
+    #[serde(default)]
+    slack: Option<SlackBinding>,
 }
 
 /// Hand-written because a project's env may carry secrets, which the
@@ -467,6 +483,7 @@ impl std::fmt::Debug for ProjectEntry {
             .field("vault_roots", &self.vault_roots)
             .field("handoff", &self.handoff)
             .field("browser_profile", &self.browser_profile)
+            .field("slack", &self.slack)
             .finish()
     }
 }
@@ -749,6 +766,192 @@ impl std::fmt::Debug for LoadedConfig {
     }
 }
 
+/// What one `forge.toml` reload changed, in the terms the boot's log line
+/// reads: the tables whose new values are live from their next use, and the
+/// keys whose values are stored but need a restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigReload {
+    pub changed: Vec<&'static str>,
+    pub restart_only: Vec<&'static str>,
+}
+
+impl LoadedConfig {
+    /// The reload summary between this load and `next`.
+    pub(crate) fn diff(&self, next: &Self) -> ConfigReload {
+        fn mark(list: &mut Vec<&'static str>, name: &'static str, differs: bool) {
+            if differs {
+                list.push(name);
+            }
+        }
+
+        let mut reload = ConfigReload::default();
+        mark(&mut reload.changed, "accounts", !same_accounts(&self.accounts, &next.accounts));
+        mark(
+            &mut reload.changed,
+            "orgs",
+            !same_projects(&self.projects, &next.projects)
+                || self.org_browser_profiles != next.org_browser_profiles
+                || self.default_index != next.default_index,
+        );
+        mark(&mut reload.changed, "models", !same_models(&self.models, &next.models));
+        mark(&mut reload.changed, "handoff", self.handoff != next.handoff);
+        mark(&mut reload.changed, "systemone", self.systemone != next.systemone);
+        // `[plugins] auto_update` has no reader yet, so a change applies
+        // nothing and is not reported as applied.
+        mark(
+            &mut reload.changed,
+            "server",
+            self.server.tool_record_cap_kb != next.server.tool_record_cap_kb
+                || self.server.first_frame_cap_kb != next.server.first_frame_cap_kb,
+        );
+        mark(&mut reload.changed, "client", !same_client(&self.client, &next.client));
+        mark(&mut reload.changed, "browser", self.browser != next.browser);
+        mark(&mut reload.changed, "slack", !same_slack_sweep(&self.slack, &next.slack));
+        mark(&mut reload.changed, "documents", self.document_max_bytes != next.document_max_bytes);
+        mark(&mut reload.changed, "usage", self.usage_poll_interval != next.usage_poll_interval);
+        mark(&mut reload.changed, "gateway", self.gateway_rotation != next.gateway_rotation);
+
+        mark(
+            &mut reload.restart_only,
+            "server.enabled",
+            self.server.enabled != next.server.enabled,
+        );
+        mark(&mut reload.restart_only, "server.bind", self.server.bind != next.server.bind);
+        mark(&mut reload.restart_only, "server.port", self.server.port != next.server.port);
+        mark(&mut reload.restart_only, "gateway.port", self.gateway_port != next.gateway_port);
+        // `[dictate]` splits three ways: the key handler reads bind and
+        // mode per event, a client takes its axes at connection open, and
+        // the preflight and the engine's own configuration are built once.
+        let dictate = &self.dictate;
+        let next_dictate = &next.dictate;
+        mark(
+            &mut reload.changed,
+            "dictate",
+            dictate.bind != next_dictate.bind
+                || dictate.mode != next_dictate.mode
+                || dictate.styling != next_dictate.styling
+                || dictate.structure != next_dictate.structure
+                || dictate.context != next_dictate.context,
+        );
+        mark(
+            &mut reload.restart_only,
+            "dictate",
+            dictate.enabled != next_dictate.enabled
+                || dictate.models_dir != next_dictate.models_dir
+                || dictate.language != next_dictate.language
+                || dictate.normalizer != next_dictate.normalizer
+                || dictate.max_capture_minutes != next_dictate.max_capture_minutes
+                || dictate.transcribe_model != next_dictate.transcribe_model
+                || dictate.cleanup_model != next_dictate.cleanup_model,
+        );
+        mark(&mut reload.restart_only, "gotify", self.gotify != next.gotify);
+        mark(&mut reload.restart_only, "slack", !same_slack_subsystem(&self.slack, &next.slack));
+        reload
+    }
+}
+
+/// Accounts in declaration order. The env map is compared whole because the
+/// token is folded into it at load, so a re-minted credential reads as a
+/// change here.
+fn same_accounts(previous: &[LoadedAccount], next: &[LoadedAccount]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(old, new)| {
+            old.display_name == new.display_name
+                && old.provider == new.provider
+                && old.base_url == new.base_url
+                && old.models == new.models
+                && old.model_slugs == new.model_slugs
+                && old.model_aliases == new.model_aliases
+                && old.env == new.env
+        })
+}
+
+fn same_projects(previous: &[LoadedProject], next: &[LoadedProject]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(old, new)| {
+            old.name == new.name
+                && old.path == new.path
+                && old.display_path == new.display_path
+                && old.org == new.org
+                && old.accounts == new.accounts
+                && old.fallback_accounts == new.fallback_accounts
+                && old.auto_start == new.auto_start
+                && old.model == new.model
+                && old.env == new.env
+                && old.max_workers == new.max_workers
+                && old.permission_mode == new.permission_mode
+                && old.vault_roots == new.vault_roots
+                && old.handoff == new.handoff
+                && old.browser_profile == new.browser_profile
+                && old.slack_workspace == new.slack_workspace
+        })
+}
+
+/// The label a scope's `slack` binding resolves to, or a load error naming
+/// the label asked for and the ones that exist: a binding to a workspace
+/// forge does not have would leave every Slack tool dead at runtime.
+fn slack_binding_label(
+    binding: &SlackBinding,
+    scope: &str,
+    labels: &std::collections::BTreeSet<String>,
+    path: &std::path::Path,
+) -> Result<String, WorkspaceError> {
+    let label = binding.workspace.trim();
+    if labels.contains(label) {
+        return Ok(label.to_owned());
+    }
+    let configured = if labels.is_empty() {
+        "none".to_owned()
+    } else {
+        labels.iter().cloned().collect::<Vec<_>>().join(", ")
+    };
+    Err(WorkspaceError::ConfigInvalid {
+        path: path.to_path_buf(),
+        message: format!(
+            "{scope} slack: no [[slack]] workspace named '{label}'; configured: {configured}"
+        ),
+    })
+}
+
+fn same_models(
+    previous: &HashMap<String, ModelSettings>,
+    next: &HashMap<String, ModelSettings>,
+) -> bool {
+    previous.len() == next.len()
+        && previous.iter().all(|(name, settings)| {
+            next.get(name)
+                .is_some_and(|other| other.auto_compact_window == settings.auto_compact_window)
+        })
+}
+
+fn same_client(previous: &ClientConfig, next: &ClientConfig) -> bool {
+    // The two browser_idle ghosts are not read by anything: comparing them
+    // would report a change the config does not carry.
+    previous.mark == next.mark && previous.theme == next.theme && previous.font == next.font
+}
+
+/// The keys the Slack client and its pump capture when the subsystem
+/// starts: the client holds its token, and the pump holds its intervals.
+fn same_slack_subsystem(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(old, new)| {
+            old.workspace == new.workspace
+                && old.token == new.token
+                && old.poll_seconds == new.poll_seconds
+                && old.dm_poll_seconds == new.dm_poll_seconds
+        })
+}
+
+/// The windows the sweep reads from the live config on every pass, so an
+/// edit applies without a restart.
+fn same_slack_sweep(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(old, new)| {
+            old.thread_idle_days == new.thread_idle_days
+                && old.stale_after_hours == new.stale_after_hours
+        })
+}
+
 /// The port the gateway's listener binds when `[gateway] port` is
 /// absent. Fixed, not OS-assigned: every session's base URL names it,
 /// so a drift would point children at an address nothing serves.
@@ -803,6 +1006,10 @@ pub(crate) struct LoadedProject {
     /// The browser profile this project's sessions drive: the project's
     /// override, else the org's, else `<org>/default`.
     pub browser_profile: ProfileKey,
+    /// The `[[slack]]` label this project's sessions act in: the
+    /// project's binding, else the org's. `None` leaves the Slack tools
+    /// refusing with the key to add.
+    pub slack_workspace: Option<String>,
 }
 
 /// Hand-written because a project's env may carry secrets (`env_file`
@@ -827,6 +1034,7 @@ impl std::fmt::Debug for LoadedProject {
             .field("vault_roots", &self.vault_roots)
             .field("handoff", &self.handoff)
             .field("browser_profile", &self.browser_profile)
+            .field("slack_workspace", &self.slack_workspace)
             .finish()
     }
 }
@@ -1039,6 +1247,13 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     if parsed.web.is_some() {
         return Err(WorkspaceError::WebSectionRenamed { path });
     }
+
+    // The boot's SlackWorkspaces build runs these checks; a reload goes
+    // through the same loader, so it must refuse the same file a restart
+    // would.
+    crate::slack::validate_configs(&parsed.slack).map_err(|message| {
+        WorkspaceError::ConfigInvalid { path: path.clone(), message: format!("slack: {message}") }
+    })?;
 
     if parsed.workers.is_some() {
         tracing::warn!(
@@ -1261,6 +1476,8 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     }
 
     // Validate orgs + build the flat project list.
+    let slack_labels: std::collections::BTreeSet<String> =
+        parsed.slack.iter().map(|config| config.workspace.trim().to_owned()).collect();
     let mut seen_org_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_project_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
@@ -1303,6 +1520,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             })?,
         };
         org_browser_profiles.insert(org_entry.name.clone(), org_profile.name().to_owned());
+        let org_slack = org_entry
+            .slack
+            .as_ref()
+            .map(|binding| slack_binding_label(binding, "[[orgs]]", &slack_labels, &path))
+            .transpose()?;
         for project_entry in org_entry.projects {
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
@@ -1335,6 +1557,12 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                     &format!("project \"{}\"", project_entry.name),
                 )?;
             }
+            let slack_workspace = match &project_entry.slack {
+                Some(binding) => {
+                    Some(slack_binding_label(binding, "[[orgs.projects]]", &slack_labels, &path)?)
+                }
+                None => org_slack.clone(),
+            };
             let browser_profile = match project_entry.browser_profile.as_deref() {
                 Some(name) => ProfileKey::of(&org_entry.name, name).map_err(|why| {
                     WorkspaceError::ConfigInvalid {
@@ -1359,6 +1587,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 vault_roots,
                 handoff: project_entry.handoff,
                 browser_profile,
+                slack_workspace,
             });
             // The project model must be served by at least one account
             // the org can reach: a typo would boot clean, stamp all the
@@ -2788,6 +3017,257 @@ poll_second = 45
         let toml = "[[slack]]\nworkspace = \"a\"\ntoken = \"x\"\n";
         let parsed: ForgeToml = toml::from_str(toml).expect("parses without stale_after_hours");
         assert_eq!(parsed.slack[0].stale_after_hours, 24);
+    }
+
+    /// The loader runs the checks the boot's Slack build runs, so a reload
+    /// cannot accept a list a restart refuses.
+    #[test]
+    fn load_refuses_a_slack_list_the_boot_would_refuse() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Acct"]
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "same"
+token = "x"
+[[slack]]
+workspace = "same"
+token = "y"
+"#,
+        );
+
+        let error = load_from_dir(dir.path()).expect_err("duplicate labels are refused");
+        assert!(matches!(error, WorkspaceError::ConfigInvalid { .. }), "{error}");
+        assert!(error.to_string().contains("share the label"), "{error}");
+    }
+
+    /// A project's own binding is the narrower statement, so it wins over
+    /// the org's: the org key exists to save every project repeating one.
+    #[test]
+    fn a_projects_slack_binding_overrides_its_orgs() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[orgs.slack]
+workspace = "org-wide"
+
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+[orgs.projects.slack]
+workspace = "project-one"
+
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "org-wide"
+token = "x"
+[[slack]]
+workspace = "project-one"
+token = "y"
+"#,
+        );
+
+        let config = load_from_dir(dir.path()).expect("both labels exist");
+        assert_eq!(
+            named(&config, "forge").slack_workspace.as_deref(),
+            Some("project-one"),
+            "the project's binding is the one its sessions resolve",
+        );
+    }
+
+    /// The org key's whole point: a project that names nothing inherits it.
+    #[test]
+    fn an_org_binding_reaches_a_project_that_names_none() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[orgs.slack]
+workspace = "org-wide"
+
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+
+[[orgs.projects]]
+name = "busymail"
+path = "/tmp/busymail"
+
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "org-wide"
+token = "x"
+"#,
+        );
+
+        let config = load_from_dir(dir.path()).expect("the org's label exists");
+        assert_eq!(named(&config, "forge").slack_workspace.as_deref(), Some("org-wide"));
+        assert_eq!(named(&config, "busymail").slack_workspace.as_deref(), Some("org-wide"));
+    }
+
+    /// A binding that names no `[[slack]]` entry would boot with every
+    /// Slack tool dead, so it is refused, naming the label it asked for and
+    /// the ones that exist.
+    #[test]
+    fn a_project_binding_naming_an_unknown_label_is_refused_with_both_names() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+[orgs.projects.slack]
+workspace = "typo"
+
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "real-one"
+token = "x"
+"#,
+        );
+
+        let error = load_from_dir(dir.path()).expect_err("an unknown label is refused");
+        let message = error.to_string();
+        assert!(message.contains("[[orgs.projects]] slack"), "names the scope: {message}");
+        assert!(message.contains("'typo'"), "names the label it asked for: {message}");
+        assert!(message.contains("real-one"), "names the labels that exist: {message}");
+    }
+
+    #[test]
+    fn an_org_binding_naming_an_unknown_label_is_refused_with_both_names() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[orgs.slack]
+workspace = "typo"
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "real-one"
+token = "x"
+"#,
+        );
+
+        let error = load_from_dir(dir.path()).expect_err("an unknown label is refused");
+        let message = error.to_string();
+        assert!(message.contains("[[orgs]] slack"), "names the scope: {message}");
+        assert!(message.contains("'typo'"), "names the label it asked for: {message}");
+        assert!(message.contains("real-one"), "names the labels that exist: {message}");
+    }
+
+    /// A padded label is the same label: `[[slack]]` labels are matched
+    /// trimmed, so a binding is too, and the stored value is the trimmed
+    /// one every later lookup uses.
+    #[test]
+    fn a_slack_binding_label_is_trimmed_before_it_is_matched() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+[orgs.projects.slack]
+workspace = "  acme  "
+
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+[[slack]]
+workspace = "acme"
+token = "x"
+"#,
+        );
+
+        let config = load_from_dir(dir.path()).expect("the padded label matches");
+        assert_eq!(
+            named(&config, "forge").slack_workspace.as_deref(),
+            Some("acme"),
+            "the stored label is the trimmed one the clients are keyed by",
+        );
+    }
+
+    /// A binding with no `[[slack]]` section at all is still refused, and
+    /// the message says there is nothing to bind to rather than printing an
+    /// empty list.
+    #[test]
+    fn a_binding_with_no_slack_entries_says_none_are_configured() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Busytools"
+accounts = ["Acct"]
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/forge"
+[orgs.projects.slack]
+workspace = "acme"
+
+[[accounts]]
+display_name = "Acct"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+
+        let error = load_from_dir(dir.path()).expect_err("there is no label to bind to");
+        assert!(
+            error.to_string().contains("configured: none"),
+            "the message says the file configures no workspace: {error}",
+        );
     }
 
     #[test]

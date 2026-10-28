@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { hideBrowser, showBrowser } from '../browser/host';
+import { hideBrowser, showBrowser } from '../browser/link';
 import { surface } from '../browser/surface.svelte';
 
 /**
@@ -11,14 +11,14 @@ import { surface } from '../browser/surface.svelte';
  * here: outside the shell the real one answers a reason, which only ever
  * proved the could-not line.
  */
-vi.mock('../browser/host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../browser/host')>();
+vi.mock('../browser/link', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../browser/link')>();
   return {
     ...actual,
     // jsdom is not the shell: the surface gates would answer "not the
     // client" and the takeover's tests would never see their bar. The store
     // and the shell's own doors are mocked below on that basis.
-    canHost: vi.fn(() => true),
+    canAttach: vi.fn(() => true),
     drawsSurface: vi.fn(() => true),
     // No window in tests: the shell's raise answers the reason it could not
     // land, or null when it did. The default takes it as landing; a case
@@ -3492,28 +3492,37 @@ describe('the frame', () => {
 
   /**
    * A narrow box cannot hold the hints and the controls on one row - measured,
-   * the widest pair needs 365px - so the keys go and the controls keep the row.
+   * the widest set needs 371px with a mouse's glyphs and 431px with a finger's
+   * - so the keys go and the controls keep the row, the finger's set first.
    */
   it('drops the key hints rather than the controls when the box is narrow', () => {
     expect(sheet, 'the foot wraps its hints instead of giving them up').toMatch(
       /@container \(max-width: 400px\) \{ \.foot \.hints \{ display: none; \} \}/,
     );
+    expect(sheet, "the foot keeps the key hints at a finger's width that cannot hold them").toMatch(
+      /@media \(pointer: coarse\) \{\n {2}@container \(max-width: 470px\) \{ \.foot \.hints \{ display: none; \} \}/,
+    );
   });
 
   /**
    * **The phone's floors are read on the block itself**, because the coarse
-   * rules sit on one line inside the media query, where the per-selector scan
-   * above reaches only their base rules - and that is exactly how they went
-   * unpinned while two changes crossed.
+   * rules sit inside the media query, where the per-selector scan above
+   * reaches only their base rules - and that is exactly how they went unpinned
+   * while two changes crossed.
    */
-  it("keeps the mic and the panel's close at a finger's size, and the mic's accent", () => {
-    // Anchored so `.mic` cannot match as the tail of another class: a pattern
-    // that also accepts `.foot .mic` keeps passing while the on-line mic has
-    // lost the floor this is checking it for.
-    const coarse =
-      /@media \(pointer: coarse\) \{[^\n]*[^.\w]\.mic\s*\{[^\n]*\}/.exec(sheet)?.[0] ?? '';
-    expect(coarse, 'the mic lost its height floor on a finger').toContain('min-height: 44px');
-    expect(coarse, 'the mic lost its width floor on a finger').toContain('min-width: 44px');
+  it("keeps the glyph controls and the panel's close at a finger's size, and the mic's accent", () => {
+    // A rule per control rather than one selector pinned whole, so a control
+    // that leaves the shared glyph rule for one of its own still has to state
+    // both floors.
+    const coarse = [...sheet.matchAll(/@media \(pointer: coarse\) \{\n([\s\S]*?)\n\}/g)]
+      .map((match) => match[1])
+      .join('\n');
+    for (const control of ['mic', 'send', 'stop']) {
+      const rule = new RegExp(`\\.${control}(?:, [^{]*)? \\{([^}]*)\\}`).exec(coarse)?.[1];
+      expect(rule, `.${control} has no rule in a coarse-pointer block`).toBeDefined();
+      expect(rule, `.${control} lost its height floor on a finger`).toContain('min-height: 44px');
+      expect(rule, `.${control} lost its width floor on a finger`).toContain('min-width: 44px');
+    }
     expect(coarse, "the panel's close lost its width floor").toContain(
       '.pop .hd .x { min-width: 44px; }',
     );
@@ -4009,6 +4018,278 @@ describe('the dock', () => {
       vs?.parentElement,
       'and it shares the name column, so the two align rather than the name being pushed around',
     ).toBe(name?.parentElement);
+  });
+
+  /**
+   * **A preview is a document, so it is bounded and scrolls in place.** A
+   * forty-line issue body used to grow the composer lane past the window, and
+   * `.session-page` clips its grid - so the tail of the very thing being
+   * approved was unreachable, with nothing on screen to say it was there. One
+   * rule covers both panels, because both are the same region.
+   *
+   * Read off the sheet because the bound IS a declaration: jsdom lays out
+   * nothing, so `scrollHeight > clientHeight` here would be asserting this
+   * test's own stubs. The measured geometry at both widths rides the pull
+   * request instead.
+   */
+  it('bounds a preview panel, so a long one scrolls rather than clipping', () => {
+    // Off the working directory, which the suite runs from the client root:
+    // jsdom's `import.meta.url` is an http one, so it cannot name the file.
+    const sheet = readFileSync('src/assets/web.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = /\.dock \.preview\s*\{([^}]*)\}/.exec(sheet)?.[1];
+    expect(rule, 'the sheet bounds the panel both previews are drawn in').toBeDefined();
+    expect(rule, 'to a height the window decides').toMatch(/max-height:\s*min\([^)]*\)/);
+    expect(rule, 'and gives it its own scroll').toMatch(/overflow-y:\s*(auto|scroll)/);
+  });
+
+  /**
+   * **The preview owns the scroll keys while the keyboard is in it.** Tab is
+   * how a reader with no wheel gets into the region, and the dock's own key
+   * map would otherwise take the arrow to move the mark - so the tab stop
+   * would scroll nothing and the rest of the document would stay unread.
+   */
+  it('keeps the scroll keys for the preview while the keyboard is in it', () => {
+    const long = Array.from(
+      { length: 40 },
+      (_, at) => `paragraph ${String(at + 1)} of the preview`,
+    ).join('\n\n');
+    open({
+      record: record({
+        pending_asks: [
+          questionAsk('tu-q', {
+            options: [
+              { option_id: 'q-long', label: 'The long one', description: null, preview: long },
+              { option_id: 'q-prod', label: 'Production', description: null, preview: null },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const preview = document.querySelector('.dock .preview');
+    if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    expect(preview.tabIndex, 'the region is a tab stop, or no keyboard reaches it').toBe(0);
+    expect(preview.getAttribute('role'), 'and it is named for what it is').toBe('region');
+    expect(
+      preview.getAttribute('aria-label'),
+      "with the marked option's label, which is what a screen reader says over its prose",
+    ).toBe("the marked option's preview");
+    preview.focus();
+    flushSync();
+
+    press('ArrowDown');
+
+    expect(
+      options()[0]?.getAttribute('aria-selected'),
+      'an arrow over the preview scrolls it rather than moving the mark',
+    ).toBe('true');
+    expect(document.activeElement, 'and the keyboard stays in the document being read').toBe(
+      preview,
+    );
+  });
+
+  /**
+   * **The rest of the keys are still the dock's.** The region takes the keys
+   * that scroll it and gives every other one back: a character typed while the
+   * keyboard is in the preview is the first character of the reader's own
+   * answer, and swallowing it there would break the type-to-start path the
+   * dock has everywhere else.
+   */
+  it('still takes a character typed from the preview as the answer', () => {
+    open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const preview = document.querySelector('.dock .preview');
+    if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    preview.focus();
+    flushSync();
+    expect(
+      document.activeElement,
+      'the keyboard is in the region, or the dock would take the character without it',
+    ).toBe(preview);
+
+    press('k');
+
+    const field = document.querySelector('.dock textarea.notes');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the dock drew no words row');
+    expect(field.value, 'the dock received the character').toBe('k');
+    expect(document.activeElement, 'and the caret went where the character landed').toBe(field);
+  });
+
+  /**
+   * **A link inside the region is the link's.** The region draws rendered
+   * markdown, which can carry a link, and a reader tabbed onto one presses
+   * Enter to follow it - the dock's own Enter would answer the marked row
+   * instead. jsdom runs no native activation, so what these assertions pin is
+   * the half this component owns: the dock must not swallow the key on its
+   * way to the link. The region itself keeps the key, so the exemption is the
+   * link rather than the panel: a guard on the panel would take Enter from
+   * the reader who tabbed into it to answer.
+   */
+  it('gives Enter on a link inside a preview to the link, and keeps it for the region', () => {
+    const harness = open({
+      record: record({
+        pending_asks: [
+          questionAsk('tu-q', {
+            options: [
+              {
+                option_id: 'q-link',
+                label: 'The runbook',
+                description: null,
+                preview: 'Read [the runbook](https://example.com/runbook) first.',
+              },
+              { option_id: 'q-prod', label: 'Production', description: null, preview: null },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const preview = document.querySelector('.dock .preview');
+    if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    const link = preview.querySelector('a');
+    if (!(link instanceof HTMLAnchorElement)) throw new Error('the preview drew no link');
+
+    const onLink = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    link.dispatchEvent(onLink);
+    flushSync();
+
+    expect(onLink.defaultPrevented, "the link's Enter was not swallowed").toBe(false);
+    expect(
+      commands(harness),
+      "and the dock answered nothing under it: following the link is the link's",
+    ).toEqual([]);
+
+    const onRegion = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+    });
+    preview.dispatchEvent(onRegion);
+    flushSync();
+
+    expect(onRegion.defaultPrevented, 'the region still answers its own Enter').toBe(true);
+    expect(commands(harness), 'and answers the marked row').toEqual([
+      {
+        respond_question: {
+          key: SLOT,
+          tool_id: 'tu-q',
+          outcome: { outcome: 'answered', selected_option_ids: ['q-link'], annotation: null },
+        },
+      },
+    ]);
+  });
+
+  /**
+   * **The held post's half of the link rule.** On a held post the old path
+   * answered nothing either way, so a commands-only assertion would call the
+   * broken dock fixed: what tells them apart is whether Enter was swallowed
+   * on its way to the post's link.
+   */
+  it("does not swallow Enter on a held post's link", () => {
+    const harness = open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            text: 'Deploy finished. See [the runbook](https://example.com/runbook).',
+          }),
+        ],
+      }),
+    });
+
+    const link = document.querySelector('.dock .preview a');
+    if (!(link instanceof HTMLAnchorElement)) throw new Error('the held post drew no link');
+
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    link.dispatchEvent(event);
+    flushSync();
+
+    expect(event.defaultPrevented, "the post's link kept its Enter").toBe(false);
+    expect(commands(harness), 'and nothing was answered on its way').toEqual([]);
+  });
+
+  /**
+   * **The held post is the same document, so it is the same region.** A long
+   * Slack post grew the composer lane exactly as a long option preview did,
+   * and `.session-page` clips its grid - the words the reader is asked to
+   * approve, with their tail unreachable and nothing on screen to say so.
+   * Both panels are drawn by one snippet, so the post gets the very region the
+   * option preview gets rather than a second copy of it.
+   *
+   * What the bound IS is a declaration in the sheet, asserted by the case
+   * above; the overflow it produces is measured against the running page at
+   * both widths, because jsdom lays out nothing and reading `scrollHeight`
+   * against `clientHeight` here would assert this test's own stubs.
+   */
+  it('draws a held post in the bounded region an option preview uses', () => {
+    const long = Array.from(
+      { length: 40 },
+      (_, at) => `paragraph ${String(at + 1)} of the post`,
+    ).join('\n\n');
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+
+    const option = document.querySelector('.dock .preview');
+    if (!(option instanceof HTMLElement)) throw new Error('the dock drew no option preview');
+    const shape = (el: HTMLElement) => ({
+      tag: el.tagName,
+      classes: el.className,
+      role: el.getAttribute('role'),
+      tabIndex: el.tabIndex,
+      scrollRegion: el.hasAttribute('data-preview'),
+    });
+
+    harness.page.record = record({ pending_asks: [slackDraftAsk({ text: long })] });
+    flushSync();
+
+    const post = document.querySelector('.dock .preview');
+    if (!(post instanceof HTMLElement)) throw new Error('the dock drew no held post region');
+    expect(shape(post), 'the post gets the very panel the option preview gets').toEqual(
+      shape(option),
+    );
+    expect(post.tabIndex, 'the region is a tab stop, or no keyboard reaches it').toBe(0);
+    expect(post.getAttribute('role'), 'and it is named for what it is').toBe('region');
+    expect(
+      post.getAttribute('aria-label'),
+      "with the post's own label, not the option preview's",
+    ).toBe('the post held for approval');
+    expect(
+      drawn(),
+      'the key line leads with the Tab that reaches the region, where the arrows scroll',
+    ).toContain('Tab into the post, then ↑↓ scroll it');
+    expect(drawn(), 'and names the second Tab for the two actions').toContain(
+      "Tab again for Post and Don't send",
+    );
+  });
+
+  /**
+   * **The region takes only the keys that scroll it.** Escape is one it must
+   * give back, and it is the held post's own dock key - "don't send" - which
+   * makes it the key this kind of prompt can prove: a held post draws no words
+   * row, so a typed character has nothing to land in, and the character path
+   * is the option preview's case above.
+   */
+  it("lets a held post's Escape through the region to the dock's own don't send", () => {
+    const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    const post = document.querySelector('.dock .preview');
+    if (!(post instanceof HTMLElement)) throw new Error('the dock drew no held post region');
+    post.focus();
+    flushSync();
+    expect(
+      document.activeElement,
+      'the keyboard is in the region, or a dock key would pass this without it',
+    ).toBe(post);
+
+    press('Escape');
+
+    expect(commands(harness), "the region gave the key back to the post's own dock").toEqual([
+      {
+        respond_slack_post: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-000000000000',
+          approved: false,
+        },
+      },
+    ]);
   });
 
   it("offers the reader's own words as the agent's, which is the wording rule", () => {
@@ -5525,6 +5806,28 @@ describe('the dock', () => {
     expect(drawn(), 'the reason is drawn where the dock stood').toContain('no longer waiting');
   });
 
+  /** **The dock card's own door before the takeover is up.** The page writes
+   *  this word by hand and nothing else ties it to the core's enum, so a
+   *  rename here would compile, keep every suite green, and leave every
+   *  answer given before Open undecodable - the exact failure the wire test
+   *  exists for, and the one door no client test used to cover. */
+  it('answers the dock card with its own door before Open', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Done').click();
+    flushSync();
+
+    expect(commands(harness)).toEqual([
+      {
+        respond_browser_hand_off: {
+          key: { org: 'Busytools', project: 'forge', label: 'lead' },
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          answer: { ending: { type: 'done' }, source: 'dock' },
+        },
+      },
+    ]);
+  });
+
   it('answers the hand-off as the verb says: Done settles it', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
@@ -5538,7 +5841,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: true,
+          answer: { ending: { type: 'done' }, source: 'takeover' },
         },
       },
     ]);
@@ -5637,7 +5940,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });
@@ -5659,7 +5962,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: false,
+          answer: { ending: { type: 'not_now' }, source: 'takeover' },
         },
       },
     ]);
@@ -5691,7 +5994,13 @@ describe('the dock', () => {
     expect(surface.phase, 'the second ask landed').toBe('live');
   });
 
-  it("sends the bar's feedback to the agent, then declines the hand-off", () => {
+  /** **A person reporting a problem is not a person declining.** The feedback
+   *  line sends their words as a prompt and then ends the park, and the ending
+   *  it sends must say they spoke - `not_now` here told the session "the person
+   *  declined, decide what to do instead" while they were still working the
+   *  page (live, 2026-10-26: two parks ended that way with the person's own
+   *  words describing the page). */
+  it('sends the bar feedback to the agent and ends the park as spoken, not declined', () => {
     const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
 
     action('Open browser').click();
@@ -5718,9 +6027,64 @@ describe('the dock', () => {
       respond_browser_hand_off: {
         key: { org: 'Busytools', project: 'forge', label: 'lead' },
         id: '0192e1c0-0000-7000-8000-0000000000aa',
-        done: false,
+        answer: { ending: { type: 'feedback' }, source: 'feedback' },
       },
     });
+  });
+
+  /** **Words that never left are not a message to read.** A send the socket
+   *  refused used to answer `feedback` anyway, telling the session to read a
+   *  prompt nobody sent and ending the park on nothing; the dock stays live,
+   *  so the reader can press send again when the socket is back. */
+  it('keeps the hand-off parked when the feedback never left', () => {
+    const shared = wire();
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+
+    shared.down = true;
+    send.click();
+    flushSync();
+    expect(commands(harness), 'the refused send answers nothing').toEqual([]);
+
+    shared.down = false;
+    send.click();
+    flushSync();
+    expect(
+      commands(harness).map((command) => Object.keys(command)[0]),
+      'and the retry sends the words and then the ending',
+    ).toEqual(['prompt_under', 'respond_browser_hand_off']);
+  });
+
+  /** **A key inside the raised takeover is the page's, not the dock's.** The
+   *  native overlay holds the keyboard while the surface is up, and a key the
+   *  bar itself receives must not reach the dock's refusal - Escape in a
+   *  raised takeover declining the hand-off was the first suspect in the live
+   *  incident, and this is the property that rules it out. */
+  it('does not answer the hand-off on Escape inside the raised takeover', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    action('Open browser').click();
+    flushSync();
+    barAction('something').click();
+    flushSync();
+
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.focus();
+    press('Escape');
+
+    expect(commands(harness), 'the hand-off is still parked, nothing answered it').toEqual([]);
   });
 
   it('declines the hand-off on Escape, which the dock row promises', () => {
@@ -5738,7 +6102,7 @@ describe('the dock', () => {
         respond_browser_hand_off: {
           key: { org: 'Busytools', project: 'forge', label: 'lead' },
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          done: false,
+          answer: { ending: { type: 'not_now' }, source: 'dock_escape' },
         },
       },
     ]);
@@ -5756,7 +6120,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });
@@ -5765,6 +6129,30 @@ describe('the dock', () => {
 
     expect(document.querySelector('.dock'), 'the dock stands down').toBeNull();
     expect(drawn(), 'and the row says which ending took it').toContain('settled in another view');
+  });
+
+  /** The feedback ending is a new word on the wire, and a client that does
+   *  not know it falls through to "no longer waiting" - which would tell a
+   *  reader nothing about a hand-off the person settled with a message. */
+  it('says a hand-off another view settled with a message', () => {
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) });
+
+    harness.say({
+      kind: 'update',
+      update: {
+        browser_hand_off_resolved: {
+          key: SLOT,
+          id: '0192e1c0-0000-7000-8000-0000000000aa',
+          answer: { ending: { type: 'feedback' }, source: 'feedback', client: 1 },
+        },
+      },
+    });
+    harness.page.record = record();
+    flushSync();
+
+    expect(drawn(), 'the news is the message, not a silence').toContain(
+      'settled with a message in another view',
+    );
   });
 
   it("does not narrate the reader's own answer to a hand-off", () => {
@@ -5785,7 +6173,7 @@ describe('the dock', () => {
         browser_hand_off_resolved: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-0000000000aa',
-          ending: { type: 'done' },
+          answer: { ending: { type: 'done' }, source: 'takeover', client: 1 },
         },
       },
     });

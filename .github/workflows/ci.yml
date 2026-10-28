@@ -431,6 +431,13 @@ jobs:
       - run: cargo nextest run -p forge-server --test browser_service --run-ignored ignored-only
         env:
           FORGE_BROWSER_TEST_STACK: ${{ runner.temp }}/forge-browser-stack
+      # **The host arms and the surface parity, live**: the two tools the
+      # driver does not have, the two arguments it does not take, and the
+      # check that every advertised spec is answered by the driver or by a
+      # host arm. Same host bundle and stack as the service test above.
+      - run: cargo nextest run -p forge-server --test browser_custom_live --test surface_parity_live --run-ignored ignored-only
+        env:
+          FORGE_BROWSER_TEST_STACK: ${{ runner.temp }}/forge-browser-stack
       - run: just client-tauri-clippy
       - run: just client-tauri-test
 

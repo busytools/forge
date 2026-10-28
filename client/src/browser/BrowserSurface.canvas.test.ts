@@ -7,13 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * each relayed frame on a canvas and sends the person's gestures back. The
  * desktop's arm (the shell's overlay) is not this test's.
  */
-vi.mock('./host', () => ({
-  canHost: vi.fn(() => true),
+vi.mock('./link', () => ({
+  canAttach: vi.fn(() => true),
+  clearBrowserLink: vi.fn(),
   drawsSurface: vi.fn(() => true),
   drawsCanvas: vi.fn(() => true),
   keptFrame: vi.fn(() => Promise.resolve(null)),
   showBrowser: vi.fn(() => Promise.resolve(null)),
   hideBrowser: vi.fn(() => Promise.resolve(true)),
+  installBrowserLink: vi.fn(),
   listTabs: vi.fn(() =>
     Promise.resolve({
       profile: 'hunt',
@@ -24,14 +26,24 @@ vi.mock('./host', () => ({
       rows: [],
     }),
   ),
-  tabListOf: (value: unknown) => value,
+  navigateBrowser: vi.fn(() => Promise.resolve()),
+  onConnection: vi.fn(() => Promise.resolve(() => {})),
+  onFailed: vi.fn(() => Promise.resolve(() => {})),
+  onLower: vi.fn(() => null),
+  onNav: vi.fn(() => Promise.resolve(() => {})),
+  onRemeasure: vi.fn(() => null),
+  onTabs: vi.fn(() => Promise.resolve(() => {})),
+  onView: vi.fn(() => Promise.resolve(() => {})),
+  reattachesOnReconnect: vi.fn(() => false),
   reportSurfaceRect: vi.fn(() => Promise.resolve()),
   resizeBrowser: vi.fn(() => Promise.resolve()),
+  sizesAsWatcher: vi.fn(() => false),
   takeControl: vi.fn(() => Promise.resolve()),
+  usesPageHistory: vi.fn(() => false),
 }));
 
 import BrowserSurface from './BrowserSurface.svelte';
-import { keptFrame } from './host';
+import { keptFrame } from './link';
 import { selectTab, setRegion, surface } from './surface.svelte';
 import type { BrowserFrame, Connection } from '../socket';
 import type { BrowserInputEvent } from '../protocol';
@@ -112,7 +124,7 @@ describe('the canvas viewer', () => {
       Promise.resolve({ width: 320, height: 200, close: () => {} }),
     );
     vi.mocked(keptFrame).mockResolvedValue(frame(1));
-    const { showBrowser } = await import('./host');
+    const { showBrowser } = await import('./link');
     vi.mocked(showBrowser).mockResolvedValue({ profile: 'hunt', tab: 2 });
     const { connection } = stubConnection();
     surface.phase = 'failed';
@@ -432,6 +444,82 @@ describe('the canvas viewer', () => {
     canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ kind: 'mouse', action: 'press', button: 0 });
+  });
+
+  /// **A mouse's press keeps the keyboard on the page.** The click moves
+  /// focus to the body and the canvas is not focusable, so without this a
+  /// page with no shell behind it loses every key after the first click.
+  it('puts the keyboard on the page for a press that holds the role', async () => {
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector('input.surface-ime');
+    if (canvas === null || ime === null) throw new Error('no canvas or keyboard field');
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'a click that holds the role owns the keyboard').toBe(ime),
+    );
+  });
+
+  /// **A watcher's press takes no keyboard.** Its keys are refused by the
+  /// server, and a field it does not own must not take the person's typing.
+  it('leaves the keyboard alone for a press that does not hold the role', () => {
+    surface.viewer = 7;
+    surface.controller = null;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector('input.surface-ime');
+    if (canvas === null || ime === null) throw new Error('no canvas or keyboard field');
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
+    expect(document.activeElement, "a watcher's press takes no keyboard").not.toBe(ime);
+  });
+
+  /// **A hover is the page's too**, and a double click is the count the DOM
+  /// already decided: a menu that opens on hover and a field that selects on
+  /// a double click both need what a drag-only, single-click stream loses.
+  it('sends a button-less move and a double click as itself', () => {
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    if (canvas === null) throw new Error('no canvas');
+
+    canvas.dispatchEvent(
+      new MouseEvent('pointermove', { clientX: 10, clientY: 20, bubbles: true }),
+    );
+    expect(events.at(-1), 'a hover crosses with no button held').toMatchObject({
+      kind: 'mouse',
+      action: 'move',
+    });
+
+    canvas.dispatchEvent(
+      new MouseEvent('pointerdown', { clientX: 10, clientY: 20, detail: 2, bubbles: true }),
+    );
+    expect(events.at(-1), 'the second click is the second click').toMatchObject({
+      action: 'press',
+      clicks: 2,
+    });
+  });
+
+  /// **A mouse that takes control can type at once**, and a finger's keyboard
+  /// stays a tap away: raising it on the role would interrupt the swipe that
+  /// came with it.
+  it('gives the keyboard to a fine pointer that takes control', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: fine)' }));
+    const { connection } = stubConnection();
+    const target = open(connection);
+    surface.viewer = 7;
+    surface.controller = 7;
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (input === null) throw new Error('no keyboard field');
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'the field takes the keyboard').toBe(input),
+    );
   });
 
   /** A pointer event of the kind a finger sends. */

@@ -446,6 +446,10 @@ pub(crate) enum CronFireOutcome {
     /// one-shot stays due instead, because advancing removes a one-shot:
     /// dropping it would throw the prompt away with no later slot.
     TargetCannotBeWoken { directory: std::path::PathBuf },
+    /// Every account serving the project's model is cooling until the
+    /// carried reset: the caller leaves the entry due, because a refusal
+    /// right now would expire the parked prompt.
+    DeferredCooling { cooling: crate::workspace::ProjectCooling },
     /// The Command channel is closed (workspace shutting down). The caller
     /// leaves the cron due so the next boot catch-up re-fires it.
     DispatchFailed,
@@ -566,14 +570,8 @@ pub(crate) fn deliver_cron_prompt(
     // too. A walk empty because no account declares the model is the other
     // case, and that one is permanent - deferring it would retry a broken
     // cron forever, so it is left to fail as before.
-    if workspace.project_walk_is_cooling(&view.key) {
-        tracing::warn!(
-            target: "forge_workspace::spawn",
-            project = %project_name,
-            "cron fire deferred: every account serving this project's model is cooling, so the \
-             wake would be refused and its parked prompt expired",
-        );
-        return CronFireOutcome::DispatchFailed;
+    if let Some(cooling) = workspace.project_walk_cooling(&view.key) {
+        return CronFireOutcome::DeferredCooling { cooling };
     }
     // Buffer by owner, then wake via resume: SpawnProject resumes the lead,
     // whose reconnect re-spawns the persisted workers; each drains its own
@@ -1666,7 +1664,7 @@ pub(crate) fn handle_spawn_worker(
         charter: Some(spawn_prompt_charter(
             &charter,
             families.as_deref(),
-            workspace.systemone.is_some(),
+            workspace.systemone.read().is_some(),
         )),
         extra_args: build_worker_extra_args(is_git, label, interactive),
         ..Default::default()
@@ -1867,10 +1865,27 @@ pub(crate) fn handle_close_worker(
         .into_iter()
         .rev()
         .find(|worker| worker.label == label);
+    // **A failed spawn is a seat to dismiss, not a session to tear down.**
+    // Its entry is a tombstone (or was rolled back), so there is nothing
+    // running to kill and the persisted row is what lets the label start
+    // again - [`teardown_worker`] would delete it.
+    if live
+        .as_ref()
+        .is_some_and(|entry| matches!(entry.status, forge_primitives::WorkerLiveness::Failed))
+    {
+        dismiss_failed_worker(workspace, project_key, label, live.as_ref());
+        return;
+    }
     if let Some(entry) = live.as_ref() {
         workspace.announce_release(&entry.slot);
     }
     let Some(entry) = teardown_worker(workspace, project_key, label) else {
+        // No live entry: the seat may still be here as a persisted row with
+        // a spawn failure that rolled its entry back. The close dismisses
+        // that trace; with none, there is nothing to close.
+        if dismiss_failed_worker(workspace, project_key, label, None) {
+            return;
+        }
         tracing::warn!(
             target: "forge_workspace::spawn",
             project = %project_key.as_str(),
@@ -1882,6 +1897,51 @@ pub(crate) fn handle_close_worker(
     let worktree = WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
     emit_worker_removed(workspace, project_key, &entry, worktree);
     sweep_browser_seats(workspace);
+}
+
+/// Close a failed worker, or one whose failure is all that is left of it:
+/// take the tombstone entry when one survives, clear the slot's failure
+/// record, and announce the release so views re-read the row without it.
+///
+/// **Not [`teardown_worker`]**: the persisted row stays, because it is what
+/// lets the label start again once whatever refused the spawn is fixed. The
+/// worker's subscriptions and schedules stay with it for the same reason.
+/// Answers whether anything was there to dismiss.
+fn dismiss_failed_worker(
+    workspace: &Arc<Workspace>,
+    project_key: &ProjectKey,
+    label: &str,
+    entry: Option<&crate::mcp::workers::types::WorkerEntry>,
+) -> bool {
+    let slot = if let Some(entry) = entry {
+        entry.slot.clone()
+    } else {
+        // The slot is the identity the failure is recorded under; a project
+        // no longer in the config has no seat left to address.
+        let Some(view) =
+            workspace.list_projects().into_iter().find(|view| view.key == *project_key)
+        else {
+            return false;
+        };
+        SessionSlot::worker(&view.org, &view.name, label)
+    };
+    if entry.is_none() && workspace.spawn_failure(&slot).is_none() {
+        return false;
+    }
+    if let Some(entry) = entry {
+        let _ = workspace.remove_worker_by_session_key(&entry.slot);
+    }
+    workspace.announce_release(&slot);
+    workspace.expire_parked_for_slot(
+        &slot,
+        crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
+    );
+    if let Some(entry) = entry {
+        let worktree = WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
+        emit_worker_removed(workspace, project_key, entry, worktree);
+    }
+    sweep_browser_seats(workspace);
+    true
 }
 
 /// Tell the browser fleet which seats remain: **the seat is down, so its
@@ -3358,7 +3418,7 @@ provider = "anthropic"
         }
     }
 
-    use forge_primitives::slack::SlackFile;
+    use forge_primitives::slack::{SlackFile, SlackFileShares};
 
     fn slack_msg(text: &str) -> SlackMessage {
         SlackMessage {
@@ -5454,6 +5514,7 @@ provider = "anthropic"
             id: "F1".to_owned(),
             name: "notes.txt".to_owned(),
             url_private: "https://files.slack.com/x".to_owned(),
+            shares: SlackFileShares::default(),
         }];
 
         let prose = fresh_prose(&[message]);
@@ -5617,8 +5678,8 @@ provider = "anthropic"
     }
 
     /// The name the connector resolved is what the block shows. The raw id
-    /// stays on the message for the own-message filter, and the block drops
-    /// it, so the resolved name is the only one that reaches a reader.
+    /// stays on the message and the block drops it, so the resolved name is
+    /// the only one that reaches a reader.
     #[test]
     fn a_bundle_prefers_the_resolved_author_over_the_id() {
         let mut message = slack_msg_at("1.1", "U0ATEK2EAGP", "hi");
@@ -9500,6 +9561,28 @@ mod lead_charter_tests {
                  cut down"
             ),
             "the user-decision half is pinned",
+        );
+    }
+
+    /// Mid-turn delivery had no written duty of its own in this charter, so the
+    /// bullet that adds one is pinned sentence by sentence.
+    #[test]
+    fn the_charter_answers_a_mid_turn_message() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "- **A message from the user that arrives mid-turn is still owed an answer.**"
+            ),
+            "the bullet's own lead-in, so folding it into another bullet fails here",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("Answer it in that same turn, before you start the next piece of work"),
+            "the duty falls due in the same turn, before the next piece of work",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("a question left unanswered is a dropped message, not a deferred one"),
+            "the failure is named, so the line cannot be read as permission to defer",
         );
     }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { handoffFrame } from '../wire/handoff';
 import { cronNames } from './cron-names.svelte';
 import { familyOf } from './families';
 import { runningMs } from './report';
@@ -265,7 +266,7 @@ describe('one turn folded into the units a view draws', () => {
       refused(
         'mcp__forge__slack__list',
         {},
-        'several Slack workspaces are configured; pass `workspace`: Subspace, Trust Machines',
+        'no Slack workspace is bound to Granite/core-v1; add [orgs.slack] workspace = "<label>" to the org, or [orgs.projects.slack] workspace = "<label>" to the project in forge.toml',
       ),
     );
 
@@ -274,7 +275,7 @@ describe('one turn folded into the units a view draws', () => {
     expect(
       call?.leaf.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join(''),
       'and the reason is there for the row and the body',
-    ).toContain('several Slack workspaces are configured');
+    ).toContain('no Slack workspace is bound to Granite/core-v1');
   });
 
   it('titles a successful forge call by the card own subject, not the family own noun', () => {
@@ -3887,24 +3888,28 @@ describe('a page seam that re-serves a result', () => {
   it('folds a handoff frame into the row that joins two sessions', () => {
     const units = fold([
       said([{ type: 'text', text: 'the work so far' }]),
-      {
-        type: 'forge_handoff',
-        handoff: {
-          from: 'old-session-id',
-          to: 'new-session-id',
-          reason: 'fill',
-          fill_percent: 85,
-          brief: { ground_truth: [], judgment: [] },
-        },
-      },
+      handoffFrame({
+        from: 'old-session-id',
+        to: 'new-session-id',
+        reason: 'fill',
+        fill_percent: 85,
+        total_tokens: null,
+        max_tokens: null,
+        at_percent: 85,
+        at: null,
+        cycle: { requests: 0, turns: 0, prompt_tokens: 0 },
+        successor: null,
+        ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
+        judgment: [{ label: 'Next', lines: ['the client row'] }],
+      }),
       said([{ type: 'text', text: 'picked up' }]),
     ]);
     expect(kinds(units), 'prose, the row, then the successor').toEqual(['text', 'handoff', 'text']);
     const row = units.find((unit) => unit.kind === 'handoff');
-    expect(
-      row?.kind === 'handoff' ? row.handoff.to : null,
-      'the row names the session that continues',
-    ).toBe('new-session-id');
+    const handed = row?.kind === 'handoff' ? row.handoff : null;
+    expect(handed?.to, 'the row names the session that continues').toBe('new-session-id');
+    expect(handed?.ground_truth[0]?.label, 'the ground truth rides the row').toBe('seat');
+    expect(handed?.judgment[0]?.label, 'and the judgment with it').toBe('Next');
   });
 });
 

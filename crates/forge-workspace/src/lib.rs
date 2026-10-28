@@ -103,6 +103,7 @@ pub use forge_gateway::{LoadingState, Unusable, UsageFetchStatus};
 pub use domain_session::{ContextUsage, DomainSession, McpServers, TurnLiveness, liveness_of};
 pub use error::WorkspaceError;
 pub use forge_dictate::normalize::{Context, Structure, Styling};
+pub use handoff::{SkillInstall, install_skill, skill_path};
 pub use protocol::{
     Command, DictateOutcome, DispatchError, NoticeSeverity, PromptOrigin, PromptSource,
     SessionUpdate, TurnErrorClass,
@@ -145,10 +146,13 @@ pub use forge_agent::transcript_rows;
 // re-exports from `forge_primitives`; the modules also surface a
 // handful of helper functions / network fetchers that genuinely live
 // in `forge-agent`.
-pub use config::{BrowserSettings, PluginSettings};
+pub use config::{BrowserSettings, ConfigReload, PluginSettings};
 pub mod env {
     pub mod cli_version {
         pub use forge_agent::env::cli_version::*;
+    }
+    pub mod config_watch {
+        pub use forge_agent::env::config_watch::*;
     }
     pub mod documents {
         pub use forge_agent::env::documents::*;

@@ -53,10 +53,17 @@
   .bt.off { opacity: .45; }
   .btitle { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
   .bacts { margin-left: auto; display: flex; gap: 8px; }
-  .feedback { display: flex; gap: 8px; padding: 7px 12px;
+  .feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
     border-bottom: 1px solid var(--line); background: var(--s2); }
   .fld { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
     border: 1px solid var(--line); border-radius: 8px; background: var(--s1); color: var(--text); }
+  /* The feedback line's two controls are the dock's own, drawn as it draws
+     them: the mic dim, the send accent, both a 26px box for the glyph. */
+  .micb, .sendb { flex: none; width: 26px; height: 26px; border-radius: 8px;
+    background: none; display: grid; place-items: center; cursor: pointer; }
+  .micb { border: 1px solid var(--line); color: var(--dim); }
+  .sendb { border: 1px solid rgba(244,118,0,.45); color: var(--accent); }
+  .micb .ic, .sendb .ic { width: 15px; height: 15px; display: block; }
 
   /* The page area: the page itself, no browser chrome. */
   .stage { position: relative; flex: 1; min-height: 340px; background: #fdfbf7;
@@ -80,7 +87,8 @@
   .dock .q { display: flex; align-items: baseline; gap: 9px; }
   .dock .qm { color: var(--accent); font-family: var(--mono); font-size: var(--fs-data); }
   .dock .op { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
-  .dock .fo { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .dock .reason { font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+  .dock .desc { color: var(--dim); font-size: var(--fs-data); }
   .btn { border: 1px solid var(--line); border-radius: 9px; padding: 5px 12px;
     background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
   .btn.p { background: var(--accent); border-color: var(--accent); color: #140b03; }
@@ -128,7 +136,7 @@
     <span>engine: the server's CEF host</span>
     <span>one host per org profile</span>
     <span>the host owns the tabs</span>
-    <span>the phone is a viewer too</span>
+    <span>the phone and the web are viewers too</span>
   </div>
 
   <h2>The takeover</h2>
@@ -216,6 +224,52 @@
     padding, and the newest frame is kept for a canvas that mounts after it arrived.</div>
   </div>
 
+  <h2>The web</h2>
+  <div class="tile">
+    <div class="tcap"><b>the same page in a browser tab</b> - the page owns the overlay, the canvas is the picture</div>
+    <div style="border:1.5px solid var(--line); border-radius:14px; overflow:hidden; background:var(--s1);">
+      <div style="display:flex; align-items:center; gap:8px; padding:7px 10px; border-bottom:1px solid var(--line); background:var(--s2); font-family:var(--mono); font-size:var(--fs-label); color:var(--dim);">
+        <span style="display:inline-flex; gap:5px;">
+          <span style="width:9px;height:9px;border-radius:50%;background:var(--line);"></span>
+          <span style="width:9px;height:9px;border-radius:50%;background:var(--line);"></span>
+          <span style="width:9px;height:9px;border-radius:50%;background:var(--line);"></span>
+        </span>
+        <span style="flex:1; border:1px solid var(--line); border-radius:7px; padding:3px 9px; color:var(--muted);">https://forge.hub/session/Busytools/job-hunt/lead</span>
+      </div>
+      <div class="takeover" style="border:0; border-radius:0; min-height:360px;">
+        <div class="bar">
+          <span class="bt d">back to chat</span>
+          <span class="bnav">
+            <span class="bt arrow" aria-label="back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></span>
+            <span class="bt arrow off" aria-label="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+          </span>
+          <span class="btitle">browser hand-off &middot; tab 2</span>
+          <span class="bt bpick" title="the profile's tabs">2 <span class="car">&#9662;</span></span>
+          <span class="bacts">
+            <span class="bt">take control</span>
+            <span class="bt">Done</span>
+            <span class="bt d">something's wrong&hellip;</span>
+            <span class="bt d">Not now</span>
+          </span>
+        </div>
+        <div class="stage" style="min-height:300px;">
+          <div class="pagetop" style="padding:20px 24px 0;">
+            <span class="kicker">hiring cafe</span>
+            <h3 style="font-size:22px;">Senior Rust engineer</h3>
+            <p style="font-size:var(--fs-data);">The server encoded this frame; the page drew it on a
+            canvas sized to the tab.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="tnote">a plain browser tab has no shell, so the page draws the whole takeover itself:
+    a fixed overlay over the viewport, the bar at its top and a canvas under it. Attaching, listing
+    the tabs, lowering, taking control, moving through history and laying the page out are the
+    socket's own messages rather than the shell's invokes, and there is no rect to report - the
+    overlay's own box is the surface. Back to chat lowers it and leaves the hand-off parked, and
+    the chat is still under it, so the tab never leaves the app.</div>
+  </div>
+
   <h2>The bar's other two doors</h2>
   <div class="tile">
     <div class="tcap"><b>feedback</b> - what did not work goes to the agent</div>
@@ -237,12 +291,14 @@
       </div>
       <div class="feedback">
         <input class="fld" value="the upload form rejected the file" aria-label="feedback">
-        <span class="bt">send</span>
+        <span class="micb" aria-label="dictate the feedback"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></span>
+        <span class="sendb" aria-label="send the feedback and end the hand-off"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></span>
       </div>
     </div>
-    <div class="tnote">send files the words as a prompt and answers Not now, so the session hears
-    what went wrong and carries on; back to chat closes the takeover and leaves the hand-off
-    parked, the session still waiting.</div>
+    <div class="tnote">send files the words as a prompt and ends the hand-off as <b>feedback</b>,
+    so the session hears what went wrong and carries on without reading it as a decline. The mic
+    is the composer's own, so a take here is the same capture the dock draws. Back to chat closes
+    the takeover and leaves the hand-off parked, the session still waiting.</div>
   </div>
 
   <h2>Before Open, and the strip</h2>
@@ -250,11 +306,12 @@
     <div class="tcap"><b>the hand-off's card</b></div>
     <div class="dock">
       <div class="q"><span class="qm">&#9656;</span> browser hand-off &middot; tab 2</div>
+      <div class="reason">The Apply form needs your CV uploaded, and the upload only takes your own files.</div>
+      <div class="desc">Open browser shows the page the session prepared, exactly as it stands. The session waits, with no timeout, for your answer.</div>
       <div class="op">
         <span class="btn p">Open browser</span>
         <span class="btn">Done</span>
         <span class="btn d">Not now</span>
-        <span class="fo">the session waits until Done or Not now</span>
       </div>
     </div>
     <div class="tnote">once the takeover is up the card leaves the actions to the bar.</div>
@@ -293,7 +350,9 @@
     </div>
     <div class="tnote">the strip's row opens the same takeover outside a hand-off; its panel lists
     the profile's tabs with each one's owner and state, and show raises that tab. Hide returns to
-    the chat and the sessions keep driving the tabs.</div>
+    the chat and the sessions keep driving the tabs. <b>The row only exists while the profile has
+    a tab</b>: with none, the segment draws nothing at all rather than an empty "0 tabs"
+    row.</div>
   </div>
 
   <h2>The states before a frame</h2>
@@ -343,7 +402,7 @@
     </div>
     <div class="tnote">a failure draws the shell's own sentence - the port, the profile, the
     framework, or a page area that could not be placed - and the hand-off stays parked until
-    Done or Not now; <b>try again</b> asks the shell for the surface once more. The tab picker
+    Done, Not now or feedback; <b>try again</b> asks the shell for the surface once more. The tab picker
     is drawn only when the last list it read or was pushed still has tabs.</div>
   </div>
 </div>

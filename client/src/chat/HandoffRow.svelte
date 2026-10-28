@@ -116,16 +116,14 @@
       <div class="sessions">
         <div class="sid">
           <span class="k">previous</span>
-          <span class="v">{handoff.from}</span>
-          <CopyButton id={handoff.from} />
+          <span class="v">{handoff.from}<CopyButton id={handoff.from} /></span>
         </div>
         <div class="sid">
           <span class="k">this session</span>
-          <span class="v">{handoff.to}</span>
-          <CopyButton id={handoff.to} />
+          <span class="v">{handoff.to}<CopyButton id={handoff.to} /></span>
         </div>
-        <div class="hint">copy the previous id and run /resume &lt;old-id&gt; to bring it back</div>
       </div>
+      <div class="hint">copy the previous id and run /resume &lt;old-id&gt; to bring it back</div>
       <div class="lbl">PART 1 &#183; GROUND TRUTH</div>
       {#each handoff.ground_truth as section, at (section.label + ':' + at)}
         <div class="fact">

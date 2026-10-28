@@ -37,15 +37,56 @@ use crate::window::Cdp;
 use crate::{channel, engine, osr, veto};
 
 /// What one call knows about the browser it looked up, and the page it drives.
-struct Driven<'a> {
+struct Driven {
     generation: u64,
     pid: u32,
     port: u16,
     tab: u16,
-    target: &'a str,
     /// The call's remaining budget, so a replacement's own listing cannot
     /// outlive it (an upload is deliberately bounded at 10 s).
     bound: Duration,
+}
+
+/// The call a failure is handled for: the driver tool it ran as, the name the
+/// caller used, and the arguments a repeat would send. **The two names differ
+/// only for a tool forge composes**, so a failure still names what the session
+/// asked for.
+struct Call<'a> {
+    tool: &'a str,
+    reported: &'a str,
+    args: &'a Value,
+}
+
+/// A call as the driver sees it, beside the name the session is told about.
+struct DriverCall<'a> {
+    tool: &'a str,
+    reported: &'a str,
+    args: Value,
+}
+
+/// The driver tool a call runs as, and the name a failure reports. **They
+/// differ only for a tool forge composes**, whose caller never called the
+/// evaluate or the snippet underneath.
+///
+/// `Err` is the call's own shape fault - a forced click with no target, a
+/// wait carrying both a time and an expression - decided before a profile is
+/// opened or the call lock taken, so the refusal is unconditional.
+fn driver_call(tool: &str, args: Value) -> Result<DriverCall<'_>, String> {
+    if tool == "browser_challenge_state" {
+        return Ok(DriverCall {
+            tool: "browser_evaluate",
+            reported: tool,
+            args: json!({ "function": crate::challenge::state_js() }),
+        });
+    }
+    match crate::custom::route(tool, args)? {
+        crate::custom::Routed::Upstream { args } => Ok(DriverCall { tool, reported: tool, args }),
+        crate::custom::Routed::Snippet(code) => Ok(DriverCall {
+            tool: "browser_run_code_unsafe",
+            reported: tool,
+            args: json!({ "code": code }),
+        }),
+    }
 }
 
 /// One browser call's tool, budget and the host it drives.
@@ -81,7 +122,7 @@ pub const VIEW_HEIGHT: u32 = 900;
 /// How long a creation waits for the host's own `TabCreated` line.
 const TAB_EVENT_BOUND: Duration = Duration::from_secs(10);
 
-/// The id a requested tab carries to its birth, so a popup queued beside it
+/// The id a requested tab carries to its birth, so a popup reported beside it
 /// cannot be mistaken for it.
 static TAB_REQUESTS: AtomicU64 = AtomicU64::new(1);
 
@@ -162,6 +203,12 @@ pub struct BrowserService {
     /// stale seat set cannot rebuild `live` over a newer one. The generations
     /// are an order because the workspace serialises its captures.
     sweep_lock: AsyncMutex<u64>,
+    /// The popup births that asked for a pairing pass, for [`Self::start_pairing`].
+    pairing: mpsc::UnboundedSender<PairingRequest>,
+    /// The pairing queue, until `start_pairing` takes it.
+    pairing_queue: Mutex<Option<mpsc::UnboundedReceiver<PairingRequest>>>,
+    /// Whether `start_pairing` has already spawned its consumer.
+    pairing_started: AtomicBool,
 }
 
 /// The idle release's settings, as the boot configures them.
@@ -179,8 +226,13 @@ struct ProfilesConfig {
 
 impl BrowserService {
     /// A service at `root`, with the vendored driver stack read from `stack`.
-    pub fn at(root: PathBuf, stack: PathBuf) -> Self {
-        Self {
+    ///
+    /// **A popup's pairing pass starts here**, not at a boot call that a later
+    /// edit can drop: a birth that nothing pairs is a row the person never
+    /// sees, and nothing else in the service is guaranteed to run.
+    pub fn at(root: PathBuf, stack: PathBuf) -> Arc<Self> {
+        let (pairing, pairing_queue) = mpsc::unbounded_channel();
+        let service = Arc::new(Self {
             store: Store::at(&root),
             root,
             stack,
@@ -198,7 +250,12 @@ impl BrowserService {
             launch: Arc::new(AsyncMutex::new(())),
             stopped: Arc::new(AtomicBool::new(false)),
             sweep_lock: AsyncMutex::new(0),
-        }
+            pairing,
+            pairing_queue: Mutex::new(Some(pairing_queue)),
+            pairing_started: AtomicBool::new(false),
+        });
+        service.start_pairing();
+        service
     }
 
     /// Set the `[browser]` encoding pair every host spawned from here reads.
@@ -235,9 +292,91 @@ impl BrowserService {
         });
     }
 
+    /// Pair a page's popup as it is born, for the process's life, once.
+    ///
+    /// **A popup has no tool call behind it.** A person clicking a sign-in
+    /// button asks this service for nothing, so a birth that waited for the
+    /// next call would leave the strip unchanged and the tab undriveable;
+    /// this pass is what turns the host's `TabCreated` into a row, a pushed
+    /// list and a tab a session can be driven on.
+    pub fn start_pairing(self: &Arc<Self>) {
+        if self.pairing_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // **A service built outside a runtime cannot spawn its pass**, and
+        // leaving the flag down lets the first one inside a runtime start it.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            self.pairing_started.store(false, Ordering::Release);
+            return;
+        };
+        let taken = self.pairing_queue.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let Some(mut queue) = taken else { return };
+        // **The task holds a Weak, not the service.** A test builds many
+        // services; a pass that owns one would keep every one of them, and
+        // its channel, alive for the process's life.
+        let weak = Arc::downgrade(self);
+        handle.spawn(async move {
+            while let Some(request) = queue.recv().await {
+                let Some(service) = weak.upgrade() else { break };
+                let key = request.key.clone();
+                let profile = service.profiles.lock().await.get(&key).cloned();
+                let Some(profile) = profile else { continue };
+                let (driver, port) = {
+                    let state = profile.state.lock().await;
+                    (
+                        state.driver.as_ref().map(Arc::clone),
+                        state.host.as_ref().map(|host| host.port),
+                    )
+                };
+                // **A pass with no driver yet is retried**, or a birth that
+                // arrived while the profile was still coming up waits for a
+                // call that never comes.
+                let (Some(driver), Some(port)) = (driver, port) else {
+                    if tokio::time::Instant::now() < request.until {
+                        tokio::time::sleep(POPUP_PAIR_EVERY).await;
+                        let _ = service.pairing.send(request);
+                    }
+                    continue;
+                };
+                // **One turn per profile, like a call's**: a pairing pass and
+                // a call never pair against each other's listing.
+                let outcome = {
+                    let _turn = profile.call_lock.lock().await;
+                    tokio::time::timeout(PAIR_BOUND, service.reconcile(&profile, &driver, port))
+                        .await
+                };
+                let retry = if let Ok(listed) = outcome {
+                    // **A pass that could not list pairs nothing**, so its
+                    // birth is still the receiver's: it is retried exactly as
+                    // one still waiting in the deferred list is.
+                    !listed || popup_birth_waits(&profile)
+                } else {
+                    tracing::debug!(
+                        event_name = "browser_pair_slow",
+                        profile = %key,
+                        tab = request.tab,
+                        opener = request.opener,
+                        url = %request.url,
+                        "a popup's pairing pass outlasted its bound"
+                    );
+                    true
+                };
+                // **A popup's page appears only once its first document has
+                // started.** The birth that asked for this pass may have
+                // arrived before the driver could list its page, so a birth
+                // still waiting is tried again rather than left for a call
+                // that a person clicking a sign-in button never makes.
+                if retry && tokio::time::Instant::now() < request.until {
+                    tokio::time::sleep(POPUP_PAIR_EVERY).await;
+                    let _ = service.pairing.send(request);
+                }
+            }
+        });
+    }
+
     /// The service the server runs: profiles under forge's app-support tree
     /// and the vendored stack installed beside them.
-    pub fn installed() -> Result<Self, String> {
+    pub fn installed() -> Result<Arc<Self>, String> {
         let root = crate::host_bundle::app_support()?.join("browser");
         let store = Store::at(&root);
         // **The deletion can be gigabytes, so it does not hold up boot.** It
@@ -289,6 +428,11 @@ impl BrowserService {
     /// Where a profile's cache root sits: `<root>/profiles/<org>/<name>/cef`.
     pub fn profile_dir(&self, key: &ProfileKey) -> PathBuf {
         self.store.org_profile(key).join("cef")
+    }
+
+    /// Where a profile's takes sit: `<root>/profiles/<org>/<name>/recordings`.
+    fn recordings_dir(&self, key: &ProfileKey) -> PathBuf {
+        self.store.org_profile(key).join("recordings")
     }
 
     /// The gate for one profile key, held across its open and its teardown.
@@ -425,6 +569,7 @@ impl BrowserService {
             recorded: watch::channel(None).0,
             recording: Mutex::new(None),
             surface: Mutex::new((VIEW_WIDTH, VIEW_HEIGHT, 1.0)),
+            resize: AsyncMutex::new(()),
             encoding: self.encoding(),
             launch: Arc::clone(&self.launch),
             stopped: Arc::clone(&self.stopped),
@@ -437,6 +582,7 @@ impl BrowserService {
             call_lock: AsyncMutex::new(()),
             host_tab_events: AsyncMutex::new(None),
             deferred_tab_events: Mutex::new(Vec::new()),
+            pairing: self.pairing.clone(),
             state: AsyncMutex::new(State::default()),
             touch: Mutex::new(Touch::now()),
             ended: AtomicBool::new(false),
@@ -770,6 +916,7 @@ impl BrowserService {
         match tool {
             "browser_record_start" => return self.record_start(seat).await,
             "browser_record_stop" => return self.record_stop(seat).await,
+            "browser_resize" => return self.resize_window(seat, &args).await,
             _ => {}
         }
         // **An agent's upload is bounded before a browser is opened for it.**
@@ -779,6 +926,13 @@ impl BrowserService {
         // the person's own answer carries.
         let upload =
             if tool == "browser_file_upload" { Some(upload_request(&args)?) } else { None };
+        // **The call's own shape is refused before a browser is opened for
+        // it**: a malformed call is its argument error, never a host boot or
+        // a "the browser is busy" it would not act on. The family's composed
+        // tools are built here too, and the driver's name rides beside the
+        // caller's, because a failure reported as the evaluate or the snippet
+        // underneath would name a tool the session never called.
+        let DriverCall { tool: driver_tool, reported, args } = driver_call(tool, args)?;
         let profile = self.open(seat).await?;
         // **A queued call is a call the session is waiting on.** The wait for
         // the profile's turn is bounded by the driver's own call timeout, and
@@ -873,9 +1027,20 @@ impl BrowserService {
                 }
             },
         };
+        // **The challenge probe is one fixed page script**, so it reaches the
+        // driver as the evaluate it is; upstream has no tool that answers it.
+        // The caller's own name rides beside it, because a failure reported as
+        // `browser_evaluate` would name a tool the session never called.
+        let challenge = reported == "browser_challenge_state";
         let retry_args = args.clone();
-        let (tab, outcome, target) = self
-            .drive(&profile, seat, &driver, tab, Drive { tool, args, bound, port, generation })
+        let (tab, outcome) = self
+            .drive(
+                &profile,
+                seat,
+                &driver,
+                tab,
+                Drive { tool: driver_tool, args, bound, port, generation },
+            )
             .await;
         // **The agent answered a chooser the driver had not reported yet.**
         // One event is owed to this answer, so it is consumed rather than
@@ -891,9 +1056,8 @@ impl BrowserService {
         let outcome = self
             .after_failure(
                 &profile,
-                Driven { generation, pid, port, tab, target: &target, bound },
-                tool,
-                &retry_args,
+                Driven { generation, pid, port, tab, bound },
+                Call { tool: driver_tool, reported, args: &retry_args },
                 outcome,
             )
             .await;
@@ -901,12 +1065,15 @@ impl BrowserService {
             Ok(mut parts) => {
                 // **A host that answered is not suspect any more.**
                 *profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                if challenge {
+                    parts = challenge_result(parts);
+                }
                 if created {
                     parts.push(BrowserPart::Text { text: format!("tab {tab}") });
                 }
                 Ok(parts)
             }
-            Err(why) => Err(why),
+            Err(why) => Err(reported_error(why, driver_tool, reported)),
         }
     }
 
@@ -1353,7 +1520,7 @@ impl BrowserService {
         driver: &Arc<dyn TabDriver>,
         tab: u16,
         call: Drive<'_>,
-    ) -> (u16, Result<Vec<BrowserPart>, String>, String) {
+    ) -> (u16, Result<Vec<BrowserPart>, String>) {
         let Drive { tool, args, bound, port, generation } = call;
         let deadline = tokio::time::Instant::now() + bound;
         let mut driver = Arc::clone(driver);
@@ -1372,7 +1539,7 @@ impl BrowserService {
             .await
         {
             Ok(listing) => Self::tab_index(profile, tab, &page, &listing),
-            Err(why) => return (tab, Err(why), target),
+            Err(why) => return (tab, Err(why)),
         };
         let Some(index) = index else {
             // **A row that cannot be paired is not a closed tab.** Closing it
@@ -1394,11 +1561,10 @@ impl BrowserService {
                     "tab {tab}'s page is not in the browser's list, so the tab was left open. \
                      Call browser_tabs to see it, or open a new tab."
                 )),
-                target,
             );
         };
         if let Err(why) = driver.select(index, left(deadline)).await {
-            return (tab, Err(why), target);
+            return (tab, Err(why));
         }
         self.focus(profile, tab).await;
         profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, true);
@@ -1410,7 +1576,7 @@ impl BrowserService {
         if profile.state.lock().await.host.is_none() {
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
             self.publish_rows(&profile.key).await;
-            return (tab, outcome, target);
+            return (tab, outcome);
         }
         // **The driver's row is the target of record after the call.** A
         // navigation swaps CEF's page target id while the driver's Tab
@@ -1431,7 +1597,7 @@ impl BrowserService {
         // over.** Its paths take `file_decision` to clear a dead driver's
         // chooser; an upload holds that lock across this call, and a second
         // acquisition here would deadlock the profile.
-        (tab, outcome, target)
+        (tab, outcome)
     }
 
     /// The driver's tabs, replacing a driver that is dead. **The backend
@@ -1641,7 +1807,14 @@ impl BrowserService {
     /// targets neither the registry nor the boot tab knows: **a page the
     /// driver created on its own is not a host tab and must not shift the
     /// indices**.
-    async fn reconcile(&self, profile: &Arc<Profile>, driver: &Arc<dyn TabDriver>, port: u16) {
+    /// **Answers whether it got a listing.** A pass that could not list paired
+    /// nothing, so a caller retrying on a waiting birth knows to try again.
+    async fn reconcile(
+        &self,
+        profile: &Arc<Profile>,
+        driver: &Arc<dyn TabDriver>,
+        port: u16,
+    ) -> bool {
         // **A reconcile in flight across a host death must not write its
         // events back over the empty list** the death just made. The
         // generation names the host this pass is pairing for.
@@ -1653,21 +1826,30 @@ impl BrowserService {
                 "reconcile could not list the driver's tabs"
             );
             self.publish_rows(&profile.key).await;
-            return;
+            return false;
         };
-        let mut events: Vec<(u64, HostEvent)> = {
+        // **The events this pass takes are held, not owned.** The pairing pass
+        // that runs here is bounded by a timeout, and a listing that never
+        // returns cancels the future with the births in hand; dropping them
+        // loses a popup for good, and the next pass then prunes its page as an
+        // orphan.
+        let taken: Vec<(u64, HostEvent)> = {
             let mut deferred =
                 profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner);
             std::mem::take(&mut *deferred)
         };
+        let mut held = TakenEvents { profile, events: Some(taken) };
         {
             let mut queue = profile.host_tab_events.lock().await;
             if let Some(receiver) = queue.as_mut() {
                 while let Ok(event) = receiver.try_recv() {
-                    events.push(event);
+                    if let Some(events) = held.events.as_mut() {
+                        events.push(event);
+                    }
                 }
             }
         }
+        let events = held.events.clone().unwrap_or_default();
         let mut unmatched = {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             pair_tab_events(&mut tabs, &listing, events, generation)
@@ -1703,6 +1885,9 @@ impl BrowserService {
         } else {
             *profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner) = unmatched;
         }
+        // **The taken events are the deferred list's now**, so a cancellation
+        // from here on has nothing to put back.
+        held.events = None;
         let orphaned: Vec<String> = {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             // **A fresh host's current page is its boot tab, not an
@@ -1746,6 +1931,7 @@ impl BrowserService {
             "tabs reconciled"
         );
         self.publish_rows(&profile.key).await;
+        true
     }
 
     /// One tab's row list, in the words the tool returns.
@@ -1851,12 +2037,12 @@ impl BrowserService {
     async fn after_failure(
         &self,
         profile: &Arc<Profile>,
-        driven: Driven<'_>,
-        tool: &str,
-        args: &Value,
+        driven: Driven,
+        call: Call<'_>,
         outcome: Result<Vec<BrowserPart>, String>,
     ) -> Result<Vec<BrowserPart>, String> {
-        let Driven { generation, pid, port, tab, target, bound } = driven;
+        let Driven { generation, pid, port, tab, bound, .. } = driven;
+        let Call { tool, reported, args } = call;
         let drove = HostIdentity { pid, port, generation };
         let why = match outcome {
             Ok(parts) => {
@@ -1880,18 +2066,17 @@ impl BrowserService {
                 return Err(dead_host_answer(profile, host, &why));
             }
         }
+        let again = Call { tool, reported, args };
         if driver::stale_page(&why) {
             return self
-                .rebuild_after_dead_page(
-                    profile, generation, drove, tab, target, tool, args, bound, &why,
-                )
+                .rebuild_after_dead_page(profile, generation, drove, tab, again, bound, &why)
                 .await;
         }
         if driver::died(&why) {
             // **A driver that never answered is dead, not a page.** It is
             // replaced on this call rather than waiting for a restart.
             return self
-                .replace_dead_driver(profile, generation, drove, tab, tool, args, bound, &why)
+                .replace_dead_driver(profile, generation, drove, tab, again, bound, &why)
                 .await;
         }
         // **A driver built against a browser that is gone is dropped.** The
@@ -2017,12 +2202,11 @@ impl BrowserService {
         generation: u64,
         drove: HostIdentity,
         tab: u16,
-        _target: &str,
-        tool: &str,
-        args: &Value,
+        call: Call<'_>,
         bound: Duration,
         why: &str,
     ) -> Result<Vec<BrowserPart>, String> {
+        let Call { tool, reported, args } = call;
         // **One rebuild at a time, and the cooldown lives inside it.** Two
         // calls that both read an old `stale_since` would otherwise both
         // rebuild, and the second would clear the driver the first installed.
@@ -2039,13 +2223,16 @@ impl BrowserService {
             // the generation it captured at its lookup; a driver installed
             // since then is serving the profile now.
             if state.driver_generation != generation {
-                log_rebuild(profile, tool, "not this call's generation", why);
-                return Err(why.to_owned());
+                log_rebuild(profile, reported, "not this call's generation", why);
+                return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated {
+                    tool: reported,
+                    why,
+                }));
             }
             if let Some(at) = state.stale_since
                 && at.elapsed() < REBUILD_COOLDOWN
             {
-                log_rebuild(profile, tool, "not rebuilt again yet", why);
+                log_rebuild(profile, reported, "not rebuilt again yet", why);
                 return Err(dead_page_answer(DeadPageOutcome::Cooling));
             }
             // **The stale driver's ask and handle go with it**, and the slot
@@ -2057,7 +2244,7 @@ impl BrowserService {
         }
         if let Err(cannot) = profile.ensure(&self.root, self.stack()).await {
             profile.state.lock().await.stale_since = Some(Instant::now());
-            log_rebuild(profile, tool, "rebuild failed", why);
+            log_rebuild(profile, reported, "rebuild failed", why);
             return Err(dead_page_answer(DeadPageOutcome::RebuildFailed { why: &cannot }));
         }
         let (fresh, fresh_generation) = {
@@ -2066,13 +2253,13 @@ impl BrowserService {
         };
         let Some(fresh) = fresh else {
             profile.state.lock().await.stale_since = Some(Instant::now());
-            log_rebuild(profile, tool, "rebuild left no driver", why);
+            log_rebuild(profile, reported, "rebuild left no driver", why);
             return Err(dead_page_answer(DeadPageOutcome::RebuildFailed {
                 why: "the rebuilt driver did not come up",
             }));
         };
         self.repair_tab_identity(profile, &fresh, bound).await;
-        if repeatable(tool, args) {
+        if repeatable(tool, reported, args) {
             // **The page is found by the guid, with the target as the
             // fallback a fresh driver's renaming needs.** A retry without a
             // page would drive whatever the fresh driver calls current -
@@ -2096,28 +2283,28 @@ impl BrowserService {
                 // read**: nothing is known about the page, so it is not
                 // gone.
                 Err(cannot) => {
-                    log_rebuild(profile, tool, "rebuilt, the listing failed", why);
+                    log_rebuild(profile, reported, "rebuilt, the listing failed", why);
                     return Err(dead_page_answer(DeadPageOutcome::ListFailed { why: &cannot }));
                 }
             };
             let Some(index) = index else {
-                log_rebuild(profile, tool, "rebuilt, the tab is not listed", why);
+                log_rebuild(profile, reported, "rebuilt, the tab is not listed", why);
                 return Err(dead_page_answer(DeadPageOutcome::TabGone { tab }));
             };
             if let Err(cannot) = fresh.select(index, bound).await {
                 profile.state.lock().await.stale_since = Some(Instant::now());
-                log_rebuild(profile, tool, "rebuilt, selection failed", why);
+                log_rebuild(profile, reported, "rebuilt, selection failed", why);
                 return Err(dead_page_answer(DeadPageOutcome::RetryFailed { why: &cannot }));
             }
             return match fresh.call_within(tool, args.clone(), bound).await {
                 Ok(parts) => {
                     profile.state.lock().await.stale_since = None;
-                    log_rebuild(profile, tool, "rebuilt, call retried and answered", why);
+                    log_rebuild(profile, reported, "rebuilt, call retried and answered", why);
                     Ok(parts)
                 }
                 Err(retry_why) => {
                     profile.state.lock().await.stale_since = Some(Instant::now());
-                    log_rebuild(profile, tool, "rebuilt, retried call failed", why);
+                    log_rebuild(profile, reported, "rebuilt, retried call failed", why);
                     // **No second rebuild in this call**: the repeated
                     // failure is handed back, not met with another driver
                     // start.
@@ -2129,8 +2316,8 @@ impl BrowserService {
                 }
             };
         }
-        log_rebuild(profile, tool, "rebuilt, call handed back", why);
-        Err(dead_page_answer(DeadPageOutcome::NotRepeated { tool }))
+        log_rebuild(profile, reported, "rebuilt, call handed back", why);
+        Err(dead_page_answer(DeadPageOutcome::NotRepeated { tool: reported }))
     }
 
     /// **A driver that stopped answering is replaced on this call.** The
@@ -2142,11 +2329,11 @@ impl BrowserService {
         generation: u64,
         drove: HostIdentity,
         tab: u16,
-        tool: &str,
-        args: &Value,
+        call: Call<'_>,
         bound: Duration,
         why: &str,
     ) -> Result<Vec<BrowserPart>, String> {
+        let Call { tool, reported, args } = call;
         {
             let state = profile.state.lock().await;
             // **A newer driver is not this call's to clear**: the call drove
@@ -2158,7 +2345,7 @@ impl BrowserService {
         tracing::warn!(
             event_name = "browser_driver_replaced",
             profile = %profile.key,
-            tool,
+            tool = reported,
             "the call found its driver dead; a fresh one is attached: {why}"
         );
         let (fresh, fresh_generation) = match self.recover_driver(profile, generation, bound).await
@@ -2171,8 +2358,8 @@ impl BrowserService {
                 return Err(dead_driver_answer(DeadDriverOutcome::ReplaceFailed { why: &cannot }));
             }
         };
-        if !repeatable_after_timeout(tool, args) {
-            return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated { tool, why }));
+        if !repeatable_after_timeout(tool, reported, args) {
+            return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated { tool: reported, why }));
         }
         let page =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
@@ -2402,8 +2589,13 @@ impl BrowserService {
         }
     }
 
-    /// Lay one tab out to its controller's surface. A resize from anyone else
-    /// is ignored: the page must not move under the person driving it.
+    /// Lay one tab out to a viewer's surface.
+    ///
+    /// **A held controller owns the layout** - the page must not move under
+    /// the person driving it - and with nobody holding the role it belongs to
+    /// the tab's longest-watching viewer, never to whoever asks. A size the
+    /// page already has is not a request: a re-attach or a re-measure that
+    /// lands on the same box must not force the host through another layout.
     pub async fn resize(
         &self,
         profile: &str,
@@ -2420,14 +2612,31 @@ impl BrowserService {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&tab)
             .map(|(holder, _)| *holder);
+        let watchers = profile
+            .viewers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&tab)
+            .cloned()
+            .unwrap_or_default();
         let Some((width, height, scale)) =
-            controller_size(controller, viewer, width, height, scale)
+            owner_size(controller, &watchers, viewer, width, height, scale)
         else {
             return;
         };
+        // **The surface and the request are one step**: two resizes
+        // interleaving would leave the ring painting one size while the
+        // stored surface named the other, which is what a take restores.
+        let _serial = profile.resize.lock().await;
         // **A take owns the layout**: the controller's resize is remembered
         // and applied again when the recording ends.
-        *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) = (width, height, scale);
+        {
+            let mut surface = profile.surface.lock().unwrap_or_else(PoisonError::into_inner);
+            if *surface == (width, height, scale) {
+                return;
+            }
+            *surface = (width, height, scale);
+        }
         if profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
             return;
         }
@@ -2435,6 +2644,58 @@ impl BrowserService {
         if let Some(host) = state.host.as_ref() {
             host.ring.request(width, height, scale);
         }
+    }
+
+    /// Resize the browser's painted surface from a session's own tool call.
+    ///
+    /// **The tool means the window, not a viewport override.** Upstream's
+    /// `browser_resize` is Playwright's `page.setViewportSize`, which tells
+    /// the page one size while the host paints another and leaves the device
+    /// ratio at 1 for the rest of the host's life. Here the window is the
+    /// profile's ring, so the viewport, the ratio and the painted size all
+    /// follow it - the path a viewer's own `BrowserResize` already takes.
+    async fn resize_window(
+        &self,
+        seat: &SessionSlot,
+        args: &Value,
+    ) -> Result<Vec<BrowserPart>, String> {
+        let profile = self.open(seat).await?;
+        // **One critical section for the read, the request and the write**, so
+        // a viewer's resize cannot land between them and leave the stored
+        // surface naming a size the ring never painted.
+        let _serial = profile.resize.lock().await;
+        // **The take's size is the take's to promise**: a recording start
+        // takes this same lock before it lays its tab out, so no take can
+        // begin between this check and the request below.
+        let running = profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+        if running {
+            return Err(format!(
+                "a recording is running for '{}', so the page stays at {}x{} until \
+                 browser_record_stop",
+                profile.key,
+                crate::record::WIDTH,
+                crate::record::HEIGHT,
+            ));
+        }
+        let scale = profile.surface.lock().unwrap_or_else(PoisonError::into_inner).2;
+        let width = window_dimension(args, "width", scale, crate::osr::MAX_WIDTH)?;
+        let height = window_dimension(args, "height", scale, crate::osr::MAX_HEIGHT)?;
+        let (device_width, device_height) =
+            (device_pixels(width, scale), device_pixels(height, scale));
+        {
+            let state = profile.state.lock().await;
+            let host = state
+                .host
+                .as_ref()
+                .ok_or_else(|| format!("the browser for '{}' is not up", profile.key))?;
+            host.ring.request(device_width, device_height, scale);
+        }
+        // **The surface is written back, as a viewer's own resize writes
+        // it**: a take restores this size when it ends, and the next resize
+        // from either side replaces it.
+        *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) =
+            (device_width, device_height, scale);
+        Ok(vec![BrowserPart::Text { text: format!("The browser window is now {width}x{height}.") }])
     }
 
     /// Inject one input event into one tab, and only for the viewer that holds
@@ -2687,7 +2948,8 @@ impl BrowserService {
             .unwrap_or_else(PoisonError::into_inner)
             .current(seat)
             .ok_or_else(|| "this session has no tab to record".to_owned())?;
-        let dir = self.root.join("recordings");
+        let key = self.target(seat)?;
+        let dir = self.recordings_dir(&key);
         std::fs::create_dir_all(&dir)
             .map_err(|why| format!("the recordings directory cannot be made: {why}"))?;
         if let Some(free) = free_bytes(&dir)
@@ -2708,7 +2970,18 @@ impl BrowserService {
         };
         prune_recordings(&dir, KEEP);
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let path = dir.join(format!("{}-{stamp}.mp4", profile.key));
+        let path = dir.join(format!("{stamp}.mp4"));
+        // **A take's layout is a resize's business**: the lock a resize holds
+        // across its request spans this start, so a window request cannot land
+        // after the take laid its tab out.
+        let serial = profile.resize.lock().await;
+        let running = profile.recording.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+        if running {
+            return Err(format!(
+                "a recording is already running for '{}'; stop it first",
+                profile.key
+            ));
+        }
         profile.recorded.send_replace(None);
         let mut recorded = profile.recorded.subscribe();
         *profile.recording.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -2734,6 +3007,9 @@ impl BrowserService {
                 profile.key
             ));
         }
+        // **The lock spans the start, not the take**: a resize during it reads
+        // `recording` and refuses.
+        drop(serial);
         match recording_answer(&mut recorded, None, Duration::from_secs(10)).await {
             Some(state) if state.started => Ok(vec![BrowserPart::Text {
                 text: format!(
@@ -3155,6 +3431,11 @@ pub struct Profile {
     recording: Mutex<Option<(u16, PathBuf)>>,
     /// The controller's last requested view, restored when a take ends.
     surface: Mutex<(u32, u32, f64)>,
+    /// **A resize's request and the surface it stores are one step.** Two
+    /// resizes and a take's own layout all move the same page; this lock
+    /// spans each one's read, request and write, so the stored surface always
+    /// belongs to the request the ring holds last.
+    resize: AsyncMutex<()>,
     /// The tab this profile's tabs are, keyed by the host's own numbers.
     tabs: Mutex<TabRegistry>,
     /// The host's boot tab, until a session's first page call adopts it.
@@ -3180,6 +3461,10 @@ pub struct Profile {
     /// popup before the driver lists its page**, so an unmatched event waits
     /// for the next pass rather than being lost.
     deferred_tab_events: Mutex<Vec<(u64, HostEvent)>>,
+    /// Where a page's popup asks for a pairing pass. **A birth nothing asked
+    /// for must still become a row**: a person clicking "Continue with
+    /// Google" makes no tool call, so the service cannot wait for one.
+    pairing: mpsc::UnboundedSender<PairingRequest>,
     state: AsyncMutex<State>,
     /// When a seat last used this profile.
     touch: Mutex<Touch>,
@@ -4184,6 +4469,9 @@ impl Profile {
         let recorded = self.recorded.clone();
         let dir = self.dir.clone();
         let key = self.key.clone();
+        // **A popup's birth pairs itself.** Nothing a person clicks is a call
+        // this service can wait for, so the birth asks for a pass here.
+        let pairing = self.pairing.clone();
         tokio::spawn(async move {
             let mut pending: std::collections::VecDeque<HostEvent> = pending.into();
             loop {
@@ -4202,8 +4490,20 @@ impl Profile {
                         );
                         let _ = tab_sender.send((
                             generation,
-                            HostEvent::TabCreated { tab, opener, url, request },
+                            HostEvent::TabCreated { tab, opener, url: url.clone(), request },
                         ));
+                        // **A popup is nobody's call**: its row has to appear
+                        // on its own, or the person who opened it sees the
+                        // screen unchanged.
+                        if let Some(opener) = opener {
+                            let _ = pairing.send(PairingRequest {
+                                key: key.clone(),
+                                tab,
+                                opener,
+                                url: url.clone(),
+                                until: tokio::time::Instant::now() + POPUP_PAIR_UNTIL,
+                            });
+                        }
                     }
                     HostEvent::TabClosed { tab } => {
                         tracing::debug!(
@@ -4213,6 +4513,13 @@ impl Profile {
                         if let Some(profile) = profile.upgrade() {
                             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).close(tab);
                             profile.forget_tab(tab);
+                            // **The strip hears it now**, not at the next
+                            // call: a popup that closes itself, or a tab the
+                            // host gave up, has no call behind it, and a row
+                            // left drawn points at a tab nothing runs.
+                            profile.rows.send_modify(|list| {
+                                list.rows.retain(|row| row.number != tab);
+                            });
                         }
                         let _ = tab_sender.send((generation, HostEvent::TabClosed { tab }));
                     }
@@ -4463,6 +4770,32 @@ async fn live_target(profile: &Arc<Profile>, tab: u16) -> LiveTarget {
 /// How long the watch waits for a page target that is not there yet.
 const NAV_RETRY: Duration = Duration::from_millis(500);
 
+/// How long one birth's pairing pass is given. **A pass that outlasts this is
+/// named rather than left to the driver's own 150 s**: the person is waiting
+/// on a popup's row, and a listing that never returns is the wedge a stuck
+/// popup target used to cause.
+const PAIR_BOUND: Duration = Duration::from_secs(30);
+
+/// How often a pairing pass is retried while a popup's birth still waits for
+/// its page, and how long the retries last. **The page appears only after
+/// the popup's own first document starts**, so the birth is older than the
+/// listing that can name it.
+const POPUP_PAIR_EVERY: Duration = Duration::from_millis(250);
+/// A little past the host's own give-up, so a final pass reads the close that
+/// answers the birth instead of leaving it deferred until someone calls.
+const POPUP_PAIR_UNTIL: Duration = Duration::from_secs(12);
+
+/// One popup birth's pairing pass was asked for: the profile to pass over,
+/// and what the slow-pass line names.
+#[derive(Clone)]
+struct PairingRequest {
+    key: String,
+    tab: u16,
+    opener: u16,
+    url: String,
+    until: tokio::time::Instant,
+}
+
 /// Watch the focused tab's own navigations and publish the bar's arrows.
 ///
 /// **The page navigates without anyone asking**: a link click, a redirect
@@ -4712,11 +5045,41 @@ fn installed_generation(state: &State) -> u64 {
     state.driver_generation.wrapping_add(1)
 }
 
+/// The report an evaluate answer carries, without the evaluate's own
+/// dressing: the `### Result` block is the report, and the code it ran is a
+/// script this tool fixes rather than something the caller sent.
+fn challenge_result(parts: Vec<BrowserPart>) -> Vec<BrowserPart> {
+    parts
+        .into_iter()
+        .map(|part| match part {
+            BrowserPart::Text { text } => {
+                let result =
+                    text.split_once("### Result\n").map_or(text.as_str(), |(_, rest)| rest);
+                let result = result.split("\n### ").next().unwrap_or(result);
+                BrowserPart::Text { text: result.trim().to_owned() }
+            }
+            part @ BrowserPart::Image { .. } => part,
+        })
+        .collect()
+}
+
+/// A failure's text names the tool the session called, not the evaluate a
+/// composed call runs as. **Only the composed call differs**, so a plain
+/// tool's own words ride through untouched.
+fn reported_error(why: String, driver_tool: &str, reported: &str) -> String {
+    if driver_tool == reported { why } else { why.replace(driver_tool, reported) }
+}
+
 /// Whether repeating a tool call cannot land twice on the page.
 ///
 /// A dead page context is rebuilt and the call repeated only here; a click,
 /// a submit or a type is handed back with the rebuild named instead.
-fn repeatable(tool: &str, args: &Value) -> bool {
+fn repeatable(tool: &str, reported: &str, args: &Value) -> bool {
+    // The challenge probe and a form read are reads: repeating either cannot
+    // land twice.
+    if matches!(reported, "browser_challenge_state" | "browser_form_state") {
+        return true;
+    }
     match tool {
         "browser_navigate" => {
             args.get("url").and_then(Value::as_str).is_some_and(|url| !url.is_empty())
@@ -4733,8 +5096,9 @@ fn repeatable(tool: &str, args: &Value) -> bool {
 /// repeated; everything else is handed back with that warning. (A dead PAGE
 /// is different - its context died and took the action with it - so
 /// [`repeatable`] is the broader rule there.)
-fn repeatable_after_timeout(tool: &str, _args: &Value) -> bool {
-    matches!(tool, "browser_snapshot")
+fn repeatable_after_timeout(tool: &str, reported: &str, _args: &Value) -> bool {
+    matches!(reported, "browser_challenge_state" | "browser_form_state")
+        || matches!(tool, "browser_snapshot")
 }
 
 /// What became of a call whose page context died, as the answer's own words.
@@ -5032,6 +5396,40 @@ fn defer_events(profile: &Profile, events: &mut Vec<(u64, HostEvent)>, skip: Opt
     profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).extend(kept);
 }
 
+/// Whether a popup's birth is still waiting for its page.
+fn popup_birth_waits(profile: &Profile) -> bool {
+    profile
+        .deferred_tab_events
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|(_, event)| matches!(event, HostEvent::TabCreated { opener: Some(_), .. }))
+}
+
+/// **The events one reconcile took, put back if that pass is cancelled.**
+/// The pairing pass is bounded by a timeout, and a listing that never returns
+/// cancels the future where it stands; without this the births held in the
+/// pass's own vector go with it, the popup never pairs, and the next pass
+/// prunes its page as an orphan.
+struct TakenEvents<'a> {
+    profile: &'a Profile,
+    events: Option<Vec<(u64, HostEvent)>>,
+}
+
+impl Drop for TakenEvents<'_> {
+    fn drop(&mut self) {
+        let Some(events) = self.events.take() else { return };
+        if events.is_empty() {
+            return;
+        }
+        self.profile
+            .deferred_tab_events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(events);
+    }
+}
+
 /// Pair host tab events with the driver's pages: a `TabClosed` removes the
 /// tab, and a `TabCreated` takes the first page no tab claims. **A popup's
 /// page can appear in the driver's list a moment after the host reports it**,
@@ -5101,6 +5499,13 @@ fn pair_tab_events(
             other => unmatched.push((event_generation, other)),
         }
     }
+    // **A close and a birth can arrive in one pass**, the birth first. The
+    // close answers the birth, so it is dropped here rather than kept for a
+    // page the tab will never have.
+    unmatched.retain(|(event_generation, event)| {
+        !(*event_generation == generation
+            && matches!(event, HostEvent::TabCreated { tab, .. } if tabs.was_closed(*tab)))
+    });
     unmatched
 }
 
@@ -5115,36 +5520,75 @@ fn tool_tab(args: &Value) -> Result<u16, String> {
     u16::try_from(number).map_err(|_| format!("{number} is not a tab number"))
 }
 
-/// The view a resize asks for, when the caller holds the role: the role as a
-/// value, so a watcher's window is refused before any host is touched.
-fn controller_size(
+/// The view a resize asks for, when the caller owns the tab's layout: its
+/// controller while the role is held, else its longest-watching viewer.
+///
+/// **One owner, never whoever asks**: two viewers sizing the same unheld tab
+/// would move the page under each other, and a page with no shell still lays
+/// its own view out while it is the only one watching.
+fn owner_size(
     controller: Option<u64>,
+    watchers: &HashSet<u64>,
     viewer: u64,
     width: u32,
     height: u32,
     scale: f64,
 ) -> Option<(u32, u32, f64)> {
-    if controller != Some(viewer) {
+    let owner = controller.or_else(|| watchers.iter().copied().min());
+    if owner != Some(viewer) {
         return None;
     }
     let scale = if scale.is_finite() && scale > 0.0 { scale.clamp(0.1, 8.0) } else { 1.0 };
     Some((width.max(1), height.max(1), scale))
 }
 
+/// One window dimension in CSS pixels, bounded to what the ring can hold at
+/// `scale`. **Bounded here rather than left to the ring's silent clamp**, so
+/// the answer names the size the page will report.
+fn window_dimension(args: &Value, name: &str, scale: f64, device_max: u32) -> Result<u32, String> {
+    let asked = args
+        .get(name)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("browser_resize needs `{name}` as a number"))?;
+    if !asked.is_finite() || asked < 1.0 {
+        return Err(format!("browser_resize needs `{name}` as a positive number"));
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked finite and at least 1, then bounded by the ring's own device size"
+    )]
+    let css = asked.round().min(f64::from(device_max) / scale) as u32;
+    Ok(css.max(1))
+}
+
+/// The device pixels a CSS dimension paints at, rounded to the nearest. The
+/// caller has already bounded it by the ring's device size.
+fn device_pixels(css: u32, scale: f64) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounded by the ring's own device bound before the cast"
+    )]
+    let pixels = (f64::from(css) * scale).round() as u32;
+    pixels.max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserService, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome, DeadHost,
-        DeadPageOutcome, Driven, Profile, State, UploadRequest, agent_upload_paths,
-        agent_upload_refused, begin_upload, captured_generation, clear_if_dead, controller_size,
-        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, file_name,
+        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome,
+        DeadHost, DeadPageOutcome, Driven, Profile, State, UploadRequest, agent_upload_paths,
+        agent_upload_refused, begin_upload, captured_generation, clear_if_dead, dead_driver_answer,
+        dead_host_answer, dead_page_answer, death_cause, device_pixels, file_name,
         installed_generation, note_agent_answered, note_surfaced_opened, note_upload_finished,
-        pair_tab_events, stage_agent_uploads, upload_request, write_uploads,
+        owner_size, pair_tab_events, stage_agent_uploads, upload_request, window_dimension,
+        write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::ProfileKey;
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::time::Duration;
     use tokio::sync::Notify;
 
@@ -5511,8 +5955,7 @@ mod tests {
                 generation,
                 drove,
                 1,
-                "browser_snapshot",
-                &json!({}),
+                Call { tool: "browser_snapshot", reported: "browser_snapshot", args: &json!({}) },
                 Duration::from_secs(1),
                 "the driver did not answer browser_tabs within 9 s",
             )
@@ -6507,8 +6950,7 @@ mod tests {
         use crate::driver::FileChooser;
 
         let dir = tempfile::tempdir().expect("a temp dir");
-        let service =
-            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
         let profile = service.entry(&seat).await.expect("a profile entry");
         let tab = seed_tab(&profile, &seat);
@@ -6875,21 +7317,20 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
-                Driven {
-                    generation: 1,
-                    pid: 1,
-                    port: 9,
-                    tab: 1,
-                    target: "T1",
-                    bound: Duration::from_secs(150),
+                Driven { generation: 1, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
+                Call {
+                    tool: "browser_evaluate",
+                    reported: "browser_challenge_state",
+                    args: &json!({}),
                 },
-                "browser_click",
-                &json!({}),
                 Err(dead.to_owned()),
             )
             .await
             .expect_err("a stale failure is not this call's to rebuild");
-        assert_eq!(why, dead, "the call's own failure is handed back unchanged");
+        assert!(
+            why.contains("browser_challenge_state") && !why.contains("browser_evaluate"),
+            "a stale call is handed back as not repeated, under the caller's name: {why}",
+        );
         assert!(profile.files.borrow().is_some(), "the newer driver's ask survives");
         assert!(
             profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner).is_some(),
@@ -6903,16 +7344,8 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
-                Driven {
-                    generation: 2,
-                    pid: 1,
-                    port: 9,
-                    tab: 1,
-                    target: "T1",
-                    bound: Duration::from_secs(150),
-                },
-                "browser_click",
-                &json!({}),
+                Driven { generation: 2, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
+                Call { tool: "browser_click", reported: "browser_click", args: &json!({}) },
                 Err(dead.to_owned()),
             )
             .await
@@ -6926,21 +7359,100 @@ mod tests {
         let again = service
             .after_failure(
                 &profile,
-                Driven {
-                    generation: 2,
-                    pid: 1,
-                    port: 9,
-                    tab: 1,
-                    target: "T1",
-                    bound: Duration::from_secs(150),
-                },
-                "browser_click",
-                &json!({}),
+                Driven { generation: 2, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
+                Call { tool: "browser_click", reported: "browser_click", args: &json!({}) },
                 Err(dead.to_owned()),
             )
             .await
             .expect_err("the cooldown refuses a second rebuild");
         assert!(again.contains("not been rebuilt a second time yet"), "{again}");
+    }
+
+    /// **A composed tool drives as the evaluate the driver has, and its
+    /// failures still name what the session called.** A report reading
+    /// "browser_evaluate may already have landed" would name a tool the
+    /// session never used, so the two names are pinned here.
+    #[test]
+    fn a_composed_tool_drives_as_an_evaluate_and_reports_its_caller() {
+        let composed = super::driver_call("browser_challenge_state", json!({}))
+            .expect("the challenge probe composes");
+        assert_eq!(composed.tool, "browser_evaluate");
+        assert_eq!(composed.reported, "browser_challenge_state");
+        assert!(
+            composed.args["function"]
+                .as_str()
+                .is_some_and(|script| script.contains("challengePresent")),
+            "the driver is handed the challenge script: {}",
+            composed.args,
+        );
+
+        let plain = super::driver_call("browser_click", json!({ "target": "e1" }))
+            .expect("a plain call composes");
+        assert_eq!(plain.tool, "browser_click");
+        assert_eq!(plain.reported, "browser_click");
+        assert_eq!(
+            plain.args,
+            json!({ "target": "e1" }),
+            "a plain call's arguments ride untouched"
+        );
+
+        // **A host-answered tool is a snippet over the driver's own run_code**,
+        // and the caller's name rides beside it so a failure names the tool a
+        // session called rather than the one underneath.
+        let snippet = super::driver_call("browser_form_state", json!({}))
+            .expect("a host-answered tool composes");
+        assert_eq!(snippet.tool, "browser_run_code_unsafe");
+        assert_eq!(snippet.reported, "browser_form_state");
+        assert!(
+            snippet.args["code"].as_str().is_some_and(|code| code.contains("elementHandles")),
+            "the driver is handed the form snippet: {}",
+            snippet.args,
+        );
+
+        // The call's own shape fault is decided here, before any page.
+        assert!(
+            super::driver_call("browser_click", json!({ "force": true })).is_err(),
+            "a forced click with no target is refused before a tab is consulted",
+        );
+
+        // A read is safe to repeat after a dead page and after a timeout.
+        assert!(super::repeatable("browser_evaluate", "browser_challenge_state", &json!({})));
+        assert!(super::repeatable_after_timeout(
+            "browser_evaluate",
+            "browser_challenge_state",
+            &json!({})
+        ));
+        assert!(
+            !super::repeatable("browser_evaluate", "browser_evaluate", &json!({})),
+            "an evaluate a session sent is not assumed repeatable",
+        );
+
+        // **A form read cannot land twice either**, and the click-and-capture
+        // tool is a click underneath, so it stays out of both lists.
+        assert!(super::repeatable("browser_run_code_unsafe", "browser_form_state", &json!({})));
+        assert!(super::repeatable_after_timeout(
+            "browser_run_code_unsafe",
+            "browser_form_state",
+            &json!({})
+        ));
+        assert!(
+            !super::repeatable("browser_run_code_unsafe", "browser_click_and_capture", &json!({})),
+            "a capture clicks, so it is not repeated after a dead page",
+        );
+        assert!(!super::repeatable_after_timeout(
+            "browser_run_code_unsafe",
+            "browser_click_and_capture",
+            &json!({})
+        ));
+
+        // The driver's own words name the caller's tool in what the session reads.
+        let scrubbed = super::reported_error(
+            "the driver did not answer browser_evaluate within 150 s".to_owned(),
+            "browser_evaluate",
+            "browser_challenge_state",
+        );
+        assert!(scrubbed.contains("browser_challenge_state"), "{scrubbed}");
+        assert!(!scrubbed.contains("browser_evaluate"), "{scrubbed}");
     }
 
     /// **The rebuild reads the generation after both locks**, so a driver
@@ -6975,22 +7487,17 @@ mod tests {
         let (outcome, ()) = tokio::join!(
             service.after_failure(
                 &profile,
-                Driven {
-                    generation: 1,
-                    pid: 1,
-                    port: 9,
-                    tab: 1,
-                    target: "T1",
-                    bound: Duration::from_secs(150)
-                },
-                "browser_click",
-                &no_args,
+                Driven { generation: 1, pid: 1, port: 9, tab: 1, bound: Duration::from_secs(150) },
+                Call { tool: "browser_click", reported: "browser_click", args: &no_args },
                 Err(dead.to_owned()),
             ),
             bump,
         );
         let why = outcome.expect_err("the rebuild waited and then saw the newer generation");
-        assert_eq!(why, dead, "the call's own failure is handed back");
+        assert!(
+            why.contains("browser_click") && why.contains("not repeated"),
+            "the newer generation hands the call back as not repeated: {why}",
+        );
         assert!(profile.files.borrow().is_some(), "the newer driver's ask survives");
         assert!(
             profile.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner).is_some(),
@@ -7201,6 +7708,121 @@ mod tests {
         assert_eq!((ledger.surfaced, ledger.pre_answered), (0, 0));
     }
 
+    /// **A first take on a fresh profile opens its own file.** The
+    /// recordings directory is the profile's, so a fresh profile has none
+    /// until its first take; without making it, AVAssetWriter refuses with
+    /// "Cannot create file" on every real profile.
+    #[tokio::test]
+    async fn a_first_take_writes_into_its_profiles_own_recordings_directory() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().join("browser"), dir.path().join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        let profile = service.entry(&seat).await.expect("a profile entry");
+        seed_tab(&profile, &seat);
+
+        // A host that runs the real writer: the answer the take waits on is
+        // AVFoundation's own.
+        let (input, lines) = std::sync::mpsc::channel();
+        let answers = profile.recorded.clone();
+        let pixels = vec![
+            0_u8;
+            usize::try_from(crate::record::WIDTH * crate::record::HEIGHT * 4)
+                .expect("a frame")
+        ];
+        let slot: crate::record::FrameSlot = Arc::new(Mutex::new(Some(Arc::new(pixels))));
+        let ring_name = format!("/forge-first-take-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: profile.dir.clone(),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        let host = std::thread::spawn(move || {
+            let mut recorder = None;
+            while let Ok(line) = lines.recv() {
+                match crate::input::parse_host_line(&line) {
+                    Some(crate::input::HostInput::RecordStart { path, .. }) => {
+                        let state =
+                            match crate::record::Recorder::start(path.into(), Arc::clone(&slot)) {
+                                Ok(started) => {
+                                    recorder = Some(started);
+                                    super::RecordingState {
+                                        started: true,
+                                        seconds: 0,
+                                        bytes: 0,
+                                        capped: false,
+                                        error: None,
+                                    }
+                                }
+                                Err(why) => super::RecordingState {
+                                    started: false,
+                                    seconds: 0,
+                                    bytes: 0,
+                                    capped: false,
+                                    error: Some(why),
+                                },
+                            };
+                        answers.send_replace(Some(state));
+                    }
+                    Some(crate::input::HostInput::RecordStop) => {
+                        let stopped = recorder.take().map(crate::record::Recorder::stop);
+                        let outcome = stopped.unwrap_or(crate::record::Outcome {
+                            seconds: 0,
+                            bytes: 0,
+                            capped: false,
+                            error: None,
+                        });
+                        answers.send_replace(Some(super::RecordingState {
+                            started: false,
+                            seconds: outcome.seconds,
+                            bytes: outcome.bytes,
+                            capped: outcome.capped,
+                            error: outcome.error,
+                        }));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let started = service
+            .call(&seat, "browser_record_start", json!({}))
+            .await
+            .expect("the first take starts");
+        assert!(
+            matches!(
+                started.as_slice(),
+                [forge_primitives::browser::BrowserPart::Text { text }]
+                    if text.starts_with("Recording the page into")
+            ),
+            "the take reports that it started: {started:?}"
+        );
+        let path = profile
+            .recording
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .expect("a live take")
+            .1;
+        let own = service.store.org_profile(&service.profile_for(&seat).expect("the seat's key"));
+        assert!(
+            path.starts_with(&own),
+            "the take lands under the profile's own directory: {}",
+            path.display()
+        );
+        assert!(path.is_file(), "the writer opened the file at {}", path.display());
+
+        service.call(&seat, "browser_record_stop", json!({})).await.expect("the take stops");
+        host.join().expect("the fake host ends");
+        crate::osr::Ring::unlink(&ring_name);
+    }
+
     /// **A stop refuses by name when there is no take**, and never starts a
     /// browser to look for one.
     #[tokio::test]
@@ -7208,10 +7830,33 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("TestOrg", "proj");
-        let refused = service.record_stop(&seat).await.expect_err("no take is running");
+        let refused = service
+            .call(&seat, "browser_record_stop", json!({}))
+            .await
+            .expect_err("no take is running");
         assert!(
             refused.contains("no recording is running"),
             "the stop names the missing take: {refused}"
+        );
+    }
+
+    /// **A malformed call is refused before a browser opens for it.** A cold
+    /// profile must not boot a host to answer a call that cannot run, and a
+    /// busy one must not answer "the browser is busy" to an argument error.
+    #[tokio::test]
+    async fn a_malformed_call_is_refused_before_a_profile_opens() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let refused = service
+            .call(&seat, "browser_click", json!({ "force": true }))
+            .await
+            .expect_err("a forced click with no target is refused");
+        assert!(refused.contains("`target`"), "the call's own argument error: {refused}");
+        assert!(
+            !dir.path().join("profiles").exists(),
+            "no profile was opened for it: {:?}",
+            dir.path().join("profiles"),
         );
     }
 
@@ -7602,24 +8247,138 @@ mod tests {
         assert_ne!(other.id, mine.id, "two orgs, two browsers");
     }
 
-    /// **Only the controller's surface moves the page.** A watcher's window,
-    /// or one from before anyone took the role, is refused before any host is
-    /// touched; a nonsense ratio draws at 1 rather than poisoning CEF.
+    /// **A held role owns the page's layout; an unheld one belongs to the tab's
+    /// longest-watching viewer.** A second unheld viewer's window never moves
+    /// the page under the first, a page with no shell still lays its own view
+    /// out while it is the only one watching, and a nonsense ratio draws at 1
+    /// rather than poisoning CEF.
     #[test]
-    fn a_resize_is_the_controllers_and_nobody_elses() {
-        assert_eq!(controller_size(None, 7, 800, 600, 2.0), None, "no role, no size");
+    fn a_resize_follows_the_controller_else_the_longest_watcher() {
+        let alone = HashSet::from([7]);
         assert_eq!(
-            controller_size(Some(8), 7, 800, 600, 2.0),
-            None,
-            "a watcher's window never moves the page"
+            owner_size(None, &alone, 7, 800, 600, 2.0),
+            Some((800, 600, 2.0)),
+            "the only viewer sizes its own view"
         );
-        assert_eq!(controller_size(Some(7), 7, 800, 600, 2.0), Some((800, 600, 2.0)));
+        let two = HashSet::from([7, 9]);
         assert_eq!(
-            controller_size(Some(7), 7, 800, 600, f64::NAN),
+            owner_size(None, &two, 9, 800, 600, 2.0),
+            None,
+            "a second viewer never moves the page under the first"
+        );
+        assert_eq!(
+            owner_size(None, &two, 7, 640, 480, 1.0),
+            Some((640, 480, 1.0)),
+            "the longest-watching viewer owns the unheld layout"
+        );
+        assert_eq!(
+            owner_size(Some(8), &two, 7, 800, 600, 2.0),
+            None,
+            "a watcher's window never moves the page under the holder"
+        );
+        assert_eq!(owner_size(Some(7), &two, 7, 800, 600, 2.0), Some((800, 600, 2.0)));
+        assert_eq!(
+            owner_size(Some(7), &two, 7, 800, 600, f64::NAN),
             Some((800, 600, 1.0)),
             "a nonsense ratio draws at 1"
         );
-        assert_eq!(controller_size(Some(7), 7, 0, 0, 99.0), Some((1, 1, 8.0)), "bounded both ways");
+        assert_eq!(
+            owner_size(Some(7), &two, 7, 0, 0, 99.0),
+            Some((1, 1, 8.0)),
+            "bounded both ways"
+        );
+    }
+
+    /// **A window size is the page's own CSS pixels, and the answer names the
+    /// size the ring will paint.** A request past the ring's device bound is
+    /// cut here rather than left to the ring's silent clamp, and a size that
+    /// is not a positive number is refused rather than clamped to 1.
+    #[test]
+    fn a_window_size_is_css_pixels_bounded_by_the_ring() {
+        let width = |value: serde_json::Value| {
+            window_dimension(&json!({ "width": value }), "width", 2.0, crate::osr::MAX_WIDTH)
+        };
+        assert_eq!(width(json!(1120)), Ok(1120), "a CSS size passes through");
+        assert_eq!(width(json!(1120.6)), Ok(1121), "and rounds to the nearest pixel");
+        assert_eq!(
+            width(json!(3000)),
+            Ok(1920),
+            "3000 CSS pixels would paint past 3840 device pixels at 2x"
+        );
+        assert_eq!(
+            width(json!(0)),
+            Err("browser_resize needs `width` as a positive number".into())
+        );
+        assert_eq!(width(json!("wide")), Err("browser_resize needs `width` as a number".into()));
+        assert_eq!(device_pixels(1120, 2.0), 2240, "CSS pixels times the ratio it paints at");
+        assert_eq!(device_pixels(1920, 2.0), crate::osr::MAX_WIDTH, "the bound is reachable");
+    }
+
+    /// **A resize is one step: the ring is asked for the size and that size is
+    /// stored.** A take lays its tab out at its own size and restores the
+    /// profile's surface when it ends, so a resize that moved the ring and
+    /// left the stored surface alone would be undone by the next take. **Both
+    /// arms are the same step**: the tool's window and the viewer's own.
+    #[tokio::test]
+    async fn a_resize_stores_the_surface_it_asks_the_ring_for() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let ring_name = format!("/forge-resize-surface-{}", std::process::id());
+        let ring = Arc::new(
+            crate::osr::Ring::create(
+                &ring_name,
+                crate::service::VIEW_WIDTH,
+                crate::service::VIEW_HEIGHT,
+            )
+            .expect("a ring"),
+        );
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::clone(&ring),
+            profile: dir.path().join("host"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        *profile.surface.lock().unwrap_or_else(PoisonError::into_inner) = (2880, 2128, 2.0);
+
+        service
+            .call(&seat, "browser_resize", json!({ "width": 1120, "height": 760 }))
+            .await
+            .expect("the window resizes");
+
+        assert_eq!(
+            ring.requested(),
+            (2240, 1520, 2_000, 1),
+            "the ring is asked once, for the device size the page paints at",
+        );
+        assert_eq!(
+            *profile.surface.lock().unwrap_or_else(PoisonError::into_inner),
+            (2240, 1520, 2.0),
+            "the tool's window replaces the surface, at the ratio the surface paints at",
+        );
+
+        // **The viewer's arm is the same step**: its own surface report asks
+        // the ring and stores the surface together, so a take restores the
+        // window the viewer last asked for.
+        profile.controls.lock().unwrap_or_else(PoisonError::into_inner).insert(1, (7, 0));
+        service.resize("O/default", 1, 7, 2880, 2128, 2.0).await;
+        assert_eq!(
+            ring.requested(),
+            (2880, 2128, 2_000, 2),
+            "the viewer's window is the request the ring holds last",
+        );
+        assert_eq!(
+            *profile.surface.lock().unwrap_or_else(PoisonError::into_inner),
+            (2880, 2128, 2.0),
+            "and the surface a take restores is that same request",
+        );
+        crate::osr::Ring::unlink(&ring_name);
     }
 
     /// **Two orgs share nothing**: their wire ids differ (what a frame is
@@ -7748,7 +8507,7 @@ mod tests {
     /// A service whose idle bound has already passed: a profile an idle pass
     /// reads is one the clock says closes.
     fn idle_service(root: &std::path::Path) -> Arc<BrowserService> {
-        let service = Arc::new(BrowserService::at(root.to_owned(), root.join("stack")));
+        let service = BrowserService::at(root.to_owned(), root.join("stack"));
         service.configure_idle(0);
         service
     }
@@ -7865,7 +8624,7 @@ mod tests {
     async fn another_profile_is_served_while_one_is_torn_down() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("browser");
-        let service = Arc::new(BrowserService::at(root.clone(), root.join("stack")));
+        let service = BrowserService::at(root.clone(), root.join("stack"));
         let one = SessionSlot::lead("TestOrg", "proj");
         let two = SessionSlot::lead("OtherOrg", "proj");
         let a = service.entry(&one).await.expect("the first profile");
@@ -7978,7 +8737,7 @@ mod tests {
 
     /// One tab on a profile a test made by hand, so the viewer and chooser
     /// tests can name the tab their roles and asks belong to.
-    fn seed_tab(profile: &Arc<Profile>, seat: &SessionSlot) -> u16 {
+    pub(crate) fn seed_tab(profile: &Arc<Profile>, seat: &SessionSlot) -> u16 {
         let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
         if tabs.target(1).is_some() {
             return 1;
@@ -7989,7 +8748,7 @@ mod tests {
     /// A driver the call path can be tested against: it records the indices
     /// it selects and answers every tool with one text part.
     #[derive(Clone, Default)]
-    struct FakeDriver {
+    pub(crate) struct FakeDriver {
         tabs: Arc<Mutex<Vec<crate::tabs::DriverTab>>>,
         selected: Arc<Mutex<Vec<usize>>>,
         /// One listing that fails like a driver whose page outlived its
@@ -8008,10 +8767,12 @@ mod tests {
         /// **Every** page call answers an initialise timeout, as a driver
         /// that could not attach to its host does.
         attach_timeout: Arc<std::sync::atomic::AtomicBool>,
+        /// Every page call answers the driver's plain failure.
+        fail_calls: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeDriver {
-        fn with_blank(target: &str) -> Self {
+        pub(crate) fn with_blank(target: &str) -> Self {
             let fake = Self::default();
             fake.tabs.lock().expect("the tabs").push(crate::tabs::DriverTab {
                 index: 0,
@@ -8024,7 +8785,7 @@ mod tests {
             fake
         }
 
-        fn push_target(&self, target: &str) {
+        pub(crate) fn push_target(&self, target: &str) {
             let mut tabs = self.tabs.lock().expect("the tabs");
             let index = tabs.len();
             tabs.push(crate::tabs::DriverTab {
@@ -8061,13 +8822,13 @@ mod tests {
         }
 
         /// The fake's next listing answers the stale-page error once.
-        fn stale_once(&self) {
+        pub(crate) fn stale_once(&self) {
             self.stale_once.store(true, Ordering::Release);
         }
 
         /// **Every** listing answers the driver's own timeout: a retry on
         /// this same fake cannot pass, so only a real replacement can.
-        fn timeout_every_listing(&self) {
+        pub(crate) fn timeout_every_listing(&self) {
             self.slow_listing.store(true, Ordering::Release);
         }
 
@@ -8099,6 +8860,11 @@ mod tests {
         /// Every upload answers the driver's plain failure.
         fn fail_uploads(&self) {
             self.fail_upload.store(true, Ordering::Release);
+        }
+
+        /// Every page call answers the driver's plain failure.
+        fn fail_calls(&self) {
+            self.fail_calls.store(true, Ordering::Release);
         }
     }
 
@@ -8307,6 +9073,9 @@ mod tests {
                         .to_owned(),
                 );
             }
+            if self.fail_calls.load(Ordering::Acquire) {
+                return Err(format!("{tool} failed"));
+            }
             Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "ok".to_owned() }])
         }
 
@@ -8345,6 +9114,28 @@ mod tests {
         let tabs = service.tabs(&seat).await.expect("the rows");
         assert_eq!(tabs.rows.len(), 1);
         assert_eq!(tabs.rows[0].owner, seat);
+    }
+
+    /// **A composed call's failure, through the whole path, names the tool the
+    /// session called.** The scrub sits on the one boundary every error leaves
+    /// [`BrowserService::call`] through, so this drives it end to end: the
+    /// fake driver answers the synthetic "browser_evaluate failed" a real one
+    /// does, and the session must not read that name.
+    #[tokio::test]
+    async fn a_failed_challenge_call_names_the_caller_not_the_evaluate() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::with_blank("T1");
+        driver.fail_calls();
+        service.install_fake(&seat, driver).await;
+
+        let why = service
+            .call(&seat, "browser_challenge_state", json!({}))
+            .await
+            .expect_err("the driver's failure is the call's");
+        assert!(why.contains("browser_challenge_state"), "the caller's tool is named: {why}");
+        assert!(!why.contains("browser_evaluate"), "the evaluate it ran as is not: {why}");
     }
 
     /// **Two sessions never drive each other's tab.** The second session's
@@ -8947,7 +9738,8 @@ mod tests {
 /// re-read spares the same pages, so the branch was redundant.
 #[cfg(test)]
 mod server_guards {
-    use super::{BrowserService, Profile};
+    use super::tests::{FakeDriver, seed_tab};
+    use super::{BrowserService, Profile, pair_tab_events};
     use crate::control::HostEvent;
     use crate::driver::TabDriver;
     use crate::tabs::DriverTab;
@@ -9070,8 +9862,7 @@ mod server_guards {
     #[tokio::test]
     async fn a_reconcile_that_lost_its_host_keeps_an_event_deferred_under_it() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let service =
-            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
         let generation = profile.host_generation.load(Ordering::Acquire);
         let queue = profile.host_tab_events.lock().await;
@@ -9108,8 +9899,7 @@ mod server_guards {
     #[tokio::test]
     async fn a_reconcile_on_one_host_replaces_the_events_deferred_under_it() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let service =
-            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
         let generation = profile.host_generation.load(Ordering::Acquire);
         let queue = profile.host_tab_events.lock().await;
@@ -9134,6 +9924,158 @@ mod server_guards {
             !deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
             "a stable pass kept an event it did not pair: {deferred:?}"
         );
+    }
+
+    /// **A pairing pass that runs out of time puts its births back.** The
+    /// pass is bounded by a timeout, and a driver recovery that never answers
+    /// cancels the future where it stands; a birth taken and dropped with it
+    /// is a popup that never pairs, and the next pass prunes its page as an
+    /// orphan.
+    #[tokio::test]
+    async fn a_cancelled_pairing_pass_puts_its_births_back() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let installed = FakeDriver::with_blank("T1");
+        service.install_fake(&seat, installed).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        let (births, taken) = tokio::sync::mpsc::unbounded_channel();
+        *profile.host_tab_events.lock().await = Some(taken);
+        births
+            .send((
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "u".to_owned(),
+                    request: None,
+                },
+            ))
+            .expect("the birth is queued");
+
+        // **The driver recovery is the pass's slow step**, and it takes this
+        // lock first: holding it parks the pass where a slow recovery would,
+        // with the births already taken.
+        let rebuilding = profile.rebuild.lock().await;
+        let listing = driver(Vec::new(), None);
+        let pass = tokio::time::timeout(
+            Duration::from_millis(250),
+            service.reconcile(&profile, &listing, 9),
+        )
+        .await;
+        drop(rebuilding);
+        assert!(pass.is_err(), "the pass was not the cancelled one the test means to pin");
+
+        let deferred =
+            profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        assert!(
+            deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabCreated { tab: 2, .. })),
+            "a cancelled pass ate the popup's birth: {deferred:?}"
+        );
+    }
+
+    /// **A birth for a tab the host has ended is answered, not kept.** A popup
+    /// the host gave up closed before its page existed, and a birth kept for
+    /// it would be re-deferred on every pass - a driver recovery each time,
+    /// for a page that will never be listed.
+    #[test]
+    fn a_birth_for_a_closed_tab_is_dropped() {
+        let mut tabs = crate::tabs::TabRegistry::default();
+        tabs.close(9);
+        let birth =
+            HostEvent::TabCreated { tab: 9, opener: Some(1), url: "u".to_owned(), request: None };
+        let waiting = pair_tab_events(&mut tabs, &[], vec![(1, birth)], 1);
+        assert!(waiting.is_empty(), "a birth for a closed tab is dropped: {waiting:?}");
+
+        // The control: the same birth for a tab nobody closed waits.
+        let live =
+            HostEvent::TabCreated { tab: 10, opener: Some(1), url: "u".to_owned(), request: None };
+        let waiting = pair_tab_events(&mut tabs, &[], vec![(1, live.clone())], 1);
+        assert_eq!(waiting, vec![(1, live)], "a birth with no page and no close waits");
+    }
+
+    /// **A pairing pass that could not list tries again.** The birth is still
+    /// the receiver's when the listing fails, so a retry keyed on the deferred
+    /// list alone would never fire and the popup would wait for a call that
+    /// never comes.
+    #[tokio::test]
+    async fn a_pairing_pass_that_could_not_list_tries_again() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        fake.stale_once();
+        fake.push_target("T2");
+        service.install_fake(&seat, fake).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        seed_tab(&profile, &seat);
+        let ring_name = format!("/forge-pair-retry-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, requests) = std::sync::mpsc::channel();
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: dir.path().join("pair-retry"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        let (births, taken) = tokio::sync::mpsc::unbounded_channel();
+        *profile.host_tab_events.lock().await = Some(taken);
+        births
+            .send((
+                generation,
+                HostEvent::TabCreated {
+                    tab: 2,
+                    opener: Some(1),
+                    url: "about:blank".to_owned(),
+                    request: None,
+                },
+            ))
+            .expect("the birth is queued");
+        let _ = service.pairing.send(super::PairingRequest {
+            key: "O/default".to_owned(),
+            tab: 2,
+            opener: 1,
+            url: "about:blank".to_owned(),
+            until: tokio::time::Instant::now() + Duration::from_secs(5),
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let paired =
+                    profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).number_of("T2")
+                        == Some(2);
+                if paired {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("a pass that could not list tried again and paired the popup");
+        drop(requests);
+        crate::osr::Ring::unlink(&ring_name);
+    }
+
+    /// **The service starts its own pairing pass.** A birth with no call
+    /// behind it has to become a row on its own, and a pass started only by
+    /// the boot's one call is a line a later edit can drop without a test
+    /// going red.
+    #[tokio::test]
+    async fn the_pairing_pass_starts_with_the_service() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while service.pairing_queue.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the service's construction starts the pairing pass");
     }
 
     /// **The host can move again between closes**, and a successor normally
@@ -9209,8 +10151,7 @@ mod server_guards {
     #[tokio::test]
     async fn a_sweep_waits_for_the_one_in_front_of_it() {
         let dir = tempfile::tempdir().expect("a temp dir");
-        let service =
-            Arc::new(BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack")));
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let _profile = profile_for_test(&service).await;
         let seat = SessionSlot::lead("O", "p");
 

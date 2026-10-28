@@ -281,6 +281,14 @@ function stub() {
         update: { prompt_lifecycle: { key: LEAD, uuid: 'said-once', state: 'started' } },
       });
     },
+    /** The core's answer on whether a turn is in flight, which a page alone cannot say. */
+    inflight(on = true): void {
+      send({
+        kind: 'snapshot',
+        subject: { session: LEAD },
+        data: { header: { turn_in_flight: on } },
+      });
+    },
     /**
      * The read's own queue, which the snapshot carries.
      *
@@ -2155,5 +2163,190 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(pinned(), 'the end they are sitting at is followed again').toEqual([FITS]);
+  });
+});
+
+/**
+ * **The heights the follow pass never ran on.**
+ *
+ * A turn's row grows after the frame that grew it has published, the beat
+ * hands its report row back with no publish at all, and the composer takes
+ * room without one message changing - each a way the newest end ends up below
+ * the fold. The size notification that reports one of them is also a thing a
+ * browser drops under load (#1759 measured it).
+ */
+describe('the heights a turn ends at', () => {
+  /** How much the finished turn's report row adds to the turn, in the test's own layout. */
+  const ROW = 120;
+  /** One assistant frame, which is where the running row's figures come from. */
+  const spoke = (uuid: string): unknown => ({
+    type: 'assistant',
+    uuid,
+    timestamp: '2026-10-01T06:00:00Z',
+    message: {
+      id: `m-${uuid}`,
+      role: 'assistant',
+      model: 'claude-opus-5',
+      content: [{ type: 'text', text: 'working' }],
+      usage: { input_tokens: 100, output_tokens: 20 },
+    },
+  });
+  /** The reader's own message, which is what opens a turn. */
+  const asked = {
+    type: 'user',
+    uuid: 'u-t2',
+    message: { role: 'user', content: [{ type: 'text', text: 'go' }] },
+  };
+  /** The newest turn as the seat says it is running: its row is the pin's. */
+  const live = { key: 't2', running: true, messages: [asked, spoke('a1')] };
+  /** The same turn, settled by the core's own result. */
+  const settled = {
+    key: 't2',
+    running: false,
+    messages: [
+      asked,
+      spoke('a1'),
+      {
+        type: 'result',
+        uuid: 'r1',
+        duration_ms: 42_000,
+        duration_api_ms: 20_000,
+        total_cost_usd: 0.1,
+        usage: {},
+      },
+    ],
+  };
+
+  /** A column whose newest turn is running, so its report row is the pin's. */
+  async function running(server: ReturnType<typeof stub>): Promise<void> {
+    await draw(server);
+    server.inflight(true);
+    server.page([turn('t1'), live]);
+    await settle();
+    expect(
+      document.querySelectorAll('details.turninfo'),
+      'the running row is pinned, not drawn in the turn',
+    ).toHaveLength(0);
+  }
+
+  /**
+   * Finish the running turn, and let the beat hand its row back to the turn.
+   *
+   * `grow` is the layout the hand-over makes: the turn is taller by the row
+   * the moment the beat lets it go, so it is written between the timer and
+   * the flush that runs the pass - the way a browser paints the row into the
+   * turn and then lays it out.
+   */
+  async function beat(server: ReturnType<typeof stub>, grow = 0): Promise<void> {
+    server.inflight(false);
+    server.page([turn('t1'), settled]);
+    await vi.advanceTimersByTimeAsync(34);
+    flushSync();
+    expect(
+      document.querySelectorAll('details.turninfo'),
+      'the pin holds the finished row for its beat',
+    ).toHaveLength(0);
+    vi.advanceTimersByTime(450);
+    if (grow > 0) element.height = TOTAL + grow;
+    // The page landing and the completion each pinned the old foot; what the
+    // beat itself lands is the only pin the cases below are about.
+    clear();
+    flushSync();
+    expect(
+      document.querySelectorAll('details.turninfo'),
+      'and the beat hands it back to the turn',
+    ).toHaveLength(1);
+  }
+
+  it('lands the row the beat hands back, with no size report at all', async () => {
+    // **The turn-end metadata below the fold.** The finished row moves out of
+    // the pin and into the turn at the beat with no publish behind it, so the
+    // beat itself is the signal - not a size notification.
+    const server = stub();
+    await running(server);
+    readerAt(element.height - element.viewport);
+    await settle();
+    clear();
+
+    vi.useFakeTimers();
+    try {
+      // The timer and the layout it causes land together: the row is in the
+      // turn, the turn is taller, and nothing reports a size.
+      await beat(server, ROW);
+
+      const foot = Math.floor(TOTAL + ROW);
+      expect(pinned(), 'the foot the beat handed back needs is pinned').toEqual([
+        { asked: foot, landed: foot - VIEWPORT },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lands the newest row's own growth when the column's size report is the one dropped", async () => {
+    // **The row has its own observer, and that is the redundancy.** A turn
+    // grown after its frame's publish measures later than the pass ran, and
+    // the column's content observer is the notification a browser drops under
+    // load - so the row's own report, on a different node, is what lands it.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    setElement(TOTAL + ROW, VIEWPORT);
+    // Only the newest turn's own observer: every other node is skipped, the
+    // column's watcher included, so the height reaches the key by that row
+    // alone rather than by any row or by the content around them.
+    resized(TOTAL + ROW, (node) => node.getAttribute('data-t') !== 't2');
+    await settle();
+
+    const foot = Math.floor(TOTAL + ROW);
+    expect(pinned(), 'the foot the row moved is followed').toEqual([
+      { asked: foot, landed: foot - VIEWPORT },
+    ]);
+  });
+
+  it('lands the foot the composer took room from', async () => {
+    // **The column's room is not the conversation's size.** The composer below
+    // it grows on its own - a dock opening, a take's row appearing - and the
+    // column's foot moves without one row of the conversation changing.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    const roomier = VIEWPORT - 120;
+    setElement(TOTAL, roomier);
+    resized();
+    await settle();
+
+    expect(pinned(), 'the column re-lands on the foot its own room leaves').toEqual([
+      { asked: ASKED, landed: ASKED - roomier },
+    ]);
+  });
+
+  it('leaves a reader away from the foot alone through the beat and the room', async () => {
+    // **The control**: both signals are heights, and a height is not a reason
+    // to carry a reader who put themselves somewhere else.
+    const server = stub();
+    await running(server);
+    readerAt(0);
+    await settle();
+    clear();
+
+    vi.useFakeTimers();
+    try {
+      await beat(server, ROW);
+      setElement(TOTAL + ROW, VIEWPORT - 120);
+      resized();
+      await vi.advanceTimersByTimeAsync(34);
+      flushSync();
+
+      expect(pinned(), 'a reader away from the foot stays where they left it').toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

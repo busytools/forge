@@ -1,3 +1,5 @@
+import { SvelteMap } from 'svelte/reactivity';
+
 /**
  * The last measured height of each turn's row, by the turn's key.
  *
@@ -52,7 +54,8 @@ interface RowSizes {
 }
 
 export function sizes(): RowSizes {
-  const heights = new Map<string, number>();
+  // Reactive: the follow pass runs on the newest row's measured height.
+  const heights = new SvelteMap<string, number>();
   return {
     sizeOf(key) {
       return key === null || key === undefined ? undefined : heights.get(key);

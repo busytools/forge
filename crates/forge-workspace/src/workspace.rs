@@ -21,7 +21,7 @@ use tracing::Instrument;
 use forge_gateway::AccountKey;
 use forge_gateway::ProviderHost as _;
 
-use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
+use crate::config::{ConfigReload, LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
 use crate::protocol::{
@@ -55,6 +55,15 @@ const MODEL_SLOT_VARIABLES: [&str; 5] = [
 /// The env the CLI takes its auto-compaction window from: the `[models]`
 /// table's `auto_compact_window` is stamped here for the project's model.
 const AUTO_COMPACT_WINDOW_ENV: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+
+/// A project's walk blocked by a rotation cooldown, as the walk's own
+/// `BudgetExhausted` reports it.
+pub(crate) struct ProjectCooling {
+    pub(crate) org: String,
+    pub(crate) model: String,
+    pub(crate) tried: usize,
+    pub(crate) reset_in: Duration,
+}
 
 /// Max attempts for `tag_session_with_retry` to find the worker's
 /// `<session_id>.jsonl` and append the tag row. claude CLI writes the
@@ -198,14 +207,19 @@ pub enum SessionChipState {
     /// endpoint, malformed response). Warning yellow, no glyph - the
     /// same split the account rows render; the pollers heal it.
     Degraded,
+    /// Every account serving the project is inside a rotation cooldown, so
+    /// a spawn is refused until the soonest reset. Unlike `AtCap` the walk
+    /// will not take this account now; the window that is spent and when
+    /// it lifts come from the account's own reading.
+    RateLimited,
 }
 
 /// What a session is waiting on a person for. The kind a needs-you row
 /// names, since "asked you a question" and "a permission prompt is
-/// waiting" are different asks with the same mark - and a document
-/// hand-off is a third, parked in the workspace's own registry rather
-/// than in the session's pending set (Ved, the look: the hand-off must
-/// ride the same needs-you machinery as every ask).
+/// waiting" are different asks with the same mark - and a hand-off (a
+/// document's or the browser's) is the third, parked in the workspace's
+/// own registries rather than in the session's pending set (Ved, the look:
+/// the hand-off must ride the same needs-you machinery as every ask).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingInteractionKind {
@@ -320,13 +334,19 @@ pub struct Workspace {
     /// config-dir binding can re-resolve from here.
     config_dir: PathBuf,
     /// `pub(crate)` so the impl block in [`crate::gotify`] can read the
-    /// `[gotify]` section.
-    pub(crate) config: LoadedConfig,
+    /// `[gotify]` section. Swapped whole by [`Workspace::reload_config`],
+    /// which is why readers take an owned snapshot rather than a reference.
+    pub(crate) config: parking_lot::RwLock<Arc<LoadedConfig>>,
+    /// Odd while a reload is swapping state, even when settled. A spawn
+    /// reads it before resolving and re-checks after, so a resolution that
+    /// straddled the swap retries rather than pairing an old project pin
+    /// with the new pool.
+    reload_generation: std::sync::atomic::AtomicU64,
     /// The `[systemone]` decision client, built at boot when the section
     /// is present and enabled; the session MCP servers are handed a
     /// facade over it. `None` keeps the systemone tools out of every
-    /// session.
-    pub(crate) systemone: Option<Arc<forge_system_one::SystemOneClient>>,
+    /// session. Rebuilt by [`Workspace::reload_config`].
+    pub(crate) systemone: parking_lot::RwLock<Option<Arc<forge_system_one::SystemOneClient>>>,
     /// Catalog of sessions per project. Populated by the background
     /// catalog scan once [`Workspace::start_catalog_scan`] runs;
     /// mutated in-place by [`Workspace::record_connected_session`]
@@ -696,6 +716,15 @@ pub struct Workspace {
     /// Per-workspace pump liveness for the Inspector's SLACK section.
     /// Keyed by label for the same reason.
     pub(crate) slack_connected: Mutex<std::collections::BTreeMap<String, bool>>,
+    /// Conversations forge has a post in flight into, keyed
+    /// `(workspace, the resolved conversation)`, each entry a stamp per
+    /// live call: one post call with its ledger write, or one upload's
+    /// shares read. The sweep skips a conversation while any stamp is
+    /// within budget, because the message can reach history before its ts
+    /// is ledgered; a stamp past the request timeout is expired, never
+    /// obeyed, so a stalled call cannot silence the conversation.
+    pub(crate) slack_inflight:
+        Mutex<std::collections::HashMap<(String, String), Vec<crate::slack::SlackPostStamp>>>,
     /// The authenticated user's id per workspace, resolved once by the
     /// boot `auth.test` and needed to recognise `<@U...>` mentions.
     pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
@@ -705,6 +734,11 @@ pub struct Workspace {
     /// `(workspace, user id)` pairs whose failed lookup has been reported, so
     /// a persistent failure says so once rather than on every tick.
     pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
+    /// Conversations whose own-post ledger could not be read this run,
+    /// keyed `(workspace, conversation)`. The read is retried on every
+    /// message; this only decides whether the failure is worth a line a
+    /// reader sees, once rather than per message.
+    pub(crate) slack_ledger_failures: Mutex<std::collections::HashSet<(String, String)>>,
     /// Composed Slack messages held for the user's decision, keyed by
     /// draft id and carrying the session that asked. The owner is stored
     /// beside it so an answer is only ever applied by the session it was
@@ -716,6 +750,10 @@ pub struct Workspace {
     /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
     /// for as long as the person takes.
     pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
+    /// How many asks have ever arrived for a seat. **The ask's identity on the
+    /// wire**: one ask replacing another reads as a different ask, and
+    /// answering one of several leaves the number where it was.
+    pending_seq: Mutex<HashMap<SessionSlot, u64>>,
     /// Slack messages handed to a session recently, keyed by
     /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
     /// whenever a 429 lands mid-sweep, a watermark write fails, or the
@@ -753,6 +791,11 @@ pub struct Workspace {
     /// is new again and warns at `WARN` again. A set that never cleared
     /// would silence a cron that is firing.
     unwakeable_crons: Mutex<std::collections::HashSet<forge_primitives::CronId>>,
+    /// The cron ids the last `fire_due_crons` pass found cooling, with the
+    /// time each last warned. Replaced wholesale each pass, like
+    /// `unwakeable_crons`, so an episode that clears drops its marker and a
+    /// later one warns again.
+    cooling_crons: Mutex<std::collections::HashMap<forge_primitives::CronId, SystemTime>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler - used by
@@ -1270,6 +1313,22 @@ fn project_identities(config: &LoadedConfig) -> Vec<crate::store::sessions::Proj
         .collect()
 }
 
+/// The gateway's per-org walk order. Orgs are load-validated to share one
+/// pin, so the first project of an org states it.
+fn org_pins(config: &LoadedConfig) -> HashMap<String, forge_gateway::selection::OrgPin> {
+    let mut pins: HashMap<String, forge_gateway::selection::OrgPin> = HashMap::new();
+    for project in &config.projects {
+        let pin =
+            pins.entry(project.org.clone()).or_insert_with(|| forge_gateway::selection::OrgPin {
+                accounts: project.accounts.clone(),
+                fallback_accounts: project.fallback_accounts.clone(),
+            });
+        debug_assert_eq!(pin.accounts, project.accounts, "org pin drifted");
+        debug_assert_eq!(pin.fallback_accounts, project.fallback_accounts, "org pin drifted");
+    }
+    pins
+}
+
 /// The scan root for one config dir: the canonical parent of its
 /// resolved `projects` dir, or the canonical config dir itself when
 /// the resolved tree is not named `projects` (the walk descends into
@@ -1318,6 +1377,120 @@ type ForgeAnswer = (NoticeSeverity, String);
 /// a mistyped command reaching the model reads as a question.
 fn forge_misuse(usage: &str) -> ForgeAnswer {
     (NoticeSeverity::Error, usage.to_owned())
+}
+
+/// Record the surface a spawn hands its child.
+///
+/// The child fetches this list once and keeps it for its life, so this line
+/// is the only statement of what it was given; the boot init frame's own
+/// answer is recorded beside it.
+fn record_session_tool_surface(slot: &SessionSlot, lead: bool, names: &[&str]) {
+    tracing::debug!(
+        target: "forge_workspace::mcp",
+        event_name = "session_tool_surface",
+        slot = %slot.display(),
+        lead,
+        count = names.len(),
+        tools = %names.join(","),
+        "the forge tool surface handed to this spawn",
+    );
+}
+
+#[cfg(test)]
+mod record_session_tool_surface_tests {
+    use super::record_session_tool_surface;
+    use crate::SessionSlot;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Debug)]
+    struct CaughtEvent {
+        level: tracing::Level,
+        target: String,
+        fields: Vec<(String, String)>,
+    }
+
+    impl CaughtEvent {
+        fn field(&self, name: &str) -> Option<&str> {
+            self.fields.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Caught(Arc<Mutex<Vec<CaughtEvent>>>);
+
+    struct Fields(Vec<(String, String)>);
+
+    impl Visit for Fields {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0.push((field.name().to_owned(), format!("{value:?}")));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.push((field.name().to_owned(), value.to_owned()));
+        }
+
+        fn record_bool(&mut self, field: &Field, value: bool) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            self.0.push((field.name().to_owned(), value.to_string()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields(Vec::new());
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push(CaughtEvent {
+                level: *event.metadata().level(),
+                target: event.metadata().target().to_owned(),
+                fields: fields.0,
+            });
+        }
+    }
+
+    /// **The spawn's line is the artifact a "which list was that session
+    /// handed" report is answered from**, so it is pinned field by field:
+    /// a block that stops emitting, drops the slot, or changes the level
+    /// fails here rather than leaving the record silently thinner.
+    #[test]
+    fn the_record_names_the_slot_kind_count_and_every_tool() {
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let slot = SessionSlot::worker("Busytools", "forge", "surface");
+        let displayed = slot.display();
+        tracing::subscriber::with_default(subscriber, || {
+            record_session_tool_surface(&slot, false, &["agents__list", "browser_form_state"]);
+        });
+
+        let events = caught.0.lock().expect("capture");
+        let event = events.last().expect("the record was emitted");
+        assert_eq!(
+            event.level,
+            tracing::Level::DEBUG,
+            "a spawn's surface is the session's own fact"
+        );
+        assert_eq!(
+            event.target, "forge_workspace::mcp",
+            "it lands under the default filter's target"
+        );
+        assert_eq!(event.field("event_name"), Some("session_tool_surface"));
+        assert_eq!(event.field("slot"), Some(displayed.as_str()));
+        assert_eq!(event.field("lead"), Some("false"));
+        assert_eq!(event.field("count"), Some("2"));
+        assert_eq!(event.field("tools"), Some("agents__list,browser_form_state"));
+    }
 }
 
 impl Workspace {
@@ -1730,27 +1903,8 @@ impl Workspace {
             Arc::new(forge_gateway::forward::Gateway::new(Arc::clone(&accounts), forward_http));
         // Hand the gateway each org's walk order so an unbound session
         // can select an account from its path alone - the restart case,
-        // where the bindings are gone but the config is boot-frozen.
-        {
-            let mut pins: HashMap<String, forge_gateway::selection::OrgPin> = HashMap::new();
-            for project in &config.projects {
-                let pin = pins.entry(project.org.clone()).or_insert_with(|| {
-                    forge_gateway::selection::OrgPin {
-                        accounts: project.accounts.clone(),
-                        fallback_accounts: project.fallback_accounts.clone(),
-                    }
-                });
-                // Orgs are load-validated to share one pin; differing
-                // copies would mean a config bug, so the first wins and
-                // the rest are ignored the way duplicates elsewhere are.
-                debug_assert_eq!(pin.accounts, project.accounts, "org pin drifted");
-                debug_assert_eq!(
-                    pin.fallback_accounts, project.fallback_accounts,
-                    "org pin drifted"
-                );
-            }
-            gateway.set_org_pins(pins);
-        }
+        // where the bindings are gone but the config is loaded.
+        gateway.set_org_pins(org_pins(&config));
         gateway.set_rotation_numbers(config.gateway_rotation);
 
         // Seed account usage from the machine-local store so usage
@@ -1792,8 +1946,9 @@ impl Workspace {
         let service_status: Arc<Mutex<Option<ServiceIssue>>> = Arc::new(Mutex::new(None));
         let workspace = Self {
             config_dir,
-            config,
-            systemone,
+            config: parking_lot::RwLock::new(Arc::new(config)),
+            reload_generation: std::sync::atomic::AtomicU64::new(0),
+            systemone: parking_lot::RwLock::new(systemone),
             catalog,
             app_support,
             pool: Mutex::new(HashMap::new()),
@@ -1877,17 +2032,21 @@ impl Workspace {
             slack_subs: Mutex::new(slack_subs),
             slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
             slack_connected: Mutex::new(std::collections::BTreeMap::new()),
+            slack_inflight: Mutex::new(std::collections::HashMap::new()),
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            pending_seq: Mutex::new(HashMap::new()),
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
             slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
+            cooling_crons: Mutex::new(std::collections::HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -1922,21 +2081,161 @@ impl Workspace {
     /// and where it binds. Read by the binary entry point, which serves the
     /// socket - the workspace never does.
     pub fn server_config(&self) -> forge_primitives::ServerConfig {
-        self.config.server.clone()
+        self.config_arc().server.clone()
+    }
+
+    /// The live config as one owned snapshot. A reload swaps the whole
+    /// value, so every reader takes the snapshot it will use rather than a
+    /// reference that a reload could pull out from under it.
+    pub(crate) fn config_arc(&self) -> Arc<LoadedConfig> {
+        Arc::clone(&self.config.read())
+    }
+
+    /// Whether a spawn's resolution ran entirely inside one settled config:
+    /// the generation is odd while a reload swaps state, so the start must
+    /// be even and equal to the end.
+    fn resolution_held(generation: u64, settled: u64) -> bool {
+        generation.is_multiple_of(2) && generation == settled
+    }
+
+    /// Re-read `<config_dir>/forge.toml` and apply what can change without
+    /// a restart. A reload is a whole-config replacement: the parsed value
+    /// goes through the same loader a boot uses, and only a valid file
+    /// replaces the live config. An invalid file returns its error and
+    /// leaves the previous config untouched, so a half-written save never
+    /// loses a good config.
+    ///
+    /// What a reader sees after this returns equals what a boot on the same
+    /// file would load. Running sessions keep what they spawned with; only
+    /// their next use reads the new values.
+    ///
+    /// # Errors
+    ///
+    /// The file could not be read, parsed or validated, or the systemone
+    /// client could not be built. Nothing was applied.
+    pub fn reload_config(self: &Arc<Self>) -> Result<ConfigReload, WorkspaceError> {
+        let next = crate::config::load_from_dir(&self.config_dir)?;
+        let forge_toml = crate::config::forge_data_dir(&self.config_dir).join("forge.toml");
+        let systemone =
+            crate::systemone::client_for(next.systemone.as_ref(), &forge_toml)?.map(Arc::new);
+
+        let previous = self.config.read().clone();
+        let reload = previous.diff(&next);
+        let added_accounts: Vec<forge_gateway::AccountKey> = next
+            .accounts
+            .iter()
+            .filter(|account| {
+                !previous.accounts.iter().any(|old| old.display_name == account.display_name)
+            })
+            .map(|account| forge_gateway::AccountKey(account.display_name.clone()))
+            .collect();
+
+        // Odd while the swap runs. A spawn that resolves across it retries;
+        // see `resolution_held`.
+        self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.accounts.replace_accounts(&next.accounts);
+        self.gateway.set_org_pins(org_pins(&next));
+        // The setter rebuilds the rotation state, which would empty the
+        // live cooldowns and streaks. Only a reload that moved the numbers
+        // is allowed to do that.
+        if reload.changed.contains(&"gateway") {
+            self.gateway.set_rotation_numbers(next.gateway_rotation);
+        }
+        *self.systemone.write() = systemone;
+        *self.config.write() = Arc::new(next);
+        self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+
+        // A new account starts `Loading`; kick the same probe a boot runs
+        // so it does not wait for the poller's next tick.
+        let mut loading = Vec::new();
+        for key in added_accounts {
+            let weak = Arc::downgrade(self);
+            let span = tracing::info_span!("account_loading", account = %key.0);
+            loading.push(tokio::spawn(
+                async move { crate::account_loader::run_account_loading(key, weak).await }
+                    .instrument(span),
+            ));
+        }
+
+        // A project-only edit moves the roster, not the pool: the server
+        // roster reads it on the next home read, and an `AccountsChanged`
+        // frame here would claim a pool move that did not happen.
+        if reload.changed.contains(&"accounts") {
+            self.announce_accounts_changed();
+        }
+        // A project the edit added starts as it would at boot; one already
+        // declared keeps whatever it is running, and a removed one is left
+        // alone.
+        let added: Vec<(String, String)> = self
+            .config_arc()
+            .projects
+            .iter()
+            .filter(|project| {
+                project.auto_start
+                    && !previous
+                        .projects
+                        .iter()
+                        .any(|old| old.org == project.org && old.name == project.name)
+            })
+            .map(|project| (project.org.clone(), project.name.clone()))
+            .collect();
+        if !added.is_empty() {
+            if loading.is_empty() {
+                self.start_added_projects(added);
+            } else {
+                // An added project may name an account the same save added,
+                // which is still `Loading`, and the selection walk skips a
+                // `Loading` account: hold the spawn until those probes
+                // settle, the way the boot wave holds.
+                let workspace = Arc::downgrade(self);
+                tokio::spawn(async move {
+                    for handle in loading {
+                        let _ = handle.await;
+                    }
+                    let Some(workspace) = workspace.upgrade() else { return };
+                    workspace.start_added_projects(added);
+                });
+            }
+        }
+        Ok(reload)
+    }
+
+    /// Start the projects a reload added, once any account the same save
+    /// added has settled.
+    fn start_added_projects(self: &Arc<Self>, added: Vec<(String, String)>) {
+        for (org, project_name) in added {
+            // The boot wave may have started it already; a slot the pool
+            // holds needs no second dispatch.
+            if self.pool.lock().contains_key(&SessionSlot::lead(&org, &project_name)) {
+                continue;
+            }
+            if let Err(error) = self.dispatch(Command::SpawnProject {
+                project_name: project_name.clone(),
+                launch_settings: SessionLaunchSettings::default(),
+            }) {
+                tracing::warn!(
+                    target: "forge_workspace::workspace",
+                    event_name = "config_reload_autostart_failed",
+                    project = %project_name,
+                    error = %error,
+                    "an auto_start project the reload added did not start",
+                );
+            }
+        }
     }
 
     /// Effective `[client]` settings: which of the sets forge ships a
     /// client draws with. Carried by the greeting, so a client never reads
     /// `forge.toml` itself.
     pub fn client_config(&self) -> forge_primitives::ClientConfig {
-        self.config.client.clone()
+        self.config_arc().client.clone()
     }
 
     /// The server browser's own knobs: `[browser]`'s encoding rate and
     /// quality, and its idle release's two bounds. Absent section keeps the
     /// defaults the struct carries.
     pub fn browser_settings(&self) -> crate::BrowserSettings {
-        self.config.browser
+        self.config_arc().browser
     }
 
     /// The profile names `forge.toml` resolved: each org's, and each
@@ -1949,9 +2248,9 @@ impl Workspace {
         std::collections::HashMap<String, String>,
         std::collections::HashMap<(String, String), String>,
     ) {
-        let orgs = self.config.org_browser_profiles.clone();
-        let projects = self
-            .config
+        let config = self.config_arc();
+        let orgs = config.org_browser_profiles.clone();
+        let projects = config
             .projects
             .iter()
             .map(|project| {
@@ -1968,7 +2267,7 @@ impl Workspace {
     /// max_size_mib` over the crate's own default. Read by the document
     /// read, which refuses a document over it.
     pub fn document_max_bytes(&self) -> u64 {
-        self.config.document_max_bytes
+        self.config_arc().document_max_bytes
     }
 
     /// Note a client connection attached, and give it back when it goes.
@@ -2000,18 +2299,18 @@ impl Workspace {
         self.browser_host.get().cloned()
     }
 
-    /// The push-to-talk key from forge.toml `[dictate] bind`. Read by
-    /// a view's key handler per event; config is boot-frozen so the
-    /// value never changes mid-run.
+    /// The push-to-talk key from forge.toml `[dictate] bind`. The value
+    /// rides the seat record a client last read, so a reload reaches the
+    /// key handler on the next seat read rather than the next event.
     pub fn dictate_bind(&self) -> crate::dictate::DictateBind {
-        self.config.dictate.bind
+        self.config_arc().dictate.bind
     }
 
     /// How press/release maps onto starting and stopping a take, from
-    /// forge.toml `[dictate] mode`. Read by a view's key handler per
-    /// event; config is boot-frozen so the value never changes mid-run.
+    /// forge.toml `[dictate] mode`. It rides the seat record like `bind`,
+    /// so a reload reaches the key handler on the next seat read.
     pub fn dictate_mode(&self) -> crate::dictate::DictateMode {
-        self.config.dictate.mode
+        self.config_arc().dictate.mode
     }
 
     /// Whether dictation is on at all. The key handler reads this so a
@@ -2019,14 +2318,14 @@ impl Workspace {
     /// the box doc's S0 is "nothing at all", and with the section
     /// absent every Cmd chord would otherwise pop an error.
     pub fn dictate_enabled(&self) -> bool {
-        self.config.dictate.enabled
+        self.config_arc().dictate.enabled
     }
 
     /// The `[plugins]` auto-update policy from forge.toml. Read by the
     /// plugins pane for the boot auto-update gate and the pane's
     /// auto-update state display.
-    pub fn plugin_settings(&self) -> &crate::config::PluginSettings {
-        &self.config.plugins
+    pub fn plugin_settings(&self) -> crate::config::PluginSettings {
+        self.config_arc().plugins.clone()
     }
 
     /// Remember plugin updates applied by a pane run or by boot
@@ -2077,7 +2376,7 @@ impl Workspace {
     /// forge.toml - the launchpad picker uses its own row sort, so
     /// no further ordering is imposed here.
     pub fn auto_start_project_names(&self) -> Vec<String> {
-        self.config.auto_start_projects().map(|p| p.name.clone()).collect()
+        self.config_arc().auto_start_projects().map(|p| p.name.clone()).collect()
     }
 
     /// Every project listed in `forge.toml`, each carrying its catalog
@@ -2105,17 +2404,18 @@ impl Workspace {
         // pattern).
         #[cfg(any(test, feature = "testing"))]
         let extra = self.test_extra_projects.lock();
+        let config = self.config_arc();
         let project_iter: Box<dyn Iterator<Item = &LoadedProject>> = {
             #[cfg(any(test, feature = "testing"))]
             {
-                Box::new(self.config.projects.iter().chain(extra.iter()))
+                Box::new(config.projects.iter().chain(extra.iter()))
             }
             #[cfg(not(any(test, feature = "testing")))]
             {
-                Box::new(self.config.projects.iter())
+                Box::new(config.projects.iter())
             }
         };
-        let mut views = Vec::with_capacity(self.config.projects.len());
+        let mut views = Vec::with_capacity(config.projects.len());
         for project in project_iter {
             let key =
                 ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
@@ -2158,7 +2458,8 @@ impl Workspace {
     /// top-level one, with the defaults under both.
     pub(crate) fn handoff_policy_for(&self, slot: &SessionSlot) -> crate::config::HandoffPolicy {
         let project = self.project_for_slot(slot).and_then(|project| project.handoff);
-        crate::config::HandoffPolicy::resolve(&self.config.handoff, project.as_ref())
+        let config = self.config_arc();
+        crate::config::HandoffPolicy::resolve(&config.handoff, project.as_ref())
     }
 
     /// Validate that `name` matches a project in `forge.toml`. Used
@@ -2315,34 +2616,51 @@ impl Workspace {
         // is no org, no pin and no model for the walk to run over, and
         // an unregistered spawn would hand the child the account's real
         // credential and a direct base URL.
-        let Some(project) = self.project_for_target(&target) else {
-            return Err(
-                WorkspaceError::SpawnResolvesToNoProject { slot: session_slot.display() }.into()
-            );
-        };
-        // The role and the slot are two statements of the same thing -
-        // the tool surface comes from the first and the address from the
-        // second - so a caller that states them differently is refused
-        // rather than handed a worker's address with a lead's tools.
-        if Self::slot_for_spawn(role, &project) != session_slot {
-            return Err(WorkspaceError::SpawnRoleSlotDisagree {
-                role: role.clone(),
-                slot: session_slot.display(),
+        // Resolving a project and selecting its account reads two different
+        // snapshots (the config and the pool). A reload between them would
+        // pair an old pin with the new pool, so the generation is read
+        // before and re-checked after; a straddled resolution retries.
+        let (project, account_key) = loop {
+            let generation = self.reload_generation.load(std::sync::atomic::Ordering::Acquire);
+            if !generation.is_multiple_of(2) {
+                std::thread::yield_now();
+                continue;
             }
-            .into());
-        }
-        // The gateway's walk is the one place a session's account is
-        // decided: it looks the org's pin up, filters cooling accounts
-        // and walks the accounts declaring the model. The spawn only
-        // registers the answer, and that registration is what binds.
-        let Some(model) = project.model.as_deref() else {
-            return Err(WorkspaceError::ProjectModelMissing {
-                project: project.name.clone(),
-                org: project.org.clone(),
+            let Some(project) = self.project_for_target(&target) else {
+                return Err(WorkspaceError::SpawnResolvesToNoProject {
+                    slot: session_slot.display(),
+                }
+                .into());
+            };
+            // The role and the slot are two statements of the same thing -
+            // the tool surface comes from the first and the address from
+            // the second - so a caller that states them differently is
+            // refused rather than handed a worker's address with a lead's
+            // tools.
+            if Self::slot_for_spawn(role, &project) != session_slot {
+                return Err(WorkspaceError::SpawnRoleSlotDisagree {
+                    role: role.clone(),
+                    slot: session_slot.display(),
+                }
+                .into());
             }
-            .into());
+            // The gateway's walk is the one place a session's account is
+            // decided: it looks the org's pin up, filters cooling accounts
+            // and walks the accounts declaring the model. The spawn only
+            // registers the answer, and that registration is what binds.
+            let Some(model) = project.model.as_deref() else {
+                return Err(WorkspaceError::ProjectModelMissing {
+                    project: project.name.clone(),
+                    org: project.org.clone(),
+                }
+                .into());
+            };
+            let account_key = self.select_account_for_project(&project, model)?;
+            let settled = self.reload_generation.load(std::sync::atomic::Ordering::Acquire);
+            if Self::resolution_held(generation, settled) {
+                break (project, account_key);
+            }
         };
-        let account_key = self.select_account_for_project(&project, model)?;
         // The account and model checks have passed, so this spawn is
         // committed: record the id its lead will run under, either the
         // one the store held or the one minted in
@@ -2406,8 +2724,9 @@ impl Workspace {
             // for the same reason the slots do: they describe this model,
             // so they follow the project's pin. An env layer that already
             // names the key is the user's own word on it and wins.
+            let config = self.config_arc();
             if let Some(window) =
-                self.config.models.get(model).and_then(|parameters| parameters.auto_compact_window)
+                config.models.get(model).and_then(|parameters| parameters.auto_compact_window)
                 && !session_env.contains_key(AUTO_COMPACT_WINDOW_ENV)
             {
                 session_env.insert(AUTO_COMPACT_WINDOW_ENV.to_owned(), window.to_string());
@@ -2487,7 +2806,7 @@ impl Workspace {
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
             let tasks_facade = crate::mcp::tasks::facade::ProdTasksFacade::from_arc(self);
-            let systemone_facade = self.systemone.as_ref().map(|client| {
+            let systemone_facade = self.systemone.read().as_ref().map(|client| {
                 crate::mcp::systemone::facade::ProdSystemOneFacade::new(Arc::clone(client))
                     .into_arc()
             });
@@ -2515,6 +2834,11 @@ impl Workspace {
                 session_kind,
             )
         };
+        record_session_tool_surface(
+            &session_slot,
+            session_slot.is_lead(),
+            &forge_server.tool_names(),
+        );
 
         #[cfg(any(test, feature = "testing"))]
         {
@@ -2741,8 +3065,8 @@ impl Workspace {
         self.gateway.select_for(&project.org, model).is_ok()
     }
 
-    /// Whether a spawn in `project_key` would be refused because every
-    /// account serving its model is cooling.
+    /// The cooling that would refuse a spawn in `project_key`, or `None`
+    /// when a spawn would find an account.
     ///
     /// Matches the walk's budget failure alone, rather than taking any
     /// error, because that failure is the one carrying a reset to wait
@@ -2753,17 +3077,15 @@ impl Workspace {
     /// loaded config today. Keep the match narrow anyway: an empty walk
     /// with nothing to wait for must fail as before rather than retry
     /// forever, and this is the line that says so.
-    pub(crate) fn project_walk_is_cooling(&self, project_key: &ProjectKey) -> bool {
-        let Some(project) = self.project_for_key(project_key) else {
-            return false;
-        };
-        let Some(model) = project.model.as_deref() else {
-            return false;
-        };
-        matches!(
-            self.gateway.select_for(&project.org, model),
-            Err(forge_gateway::SelectFailure::BudgetExhausted { .. })
-        )
+    pub(crate) fn project_walk_cooling(&self, project_key: &ProjectKey) -> Option<ProjectCooling> {
+        let project = self.project_for_key(project_key)?;
+        let model = project.model.as_deref()?;
+        match self.gateway.select_for(&project.org, model) {
+            Err(forge_gateway::SelectFailure::BudgetExhausted { tried, org, model, reset_in }) => {
+                Some(ProjectCooling { org, model, tried, reset_in })
+            }
+            _ => None,
+        }
     }
 
     /// Snapshot of `(AccountKey display name, LoadingState)` pairs in
@@ -2837,10 +3159,10 @@ impl Workspace {
     }
 
     /// The `forge.toml` this workspace loaded. Preflight names it as
-    /// one of the two ways past an account that will not authenticate -
-    /// the one that needs a restart, since config is read at boot. The
-    /// other is repairing the account's own credentials, which a poller
-    /// picks up in place without one.
+    /// one of the two ways past an account that will not authenticate;
+    /// an edit applies to new work as the file changes. The other is
+    /// repairing the account's own credentials, which a poller picks up
+    /// in place without one.
     pub fn config_path(&self) -> PathBuf {
         crate::config::forge_data_dir(&self.config_dir).join("forge.toml")
     }
@@ -2862,7 +3184,7 @@ impl Workspace {
     /// Where the dictation models land. `None` when the platform has no
     /// usable cache directory and none was configured.
     pub fn dictate_models_dir(&self) -> Option<PathBuf> {
-        self.config.dictate.models_dir()
+        self.config_arc().dictate.models_dir()
     }
 
     /// The connection that was streaming a take for `key` has gone: the
@@ -2909,7 +3231,7 @@ impl Workspace {
     /// The dictate axes in force: `forge.toml` over the crate's own
     /// defaults. What a capturing client starts on and resets to.
     pub fn dictate_axes(&self) -> crate::dictate::DictateAxes {
-        self.config.dictate.axes()
+        self.config_arc().dictate.axes()
     }
 
     /// Push one frame of client-captured audio into the seat's live take,
@@ -2958,7 +3280,7 @@ impl Workspace {
         if self.dictate_preflight_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return;
         }
-        let settings = self.config.dictate.clone();
+        let settings = self.config_arc().dictate.clone();
         if !settings.enabled {
             return;
         }
@@ -3047,11 +3369,25 @@ impl Workspace {
     /// - `Ready` + any usage window at the cap (the same
     ///   `is_saturated` signal the walk demotes an account for) ->
     ///   `AtCap` (yellow; the session still spawns but will throttle).
+    /// - Every account serving the model inside a rotation cooldown ->
+    ///   `RateLimited`, naming the account whose cooldown lifts first:
+    ///   the one the first spawn after the thaw lands on. The walk still
+    ///   refuses a spawn; only this read looks past the cooldown.
     /// - Otherwise -> `Normal` (DIM; default chip).
     pub fn session_chip_for(&self, project_key: &ProjectKey) -> Option<SessionChipInfo> {
         let project = self.project_for_key(project_key)?;
         let model = project.model.as_deref()?;
-        let account_key = self.gateway.select_for(&project.org, model).ok()?;
+        let account_key = match self.gateway.select_for(&project.org, model) {
+            Ok(key) => key,
+            Err(forge_gateway::SelectFailure::BudgetExhausted { .. }) => {
+                let key = self.gateway.cooling_account_serving(&project.org, model)?;
+                return Some(SessionChipInfo {
+                    account_name: key.0,
+                    state: SessionChipState::RateLimited,
+                });
+            }
+            Err(_) => return None,
+        };
 
         let loading = self.accounts.loading_state(&account_key);
         let saturated = self.accounts.is_saturated(&account_key);
@@ -3269,7 +3605,7 @@ impl Workspace {
             return;
         }
         let weak = Arc::downgrade(self);
-        let poll_interval = self.config.usage_poll_interval;
+        let poll_interval = self.config_arc().usage_poll_interval;
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(
             async move {
@@ -3289,6 +3625,16 @@ impl Workspace {
                     let Some(workspace) = weak.upgrade() else {
                         return; // Workspace dropped; exit cleanly.
                     };
+                    // A reload's `[usage] poll_seconds` lands on the tick
+                    // after it, so the loop never holds a stale interval.
+                    let configured = workspace.config_arc().usage_poll_interval;
+                    if configured != interval.period() {
+                        interval = tokio::time::interval_at(
+                            tokio::time::Instant::now() + configured,
+                            configured,
+                        );
+                        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    }
                     workspace.refresh_account_usage_once().await;
                 }
             }
@@ -3368,11 +3714,17 @@ impl Workspace {
                         forge_gateway::ProbeError::Fetch(
                             forge_primitives::usage::oauth::OauthUsageError::RateLimited {
                                 retry_after,
+                                ..
                             },
                         ) => *retry_after,
                         _ => None,
                     };
                     self.accounts.set_last_error(&key, status, retry_after);
+                    // A 429 is a reading even though it heals nothing: keep
+                    // its windows so the rail can say which one is spent.
+                    if let Some(snapshot) = err.rate_limited_snapshot() {
+                        self.accounts.set_limit_reading(&key, snapshot.clone());
+                    }
                     self.announce_accounts_changed();
                     // Branch the log message by error class so anyone
                     // reading triage logs gets the right framing.
@@ -3502,12 +3854,13 @@ impl Workspace {
         }
     }
 
-    /// Read the cached usage snapshot for an account by display
-    /// name. `None` when the poller hasn't yet succeeded (cold
-    /// cache, no credentials, network blip). A view renders the
-    /// 5h / 7d bars from this snapshot.
+    /// The newest usage reading the pool holds for an account, by display
+    /// name: a rate-limited response's windows when one landed after the
+    /// last successful probe, else that probe's snapshot. `None` while the
+    /// account has reported nothing. A view renders the 5h / 7d bars from
+    /// this reading.
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
-        self.accounts.usage(display_name)
+        self.accounts.latest_reading(display_name)
     }
 
     /// The account the gateway is serving `key`'s session with right
@@ -3603,7 +3956,8 @@ impl Workspace {
     ) -> Result<SessionSlot, WorkspaceError> {
         match target {
             SessionTarget::Default => {
-                let project = self.config.default_project();
+                let config = self.config_arc();
+                let project = config.default_project();
                 Ok(SessionSlot::lead(&project.org, &project.name))
             }
             SessionTarget::Named(name) => {
@@ -3621,10 +3975,13 @@ impl Workspace {
     /// org and name.
     fn project_for_target(&self, target: &SessionTarget) -> Option<LoadedProject> {
         match target {
-            SessionTarget::Default => Some(self.config.default_project().clone()),
+            SessionTarget::Default => {
+                let config = self.config_arc();
+                Some(config.default_project().clone())
+            }
             SessionTarget::Named(name) => self.find_project_view_by_name(name),
             SessionTarget::Session(slot) | SessionTarget::FreshInProject { slot, .. } => self
-                .config
+                .config_arc()
                 .projects
                 .iter()
                 .find(|project| project.org == slot.org() && project.name == slot.project())
@@ -3634,23 +3991,38 @@ impl Workspace {
 
     /// The project `slot` names, if `forge.toml` still declares it.
     pub(crate) fn project_for_slot(&self, slot: &SessionSlot) -> Option<LoadedProject> {
-        self.config
-            .projects
-            .iter()
-            .find(|project| project.org == slot.org() && project.name == slot.project())
-            .cloned()
+        let config = self.config_arc();
+        let find =
+            |project: &LoadedProject| project.org == slot.org() && project.name == slot.project();
+        if let Some(project) = config.projects.iter().find(|project| find(project)) {
+            return Some(project.clone());
+        }
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(project) = self.test_extra_projects.lock().iter().find(|project| find(project))
+        {
+            return Some(project.clone());
+        }
+        None
+    }
+
+    /// The Slack workspace bound to `slot`'s project: the project's own
+    /// binding, else its org's. `None` when the slot names no configured
+    /// project or nothing binds one - both leave the Slack tools refusing
+    /// with the key to add.
+    pub(crate) fn slack_workspace_for_slot(&self, slot: &SessionSlot) -> Option<String> {
+        self.project_for_slot(slot).and_then(|project| project.slack_workspace)
     }
 
     /// Look up a project by `name` from `forge.toml`. Returns
     /// [`WorkspaceError::ProjectNotFound`] when no project carries
     /// that name.
-    fn find_project_by_name(&self, name: &str) -> Result<&LoadedProject, WorkspaceError> {
-        self.config.projects.iter().find(|project| project.name == name).ok_or_else(|| {
-            WorkspaceError::ProjectNotFound {
+    fn find_project_by_name(&self, name: &str) -> Result<LoadedProject, WorkspaceError> {
+        self.config_arc().projects.iter().find(|project| project.name == name).cloned().ok_or_else(
+            || WorkspaceError::ProjectNotFound {
                 name: name.to_owned(),
                 path: crate::config::forge_data_dir(&self.config_dir).join("forge.toml"),
-            }
-        })
+            },
+        )
     }
 
     /// The charter the store holds for `slot`, if any. A worker's mission
@@ -4030,7 +4402,7 @@ impl Workspace {
         {
             return Some(found);
         }
-        self.config.projects.iter().find(|p| p.name == name).cloned()
+        self.config_arc().projects.iter().find(|p| p.name == name).cloned()
     }
 
     /// The seat a project-scoped section update routes on: the project's
@@ -5176,8 +5548,9 @@ impl Workspace {
                     Some((mode, registration, account)) => {
                         // The respawned CLI runs the project's model too:
                         // this path bypasses the spawn-time stamp.
+                        let config = self.config_arc();
                         let project = registration.as_ref().and_then(|registration| {
-                            self.config
+                            config
                                 .projects
                                 .iter()
                                 .find(|project| project.name == registration.project)
@@ -5479,26 +5852,24 @@ impl Workspace {
                         return Err(DispatchError::NoDraftWaiting { key: key.clone(), id });
                     }
                 }
-                Command::RespondBrowserHandOff { key, id, done } => {
+                Command::RespondBrowserHandOff { key, id, answer } => {
                     // Same shape as the Slack arm above: the guard already
                     // refused one that is not waiting, so a `false` here is a
                     // resolve that landed between the two.
-                    // **Who answered is the log's business**: hand-offs were
-                    // seen resolving by themselves in a live round
-                    // (2026-10-07), and nothing named the hand that sent it.
+                    // **The answer names its own hand**: the ending, the door
+                    // that sent it and the connection it came over, so a
+                    // hand-off never resolves with nothing attributable
+                    // behind it (2026-10-07, 2026-10-26).
                     tracing::debug!(
                         event_name = "browser_hand_off_answered",
                         key = ?key,
                         id = %id,
-                        done,
+                        ending = ?answer.ending,
+                        source = ?answer.source,
+                        client = answer.client,
                         "a client answered a parked browser hand-off"
                     );
-                    let ending = if done {
-                        forge_primitives::browser::HandOffEnding::Done
-                    } else {
-                        forge_primitives::browser::HandOffEnding::NotNow
-                    };
-                    let answered = self.resolve_browser_hand_off(id, &key, ending);
+                    let answered = self.resolve_browser_hand_off(id, &key, answer);
                     if !answered {
                         return Err(DispatchError::NoBrowserHandOffWaiting {
                             key: key.clone(),
@@ -5963,7 +6334,8 @@ impl Workspace {
                     // A project this forge does not carry has no seat to name
                     // and no row to hold: an assignment to it is refused
                     // rather than written against an invented empty-org slot.
-                    if let Some(row) = self.config.projects.iter().find(|p| p.name == project) {
+                    let config = self.config_arc();
+                    if let Some(row) = config.projects.iter().find(|p| p.name == project) {
                         let owner_slot =
                             owner.map(|label| SessionSlot::new(&row.org, &project, label.clone()));
                         match self.assign_task(&project, &TaskId::from(id.as_str()), owner_slot) {
@@ -6267,6 +6639,25 @@ impl Workspace {
         *self.unwakeable_crons.lock() = ids;
     }
 
+    /// When the previous fire pass last warned about this cron's cooling,
+    /// or `None` when that pass did not find it cooling.
+    pub(crate) fn cron_cooling_warned_at(
+        &self,
+        id: &forge_primitives::CronId,
+    ) -> Option<SystemTime> {
+        self.cooling_crons.lock().get(id).copied()
+    }
+
+    /// Close a fire pass with the crons it still found cooling and the
+    /// time each last warned, replacing the previous pass's map wholesale
+    /// for the same reason [`Self::cron_unwakeable_commit`] does.
+    pub(crate) fn cron_cooling_commit(
+        &self,
+        warned_at: std::collections::HashMap<forge_primitives::CronId, SystemTime>,
+    ) {
+        *self.cooling_crons.lock() = warned_at;
+    }
+
     /// The session a worker label resumes onto.
     ///
     /// The row the label is registered under is authoritative while it is
@@ -6523,11 +6914,6 @@ impl Workspace {
     /// reaches Running. `live_workers` is the authoritative
     /// "this session is a child agent" registry.
     pub fn release_session_with_cascade(self: &Arc<Self>, session_key: &SessionSlot) {
-        // Announced before anything is torn down, so the seat's row starts
-        // saying where it is going at the gesture rather than after the
-        // workers this cascade takes with it (#1930). A viewer's mark is a
-        // set, so a second announcement would be spent.
-        self.announce_release(session_key);
         // The cascade is the lead's, and a lead's slot is the one whose
         // label says so: a worker's slot carries its own label, so a
         // closed worker cannot be misidentified as its lead however far
@@ -6537,13 +6923,34 @@ impl Workspace {
                 .into_iter()
                 .find(|view| view.org == session_key.org() && view.name == session_key.project())
         });
-        let cascade_project = cascade_project.flatten().map(|view| view.key);
-        if let Some(project_key) = cascade_project {
-            for entry in self.drain_live_workers(&project_key) {
+        let cascade_project = cascade_project.flatten();
+        // **Every record this close dismisses is cleared before the first
+        // frame that makes a view re-read.** The lead's announcement below is
+        // one; each live worker's removal is another. A stranded worker - a
+        // record with no live entry left to carry it - is the project's too,
+        // so every persisted label is cleared here rather than only what
+        // `live_workers` still holds.
+        if let Some(view) = cascade_project.as_ref() {
+            for row in self.worker_rows_for_project(&view.key) {
+                let slot = SessionSlot::worker(&row.org, &row.project, &row.label);
+                self.clear_spawn_failure(&slot);
+                self.spend_death(&slot);
+            }
+        }
+        // Announced before anything is torn down, so the seat's row starts
+        // saying where it is going at the gesture rather than after the
+        // workers this cascade takes with it (#1930). A viewer's mark is a
+        // set, so a second announcement would be spent.
+        self.announce_release(session_key);
+        if let Some(view) = cascade_project.as_ref() {
+            for entry in self.drain_live_workers(&view.key) {
+                // An entry whose label has no persisted row is only here.
+                self.clear_spawn_failure(&entry.slot);
+                self.spend_death(&entry.slot);
                 let worktree =
                     crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
-                    project_key: project_key.clone(),
+                    project_key: view.key.clone(),
                     action: crate::protocol::WorkerStatusAction::Removed,
                     status: entry.to_status(),
                     worktree,
@@ -6564,7 +6971,14 @@ impl Workspace {
     /// has not started: a lead before its cascade, a worker before its own
     /// kill - where a despawn's removal frame only follows the worktree
     /// cleanup, minutes later (#1930).
+    ///
+    /// The seat's failure record and any standing death go with the
+    /// announcement, before the frame that makes a view re-read: a close is
+    /// the reader acting on the row, and a trace that outlived the seat kept
+    /// it in the needs-you group with nothing left to act on.
     pub(crate) fn announce_release(self: &Arc<Self>, key: &SessionSlot) {
+        self.clear_spawn_failure(key);
+        self.spend_death(key);
         let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
@@ -6825,11 +7239,11 @@ impl Workspace {
     /// What the session at `slot` is waiting on a person for, or `None`
     /// when it can advance on its own.
     pub fn pending_interaction(&self, slot: &SessionSlot) -> Option<PendingInteractionKind> {
-        // The document hand-offs first: one parks in the workspace's own
-        // registry rather than in the session's set, so a seat with no
-        // domain can still be holding one - and it is a prompt a person
-        // must act on exactly like the other two.
-        if self.has_document_handoff(slot) {
+        // The hand-offs first: one parks in the workspace's own registries
+        // rather than in the session's set, so a seat with no domain can
+        // still be holding one - and both are prompts a person must act on
+        // exactly like the other two.
+        if self.has_document_handoff(slot) || self.has_browser_hand_off(slot) {
             return Some(PendingInteractionKind::HandOff);
         }
         let domain = self.domain_session_for(slot)?;
@@ -6855,10 +7269,30 @@ impl Workspace {
     /// view showing one of them can say how many wait behind it.
     pub fn pending_interaction_depth(&self, slot: &SessionSlot) -> usize {
         let parked = self.document_handoffs.lock().values().filter(|h| &h.seat == slot).count();
+        let handed =
+            self.browser_handoffs.lock().values().filter(|(owner, _, _)| owner == slot).count();
         parked
+            + handed
             + self
                 .domain_session_for(slot)
                 .map_or(0, |domain| domain.lock().pending_interactions.len())
+    }
+
+    /// Note that an ask arrived for `slot`.
+    ///
+    /// **The number is the ask's identity on the wire.** A client announces a
+    /// new ask by it, so a re-read of the roster is not news, an ask replacing
+    /// another at the same depth is, and an answer that shrinks a batch is
+    /// not.
+    pub(crate) fn note_ask(&self, slot: &SessionSlot) {
+        let mut held = self.pending_seq.lock();
+        let next = held.entry(slot.clone()).or_insert(0);
+        *next = next.saturating_add(1);
+    }
+
+    /// How many asks have ever arrived for `slot`, zero when none has.
+    pub fn pending_request_seq(&self, slot: &SessionSlot) -> u64 {
+        self.pending_seq.lock().get(slot).copied().unwrap_or(0)
     }
 
     /// Record a fatal error, so a view that was not attached when it fired
@@ -7741,7 +8175,7 @@ impl Workspace {
             .get(key)
             .and_then(|entry| entry.registration.as_ref())
             .map(|registration| registration.project.clone())?;
-        self.config
+        self.config_arc()
             .projects
             .iter()
             .find(|project| project.name == project_name)
@@ -7766,14 +8200,15 @@ impl Workspace {
         // The org's account walk order, from any of its projects
         // (the pin is shared across the org).
         let mut order: Vec<String> = Vec::new();
-        if let Some(project) = self.config.projects.iter().find(|p| p.org == org) {
+        let config = self.config_arc();
+        if let Some(project) = config.projects.iter().find(|p| p.org == org) {
             order.extend(project.accounts.iter().cloned());
             order.extend(project.fallback_accounts.iter().cloned());
         }
         let mut seen = std::collections::HashSet::new();
         let mut rows = Vec::new();
         for name in order {
-            let Some(account) = self.config.accounts.iter().find(|a| a.display_name == name) else {
+            let Some(account) = config.accounts.iter().find(|a| a.display_name == name) else {
                 continue;
             };
             for model in &account.models {
@@ -8421,7 +8856,8 @@ impl Workspace {
         // symlinks, so one repo declared under two org scopes collides.
         // Picking either would hand one project's env to the other's
         // sessions; no project env is the failure that cannot leak.
-        let mut matches = self.config.projects.iter().filter(|p| &derive_key(p) == target);
+        let config = self.config_arc();
+        let mut matches = config.projects.iter().filter(|p| &derive_key(p) == target);
         let first = matches.next()?;
         if matches.next().is_some() {
             tracing::warn!(
@@ -8575,6 +9011,9 @@ impl Workspace {
             // (the worker never existed; the user-visible signal is
             // the typed notice routed to the lead, not the worker row).
             self.remove_worker_by_session_key(&entry.slot);
+            // The failure record goes with the row this arm deletes, or the
+            // slot reads Failed with nothing left to clear it.
+            self.clear_spawn_failure(session_key);
             // Same release the tag-rollback arm runs: without it the
             // pool entry + command sender + domain handle + SessionTask
             // leak per failed fresh spawn, unbounded across retries.
@@ -9200,9 +9639,10 @@ impl Workspace {
 }
 
 /// The repair line the usage poller logs under an auth-classified
-/// failure, keyed on how the account authenticates. Credentials are
-/// boot-frozen, so both classes point at the flat-key edit on the
-/// account block, never a re-authentication of the shared config dir.
+/// failure, keyed on how the account authenticates. A session's
+/// credentials are fixed at its spawn, so both classes point at the
+/// flat-key edit on the account block, never a re-authentication of the
+/// shared config dir.
 ///
 /// The base-url test must stay first: a global `[env]` setup token
 /// reaches base-url accounts too, and the re-mint advice is for a
@@ -9604,6 +10044,7 @@ mod account_stamp_tests {
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
                 .expect("a profile key"),
+            slack_workspace: None,
         }
     }
 
@@ -12772,6 +13213,288 @@ base_url = "https://openrouter.ai/api"
         dir
     }
 
+    /// A valid reload replaces the whole config, and the live value equals
+    /// what a boot on the same file would load.
+    #[tokio::test]
+    async fn a_valid_reload_applies_the_file_and_equals_a_fresh_load() {
+        let dir = make_workspace_dir_declaring_model();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        assert_eq!(
+            workspace.config_arc().projects[0].model.as_deref(),
+            Some("deepseek-v4.1-flash"),
+            "the fixture starts on its own model, or this test proves nothing",
+        );
+
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Personal"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-opus-5"
+env = { RELOADED = "yes" }
+
+[[accounts]]
+display_name = "Personal"
+token = "t2"
+models = ["claude-opus-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write the new config");
+
+        let reload = workspace.reload_config().expect("the new file is valid");
+        assert!(reload.changed.contains(&"accounts"), "the account set moved: {reload:?}");
+        assert!(reload.changed.contains(&"orgs"), "the project set moved: {reload:?}");
+
+        let live = workspace.config_arc();
+        assert_eq!(live.projects[0].model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(
+            live.projects[0].env.get("RELOADED").map(String::as_str),
+            Some("yes"),
+            "the project's env is live for the next spawn",
+        );
+        assert_eq!(live.accounts[0].display_name, "Personal");
+
+        let fresh = crate::config::load_from_dir(dir.path()).expect("a fresh boot load");
+        assert_eq!(live.projects.len(), fresh.projects.len());
+        assert_eq!(live.projects[0].name, fresh.projects[0].name);
+        assert_eq!(live.projects[0].model, fresh.projects[0].model);
+        assert_eq!(live.projects[0].env, fresh.projects[0].env);
+        assert_eq!(live.accounts.len(), fresh.accounts.len());
+        assert_eq!(live.accounts[0].display_name, fresh.accounts[0].display_name);
+        assert_eq!(
+            live.accounts[0].env, fresh.accounts[0].env,
+            "the live config equals what a restart on the same file loads",
+        );
+    }
+
+    /// An invalid file is rejected whole; the last good config stays live.
+    #[tokio::test]
+    async fn an_invalid_reload_keeps_the_last_good_config() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        fs::write(forge_toml_path(dir.path()), "this is not toml = [").expect("write invalid");
+
+        let error = workspace.reload_config().expect_err("an invalid file is rejected");
+
+        assert!(
+            matches!(error, WorkspaceError::ConfigParse { .. }),
+            "the parse failure is reported: {error}",
+        );
+        assert_eq!(
+            workspace.config_arc().projects[0].name,
+            "forge",
+            "the previous config is still live after a rejected file",
+        );
+    }
+
+    /// A bound port is stored but named restart-only; the socket is never
+    /// rebound on a reload.
+    #[tokio::test]
+    async fn a_changed_port_is_reported_restart_only_and_stored() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw.push_str("\n[server]\nport = 49321\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write with the new port");
+
+        let reload = workspace.reload_config().expect("the new file is valid");
+
+        assert!(
+            reload.restart_only.contains(&"server.port"),
+            "the new port needs a restart: {reload:?}",
+        );
+        assert!(
+            !reload.changed.contains(&"server"),
+            "a port change is not a live server change: {reload:?}",
+        );
+        assert_eq!(
+            workspace.server_config().port,
+            49321,
+            "the value is stored even though the bound socket keeps the old one",
+        );
+    }
+
+    /// A snapshot a reader took before the reload keeps the values it read;
+    /// the next reader sees the new config.
+    #[tokio::test]
+    async fn a_config_snapshot_taken_before_a_reload_keeps_its_values() {
+        let dir = make_workspace_dir_declaring_model();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let before = workspace.config_arc();
+
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Personal"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-opus-5"
+
+[[accounts]]
+display_name = "Personal"
+token = "t"
+models = ["claude-opus-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write the new config");
+
+        workspace.reload_config().expect("the new file is valid");
+
+        assert_eq!(
+            before.projects[0].model.as_deref(),
+            Some("deepseek-v4.1-flash"),
+            "a spawn already reading the old config keeps what it read",
+        );
+        assert_eq!(
+            workspace.config_arc().projects[0].model.as_deref(),
+            Some("claude-opus-5"),
+            "the next reader gets the new value",
+        );
+    }
+
+    /// A project the edit adds with `auto_start` starts as it would at boot;
+    /// a project already declared is not restarted by the reload.
+    #[tokio::test]
+    async fn a_reload_starts_only_a_newly_added_auto_start_project() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.enable_test_dispatch_intercept();
+
+        fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[orgs.projects]]
+name = "fresh"
+path = "~/Projects/fresh"
+auto_start = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write the new config");
+
+        workspace.reload_config().expect("the new file is valid");
+
+        let spawned: Vec<String> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::SpawnProject { project_name, .. } => Some(project_name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            spawned,
+            vec!["fresh".to_owned()],
+            "only the project the edit added starts; the running one is left alone",
+        );
+    }
+
+    /// `[dictate]`'s derived state is built once at boot, so an edit is
+    /// stored and named restart-only rather than reported as live.
+    #[tokio::test]
+    async fn a_dictate_change_is_restart_only() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw.push_str("\n[dictate]\nenabled = true\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write");
+
+        let reload = workspace.reload_config().expect("the new file is valid");
+
+        assert!(reload.restart_only.contains(&"dictate"), "{reload:?}");
+        assert!(!reload.changed.contains(&"dictate"), "{reload:?}");
+    }
+
+    /// A reload that did not move the gateway's rotation numbers must not
+    /// rebuild the rotation state: an unrelated edit cannot make a cooling
+    /// account eligible again.
+    #[tokio::test]
+    async fn an_unrelated_reload_keeps_the_live_rotation_state() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let account = forge_gateway::AccountKey("Stargate".to_owned());
+        let registration = forge_gateway::binding::Registration {
+            org: "Default".to_owned(),
+            project: "forge".to_owned(),
+            session: "s".to_owned(),
+            account: account.clone(),
+            provider: forge_primitives::account::Provider::Anthropic,
+        };
+        workspace.gateway.bindings.register(
+            &registration,
+            "http://127.0.0.1:1",
+            &std::collections::HashMap::new(),
+        );
+        let reset = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_secs()
+            + 3_600;
+        workspace.gateway.report_rate_limit("Default", "forge", "s", Some(reset));
+        assert!(workspace.gateway.is_cooling(&account), "the fixture cools the account");
+
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw.push_str("\n[documents]\nmax_size_mib = 11\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write");
+        workspace.reload_config().expect("the new file is valid");
+        assert!(
+            workspace.gateway.is_cooling(&account),
+            "a reload outside [gateway] leaves the live cooldown alone",
+        );
+
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw.push_str("\n[gateway]\nstreak_count = 7\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write");
+        workspace.reload_config().expect("the new file is valid");
+        assert!(
+            !workspace.gateway.is_cooling(&account),
+            "a reload that moved the numbers replaces the rotation state",
+        );
+    }
+
+    /// The parity check is what stops a spawn accepting a resolution that
+    /// straddled a reload: an odd generation is a swap in progress, so an
+    /// equal-but-odd pair is not a settled read.
+    #[test]
+    fn a_resolution_must_start_and_end_on_a_settled_generation() {
+        assert!(Workspace::resolution_held(4, 4), "an even, unchanged pair held");
+        assert!(!Workspace::resolution_held(4, 6), "a completed reload invalidates it");
+        assert!(
+            !Workspace::resolution_held(5, 5),
+            "an odd generation is a swap in progress, not a settled read",
+        );
+        assert!(!Workspace::resolution_held(5, 6), "a start mid-swap is never settled");
+    }
+
     #[tokio::test]
     async fn new_for_test_opens_redb_under_the_tempdir() {
         let dir = make_workspace_dir();
@@ -13355,7 +14078,7 @@ provider = "anthropic"
         };
 
         let restarted = Workspace::new_for_test(dir.path().to_owned()).expect("second boot");
-        let project = restarted.config.default_project().clone();
+        let project = restarted.config_arc().default_project().clone();
         assert_eq!(
             restarted
                 .stored_resume_id(&SessionSlot::lead(&project.org, &project.name), false)
@@ -13375,7 +14098,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
         workspace.seed_test_ready_account("Stargate");
-        let project = workspace.config.default_project().clone();
+        let project = workspace.config_arc().default_project().clone();
         workspace.record_session_id(
             &project.org,
             &project.name,
@@ -13440,7 +14163,7 @@ provider = "anthropic"
     async fn a_lead_row_with_no_id_starts_fresh() {
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let project = workspace.config.default_project().clone();
+        let project = workspace.config_arc().default_project().clone();
         workspace.catalog.lock().insert(
             project_key_for(&project),
             vec![forge_primitives::SDKSessionInfo {
@@ -13475,7 +14198,7 @@ provider = "anthropic"
     async fn an_unreadable_session_row_refuses_the_spawn_rather_than_forking() {
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let project = workspace.config.default_project().clone();
+        let project = workspace.config_arc().default_project().clone();
         {
             let db = workspace.db.lock();
             crate::store::sessions::put_raw_for_test(
@@ -14613,12 +15336,16 @@ provider = "anthropic"
         assert_eq!(
             classify_oauth_usage_error(&fetch(OauthUsageError::RateLimited {
                 retry_after: Some(std::time::Duration::from_secs(60)),
+                snapshot: None,
             })),
             UsageFetchStatus::RateLimited,
             "new dedicated 429 variant also maps to RateLimited",
         );
         assert_eq!(
-            classify_oauth_usage_error(&fetch(OauthUsageError::RateLimited { retry_after: None })),
+            classify_oauth_usage_error(&fetch(OauthUsageError::RateLimited {
+                retry_after: None,
+                snapshot: None,
+            })),
             UsageFetchStatus::RateLimited,
         );
         assert_eq!(
@@ -15226,6 +15953,27 @@ mod worker_activity_tests {
         );
     }
 
+    /// **The sequence is the ask's identity, and a read never moves it.**
+    /// Two asks on one seat are two numbers; reading the roster is not an
+    /// ask, so a client can tell the first from the second without seeing
+    /// the depth move and be fooled by an answer that shrinks the batch.
+    #[test]
+    fn every_ask_gets_its_own_number() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::from_str_for_test("w-numbered");
+        assert_eq!(ws.pending_request_seq(&seat), 0, "a seat nothing asked is zero");
+
+        ws.note_ask(&seat);
+        assert_eq!(ws.pending_request_seq(&seat), 1);
+        ws.note_ask(&seat);
+        assert_eq!(ws.pending_request_seq(&seat), 2, "a second ask is a second number");
+        assert_eq!(
+            ws.pending_request_seq(&SessionSlot::from_str_for_test("w-quiet")),
+            0,
+            "another seat's asks are not this seat's",
+        );
+    }
+
     /// **A parked browser hand-off is in the READ as well as on the stream**:
     /// a view that attached after it landed has nothing else to draw the dock
     /// from, and the dock is the only place its answer can come from.
@@ -15717,6 +16465,13 @@ mod worker_activity_tests {
             L::Attention,
             "a held hand-off is a person's to answer, not a running turn's",
         );
+        assert_eq!(
+            ws.pending_interaction(&seat),
+            Some(crate::workspace::PendingInteractionKind::HandOff),
+            "and the roster says what the seat is waiting on",
+        );
+        assert_eq!(ws.pending_interaction_depth(&seat), 1, "with the ask it holds");
+        assert_eq!(ws.pending_request_seq(&seat), 1, "and the ask has its own identity");
 
         let bystander = SessionSlot::from_str_for_test("w-bystander2");
         let other = ws.register_domain_session(bystander.clone(), None);
@@ -16848,7 +17603,7 @@ mod worker_respawn_tests {
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
                 tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),
-                systemone: workspace.systemone.as_ref().map(|client| {
+                systemone: workspace.systemone.read().as_ref().map(|client| {
                     crate::mcp::systemone::facade::ProdSystemOneFacade::new(std::sync::Arc::clone(
                         client,
                     ))
@@ -19849,9 +20604,13 @@ mod async_worker_spawn_failure_tests {
         workspace
             .insert_live_worker(&project_key, fake_worker("reviewer", worker_key, lead_id, true));
         let lead_key = install_lead_in_pool(&workspace, lead_id);
+        // The ConnectionFailed arm records the failure before this handler
+        // runs, and the rollback deletes the row it would have drawn.
+        let worker_slot = SessionSlot::from_str_for_test(worker_key);
+        workspace.record_spawn_failure_for_test(&worker_slot, "the subprocess exited");
 
         let handled = workspace.handle_async_worker_spawn_failure(
-            &SessionSlot::from_str_for_test(worker_key),
+            &worker_slot,
             "fatal: 'reviewer' is already used by worktree at /a/b/c",
             SpawnFailureKind::Unclassified,
         );
@@ -19887,6 +20646,11 @@ mod async_worker_spawn_failure_tests {
         assert!(
             workspace.list_live_workers(&project_key).is_empty(),
             "WorkerEntry removed on async failure",
+        );
+        assert_eq!(
+            workspace.spawn_failure(&worker_slot),
+            None,
+            "the failure record goes with the row the rollback deletes",
         );
     }
 
@@ -21119,6 +21883,38 @@ provider = "anthropic"
         dir
     }
 
+    /// Two accounts serving one project's model, in pin order.
+    fn make_two_account_workspace_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            forge_toml_path(dir.path()),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["First", "Second"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "First"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[accounts]]
+display_name = "Second"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
     /// A project `model` fills the CLI's model slots: all five slot
     /// variables carry that one model on the spawned child.
     #[tokio::test]
@@ -21715,6 +22511,7 @@ base_url = "https://openrouter.ai/api"
                     std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
                 ),
                 reset_description: None,
+                status: None,
             }),
             seven_day: None,
             seven_day_opus: None,
@@ -21731,7 +22528,7 @@ base_url = "https://openrouter.ai/api"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         assert!(
             workspace.session_chip_for(&project_key).is_none(),
@@ -21755,6 +22552,7 @@ base_url = "https://openrouter.ai/api"
                         std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
                     ),
                     reset_description: None,
+                    status: None,
                 }),
                 seven_day: None,
                 seven_day_opus: None,
@@ -21766,7 +22564,7 @@ base_url = "https://openrouter.ai/api"
         );
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Normal);
@@ -21789,6 +22587,7 @@ base_url = "https://openrouter.ai/api"
                         std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
                     ),
                     reset_description: None,
+                    status: None,
                 }),
                 seven_day: None,
                 seven_day_opus: None,
@@ -21800,7 +22599,7 @@ base_url = "https://openrouter.ai/api"
         );
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::AtCap);
@@ -21824,6 +22623,7 @@ base_url = "https://openrouter.ai/api"
                         std::time::SystemTime::now() + std::time::Duration::from_secs(86_400),
                     ),
                     reset_description: None,
+                    status: None,
                 }),
                 seven_day_opus: None,
                 seven_day_sonnet: None,
@@ -21834,10 +22634,79 @@ base_url = "https://openrouter.ai/api"
         );
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::AtCap);
+    }
+
+    /// **A chip resolves while the walk refuses.** A cooling account is the
+    /// one a spawn would land on once its window lifts, so the read names
+    /// it and says it is rate-limited; the walk and the spawn refusal are
+    /// untouched.
+    #[tokio::test]
+    async fn session_chip_for_names_the_cooling_account() {
+        let dir = make_workspace_dir_246();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let key = AccountKey("Stargate".to_owned());
+        workspace.account_pool().set_usage(&key, usage_at(100.0));
+        let reset_at = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the test clock is past the epoch")
+            .as_secs()
+            + 3600;
+        workspace.gateway.report_probe_limit(&key, Some(reset_at));
+
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.read().projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace
+            .session_chip_for(&project_key)
+            .expect("the read names the account a spawn would land on");
+        assert_eq!(chip.account_name, "Stargate");
+        assert_eq!(chip.state, SessionChipState::RateLimited);
+
+        assert!(
+            matches!(
+                workspace.gateway.select_for("Default", "claude-sonnet-5"),
+                Err(forge_gateway::SelectFailure::BudgetExhausted { .. }),
+            ),
+            "the read surface must not have made the cooling account selectable",
+        );
+    }
+
+    /// **With two cooling accounts the chip follows the thaw, not pin
+    /// order.** The first spawn after the cooldowns lift lands on the
+    /// account whose reset is soonest, so that is the one whose windows and
+    /// reset the footer must state.
+    #[tokio::test]
+    async fn session_chip_for_names_the_cooling_account_that_thaws_first() {
+        let dir = make_two_account_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let first = AccountKey("First".to_owned());
+        let second = AccountKey("Second".to_owned());
+        workspace.account_pool().set_usage(&first, usage_at(42.0));
+        workspace.account_pool().set_usage(&second, usage_at(100.0));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("the test clock is past the epoch")
+            .as_secs();
+        workspace.gateway.report_probe_limit(&first, Some(now + 2 * 3600));
+        workspace.gateway.report_probe_limit(&second, Some(now + 10 * 60));
+
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                workspace.config.read().projects[0].path.to_string_lossy().as_ref(),
+            )));
+        let chip = workspace
+            .session_chip_for(&project_key)
+            .expect("the read names the account a spawn would land on");
+        assert_eq!(
+            chip.account_name, "Second",
+            "the chip named the first-pinned account instead of the one that thaws first",
+        );
+        assert_eq!(chip.state, SessionChipState::RateLimited);
     }
 
     #[tokio::test]
@@ -21871,7 +22740,7 @@ base_url = "https://openrouter.ai/api"
         );
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Bailed);
@@ -21903,7 +22772,7 @@ base_url = "https://openrouter.ai/api"
             .set_loading(&AccountKey("Stargate".to_owned()), forge_gateway::LoadingState::Bailed);
         let project_key =
             ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                workspace.config.projects[0].path.to_string_lossy().as_ref(),
+                workspace.config_arc().projects[0].path.to_string_lossy().as_ref(),
             )));
         let chip = workspace.session_chip_for(&project_key).expect("chip");
         assert_eq!(chip.state, SessionChipState::Degraded);

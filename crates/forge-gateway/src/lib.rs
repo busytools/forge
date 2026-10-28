@@ -76,6 +76,17 @@ pub enum ProbeError {
     Unmappable(String),
 }
 
+impl ProbeError {
+    /// The plan windows a rate-limited probe still carried, if any: a 429
+    /// is a reading, and it is the one that says which window is spent.
+    pub fn rate_limited_snapshot(&self) -> Option<&UsageSnapshot> {
+        match self {
+            Self::Fetch(OauthUsageError::RateLimited { snapshot, .. }) => snapshot.as_deref(),
+            Self::NoCredentials | Self::Fetch(_) | Self::Unmappable(_) => None,
+        }
+    }
+}
+
 /// What a backend allows after one of its probes failed, decided by
 /// [`ProviderBackend::repair`]. The boot loader executes the verdict
 /// against its state machine.
@@ -139,7 +150,8 @@ pub trait ProviderBackend: Send + Sync {
 
     /// What this backend allows after a failed probe. The shared
     /// default: the auth classes are terminal (an env credential is
-    /// boot-frozen and there is no local credential repair to fire) and
+    /// fixed when the session spawns and there is no local credential
+    /// repair to fire) and
     /// everything else retries. Backends whose provider repairs
     /// differently override this.
     fn repair(&self, _account: &AccountEnv<'_>, err: &ProbeError) -> RepairAction {
@@ -150,7 +162,7 @@ pub trait ProviderBackend: Send + Sync {
                 | OauthUsageError::Expired
                 | OauthUsageError::Unauthorized(_),
             ) => RepairAction::Terminal,
-            ProbeError::Fetch(OauthUsageError::RateLimited { retry_after }) => {
+            ProbeError::Fetch(OauthUsageError::RateLimited { retry_after, .. }) => {
                 RepairAction::Retry { retry_after: *retry_after }
             }
             ProbeError::Fetch(_) | ProbeError::Unmappable(_) => {
@@ -365,8 +377,10 @@ mod tests {
         let anthropic = backend(Provider::Anthropic).expect("registered");
         let retry_after = Some(Duration::from_secs(60));
         assert_eq!(
-            anthropic
-                .repair(&account, &ProbeError::Fetch(OauthUsageError::RateLimited { retry_after })),
+            anthropic.repair(
+                &account,
+                &ProbeError::Fetch(OauthUsageError::RateLimited { retry_after, snapshot: None }),
+            ),
             RepairAction::Retry { retry_after },
         );
         assert_eq!(
@@ -388,6 +402,7 @@ mod tests {
             utilization,
             resets_at: Some(future),
             reset_description: None,
+            status: None,
         };
         UsageSnapshot {
             source,

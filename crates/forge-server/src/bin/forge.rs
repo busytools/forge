@@ -78,7 +78,7 @@ fn run() -> anyhow::Result<()> {
             Ok(p) => p,
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
         };
-        let workspace = forge_server::boot::start_core(config_dir, cli.project.as_deref())?;
+        let workspace = forge_server::boot::start_core(&config_dir, cli.project.as_deref())?;
         // A headless server with no view serves nothing if the socket could
         // not bind: a supervisor watching the process would see a healthy
         // zombie, so the failure is fatal. The handle is kept: the stop path

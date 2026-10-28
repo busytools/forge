@@ -225,7 +225,7 @@ async fn fetch_json<T: DeserializeOwned>(
             })
         }
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        429 => Err(OauthUsageError::RateLimited { retry_after }),
+        429 => Err(OauthUsageError::RateLimited { retry_after, snapshot: None }),
         _ => Err(OauthUsageError::HttpStatus(status, redacted_body(&body, bearer))),
     }
 }

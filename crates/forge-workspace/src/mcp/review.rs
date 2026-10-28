@@ -1381,6 +1381,7 @@ mod tests {
             handoff: None,
             browser_profile: forge_primitives::browser::ProfileKey::of("TestOrg", "default")
                 .expect("a profile key"),
+            slack_workspace: None,
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
             .expect("the stub config is well-formed");

@@ -57,13 +57,18 @@ fn settle_probe_result(
         Err(err) => {
             let failure_class = crate::workspace::classify_oauth_usage_error(err);
             let retry_after = match err {
-                ProbeError::Fetch(OauthUsageError::RateLimited { retry_after }) => *retry_after,
+                ProbeError::Fetch(OauthUsageError::RateLimited { retry_after, .. }) => *retry_after,
                 _ => None,
             };
             pool.set_last_error(key, failure_class, retry_after);
             // set_last_error bails only on the auth classes; the
             // transient ones need the explicit terminal settle.
             pool.set_loading(key, LoadingState::Bailed);
+            // After the bail, which drops the caches: a 429 is a reading
+            // even though it is not a healthy account.
+            if let Some(snapshot) = err.rate_limited_snapshot() {
+                pool.set_limit_reading(key, snapshot.clone());
+            }
             LoadingState::Bailed
         }
     }
@@ -141,11 +146,13 @@ mod tests {
                 utilization: 10.0,
                 resets_at: Some(std::time::SystemTime::now() + Duration::from_secs(3600)),
                 reset_description: None,
+                status: None,
             }),
             seven_day: Some(UsageWindow {
                 utilization: 20.0,
                 resets_at: Some(std::time::SystemTime::now() + Duration::from_secs(3600)),
                 reset_description: None,
+                status: None,
             }),
             seven_day_opus: None,
             seven_day_sonnet: None,
@@ -164,6 +171,7 @@ mod tests {
             &key,
             &Err(ProbeError::Fetch(OauthUsageError::RateLimited {
                 retry_after: Some(Duration::from_secs(3600)),
+                snapshot: None,
             })),
         );
         assert_eq!(state, LoadingState::Bailed);
@@ -177,6 +185,10 @@ mod tests {
             Some(UsageFetchStatus::RateLimited),
             "the rate-limit class is recorded for the row's reason text",
         );
+        assert!(
+            states.latest_reading("test").is_none(),
+            "a 429 with no unified headers has no reading to keep",
+        );
         // The server Retry-After schedules the re-probe (clamped to
         // the 10-minute ceiling); the local exponential default would
         // be 30 s, so a ten-minute gap proves the server value was
@@ -186,6 +198,29 @@ mod tests {
             gap.is_some_and(|g| g > Duration::from_secs(599) && g <= Duration::from_secs(601)),
             "Retry-After retained (clamped) in the probe schedule; got {gap:?}",
         );
+    }
+
+    /// **A 429's windows survive the boot settle.** The account still bails
+    /// for the walk - a rate-limited probe heals nothing - and the reading
+    /// that says which window is spent is there for a view.
+    #[test]
+    fn settle_probe_result_keeps_a_rate_limited_readings_windows() {
+        let states = states_with_one_account();
+        let key = AccountKey("test".to_owned());
+        let state = settle_probe_result(
+            &states,
+            &key,
+            &Err(ProbeError::Fetch(OauthUsageError::RateLimited {
+                retry_after: Some(Duration::from_secs(3600)),
+                snapshot: Some(Box::new(snapshot())),
+            })),
+        );
+        assert_eq!(state, LoadingState::Bailed, "a 429 does not heal the account");
+        assert_eq!(states.loading_state(&key), LoadingState::Bailed);
+        assert_eq!(states.usage_error("test"), Some(UsageFetchStatus::RateLimited));
+        let reading = states.latest_reading("test").expect("the 429's windows survived the bail");
+        assert!(reading.five_hour.is_some(), "the 5h window was dropped");
+        assert!(reading.seven_day.is_some(), "the 7d window was dropped");
     }
 
     #[test]

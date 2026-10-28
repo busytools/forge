@@ -35,6 +35,7 @@
       "has_background_work": false,
       "pending": "permission",
       "pending_depth": 1,
+      "pending_seq": 0,
       "last_activity": null,
       "reason": null,
       "failed_turn": null,
@@ -122,6 +123,7 @@
   },
   "forge_version": "<forge-version>",
   "forge_version_short": "<forge-version-short>",
+  "boot_id": "<boot-id>",
   "service_status": null,
   "fatal_error": null
 }

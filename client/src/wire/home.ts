@@ -291,6 +291,12 @@ export interface AgentRow {
   has_background_work: boolean;
   pending: PendingKind | null;
   pending_depth: number;
+  /**
+   * How many asks have ever arrived for the seat - **the ask's identity**,
+   * so a client announces a new one once and an answer that shrinks the
+   * batch is not news. Zero on a server that predates the field.
+   */
+  pending_seq: number;
   last_activity: WireTime | null;
   reason: string | null;
   /**
@@ -357,7 +363,7 @@ export interface ProjectWire {
   /** Whether a spawn here would find an account, beside `has_model`. */
   would_bind: boolean;
   /** The account the row chips, and its state. */
-  chip: { account_name: string; state: string } | null;
+  chip: { account_name: string; state: ChipState } | null;
 }
 
 interface GatewayWire {
@@ -514,6 +520,12 @@ export interface HomeWire {
   forge_version: string;
   forge_version_short: string;
   /**
+   * The server run's own identity, minted once per process. **An ask's
+   * number restarts with the process**, so a mark scoped by this cannot be
+   * matched by a different run's ask. Empty on a server that predates it.
+   */
+  boot_id: string;
+  /**
    * The service status the core holds, which the home draws above the band -
    * `null` when it holds none. It is the probe's own report reaching a late
    * subscriber: the probe fires once, before a client attaches, so a page
@@ -542,6 +554,26 @@ const VERIFY_VALUES: ('user' | 'none')[] = ['user', 'none'];
 const PENDING: PendingKind[] = ['question', 'permission', 'hand_off'];
 const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
 const GATES: Gate[] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
+
+/**
+ * The states a project row's account chip can carry, mirroring
+ * `SessionChipState`. A union rather than a string so `view.ts` matching
+ * `rate_limited` is checked against the set: a rename on either side is a
+ * compile error instead of a word that silently stops drawing.
+ */
+export type ChipState = 'normal' | 'at_cap' | 'bailed' | 'degraded' | 'rate_limited';
+const CHIP_STATES: ChipState[] = ['normal', 'at_cap', 'bailed', 'degraded', 'rate_limited'];
+
+/** One row's account chip, narrowed where it enters. Unstated reads as no
+ *  chip; a state this client cannot name reads as `normal`. */
+function chipFrom(chip: ProjectWire['chip'] | undefined): ProjectWire['chip'] {
+  if (chip === null || chip === undefined) return null;
+  return {
+    account_name: typeof chip.account_name === 'string' ? chip.account_name : '',
+    state: narrow(typeof chip.state === 'string' ? chip.state : '', CHIP_STATES, 'normal'),
+  };
+}
+
 /** Every status the wire carries, for narrowing and for the board's lanes. */
 export const TASK_STATUSES: TaskStatus[] = [
   'pending',
@@ -725,6 +757,10 @@ function waitingFrom(raw: unknown): WaitingWire | null {
 export function homeFrom(data: HomeWire): HomeWire {
   return {
     ...data,
+    // A server older than the epoch states none: an empty scope, which no
+    // real boot id can equal, so its asks read as news only after the first
+    // read seeds them.
+    boot_id: typeof data.boot_id === 'string' ? data.boot_id : '',
     // Absent, or carrying nothing wordable, reads as no report: the banner
     // must not draw a line it cannot word, and a severity outside the two is
     // the warning every producer defaults to.
@@ -737,6 +773,7 @@ export function homeFrom(data: HomeWire): HomeWire {
       ...agent,
       lifecycle: narrow(agent.lifecycle, LIFECYCLES, 'Idle'),
       pending: agent.pending === null ? null : narrow(agent.pending, PENDING, 'permission'),
+      pending_seq: typeof agent['pending_seq'] === 'number' ? agent['pending_seq'] : 0,
       // A server old enough not to state the failure leaves the field out,
       // and it must read as `null` rather than as a failure.
       failed_turn: agent.failed_turn ?? null,
@@ -757,6 +794,7 @@ export function homeFrom(data: HomeWire): HomeWire {
     projects: (Array.isArray(data.projects) ? data.projects : []).map((row) => ({
       ...row,
       work: { ...row.work, gate: narrow(row.work?.gate, GATES, 'in_repo') },
+      chip: chipFrom(row.chip),
     })),
     // The renderer calls `some` on this one, so a page handed no list reads
     // as no unseen marks rather than throwing inside a draw.

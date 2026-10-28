@@ -85,6 +85,19 @@ impl McpServer {
         self.tools.keys().any(|name| name.starts_with(prefix))
     }
 
+    /// The names this server carries, in the order `tools/list` answers
+    /// them, so a host can record the surface it hands a child.
+    pub fn tool_names(&self) -> Vec<&str> {
+        self.tools.keys().map(String::as_str).collect()
+    }
+
+    /// Every registered tool's name and input schema, so a test can pin the
+    /// surface a family advertises. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn tool_schemas(&self) -> Vec<(String, serde_json::Value)> {
+        self.tools.iter().map(|(name, tool)| (name.clone(), tool.input_schema())).collect()
+    }
+
     /// Dispatch one JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for JSON-RPC notifications (no `id`) - notifications
@@ -290,5 +303,68 @@ mod tests_negotiation {
             let params = json!({ "protocolVersion": v });
             assert_eq!(classify_protocol_version(Some(&params)), Negotiated::Agreed(v));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_tool_names {
+    use super::{JsonRpcRequest, McpServerBuilder};
+    use crate::mcp::tool::{Tool, ToolInput, ToolOutput};
+    use serde_json::{Value, json};
+
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for Named {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+
+        fn description(&self) -> &'static str {
+            "a tool the record test registers"
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+
+        async fn call(&self, _input: ToolInput) -> ToolOutput {
+            ToolOutput::text("ok")
+        }
+    }
+
+    /// **The record of a surface is the surface itself.** A spawn logs
+    /// `tool_names()` as the list it handed its child, so a name the record
+    /// drops - or invents - would answer a later "tool not found" wrongly.
+    /// The sorting is pinned too: it is the order `tools/list` answers in.
+    #[tokio::test]
+    async fn the_recorded_names_are_exactly_what_tools_list_answers() {
+        let server = McpServerBuilder::new("forge", "1.2.3")
+            .tool(Named("tasks__list"))
+            .tool(Named("browser_form_state"))
+            .tool(Named("agents__list"))
+            .build();
+
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+        }))
+        .expect("a tools/list request");
+        let response = server.dispatch(&request).await.expect("an id-bearing request is answered");
+        let result = serde_json::to_value(response.result.expect("tools/list succeeds"))
+            .expect("serializes");
+        let listed: Vec<String> = result["tools"]
+            .as_array()
+            .expect("a tools array")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("a tool name").to_owned())
+            .collect();
+
+        assert_eq!(
+            server.tool_names(),
+            listed,
+            "what a spawn records is exactly the set tools/list answers, in its order",
+        );
     }
 }

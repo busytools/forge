@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::routing::get;
-use forge_primitives::{ClientConfig, Message, SessionSlot};
+use forge_primitives::{Message, SessionSlot};
 use tokio::net::TcpListener;
 
 use crate::SessionUpdate;
@@ -132,7 +132,28 @@ pub mod wire;
 /// no seat is ever attached and no mark is ever spent - the rail keeps
 /// diamonds the reader has already looked at. `baselines/socket/11/` is the
 /// record a v11 server emitted.
-pub const PROTOCOL_VERSION: u32 = 12;
+///
+/// **v13 is a bump for a hand-off's answer.** The answer carries what it
+/// means, the door in the client that sent it and the connection that
+/// carried it, in place of the bare `done` flag. A v12 client's answer names
+/// only `done` and cannot be decoded, so **nothing refuses the connection**
+/// (the endings it draws are ignored safely), and its answer comes back as
+/// a dispatch refusal, which a client draws where the answer came from: the
+/// command frame is recognised by its kind even when its body no longer
+/// parses, so the person is told the prompt is still waiting instead of
+/// losing the answer to the console. `baselines/socket/12/` is the record a
+/// v12 server emitted.
+///
+/// **v14 is a bump for a web client's perf batch.** `client_perf` carries the
+/// records a page measures, so a client with no shell to write them still
+/// produces its own diagnostics. It shares a number with nothing: v13 was
+/// already the hand-off answer's, and two schemas cannot answer to one
+/// protocol. A v13 server reads the batch as a message it does not know and
+/// answers an `error` naming `client_message`, which the page's own error
+/// path takes as a refused subscribe: an in-flight read can be marked
+/// refused while the connection stays up. `baselines/socket/13/` is the
+/// record a v13 server emitted.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
@@ -218,7 +239,6 @@ pub struct TransportState {
     pub work: Arc<WorkCache>,
     pub conversations: Arc<conversation::Conversations>,
     pub live: Mutex<Live>,
-    pub client: ClientConfig,
     /// The server's browser fleet, when one is installed: the connection
     /// attaches viewers, routes input and takes the controller role through
     /// it. `None` is a transport with no fleet (tests, a platform with no
@@ -236,10 +256,7 @@ impl TransportState {
     /// **One place, so the pieces cannot drift apart.** Every field here is
     /// something the socket needs that the workspace owns or that is the
     /// transport's own.
-    pub fn for_workspace(
-        workspace: &Arc<forge_workspace::Workspace>,
-        client: ClientConfig,
-    ) -> Self {
+    pub fn for_workspace(workspace: &Arc<forge_workspace::Workspace>) -> Self {
         Self {
             surface: Arc::new(ViewSurface::new(Arc::clone(workspace))),
             work: Arc::new(WorkCache::new()),
@@ -248,7 +265,6 @@ impl TransportState {
             // attachment count has to see it: a turn finishing on a seat this
             // process shows is one the reader watched.
             live: Mutex::new(Live::new()),
-            client,
             browser_host: workspace.browser_host(),
             heartbeat: Heartbeat::default(),
         }

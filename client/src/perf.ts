@@ -16,8 +16,11 @@
  * cadence behaved - and long tasks carry their own name, so a record says
  * WHICH work blocked, not merely that something did.
  *
- * Nothing here may break the app: a missing shell (the web build) or a
- * refused invoke is silence, never an error thrown into a render path.
+ * **Where a record is written is the platform's one difference**: the shell's
+ * invoke writes it beside the shell's own log, and a page with no shell sends
+ * the same batch over its socket. Nothing here may break the app: a refused
+ * write or a batch with no live connection is silence, never an error thrown
+ * into a render path.
  */
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -339,6 +342,59 @@ function observeHeartbeat(
  */
 let pendingWrites: PerfRecord[] = [];
 let writeQueued = false;
+
+/** The page's own sink: the connection it posts through, once there is one. */
+let socketSink: ((records: PerfRecord[]) => boolean) | null = null;
+
+/** The run's opening line, held until a connection can carry it. */
+let startLine: PerfRecord | null = null;
+
+/**
+ * Point the web build's sink at the connection whose socket carries its
+ * records. `null` - no connection - drops them.
+ *
+ * **The run's own line goes with the first connection.** The probe starts at
+ * module load, long before a socket exists, so its `run_started` would
+ * otherwise be dropped and a web log would open mid-story.
+ */
+export function setPerfSocket(sink: ((records: PerfRecord[]) => boolean) | null): void {
+  socketSink = sink;
+  if (sink !== null && startLine !== null) {
+    const line = startLine;
+    startLine = null;
+    sink([line]);
+  }
+}
+
+/**
+ * The web build's write: one batch over the socket per turn.
+ *
+ * **A batch with no live connection is dropped, not queued**: the log is a
+ * diagnostic, and a page that hoards records through an outage is measuring
+ * its own backlog rather than the frames.
+ */
+function sinkToSocket(records: PerfRecord[]): void {
+  pendingWrites.push(...records);
+  // **The opening line is not a loss**: it describes the run, so it is held
+  // until a connection exists rather than going out with a batch nobody
+  // carries.
+  if (startLine === null) {
+    startLine = pendingWrites.find((record) => record.kind === 'run_started') ?? null;
+  }
+  if (writeQueued) return;
+  writeQueued = true;
+  queueMicrotask(() => {
+    writeQueued = false;
+    const batch = pendingWrites;
+    pendingWrites = [];
+    socketSink?.(batch);
+  });
+}
+
+/** The sink this build writes through. */
+export function perfSink(): (records: PerfRecord[]) => void {
+  return isTauri() ? sinkToShell : sinkToSocket;
+}
 
 /** The shell's write: one invoke per turn, fire-and-forget. */
 function sinkToShell(records: PerfRecord[]): void {
@@ -876,14 +932,13 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
 let running: PerfProbe | null = null;
 
 /**
- * Start the probe, once, and only where there is a shell to write to. The
- * web build measures nothing: a record with no file behind it helps no one,
- * and a refused invoke per frame is worse.
+ * Start the probe, once. **Every client measures**: the shell writes its
+ * records through its own invoke, and a page with no shell sends the same
+ * batches over the socket, where the server writes them beside its own log.
  */
 export function startPerfProbe(options: ProbeOptions = {}): PerfProbe | null {
   if (running !== null) return running;
-  if (!isTauri()) return null;
-  running = perfProbe(options);
+  running = perfProbe({ ...options, sink: options.sink ?? perfSink() });
   running.start();
   return running;
 }

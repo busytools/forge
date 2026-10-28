@@ -11,15 +11,24 @@
     serverParameter,
   } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
-  import { noteSeatClick } from '../perf';
+  import {
+    askState,
+    deliverAsk,
+    launchSeat,
+    notifiesFromThePage,
+    rising,
+    watchNotificationClicks,
+  } from '../notify';
+  import { noteSeatClick, setPerfSocket } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
-  import { currentRoute, goTo, hrefFor, parseRoute, type Route } from '../routes';
+  import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
   import { releaseSeat } from '../session/live';
   import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
   import { watchUpdate } from '../update/state';
   import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
+  import { installBrowser, uninstallBrowser } from '../browser/surface.svelte';
   import Router from './Router.svelte';
 
   // The connect screen is the front door: it is the first thing a person
@@ -90,6 +99,8 @@
   let destroyed = false;
   onDestroy(() => {
     destroyed = true;
+    uninstallBrowser();
+    setPerfSocket(null);
     connection?.close();
   });
 
@@ -102,6 +113,11 @@
    * behind the reader.
    */
   async function open() {
+    // **A notification tap that launched the app named its seat before this
+    // page existed**, so it is asked for rather than waited on as an event.
+    // A launch that cannot read it is still a launch: the ask answers `None`
+    // for that, and for every launch no tap opened.
+    const seat = await launchSeat();
     // What a connection taken while this is in flight is measured against.
     const held = connection;
     // The parameter first, then the memory: both are this launch's target.
@@ -122,9 +138,15 @@
     }
     failure = launched.failure;
     if (launched.connected) take(launched.connected);
-    // `null` is a route the app was addressed at. A launch opens the socket
-    // its page reads but leaves the page itself alone.
-    if (launched.route !== null) currentRoute.set(launched.route);
+    if (seat !== null) {
+      // **The seat a tap named outranks the home the launch would land on**:
+      // the person asked for it, and the launch's own route is only a guess.
+      goTo({ name: 'session', slot: seat });
+    } else if (launched.route !== null) {
+      // `null` is a route the app was addressed at. A launch opens the socket
+      // its page reads but leaves the page itself alone.
+      currentRoute.set(launched.route);
+    }
   }
 
   $effect(() => {
@@ -182,6 +204,72 @@
       stopHome();
       stopStatus();
       stopGreetings();
+    };
+  });
+
+  /** The asks already announced, so a re-read of the roster is not news. */
+  const asks = askState();
+
+  /**
+   * Whether this page has the person's attention.
+   *
+   * **The rule turns on this**, and nothing in the roster moves when they
+   * look away - so it is tracked, and the effect below re-runs on it rather
+   * than waiting for the next read a parked page never makes.
+   */
+  let looking = $state(typeof document === 'undefined' ? true : document.hasFocus());
+
+  $effect(() => {
+    // **The event is the signal, not a read after it**: a blur is exactly the
+    // moment the person stopped looking, and re-reading `hasFocus()` there
+    // trusts a value that has not settled on every engine.
+    const lost = (): void => {
+      looking = false;
+    };
+    const gained = (): void => {
+      looking = document.visibilityState !== 'hidden';
+    };
+    const visibility = (): void => {
+      looking = document.visibilityState !== 'hidden' && document.hasFocus();
+    };
+    looking = document.visibilityState !== 'hidden' && document.hasFocus();
+    window.addEventListener('blur', lost);
+    window.addEventListener('focus', gained);
+    document.addEventListener('visibilitychange', visibility);
+    return () => {
+      window.removeEventListener('blur', lost);
+      window.removeEventListener('focus', gained);
+      document.removeEventListener('visibilitychange', visibility);
+    };
+  });
+
+  /**
+   * An ask that arrives while the person is not looking at its seat becomes a
+   * notification.
+   *
+   * **A page with no shell raises it here**; a shell's Rust half raises the
+   * same rule itself, because a parked or frozen page stops running this
+   * effect exactly when a notification matters.
+   */
+  $effect(() => {
+    if (!notifiesFromThePage()) return;
+    const wire = home.wire;
+    if (wire === null) return;
+    const notices = rising(asks, wire.boot_id, wire.agents, shownSeat(route), looking);
+    for (const notice of notices) deliverAsk(notice);
+  });
+
+  /** A shell's notification click names its seat; the page owns the route. */
+  $effect(() => {
+    let stop: (() => void) | null = null;
+    let live = true;
+    void watchNotificationClicks().then((off) => {
+      if (live) stop = off;
+      else off();
+    });
+    return () => {
+      live = false;
+      stop?.();
     };
   });
 
@@ -298,6 +386,13 @@
     const search = movedParameter(location.search, connected.address);
     if (search !== null) history.replaceState(null, '', `${location.pathname}${search}`);
     connection = connected.connection;
+    // **The browser follows the connection it draws through**: a shell hands
+    // its overlay to this connection, and a page drives the server's browser
+    // over this socket.
+    installBrowser(connected.connection);
+    // **The web build's perf records ride this socket.** The shell writes its
+    // own through `client_perf`; a page has no file, so the server holds it.
+    setPerfSocket((records) => connected.connection.clientPerf?.(records) ?? false);
     // The reason belonged to the launch that produced it. Left standing, the
     // door a Back lands on accuses a forge that has just answered.
     failure = null;

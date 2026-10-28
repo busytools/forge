@@ -87,12 +87,15 @@ the person's gestures back.
 `src-tauri/src/browser/` is the viewer, and three things in it are worth
 knowing before changing them:
 
-- **The picture has two painters.** On macOS the shell lays a native view
-  over the takeover's page area and decodes each WebP frame into it; on the
-  phone there is no native layer, so the Rust half hands each frame to the
-  page and `src/browser/BrowserSurface.svelte` paints it on a canvas. The
-  page reports the page area's rect either way, and every gesture's point is
-  scaled from that layout into the page's viewport.
+- **The picture has two painters and one interface.** On macOS the shell lays
+  a native view over the takeover's page area and decodes each WebP frame into
+  it; on the phone there is no native layer, so the Rust half hands each frame
+  to the page and `src/browser/BrowserSurface.svelte` paints it on a canvas.
+  A plain browser has no shell at all: the page draws the whole takeover as a
+  fixed overlay, paints the canvas itself, and sends what the shell's invoke
+  surface carries as the socket's own messages. `src/browser/link.ts` is the
+  one seam - `shell.ts` and `wire.ts` are its two implementations - so the
+  surface, the strip and the dock never ask which platform they are on.
 - **Exactly one viewer controls the browser.** A surface attaches as a
   watcher; the bar's **take control** sends `browser_control`, the server
   moves the role, and only the holder's input reaches the page. The server
@@ -105,8 +108,10 @@ knowing before changing them:
   agent meant, and the bar carries a picker over the profile's tabs.
 
 `src-tauri/src/socket.rs` and `src/socket.ts` are the two transports' frame
-readers; `src/browser/host.ts` is the page's window onto the shell's viewer
-commands, and exists only where `canHost()` finds the Tauri marker.
+readers; `src/browser/host.ts` is the browser's wire narrowing and its pure
+tab-row helpers, and `src/browser/link.ts` is the page's window onto the
+browser - the shell's viewer commands inside the shell, and the socket's own
+messages everywhere else.
 
 A start has no terminal to report to, so it writes to
 `~/Library/Logs/dev.vedhavyas.forge/forge.log` instead. That file is
@@ -118,7 +123,12 @@ that line itself, because nothing else would.
 
 The page's frame cost goes to
 `~/Library/Logs/<identifier>/forge-perf.log` (`<identifier>` the shell's
-bundle identifier - `dev.vedhavyas.forge` for the installed app), one
+bundle identifier - `dev.vedhavyas.forge` for the installed app). **A page
+with no shell sends the same records over its socket** and the server writes
+them to `forge-perf-web.log` beside its own `forge.log` (under the
+machine-local forge `logs/` directory), with one rolled copy - a batch posted
+while the socket is down is dropped rather than queued, because a log is a
+diagnostic and an outage backlog is not the frame cost. Either file holds one
 JSON line per record: `run_started` when a page attaches, `summary` every
 ten seconds (frames, how many were slow, the worst gap), and a `frame` line
 for each frame at or over 50 ms with the surface and seat it happened
@@ -193,8 +203,23 @@ time (`parse_ms`), both the shell half's own measurement. A `connection`
 record, written once a second while anything happened, carries `subscribes`
 and `snapshot_chars` with `subscribe_rate` and `snapshot_chars_per_s` - the
 pair that tells a switch's own subscribe apart from a client re-subscribing
-back to back. The web build runs no probe, so these records exist only in
-the app.
+back to back. Both halves run the probe: the web page's records are the same
+shape, written by the server to its own `forge-perf-web.log`.
+
+## Notifications
+
+An ask raised on a seat the person is not looking at becomes one OS
+notification: a question, a permission, a browser hand-off or a document
+hand-off, read from the home roster's per-seat pending state and fired on the
+transition into it, once per ask. The seat on screen is not announced while
+the page has focus, and answering an ask clears its mark so the next one on
+that seat is news again. The shell delivers through `tauri-plugin-notification`
+(`src-tauri/src/notify.rs`): the notification carries the seat, a click brings
+the window forward and the page opens that seat. **Android needs both the
+`POST_NOTIFICATIONS` permission and the `asks` channel**, and both are
+registered at startup. A page with no shell uses its own `Notification` API,
+asks for permission on the first ask that would fire rather than at load, and
+respects a refusal silently.
 
 The icon is the `panes` mark from `src/brand.ts`, on the `--bg` ground in
 the `--accent` colour. Render the mark to a 1024 PNG and pass that to
@@ -355,7 +380,9 @@ the prerequisites; a device is arm64.
 
 The manifest declares `RECORD_AUDIO` and `MODIFY_AUDIO_SETTINGS`: wry's
 `WebChromeClient` requests both together for a `getUserMedia` prompt, so one
-missing from the manifest denies the whole request.
+missing from the manifest denies the whole request. It also declares
+`POST_NOTIFICATIONS`, which API 33+ needs before the `asks` channel can
+deliver anything.
 
 ### The release APK
 

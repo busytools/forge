@@ -27,7 +27,7 @@ import {
   type Skew,
   type Subject,
 } from './protocol';
-import { noteSnapshot, noteSubscribe } from './perf';
+import { noteSnapshot, noteSubscribe, type PerfRecord } from './perf';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
 import { settingsFrom } from './wire/types';
@@ -202,6 +202,16 @@ export interface Connection {
    */
   browserInput(event: BrowserInputEvent): boolean;
   /**
+   * The page's own perf records, carried over the socket for a client with no
+   * shell to write them.
+   *
+   * Answers whether the batch went: `false` means the socket is down, and the
+   * caller drops it rather than queueing an unbounded backlog. **Absent on a
+   * connection with no socket of its own** - the desktop bridge, whose page
+   * writes through the shell's invoke instead.
+   */
+  clientPerf?(records: PerfRecord[]): boolean;
+  /**
    * Hear each browser frame the server relays, as its host's own wire: the
    * profile id, the sequence, the view size, the key flag and the encoded
    * pixels. The phone draws them on a canvas; the desktop hands them to its
@@ -265,6 +275,15 @@ const ANSWERS_THROUGH_A_REPLY = new Set([
  * so no finite bound is honest.
  */
 const REPLY_BOUND_MS = 10_000;
+
+/**
+ * The bound on a browser attach, which is longer than a command's.
+ *
+ * **A cold profile starts a host and a driver before it can answer**, and a
+ * measured cold start is about 14 s - so the command bound would report every
+ * first attach as failed and then log the answer nobody waited for.
+ */
+const ATTACH_BOUND_MS = 30_000;
 
 /** The bound this command gets, or `null` for a despawn. */
 function replyBoundFor(variant: string, bound: number): number | null {
@@ -338,6 +357,72 @@ export interface BrowserFrame {
   bytes: Uint8Array;
 }
 
+/**
+ * The browser's own client messages, as a page that draws the server's browser
+ * sends them.
+ *
+ * **These are not core commands.** `browser_view` and `browser_tabs` answer
+ * through replies of their own, and the rest are fire-and-forget assertions
+ * about what this viewer is doing. A connection without them is the desktop
+ * bridge, whose shell drives the browser through its native overlay instead.
+ */
+export interface BrowserWire {
+  /**
+   * Attach this connection to one of a seat's browser tabs, as a viewer.
+   *
+   * Answers the profile and tab the server actually attached - a hand-off
+   * that named no tab resolves to the seat's current one - or rejects with
+   * the server's own sentence.
+   */
+  browserView(seat: SessionSlot, tab: number | null): Promise<BrowserAttach>;
+  /**
+   * Read a seat's profile tabs.
+   *
+   * **The ask is the subscription**: the answer is the rows as they stand,
+   * and every change after it is pushed as a `browser_tabs`.
+   */
+  browserTabs(seat: SessionSlot): Promise<unknown>;
+  /** Give the attached profile up: the takeover lowered. */
+  browserDetach(): boolean;
+  /** Take the controller role for the viewed surface, or give it back. */
+  browserControl(take: boolean): boolean;
+  /** Move the viewed page through its history. */
+  browserNav(back: boolean): boolean;
+  /** Lay the page out to this viewer's surface, in device pixels. */
+  browserResize(width: number, height: number, scale: number): boolean;
+}
+
+/** The attach a `browser_view` answered with. */
+export interface BrowserAttach {
+  profile: string;
+  tab: number;
+}
+
+/**
+ * One attach's reply, narrowed once: the resolved pair, or the server's own
+ * sentence for why it could not attach.
+ */
+function attachOf(body: unknown): BrowserAttach {
+  if (typeof body !== 'object' || body === null) {
+    throw new Error('the attach answered nothing this page can read');
+  }
+  const held = body as Record<string, unknown>;
+  if (held['ok'] !== true) {
+    throw new Error(
+      typeof held['why'] === 'string' && held['why'] !== ''
+        ? held['why']
+        : 'the browser could not be opened',
+    );
+  }
+  if (typeof held['profile'] !== 'string' || held['profile'] === '') {
+    throw new Error('the attach named no profile');
+  }
+  if (typeof held['tab'] !== 'number' || !Number.isInteger(held['tab'])) {
+    throw new Error('the attach named no tab');
+  }
+  return { profile: held['profile'], tab: held['tab'] };
+}
+
 /** One binary message, decoded as a browser frame, when it is one. */
 function browserFrame(bytes: Uint8Array): BrowserFrame | null {
   // The kind tag, then the host's own 14-byte header, then the pixels.
@@ -370,7 +455,7 @@ export function connect(
   url: string,
   boundMs: number = READ_BOUND_MS,
   replyBoundMs: number = REPLY_BOUND_MS,
-): Connection {
+): Connection & BrowserWire {
   const stores = new Stores();
   /**
    * The bound on a subscription's first read: a subject still loading when
@@ -933,6 +1018,40 @@ export function connect(
     return true;
   }
 
+  /**
+   * A reply channel for one message, with the bound its caller is given.
+   *
+   * Registered before the message goes, because a refusal can come back as
+   * fast as the send returns. A reply that never comes has no frame to resolve
+   * it - an older server answers an unknown message with an `error` naming no
+   * reply id - so the caller's only other way out is the timer.
+   */
+  function asked(
+    bound: number | null,
+    what: string,
+  ): { replyTo: number; answer: Promise<unknown> } {
+    const replyTo = nextReplyId;
+    nextReplyId += 1;
+    const answer = new Promise<unknown>((resolve, reject) => {
+      const entry: PendingReply = { resolve, reject };
+      if (bound !== null) {
+        entry.timer = setTimeout(() => {
+          if (!pending.delete(replyTo)) return;
+          reject(new Error(`the server did not answer the ${what}`));
+        }, bound);
+      }
+      pending.set(replyTo, entry);
+    });
+    return { replyTo, answer };
+  }
+
+  /** One message on its way with no reply: `false` when nothing went. */
+  function sendClient(message: ClientMessage): boolean {
+    if (!isOpen()) return false;
+    sendNow(message);
+    return true;
+  }
+
   function dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {
     // Before anything is registered, so a command that never went leaves no
     // promise behind for a later failure to reject.
@@ -952,24 +1071,8 @@ export function connect(
       return null;
     }
 
-    const replyTo = nextReplyId;
-    nextReplyId += 1;
     const bound = replyBoundFor(variant, replyBoundMs);
-    // Registered before it goes, because a refusal can come back as fast as
-    // the send returns.
-    const answer = new Promise<unknown>((resolve, reject) => {
-      const entry: PendingReply = { resolve, reject };
-      // A reply that never comes has no frame to resolve it: the skew answer
-      // is an `error` that names no reply id, so a bounded command's only way
-      // out is its timer. A despawn has none, and waits.
-      if (bound !== null) {
-        entry.timer = setTimeout(() => {
-          if (!pending.delete(replyTo)) return;
-          reject(new Error('the server did not answer the command'));
-        }, bound);
-      }
-      pending.set(replyTo, entry);
-    });
+    const { replyTo, answer } = asked(bound, 'command');
     try {
       sendNow({ kind: 'command', command, reply_to: replyTo });
     } catch (why) {
@@ -994,6 +1097,37 @@ export function connect(
     relist,
     release,
     dispatch,
+    browserView(seat, tab) {
+      if (!isOpen()) return Promise.reject(new Error('the socket is not open'));
+      const { replyTo, answer } = asked(ATTACH_BOUND_MS, 'browser attach');
+      sendNow({ kind: 'browser_view', seat, tab, reply_to: replyTo });
+      return answer.then(attachOf);
+    },
+    browserTabs(seat) {
+      if (!isOpen()) return Promise.reject(new Error('the socket is not open'));
+      const { replyTo, answer } = asked(replyBoundMs, 'tab list');
+      sendNow({ kind: 'browser_tabs', seat, reply_to: replyTo });
+      return answer.then((body) => {
+        if (typeof body !== 'object' || body === null) {
+          throw new Error('the tab list answered nothing this page can read');
+        }
+        const held = body as Record<string, unknown>;
+        if (held['ok'] !== true) {
+          throw new Error(
+            typeof held['why'] === 'string' && held['why'] !== ''
+              ? held['why']
+              : 'the browser could not list its tabs',
+          );
+        }
+        return held['tabs'];
+      });
+    },
+    browserDetach: () => sendClient({ kind: 'browser_detach' }),
+    browserControl: (take) => sendClient({ kind: 'browser_control', take }),
+    browserNav: (back) => sendClient({ kind: 'browser_nav', back }),
+    browserResize: (width, height, scale) =>
+      sendClient({ kind: 'browser_resize', width, height, scale }),
+    clientPerf: (records) => sendClient({ kind: 'client_perf', records }),
     more(conversation, before = null, turns = MORE_TURNS) {
       if (!isOpen()) return false;
       sendNow({ kind: 'more', conversation, before, turns });

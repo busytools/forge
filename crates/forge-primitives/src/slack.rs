@@ -3,6 +3,7 @@
 //! `users.conversations` reports, and the subscription record a session
 //! creates.
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -194,13 +195,41 @@ pub struct SlackFile {
     pub name: String,
     #[serde(default)]
     pub url_private: String,
+    /// Where the file was shared. The upload call answers no message `ts`,
+    /// so this is the only place a posted file's message is named.
+    #[serde(default, deserialize_with = "shares_or_null")]
+    pub shares: SlackFileShares,
+}
+
+/// Slack sends `shares: null` on a file it has not shared; that is not an
+/// object, and it reads as no shares rather than failing the whole file.
+fn shares_or_null<'de, D>(deserializer: D) -> Result<SlackFileShares, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<SlackFileShares>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
+/// A file's shares, keyed by visibility and then by conversation id.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SlackFileShares {
+    #[serde(default)]
+    pub public: HashMap<String, Vec<SlackFileShare>>,
+    #[serde(default)]
+    pub private: HashMap<String, Vec<SlackFileShare>>,
+}
+
+/// One message a file was shared as, in one conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SlackFileShare {
+    pub ts: String,
 }
 
 /// One hit from `search.messages`. `conversation_name` is absent on a DM,
 /// which has no name rather than an empty one. `user` is the author's id,
-/// which the mention sweep needs for the own-message filter - `username`
-/// is only a handle. A file-share with no text is a real hit, so the
-/// files ride along for delivery and `slack__attachment`.
+/// which the delivered block carries - `username` is only a handle. A
+/// file-share with no text is a real hit, so the files ride along for
+/// delivery and `slack__attachment`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SlackSearchMatch {
     pub ts: String,
@@ -219,8 +248,9 @@ pub struct SlackSearchMatch {
     pub files: Vec<SlackFile>,
 }
 
-/// One user as `users.info` reports it. Every optional field is optional
-/// because Slack omits fields per user type rather than sending nulls.
+/// One user as `users.info` and `users.list` report them. Every optional
+/// field is optional because Slack omits fields per user type rather than
+/// sending nulls.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SlackUser {
     pub id: String,
@@ -230,6 +260,20 @@ pub struct SlackUser {
     pub real_name: Option<String>,
     #[serde(default)]
     pub tz: Option<String>,
+    /// A deactivated member keeps their row; they cannot be notified.
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default)]
+    pub profile: Option<SlackUserProfile>,
+}
+
+/// The part of a user's profile a name lookup needs. `display_name` is what
+/// people call themselves, which is often neither the handle nor the legal
+/// name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SlackUserProfile {
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// One pinned message as `pins.list` reports it. Pins are messages, and
