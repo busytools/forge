@@ -31,6 +31,24 @@ const SEAT = 'session:Busytools/forge/lead';
 const ELSEWHERE = 'session:Busytools/forge/worker';
 
 describe('a landing', () => {
+  /**
+   * **The arm is what a surface about to close must wait on.** A page that
+   * navigates while a take's words are still in flight loses them: the
+   * landing names this surface, and no other one will place it.
+   */
+  it('reports the arm until a notice spends it or the take is dropped', () => {
+    const landing = new Landing('composer');
+    expect(landing.armed, 'nothing is owed before a press').toBe(false);
+    landing.arm(SEAT, null);
+    expect(landing.armed, 'a press owes a landing').toBe(true);
+    expect(landing.place(SEAT, words)).toBe('this read is the whole input');
+    expect(landing.armed, 'the notice spent the arm').toBe(false);
+
+    landing.arm(SEAT, words);
+    landing.drop();
+    expect(landing.armed, 'an abandoned take owes nothing').toBe(false);
+  });
+
   it('places its words once, and remembers them for the cut row', () => {
     const landing = new Landing('composer');
     landing.arm(SEAT, null);
