@@ -428,6 +428,61 @@ mod commands {
     }
 }
 
+/// The client logger's default directives, as data: `Info` for the crate, and
+/// `debug` for the targets whose demoted lines must stay readable (rule 20) -
+/// the client's half of the server's own directive table.
+const LOG_BASELINE: tauri_plugin_log::log::LevelFilter = tauri_plugin_log::log::LevelFilter::Info;
+const DEBUG_LEVEL: tauri_plugin_log::log::LevelFilter = tauri_plugin_log::log::LevelFilter::Debug;
+
+/// The targets kept at [`DEBUG_LEVEL`]: the mic's press line is a session's
+/// own work rather than forge's, and it is what a slow open is answered from.
+pub(crate) const DEBUG_TARGETS: &[&str] = &[mic::LOG_TARGET];
+
+/// The highest level any target is kept at. The logger's own facade filter
+/// must allow at least this much, or it drops a record [`keeps`] would keep -
+/// which with a `debug` target means every `debug!` body in the client now
+/// evaluates, a formatting call apiece for the ones the filter then drops.
+pub(crate) const LOG_MAX: tauri_plugin_log::log::LevelFilter = max_level(LOG_BASELINE, DEBUG_LEVEL);
+
+const fn max_level(
+    a: tauri_plugin_log::log::LevelFilter,
+    b: tauri_plugin_log::log::LevelFilter,
+) -> tauri_plugin_log::log::LevelFilter {
+    if a as u8 >= b as u8 { a } else { b }
+}
+
+/// Whether the client's logger keeps a record: [`LOG_BASELINE`] for the crate,
+/// [`DEBUG_LEVEL`] for a target [`DEBUG_TARGETS`] names or a module under one.
+///
+/// **The one policy both loggers read**: the shipped logger filters on it, and
+/// the tests' capture keeps by it, so a test cannot model a filter the app
+/// does not ship.
+pub(crate) fn keeps(level: tauri_plugin_log::log::Level, target: &str) -> bool {
+    level <= limit_for(target)
+}
+
+/// The level `target` is kept at: the most specific [`DEBUG_TARGETS`] entry
+/// naming it or a parent module of it, the baseline otherwise.
+fn limit_for(target: &str) -> tauri_plugin_log::log::LevelFilter {
+    let mut named = target;
+    loop {
+        if DEBUG_TARGETS.contains(&named) {
+            return DEBUG_LEVEL;
+        }
+        match named.rfind("::") {
+            Some(at) => named = &named[..at],
+            None => return LOG_BASELINE,
+        }
+    }
+}
+
+/// The client's logger under those directives.
+fn client_logger() -> tauri_plugin_log::Builder {
+    tauri_plugin_log::Builder::new()
+        .level(LOG_MAX)
+        .filter(|record| keeps(record.level(), record.target()))
+}
+
 /// The app, as a library: the Android target links it as a native library, and
 /// the desktop binary in `main.rs` runs the same builder.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -435,9 +490,7 @@ pub fn run() {
     let context = tauri::generate_context!();
     let log_file = log_file(&context.config().identifier);
 
-    let builder = tauri::Builder::default().plugin(
-        tauri_plugin_log::Builder::new().level(tauri_plugin_log::log::LevelFilter::Info).build(),
-    );
+    let builder = tauri::Builder::default().plugin(client_logger().build());
 
     // The updater plugin stops at the desktop; the phone's fetch, download,
     // signer check and installer handoff live in its own Kotlin plugin. Both
@@ -891,6 +944,32 @@ mod tests {
         assert_eq!(attention(&tauri::WindowEvent::Destroyed), None);
     }
 
+    /// **The one policy the shipped logger and the tests' capture share.** A
+    /// named target keeps `debug` and a module under it does too, since a
+    /// file that moves into a subdirectory is the same module's own line; an
+    /// unnamed target stops at `Info`, which is what keeps `forge.log`
+    /// readable.
+    #[test]
+    fn the_default_directives_keep_debug_for_their_own_targets() {
+        use super::{DEBUG_TARGETS, keeps};
+        use tauri_plugin_log::log::Level;
+
+        for target in DEBUG_TARGETS {
+            assert!(keeps(Level::Debug, target), "a named target keeps `debug`: {target}");
+            assert!(
+                keeps(Level::Debug, &format!("{target}::submodule")),
+                "a module under a named target keeps `debug` too: {target}",
+            );
+            assert!(keeps(Level::Info, target), "and `Info` is kept as well: {target}");
+        }
+        assert!(
+            !keeps(Level::Debug, "forge_client::socket"),
+            "an unnamed target stops at `Info`: debug is dropped",
+        );
+        assert!(keeps(Level::Warn, "forge_client::socket"), "a warning always crosses");
+        assert!(keeps(Level::Info, "forge_client::socket"), "so does `Info`");
+    }
+
     /// Two Android classes under one plugin name replace each other's commands:
     /// tauri keys the Android plugin map by the builder's name, which is why
     /// the update check dispatched into the file-name plugin and failed.
@@ -899,6 +978,41 @@ mod tests {
         assert_ne!(
             ANDROID_UPDATE_PLUGIN, ANDROID_FILE_NAME_PLUGIN,
             "two Android plugin classes share one tauri plugin name again"
+        );
+    }
+
+    /// **The shipped logger, built.** The tests' capture keeps by [`keeps`] on
+    /// its own, so nothing above reached `client_logger`: swapping its level
+    /// or dropping its filter left every test green while `forge.log` lost the
+    /// press line. This builds the dispatch the app installs, through the same
+    /// `split` -> `acquire_logger` -> `into_dispatch` path.
+    #[test]
+    fn the_shipped_logger_keeps_the_press_line_and_drops_its_neighbours() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        use tauri_plugin_log::log::{Level, Log as _, Metadata};
+
+        use super::{LOG_MAX, client_logger, mic};
+
+        fn metadata(level: Level, target: &str) -> Metadata<'_> {
+            let mut builder = Metadata::builder();
+            builder.level(level).target(target).build()
+        }
+
+        let app = mock_builder().build(mock_context(noop_assets())).expect("a mock app builds");
+        let (_plugin, max, logger) =
+            client_logger().split(app.handle()).expect("the logger builds");
+        assert_eq!(max, LOG_MAX, "the facade allows what the filter keeps");
+        assert!(
+            logger.enabled(&metadata(Level::Debug, mic::LOG_TARGET)),
+            "the press line is kept at `debug`",
+        );
+        assert!(
+            !logger.enabled(&metadata(Level::Debug, "forge_client::socket")),
+            "an unnamed target's debug line is dropped",
+        );
+        assert!(
+            logger.enabled(&metadata(Level::Info, "forge_client::socket")),
+            "and the baseline is still written",
         );
     }
 }

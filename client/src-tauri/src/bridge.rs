@@ -689,6 +689,11 @@ impl Bridge {
         self.raise(notices);
     }
 
+    /// The seat the page has on screen, as the last `showing` said.
+    pub fn shown(&self) -> Option<SessionSlot> {
+        self.lock().shown.clone()
+    }
+
     /// Ask again for a subject the page still holds, **without counting a
     /// reader**: the record and the page's store both survived the drop, and
     /// only the server's subscription went with the socket.
