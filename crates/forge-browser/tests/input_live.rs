@@ -30,8 +30,10 @@ const POLL_EVERY: Duration = Duration::from_millis(50);
 
 /// A staged host, its page's DevTools connection, and the scratch they live in.
 struct Fixture {
-    _scratch: tempfile::TempDir,
+    /// **Before `_scratch`**: fields drop in declaration order, and the host's
+    /// own drop reads its log out of the scratch dir.
     host: support::Host,
+    _scratch: tempfile::TempDir,
     cdp: Cdp,
     _events: tokio::sync::mpsc::UnboundedReceiver<Value>,
     ring: String,

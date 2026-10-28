@@ -2146,7 +2146,7 @@ impl BrowserService {
                 // **The sentence goes out before the tab senders close**, so
                 // a viewer reads why the browser went rather than "tab N was
                 // closed"; the identity is what a recurrence is diagnosed by.
-                tail = spawn::log_tail(&profile.dir);
+                tail = spawn::log_tail(&spawn::host_log_path(&profile.dir));
                 let words = if tail.is_empty() {
                     "its log is empty".to_owned()
                 } else {
@@ -3876,7 +3876,9 @@ impl HostEnd {
 /// bounded and does not block the worker.
 async fn host_tail(profile: &Profile) -> String {
     let dir = profile.dir.clone();
-    tokio::task::spawn_blocking(move || spawn::log_tail(&dir)).await.unwrap_or_default()
+    tokio::task::spawn_blocking(move || spawn::log_tail(&spawn::host_log_path(&dir)))
+        .await
+        .unwrap_or_default()
 }
 
 /// **A host the service deliberately ends is said in the log**, with the
@@ -4423,9 +4425,9 @@ impl Profile {
                 let cause = death_cause(status);
                 // **The host's own last words are the diagnosis here too.**
                 // The read is bounded, and the monitor holds no profile lock.
-                let tail = profile
-                    .upgrade()
-                    .map_or_else(String::new, |profile| spawn::log_tail(&profile.dir));
+                let tail = profile.upgrade().map_or_else(String::new, |profile| {
+                    spawn::log_tail(&spawn::host_log_path(&profile.dir))
+                });
                 tracing::warn!(
                     event_name = "browser_host_died",
                     profile = %key,
@@ -5401,7 +5403,7 @@ fn dead_host_answer(profile: &Profile, host: DeadHost, why: &str) -> String {
         DeadHost::Ended { pid, port } => {
             // **The host's own last words are the diagnosis**: a bare
             // initializeServer timeout names nothing (#2534).
-            let tail = spawn::log_tail(&profile.dir);
+            let tail = spawn::log_tail(&spawn::host_log_path(&profile.dir));
             let words = if tail.is_empty() {
                 "its log is empty".to_owned()
             } else {
@@ -11049,7 +11051,7 @@ mod server_guards {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
         let stub = dir.path().join("crash-host.sh");
-        write_exec(&stub, "#!/bin/sh\nkill -9 $$\n");
+        write_exec(&stub, "#!/bin/sh\necho \"cef host: crashing\" >&2\nkill -9 $$\n");
         let (pid, port) = spawn_stub(&stub, &profile, dir.path());
         let (_, ring) = install_host_with_pid(&profile, dir.path(), pid, port).await;
         let uploads = profile.dir.join("uploads");
@@ -11073,6 +11075,10 @@ mod server_guards {
         let (level, fields) = died[0];
         assert_eq!(*level, tracing::Level::WARN, "{fields}");
         assert!(fields.contains("cause=signal 9"), "the cause is the signal: {fields}");
+        assert!(
+            fields.contains("log_tail=cef host: crashing"),
+            "the record carries the host's last words: {fields}"
+        );
         assert!(!saw(&caught, "browser_host_ended"), "a crash is not an end");
         assert!(!uploads.exists(), "the dead host's uploads go with it");
         crate::osr::Ring::unlink(&ring);

@@ -77,6 +77,26 @@ export class Box {
   /** The line the reader's own typing has dismissed, which the next take clears. */
   dismissed = $state<string | null>(null);
   /**
+   * The prompt this box's own words box belongs to, which is what tells its
+   * words from the next prompt's.
+   *
+   * **Per seat, like the words themselves**: a parked hand-off keeps its line
+   * across a visit to another seat, so the key has to survive that visit with
+   * the words it keys.
+   */
+  askKey: string | null = null;
+  /** What the reader wrote in the dock's or the bar's line. */
+  dockDraft = $state('');
+  /** A take's words that landed in the dock, which is what brings its box the keyboard. */
+  dockLanded = $state<string | null>(null);
+  /** A landing the bar's line took, which the carry hands over if the line goes. */
+  barLanded = $state<string | null>(null);
+  /**
+   * Words the bar's line was holding when it went away, in the chat's draft
+   * now - what the parked hand-off's card says so they are not invisible.
+   */
+  carried = $state<string | null>(null);
+  /**
    * When a landed take's words settled here: the whole of the beat's state.
    *
    * Read as a window rather than remembered as a flag a timer clears, so the

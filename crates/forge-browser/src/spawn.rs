@@ -266,7 +266,7 @@ pub fn spawn_with(
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(profile.join("cef-host.log"))
+        .open(host_log_path(profile))
         .map_err(|why| format!("the host's log cannot be opened: {why}"))?;
     let mut command =
         host_command(exe, profile, port, ring, width, height, profile_id, encoding, frames);
@@ -386,11 +386,20 @@ const TAIL_BYTES: u64 = 4 * 1024;
 const TAIL_LINES: usize = 4;
 const TAIL_CHARS: usize = 512;
 
+/// The log a profile's host writes, where the spawn opens it and the readers
+/// find it.
+pub fn host_log_path(profile: &Path) -> PathBuf {
+    profile.join("cef-host.log")
+}
+
 /// The host log's last few lines, read from the file's own end. A seek can
 /// land mid-line, so the first kept line may be a fragment.
-pub(crate) fn log_tail(profile: &Path) -> String {
+///
+/// **Public because the live test support reads a failed test's host log the
+/// same way**, and a second reader would drift from this one's bounds.
+pub fn log_tail(log: &Path) -> String {
     use std::io::{Read as _, Seek as _};
-    let Ok(mut file) = std::fs::File::open(profile.join("cef-host.log")) else {
+    let Ok(mut file) = std::fs::File::open(log) else {
         return String::new();
     };
     let len = file.metadata().map_or(0, |meta| meta.len());
@@ -1160,6 +1169,26 @@ mod tests {
         assert!(alive(std::process::id()), "the unrelated process is still running");
     }
 
+    /// **A window that opens inside a character still reads the tail.** The
+    /// host log carries whatever a page printed, and refusing the window would
+    /// blank the record for exactly the logs that hold one.
+    #[test]
+    fn a_tail_read_from_inside_a_character_is_lossy_not_empty() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        // 6100 bytes: the 4 KiB window opens two bytes into a three-byte char.
+        // **The first-character assertion is what keeps that true**: move
+        // `TAIL_BYTES` and the window lands on a boundary, which fails here
+        // rather than passing vacuously.
+        let body = format!("{}{}", "a".repeat(100), "\u{20ac}".repeat(2_000));
+        let log = dir.path().join("cef-host.log");
+        std::fs::write(&log, body).expect("the host log");
+
+        let tail = log_tail(&log);
+        assert!(!tail.is_empty(), "the window was refused instead of read lossily");
+        assert!(tail.starts_with('\u{FFFD}'), "the window did not open inside a character: {tail}");
+        assert!(tail.contains('\u{20ac}'), "the tail lost the log's own text: {tail}");
+    }
+
     /// **The tail is bounded by bytes, lines and characters.** The host log is
     /// append-only and never rotated, so a full read would grow with the
     /// host's uptime and a long line would grow the record with it.
@@ -1173,7 +1202,7 @@ mod tests {
             let _ = writeln!(big, "line {n}");
         }
         std::fs::write(dir.path().join("cef-host.log"), big).expect("the host log");
-        let tail = log_tail(dir.path());
+        let tail = log_tail(&dir.path().join("cef-host.log"));
         assert!(tail.starts_with("line 996 | "), "the last four lines are kept: {tail}");
         assert!(tail.ends_with("line 999"), "and the newest is the last: {tail}");
 
@@ -1183,7 +1212,7 @@ mod tests {
             format!("one\ntwo\nlong {long}\nthree\nfour\n"),
         )
         .expect("the host log");
-        let tail = log_tail(dir.path());
+        let tail = log_tail(&dir.path().join("cef-host.log"));
         assert_eq!(tail.matches(" | ").count(), 3, "the four newest lines: {tail}");
         assert!(tail.starts_with("two | "), "the oldest line is dropped: {tail}");
         assert!(!tail.contains(&long), "the long line is cut at the cap: {tail}");
@@ -1198,7 +1227,7 @@ mod tests {
             let _ = writeln!(wide, "{prefix}-{}", "M".repeat(1_100));
         }
         std::fs::write(dir.path().join("cef-host.log"), wide).expect("the host log");
-        let tail = log_tail(dir.path());
+        let tail = log_tail(&dir.path().join("cef-host.log"));
         assert!(!tail.contains("MARKER"), "a whole read keeps the marker: {tail}");
     }
 }
