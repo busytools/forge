@@ -704,7 +704,7 @@ impl Workspace {
         }
         let gate = self.held_work_seats.gate(slot);
         let _one_at_a_time = match &gate {
-            Some(gate) => Some(
+            Some(gate) => {
                 // **A drawing read waits for a scan, but not for ever.** The
                 // gate is held across the watch's whole scan - its PR lookup
                 // and its base refresh included - and a reader that queued
@@ -712,24 +712,22 @@ impl Workspace {
                 // asked for. Past the bound the store is served instead, and
                 // the caller labels the base unverified, because that store
                 // was written before the base this read refreshed moved.
-                match tokio::time::timeout(PINNED_GATE_WAIT, gate.lock()).await {
-                    Ok(held) => held,
-                    Err(_) => {
-                        tracing::warn!(
-                            target: "forge_workspace::work",
-                            event_name = "work_scan_gate_overrun",
-                            slot = %slot.display(),
-                            wait_ms = PINNED_GATE_WAIT.as_secs_f64() * 1000.0,
-                            "a drawing read waited the whole bound for the seat's work gate",
-                        );
-                        return Err(format!(
-                            "{}'s work gate was held past {}ms",
-                            slot.display(),
-                            PINNED_GATE_WAIT.as_millis(),
-                        ));
-                    }
-                },
-            ),
+                let Ok(held) = tokio::time::timeout(PINNED_GATE_WAIT, gate.lock()).await else {
+                    tracing::warn!(
+                        target: "forge_workspace::work",
+                        event_name = "work_scan_gate_overrun",
+                        slot = %slot.display(),
+                        wait_ms = PINNED_GATE_WAIT.as_secs_f64() * 1000.0,
+                        "a drawing read waited the whole bound for the seat's work gate",
+                    );
+                    return Err(format!(
+                        "{}'s work gate was held past {}ms",
+                        slot.display(),
+                        PINNED_GATE_WAIT.as_millis(),
+                    ));
+                };
+                Some(held)
+            }
             None => None,
         };
         Ok(self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base).await)

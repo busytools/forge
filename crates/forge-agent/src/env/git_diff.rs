@@ -359,7 +359,7 @@ fn claim_refresh_slot(key: &Path, now: Instant, window: Duration) -> bool {
 }
 
 /// The watch's own base refresh: fetch `default_branch` unless this checkout
-/// was refreshed inside [`WATCH_REFRESH_INTERVAL`].
+/// was refreshed inside the watch's cadence (one fetch per four minutes).
 ///
 /// **Nobody waits on the watch's pass**, so it is where a fetch keeps the
 /// session row's "N commits" honest while no review page is open: the scan
@@ -454,19 +454,16 @@ async fn fetch_base(cwd: &Path, remote_branch: &str, deadline: Instant) {
     // side would then log as the user's own git holding it, which is the one
     // thing it is not.
     let gate = fetch_gate(cwd);
-    let _one_at_a_time = match timeout(remaining(deadline), gate.lock()).await {
-        Ok(held) => held,
-        Err(_) => {
-            tracing::debug!(
-                target: crate::logging::targets::ENV_GIT,
-                cwd = %cwd.display(),
-                event_name = "git_base_fetch_busy",
-                message = "another base fetch held this checkout past the budget",
-                outcome = "timeout",
-                branch = %remote_branch,
-            );
-            return;
-        }
+    let Ok(_one_at_a_time) = timeout(remaining(deadline), gate.lock()).await else {
+        tracing::debug!(
+            target: crate::logging::targets::ENV_GIT,
+            cwd = %cwd.display(),
+            event_name = "git_base_fetch_busy",
+            message = "another base fetch held this checkout past the budget",
+            outcome = "timeout",
+            branch = %remote_branch,
+        );
+        return;
     };
     let refspec = format!("+refs/heads/{remote_branch}:refs/remotes/origin/{remote_branch}");
     let mut command = git_command::tokio_git_command(cwd);

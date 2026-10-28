@@ -2372,9 +2372,10 @@ async fn session(
     };
     // **The pin goes with the scan.** A fallback scan read the ref's name, so
     // pinning the content read to the fetched sha would pair two refs.
-    let base_ref = match scan_pinned {
-        true => refresh.as_ref().and_then(|refresh| refresh.base_ref.as_deref()),
-        false => None,
+    let base_ref = if scan_pinned {
+        refresh.as_ref().and_then(|refresh| refresh.base_ref.as_deref())
+    } else {
+        None
     };
     let at = std::time::Instant::now();
     let diff = scan_content(&held.cwd, &held.diff, base, base_ref).await;
