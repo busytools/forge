@@ -227,7 +227,7 @@ control, and exactly one holds it at a time. A take moves the role to the
 caller; the previous holder becomes a watcher and its input is refused from
 that moment. **A take that does not land** - no attach, or a tab that moved -
 is refused with an `error` naming `browser_control` and recorded
-(`browser_control` with `landed: false`), and a release gives the role up,
+(`browser_control` with `landed=false`), and a release gives the role up,
 recorded once when it actually held it (`browser_role_released`). Every
 viewer of the tab is sent the new state (`browser_view`), so the same truth
 is drawn everywhere.
