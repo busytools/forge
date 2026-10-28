@@ -187,14 +187,18 @@ export function holdsControl(): boolean {
 }
 
 /**
- * Take the controller role for this surface, or give it back. **The reply's
- * state push is what settles it**; the store moves now so the bar does not
- * lag a round trip behind the person's press.
+ * Take the controller role for this surface, or give it back.
+ *
+ * **The role is the server's to give, and its `browser_view` push is what
+ * settles it.** A take it refuses - no attach, a tab that moved - must leave
+ * the bar saying this surface does not hold it, or the page shows a driver
+ * whose every gesture the server then refuses. A release is the one this side
+ * can settle itself: the state it claims is the one nobody holds.
  */
 export async function takeControl(take: boolean): Promise<void> {
   if (!drawsSurface()) return;
   await sendControl(take);
-  surface.controller = take ? surface.viewer : null;
+  if (!take) surface.controller = null;
   if (take) void resizeToRegion();
 }
 

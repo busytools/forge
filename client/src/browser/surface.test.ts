@@ -38,6 +38,7 @@ import {
   resizeBrowser,
   showBrowser,
   sizesAsWatcher,
+  takeControl as sendControl,
 } from './link';
 import {
   closeSurface,
@@ -72,6 +73,7 @@ beforeEach(() => {
   hostable.mockReset();
   hostable.mockReturnValue(true);
   resize.mockClear();
+  vi.mocked(sendControl).mockClear();
   vi.mocked(sizesAsWatcher).mockReturnValue(false);
   surface.viewer = null;
   surface.controller = null;
@@ -141,6 +143,17 @@ describe('the browser surface', () => {
     expect(resize, 'nothing goes out while watching').not.toHaveBeenCalled();
     await takeControl(true);
     expect(resize).toHaveBeenCalledWith(640, 480, 1);
+  });
+
+  /// **The press is not the role.** A take the server refuses leaves this
+  /// surface a watcher, or the bar reads "release control" over a page whose
+  /// every gesture the server then refuses; only the server's push settles it.
+  it('does not claim the role before the server has given it', async () => {
+    surface.viewer = 7;
+    surface.controller = null;
+    await takeControl(true);
+    expect(sendControl, 'the take is asked for on the wire').toHaveBeenCalledWith(true);
+    expect(surface.controller, 'a refused take is not a role').toBeNull();
   });
 
   it('opens onto the live phase and names the profile and tab it opened', async () => {

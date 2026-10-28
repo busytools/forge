@@ -63,6 +63,13 @@ pub trait BrowserHost: Send + Sync {
 
     /// Attach a viewer to one of the seat's tabs. `tab` is `None` for the
     /// seat's current tab, else its profile's first.
+    ///
+    /// **The attach moves the viewer, and the role with it**: a same-tab
+    /// attach by the viewer already there keeps the controller role it holds
+    /// there, and any other attach (another tab, another profile) releases
+    /// what it held on the one it leaves. An implementation that detaches the
+    /// viewer first turns every re-attach into a move and takes the role with
+    /// it, which is the silent failure this rule exists to prevent.
     async fn attach(
         &self,
         viewer: u64,
