@@ -379,3 +379,32 @@ describe("the takeover bar's feedback controls", () => {
     ).not.toBeNull();
   });
 });
+
+/** **An ask with no words draws no row**: a blank reason would otherwise be an
+ *  empty bordered strip that says nothing and takes the page's room. */
+describe("the bar's ask", () => {
+  async function drawn(reason: string | null): Promise<HTMLElement> {
+    if (shown !== null) await unmount(shown);
+    document.body.innerHTML = '';
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: { title: 'browser hand-off', reason, onback: () => {} },
+    });
+    flushSync();
+    return target;
+  }
+
+  it('draws the ask only when it has words', async () => {
+    expect((await drawn(null)).querySelector('.tb-ask'), 'no reason, no row').toBeNull();
+    expect(
+      (await drawn('   ')).querySelector('.tb-ask'),
+      'a blank reason draws no row either',
+    ).toBeNull();
+    expect(
+      (await drawn('The sign-in page is showing a CAPTCHA.')).querySelector('.tb-ask')?.textContent,
+      'and words are drawn as they came',
+    ).toBe('The sign-in page is showing a CAPTCHA.');
+  });
+});

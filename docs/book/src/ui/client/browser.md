@@ -41,7 +41,8 @@ in-process node any more.
 |---|---|---|
 | The hand-off's card | `browser hand-off · tab N`; **Open browser**, **Done** and **Not now** before the takeover; while it is up, the card says the browser is open over the window and leaves the actions to the bar | the `browser_hand_off` ask, and the page's own surface state |
 | The takeover's bar | **back to chat**, the page's **back** and **forward** arrows, the tab picker, the title (`the browser · <org>/<name>`, or `browser hand-off · tab N`), **take control** / **release control**, **Done**, **something's wrong…** and **Not now**; **try again** while the surface is in its failed state | the page's surface state, the parked hand-off, and the pushed `browser_view` and `browser_tabs` frames |
-| The feedback line | a text field and the dock's own **mic** and **send**: the person's words go to the agent as a prompt and the hand-off ends as *feedback* - they spoke, so nothing is recorded as a decline. **A take replaces the field with the dock's own card**, and the card takes the line: it grows to everything the mic leaves, so its graph is the row's meter rather than a pill in an empty row. **While a take is still opening its microphone, a line above the row says so**: the card draws from this page's own take, which exists only once the capture has opened, and the composer's own band is behind the picture | the page's own state, and the take it is opening; the prompt rides the socket |
+| The ask on the bar | this seat's parked hand-off: its own words under the bar row, with the tab its title names. Shown whenever the page is this seat's; **Done, Not now and the feedback line are offered only while that page is up on the tab the hand-off named** (live, or failed with its host gone), and **a page raised for another seat is lowered when that seat is left** | the `browser_hand_off` ask, and the page's own surface state |
+| The feedback line | a text field and the dock's own **mic** and **send**: the person's words go to the agent as a prompt and the hand-off ends as *feedback* - they spoke, so nothing is recorded as a decline. A take begun at the bar's mic lands in this line. **A take replaces the field with the dock's own card**, and the card takes the line: it grows to everything the mic leaves, so its graph is the row's meter rather than a pill in an empty row. **While a take is still opening its microphone, a line above the row says so**: the card draws from this page's own take, which exists only once the capture has opened, and the composer's own band is behind the picture | the page's own state, and the take it is opening; the prompt rides the socket |
 | The surface | the viewed tab's page, filling the window under the bar: no window, no browser tab strip and no browser chrome | the server's relayed frames for that tab - drawn by the desktop's native overlay, or by the phone's and the web page's canvas |
 | The strip's row | `browser` with its tab count, a dot when the host is connected (an idle dot when only the host is up, a cross when nothing runs), and a hover naming the profile, the connection and `closing in Nm`; its panel lists the tabs with **show** / **hide**. **The row is drawn only while the profile has a tab**: a browser nothing has invoked is no row at all | the `browser_tabs` ask and its pushed frame |
 | A tab row | the host's number, the title (else its URL), the owner as `org/project/label`, and its state - **in use**, **idle** or **held** - with the mark that says which | the tab list's rows |
@@ -276,6 +277,14 @@ what a refused show or hide said. **Done**, **Not now** and **feedback** are
 the hand-off's answers; the feedback line sends its words as a prompt and,
 once they leave, ends the park as **feedback**, saying the person spoke
 rather than that they declined.
+
+**An answer belongs to the page it answers.** The takeover is one seat's page:
+leaving that seat lowers it, so it never sits over a seat whose ask is waiting.
+The bar carries the ask while the page is the asking seat's, and offers Done,
+Not now and the feedback line only while that page is up on the tab the
+hand-off named; a page moved to another tab names the ask and answers nothing.
+**A failed page stays answerable**: a host that died under a parked ask is what
+the feedback line is for.
 
 ## The widths
 

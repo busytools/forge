@@ -24,6 +24,7 @@ use crate::protocol::{Command, NoticeSeverity, SessionUpdate};
 /// avoid.
 const FILE_CAP: usize = 10;
 const COMMAND_CAP: usize = 10;
+const ACTION_CAP: usize = 10;
 const DIRTY_CAP: usize = 20;
 const CONSTRAINT_CAP: usize = 10;
 const CONSTRAINT_LINE_CAP: usize = 300;
@@ -184,6 +185,10 @@ pub(crate) fn assemble(
     sections.push(ask);
     sections.push(constraints);
     sections.push(files_section(messages, git, memory_roots));
+    // **No action, no heading.** A brief with a blank "actions" label reads as
+    // a section the reader should have filled in rather than one that does not
+    // apply to this session.
+    sections.extend(actions_section(messages));
     sections.push(verify_section(messages));
     sections.push(board_section(seat.slot, board));
     sections.extend(live);
@@ -593,6 +598,56 @@ fn files_section(
         lines.extend(git.diff.iter().cloned());
     }
     HandoffSection { label: "files".to_owned(), lines }
+}
+
+/// What the session DID through forge's own tools, one line each.
+///
+/// **A successor cannot infer these from the transcript above it**, because a
+/// successor has none: an agent messaged, a row filed, a schedule set and a
+/// page driven are all work that would otherwise vanish with the handover.
+/// File and command families stay in their own sections above; the action's
+/// own most telling argument rides the line so the verb alone is not a riddle.
+fn actions_section(messages: &[Message]) -> Option<HandoffSection> {
+    let mut lines: Vec<String> = Vec::new();
+    for (_, name, input) in tool_uses(messages) {
+        let Some(action) = forge_action(name) else { continue };
+        let line = match action_detail(input) {
+            Some(detail) => format!("{action}: {}", clipped(detail, MEASURED_LINE_CAP)),
+            None => action.to_owned(),
+        };
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let (shown, omitted) = first_and_newest(&lines, ACTION_CAP);
+    let mut out: Vec<String> = shown.into_iter().cloned().collect();
+    if omitted > 0 {
+        out.push(format!("... {omitted} more actions omitted"));
+    }
+    Some(HandoffSection { label: "actions".to_owned(), lines: out })
+}
+
+/// The forge tool families the brief carries as actions.
+fn forge_action(name: &str) -> Option<&str> {
+    let action = name.strip_prefix("mcp__forge__")?;
+    let family = action.split("__").next().unwrap_or(action);
+    let named = matches!(
+        family,
+        "agents" | "tasks" | "cron" | "slack" | "gotify" | "documents" | "review" | "systemone"
+    );
+    (named || family.starts_with("browser")).then_some(action)
+}
+
+/// The one argument of an action that says what it acted on.
+fn action_detail(input: &serde_json::Value) -> Option<&str> {
+    const KEYS: [&str; 8] =
+        ["subject", "message", "prompt", "question", "text", "content", "description", "url"];
+    KEYS.iter()
+        .find_map(|key| input.get(*key).and_then(serde_json::Value::as_str))
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn verify_section(messages: &[Message]) -> HandoffSection {
@@ -2216,6 +2271,71 @@ mod tests {
             section.lines.iter().any(|line| line.starts_with("uncommitted: 1 paths")),
             "and the count is stated: {:?}",
             section.lines,
+        );
+    }
+
+    /// **The session's own actions were invisible to the brief.** A successor
+    /// inheriting an MCP call it cannot see repeats it or undoes it, so the
+    /// ground truth names every forge action the session took, one line each -
+    /// and leaves the file and command families to the sections above them.
+    #[test]
+    fn the_brief_lists_the_sessions_forge_actions() {
+        let messages = vec![
+            call(
+                "a1",
+                "mcp__forge__agents__send_message",
+                serde_json::json!({
+                    "org": "Busytools", "project": "forge", "label": "lead",
+                    "message": "the handoff is ready"
+                }),
+            ),
+            call(
+                "a2",
+                "mcp__forge__tasks__create",
+                serde_json::json!({ "subject": "draw the provisional row" }),
+            ),
+            call("a3", "mcp__forge__gotify__apps", serde_json::json!({})),
+            call("f1", "Read", serde_json::json!({ "file_path": "src/lib.rs" })),
+            call("f2", "Bash", serde_json::json!({ "command": "just check" })),
+        ];
+        let ground =
+            assemble(&seat(), &messages, &HandoffGitState::default(), &[], None, &[], Vec::new());
+        let actions = ground
+            .sections
+            .iter()
+            .find(|section| section.label == "actions")
+            .expect("the brief carries the session's actions");
+        assert!(
+            actions.lines.iter().any(|line| line.contains("agents__send_message")
+                && line.contains("the handoff is ready")),
+            "the message it sent is named: {:?}",
+            actions.lines,
+        );
+        assert!(
+            actions
+                .lines
+                .iter()
+                .any(|line| line.contains("tasks__create")
+                    && line.contains("draw the provisional row")),
+            "and the row it filed: {:?}",
+            actions.lines,
+        );
+        assert!(
+            actions.lines.iter().any(|line| line == "gotify__apps"),
+            "every forge family is named, the connector's included: {:?}",
+            actions.lines,
+        );
+        assert!(
+            !actions.lines.iter().any(|line| line.starts_with("Read") || line.starts_with("Bash")),
+            "the file and command families stay in their own sections: {:?}",
+            actions.lines,
+        );
+
+        let quiet = assemble(&seat(), &[], &HandoffGitState::default(), &[], None, &[], Vec::new());
+        assert!(
+            quiet.sections.iter().all(|section| section.label != "actions"),
+            "a session with no forge-tool calls gets no blank heading: {:?}",
+            quiet.sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
         );
     }
 

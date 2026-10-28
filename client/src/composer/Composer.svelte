@@ -6,7 +6,7 @@
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/link';
-  import { clearHandOff, closeSurface, openSurface, surface } from '../browser/surface.svelte';
+  import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -471,6 +471,22 @@
   });
 
   /**
+   * **A takeover is one seat's page.** Leaving that seat lowers it - the chat
+   * comes back with this seat's own card, and the browser keeps running for
+   * the seat that raised it. A page left up over a seat it does not belong to
+   * is how a parked ask ended up hidden behind a browser it never named
+   * (live, 2026-10-28: the ask drawn, its card covered, its answers on the
+   * bar).
+   */
+  $effect(() => {
+    // Only a page coming up or up is this seat's to lower; a failed one has
+    // had its lower already, and asking again earns a second refusal.
+    if (surface.phase !== 'opening' && surface.phase !== 'live') return;
+    if (surface.seat === null || boxKey(surface.seat) === boxKey(slot)) return;
+    void closeSurface();
+  });
+
+  /**
    * A held hand-off leaving the core, the draft's own twin: the dock vanishes
    * with the update that drops it, and the ENDING is what tells this reader
    * what became of a hand-off they did not answer.
@@ -493,7 +509,6 @@
       // The local Done lowers its own; an answer from another view never
       // touches this shell. Through the store, so the page's phase follows
       // the shell's answer instead of staying live over a closed surface.
-      if (surface.hand_off?.id === id) clearHandOff(id);
       void closeSurface(null, at);
     });
   });
@@ -555,6 +570,46 @@
   });
 
   /**
+   * Whether the takeover's page is this seat's own.
+   *
+   * A surface outlives a seat switch - one page at a time, and its host keeps
+   * running - so a page raised for another seat can be on screen while this
+   * one has a hand-off parked. It is not this seat's page to answer from.
+   */
+  const surfaceIsMine = $derived(
+    surface.phase !== 'closed' && surface.seat !== null && boxKey(surface.seat) === boxKey(slot),
+  );
+
+  /**
+   * The hand-off this takeover stands in front of: this seat's parked ask.
+   *
+   * **The bar is where an ask under an open page can be seen at all** - the
+   * card carrying its reason is drawn in the chat behind the native layer, so
+   * with the page up the bar is the only place the ask can ride.
+   */
+  const takeoverAsk = $derived(
+    surfaceIsMine && dockAsk?.kind === 'browser_hand_off' ? dockAsk : null,
+  );
+
+  /**
+   * Whether the page is the one the ask asked for: up, on the tab the
+   * hand-off named (or on any, when it named none). **Only then are its
+   * answers offered**, by the bar or by a take's words - Done and Not now are
+   * ways of answering THIS ask, and a page the session did not prepare is not
+   * one. The dock's card asks the same question of its own Open.
+   *
+   * **A failed page keeps them.** The person still has to be able to say the
+   * host died rather than the page being wrong - that is what the feedback
+   * line is for, and it is exactly what was done when the browser crashed
+   * under a parked ask (live, 2026-10-28).
+   */
+  const answering = $derived(
+    takeoverAsk !== null &&
+      (surface.phase === 'live' || surface.phase === 'failed') &&
+      (takeoverAsk.request.tab === null || surface.tab === takeoverAsk.request.tab),
+  );
+
+  /**
    * Whether the dock is the box a landing belongs to.
    *
    * The prompt holding the slot is not enough on its own: the dock draws only
@@ -563,10 +618,12 @@
    * the notes option, and a held post never.
    */
   function toDock(): boolean {
-    // **The takeover's feedback line is this dock's words box.** While the
-    // surface is open, the only text box on screen is the bar's, so a take
-    // started from its mic belongs there - the same `notes` the dock binds.
-    if (surface.phase === 'live' && surface.hand_off !== null) return true;
+    // **The takeover's feedback line is this dock's words box** while the
+    // takeover stands for this seat's hand-off on the tab it shows: the only
+    // text box on screen is the bar's, so a take started at it belongs there -
+    // the same `notes` the dock binds. A page the ask did not name is the
+    // chat's box, and words about it are the chat's.
+    if (answering) return true;
     const asking = dockAsk;
     if (asking === null || blocker !== null) return false;
     if (asking.kind === 'question') return true;
@@ -1064,16 +1121,6 @@
   }
 
   /**
-   * The hand-off the takeover's bar is answering, while the surface is up.
-   *
-   * **The bar lives here rather than in the dock** because `.surf` is a
-   * `container-type`, so a fixed child of it hangs off the composer instead
-   * of the window - and this bar must sit at the window's top.
-   */
-  const takeoverAsk = $derived(
-    surface.phase !== 'closed' && dockAsk?.kind === 'browser_hand_off' ? dockAsk : null,
-  );
-  /**
    * **The bar stays while the surface is up, even when the ask leaves**: a
    * hand-off the core resolved elsewhere takes the dock's card with it, and a
    * bare picture with no way back to the chat is a trap. With no ask the bar
@@ -1096,7 +1143,7 @@
 
   /** Done, Not now or feedback: the hand-off's answer, and the takeover comes down. */
   function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): void {
-    if (takeoverAsk === null) return;
+    if (takeoverAsk === null || !answering) return;
     const id = takeoverAsk.request.id;
     remember(id);
     const source = ending === 'feedback' ? 'feedback' : 'takeover';
@@ -1115,7 +1162,6 @@
       report('the answer was not sent', error);
     }
     void closeSurface(null, slot);
-    clearHandOff(id);
   }
 
   /**
@@ -1128,7 +1174,7 @@
    * (live, 2026-10-26, twice on one CAPTCHA).
    */
   function takeoverFeedback(text: string): void {
-    if (takeoverAsk === null) return;
+    if (takeoverAsk === null || !answering) return;
     const uuid = mintPromptId();
     try {
       void connection.dispatch(
@@ -1227,6 +1273,7 @@
   {#if surface.phase !== 'closed' && drawsSurface()}
     <TakeoverBar
       title={takeoverTitle}
+      reason={takeoverAsk?.request.reason ?? null}
       bind:notes={dockDraft}
       take={composer.take}
       phase={rowPhase}
@@ -1244,11 +1291,11 @@
         // composer notice can come back when the takeover lowers.
         if (box.dictateLine !== null) box.dismissed = box.dictateLine.text;
       }}
-      ondone={takeoverAsk === null ? null : () => takeoverAnswer('done')}
-      onnotnow={takeoverAsk === null ? null : () => takeoverAnswer('not_now')}
+      ondone={answering ? () => takeoverAnswer('done') : null}
+      onnotnow={answering ? () => takeoverAnswer('not_now') : null}
       onback={takeoverBack}
       onnav={takeoverNav}
-      onfeedback={takeoverAsk === null ? null : takeoverFeedback}
+      onfeedback={answering ? takeoverFeedback : null}
       onretry={surface.phase === 'failed' ? takeoverRetry : null}
     />
   {/if}
