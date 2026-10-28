@@ -26,6 +26,7 @@ const a_handoff = (overrides: Partial<HandoffRecord> = {}): HandoffRecord => ({
   successor: { turns: 10, reread_files: 3, questions: 1, corrections: 0 },
   ground_truth: [{ label: 'seat', lines: ['Busytools/forge/lead'] }],
   judgment: [{ label: 'Next', lines: ['the client row'] }],
+  judgment_turn: [],
   ...overrides,
 });
 

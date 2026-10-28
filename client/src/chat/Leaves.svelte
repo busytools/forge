@@ -6,6 +6,7 @@
   import { opensByDefault, type ToolLeaf } from './leaves';
   import Nudge from './Nudge.svelte';
   import PeerRow from './PeerRow.svelte';
+  import Procedure from './Procedure.svelte';
   import Thought from './Thought.svelte';
   import type { WorkRow } from './units';
 
@@ -62,6 +63,8 @@
       <Thought text={row.text} />
     {:else if row.tag === 'nudge'}
       <Nudge text={row.text} />
+    {:else if row.tag === 'procedure'}
+      <Procedure text={row.text} />
     {:else if row.tag === 'card'}
       <PeerRow card={row.card} />
     {/if}
