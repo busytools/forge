@@ -109,8 +109,13 @@ mod commands {
     }
 
     #[tauri::command]
-    pub fn client_subscribe(bridge: tauri::State<'_, Arc<Bridge>>, what: Value, answering: bool) {
-        bridge.subscribe(what, answering);
+    pub fn client_subscribe(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        what: Value,
+        answering: bool,
+        review: bool,
+    ) {
+        bridge.subscribe(what, answering, review);
     }
 
     #[tauri::command]
@@ -119,8 +124,12 @@ mod commands {
     }
 
     #[tauri::command]
-    pub fn client_refresh(bridge: tauri::State<'_, Arc<Bridge>>, what: Value) {
-        bridge.refresh(&what);
+    pub fn client_refresh(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        what: Value,
+        review: Option<bool>,
+    ) {
+        bridge.refresh(&what, review);
     }
 
     /// Give a subject back entirely: every reader and every server entry.
@@ -141,8 +150,13 @@ mod commands {
     /// Ask again for a subject the page still holds, adding no reader: the
     /// page's half of a resume after a drop.
     #[tauri::command]
-    pub fn client_relist(bridge: tauri::State<'_, Arc<Bridge>>, what: Value, answering: bool) {
-        bridge.relist(what, answering);
+    pub fn client_relist(
+        bridge: tauri::State<'_, Arc<Bridge>>,
+        what: Value,
+        answering: bool,
+        review: bool,
+    ) {
+        bridge.relist(what, answering, review);
     }
 
     /// Older turns of a conversation; false means no socket is open and no

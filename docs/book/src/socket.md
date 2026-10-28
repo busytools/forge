@@ -141,8 +141,8 @@ as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 
 ## What a client sends
 
-**`subscribe {what, answering}`** - answered with a `snapshot` of the whole
-subject. The subscription this opens is the one updates arrive on. The
+**`subscribe {what, answering, review}`** - answered with a `snapshot` of the
+whole subject. The subscription this opens is the one updates arrive on. The
 browser is not a capability a client declares: it lives on the server, and a
 client attaches to it as a viewer (`browser_view` below).
 
@@ -164,6 +164,18 @@ the connection keeps the answering stream it already has, because the role
 is what the core counts when it decides whether a prompt can be answered,
 and a client that has drawn a dock once is not made an observer again by a
 second message. So say it on the first subscribe and expect it to stand.
+
+**`review` asks for the review page's own read, and it is off unless you say
+otherwise.** It is the one read that may wait on the network: before the
+record is encoded the server fetches the branch diff's base
+(`origin/<default>`) under a short budget, then reads the branch layer and the
+files pinned to the sha that fetch resolved - so the `diff` the record
+carries, and its `base`, describe one commit read at the moment the page
+asked. Every other read serves the stores and never waits for it, and a
+record answered without it carries `base: unverified` beside a branch layer.
+The flag follows the page holding the seat rather than one ask: the review
+page's open says it true, every re-ask that follows carries it, and the page
+says false again when it lets the seat go.
 
 **`browser_view {seat, tab, reply_to}`** - attach this connection to one of
 a seat's browser tabs as a viewer. `seat` names the seat whose browser to

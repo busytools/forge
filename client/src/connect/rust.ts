@@ -452,7 +452,7 @@ class RustConnection implements Connection {
     }
   }
 
-  subscribe(what: Subject, options?: { answering?: boolean }): Store {
+  subscribe(what: Subject, options?: { answering?: boolean; review?: boolean }): Store {
     if (this.state === 'closed') {
       // Nothing replays a subscribe made after the connection went, so a live
       // store here would promise a snapshot that is never coming.
@@ -462,6 +462,7 @@ class RustConnection implements Connection {
     void invoke('client_subscribe', {
       what,
       answering: options?.answering ?? false,
+      review: options?.review === true,
     }).catch((why: unknown) => {
       report('a subscribe could not reach the shell', why);
     });
@@ -510,10 +511,11 @@ class RustConnection implements Connection {
    * drift away from the server's. This re-asks with the role the seat already
    * declared.
    */
-  relist(what: Subject, options?: { answering?: boolean }): void {
+  relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void {
     void invoke('client_relist', {
       what,
       answering: options?.answering ?? false,
+      review: options?.review === true,
     }).catch((why: unknown) => {
       report('a relist could not reach the shell', why);
     });
@@ -537,12 +539,17 @@ class RustConnection implements Connection {
   }
 
   /** `true` when the ask went, which is what a bound re-arms on. */
-  refresh(what: Subject): boolean {
+  refresh(what: Subject, options?: { review?: boolean }): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes
     // everything held, and that answer is fresher than this ask would be.
     if (this.state !== 'open') return false;
     this.bounds.arm(what);
-    void invoke('client_refresh', { what }).catch((why: unknown) => {
+    // **A re-ask that states no scope keeps the shell's held one.** The
+    // bound's retry for a store still loading says nothing, and the shell
+    // knows which kind of read that store was asked as.
+    const review = options?.review;
+    const payload = review === undefined ? { what } : { what, review };
+    void invoke('client_refresh', payload).catch((why: unknown) => {
       report('a refresh could not reach the shell', why);
     });
     return true;

@@ -95,13 +95,19 @@ afterEach(() => {
 describe('what the shell is told', () => {
   it('a subscribe, an unsubscribe and a refresh each cross as their own command', async () => {
     const connection = await opened();
-    connection.subscribe(subject, { answering: true });
+    connection.subscribe(subject, { answering: true, review: true });
     expect(invoke).toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: true,
+      review: true,
     });
     connection.unsubscribe(subject);
     expect(invoke).toHaveBeenCalledWith('client_unsubscribe', { what: subject });
+    connection.refresh(subject, { review: true });
+    expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject, review: true });
+    // **A re-ask that says nothing keeps the shell's held scope.** The bound's
+    // retry for a store still loading has no page to ask, and the shell is
+    // what remembers which kind of read that store was.
     connection.refresh(subject);
     expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject });
   });
@@ -120,10 +126,11 @@ describe('what the shell is told', () => {
     expect(invoke).toHaveBeenCalledWith('client_showing', { seat: slot });
     connection.showing(null);
     expect(invoke).toHaveBeenCalledWith('client_showing', { seat: null });
-    connection.relist(subject, { answering: true });
+    connection.relist(subject, { answering: true, review: true });
     expect(invoke).toHaveBeenCalledWith('client_relist', {
       what: subject,
       answering: true,
+      review: true,
     });
 
     connection.subscribe(subject);
@@ -434,6 +441,7 @@ describe('frames from the bridge', () => {
     expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: false,
+      review: false,
     });
 
     vi.advanceTimersByTime(1_000);
@@ -466,6 +474,7 @@ describe('frames from the bridge', () => {
     expect(invoke, 'the first ask crossed').toHaveBeenCalledWith('client_subscribe', {
       what: subject,
       answering: false,
+      review: false,
     });
 
     // The bound fires while connecting: the refresh cannot go, so the timer dies.

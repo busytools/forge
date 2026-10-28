@@ -58,7 +58,7 @@ export interface Connection {
    * subscribes to one subject are two subscriptions, and one unsubscribe must
    * not take the seat out of the set the other is still watching.
    */
-  subscribe(what: Subject, options?: { answering?: boolean }): Store;
+  subscribe(what: Subject, options?: { answering?: boolean; review?: boolean }): Store;
   unsubscribe(what: Subject): void;
   /**
    * Ask again for a subject this connection already holds.
@@ -96,7 +96,7 @@ export interface Connection {
    * from the server's. This re-asks with the role the subject already
    * declared, and puts it back in the list a reconnect re-asks.
    */
-  relist(what: Subject, options?: { answering?: boolean }): void;
+  relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void;
   /**
    * Give a subject back entirely: every store reader this side holds for it,
    * and every subscription the server holds for it.
@@ -468,8 +468,15 @@ export function connect(
    * a wait with nothing behind it.
    */
   const bounds = new ReadBounds(stores, (what) => refresh(what), boundMs);
-  /** What to ask for again on a reconnect, in the order it was first asked. */
-  const held = new Map<string, { subject: Subject; answering: boolean }>();
+  /**
+   * What to ask for again on a reconnect, in the order it was first asked.
+   *
+   * `review` rides here for the same reason the role does: the read a page
+   * wanted must survive the drop, and a review open that reconnects as an
+   * ordinary record would label its base unverified for a check it never
+   * asked for.
+   */
+  const held = new Map<string, { subject: Subject; answering: boolean; review: boolean }>();
   const listeners = new Set<(message: ServerMessage) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
@@ -747,7 +754,7 @@ export function connect(
       subscribed.clear();
       move('open');
       retryDelay = RETRY_MS;
-      for (const { subject, answering } of [...held.values()]) {
+      for (const { subject, answering, review } of [...held.values()]) {
         // **A seat here was opened while the socket was DOWN.** `onclose`
         // takes the seats the old connection carried out of this list, so a
         // visited seat is never re-asked by a resume - `session/live.ts`
@@ -764,7 +771,7 @@ export function connect(
         // again.
         const already = subscribed.get(subjectKey(subject)) ?? 0;
         for (let remaining = stores.count(subject) - already; remaining > 0; remaining -= 1) {
-          askFor(subject, answering);
+          askFor(subject, answering, review);
         }
       }
       if (shown !== null) sendNow({ kind: 'showing', seat: shown });
@@ -896,7 +903,7 @@ export function connect(
     retryDelay = Math.min(retryDelay * 2, MAX_RETRY_MS);
   }
 
-  function subscribe(what: Subject, options?: { answering?: boolean }): Store {
+  function subscribe(what: Subject, options?: { answering?: boolean; review?: boolean }): Store {
     if (status === 'closed') {
       // Nothing replays a subscribe made after the socket went, so a live
       // store here would promise a snapshot that is never coming.
@@ -904,21 +911,28 @@ export function connect(
     }
 
     const answering = options?.answering ?? false;
+    const review = options?.review ?? false;
     const key = subjectKey(what);
     const store = stores.open(what);
 
     const existing = held.get(key);
     if (existing === undefined) {
-      held.set(key, { subject: what, answering });
-    } else if (answering) {
-      // The core's stream only ever escalates, so a later answering
-      // subscribe raises the role the reconnect re-establishes.
-      existing.answering = true;
+      held.set(key, { subject: what, answering, review });
+    } else {
+      if (answering) {
+        // The core's stream only ever escalates, so a later answering
+        // subscribe raises the role the reconnect re-establishes.
+        existing.answering = true;
+      }
+      // **The review read follows the page, so it is last-ask-wins.** A page
+      // that let its review read go must be able to take the declaration
+      // back; the role only rises, this one does not.
+      existing.review = review;
     }
 
     if (isOpen()) {
       const declaration = held.get(key);
-      askFor(what, declaration?.answering ?? answering);
+      askFor(what, declaration?.answering ?? answering, declaration?.review ?? review);
     }
     return store;
   }
@@ -992,12 +1006,13 @@ export function connect(
    * from the server's. This re-asks with the role the seat already declared,
    * and puts the subject back in the list a reconnect re-asks.
    */
-  function relist(what: Subject, options?: { answering?: boolean }): void {
+  function relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void {
     const key = subjectKey(what);
     const existing = held.get(key);
     const answering = existing?.answering === true || options?.answering === true;
-    held.set(key, { subject: what, answering });
-    if (isOpen()) askFor(what, answering);
+    const review = options?.review === true;
+    held.set(key, { subject: what, answering, review });
+    if (isOpen()) askFor(what, answering, review);
   }
 
   /** `true` when the pair went, which is what a bound re-arms on. */
@@ -1019,7 +1034,12 @@ export function connect(
       else subscribed.set(key, open - 1);
     }
     const declaration = held.get(key);
-    askFor(what, declaration?.answering ?? false, options?.review === true);
+    // **A re-ask that states no scope keeps the held one.** The bound's
+    // retry for a store still loading says nothing, and turning it into an
+    // ordinary record would undo the review read it is retrying.
+    const review = options?.review ?? declaration?.review ?? false;
+    if (declaration !== undefined) declaration.review = review;
+    askFor(what, declaration?.answering ?? false, review);
     return true;
   }
 
