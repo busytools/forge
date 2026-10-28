@@ -279,13 +279,14 @@ function record(
   commits: { sha: string; subject: string; time?: number }[] = [],
   total = commits.length,
   base: unknown = null,
+  defaultBranch = 'main',
 ): SessionRecord {
   return {
     slot: SLOT,
     composer,
     work: { branch: 'b', dirt: 'clean' },
     git: {
-      defaultBranch: 'main',
+      defaultBranch,
       ahead:
         commits.length === 0 && total === 0
           ? null
@@ -418,6 +419,7 @@ async function draw(
   commits: { sha: string; subject: string; time?: number }[] = [],
   total = commits.length,
   base: unknown = null,
+  defaultBranch = 'main',
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -430,7 +432,10 @@ async function draw(
     props: { connection: connection(), slot: SLOT, dictation },
   });
   flushSync();
-  push({ wire: record(IDLE, threads, reviews, diff, commits, total, base), refused: null });
+  push({
+    wire: record(IDLE, threads, reviews, diff, commits, total, base, defaultBranch),
+    refused: null,
+  });
   // Unified, in which each row carries one number cell: the stood-in viewer
   // draws that shape, and the doors hang off the lines' own rows.
   await settle(() => {
@@ -1387,18 +1392,46 @@ describe('the steppers', () => {
    * branch's own change - the silence Ved reported.
    */
   it('says how far behind a base the diff could not refresh is', async () => {
-    await draw([], [], true, DIFF, [FIRST_COMMIT], 1, { state: 'behind', behind: 3 });
+    // The wire names the remote-tracking ref; the reader knows it as `main`.
+    await draw(
+      [],
+      [],
+      true,
+      DIFF,
+      [FIRST_COMMIT],
+      1,
+      { state: 'behind', behind: 3 },
+      'origin/main',
+    );
 
     expect(
       document.querySelector('.rv-base')?.textContent,
-      'the all-changes scope names the base and its lag',
+      'the all-changes scope names the base and its lag, without the remote prefix',
     ).toContain('main is 3 commits behind upstream');
+    expect(
+      document.querySelector('.rv-base')?.textContent,
+      'and not the ref spelling the socket uses',
+    ).not.toContain('origin/main');
 
     press('next scope');
     expect(
       document.querySelector('.rv-base'),
       'a commit scope reads its own immutable tree, so it carries no base caveat',
     ).toBeNull();
+  });
+
+  /**
+   * **An unknown base state is drawn, never read as a healthy one** (rule 22,
+   * rule 25). A state this build cannot name is exactly the case a silent arm
+   * would hide, and it would hide the one warning the page exists to give.
+   */
+  it('draws an unknown base state rather than reading it as current', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'unknown', raw: 'sagging' });
+
+    expect(
+      document.querySelector('.rv-base')?.textContent,
+      'the page says it could not read the base rather than drawing nothing',
+    ).toContain('could not be read');
   });
 
   /** A base that could not be checked is said plainly, with no invented count. */

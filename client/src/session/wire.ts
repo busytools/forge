@@ -1184,14 +1184,18 @@ function diffFileFrom(entry: unknown): DiffFileRecord {
  * The base's own state, or null when the record carried none. An absent key
  * is not a claim of freshness: it draws nothing, the same way a layer this
  * build cannot name draws as unknown rather than as clean.
+ *
+ * **serde's external tagging nests a struct variant under the variant name**,
+ * so `Behind { behind }` arrives as `{"behind": {"behind": 3}}`, not as a flat
+ * object. Reading the outer key with `number()` answers null, which used to
+ * turn the one labelled-lag state into `unknown` and draw nothing at all.
  */
-export function baseStateFrom(value: unknown): BaseStateRecord | null {
+function baseStateFrom(value: unknown): BaseStateRecord | null {
   if (value === undefined || value === null) return null;
   if (value === 'local') return { state: 'local' };
   if (value === 'current') return { state: 'current' };
   if (value === 'unverified') return { state: 'unverified' };
-  const held = record(value);
-  const behind = number(held['behind']);
+  const behind = number(record(record(value)['behind'])['behind']);
   if (behind !== null) return { state: 'behind', behind };
   return { state: 'unknown', raw: value };
 }

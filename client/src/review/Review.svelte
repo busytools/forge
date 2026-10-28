@@ -128,13 +128,19 @@
    */
   const baseNote = $derived.by(() => {
     const base = record?.diff.base ?? null;
-    const name = record?.git.defaultBranch ?? 'the base';
+    // The wire names the remote-tracking ref; the reader knows it as `main`.
+    const name = (record?.git.defaultBranch ?? 'the base').replace(/^origin\//, '');
     if (base?.state === 'behind') {
       const n = base.behind;
       return `${name} is ${n} commit${n === 1 ? '' : 's'} behind upstream, so this diff may include work already on main.`;
     }
     if (base?.state === 'unverified') {
       return `${name} could not be refreshed, so this diff may include work already on main.`;
+    }
+    if (base?.state === 'unknown') {
+      // The server answered a state this build cannot name. Drawing nothing
+      // would read as "the base is fine", which is the one claim it cannot make.
+      return `the base ${name} could not be read, so this diff may include work already on main.`;
     }
     return null;
   });

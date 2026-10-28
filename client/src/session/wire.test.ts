@@ -276,12 +276,18 @@ describe('the diff parse', () => {
   });
 
   it('reads the base state, and names a lag with its count', () => {
-    // The plausible regression is dropping `base`, which draws a stale diff
-    // with no caveat at all - exactly the silence the reviewer reported.
+    // **These are the server's own spellings**, pinned there by
+    // `the_base_states_wire_spellings` in forge-primitives: serde's external
+    // tagging nests a struct variant under its name, so `behind` arrives as
+    // `{"behind": {"behind": 3}}`. A flat read answered unknown, which drew
+    // no caveat at all - exactly the silence the reviewer reported.
     expect(diffFrom({ base: 'current' }).base).toEqual({ state: 'current' });
     expect(diffFrom({ base: 'local' }).base).toEqual({ state: 'local' });
     expect(diffFrom({ base: 'unverified' }).base).toEqual({ state: 'unverified' });
-    expect(diffFrom({ base: { behind: 3 } }).base).toEqual({ state: 'behind', behind: 3 });
+    expect(diffFrom({ base: { behind: { behind: 3 } } }).base).toEqual({
+      state: 'behind',
+      behind: 3,
+    });
     expect(diffFrom({}).base, 'an absent base claims nothing').toBeNull();
     expect(diffFrom({ base: 'lagging' }).base, 'and an unnamed state is kept as itself').toEqual({
       state: 'unknown',
