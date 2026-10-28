@@ -106,6 +106,10 @@ pub fn free_port() -> u16 {
 }
 
 /// A host this test started: ended if the test fails before it does.
+///
+/// **A struct holding one declares it before the scratch dir its log lives
+/// in**: fields drop in declaration order, and this type's drop reads the log
+/// on the way out of a failing test.
 pub struct Host {
     child: Child,
     log: PathBuf,
@@ -214,6 +218,11 @@ impl Host {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
+    /// The host's own last words, read the way the service reads them.
+    pub fn log_tail(&self) -> String {
+        forge_browser::spawn::log_tail(&self.log)
+    }
+
     /// End the host the way the server does, and wait for it to go.
     pub fn terminate(&mut self, bound: std::time::Duration) -> std::process::ExitStatus {
         // SAFETY: a plain signal to this test's own child.
@@ -226,7 +235,7 @@ impl Host {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the host did not exit within {bound:?} of SIGTERM (log: {})",
-                self.log()
+                self.log_tail()
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -235,6 +244,20 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
+        // **A test that failed still has to say what the host was doing.**
+        // The log names the wait that expired, and it dies with the scratch
+        // dir the failing test never reaches, so the unwind is the one place
+        // it can still reach the failure's output.
+        if std::thread::panicking() {
+            use std::io::Write as _;
+            let tail = self.log_tail();
+            let words = if tail.is_empty() {
+                "the host log is empty".to_owned()
+            } else {
+                format!("the host log ends: {tail}")
+            };
+            let _ = writeln!(std::io::stderr(), "{words} ({})", self.log.display());
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -315,7 +338,7 @@ pub async fn prime_clicks(
             "no priming click reached the page at ({}, {}) (log: {})",
             at.0,
             at.1,
-            host.log()
+            host.log_tail()
         );
         click(host, at.0, at.1);
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -396,7 +419,7 @@ pub fn wait_for_page(port: u16, log: &Path, bound: std::time::Duration) -> Strin
         assert!(
             std::time::Instant::now() < deadline,
             "the host's page target never answered on port {port} (log: {})",
-            std::fs::read_to_string(log).unwrap_or_default(),
+            forge_browser::spawn::log_tail(log),
         );
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
