@@ -295,8 +295,9 @@ pub fn spawn_with(
 }
 
 /// Wait for a host this server spawned, failing as soon as the child exits
-/// rather than after the blind timeout: the reason is the host log's own
-/// last words, which is what a refused launch is diagnosable by.
+/// rather than after the blind timeout. The caller records the host log's
+/// tail in `browser_host_ended`, which is what a refused launch is diagnosed
+/// by.
 ///
 /// **The endpoint answering is not proof the endpoint is ours.** The port is
 /// probed free and then bound by the child, and another host can take it in
@@ -304,7 +305,7 @@ pub fn spawn_with(
 /// ring closes that: only this pid writes its pid and `STATE_LIVE` into it,
 /// so the probe is trusted only once the ring says so. A child that cannot
 /// own the port never reads live, and the launch fails instead of crossing.
-pub async fn wait_ready_for(pid: u32, port: u16, ring: &str, profile: &Path) -> Result<(), String> {
+pub async fn wait_ready_for(pid: u32, port: u16, ring: &str) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
     loop {
         let live = owns(ring, pid);
@@ -312,12 +313,7 @@ pub async fn wait_ready_for(pid: u32, port: u16, ring: &str, profile: &Path) -> 
             return Ok(());
         }
         if !alive(pid) {
-            let tail = log_tail(profile);
-            return Err(if tail.is_empty() {
-                "the browser host exited before its endpoint answered".to_owned()
-            } else {
-                format!("the browser host exited before its endpoint answered: {tail}")
-            });
+            return Err("the browser host exited before its endpoint answered".to_owned());
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(format!(
@@ -335,13 +331,40 @@ fn owns(name: &str, pid: u32) -> bool {
         .is_ok_and(|mapped| mapped.pid() == pid && mapped.state() == crate::osr::STATE_LIVE)
 }
 
-/// The host log's last few lines, for a launch that failed.
+/// How much of the host log a tail keeps: the last few KiB, at most four
+/// lines, and a bounded prefix of each. **The log is append-only and never
+/// rotated**, so a host that has run for months must not make a record
+/// unbounded.
+const TAIL_BYTES: u64 = 4 * 1024;
+const TAIL_LINES: usize = 4;
+const TAIL_CHARS: usize = 512;
+
+/// The host log's last few lines, read from the file's own end.
 pub(crate) fn log_tail(profile: &Path) -> String {
-    let Ok(body) = std::fs::read_to_string(profile.join("cef-host.log")) else {
+    use std::io::{Read as _, Seek as _};
+    let Ok(mut file) = std::fs::File::open(profile.join("cef-host.log")) else {
         return String::new();
     };
+    let len = file.metadata().map_or(0, |meta| meta.len());
+    if len > TAIL_BYTES {
+        let _ = file.seek(std::io::SeekFrom::Start(len - TAIL_BYTES));
+    }
+    let mut buf = Vec::with_capacity(usize::try_from(TAIL_BYTES).unwrap_or(usize::MAX));
+    // A seek can land inside a multibyte character, so the tail is read
+    // lossily rather than refused.
+    if (&mut file).take(TAIL_BYTES).read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    let body = String::from_utf8_lossy(&buf);
     let lines: Vec<&str> = body.lines().filter(|line| !line.trim().is_empty()).collect();
-    lines[lines.len().saturating_sub(4)..].join(" | ")
+    let tail: Vec<&str> = lines[lines.len().saturating_sub(TAIL_LINES)..]
+        .iter()
+        .map(|line| {
+            let cut = line.char_indices().nth(TAIL_CHARS).map_or(line.len(), |(at, _)| at);
+            &line[..cut]
+        })
+        .collect();
+    tail.join(" | ")
 }
 
 /// Whether a pid names a process this server started that is still running.
@@ -1071,5 +1094,38 @@ mod tests {
         drop(listener);
         end_verified(std::process::id(), port, Path::new("/tmp/forge-no-such-profile")).await;
         assert!(alive(std::process::id()), "the unrelated process is still running");
+    }
+
+    /// **The tail is bounded by bytes, lines and characters.** The host log is
+    /// append-only and never rotated, so a full read would grow with the
+    /// host's uptime and a long line would grow the record with it.
+    #[test]
+    fn the_log_tail_keeps_the_last_four_lines_and_caps_each() {
+        use std::fmt::Write as _;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut big = String::new();
+        for n in 0..1000 {
+            let _ = writeln!(big, "line {n}");
+        }
+        std::fs::write(dir.path().join("cef-host.log"), big).expect("the host log");
+        let tail = log_tail(dir.path());
+        assert!(tail.starts_with("line 996 | "), "the last four lines are kept: {tail}");
+        assert!(tail.ends_with("line 999"), "and the newest is the last: {tail}");
+
+        let long = "x".repeat(TAIL_CHARS + 100);
+        std::fs::write(
+            dir.path().join("cef-host.log"),
+            format!("one\ntwo\nlong {long}\nthree\nfour\n"),
+        )
+        .expect("the host log");
+        let tail = log_tail(dir.path());
+        assert_eq!(tail.matches(" | ").count(), 3, "the four newest lines: {tail}");
+        assert!(tail.starts_with("two | "), "the oldest line is dropped: {tail}");
+        assert!(!tail.contains(&long), "the long line is cut at the cap: {tail}");
+        assert!(
+            tail.chars().count() <= 4 * TAIL_CHARS + 3 * 4,
+            "the tail cannot grow with a line: {tail}"
+        );
     }
 }
