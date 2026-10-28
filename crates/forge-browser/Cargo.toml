@@ -97,6 +97,9 @@ required-features = ["testing"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# A test reads a log site's own record back: its fields are the contract with
+# whoever reads the log, and nothing else observes them.
+tracing-subscriber = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]`: the nav watch's
 # retry clock is a wall-clock sleep, and a test that waits it out for real
 # would be a multi-second flake on a loaded machine.

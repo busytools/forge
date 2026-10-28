@@ -676,7 +676,7 @@ impl BrowserService {
         // wait is never the map's.
         let mut state = profile.state.lock().await;
         profile.ended.store(true, Ordering::Release);
-        profile.teardown(&mut state).await;
+        profile.teardown(&mut state, HostEnd::Idle, "").await;
         drop(state);
         self.publish_rows(key).await;
         tracing::debug!("an idle browser closed (event_name browser_idle_closed, profile {key})");
@@ -2101,7 +2101,7 @@ impl BrowserService {
             profile.failures.send_replace(Some(format!(
                 "the browser host stopped answering (pid {pid}); the next call brings it back"
             )));
-            profile.teardown(&mut state).await;
+            profile.teardown(&mut state, HostEnd::Unresponsive, &why).await;
         }
         Err(why)
     }
@@ -2172,6 +2172,8 @@ impl BrowserService {
         if let Some(reader) = host.reader {
             reader.stop();
         }
+        let outcome = if ended { "ended" } else { "refused" };
+        log_host_ended(profile, host.pid, host.port, HostEnd::Undrivable, outcome, why);
         if ended {
             DeadHost::Ended { pid: host.pid, port: host.port }
         } else {
@@ -3761,6 +3763,81 @@ fn prune_recordings(dir: &Path, keep: usize) {
     }
 }
 
+/// Why a host the service is ending is going, and the level that states it
+/// honestly. **An end forge caused by a fault is a warning; an idle release
+/// or a profile close is not** (rule 20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostEnd {
+    /// No driver could drive it: a fresh one could not list or attach.
+    Undrivable,
+    /// It never became usable: its endpoint or its ring failed.
+    NeverReady,
+    /// It stopped answering.
+    Unresponsive,
+    /// The idle clock released it.
+    Idle,
+    /// Its profile was closed, or the server stopped.
+    Closed,
+    /// It had already exited; `browser_host_died` is its record, not this
+    /// family's.
+    AlreadyGone,
+}
+
+impl HostEnd {
+    /// The level the record takes, or `None` when this is not an end at all.
+    fn level(self) -> Option<tracing::Level> {
+        match self {
+            Self::Undrivable | Self::NeverReady | Self::Unresponsive => Some(tracing::Level::WARN),
+            Self::Idle | Self::Closed => Some(tracing::Level::INFO),
+            Self::AlreadyGone => None,
+        }
+    }
+
+    /// What the record says the host was going for.
+    fn cause(self, why: &str) -> String {
+        match self {
+            Self::Undrivable => format!("no driver could drive it: {why}"),
+            Self::NeverReady => format!("it never became usable: {why}"),
+            Self::Unresponsive => format!("it stopped answering: {why}"),
+            Self::Idle => "the idle clock released it".to_owned(),
+            Self::Closed => "its profile was closed".to_owned(),
+            Self::AlreadyGone => "it had already exited".to_owned(),
+        }
+    }
+}
+
+/// **A host the service deliberately ends is said in the log**, with the
+/// identity, the cause and the host's own last words. `browser_host_died`
+/// keeps meaning a crash, so the two are told apart by the record.
+fn log_host_ended(profile: &Profile, pid: u32, port: u16, end: HostEnd, outcome: &str, why: &str) {
+    let Some(level) = end.level() else { return };
+    let cause = end.cause(why);
+    let tail = spawn::log_tail(&profile.dir);
+    if level == tracing::Level::WARN {
+        tracing::warn!(
+            event_name = "browser_host_ended",
+            profile = %profile.key,
+            pid,
+            port,
+            cause = %cause,
+            outcome = %outcome,
+            log_tail = %tail,
+            "the service ended a browser host",
+        );
+    } else {
+        tracing::info!(
+            event_name = "browser_host_ended",
+            profile = %profile.key,
+            pid,
+            port,
+            cause = %cause,
+            outcome = %outcome,
+            log_tail = %tail,
+            "the service ended a browser host",
+        );
+    }
+}
+
 /// How a host's death reads: a signal, an exit code, or a status this
 /// process could not read. **The client's sentence carries the same words**,
 /// so a crash is diagnosable from the surface and the log alike.
@@ -4145,7 +4222,7 @@ impl Profile {
         if let Some(host) = state.host.as_ref()
             && !spawn::alive(host.pid)
         {
-            self.teardown(state).await;
+            self.teardown(state, HostEnd::AlreadyGone, "").await;
         }
         if state.host.is_none() {
             let host = self.start_host().await?;
@@ -4317,8 +4394,10 @@ impl Profile {
                  pid {pid}, port {port}): {why}",
                 self.key,
             );
-            spawn::end_verified(pid, port, &self.dir).await;
+            let ended = spawn::end_verified(pid, port, &self.dir).await;
             reader.stop();
+            let outcome = if ended { "ended" } else { "refused" };
+            log_host_ended(self, pid, port, HostEnd::NeverReady, outcome, &why);
             return Err(why);
         }
         let ring = match osr::Ring::open(&ring_name) {
@@ -4331,6 +4410,7 @@ impl Profile {
                 );
                 spawn::end(pid).await;
                 reader.stop();
+                log_host_ended(self, pid, port, HostEnd::NeverReady, "ended", &why);
                 return Err(why);
             }
         };
@@ -4617,7 +4697,10 @@ impl Profile {
     }
 
     /// End whatever is up: the driver, then the host, then the frames.
-    async fn teardown(&self, state: &mut State) {
+    ///
+    /// `end` is why the host is going, and `why` is the fault behind it for
+    /// the paths that have one.
+    async fn teardown(&self, state: &mut State, end: HostEnd, why: &str) {
         // **The profile is down before its chooser is cleared.** A chooser
         // event parked inside the driver's cancel resumes after this and must
         // see the profile down, or it would publish an ask for a dead host.
@@ -4643,9 +4726,17 @@ impl Profile {
             if let Some(monitor) = host.monitor {
                 monitor.abort();
             }
-            spawn::end_verified(host.pid, host.port, &self.dir).await;
+            // **A host that had already gone is not an end**: its record is
+            // `browser_host_died`, and a teardown that finds it gone says
+            // nothing.
+            let was_up = spawn::alive(host.pid);
+            let ended = spawn::end_verified(host.pid, host.port, &self.dir).await;
             if let Some(reader) = host.reader {
                 reader.stop();
+            }
+            if was_up {
+                let outcome = if ended { "ended" } else { "refused" };
+                log_host_ended(self, host.pid, host.port, end, outcome, why);
             }
             if spawn::alive(host.pid) {
                 // **A host that outlived its end keeps its trail.** The next
@@ -4676,7 +4767,7 @@ impl Profile {
         // can publish against a profile that is gone.
         let _decision = self.file_decision.lock().await;
         let mut state = self.state.lock().await;
-        self.teardown(&mut state).await;
+        self.teardown(&mut state, HostEnd::Closed, "").await;
         self.frames.lock().unwrap_or_else(PoisonError::into_inner).clear();
         self.nav.lock().unwrap_or_else(PoisonError::into_inner).clear();
         // **Nothing of a gone browser's chooser or its staged files stays.**
@@ -5578,12 +5669,12 @@ fn device_pixels(css: u32, scale: f64) -> u32 {
 mod tests {
     use super::{
         BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome,
-        DeadHost, DeadPageOutcome, Driven, Profile, State, UploadRequest, agent_upload_paths,
-        agent_upload_refused, begin_upload, captured_generation, clear_if_dead, dead_driver_answer,
-        dead_host_answer, dead_page_answer, death_cause, device_pixels, file_name,
-        installed_generation, note_agent_answered, note_surfaced_opened, note_upload_finished,
-        owner_size, pair_tab_events, stage_agent_uploads, upload_request, window_dimension,
-        write_uploads,
+        DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, State, UploadRequest,
+        agent_upload_paths, agent_upload_refused, begin_upload, captured_generation, clear_if_dead,
+        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
+        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        note_upload_finished, owner_size, pair_tab_events, stage_agent_uploads, upload_request,
+        window_dimension, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::ProfileKey;
@@ -5591,6 +5682,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::time::Duration;
     use tokio::sync::Notify;
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     /// A driver call a test can hold open: it says it started, then waits to
     /// be released. The decision lock must span this wait.
@@ -5619,6 +5711,63 @@ mod tests {
     }
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
+
+    /// Every record a log site emitted while the capture was installed.
+    #[derive(Clone, Default, Debug)]
+    pub(crate) struct Caught(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+    /// Every field a record carried, as `name=value`, so a test reads the
+    /// `event_name` and the identity off the site that emitted it.
+    #[derive(Default)]
+    struct Fields(String);
+
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = write!(self.0, "{}={value:?}", field.name());
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((*event.metadata().level(), fields.0));
+        }
+    }
+
+    /// The `browser_host_ended` records a capture caught, in emission order.
+    pub(crate) fn ended(caught: &Caught) -> Vec<(tracing::Level, String)> {
+        caught
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(_, fields)| fields.contains("event_name=\"browser_host_ended\""))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the capture caught `event_name=<event>`.
+    pub(crate) fn saw(caught: &Caught, event: &str) -> bool {
+        let needle = format!("event_name=\"{event}\"");
+        caught
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|(_, fields)| fields.contains(&needle))
+    }
 
     /// **A download is read once, from its own directory, or refused with a
     /// reason.** The happy path hands the bytes on and removes the server's
@@ -6373,12 +6522,23 @@ mod tests {
         let drove = super::HostIdentity { pid: std::process::id(), port, generation };
 
         let why = "a listing timed out";
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
         let host = service.end_dead_host(&profile, drove, why).await;
+        drop(_guard);
         let answer = dead_host_answer(&profile, host, why);
 
         assert!(!answer.contains("was ended"), "the refused end is not claimed: {answer}");
         assert!(answer.contains("was not ended"), "{answer}");
         assert!(answer.contains(&format!("port {port}")), "the host is named: {answer}");
+        let records = ended(&caught);
+        let (_, fields) =
+            records.first().unwrap_or_else(|| panic!("no browser_host_ended record: {caught:?}"));
+        assert!(
+            fields.contains("outcome=refused"),
+            "the record says the signal was refused: {fields}"
+        );
         crate::osr::Ring::unlink(&ring_name);
     }
 
@@ -7049,7 +7209,7 @@ mod tests {
             .expect("the gated driver call starts");
 
         let mut state = State::default();
-        profile.teardown(&mut state).await;
+        profile.teardown(&mut state, HostEnd::Closed, "").await;
         gate.release.notify_waiters();
         waiting.await.expect("the waiting chooser joins");
 
@@ -7697,7 +7857,7 @@ mod tests {
             ChooserLedger { surfaced: 1, pre_answered: 0 };
 
         let mut state = State::default();
-        profile.teardown(&mut state).await;
+        profile.teardown(&mut state, HostEnd::Closed, "").await;
 
         assert!(profile.files.borrow().is_none(), "the ask is cleared");
         assert!(
@@ -9738,7 +9898,7 @@ mod tests {
 /// re-read spares the same pages, so the branch was redundant.
 #[cfg(test)]
 mod server_guards {
-    use super::tests::{FakeDriver, seed_tab};
+    use super::tests::{Caught, FakeDriver, ended, saw, seed_tab};
     use super::{BrowserService, Profile, pair_tab_events};
     use crate::control::HostEvent;
     use crate::driver::TabDriver;
@@ -9749,6 +9909,7 @@ mod server_guards {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::Duration;
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     /// One row of a driver's listing.
     fn row(index: u16, target: &str) -> DriverTab {
@@ -10119,21 +10280,22 @@ mod server_guards {
         assert_eq!(seen, ["/json/close/A", "/json/close/B"], "an orphan was left open");
     }
 
-    /// A host standing on the profile, as a call that drove it would have left
-    /// it: an identity to end, plus the ring name the test unlinks.
-    async fn install_host(
+    /// A host standing on the profile with the pid the test names, so an
+    /// exited process can stand in for a host that had already gone.
+    async fn install_host_with_pid(
         profile: &Arc<Profile>,
         dir: &std::path::Path,
+        pid: u32,
         port: u16,
     ) -> (super::HostIdentity, String) {
-        let ring_name = format!("/forge-guard-{}-{port}", std::process::id());
+        let ring_name = format!("/forge-guard-{pid}-{port}");
         let generation = {
             let mut state = profile.state.lock().await;
             let generation = state.driver_generation;
             let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
             let (input, _input_rx) = std::sync::mpsc::channel();
             state.host = Some(crate::spawn::ActiveHost {
-                pid: std::process::id(),
+                pid,
                 port,
                 ring: Arc::new(ring),
                 profile: dir.join(format!("host-{port}")),
@@ -10143,7 +10305,17 @@ mod server_guards {
             });
             generation
         };
-        (super::HostIdentity { pid: std::process::id(), port, generation }, ring_name)
+        (super::HostIdentity { pid, port, generation }, ring_name)
+    }
+
+    /// A host standing on the profile, as a call that drove it would have left
+    /// it: an identity to end, plus the ring name the test unlinks.
+    async fn install_host(
+        profile: &Arc<Profile>,
+        dir: &std::path::Path,
+        port: u16,
+    ) -> (super::HostIdentity, String) {
+        install_host_with_pid(profile, dir, std::process::id(), port).await
     }
 
     /// **One sweep at a time**: a sweep waits for the one in front of it rather
@@ -10246,5 +10418,120 @@ mod server_guards {
         );
         crate::osr::Ring::unlink(&first_ring);
         crate::osr::Ring::unlink(&second_ring);
+    }
+
+    /// **The level says whether the end was forge's problem.** A fault that
+    /// made a host unusable is a warning; releasing an idle profile is not.
+    #[test]
+    fn the_level_says_whether_the_end_was_forge_s_problem() {
+        for (end, level) in [
+            (super::HostEnd::Undrivable, tracing::Level::WARN),
+            (super::HostEnd::NeverReady, tracing::Level::WARN),
+            (super::HostEnd::Unresponsive, tracing::Level::WARN),
+            (super::HostEnd::Idle, tracing::Level::INFO),
+            (super::HostEnd::Closed, tracing::Level::INFO),
+        ] {
+            assert_eq!(end.level(), Some(level), "{end:?} reads at {level}");
+        }
+        assert_eq!(
+            super::HostEnd::AlreadyGone.level(),
+            None,
+            "a host that had already exited is not an end",
+        );
+    }
+
+    /// **A deliberate end is a warning that names itself**, with the profile,
+    /// pid, port, the cause and the host's own last words, so a reader can act
+    /// on it without the seat that ended the host.
+    #[tokio::test]
+    async fn an_ended_host_is_a_warning_that_names_itself_and_its_last_words() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let (identity, ring) = install_host(&profile, dir.path(), 10).await;
+        std::fs::create_dir_all(&profile.dir).expect("the profile dir");
+        std::fs::write(
+            profile.dir.join("cef-host.log"),
+            "first line\nsecond line\nthird line\nfourth line\nfifth line\n",
+        )
+        .expect("the host log");
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let host = service
+            .end_dead_host(&profile, identity, "the driver's initializeServer timed out")
+            .await;
+        drop(_guard);
+
+        assert!(matches!(host, super::DeadHost::Ended { .. }), "the host was not ended: {host:?}");
+        let records = ended(&caught);
+        let (level, fields) =
+            records.first().unwrap_or_else(|| panic!("no browser_host_ended record: {caught:?}"));
+        assert_eq!(*level, tracing::Level::WARN, "an end forge caused reads at WARN: {fields}");
+        for needle in [
+            format!("profile={}", profile.key()),
+            format!("pid={}", std::process::id()),
+            "port=10".to_owned(),
+            "cause=no driver could drive it: the driver's initializeServer timed out".to_owned(),
+            "outcome=ended".to_owned(),
+            "second line".to_owned(),
+            "fifth line".to_owned(),
+        ] {
+            assert!(fields.contains(&needle), "the record carries `{needle}`: {fields}");
+        }
+        assert!(!fields.contains("first line"), "the tail keeps the last four lines: {fields}");
+        assert!(!saw(&caught, "browser_host_died"), "a deliberate end is not recorded as a crash");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A host that had already exited is not an end.** Its record is
+    /// `browser_host_died`, so a teardown that finds it gone writes nothing.
+    #[tokio::test]
+    async fn a_host_that_already_exited_is_not_reported_as_ended() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        let mut exited = std::process::Command::new("true").spawn().expect("a child");
+        let pid = exited.id();
+        exited.wait().expect("the child exits");
+        let (_, ring) = install_host_with_pid(&profile, dir.path(), pid, 11).await;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let mut state = profile.state.lock().await;
+        profile.teardown(&mut state, super::HostEnd::Closed, "").await;
+        drop(state);
+        drop(_guard);
+
+        assert!(ended(&caught).is_empty(), "a dead host was recorded as an end: {caught:?}");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **An idle release is a note, not a warning.** The browser closing on
+    /// its own clock is the service working as configured, and the record
+    /// says so at the level that means it.
+    #[tokio::test]
+    async fn an_idle_release_is_a_note_not_a_warning() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        service.configure_idle(0);
+        let profile = profile_for_test(&service).await;
+        let (_, ring) = install_host(&profile, dir.path(), 12).await;
+        *profile.touch.lock().unwrap_or_else(PoisonError::into_inner) = super::Touch::now();
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        service.idle_pass().await;
+        drop(_guard);
+
+        let records = ended(&caught);
+        let (level, fields) =
+            records.first().unwrap_or_else(|| panic!("no browser_host_ended record: {caught:?}"));
+        assert_eq!(*level, tracing::Level::INFO, "an idle release is not a warning: {fields}");
+        assert!(fields.contains("cause=the idle clock released it"), "{fields}");
+        crate::osr::Ring::unlink(&ring);
     }
 }
