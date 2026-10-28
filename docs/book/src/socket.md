@@ -420,7 +420,14 @@ frames are relayed exactly as the host encoded them:
 | 2     | height | device pixels, little-endian u16                     |
 | 1     | format | `1` = WebP                                           |
 | 1     | key   | `1` = full quality (a surface's first frame, a resize, an attach) |
+| 2     | page width | the page's own viewport width, little-endian u16 |
+| 2     | page height | the page's own viewport height, little-endian u16 |
 | rest  | bytes | the encoded pixels, untouched by the server           |
+
+**The page's viewport crosses beside the frame's pixels**, because that is
+the space a gesture is sent in: a picture letterboxed in a surface of another
+shape, or painted at another raster, still puts a press on the pixel it
+shows.
 
 **The server never re-encodes a frame.** The host encodes once and the
 bytes reach every viewer as they left it. A viewer that falls behind is
