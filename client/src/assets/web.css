@@ -1367,6 +1367,12 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   padding: 3px 6px; }
 .tb-btn:disabled { opacity: .45; }
 @media (pointer: coarse) { .tb-btn.nav { min-width: 44px; min-height: 44px; } }
+/* The parked ask's words, on the bar that answers it: the card carrying them
+   is behind the native page, so this row is where they are read. It scrolls
+   rather than taking the page's room. */
+.tb-ask { padding: 5px 12px 8px; border-top: 1px solid var(--line);
+  background: var(--s2); color: var(--text); font-size: var(--fs-data);
+  white-space: pre-wrap; max-height: 6.5em; overflow-y: auto; }
 .tb-feedback { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
   border-top: 1px solid var(--line); background: var(--s2); }
 .tb-field { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;

@@ -6,11 +6,11 @@
  * chat is not closing the browser: the sessions keep driving the same page,
  * and the next Open shows it exactly as they left it.
  *
- * **The takeover's actions are the hand-off's.** The bar that carries Done,
- * Not now, the feedback line and back-to-chat is drawn by the dock that owns
- * the ask; the dock marks the takeover as live for that ask when Open is
- * pressed (`attachHandOff`), which is what routes a take's words to the
- * bar's field.
+ * **The takeover's answers are the seat's hand-off's.** The bar carries back
+ * to chat whenever this surface is up; Done, Not now and the feedback line are
+ * drawn by the composer that owns the ask, and only while this surface is the
+ * page that ask named: the seat it was raised for and the tab it shows are
+ * what a hand-off on this page is answered from.
  *
  * A superseded open never lands: the generation is read after every await,
  * so a second Open (or a close) while the first is still starting leaves the
@@ -45,13 +45,6 @@ import {
 } from './link';
 
 export type SurfacePhase = 'closed' | 'opening' | 'live' | 'failed';
-
-/** The parked hand-off the takeover is standing for. */
-export interface HandOff {
-  id: string;
-  /** The tab the session asked the person to see. */
-  tab: number | null;
-}
 
 /** What the open page's own history allows, as the shell reads it. */
 export interface NavState {
@@ -94,8 +87,6 @@ interface Surface {
    * as one browser with a shared role.
    */
   attachedProfile: string | null;
-  /** The hand-off this takeover answers, while one is parked. */
-  hand_off: HandOff | null;
   /** The bar's two history arrows; both disabled until the shell answers. */
   nav: NavState;
   /**
@@ -124,7 +115,6 @@ export const surface: Surface = $state({
   seat: null,
   tabs: null,
   attachedProfile: null,
-  hand_off: null,
   nav: { can_back: false, can_forward: false },
   viewer: null,
   controller: null,
@@ -206,16 +196,6 @@ export async function takeControl(take: boolean): Promise<void> {
   await sendControl(take);
   surface.controller = take ? surface.viewer : null;
   if (take) void resizeToRegion();
-}
-
-/** Mark the takeover live for this hand-off, on Open. */
-export function attachHandOff(hand_off: HandOff): void {
-  surface.hand_off = hand_off;
-}
-
-/** Forget the hand-off once it is answered or its dock is gone. */
-export function clearHandOff(id: string): void {
-  if (surface.hand_off?.id === id) surface.hand_off = null;
 }
 
 /** The request that is current; a result from an older one is dropped. */
