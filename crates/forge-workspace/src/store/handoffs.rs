@@ -154,6 +154,7 @@ mod tests {
             max_tokens: Some(1_000_000),
             at_percent: 85,
             brief: HandoffBrief::default(),
+            judgment_turn: Vec::new(),
             transcript_path: "/tmp/old.jsonl".to_owned(),
             at: at.to_owned(),
             cycle: HandoffCycle { requests: 10, turns: 2, prompt_tokens: 100 },

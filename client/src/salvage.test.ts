@@ -120,8 +120,9 @@ describe('the salvage copies', () => {
     // address field's rule staying borderless in that drawing. 205 after the
     // files page's drawing landed, which declares the palette's thirteen. 221
     // after the browser surface's drawing landed, which declares the palette's
-    // sixteen.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(221);
+    // sixteen. 222 once its take card's graph declared the `--hot` the sheet
+    // strokes it with.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(222);
   });
 
   /**
