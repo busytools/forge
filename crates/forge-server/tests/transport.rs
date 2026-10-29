@@ -6333,9 +6333,12 @@ async fn a_review_read_names_why_the_base_fetch_failed() {
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    // The fold's subscription is taken before the serve task is spawned, so
+    // a `Connected` emitted right after this cannot find nobody listening.
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     let url = format!("ws://{addr}/socket");
 
@@ -6397,9 +6400,12 @@ async fn a_subscribe_behind_a_review_read_is_answered_while_it_waits() {
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    // The fold's subscription is taken before the serve task is spawned, so
+    // a `Connected` emitted right after this cannot find nobody listening.
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     let url = format!("ws://{addr}/socket");
 
@@ -6487,9 +6493,12 @@ async fn a_release_during_a_review_read_ends_it_and_answers_the_ask() {
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    // The fold's subscription is taken before the serve task is spawned, so
+    // a `Connected` emitted right after this cannot find nobody listening.
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     let url = format!("ws://{addr}/socket");
 
@@ -6582,9 +6591,12 @@ async fn a_read_off_the_loop_holds_its_own_seats_frames_only() {
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    // The fold's subscription is taken before the serve task is spawned, so
+    // a `Connected` emitted right after this cannot find nobody listening.
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     let url = format!("ws://{addr}/socket");
 
@@ -6711,9 +6723,12 @@ async fn a_queued_ask_is_withdrawn_and_answered_when_its_subject_is_released() {
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    // The fold's subscription is taken before the serve task is spawned, so
+    // a `Connected` emitted right after this cannot find nobody listening.
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     let url = format!("ws://{addr}/socket");
 
