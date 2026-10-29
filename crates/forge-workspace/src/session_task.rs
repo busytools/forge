@@ -767,11 +767,6 @@ impl SessionTask {
                 // message in it back to its sender, before the
                 // user-visible ConnectionFailed lands.
                 if let Some(workspace) = self.workspace.upgrade() {
-                    // **No machine turn survives the session's death.** A
-                    // handoff whose successor never came up and a compaction
-                    // both end with the subprocess, and a seat left holding
-                    // the blocker would be one nobody can type into.
-                    self.emit(SessionUpdate::MachineTurn { key: self.key.clone(), machine: None });
                     workspace.expire_parked_for_slot(
                         &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
@@ -820,6 +815,12 @@ impl SessionTask {
                     message,
                     fatal: false,
                 });
+                // **No machine turn survives the session's death.** A handoff
+                // whose successor never came up and a compaction both end with
+                // the subprocess, and a seat left holding the blocker would be
+                // one nobody can type into. After the failure, so a client
+                // reads the death first and the stand-down second.
+                self.emit(SessionUpdate::MachineTurn { key: self.key.clone(), machine: None });
                 // Terminal for this task: the spawn failed before any
                 // Connected, so the pooled handle is dead and must not
                 // survive it - otherwise the pool fast path hands the
@@ -7210,6 +7211,16 @@ mod tests {
                 SessionUpdate::ConnectionFailed { key: ref emitted, .. } if *emitted == key
             ),
             "the ConnectionFailed envelope still goes out"
+        );
+        // **A died session leaves no machine turn.** A handoff whose successor
+        // never came up and a compaction both end with the subprocess; the
+        // stand-down follows the death so a client reads it second.
+        assert!(
+            matches!(
+                update_rx.try_recv().map(|frame| frame.update),
+                Ok(SessionUpdate::MachineTurn { machine: None, .. })
+            ),
+            "the machine turn ends with the session",
         );
     }
 
