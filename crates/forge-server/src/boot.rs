@@ -747,6 +747,13 @@ port = {port}
             1,
             "the fold's subscription is held when serve_socket returns",
         );
+        // **And it is a stream something reads.** One subscriber taking the
+        // frame is what tells this count from a subscription taken and then
+        // dropped; nothing else has attached, so the reader is the fold's.
+        assert!(
+            workspace.emit_for_test_reported(forge_workspace::SessionUpdate::CatalogLoaded),
+            "the fold's own stream takes the frame the boot wave would emit",
+        );
         handle.abort();
     }
 
