@@ -426,6 +426,15 @@ struct Caller {
     peer: std::net::SocketAddr,
 }
 
+/// A message on its way through the loop: who sent it, and when it reached
+/// this connection. The instant is the arrival's rather than the handling's,
+/// so an ask that queued behind an earlier read pays that wait in its open.
+#[derive(Clone, Copy)]
+struct Arrival {
+    caller: Caller,
+    at: Instant,
+}
+
 /// Greet, then serve the client until it goes.
 ///
 /// The greeting is what tells a client it is speaking to a forge rather
@@ -683,9 +692,16 @@ enum Answer {
 /// that queued behind it, and the channel its task answers on.
 struct Reads {
     one: Option<Reading>,
-    waiting: std::collections::VecDeque<ClientMessage>,
+    /// The arrival instant rides with each queued ask, so the open it reports
+    /// includes the wait it spent here.
+    waiting: std::collections::VecDeque<(Instant, ClientMessage)>,
     reply: mpsc::UnboundedSender<Answer>,
 }
+
+/// Frames held for a seat whose record is being read. The record is encoded
+/// after them, so everything below its seq is discarded by the client and the
+/// newest are the ones worth keeping; a read that never ends stays bounded.
+const MAX_HELD_READ_FRAMES: usize = 1024;
 
 /// One subscribe read finished off the loop.
 struct ReadAnswer {
@@ -695,6 +711,8 @@ struct ReadAnswer {
     /// When the subscribe that began this read was taken off the socket, and
     /// the slices between it and the read's start.
     open_at: Instant,
+    /// The wait it spent queued behind an earlier read, if it was.
+    queue_ms: f64,
     prelude_ms: f64,
     queued_ms: f64,
     hold_ms: f64,
@@ -715,6 +733,51 @@ struct Reading {
     /// Held for its drop: dropping the reading aborts the task, which is what
     /// a release and the end of the connection both do.
     _task: AbortOnDrop,
+}
+
+/// Answers the loop if the read task ends without doing so. A panic in the
+/// encode must not leave the connection waiting on a record nobody owes: no
+/// answer leaves the read in flight for the connection's life, and every later
+/// subscribe queues behind it in silence.
+struct ReadAnswerGuard {
+    reply: mpsc::UnboundedSender<Answer>,
+    subject: Subject,
+    seat: Option<SessionSlot>,
+    peer: std::net::SocketAddr,
+    open_at: Instant,
+    queue_ms: f64,
+    prelude_ms: f64,
+    queued_ms: f64,
+    hold_ms: f64,
+    answered: bool,
+}
+
+impl ReadAnswerGuard {
+    fn answer(&mut self, outcome: anyhow::Result<(serde_json::Value, OpenTimings)>) {
+        self.answered = true;
+        let _ = self.reply.send(Answer::Read(Box::new(ReadAnswer {
+            subject: self.subject.clone(),
+            seat: self.seat.clone(),
+            peer: self.peer,
+            open_at: self.open_at,
+            queue_ms: self.queue_ms,
+            prelude_ms: self.prelude_ms,
+            queued_ms: self.queued_ms,
+            hold_ms: self.hold_ms,
+            outcome,
+        })));
+    }
+}
+
+impl Drop for ReadAnswerGuard {
+    fn drop(&mut self) {
+        // A cancellation is the release's own answer, or the connection's end:
+        // only a panic needs one from here.
+        if self.answered || !std::thread::panicking() {
+            return;
+        }
+        self.answer(Err(anyhow::anyhow!("the read ended without an answer")));
+    }
 }
 
 /// A task that is aborted when its handle drops, so a read nobody will answer
@@ -779,8 +842,9 @@ where
                 // composed after it, and a snapshot overtaking an update the
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
+                let arrival = Arrival { caller, at: Instant::now() };
                 handle_client(
-                    socket, state, watching, holds, updates, dictate, browser, reads, caller, msg,
+                    socket, state, watching, holds, updates, dictate, browser, reads, arrival, msg,
                 )
                 .await?;
                 // **An ask that queued behind a read is served as soon as no
@@ -788,9 +852,10 @@ where
                 // without this drain the asks behind it would wait for a
                 // record nobody owes.
                 while reads.one.is_none() {
-                    let Some(next) = reads.waiting.pop_front() else { break };
+                    let Some((at, next)) = reads.waiting.pop_front() else { break };
                     handle_message(
-                        socket, state, watching, holds, updates, dictate, browser, reads, caller,
+                        socket, state, watching, holds, updates, dictate, browser, reads,
+                        Arrival { caller, at },
                         next,
                     )
                     .await?;
@@ -811,10 +876,11 @@ where
                         // **And the asks that queued behind it**, in the order
                         // they were asked: one may start the next read.
                         while reads.one.is_none() {
-                            let Some(msg) = reads.waiting.pop_front() else { break };
+                            let Some((at, msg)) = reads.waiting.pop_front() else { break };
                             handle_message(
                                 socket, state, watching, holds, updates, dictate, browser, reads,
-                                caller, msg,
+                                Arrival { caller, at },
+                                msg,
                             )
                             .await?;
                         }
@@ -859,16 +925,30 @@ where
                 }
                 // **A seat whose record is being read off this loop has its
                 // frames held, not lost.** The record is encoded while these
-                // are already in flight; handing them on after the snapshot
-                // keeps a frame from drawing over a page that has not arrived,
-                // and each carries the seq that says whether the snapshot
-                // already covers it.
-                if let Some(read) = reads.one.as_mut()
-                    && read.subject.covers(&update)
+                // are already in flight; handing the seat's copy on after the
+                // snapshot keeps a frame from drawing over a page that has not
+                // arrived, and each carries the seq that says whether the
+                // snapshot already covers it. The frame still takes the normal
+                // path below, so another subscriber on this connection - the
+                // home's fleet row - is not robbed of its own copy.
+                // **A fatal is never held**: it carries no seat, so it never
+                // matches a seat's hold, and the flush below is what sends it
+                // now rather than on the batch's clock.
+                let held_for_read = reads.one.as_ref().is_some_and(|read| {
+                    ours_to_hear(&update, me) && read.subject.covers(&update)
+                });
+                if held_for_read
+                    && let Some(read) = reads.one.as_mut()
                 {
-                    read.frames
-                        .push(SeatUpdate { seq: frame.seq, update: for_a_client(update, cap) });
-                    continue;
+                    // The newest are the ones the client will not discard by
+                    // seq, so the oldest go first when a read runs long.
+                    if read.frames.len() == MAX_HELD_READ_FRAMES {
+                        read.frames.remove(0);
+                    }
+                    read.frames.push(SeatUpdate {
+                        seq: frame.seq,
+                        update: for_a_client(update.clone(), cap),
+                    });
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
@@ -1188,6 +1268,8 @@ struct OpenReport {
     /// When the subscribe was taken off the socket, and the slices between it
     /// and the read's start.
     open_at: Instant,
+    /// The wait it spent queued behind an earlier read on this connection.
+    queue_ms: f64,
     prelude_ms: f64,
     queued_ms: f64,
     hold_ms: f64,
@@ -1268,6 +1350,7 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
         slot = %slot.display(),
         peer = %report.peer,
         open_ms = report.open_at.elapsed().as_secs_f64() * 1000.0,
+        queue_ms = report.queue_ms,
         prelude_ms = report.prelude_ms,
         queued_ms = report.queued_ms,
         hold_ms = report.hold_ms,
@@ -1290,7 +1373,8 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
         tail_ms = timings.tail_ms,
         encode_ms = timings.encode_ms,
         pr_age_s = timings.pr_age_s,
-        "the subscribe's own work, in DISJOINT slices: prelude is the \
+        "the subscribe's own work, in DISJOINT slices: queue is the wait it \
+         spent behind an earlier read on this connection, prelude is the \
          client line and the browser role, queued the frames already \
          waiting for this subject, hold the seat's watch, prologue the \
          roster and its asks, header the seat's header, catch_up the \
@@ -1338,6 +1422,7 @@ where
                     seat: done.seat,
                     peer: done.peer,
                     open_at: done.open_at,
+                    queue_ms: done.queue_ms,
                     prelude_ms: done.prelude_ms,
                     queued_ms: done.queued_ms,
                     hold_ms: done.hold_ms,
@@ -1385,12 +1470,13 @@ async fn handle_client<S>(
     dictate: &mut Streaming,
     browser: &mut BrowserViewing,
     reads: &mut Reads,
-    caller: Caller,
+    arrival: Arrival,
     msg: Message,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
+    let caller = arrival.caller;
     let me = caller.id;
     let text = match msg {
         Message::Text(text) => text,
@@ -1436,8 +1522,10 @@ where
         )
         .await;
     };
-    handle_message(socket, state, watching, holds, updates, dictate, browser, reads, caller, client)
-        .await
+    handle_message(
+        socket, state, watching, holds, updates, dictate, browser, reads, arrival, client,
+    )
+    .await
 }
 
 /// [`handle_client`] with the message already read, so a subscribe that
@@ -1451,12 +1539,14 @@ async fn handle_message<S>(
     dictate: &mut Streaming,
     browser: &mut BrowserViewing,
     reads: &mut Reads,
-    caller: Caller,
+    arrival: Arrival,
     client: ClientMessage,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
+    let caller = arrival.caller;
+    let arrived_at = arrival.at;
     let viewing = &mut browser.viewing;
     let tabs = &mut browser.tabs;
     let me = caller.id;
@@ -1469,7 +1559,13 @@ where
             // read to the snapshot being written - the span a client's seat
             // switch waits on this half for, whatever subject it names; the
             // line below is emitted for a session, which is where the wait is.
-            let open_at = Instant::now();
+            // The arrival is the read's, so an ask that queued behind an
+            // earlier read pays that wait in the open it reports.
+            let open_at = arrived_at;
+            // What the wait behind an earlier read cost, for the record's own
+            // slices: `open_ms` carries it too, and this names it apart.
+            let wait_ms =
+                Instant::now().saturating_duration_since(arrived_at).as_secs_f64() * 1000.0;
             // **Which attached client this subscribe is (#2506).** Several
             // clients attach from addresses the log otherwise never names, so
             // a slow open could not be placed on the one that asked for it.
@@ -1487,7 +1583,9 @@ where
             // holds, and the loop above answers these in that order; every
             // other message on this connection keeps moving.
             if reads.one.is_some() {
-                reads.waiting.push_back(ClientMessage::Subscribe { what, answering, review });
+                reads
+                    .waiting
+                    .push_back((arrived_at, ClientMessage::Subscribe { what, answering, review }));
                 return Ok(());
             }
             // Forwarded before the snapshot: they were emitted before it was
@@ -1542,17 +1640,24 @@ where
                 let subject = what.clone();
                 let peer = caller.peer;
                 let task = tokio::spawn(async move {
-                    let outcome = encode_subject_timed(&state, &subject, true).await;
-                    let _ = reply.send(Answer::Read(Box::new(ReadAnswer {
+                    // **An answer is owed even if the encode panics.** The loop
+                    // is waiting on this task: no answer leaves its read in
+                    // flight for the connection's life, and every later
+                    // subscribe queued behind it.
+                    let mut answer = ReadAnswerGuard {
+                        reply,
                         subject,
                         seat,
                         peer,
                         open_at,
+                        queue_ms: wait_ms,
                         prelude_ms,
                         queued_ms,
                         hold_ms,
-                        outcome,
-                    })));
+                        answered: false,
+                    };
+                    let outcome = encode_subject_timed(&state, &answer.subject, true).await;
+                    answer.answer(outcome);
                 });
                 reads.one =
                     Some(Reading { subject: what, frames: Vec::new(), _task: AbortOnDrop(task) });
@@ -1574,6 +1679,7 @@ where
                             seat,
                             peer: caller.peer,
                             open_at,
+                            queue_ms: wait_ms,
                             prelude_ms,
                             queued_ms,
                             hold_ms,
@@ -2479,23 +2585,43 @@ where
                 if let Subject::Session(slot) = &what {
                     holds.give_back(slot);
                 }
-                send(
-                    socket,
-                    ServerMessage::Error {
-                        what: "subscribe".to_owned(),
-                        why: "the seat was released while its read was in flight".to_owned(),
-                        seat: match &what {
-                            Subject::Session(slot) => Some(slot.clone()),
-                            _ => None,
-                        },
-                        dispatch_id: None,
-                    },
-                )
-                .await?;
+                send(socket, released_subscribe(&what)).await?;
+            }
+            // **An ask queued for this subject is withdrawn with it**, and
+            // answered the same way: the page that wanted it has let the
+            // subject go, and an ask left answering nothing would strand the
+            // client's oldest-first bookkeeping - or take a hold nobody wants.
+            let mut kept = std::collections::VecDeque::with_capacity(reads.waiting.len());
+            let mut withdrawn = 0;
+            while let Some((at, queued)) = reads.waiting.pop_front() {
+                match &queued {
+                    ClientMessage::Subscribe { what: queued, .. } if queued == &what => {
+                        withdrawn += 1;
+                    }
+                    _ => kept.push_back((at, queued)),
+                }
+            }
+            reads.waiting = kept;
+            for _ in 0..withdrawn {
+                send(socket, released_subscribe(&what)).await?;
             }
             Ok(())
         }
         ClientMessage::Showing { seat } => set_showing(socket, state, watching, seat).await,
+    }
+}
+
+/// The answer a subscribe owes when the subject it named was released before
+/// any read for it could land.
+fn released_subscribe(what: &Subject) -> ServerMessage {
+    ServerMessage::Error {
+        what: "subscribe".to_owned(),
+        why: "the seat was released before its read answered".to_owned(),
+        seat: match what {
+            Subject::Session(slot) => Some(slot.clone()),
+            _ => None,
+        },
+        dispatch_id: None,
     }
 }
 
@@ -3521,6 +3647,58 @@ mod tests {
     use super::*;
     use crate::transport::Heartbeat;
     use crate::work::WorkCache;
+
+    /// **A panic in the encode answers the loop; a cancellation does not.** The
+    /// release and the end of the connection cancel the read and send their own
+    /// answer, so a guard that fired on both would answer one ask twice.
+    #[test]
+    fn a_panicking_read_answers_the_loop_and_a_cancelled_one_does_not() {
+        let (reply, mut answers) = mpsc::unbounded_channel();
+        // A panic through the guard's own scope, the guard dropped by the
+        // unwind as the task's future is.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _armed = ReadAnswerGuard {
+                reply,
+                subject: Subject::Home,
+                seat: None,
+                peer: "127.0.0.1:1".parse().expect("a peer"),
+                open_at: Instant::now(),
+                queue_ms: 0.0,
+                prelude_ms: 0.0,
+                queued_ms: 0.0,
+                hold_ms: 0.0,
+                answered: false,
+            };
+            panic!("the encode broke");
+        }));
+        assert!(panicked.is_err(), "control: the scope really panicked");
+        let answer = answers.try_recv().expect("the panic answered the loop");
+        let Answer::Read(read) = answer else { panic!("a read's answer, not a reply") };
+        assert!(
+            read.outcome
+                .as_ref()
+                .err()
+                .is_some_and(|why| why.to_string().contains("without an answer")),
+            "the refusal names what happened",
+        );
+
+        // A drop that is not a panic - a cancellation - answers nothing.
+        let (reply, mut answers) = mpsc::unbounded_channel();
+        let cancelled = ReadAnswerGuard {
+            reply,
+            subject: Subject::Home,
+            seat: None,
+            peer: "127.0.0.1:1".parse().expect("a peer"),
+            open_at: Instant::now(),
+            queue_ms: 0.0,
+            prelude_ms: 0.0,
+            queued_ms: 0.0,
+            hold_ms: 0.0,
+            answered: false,
+        };
+        drop(cancelled);
+        assert!(answers.try_recv().is_err(), "a cancelled read answered its own ask twice");
+    }
 
     /// **Only a ping that went out can go unanswered.** The state holds no
     /// read clock at all, so a quiet read - a connection busy in one long

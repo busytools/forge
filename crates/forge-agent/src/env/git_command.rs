@@ -40,10 +40,21 @@ pub(super) enum SshCommand {
 /// **No prompt path, and no unbounded one.** A child on a dead link ends in an
 /// error rather than holding a read open for the process's life: git's
 /// terminal prompt is off, the environment's askpass hooks are removed, http
-/// aborts below a trickle, and when the checkout names no ssh command of its
-/// own, forge's bounds ssh's connect and keeps the session alive. `core.askPass`
-/// is a checkout's own configuration and is not touched: it is a helper that
-/// answers or fails, not a terminal prompt.
+/// aborts below a trickle, and when the effective configuration names no ssh
+/// command of its own (the global file included), forge's bounds ssh's connect
+/// and keeps the session alive.
+///
+/// **What the bounds cost, said plainly.** `http.lowSpeedLimit=1000` with
+/// `lowSpeedTime=20` ends a transfer that stays below one kilobyte a second
+/// for twenty seconds: a cap on a *working* link, chosen where only a dead one
+/// would notice, and git's own words ("Operation too slow") reach the page
+/// when it bites. `ServerAliveInterval=10` with `ServerAliveCountMax=3` turns
+/// a 45-second silence into an error, and because a command-line `-o` outranks
+/// `~/.ssh/config`, those two win over a user's own interval while forge's
+/// command runs; they are set only where the user named no command. A checkout
+/// command is left alone, and then its timeouts are its own. `core.askPass` is
+/// a checkout's own helper and is not touched: it answers or fails, it does
+/// not open a terminal.
 ///
 /// This is the network children's alone, not the shared constructor's (#2668):
 /// a local scan has nothing to prompt for, and a plugin's clone still belongs

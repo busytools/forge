@@ -207,11 +207,11 @@
    * read as the branch's own change.
    */
   const baseNote = $derived.by(() => {
-    // **Only a record this page's own read produced may say what the refresh
+    // **Only a record this page's own read produced may say what the read
     // found.** A record read by any other page has not checked its base at
-    // all, and drawing "could not be refreshed" off it names a refresh that
-    // never ran - the false caveat every open used to flash while its own
-    // read was in flight.
+    // all, and drawing "could not be checked" off it names a check that never
+    // ran - the false caveat every open used to flash while its own read was
+    // in flight.
     if (!read.review) return null;
     const base = record?.diff.base ?? null;
     // The wire names the remote-tracking ref; the reader knows it as `main`.

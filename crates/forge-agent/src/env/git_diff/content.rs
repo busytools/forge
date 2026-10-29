@@ -72,7 +72,6 @@ pub struct DiffContent {
     /// the same reason: a page says what failed rather than only that the base
     /// could not be checked. `None` when the fetch ran or no branch layer is
     /// drawn.
-    #[serde(default)]
     pub base_error: Option<String>,
     /// Content this read withheld: a file cut by a cap, a file past the
     /// file cap, or a fetch that failed. The per-file flags say which.
