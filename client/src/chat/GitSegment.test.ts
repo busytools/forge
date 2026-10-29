@@ -1,11 +1,12 @@
 import { render } from 'svelte/server';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import GitSegment from './GitSegment.svelte';
 import { changeLine, git, vcsLine } from './git.svelte';
 
 afterEach(() => {
   git.clear();
+  vi.useRealTimers();
 });
 
 describe('the tree segment', () => {
@@ -55,6 +56,21 @@ describe('the tree segment', () => {
     expect(vcsLine('checkout', 'topic')).toBe('repository changed (checkout) on topic');
     expect(vcsLine('merge', null)).toBe('merged');
     expect(vcsLine('push', 'main')).toBe('pushed main');
+  });
+
+  it('gives the row back to the tree after the event\'s moment, and with the record', () => {
+    vi.useFakeTimers();
+    const slot = { org: 'TestOrg', project: 'forge', label: 'lead' };
+    git.show(slot);
+    git.note(slot, 'committed on main');
+    expect(git.noteNow()?.line, 'the event is on the row').toBe('committed on main');
+
+    vi.advanceTimersByTime(8_000);
+    expect(git.noteNow(), 'the event clears itself').toBeNull();
+
+    git.note(slot, 'pushed main');
+    git.sync(null);
+    expect(git.noteNow(), 'a seat with no record carries no event').toBeNull();
   });
 
   it('names a published action, including the ones with no chat row', () => {
