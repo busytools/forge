@@ -10,7 +10,7 @@
  * refilling on every blip.
  */
 
-import { READ_BOUND_MS, REVIEW_READ_BOUND_MS, ReadBounds } from './read-bound';
+import { READ_BOUND_MS, ReadBounds } from './read-bound';
 import { refused } from './refusals';
 import { StreamGate } from './session/stream';
 import {
@@ -637,11 +637,12 @@ export function connect(
     awaiting.push(key);
     subscribed.set(key, (subscribed.get(key) ?? 0) + 1);
     // The read this ask owes is bounded from here: nothing else would ask
-    // again for a snapshot that simply never came. A review read gets the
-    // longer pass: the server's own bounds for it are longer than a healthy
-    // read, and the ordinary one would ask a second whole record under the
-    // first.
-    bounds.arm(what, review ? REVIEW_READ_BOUND_MS : undefined);
+    // again for a snapshot that simply never came. A review read is armed with
+    // no bound at all, which also clears any timer an ordinary read of the
+    // same subject left standing: the server waits for its base fetch with no
+    // cap, so a timer would ask a second whole record under one still
+    // legitimately running.
+    bounds.arm(what, review ? null : undefined);
   }
 
   /** A subject the server has answered, which is no longer outstanding. */

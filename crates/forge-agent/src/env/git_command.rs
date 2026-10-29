@@ -21,6 +21,62 @@ pub(crate) fn command(program: &str) -> Command {
     command
 }
 
+/// Whether forge builds the ssh command for a child, or the checkout does.
+///
+/// **`GIT_SSH_COMMAND` outranks both `core.sshCommand` and `GIT_SSH`**, so a
+/// command forge sets is the one that runs: it may not be set while either of
+/// the others is the user's own way to reach their remote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SshCommand {
+    /// The environment and the checkout name none, so forge's bounded one
+    /// runs.
+    Forge,
+    /// One of the user's spellings is in force, and it is left alone.
+    User,
+}
+
+/// A `git` child that may reach a remote.
+///
+/// **No prompt path, and no unbounded one.** A child on a dead link ends in an
+/// error rather than holding a read open for the process's life: git's
+/// terminal prompt is off, the environment's askpass hooks are removed, http
+/// aborts below a trickle, and when the effective configuration names no ssh
+/// command of its own (the global file included), forge's bounds ssh's connect
+/// and keeps the session alive.
+///
+/// **What the bounds cost, said plainly.** `http.lowSpeedLimit=1000` with
+/// `lowSpeedTime=20` ends a transfer that stays below one kilobyte a second
+/// for twenty seconds: a cap on a *working* link, chosen where only a dead one
+/// would notice, and git's own words ("Operation too slow") reach the page
+/// when it bites. `ServerAliveInterval=10` with `ServerAliveCountMax=3` turns
+/// a 45-second silence into an error, and because a command-line `-o` outranks
+/// `~/.ssh/config`, those two win over a user's own interval while forge's
+/// command runs; they are set only where the user named no command. A checkout
+/// command is left alone, and then its timeouts are its own. `core.askPass` is
+/// a checkout's own helper and is not touched: it answers or fails, it does
+/// not open a terminal.
+///
+/// This is the network children's alone, not the shared constructor's (#2668):
+/// a local scan has nothing to prompt for, and a plugin's clone still belongs
+/// to whoever asked for it.
+pub(super) fn network_tokio_git_command(
+    cwd: &std::path::Path,
+    ssh: SshCommand,
+) -> tokio::process::Command {
+    let mut command = tokio_git_command(cwd);
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    command.env_remove("GIT_ASKPASS").env_remove("SSH_ASKPASS");
+    command.args(["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20"]);
+    if ssh == SshCommand::Forge {
+        command.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 \
+             -o ServerAliveCountMax=3",
+        );
+    }
+    command
+}
+
 /// The [`command`] variant async callers await; the scrub rides the
 /// std -> tokio conversion.
 pub(super) fn tokio_command(program: &str) -> tokio::process::Command {
@@ -164,6 +220,65 @@ mod tests {
             .and_then(|(_, value)| value)
             .and_then(|value| value.to_str());
         assert_eq!(carried, Some("project-token"), "the project's GH_TOKEN is on the spawn");
+    }
+
+    /// **A network git child can never wait on a person, nor on a dead link.**
+    /// The review page's read waits for its base fetch to finish, so a prompt
+    /// inherited from the shell forge was launched in would hold the page open
+    /// for as long as nobody answers it, and a blackholed remote would hold it
+    /// open for ever. Every such child ends in a git error instead: the
+    /// terminal prompt is off, the environment's askpass hooks are removed,
+    /// http aborts below a trickle, and ssh is bounded when the checkout names
+    /// no command of its own.
+    #[test]
+    fn a_network_git_child_can_wait_on_neither_a_person_nor_a_dead_link() {
+        let cwd = std::path::Path::new("/tmp/nowhere");
+        let ours = network_tokio_git_command(cwd, SshCommand::Forge).into_std();
+        let set = |command: &Command, key: &str| {
+            command
+                .get_envs()
+                .find(|(k, _)| *k == key)
+                .and_then(|(_, value)| value)
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            set(&ours, "GIT_TERMINAL_PROMPT").as_deref(),
+            Some("0"),
+            "git's terminal prompt is disabled whatever the shell exported",
+        );
+        for key in ["GIT_ASKPASS", "SSH_ASKPASS"] {
+            assert!(
+                removed_keys(&ours).iter().any(|k| k == key),
+                "{key} reaches the child from this process's environment",
+            );
+        }
+        let args: Vec<String> =
+            ours.get_args().filter_map(|arg| arg.to_str().map(str::to_owned)).collect();
+        for pinned in ["http.lowSpeedLimit=1000", "http.lowSpeedTime=20"] {
+            assert!(args.iter().any(|arg| arg == pinned), "http is bounded: {args:?}");
+        }
+        let ssh = set(&ours, "GIT_SSH_COMMAND").unwrap_or_default();
+        for pinned in ["BatchMode=yes", "ConnectTimeout=15", "ServerAliveInterval=10"] {
+            assert!(ssh.contains(pinned), "forge's ssh is bounded: {ssh:?}");
+        }
+
+        // **A checkout's own command is left alone**, whichever spelling holds
+        // it: GIT_SSH_COMMAND outranks both, so forge must not set it.
+        let theirs = network_tokio_git_command(cwd, SshCommand::User).into_std();
+        assert!(
+            set(&theirs, "GIT_SSH_COMMAND").is_none(),
+            "the user's own ssh command is not overridden",
+        );
+
+        // And the shared constructor carries none of it: this is the network
+        // children's, so a local scan and a plugin's clone are untouched.
+        let local = command("git");
+        assert!(set(&local, "GIT_TERMINAL_PROMPT").is_none(), "a local git is not reshaped");
+        assert!(
+            !removed_keys(&local).iter().any(|k| k == "GIT_ASKPASS"),
+            "a local git keeps the environment's askpass hooks",
+        );
     }
 
     /// And the server's identity never reaches it: a project that

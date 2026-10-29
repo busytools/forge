@@ -99,6 +99,13 @@ pub(super) fn stall_git_for(dir: &std::path::Path, bin: &std::path::Path, secs: 
     crate::env::git_command::point_git_at(dir, &wrapper);
 }
 
+/// Point the repo at `dir` at a `git` whose `fetch` takes `secs` and then runs
+/// the real one: the shape a remote slower than any fixed bound produces.
+#[cfg(test)]
+pub(super) fn slow_fetch_at(dir: &std::path::Path, bin: &std::path::Path, secs: f64) {
+    write_wrapper(dir, bin, "slow-fetch-git", &[], &format!("/bin/sleep {secs}; exec git \"$@\""));
+}
+
 /// Point the repo at `dir` at a `git` whose `fetch` refuses and whose every
 /// other subcommand is the machine's own. A base refresh that cannot run while
 /// the remote can still be asked is the shape [`measure_lag`] reports: the
@@ -187,21 +194,15 @@ pub(super) fn noop_fetch_at(dir: &std::path::Path, bin: &std::path::Path) {
     write_wrapper(dir, bin, "noop-git", &[], "exit 0");
 }
 
-/// Point the repo at `dir` at a `git` whose `fetch` fails at once while its
-/// `ls-remote` stalls for `secs`: the shape the display budget must cut.
+/// The environment a test's `git` wrapper gives its child, so a case about a
+/// checkout that names no ssh command is not answered by the developer's own
+/// global config.
 #[cfg(test)]
-pub(super) fn fail_fetch_stall_tip_at(dir: &std::path::Path, bin: &std::path::Path, secs: u64) {
-    write_wrapper(
-        dir,
-        bin,
-        "slow-tip-git",
-        &[("ls-remote", &format!("/bin/sleep {secs}"))],
-        "echo 'fatal: forced fetch failure' >&2; exit 128",
-    );
-}
+const ISOLATED_GIT_CONFIG: &str = "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null";
 
 /// Write a `git` wrapper with one refusal on `fetch` and an optional stall on
-/// another subcommand, delegating everything else to the machine's own git.
+/// another subcommand, delegating everything else to the machine's own git,
+/// with the machine's own config kept out of reach.
 #[cfg(test)]
 fn write_wrapper(
     dir: &std::path::Path,
@@ -218,11 +219,94 @@ fn write_wrapper(
     for (subcommand, body) in stalls {
         writeln!(script, "  *\" {subcommand} \"*) {body} ;;").expect("the wrapper's stall arm");
     }
-    script.push_str("esac\nexec git \"$@\"\n");
+    writeln!(script, "esac\n{ISOLATED_GIT_CONFIG} exec git \"$@\"")
+        .expect("the wrapper's fallback");
     let wrapper = bin.join(name);
     std::fs::write(&wrapper, script).expect("the wrapper");
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
     crate::env::git_command::point_git_at(dir, &wrapper);
+}
+
+/// Point `dir`'s `git` at a wrapper that cannot see the machine's own config:
+/// the ssh classifier reads `core.sshCommand` from it, and a developer's global
+/// value would answer for the checkout under test.
+#[cfg(test)]
+fn without_machine_config_at(dir: &std::path::Path, bin: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let script = format!("#!/bin/sh\n{ISOLATED_GIT_CONFIG} exec git \"$@\"\n");
+    let wrapper = bin.join("isolated-git");
+    std::fs::write(&wrapper, script).expect("the wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+    crate::env::git_command::point_git_at(dir, &wrapper);
+}
+
+/// A fetch a test can hold open, and the marks that prove what happened while
+/// it was held.
+#[cfg(test)]
+struct HeldFetch {
+    /// Exists while a fetch is blocked in the wrapper.
+    open: std::path::PathBuf,
+    /// Dropped by the test to let the blocked fetch run.
+    release: std::path::PathBuf,
+    /// One line per fetch started.
+    starts: std::path::PathBuf,
+    /// One line per `rev-parse --git-common-dir`, the registry key's own
+    /// probe: a second line is a second caller reaching the registry.
+    probes: std::path::PathBuf,
+}
+
+#[cfg(test)]
+impl HeldFetch {
+    fn starts(&self) -> usize {
+        std::fs::read_to_string(&self.starts).map(|text| text.lines().count()).unwrap_or_default()
+    }
+
+    fn probes(&self) -> usize {
+        std::fs::read_to_string(&self.probes).map(|text| text.lines().count()).unwrap_or_default()
+    }
+
+    fn open(&self) -> bool {
+        self.open.exists()
+    }
+
+    fn release(&self) {
+        std::fs::write(&self.release, b"go").expect("release the fetch");
+    }
+}
+
+/// Point `dir` at a `git` whose `fetch` marks itself, blocks until
+/// [`HeldFetch::release`], and then runs the real one; every
+/// `rev-parse --git-common-dir` marks itself too.
+#[cfg(test)]
+fn held_fetch_at(dir: &std::path::Path, bin: &std::path::Path) -> HeldFetch {
+    let open = bin.join("fetch-open");
+    let release = bin.join("fetch-release");
+    let starts = bin.join("fetch-starts");
+    let probes = bin.join("common-dir-probes");
+    let body = format!(
+        "echo start >> '{starts}'; : > '{open}'; \
+         while [ ! -e '{release}' ]; do /bin/sleep 0.02; done; exec git \"$@\"",
+        starts = starts.display(),
+        open = open.display(),
+        release = release.display(),
+    );
+    let probe = format!("echo probe >> '{}'", probes.display());
+    write_wrapper(dir, bin, "held-git", &[("rev-parse", &probe)], &body);
+    HeldFetch { open, release, starts, probes }
+}
+
+/// Poll `ready` until it answers, with a bound that fails the test rather than
+/// hanging it: every wait here is for a child to reach a step, and a loaded
+/// machine schedules it late.
+#[cfg(test)]
+async fn wait_for(mut ready: impl FnMut() -> bool, what: &str) {
+    let mut waited = Duration::ZERO;
+    while !ready() {
+        assert!(waited < Duration::from_secs(30), "waited for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        waited += Duration::from_millis(10);
+    }
 }
 
 /// Number of file rows surfaced in the rendered diff list. The
@@ -337,44 +421,174 @@ const PR_REFETCH_INTERVAL: Duration = Duration::from_secs(300);
 /// worktree's unpushed depth.
 const PUSHED_SHA_WALK_CAP: usize = 500;
 
-/// The budget the read that draws a diff gives its base refresh, all of it:
-/// the fetch, the tip check and the lag that names a base which could not be
-/// brought up to date. A page open may wait this long once. It is
-/// deliberately smaller than the 10 s child budget the scan's own commands
-/// get, because this is the one place a known-stale base is allowed to hold a
-/// reader up.
-pub const DISPLAY_REFRESH_BUDGET: Duration = Duration::from_secs(3);
-
-/// The watch's own base refresh cadence. The watch's scan is a read nobody
-/// waits on, so it keeps the session row's "N commits" moving; throttled so a
-/// burst of scans fetches at most once a window.
+/// The kick's own cadence. The chain stays honest while no review page is
+/// open because a scan freshens the ref for the next one; throttled so a burst
+/// of scans fetches at most once a window.
 const WATCH_REFRESH_INTERVAL: Duration = Duration::from_secs(240);
 
-/// Per-repo last watch refresh, keyed by the scan cwd.
+/// Per-checkout last refresh, keyed by the scan cwd.
 ///
 /// **The cadence is per checkout rather than per repository by choice**: a
-/// worktree's own watch pass is its own read, and two checkouts of one repo
-/// refreshing their shared ref twice a window is cheap. The fetch gate below
+/// worktree's own scan is its own read, and two checkouts of one repo
+/// refreshing their shared ref twice a window is cheap. The run registry below
 /// is the one that must be per repository.
 static LAST_WATCH_REFRESH: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
 
-/// One base fetch at a time per REPOSITORY, in this process: see [`fetch_base`].
-///
-/// Weak, so a repository nobody is fetching for leaves nothing behind; dead
-/// entries are pruned on the next look.
-static FETCH_GATES: OnceLock<Mutex<HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>> =
-    OnceLock::new();
+/// One base refresh in flight per repository and base branch, shared by every
+/// caller that arrives while it runs: a reader and a kick want the same
+/// answer, and one `git fetch` answers both. Weak, so a repository nobody is
+/// refreshing for leaves nothing behind; dead entries are pruned on the next
+/// look.
+static BASE_RUNS: OnceLock<Runs> = OnceLock::new();
 
-/// The gate for `key`'s base fetches, made on first use.
-fn fetch_gate(key: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
-    let mut gates = FETCH_GATES.get_or_init(|| Mutex::new(HashMap::new())).lock();
-    gates.retain(|_, weak| weak.strong_count() > 0);
-    if let Some(gate) = gates.get(key).and_then(std::sync::Weak::upgrade) {
-        return gate;
+/// A run's address: the repository's common dir and the base branch.
+type RunKey = (PathBuf, String);
+
+/// Every run in flight, weak so a repository nobody is refreshing for leaves
+/// nothing behind.
+type Runs = Mutex<HashMap<RunKey, std::sync::Weak<BaseRun>>>;
+
+/// One base refresh in flight, and the answer it will publish.
+struct BaseRun {
+    answer: tokio::sync::watch::Sender<Option<BaseRefresh>>,
+    /// The deadline a bounded leader gave its run. A caller with no bound reads
+    /// it to decide a run is already past answering rather than wait it out.
+    deadline: Option<Instant>,
+}
+
+impl BaseRun {
+    fn new(deadline: Option<Instant>) -> std::sync::Arc<Self> {
+        let (answer, _) = tokio::sync::watch::channel(None);
+        std::sync::Arc::new(Self { answer, deadline })
     }
-    let gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-    gates.insert(key.to_path_buf(), std::sync::Arc::downgrade(&gate));
-    gate
+
+    fn publish(&self, refresh: BaseRefresh) {
+        // **`send_replace`, not `send`.** tokio's `send` throws the value away
+        // when no receiver is subscribed, which is the ordinary case for a
+        // leader nobody joined; a caller that upgrades this run after that
+        // would then wait on a channel whose value is still `None` and never
+        // wake, wedging every later refresh for the repository.
+        self.answer.send_replace(Some(refresh));
+    }
+
+    async fn wait(&self) -> BaseRefresh {
+        let mut answer = self.answer.subscribe();
+        if let Some(held) = answer.borrow().clone() {
+            return held;
+        }
+        // The value is stored rather than only handed to a waiter, so a
+        // publish between the borrow above and this await is still read here.
+        let _ = answer.changed().await;
+        answer.borrow().clone().unwrap_or_else(|| BaseRefresh {
+            state: BaseState::Unverified,
+            base_ref: None,
+            error: Some("the base refresh ended without an answer".to_owned()),
+            cut: false,
+            unanswered: true,
+        })
+    }
+}
+
+/// The run for `key`: the one already in flight (or its answer, when it has
+/// finished and a caller still holds it), or a new one the caller leads.
+fn join_base_run(key: RunKey, deadline: Option<Instant>) -> (std::sync::Arc<BaseRun>, bool) {
+    let mut runs = BASE_RUNS.get_or_init(|| Mutex::new(HashMap::new())).lock();
+    runs.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(run) = runs.get(&key).and_then(std::sync::Weak::upgrade) {
+        return (run, false);
+    }
+    lead_base_run(&mut runs, key, deadline)
+}
+
+/// A new run for `key` in place of `cut`, and only in place of it: when the
+/// registry already holds a run some other caller led, that one is joined, so
+/// a burst of readers after one cut fetch costs one more fetch and not one
+/// each.
+fn replace_cut_run(
+    key: RunKey,
+    cut: &std::sync::Arc<BaseRun>,
+    deadline: Option<Instant>,
+) -> (std::sync::Arc<BaseRun>, bool) {
+    let mut runs = BASE_RUNS.get_or_init(|| Mutex::new(HashMap::new())).lock();
+    runs.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(registered) = runs.get(&key).and_then(std::sync::Weak::upgrade)
+        && !std::sync::Arc::ptr_eq(&registered, cut)
+    {
+        return (registered, false);
+    }
+    lead_base_run(&mut runs, key, deadline)
+}
+
+fn lead_base_run(
+    runs: &mut HashMap<RunKey, std::sync::Weak<BaseRun>>,
+    key: RunKey,
+    deadline: Option<Instant>,
+) -> (std::sync::Arc<BaseRun>, bool) {
+    let run = BaseRun::new(deadline);
+    runs.insert(key, std::sync::Arc::downgrade(&run));
+    (run, true)
+}
+
+/// Publish the leader's answer, or a failure if the leader ended without one:
+/// a caller waiting on a run whose leader panicked or was cancelled must not
+/// wait for the process's life.
+struct LeaderGuard {
+    run: std::sync::Arc<BaseRun>,
+    published: bool,
+}
+
+impl LeaderGuard {
+    fn new(run: std::sync::Arc<BaseRun>) -> Self {
+        Self { run, published: false }
+    }
+
+    fn publish(&mut self, refresh: BaseRefresh) {
+        self.run.publish(refresh);
+        self.published = true;
+    }
+}
+
+impl Drop for LeaderGuard {
+    fn drop(&mut self) {
+        if self.published {
+            return;
+        }
+        self.run.publish(BaseRefresh {
+            state: BaseState::Unverified,
+            base_ref: None,
+            error: Some("the base refresh ended without an answer".to_owned()),
+            cut: false,
+            unanswered: true,
+        });
+    }
+}
+
+/// What each checkout's last completed refresh measured, so a scan can carry
+/// it onto the seat's row without waiting for the fetch itself. Pruned on the
+/// same window as the kick, and the row keeps its stored base when an entry
+/// goes.
+static LAST_MEASURED: OnceLock<Mutex<HashMap<PathBuf, (Instant, BaseState)>>> = OnceLock::new();
+
+fn remember_measurement(cwd: &Path, refresh: &BaseRefresh) {
+    // **A run that ended without answering measured nothing.** Its state is a
+    // placeholder, and storing it would draw "could not be checked" on the next
+    // scan's row for a fetch that never reported.
+    if refresh.unanswered {
+        return;
+    }
+    let mut held = LAST_MEASURED.get_or_init(|| Mutex::new(HashMap::new())).lock();
+    held.retain(|_, (at, _)| at.elapsed() < WATCH_REFRESH_INTERVAL);
+    held.insert(cwd.to_path_buf(), (Instant::now(), refresh.state));
+}
+
+/// The state this checkout's last completed base refresh measured, inside the
+/// window the kick runs on. `None` until one has completed.
+pub fn last_base_measurement(cwd: &Path) -> Option<BaseState> {
+    LAST_MEASURED
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .get(cwd)
+        .map(|(_, state)| *state)
 }
 
 /// The repository a checkout belongs to, as the fetch gate's key: git's
@@ -403,8 +617,8 @@ fn refresh_due(last: Option<Instant>, now: Instant, window: Duration) -> bool {
     }
 }
 
-/// Claim a watch refresh slot for `key`, stamping `now` when it is due, so two
-/// passes cannot both fetch.
+/// Claim a kick's slot for `key`, stamping `now` when it is due, so two scans
+/// cannot both fetch.
 fn claim_refresh_slot(key: &Path, now: Instant, window: Duration) -> bool {
     let mut map = LAST_WATCH_REFRESH.get_or_init(|| Mutex::new(HashMap::new())).lock();
     // A checkout nobody has scanned for a window is not a slot to keep: the
@@ -415,6 +629,15 @@ fn claim_refresh_slot(key: &Path, now: Instant, window: Duration) -> bool {
         map.insert(key.to_path_buf(), now);
     }
     due
+}
+
+/// Stamp `key`'s slot whatever it held: a refresh that just ran left the ref
+/// fresh, so a kick inside the window has nothing to fetch.
+fn stamp_refresh_slot(key: &Path, now: Instant) {
+    LAST_WATCH_REFRESH
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .insert(key.to_path_buf(), now);
 }
 
 /// Handles for the background fetches kicked so far, so a test can settle an
@@ -453,56 +676,32 @@ async fn settle_background_fetches() -> usize {
     settled
 }
 
-/// Kick a throttled, non-blocking `git fetch origin <default>` so the
-/// remote-tracking ref the branch-ahead layer compares against is fresher for
-/// the NEXT scan. Only fires for a remote-tracking default (`origin/...`); a
-/// purely-local default has no remote to fetch. Failures log from
-/// [`fetch_base`], which owns the one fetch path with its flags and lock line.
+/// Kick a throttled, non-blocking base refresh so the remote-tracking ref the
+/// branch-ahead layer compares against is fresher for the NEXT scan. Only fires
+/// for a remote-tracking default (`origin/...`); a purely-local default has no
+/// remote to fetch. Failures log from [`fetch_base`], which owns the one fetch
+/// path with its flags and lock line.
+///
+/// **Nobody waits on this refresh**, and it may not spend a waiting reader's
+/// wait: a reader that arrives while it runs joins it (see [`refresh_base`])
+/// rather than queueing behind it and fetching again. The scan's `budget`
+/// bounds the background run, so a hung remote cannot leave a child behind.
 ///
 /// **`scan_within` is the one scan that can serve a seat with no loop**: its
 /// record read would otherwise re-read the tree for ever against a ref
 /// nothing ever refreshes.
 fn kick_background_fetch(cwd: &Path, default_branch: &str, budget: Duration) {
-    let Some(remote_branch) = default_branch.strip_prefix("origin/") else {
+    if !default_branch.starts_with("origin/") {
         return;
-    };
-    // The watch's inline refresh claims the same window, so a repository
-    // fetches once per window whichever path gets there first.
+    }
     if !claim_refresh_slot(cwd, Instant::now(), WATCH_REFRESH_INTERVAL) {
         return;
     }
     let cwd = cwd.to_path_buf();
-    let remote_branch = remote_branch.to_owned();
-    // **A kicked fetch may not hold the per-repository gate longer than a
-    // display read's whole budget.** It shares that gate with the read that
-    // draws a diff, and a slow kick would otherwise make forge's own fetch
-    // the reason that read answers "could not be refreshed".
-    let budget = budget.min(DISPLAY_REFRESH_BUDGET);
+    let branch = default_branch.to_owned();
     track_background_fetch(tokio::spawn(async move {
-        let key = repo_key(&cwd, budget).await;
-        fetch_base(&cwd, &remote_branch, Instant::now() + budget, &key).await;
+        let _ = refresh_base(&cwd, &branch, Some(budget)).await;
     }));
-}
-
-/// The watch's own base refresh: fetch `default_branch` unless this checkout
-/// was refreshed inside the watch's cadence (one fetch per four minutes).
-///
-/// **Nobody waits on the watch's pass**, so it is where a fetch keeps the
-/// session row's "N commits" honest while no review page is open: the scan
-/// after it reads the ref this left. Throttled per checkout, so a burst of
-/// pokes is one fetch.
-///
-/// Answers what this pass measured, which the seat's row carries: a base can
-/// move without the count or the chain moving, and that move is only news if
-/// the state rides the frame.
-pub async fn watch_refresh_base(cwd: &Path, default_branch: &str) -> Option<BaseRefresh> {
-    if !default_branch.starts_with("origin/") {
-        return None;
-    }
-    if !claim_refresh_slot(cwd, Instant::now(), WATCH_REFRESH_INTERVAL) {
-        return None;
-    }
-    Some(refresh_base_for_display(cwd, default_branch).await)
 }
 
 /// What one base refresh answered.
@@ -514,6 +713,19 @@ pub struct BaseRefresh {
     /// the content read are taken against this one sha, so a count and a file
     /// list can never describe two different refs.
     pub base_ref: Option<String>,
+    /// Why the fetch did not run, in git's own first line (or forge's words
+    /// for a child it could not start or had to bound). `None` when it ran.
+    /// The record carries this so a page can say what failed rather than only
+    /// that the base could not be checked.
+    pub error: Option<String>,
+    /// The run's own bound ended the fetch. A caller that asked for no bound
+    /// answers this by fetching again for itself, so a background kick's
+    /// budget never becomes a reader's answer.
+    pub cut: bool,
+    /// The run ended without answering - its leader panicked or was cancelled.
+    /// The state and error are a placeholder rather than a measurement, and no
+    /// scan's row carries them.
+    pub unanswered: bool,
 }
 
 /// Refresh the base a drawn branch diff is measured against, and say how
@@ -522,26 +734,125 @@ pub struct BaseRefresh {
 /// **Called by the read that draws the diff, never by a record read.** A state
 /// carried on a stored scan would be as old as that scan and could call a base
 /// current after the remote had moved on, which is the stale-diff defect
-/// itself. Bounded as a whole by [`DISPLAY_REFRESH_BUDGET`]: every step shares
-/// one deadline rather than spending a child budget of its own.
+/// itself.
+///
+/// **This waits for the fetch with no cap**, because a cap can only be a lie
+/// about a network this side does not control: a three-second bound sat below
+/// a bare SSH handshake on the maintainer's link and cut every fetch before it
+/// began. A page open may wait as long as the remote takes; the connection
+/// serves it off its own loop, so the wait blocks nothing else, and a dead
+/// link ends in an error rather than in silence. A credential prompt ends in
+/// an error too: the network child is non-interactive.
 pub async fn refresh_base_for_display(cwd: &Path, default_branch: &str) -> BaseRefresh {
-    refresh_base_within(cwd, default_branch, DISPLAY_REFRESH_BUDGET).await
+    refresh_base(cwd, default_branch, None).await
 }
 
-/// [`refresh_base_for_display`] with its budget spelled: production gives it
-/// [`DISPLAY_REFRESH_BUDGET`], and a test gives it one the machine's load
-/// cannot eat, since a budget spent starting a child is the machine's bound
-/// rather than the test's subject.
+/// [`refresh_base_for_display`] with a bound: a test gives the refresh one the
+/// machine's load cannot eat, since a budget spent starting a child is the
+/// machine's bound rather than the test's subject. Production's only bound is
+/// the kick's, which calls [`refresh_base`] with the scan's own child budget.
+#[cfg(test)]
 async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration) -> BaseRefresh {
-    let deadline = Instant::now() + budget;
-    let (state, base_ref) = if let Some(remote_branch) = default_branch.strip_prefix("origin/") {
-        let key = repo_key(cwd, remaining(deadline)).await;
-        fetch_base(cwd, remote_branch, deadline, &key).await;
+    refresh_base(cwd, default_branch, Some(budget)).await
+}
+
+/// The one refresh path. A refresh already running for this repository and
+/// base branch is **joined rather than queued behind**: one `git fetch`
+/// answers every caller waiting for that base, so a reader never pays a
+/// background kick's fetch and then a second one of its own.
+///
+/// **A caller with no bound inherits none.** A run led by the kick is bounded
+/// by the scan's child budget; a reader that joins it and gets an answer that
+/// bound produced leads an unbounded refresh of its own, because a cap it
+/// never accepted may not be the answer it draws.
+async fn refresh_base(cwd: &Path, default_branch: &str, bound: Option<Duration>) -> BaseRefresh {
+    let key = (repo_key(cwd, COMMAND_TIMEOUT).await, default_branch.to_owned());
+    let (refresh, run) =
+        refresh_once(cwd, default_branch, bound, deadline_for(bound), key.clone(), Join::Any).await;
+    // **A bound this caller never accepted may not be its answer**, and a run
+    // whose bound has already passed has nothing left to wait for: either way
+    // a caller with no bound leads a refresh of its own, in place of the run it
+    // joined and only of that one.
+    let missed = run.deadline.is_some_and(|deadline| deadline <= Instant::now());
+    let refresh = if bound.is_none() && (refresh.cut || missed) {
+        let (refresh, _) =
+            refresh_once(cwd, default_branch, None, None, key, Join::Replace(&run)).await;
+        refresh
+    } else {
+        refresh
+    };
+    remember_measurement(cwd, &refresh);
+    refresh
+}
+
+/// The deadline a run's leader works to, when it was given a bound.
+fn deadline_for(bound: Option<Duration>) -> Option<Instant> {
+    bound.map(|bound| Instant::now() + bound)
+}
+
+/// Which run a caller takes: whatever the registry holds, or a fresh one in
+/// place of the cut run it was answered by.
+enum Join<'a> {
+    Any,
+    Replace(&'a std::sync::Arc<BaseRun>),
+}
+
+/// Join (or lead) one run for `key` and answer it, with the run it answered so
+/// a caller can replace exactly that one.
+async fn refresh_once(
+    cwd: &Path,
+    default_branch: &str,
+    bound: Option<Duration>,
+    deadline: Option<Instant>,
+    key: RunKey,
+    join: Join<'_>,
+) -> (BaseRefresh, std::sync::Arc<BaseRun>) {
+    let (run, leader) = match join {
+        Join::Any => join_base_run(key, deadline),
+        Join::Replace(cut) => replace_cut_run(key, cut, deadline),
+    };
+    let refresh = if leader {
+        let mut guard = LeaderGuard::new(std::sync::Arc::clone(&run));
+        let refresh = refresh_base_owned(cwd, default_branch, bound).await;
+        guard.publish(refresh.clone());
+        refresh
+    } else {
+        run.wait().await
+    };
+    (refresh, run)
+}
+
+/// One refresh's own work: the fetch, then the state judged against the
+/// remote's tip, every step sharing `bound` when there is one.
+async fn refresh_base_owned(
+    cwd: &Path,
+    default_branch: &str,
+    bound: Option<Duration>,
+) -> BaseRefresh {
+    let deadline = bound.map(|bound| Instant::now() + bound);
+    // **The user's own ssh command wins**, whichever spelling holds it: forge
+    // sets `GIT_SSH_COMMAND` only when nothing else names one.
+    let ssh = if ssh_is_forges(cwd).await {
+        git_command::SshCommand::Forge
+    } else {
+        git_command::SshCommand::User
+    };
+    let (state, base_ref, error, cut) = if let Some(remote_branch) =
+        default_branch.strip_prefix("origin/")
+    {
+        let fetched = fetch_base(cwd, remote_branch, deadline, bound, ssh).await;
+        if fetched.error.is_none() {
+            // **The ref is fresh now.** Stamping the kick's window here is what
+            // keeps a scan seconds later from fetching the same answer again.
+            stamp_refresh_slot(cwd, Instant::now());
+        }
         // **A fetch's exit 0 is not "the ref moved".** With a remote whose
         // `remote.origin.fetch` is not the conventional one, a fetch can
         // succeed and write nothing, so the claim is made against the remote's
         // own tip rather than against the exit code.
-        state_against_tip(cwd, default_branch, remote_branch, deadline).await
+        let (state, base_ref) =
+            state_against_tip(cwd, default_branch, remote_branch, deadline, ssh).await;
+        (state, base_ref, fetched.error, fetched.cut)
     } else {
         // A local base has no ref to refresh. With an `origin` remote it can
         // still be arbitrarily behind one nobody ever fetched, and there is no
@@ -577,9 +888,33 @@ async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration)
                 BaseState::Unverified
             }
         };
-        (state, local)
+        (state, local, None, false)
     };
-    BaseRefresh { state, base_ref }
+    BaseRefresh { state, base_ref, error, cut, unanswered: false }
+}
+
+/// Whether forge builds the ssh command for this checkout's network children:
+/// true when the environment names none and the repository's own
+/// `core.sshCommand` is unset, because `GIT_SSH_COMMAND` outranks both.
+async fn ssh_is_forges(cwd: &Path) -> bool {
+    if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+        return false;
+    }
+    // **`git config --get` on a missing key EXITS 1**, which the classified
+    // reader reports as a failure, not as an empty answer: the exit code is
+    // what tells "this checkout names no command" from "git could not
+    // answer", and only the first may install forge's.
+    let mut command = git_command::tokio_git_command(cwd);
+    command.arg("-C").arg(cwd).args(["config", "--get", "core.sshCommand"]).kill_on_drop(true);
+    match child_output(command.output(), COMMAND_TIMEOUT).await {
+        // The key is set. An empty value is git's own "unset", so it is not.
+        Some(Ok(out)) if out.status.success() => out.stdout.iter().all(u8::is_ascii_whitespace),
+        // Exit 1 with nothing on stdout: no such key.
+        Some(Ok(out)) if out.status.code() == Some(1) && out.stdout.is_empty() => true,
+        // A probe that did not answer leaves the question open, and forge does
+        // not overwrite a command it could not read.
+        _ => false,
+    }
 }
 
 /// Fetch one remote-tracking branch without touching the rest of the user's
@@ -588,41 +923,33 @@ async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration)
 /// `--no-auto-gc` so a killed child leaves no maintenance daemon behind;
 /// `--no-write-fetch-head` so their `FETCH_HEAD` is not clobbered on every
 /// open; and `--quiet` so progress never rides a captured stream.
-async fn fetch_base(cwd: &Path, remote_branch: &str, deadline: Instant, key: &Path) {
-    // **One forge fetch per repository at a time.** The watch's pass and a
-    // review page's open can want the same base together - from the same
-    // checkout, or from two worktrees sharing one ref - and the second
-    // `git fetch` would be refused by the first's ref lock, a refusal this
-    // side would then log as the user's own git holding it, which is the one
-    // thing it is not.
-    let gate = fetch_gate(key);
-    let Ok(_one_at_a_time) = timeout(remaining(deadline), gate.lock()).await else {
-        tracing::debug!(
-            target: crate::logging::targets::ENV_GIT,
-            cwd = %cwd.display(),
-            event_name = "git_base_fetch_busy",
-            message = "another base fetch held this checkout past the budget",
-            outcome = "timeout",
-            branch = %remote_branch,
-        );
-        return;
-    };
+///
+/// Answers what the child did: `error` is `None` when git fetched and git's own
+/// words when it did not, and `cut` says the run's bound ended it.
+async fn fetch_base(
+    cwd: &Path,
+    remote_branch: &str,
+    deadline: Option<Instant>,
+    bound: Option<Duration>,
+    ssh: git_command::SshCommand,
+) -> Fetched {
     let refspec = format!("+refs/heads/{remote_branch}:refs/remotes/origin/{remote_branch}");
-    let mut command = git_command::tokio_git_command(cwd);
+    let mut command = git_command::network_tokio_git_command(cwd, ssh);
     command
         .arg("-C")
         .arg(cwd)
         .args(["fetch", "--no-auto-gc", "--no-write-fetch-head", "--quiet", "origin", &refspec])
         .kill_on_drop(true);
-    // **The timeout kills the child, and a fetch killed while it holds a ref
+    // **A bounded run kills the child, and a fetch killed while it holds a ref
     // lock leaves `<ref>.lock` behind.** The window is between the lock being
-    // taken and the ref renamed - microseconds - and the alternative is a
-    // hung remote keeping a child per open. A stranded lock is not cleaned up
-    // here: removing a lock another git may hold is worse than naming it,
-    // which the lock WARN below does.
-    match timeout(remaining(deadline), command.output()).await {
-        Ok(Ok(out)) if out.status.success() => {}
-        Ok(Ok(out)) => {
+    // taken and the ref renamed - microseconds - and the alternative is a hung
+    // remote keeping a child per open. A stranded lock is not cleaned up here:
+    // removing a lock another git may hold is worse than naming it, which the
+    // lock WARN below does.
+    let left = remaining(deadline);
+    match child_output(command.output(), left).await {
+        Some(Ok(out)) if out.status.success() => Fetched { error: None, cut: false },
+        Some(Ok(out)) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let first = stderr.lines().next().unwrap_or_default();
             if is_lock_failure(&stderr) {
@@ -654,8 +981,15 @@ async fn fetch_base(cwd: &Path, remote_branch: &str, deadline: Instant, key: &Pa
                     stderr = %first,
                 );
             }
+            // **Redact first, then the cap.** A cap that lands inside a
+            // credential's userinfo removes the `@` the redactor needs, and
+            // the credential would reach the record whole.
+            Fetched {
+                error: Some(clipped(&redact(&first_line(&out.stderr)), FAILURE_WORDS_CAP)),
+                cut: false,
+            }
         }
-        Ok(Err(err)) => {
+        Some(Err(err)) => {
             tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
@@ -665,35 +999,116 @@ async fn fetch_base(cwd: &Path, remote_branch: &str, deadline: Instant, key: &Pa
                 error = %err,
                 branch = %remote_branch,
             );
+            Fetched { error: Some(format!("git could not be run: {err}")), cut: false }
         }
-        Err(_) => {
+        None => {
+            // **The run's budget, not what was left of it**: a run that spent
+            // its bound before the child started would otherwise say "0s".
+            let given = bound.map(|bound| bound.as_secs_f64());
             tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
                 event_name = "git_base_fetch_timeout",
-                message = "the base fetch exceeded the display budget",
+                message = "the base fetch did not finish inside the budget it was given",
                 outcome = "timeout",
                 branch = %remote_branch,
+                budget_s = ?given,
             );
+            let words = match given {
+                Some(given) => format!("the fetch did not finish inside the {given}s it was given"),
+                // Unreachable while an unbounded child has no timeout, and the
+                // reason is still named if one ever gains a bound.
+                None => "the fetch did not finish".to_owned(),
+            };
+            Fetched { error: Some(words), cut: true }
         }
     }
+}
+
+/// What one fetch's child answered.
+struct Fetched {
+    /// Why it did not run, in git's own words; `None` when it ran.
+    error: Option<String>,
+    /// The run's own bound ended it.
+    cut: bool,
+}
+
+/// Git's own words for a failed child: the first non-empty stderr line,
+/// uncapped so the redactor can see the whole URL before anything is cut.
+fn first_line(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("git exited non-zero without saying why")
+        .to_owned()
+}
+
+/// Carried characters of git's failure line. A page draws it in one sentence
+/// beside the base note; git's own `fatal:` lines are far shorter than this,
+/// and the cap applies to the redacted line.
+const FAILURE_WORDS_CAP: usize = 200;
+
+/// Git's words with any credential a remote URL carries taken out.
+///
+/// git prints the URL it could not reach, userinfo included, and the record
+/// this feeds is re-sent on every read and drawn on a page. Everything before
+/// the `@` is the part a URL keeps its credential in, so it goes whole.
+fn redact(words: &str) -> String {
+    let mut out = String::with_capacity(words.len());
+    let mut rest = words;
+    while let Some(at) = rest.find("://") {
+        let (before, after) = rest.split_at(at + 3);
+        out.push_str(before);
+        // The authority runs to the next path separator, quote or space.
+        let end = after
+            .find(|c: char| c == '/' || c == '\'' || c == '"' || c.is_whitespace())
+            .unwrap_or(after.len());
+        let (authority, tail) = after.split_at(end);
+        match authority.rfind('@') {
+            Some(userinfo) => {
+                out.push_str("<redacted>");
+                out.push_str(&authority[userinfo..]);
+            }
+            None => out.push_str(authority),
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Whether git refused the fetch because a ref lock it needed is held - by
 /// another git in the same checkout, or by a killed child that left one.
 ///
-/// **Forge's own fetches are serialised per repository** (`fetch_gate`), so a
-/// lock refusal that reaches this check is some git this process is not
-/// holding: the user's own, another forge instance on the same repo, or a
-/// stranded lock.
+/// **Forge runs one fetch per repository and base branch** (a caller joins the
+/// run already in flight), so no second fetch of this ref is this process's:
+/// two branches of one repository take different ref locks and may run
+/// together. What reaches this check is the user's git, another forge
+/// instance on the same repo, or a stranded lock.
 fn is_lock_failure(stderr: &str) -> bool {
     stderr.contains("cannot lock ref")
         || (stderr.contains("Unable to create") && stderr.contains(".lock"))
 }
 
-/// The budget left before `deadline`, zero once spent.
-fn remaining(deadline: Instant) -> Duration {
-    deadline.saturating_duration_since(Instant::now())
+/// The budget a command with no bound is given: the shape a read a person is
+/// waiting on runs under, since a cap can only be a guess about a network this
+/// side does not control.
+const UNBOUNDED: Duration = Duration::MAX;
+
+/// The budget left before `deadline`, zero once spent and [`UNBOUNDED`] when
+/// there is no deadline at all.
+fn remaining(deadline: Option<Instant>) -> Duration {
+    deadline.map_or(UNBOUNDED, |deadline| deadline.saturating_duration_since(Instant::now()))
+}
+
+/// One child's output under `budget`; `None` when the budget ran out first and
+/// the child was killed.
+async fn child_output(
+    child: impl std::future::Future<Output = std::io::Result<std::process::Output>>,
+    budget: Duration,
+) -> Option<std::io::Result<std::process::Output>> {
+    if budget == UNBOUNDED { Some(child.await) } else { timeout(budget, child).await.ok() }
 }
 
 /// The base's state judged against the remote's own tip, with the sha the base
@@ -705,9 +1120,10 @@ async fn state_against_tip(
     cwd: &Path,
     default_branch: &str,
     remote_branch: &str,
-    deadline: Instant,
+    deadline: Option<Instant>,
+    ssh: git_command::SshCommand,
 ) -> (BaseState, Option<String>) {
-    let Some(tip) = remote_tip(cwd, remote_branch, remaining(deadline)).await else {
+    let Some(tip) = remote_tip(cwd, remote_branch, remaining(deadline), ssh).await else {
         return (BaseState::Unverified, local_tip(cwd, default_branch, remaining(deadline)).await);
     };
     let Some(local) = local_tip(cwd, default_branch, remaining(deadline)).await else {
@@ -756,12 +1172,17 @@ async fn state_against_tip(
 
 /// The remote's tip for `refs/heads/<branch>`, or `None` when it could not be
 /// asked; an empty answer (a renamed or deleted branch) is logged.
-async fn remote_tip(cwd: &Path, remote_branch: &str, budget: Duration) -> Option<String> {
+async fn remote_tip(
+    cwd: &Path,
+    remote_branch: &str,
+    budget: Duration,
+    ssh: git_command::SshCommand,
+) -> Option<String> {
     if budget.is_zero() {
         return None;
     }
     let refname = format!("refs/heads/{remote_branch}");
-    match run_git_within(cwd, &["ls-remote", "origin", &refname], budget).await {
+    match run_network_git_within(cwd, &["ls-remote", "origin", &refname], budget, ssh).await {
         GitOutput::Ok(listing) => listing.split_whitespace().next().map(str::to_owned),
         GitOutput::Empty => {
             tracing::debug!(
@@ -815,7 +1236,7 @@ enum OriginRemote {
 /// The match is the literal `origin`: it is the one remote a base refresh
 /// knows how to fetch, so a repository whose only remote is named otherwise
 /// still reads as having nothing this read could refresh.
-async fn origin_remote(cwd: &Path, deadline: Instant) -> OriginRemote {
+async fn origin_remote(cwd: &Path, deadline: Option<Instant>) -> OriginRemote {
     if remaining(deadline).is_zero() {
         return OriginRemote::Unanswered("budget_spent");
     }
@@ -845,7 +1266,11 @@ async fn origin_remote(cwd: &Path, deadline: Instant) -> OriginRemote {
 /// that does can be behind that remote exactly as an `origin/...` can, and
 /// nothing was fetched for it here. `None` when git could not answer, which
 /// the caller treats as unverified rather than as "nothing to lag behind".
-async fn local_base_tracks_upstream(cwd: &Path, base: &str, deadline: Instant) -> Option<bool> {
+async fn local_base_tracks_upstream(
+    cwd: &Path,
+    base: &str,
+    deadline: Option<Instant>,
+) -> Option<bool> {
     if remaining(deadline).is_zero() {
         return None;
     }
@@ -1817,6 +2242,19 @@ pub(super) enum GitOutput {
 /// `fatal:` lines is more than enough context.
 const STDERR_LOG_CAP: usize = 1024;
 
+/// `text` cut to `cap` bytes without splitting a character: git's stderr is
+/// arbitrary bytes, and a slice at a byte offset inside one panics.
+fn clipped(text: &str, cap: usize) -> String {
+    if text.len() <= cap {
+        return text.to_owned();
+    }
+    let mut end = cap;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
 /// Spawn `git <args>` against `cwd`, await with a per-command
 /// timeout, return classified output. Failures log DEBUG with the
 /// captured stderr, so triage of "the GIT section shows nothing"
@@ -1837,10 +2275,33 @@ pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
 pub(super) async fn run_git_within(cwd: &Path, args: &[&str], budget: Duration) -> GitOutput {
     let mut command = git_command::tokio_git_command(cwd);
     command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
+    classify_git(cwd, args, command, budget).await
+}
+
+/// [`run_git_within`] for a child that may reach a remote: no prompt path and
+/// a dead link bounded, the same classification and log either way.
+pub(super) async fn run_network_git_within(
+    cwd: &Path,
+    args: &[&str],
+    budget: Duration,
+    ssh: git_command::SshCommand,
+) -> GitOutput {
+    let mut command = git_command::network_tokio_git_command(cwd, ssh);
+    command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
+    classify_git(cwd, args, command, budget).await
+}
+
+/// One git child's output, classified, with its failures logged.
+async fn classify_git(
+    cwd: &Path,
+    args: &[&str],
+    mut command: tokio::process::Command,
+    budget: Duration,
+) -> GitOutput {
     let fut = command.output();
-    let output = match timeout(budget, fut).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(err)) => {
+    let output = match child_output(fut, budget).await {
+        Some(Ok(out)) => out,
+        Some(Err(err)) => {
             tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
@@ -1852,7 +2313,7 @@ pub(super) async fn run_git_within(cwd: &Path, args: &[&str], budget: Duration) 
             );
             return GitOutput::Failed;
         }
-        Err(_) => {
+        None => {
             tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
@@ -1874,11 +2335,7 @@ pub(super) async fn run_git_within(cwd: &Path, args: &[&str], budget: Duration) 
         // `origin/HEAD` is absent by design in a repo whose remote was
         // added rather than cloned, which is why the level is DEBUG.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr_truncated = if stderr.len() > STDERR_LOG_CAP {
-            format!("{}…", &stderr[..STDERR_LOG_CAP])
-        } else {
-            stderr.into_owned()
-        };
+        let stderr_truncated = clipped(&stderr, STDERR_LOG_CAP);
         tracing::debug!(
             target: crate::logging::targets::ENV_GIT,
             cwd = %cwd.display(),
@@ -1938,9 +2395,9 @@ async fn run_gh<S: std::hash::BuildHasher>(
     let mut command = git_command::gh_tokio_command(env);
     command.current_dir(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
-    let output = match timeout(budget, fut).await {
-        Ok(Ok(out)) => out,
-        Ok(Err(err)) => {
+    let output = match child_output(fut, budget).await {
+        Some(Ok(out)) => out,
+        Some(Err(err)) => {
             tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
@@ -1952,7 +2409,7 @@ async fn run_gh<S: std::hash::BuildHasher>(
             );
             return GitOutput::Failed;
         }
-        Err(_) => {
+        None => {
             tracing::debug!(
                 target: crate::logging::targets::ENV_GIT,
                 cwd = %cwd.display(),
@@ -1987,11 +2444,7 @@ async fn run_gh<S: std::hash::BuildHasher>(
         // remote (1), API error (1). All collapse to "no PR" for
         // the renderer, and the log records stderr at DEBUG so triage
         // can still tell which case fired.
-        let stderr_truncated = if stderr.len() > STDERR_LOG_CAP {
-            format!("{}…", &stderr[..STDERR_LOG_CAP])
-        } else {
-            stderr.into_owned()
-        };
+        let stderr_truncated = clipped(&stderr, STDERR_LOG_CAP);
         tracing::debug!(
             target: crate::logging::targets::ENV_GIT,
             cwd = %cwd.display(),
@@ -3725,6 +4178,7 @@ mod tests {
             &snapshot,
             Some(BaseState::Current),
             Some(&stale),
+            None,
             TEST_GIT_BUDGET,
         )
         .await;
@@ -3739,16 +4193,18 @@ mod tests {
         );
     }
 
-    /// **A watch refresh is throttled to one a window.** Without the claim a
-    /// dirty tree fetches on every pass.
+    /// **A refresh that just ran leaves the kick nothing to do.** Stamping the
+    /// window after a successful fetch is what keeps a scan seconds later from
+    /// fetching the same answer again.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_second_watch_refresh_inside_the_window_does_not_fetch() {
+    async fn a_refresh_stamps_the_kicks_window() {
         let (_upstream, dir) = stale_base_fixture();
 
-        assert!(watch_refresh_base(dir.path(), "origin/main").await.is_some(), "the first pass");
+        let refresh = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        assert_eq!(refresh.state, BaseState::Current, "the refresh fetched");
         assert!(
-            watch_refresh_base(dir.path(), "origin/main").await.is_none(),
-            "a second pass inside the window does not fetch",
+            !claim_refresh_slot(dir.path(), Instant::now(), WATCH_REFRESH_INTERVAL),
+            "and a kick inside the window it stamped does not fetch again",
         );
     }
 
@@ -3804,11 +4260,11 @@ mod tests {
         );
     }
 
-    /// **The fetch gate is keyed on the repository, not the checkout.** Two
-    /// linked worktrees share `refs/remotes/*`, so a gate keyed per cwd would
-    /// let both fetch at once and misattribute the loser's lock refusal.
+    /// **One run per repository, not per checkout.** Two linked worktrees share
+    /// `refs/remotes/*`, so a worktree's caller joins its checkout's refresh
+    /// rather than fetching the same ref again.
     #[tokio::test(flavor = "current_thread")]
-    async fn linked_worktrees_share_one_repository_gate() {
+    async fn linked_worktrees_join_one_repository_run() {
         let dir = tempfile::tempdir().expect("tempdir");
         init_repo(&dir, "main");
         write_file(&dir, "base.txt", "base\n");
@@ -3820,10 +4276,11 @@ mod tests {
         let main_key = repo_key(dir.path(), TEST_GIT_BUDGET).await;
         let linked_key = repo_key(&linked, TEST_GIT_BUDGET).await;
         assert_eq!(main_key, linked_key, "a worktree and its checkout share one ref store");
-        assert!(
-            std::sync::Arc::ptr_eq(&fetch_gate(&main_key), &fetch_gate(&linked_key)),
-            "so both fetches queue on one gate",
-        );
+        let (first, leader) = join_base_run((main_key, "origin/main".to_owned()), None);
+        assert!(leader, "the first caller starts the run");
+        let (joined, leader) = join_base_run((linked_key, "origin/main".to_owned()), None);
+        assert!(!leader, "and the worktree's caller joins it rather than starting a second");
+        assert!(std::sync::Arc::ptr_eq(&first, &joined), "the one run answers both");
     }
 
     /// A ref lock held in the user's own checkout keeps the base stale, and
@@ -3898,27 +4355,6 @@ mod tests {
         );
     }
 
-    /// **The tip check shares the display deadline.** The fetch fails at once
-    /// and `ls-remote` stalls far past the budget: the refresh answers rather
-    /// than spending a child budget of its own on the stalled command.
-    #[tokio::test(flavor = "current_thread")]
-    async fn the_refresh_shares_one_deadline_with_the_tip_check() {
-        let (_upstream, dir) = stale_base_fixture();
-        let bin = tempfile::tempdir().expect("wrapper dir");
-        fail_fetch_stall_tip_at(dir.path(), bin.path(), 12);
-
-        let started = Instant::now();
-        let refresh = refresh_base_for_display(dir.path(), "origin/main").await;
-        let elapsed = started.elapsed();
-        crate::env::git_command::clear_git_point(dir.path());
-
-        assert_eq!(refresh.state, BaseState::Unverified, "a tip that cannot answer is unverified");
-        assert!(
-            elapsed < Duration::from_secs(6),
-            "the whole refresh is bounded by DISPLAY_REFRESH_BUDGET: {elapsed:?}",
-        );
-    }
-
     /// A base the remote has been rewritten past is not behind it, and not
     /// current either: the refs disagree while the remote has nothing the base
     /// lacks, so the state is unverified rather than a false `behind` or
@@ -3964,15 +4400,17 @@ mod tests {
         ));
     }
 
-    /// A base the refresh cannot reach inside the display budget is labelled,
-    /// not waited on for the scan's own child budget: every git child stalls
-    /// far longer than the display budget, and the refresh still returns well
-    /// inside the scan's 10 s child budget.
+    /// **The drawing read waits for its fetch, however long it takes.** A
+    /// fetch slower than any bound the old code carried still lands, and the
+    /// answer is the refreshed base rather than a labelled one. The sleep is
+    /// just past the three-second budget the drawing read used to carry; a
+    /// bound that came back
+    /// would cut this fetch and answer unverified.
     #[tokio::test(flavor = "current_thread")]
-    async fn the_display_refresh_is_bounded_by_its_own_budget() {
-        let (_upstream, dir) = stale_base_fixture();
+    async fn the_drawing_read_waits_for_a_slow_fetch() {
+        let (upstream, dir) = stale_base_fixture();
         let bin = tempfile::tempdir().expect("wrapper dir");
-        stall_git_for(dir.path(), bin.path(), 12);
+        slow_fetch_at(dir.path(), bin.path(), 3.2);
 
         let started = Instant::now();
         let base = refresh_base_for_display(dir.path(), "origin/main").await;
@@ -3981,13 +4419,18 @@ mod tests {
 
         assert_eq!(
             base.state,
-            BaseState::Unverified,
-            "a refresh that cannot answer in time is labelled",
+            BaseState::Current,
+            "the fetch ran to completion rather than being cut: {base:?}",
+        );
+        assert!(base.error.is_none(), "and nothing failed");
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            rev_parse(upstream.path(), "main"),
+            "so the ref the diff is measured against moved",
         );
         assert!(
-            elapsed < Duration::from_secs(6),
-            "the refresh is bounded by DISPLAY_REFRESH_BUDGET, not the scan's 10 s child budget: \
-             {elapsed:?}",
+            elapsed >= Duration::from_millis(3_200),
+            "the read really waited for it: {elapsed:?}",
         );
     }
 
@@ -4155,24 +4598,438 @@ mod tests {
         assert_ne!(before, rev_parse(upstream.path(), "main"), "precondition: the base is stale");
     }
 
-    /// **The watch's own refresh is where the fetch is paid.** Nobody waits on
-    /// it, so the session row's "N commits" keeps moving even with no review
-    /// page open, and the scan after it reads the ref it left.
+    /// **The scan kicks its refresh and does not wait on it.** The fetch is
+    /// held open by the fixture, so a scan that awaited it could not answer:
+    /// the bound below is the failure, not a performance claim.
     #[tokio::test(flavor = "current_thread")]
-    async fn the_watch_refresh_moves_the_base_for_the_next_scan() {
+    async fn a_scan_kicks_its_refresh_and_the_measurement_lands_for_the_next_one() {
         let (upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
 
-        watch_refresh_base(dir.path(), "origin/main").await;
-        let snap = scan_in_test(dir.path(), &HashMap::new(), None).await;
+        // The bound is a failure instead of a hang, not a performance claim:
+        // the fetch is held, so a scan that awaited it could not answer at all.
+        // It sits above one child's own budget, because a machine that holds a
+        // child to its bound must not read as a scan that waited.
+        let scanned =
+            timeout(Duration::from_secs(90), scan_in_test(dir.path(), &HashMap::new(), None))
+                .await
+                .expect("the scan answered while its fetch was still held");
+        let _ = scanned;
+        wait_for(|| held.starts() == 1, "the kicked fetch to start").await;
+        assert!(held.open(), "the fetch the scan kicked is provably still in flight");
 
+        held.release();
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
         assert_eq!(
             rev_parse(dir.path(), "refs/remotes/origin/main"),
             rev_parse(upstream.path(), "main"),
-            "the watch's refresh fetched the base",
+            "and the fetch it kicked moved the base to the remote's tip",
         );
-        let LayerState::Populated(ahead) = &snap.branch_ahead else {
-            panic!("the branch is one commit ahead of the refreshed base");
+        assert_eq!(
+            last_base_measurement(dir.path()),
+            Some(BaseState::Current),
+            "and the state it measured is what the row carries next",
+        );
+    }
+
+    /// **A reader joins the fetch already running rather than starting a
+    /// second.** The fetch is held open until the test has seen the reader's
+    /// own `rev-parse` reach the registry, so the join is not a race against a
+    /// fast child.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_reader_joins_a_refresh_already_running() {
+        let (upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
+
+        // The kick's own budget outlasts anything this test waits for: a bound
+        // that expired mid-test would cut the fetch and the reader would
+        // rightly lead its own.
+        kick_background_fetch(dir.path(), "origin/main", TEST_GIT_BUDGET);
+        wait_for(|| held.starts() == 1, "the kicked fetch to start").await;
+        let probes_before = held.probes();
+
+        let reader = tokio::spawn({
+            let dir = dir.path().to_path_buf();
+            async move { refresh_base_for_display(&dir, "origin/main").await }
+        });
+        // The reader's own key probe is what proves it reached the registry
+        // while the fetch was still open.
+        wait_for(|| held.probes() > probes_before, "the reader to reach the registry").await;
+        held.release();
+        let refresh = timeout(Duration::from_secs(5), reader)
+            .await
+            .expect("the read answered")
+            .expect("the read task finished");
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(held.starts(), 1, "one fetch answered both");
+        assert_eq!(refresh.state, BaseState::Current, "and its answer is the refreshed base");
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            rev_parse(upstream.path(), "main"),
+            "with the base at the remote's tip",
+        );
+    }
+
+    /// **A failed fetch says what git said.** The page names the cause rather
+    /// than only that the base could not be checked.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_fetch_carries_gits_own_words() {
+        let (_upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        fail_fetch_at(dir.path(), bin.path());
+
+        let refresh = refresh_base_for_display(dir.path(), "origin/main").await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(
+            refresh.error.as_deref(),
+            Some("fatal: forced fetch failure"),
+            "the record carries git's first line",
+        );
+        assert_eq!(
+            refresh.state,
+            BaseState::Behind { behind: 1 },
+            "and the remote could still be asked, so the lag is named",
+        );
+        assert!(!refresh.cut, "a fetch that failed for its own reason was not cut by a bound");
+    }
+
+    /// **A run's answer is kept for a caller that arrives after it**, even
+    /// with no receiver subscribed when it was published: `send` would throw
+    /// it away and leave that caller waiting for the process's life.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_published_answer_waits_for_a_caller_that_arrives_after_it() {
+        let key = (PathBuf::from("/an-answer-kept"), "origin/main".to_owned());
+        let (run, leader) = join_base_run(key.clone(), None);
+        assert!(leader, "the test leads");
+        run.publish(BaseRefresh {
+            state: BaseState::Current,
+            base_ref: Some("abc123".to_owned()),
+            error: None,
+            cut: false,
+            unanswered: false,
+        });
+        // The leader's own `Arc` is still here, exactly as a caller mid-flight
+        // would hold it, so the registry entry outlives the publish.
+        let (joined, leader) = join_base_run(key, None);
+        assert!(!leader, "the late caller joins the run");
+        let answer = timeout(Duration::from_secs(2), joined.wait())
+            .await
+            .expect("the published answer is not thrown away");
+        assert_eq!(answer.base_ref.as_deref(), Some("abc123"));
+    }
+
+    /// **A leader that ends without answering wakes its waiters.** A dropped
+    /// or panicked leader must not leave a joiner waiting for ever.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cancelled_leader_answers_its_waiters() {
+        let (upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
+
+        let leader = tokio::spawn({
+            let dir = dir.path().to_path_buf();
+            async move { refresh_base_for_display(&dir, "origin/main").await }
+        });
+        wait_for(|| held.starts() == 1, "the leader's fetch to start").await;
+        let follower = tokio::spawn({
+            let dir = dir.path().to_path_buf();
+            async move { refresh_base_for_display(&dir, "origin/main").await }
+        });
+        wait_for(|| held.probes() >= 2, "the follower to reach the registry").await;
+        // Its key probe is followed by the join, a few microseconds later; this
+        // settle only puts the abort after it, and the verdict never depends on
+        // the length of the wait.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        leader.abort();
+
+        let answer = timeout(Duration::from_secs(5), follower)
+            .await
+            .expect("the follower was answered")
+            .expect("the follower's task finished");
+        held.release();
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
+        let _ = upstream;
+        assert!(
+            answer.error.as_deref().is_some_and(|words| words.contains("without an answer")),
+            "a leader that ended unanswered is named: {answer:?}",
+        );
+        assert!(
+            last_base_measurement(dir.path()).is_none(),
+            "and a placeholder state is not stored as the checkout's measurement",
+        );
+    }
+
+    /// **A reader never inherits a tighter bound.** A run the kick led is cut
+    /// by the scan's budget; a caller with no bound leads its own refresh
+    /// instead of answering the cut.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_bound_less_reader_leads_its_own_when_the_run_it_joined_was_cut() {
+        let (upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
+
+        // The kick leads with a bound far shorter than the held fetch.
+        // Long enough that the held fetch always starts before the bound cuts
+        // it, short enough that the cut still happens well inside the test.
+        kick_background_fetch(dir.path(), "origin/main", Duration::from_secs(5));
+        wait_for(|| held.starts() == 1, "the kicked fetch to start").await;
+        let reader = tokio::spawn({
+            let dir = dir.path().to_path_buf();
+            async move { refresh_base_for_display(&dir, "origin/main").await }
+        });
+        wait_for(|| held.probes() >= 2, "the reader to reach the registry").await;
+        // The kick's child is killed at its bound; the reader, which asked for
+        // none, leads its own fetch, which is held too.
+        wait_for(|| held.starts() >= 2, "the reader's own fetch to start").await;
+        held.release();
+        let refresh = timeout(Duration::from_secs(5), reader)
+            .await
+            .expect("the read answered")
+            .expect("the read task finished");
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(held.starts(), 2, "the cut run and the reader's own");
+        assert_eq!(refresh.state, BaseState::Current, "the reader drew the refreshed base");
+        assert!(refresh.error.is_none(), "and no bound it never accepted: {refresh:?}");
+        assert!(!refresh.cut);
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            rev_parse(upstream.path(), "main"),
+            "with the base at the remote's tip",
+        );
+    }
+
+    /// **A burst of readers after one cut fetch costs one more fetch, not one
+    /// each.** A reader replaces the run it was answered by only while that run
+    /// is still the registered one; the rest join the refresh the first leads.
+    #[tokio::test(flavor = "current_thread")]
+    async fn readers_after_one_cut_fetch_share_the_refresh_they_lead() {
+        let (upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
+        // Long enough that the held fetch always starts before the bound cuts
+        // it, short enough that the cut still happens well inside the test.
+        kick_background_fetch(dir.path(), "origin/main", Duration::from_secs(5));
+        wait_for(|| held.starts() == 1, "the kicked fetch to start").await;
+
+        let mut readers = Vec::new();
+        for _ in 0..3 {
+            let dir = dir.path().to_path_buf();
+            readers.push(tokio::spawn(async move {
+                refresh_base_for_display(&dir, "origin/main").await
+            }));
+        }
+        // The first of them leads the replacement fetch, which the wrapper
+        // holds; the rest can only join it.
+        wait_for(|| held.starts() >= 2, "the first reader's own fetch to start").await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(held.starts(), 2, "one cut fetch and one replacement, not one per reader");
+
+        held.release();
+        for reader in readers {
+            let read = timeout(Duration::from_secs(5), reader)
+                .await
+                .expect("the read answered")
+                .expect("the read task finished");
+            assert_eq!(read.state, BaseState::Current, "every reader drew the refreshed base");
+            assert!(!read.cut && !read.unanswered);
+        }
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            rev_parse(upstream.path(), "main"),
+            "with the base at the remote's tip",
+        );
+    }
+
+    /// **The timeout words carry the run's budget**, not what was left of it:
+    /// a run that spent its bound before the child started would say "0s".
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cut_fetch_names_the_budget_it_was_given() {
+        let (_upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
+        let bound = Duration::from_millis(300);
+
+        let refresh = refresh_base_within(dir.path(), "origin/main", bound).await;
+        held.release();
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert!(refresh.cut, "the run's bound ended the fetch");
+        assert_eq!(
+            refresh.error.as_deref(),
+            Some("the fetch did not finish inside the 0.3s it was given"),
+            "the run's own budget, not the nothing left of it",
+        );
+    }
+
+    /// **Two scans inside one window cost one fetch.** The throttle the kick
+    /// carries is what keeps a tree's every pass from reaching the network.
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_scans_in_one_window_cost_one_fetch() {
+        let (_upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let counted = bin.path().join("fetches");
+        let at = counted.display();
+        let counting = format!("echo start >> '{at}'; exec git \"$@\"");
+        write_wrapper(dir.path(), bin.path(), "counting-git", &[], &counting);
+        let fetches = || {
+            std::fs::read_to_string(&counted).map(|text| text.lines().count()).unwrap_or_default()
         };
-        assert_eq!(ahead.commit_count, 1, "and the next scan reads the branch's own commit");
+
+        let _ = scan_in_test(dir.path(), &HashMap::new(), None).await;
+        let _ = settle_background_fetches().await;
+        let _ = scan_in_test(dir.path(), &HashMap::new(), None).await;
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(fetches(), 1, "the second scan's kick is throttled by the first");
+    }
+
+    /// **A checkout that names no ssh command is forge's to bound.** The
+    /// missing key exits 1, and the classifier reads that as "unset" rather
+    /// than as a probe that failed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_checkout_that_names_no_ssh_command_gets_forges() {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        init_repo(&dir, "main");
+        without_machine_config_at(dir.path(), bin.path());
+
+        assert!(ssh_is_forges(dir.path()).await, "an ordinary checkout is forge's to bound");
+        crate::env::git_command::clear_git_point(dir.path());
+    }
+
+    /// **And one that names its own is kept**, whichever spelling: forge sets
+    /// `GIT_SSH_COMMAND` only when nothing else names one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_checkouts_own_ssh_command_is_kept() {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        init_repo(&dir, "main");
+        git_at(dir.path(), &["config", "core.sshCommand", "/bin/true"]);
+        without_machine_config_at(dir.path(), bin.path());
+
+        assert!(!ssh_is_forges(dir.path()).await, "the checkout's command governs");
+        crate::env::git_command::clear_git_point(dir.path());
+    }
+
+    /// **The classifier's answer reaches the child**: the fetch itself carries
+    /// forge's bounded command on a checkout that names none, and nothing at
+    /// all over one that names its own. The wrapper records the environment it
+    /// was given, so this is the wiring and not the constructor alone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_fetch_carries_forges_ssh_command_only_when_the_checkout_names_none() {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+            return;
+        }
+        let (_upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let marker = bin.path().join("ssh-env");
+        let at = marker.display();
+        let capturing = format!(
+            "echo \"ssh=${{GIT_SSH_COMMAND:-none}}\" >> '{at}'; \
+             {ISOLATED_GIT_CONFIG} exec git \"$@\""
+        );
+        write_wrapper(dir.path(), bin.path(), "env-git", &[], &capturing);
+
+        let first = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        git_at(dir.path(), &["config", "core.sshCommand", "/bin/true"]);
+        let second = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(first.state, BaseState::Current);
+        assert_eq!(second.state, BaseState::Current);
+        let seen = std::fs::read_to_string(&marker).expect("the wrapper's record");
+        let lines: Vec<&str> = seen.lines().collect();
+        assert!(
+            lines.first().is_some_and(|line| line.contains("ConnectTimeout=15")),
+            "forge's bound is on the fetch of a checkout that names none: {seen:?}",
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("ssh=none"),
+            "and nothing is installed over the checkout's own command: {seen:?}",
+        );
+    }
+
+    /// **Git's words lose any credential a remote URL carries**: the record is
+    /// re-sent on every read and drawn on a page.
+    #[test]
+    fn a_remote_url_loses_its_credential_in_the_words_a_page_draws() {
+        assert_eq!(
+            redact(
+                "fatal: unable to access 'https://user:s3cret@host.example/x.git/': Could not \
+                 resolve host"
+            ),
+            "fatal: unable to access 'https://<redacted>@host.example/x.git/': Could not resolve \
+             host",
+        );
+        assert_eq!(
+            redact("fatal: could not read from 'https://ghp_token@host.example/x'"),
+            "fatal: could not read from 'https://<redacted>@host.example/x'",
+        );
+        assert_eq!(redact("fatal: no url here"), "fatal: no url here");
+        assert_eq!(
+            redact("fatal: 'https://host.example:8443/x' refused"),
+            "fatal: 'https://host.example:8443/x' refused",
+            "a port is not a credential",
+        );
+    }
+
+    /// **The credential goes before the cap does.** Applied first, the cap
+    /// lands inside the userinfo and takes the `@` the redactor needs with it,
+    /// so the head of the password reaches the record - and every page that
+    /// draws it. A redaction case under 200 characters cannot tell the two
+    /// orders apart; this one puts the cap inside the password.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_fetchs_credential_goes_before_the_words_are_capped() {
+        let (_upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let refused = format!(
+            "printf '%s\\n' \"fatal: {}https://user:SECRETSECRET@host.example/x: {}\" >&2; exit 1",
+            "x".repeat(170),
+            "y".repeat(300),
+        );
+        write_wrapper(dir.path(), bin.path(), "credential-git", &[], &refused);
+
+        let refresh = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        let words = refresh.error.expect("the fetch failed");
+        assert!(
+            !words.contains("SECRET"),
+            "the credential reached the words a page draws: {words:?}",
+        );
+        assert!(
+            words.contains("<redacted>"),
+            "and the words still say the URL carried one: {words:?}",
+        );
+    }
+
+    /// **The stderr clip cuts on a character boundary**: git's stderr is
+    /// arbitrary bytes and a byte slice inside one panics mid-refresh.
+    #[test]
+    fn the_stderr_clip_cuts_on_a_character_boundary() {
+        let text = format!("{}é", "a".repeat(STDERR_LOG_CAP - 1));
+        let out = clipped(&text, STDERR_LOG_CAP);
+        assert!(out.ends_with('…'), "the clip marks itself: {out:?}");
+        assert!(!out.contains('é'), "the character the cap landed inside is dropped, not split");
     }
 }

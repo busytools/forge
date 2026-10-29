@@ -138,7 +138,7 @@ pub struct WorkSnapshot {
     /// directory outside a repository is a fact about the path.
     pub cwd: PathBuf,
     pub read_at: Instant,
-    /// What the seat's last watch refresh measured for the base, carried
+    /// What the checkout's last completed base refresh measured, carried
     /// across scans that do not refresh. The row draws it, so a base that
     /// moved without the count moving is still a frame.
     pub base: Option<BaseState>,
@@ -150,11 +150,12 @@ pub const SNAPSHOT_STALENESS: Duration = Duration::from_secs(10);
 
 /// How long a drawing read waits for a scan already in flight.
 ///
-/// The seat's gate is held across the watch's whole pass - its PR lookup and
-/// its base refresh included - so a review page's read that queued behind one
-/// would wait the watch's work rather than its own. Past this bound the read
-/// is refused, and it re-reads the tree locally against the base it refreshed:
-/// the store may predate that base.
+/// The seat's gate is held across the watch's whole pass - its PR lookup
+/// included - so a review page's read that queued behind one would wait the
+/// watch's work rather than its own. The base fetch is not in that pass: a
+/// scan kicks it and never waits. Past this bound the read is refused, and it
+/// re-reads the tree locally against the base it refreshed: the store may
+/// predate that base.
 pub const PINNED_GATE_WAIT: Duration = Duration::from_secs(3);
 
 /// A shorter gate wait for a test, in milliseconds; `0` restores production's.
@@ -765,21 +766,14 @@ impl Workspace {
             let Some(cwd) = self.cwd_for_session(slot) else {
                 return Err(format!("{} has no directory to read", slot.display()));
             };
-            // **The watch's pass is where the base fetch is paid.** Nobody
-            // waits on it, so the row it pushes is computed from a ref this
-            // refreshed; a record read never comes here with `Fetch` except a
-            // sessionless seat's fallback, which has no store, no loop and
-            // nothing to keep fresh.
-            let mut measured = None;
-            if pr == PrRefresh::Fetch
-                && let Some(default) =
-                    held.as_ref().and_then(|held| held.diff.default_branch.as_deref())
-                && held.as_ref().is_some_and(|held| held.diff.branch_ahead.is_populated())
-            {
-                measured = forge_agent::env::git_diff::watch_refresh_base(Path::new(&cwd), default)
-                    .await
-                    .map(|refresh| refresh.state);
-            }
+            // **The watch's pass never waits on the base fetch.** The scan
+            // kicks a throttled background refresh (nobody reads its answer),
+            // and the state it measured rides the row on the next pass: a
+            // base can move without the count or the chain moving, and that
+            // move is only news if the state reaches the frame. A record read
+            // never comes here with `Fetch` except a sessionless seat's
+            // fallback, which has no store, no loop and nothing to keep fresh.
+            let measured = forge_agent::env::git_diff::last_base_measurement(Path::new(&cwd));
             return Ok(self
                 .scan_work_at_with_base(slot, Path::new(&cwd), pr, None, measured, false, force_pr)
                 .await);
@@ -831,8 +825,8 @@ impl Workspace {
     /// layer is computed against `base` (a sha a drawing read resolved)
     /// rather than the ref's name.
     ///
-    /// `measured` is what a watch pass just refreshed the base to; `None`
-    /// keeps the state the store last measured, so a scan that did not
+    /// `measured` is what the checkout's last completed base refresh measured;
+    /// `None` keeps the state the store last carried, so a scan that did not
     /// refresh does not erase it. `quiet` suppresses the background kick on a
     /// `Fetch` scan.
     async fn scan_work_at_with_base(
@@ -907,10 +901,11 @@ impl Workspace {
             Some(gate) => {
                 // **A drawing read waits for a scan, but not for ever.** The
                 // gate is held across the watch's whole scan - its PR lookup
-                // and its base refresh included - and a reader that queued
-                // behind that would spend the page's open on a pass it never
-                // asked for. Past the bound the read is refused and re-reads
-                // locally against the base it refreshed.
+                // included, and never its base fetch, which the scan kicks -
+                // and a reader that queued behind that would spend the page's
+                // open on a pass it never asked for. Past the bound the read
+                // is refused and re-reads locally against the base it
+                // refreshed.
                 let Ok(held) = tokio::time::timeout(wait, gate.lock()).await else {
                     // DEBUG: the fallback is the design working, not a fault -
                     // the read answers a correct scan either way, one bound
@@ -2052,6 +2047,79 @@ provider = "anthropic"
             git_work_view(&inherited.diff, inherited.base).base,
             Some(BaseState::Behind { behind: 2 }),
             "so the row a view draws says what the base is",
+        );
+    }
+
+    /// **A scan kicks its base refresh and never waits on it.** The state the
+    /// kicked fetch measured is read from the checkout's last completed
+    /// refresh, so a base-only move still reaches the row a later scan pushes.
+    #[tokio::test]
+    async fn a_kicked_refresh_reaches_the_next_scans_row() {
+        let upstream = tempfile::tempdir().expect("a bare remote");
+        git(upstream.path(), &["init", "-q", "--bare"]);
+        let dir = a_repo();
+        let repo = dir.path();
+        let rev = |at: &Path, what: &str| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(at)
+                .args(["rev-parse", what])
+                .output()
+                .expect("run git");
+            assert!(out.status.success(), "rev-parse {what} at {}", at.display());
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        git(repo, &["remote", "add", "origin", &upstream.path().to_string_lossy()]);
+        git(repo, &["push", "-q", "-u", "origin", "main"]);
+        let base = rev(repo, "HEAD");
+        std::fs::write(repo.join("upstream.txt"), "upstream").expect("write");
+        git(repo, &["add", "."]);
+        git(repo, &["commit", "-qm", "upstream"]);
+        git(repo, &["push", "-q", "origin", "main"]);
+        git(repo, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(repo.join("feat.txt"), "feat").expect("write");
+        git(repo, &["add", "."]);
+        git(repo, &["commit", "-qm", "feat"]);
+        // The tracking ref lags the remote, so the scan's kick has work to do.
+        git(repo, &["update-ref", "refs/remotes/origin/main", &base]);
+        git(repo, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+
+        let (workspace, _updates, _config) = a_workspace(repo);
+        let seat = seat();
+        let _first = workspace
+            .scan_work_if_stale(&seat, false, PrRefresh::Fetch)
+            .await
+            .expect("the seat reads its tree");
+
+        // The wait is for the kicked fetch to finish; generous because a
+        // loaded machine schedules the task late and the assertion below says
+        // whether it ever ran.
+        let mut waited = Duration::ZERO;
+        while forge_agent::env::git_diff::last_base_measurement(repo).is_none()
+            && waited < Duration::from_secs(30)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            waited += Duration::from_millis(20);
+        }
+        assert_eq!(
+            forge_agent::env::git_diff::last_base_measurement(repo),
+            Some(BaseState::Current),
+            "the kicked fetch measured a current base",
+        );
+
+        let next = workspace
+            .scan_work_if_stale(&seat, true, PrRefresh::Fetch)
+            .await
+            .expect("the moved tree is read");
+        assert_eq!(
+            next.base,
+            Some(BaseState::Current),
+            "and the next scan's row carries what the kick measured",
+        );
+        assert_eq!(
+            rev(repo, "refs/remotes/origin/main"),
+            rev(upstream.path(), "main"),
+            "because the kick moved the ref the row describes",
         );
     }
 

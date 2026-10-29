@@ -171,6 +171,10 @@ pub mod wire;
 /// client reads the old name as a fallback, so a v15 server beside it still
 /// stands the box down; the bump is what tells an old client its server has
 /// moved. `baselines/socket/15/` is the record a v15 server emitted.
+///
+/// **Additive fields do not bump.** `diff.base_error` is one, carried on the
+/// v16-era record: a client older than the field draws the vaguer line it
+/// always drew, and nothing it sends changes.
 pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
