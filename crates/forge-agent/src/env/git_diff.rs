@@ -4306,7 +4306,7 @@ mod tests {
             elapsed < Duration::from_secs(2),
             "the scan answers without waiting on its fetch: {elapsed:?}",
         );
-        assert_eq!(settle_background_fetches().await, 1, "and the fetch it kicked was in flight",);
+        assert_eq!(settle_background_fetches().await, 1, "and the fetch it kicked was in flight");
         assert_eq!(
             rev_parse(dir.path(), "refs/remotes/origin/main"),
             rev_parse(upstream.path(), "main"),
@@ -4327,8 +4327,8 @@ mod tests {
         let (upstream, dir) = stale_base_fixture();
         let bin = tempfile::tempdir().expect("wrapper dir");
         let counted = bin.path().join("fetches");
-        let counting =
-            format!("echo start >> '{}'; /bin/sleep 0.6; exec git \"$@\"", counted.display(),);
+        let at = counted.display();
+        let counting = format!("echo start >> '{at}'; /bin/sleep 0.6; exec git \"$@\"");
         write_wrapper(dir.path(), bin.path(), "counting-git", &[], &counting);
         let fetches = || {
             std::fs::read_to_string(&counted).map(|text| text.lines().count()).unwrap_or_default()
