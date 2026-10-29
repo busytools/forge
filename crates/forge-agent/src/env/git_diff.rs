@@ -103,13 +103,7 @@ pub(super) fn stall_git_for(dir: &std::path::Path, bin: &std::path::Path, secs: 
 /// the real one: the shape a remote slower than any fixed bound produces.
 #[cfg(test)]
 pub(super) fn slow_fetch_at(dir: &std::path::Path, bin: &std::path::Path, secs: f64) {
-    write_wrapper(
-        dir,
-        bin,
-        "slow-fetch-git",
-        &[],
-        &format!("/bin/sleep {secs}; exec git \"$@\""),
-    );
+    write_wrapper(dir, bin, "slow-fetch-git", &[], &format!("/bin/sleep {secs}; exec git \"$@\""));
 }
 
 /// Point the repo at `dir` at a `git` whose `fetch` refuses and whose every
@@ -608,11 +602,7 @@ async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration)
 /// The first caller's `deadline` bounds the whole run; every caller answers
 /// the same [`BaseRefresh`], which is also what the checkout's last-measured
 /// slot carries for the seat's row.
-async fn refresh_base(
-    cwd: &Path,
-    default_branch: &str,
-    deadline: Option<Instant>,
-) -> BaseRefresh {
+async fn refresh_base(cwd: &Path, default_branch: &str, deadline: Option<Instant>) -> BaseRefresh {
     let key = (repo_key(cwd, COMMAND_TIMEOUT).await, default_branch.to_owned());
     let (run, leader) = join_base_run(key);
     let refresh = if leader {
@@ -633,7 +623,9 @@ async fn refresh_base_owned(
     default_branch: &str,
     deadline: Option<Instant>,
 ) -> BaseRefresh {
-    let (state, base_ref, error) = if let Some(remote_branch) = default_branch.strip_prefix("origin/") {
+    let (state, base_ref, error) = if let Some(remote_branch) =
+        default_branch.strip_prefix("origin/")
+    {
         let error = fetch_base(cwd, remote_branch, deadline).await;
         if error.is_none() {
             // **The ref is fresh now.** Stamping the kick's window here is what
@@ -644,7 +636,8 @@ async fn refresh_base_owned(
         // `remote.origin.fetch` is not the conventional one, a fetch can
         // succeed and write nothing, so the claim is made against the remote's
         // own tip rather than against the exit code.
-        let (state, base_ref) = state_against_tip(cwd, default_branch, remote_branch, deadline).await;
+        let (state, base_ref) =
+            state_against_tip(cwd, default_branch, remote_branch, deadline).await;
         (state, base_ref, error)
     } else {
         // A local base has no ref to refresh. With an `origin` remote it can
@@ -694,11 +687,7 @@ async fn refresh_base_owned(
 /// open; and `--quiet` so progress never rides a captured stream.
 ///
 /// Answers `None` when git fetched, and `Some(words)` naming why it did not.
-async fn fetch_base(
-    cwd: &Path,
-    remote_branch: &str,
-    deadline: Option<Instant>,
-) -> Option<String> {
+async fn fetch_base(cwd: &Path, remote_branch: &str, deadline: Option<Instant>) -> Option<String> {
     let refspec = format!("+refs/heads/{remote_branch}:refs/remotes/origin/{remote_branch}");
     let mut command = git_command::tokio_git_command(cwd);
     command
@@ -825,11 +814,7 @@ async fn child_output(
     child: impl std::future::Future<Output = std::io::Result<std::process::Output>>,
     budget: Duration,
 ) -> Option<std::io::Result<std::process::Output>> {
-    if budget == UNBOUNDED {
-        Some(child.await)
-    } else {
-        timeout(budget, child).await.ok()
-    }
+    if budget == UNBOUNDED { Some(child.await) } else { timeout(budget, child).await.ok() }
 }
 
 /// The base's state judged against the remote's own tip, with the sha the base
@@ -4321,11 +4306,7 @@ mod tests {
             elapsed < Duration::from_secs(2),
             "the scan answers without waiting on its fetch: {elapsed:?}",
         );
-        assert_eq!(
-            settle_background_fetches().await,
-            1,
-            "and the fetch it kicked was in flight",
-        );
+        assert_eq!(settle_background_fetches().await, 1, "and the fetch it kicked was in flight",);
         assert_eq!(
             rev_parse(dir.path(), "refs/remotes/origin/main"),
             rev_parse(upstream.path(), "main"),
@@ -4346,15 +4327,11 @@ mod tests {
         let (upstream, dir) = stale_base_fixture();
         let bin = tempfile::tempdir().expect("wrapper dir");
         let counted = bin.path().join("fetches");
-        let counting = format!(
-            "echo start >> '{}'; /bin/sleep 0.6; exec git \"$@\"",
-            counted.display(),
-        );
+        let counting =
+            format!("echo start >> '{}'; /bin/sleep 0.6; exec git \"$@\"", counted.display(),);
         write_wrapper(dir.path(), bin.path(), "counting-git", &[], &counting);
         let fetches = || {
-            std::fs::read_to_string(&counted)
-                .map(|text| text.lines().count())
-                .unwrap_or_default()
+            std::fs::read_to_string(&counted).map(|text| text.lines().count()).unwrap_or_default()
         };
 
         // The kick leads; the reader must not start a fetch of its own. The

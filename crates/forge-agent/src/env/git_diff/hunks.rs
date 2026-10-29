@@ -1259,16 +1259,15 @@ diff --git a/x.rs b/x.rs
             closes: Vec::new(),
             pr_fetched_at: None,
         };
-        let refused_content =
-            super::super::content::scan_within(
-                dir.path(),
-                &snapshot,
-                None,
-                None,
-                None,
-                Duration::ZERO,
-            )
-                .await;
+        let refused_content = super::super::content::scan_within(
+            dir.path(),
+            &snapshot,
+            None,
+            None,
+            None,
+            Duration::ZERO,
+        )
+        .await;
         assert!(
             matches!(refused_content.worktree, LayerState::ScanFailed),
             "the content reader refuses a zero budget too: {refused_content:?}",

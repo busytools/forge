@@ -4802,14 +4802,9 @@ mod tests {
             None,
         )
         .await;
-        let content = forge_workspace::env::git_diff::content::scan(
-            repo.path(),
-            &snapshot,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let content =
+            forge_workspace::env::git_diff::content::scan(repo.path(), &snapshot, None, None, None)
+                .await;
         let threads = vec![wide_thread(
             "revealed-old",
             ReviewSide::Old,
