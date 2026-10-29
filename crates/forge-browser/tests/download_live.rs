@@ -13,7 +13,7 @@ mod support;
 use std::time::{Duration, Instant};
 
 use forge_browser::control::{HostEvent, parse};
-use forge_browser::window::Cdp;
+use forge_browser::window::{Backlog, Cdp};
 use serde_json::json;
 
 /// How long CEF is given to boot, paint and download.
@@ -59,7 +59,9 @@ async fn a_pages_download_lands_and_is_announced() {
         support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
     let id = support::wait_for_page(port, &log, BOUND);
     let (mut cdp, _events) =
-        Cdp::connect_watch(port, &format!("/devtools/page/{id}")).await.expect("devtools");
+        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent)
+            .await
+            .expect("devtools");
     cdp.call(
         "Runtime.evaluate",
         json!({ "expression": "document.documentElement.style.margin='0'; \

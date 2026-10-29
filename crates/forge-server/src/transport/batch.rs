@@ -145,7 +145,7 @@ where
         return Ok(());
     }
     for (frame, span) in folded(frames) {
-        let update = frame.update;
+        let update = std::sync::Arc::unwrap_or_clone(frame.update);
         // A delivery is drawn as the turn it reaches the model as, and the
         // CLI echoes no prompt back: a client drawing only frames would show
         // the assistant answering something nobody saw. The frame carries the
@@ -194,7 +194,7 @@ fn folded(frames: Vec<SeatUpdate>) -> Vec<(SeatUpdate, u64)> {
     let mut run: Vec<(SeatUpdate, u64)> = Vec::with_capacity(frames.len());
     for frame in frames {
         if let Some((last, span)) = run.last_mut()
-            && merge(&mut last.update, &frame.update)
+            && merge(std::sync::Arc::make_mut(&mut last.update), &frame.update)
         {
             // The survivor keeps the OLDEST frame's number and counts the
             // rest: a client's sequence advances over the run exactly as it
@@ -247,14 +247,14 @@ mod tests {
     /// One frame of the stream: the update, with the number a seat would have
     /// minted for it.
     fn frame(update: SessionUpdate) -> SeatUpdate {
-        SeatUpdate { seq: Some(1), update }
+        SeatUpdate { seq: Some(1), update: std::sync::Arc::new(update) }
     }
 
     /// What a run of frames carries, in the order it was given.
     fn names(frames: &[SeatUpdate]) -> Vec<&str> {
         frames
             .iter()
-            .map(|frame| match &frame.update {
+            .map(|frame| match &*frame.update {
                 SessionUpdate::ServiceStatus { message, .. } => message.as_str(),
                 other => panic!("a batch carries what was put in it, and this is {other:?}"),
             })
@@ -309,7 +309,7 @@ mod tests {
                 else {
                     panic!("every frame a batch writes is an update");
                 };
-                SeatUpdate { seq, update: *update }
+                SeatUpdate { seq, update: update.into() }
             })
             .collect()
     }

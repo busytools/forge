@@ -18,12 +18,6 @@ pub struct ClientConfig {
     /// face - Fira Code for prose and code alike - shipped beside the view
     /// rather than left to whatever the OS has.
     pub font: Option<String>,
-    /// Ghosts of the idle pair `[browser]` owns now: read only so a config
-    /// written before the move still boots, never carried to a client, and
-    /// safe to delete.
-    pub browser_idle_minutes: Option<u64>,
-    /// See [`ClientConfig::browser_idle_minutes`].
-    pub browser_grace_minutes: Option<u64>,
 }
 
 /// The marks forge ships, by the name `[client] mark` takes - a bounded set

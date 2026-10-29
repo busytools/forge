@@ -47,7 +47,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 16,
+  "version": 17,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -128,13 +128,13 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 58
-variants, 54 of them struct variants; the four unit variants,
+A command's variant is its name around its field bag - `Command` has 57
+variants, 53 of them struct variants; the four unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `plugin_update_all` and
 `plugin_check_updates`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 69 of `SessionUpdate`'s 72 variants are struct variants too. The other
+and 67 of `SessionUpdate`'s 70 variants are struct variants too. The other
 three are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
@@ -606,9 +606,14 @@ of prose on either side.
   reader joins. `seq` is the number the frame's OLDEST update was minted
   under and `span` how many of the seat's numbers it stands for - 1 for a
   frame that is one update, and n for a run of token appends the batch folded
-  into the one frame they draw as. Both are absent from a frame belonging to
-  no seat, and from a server older than the fields, which leaves a client
-  with the frames alone.
+  into the one frame they draw as. `seq` is absent from a frame belonging to
+  no seat, and `span` is 0 only on the turn the batch forges from a delivery
+  - a frame with no number - and 1 everywhere else. Both are absent from a
+  server older than the fields, which leaves a client with the frames alone.
+  `seq` alone is absent from a seat's frame the server answers out of band
+  rather than emitting into the stream: the `read_call_output` answer carries
+  its seat, `seq: null` and `span: 1`, because it stands nowhere in the
+  sequence.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
 - **`seat_frames {slot, epoch, frames}`** - in answer to `seat_range`: the
   frames numbered in `from..=to`, oldest first, each `{seq, update}` with the
@@ -670,12 +675,16 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   does not cancel it. With no controller the chooser waits for the agent's
   own `browser_file_upload`; CEF's own dialog is the fallback when no
   driver is attached.
-- **`browser_download {tab, name, data, error}`** - a page's download
-  finished on the server. The shell opens this machine's save door and
-  writes `data` (base64), or says `error` and writes nothing; a file past
-  32 MiB is refused in words rather than handed over. **Only the
-  controller of `tab` is sent one**, and the server's own copy is removed
-  once it has crossed, whether or not a viewer took it.
+- **`browser_download {tab, name, data, error, dropped}`** - a page's
+  download finished on the server. The shell opens this machine's save door
+  and writes `data` (base64), or says `error` and writes nothing; a file past
+  32 MiB is refused in words rather than handed over. `dropped` is true when
+  the offer was lost before this viewer read it (the backlog's ceiling), so
+  the shell titles the notice as a loss rather than a save that failed; it is
+  false, and absent from an older server, for every download the host
+  actually finished. **Only the controller of `tab` is sent one**, and the
+  server's own copy is removed once it has crossed, whether or not a viewer
+  took it.
 - **`error {what, why, seat, dispatch_id}`** - `what` failed and `why`, in
   the core's own words. `seat` names the conversation a refusal belongs to
   where it belongs to one - a refused `subscribe` names the seat it refused
@@ -750,7 +759,7 @@ conversation, and what the composer is doing.
 | `reviews`                     | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `state`                       | The seat's scan cwd and `queue` - the prompts still waiting in the CLI's queue, oldest first, each `{uuid, source, text}`. The queue is a fact about the seat, so it is read here as well as followed on the stream: `prompt_queued` adds a row and `prompt_lifecycle` settles it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `composer`                    | What the composer is doing: the machine turn running on the seat (`machine`, `handoff` or `compacting`, `null` when it takes input), a sign-in it is waiting on, the push-to-talk key and mode `forge.toml` configures, and the last landed take nobody has sent (`notice`, with `carried: true` and the `surface` whose capture began it - `null` for a server-side take or a client older than the field - which a page reads back after a reload). **No take**: a take belongs to the connection that started it, so its meter and its phases ride that connection's own updates and never the record. The asks it is answering ride `pending_asks` rather than being copied here.                                                                                                                                                                                                         |
+| `composer`                    | What the composer is doing: the machine turn running on the seat (`machine`, `handoff` or `compacting`, `null` when it takes input), the push-to-talk key and mode `forge.toml` configures, and the last landed take nobody has sent (`notice`, with `carried: true` and the `surface` whose capture began it - `null` for a server-side take or a client older than the field - which a page reads back after a reload). **No take**: a take belongs to the connection that started it, so its meter and its phases ride that connection's own updates and never the record. The asks it is answering ride `pending_asks` rather than being copied here.                                                                                                                                                                                                         |
 
 **`usage`** is the token/cost pool, scanned on the ask.
 

@@ -42,7 +42,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::spawn;
-use crate::window::Cdp;
+use crate::window::{Backlog, Cdp, EVENT_BACKLOG};
 
 /// The longest one CDP call is given before the install treats it as failed.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -325,6 +325,10 @@ async fn patch_context(cdp: &mut Cdp, event: &Value, context: &Value, port: u16,
     }
 }
 
+/// The events the veto must never lose: a target report is what releases a
+/// paused target, and a context report is where an existing world is patched.
+const PROTECTED_EVENTS: &[&str] = &["Target.attachedToTarget", "Runtime.executionContextCreated"];
+
 /// Attach at `port`'s browser and pause every page target until it is patched.
 ///
 /// **The call answers once the pause is armed; the connection then lives with
@@ -343,9 +347,13 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
             why: "the endpoint is not on the host's port".to_owned(),
         });
     };
-    let (mut cdp, mut events) = Cdp::connect_watch(port, path)
-        .await
-        .map_err(|why| Failure { stage: "browser endpoint", why })?;
+    let (mut cdp, mut events) = Cdp::connect_watch(
+        port,
+        path,
+        Backlog::KeepNamed { methods: PROTECTED_EVENTS, ceiling: EVENT_BACKLOG },
+    )
+    .await
+    .map_err(|why| Failure { stage: "browser endpoint", why })?;
     // **The pause is the coverage.** A target that is already running is
     // patched in place by the context handler below; a target that appears
     // later stops here first, whatever its type. **`flatten` is not
@@ -496,7 +504,23 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Arm, PASSKEY_VETO, attach_plan, can_arm};
+    use super::{Arm, PASSKEY_VETO, PROTECTED_EVENTS, attach_plan, can_arm};
+
+    /// **The two reports the veto acts on are the ones its queue keeps.**
+    /// The sink's own test proves a listed method is never dropped; this
+    /// pins the list itself, because emptying it would leave the queue
+    /// bounded and the test above still green.
+    #[test]
+    fn the_queue_keeps_the_reports_the_veto_acts_on() {
+        assert!(
+            PROTECTED_EVENTS.contains(&"Target.attachedToTarget"),
+            "a target report is what releases a paused target",
+        );
+        assert!(
+            PROTECTED_EVENTS.contains(&"Runtime.executionContextCreated"),
+            "a context report is where an existing world is patched",
+        );
+    }
 
     /// **A target with no document is not armed on that report.** Its
     /// session answers no page-domain command, so the attempt holds the

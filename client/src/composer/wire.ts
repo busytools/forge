@@ -2,8 +2,8 @@
  * What the core sends the composer, narrowed once at the boundary.
  *
  * `crates/forge-server/src/transport/wire.rs` is the sender: `composer` carries
- * the machine turn and a sign-in, and `pending_asks` carries the prompts the
- * seat is holding. The take and the notice are NOT on the record - a take belongs to
+ * the machine turn, and `pending_asks` carries the prompts the seat is holding.
+ * The take and the notice are NOT on the record - a take belongs to
  * the connection that started it - so this client builds them from its own
  * take's updates, which no other connection receives. Everything here is a
  * narrowing rather than a decision about how any of it looks - the gather into
@@ -78,12 +78,6 @@ export type Notice =
     }
   | { kind: 'line'; tone: string; text: string; generation?: number };
 
-/** The sign-in a seat is waiting on, which makes the hint say which account. */
-export interface SignIn {
-  methodName: string;
-  methodDescription: string;
-}
-
 /** What the seat's composer is doing, which a client cannot reconstruct. */
 export interface ComposerState {
   take: Take | null;
@@ -96,7 +90,6 @@ export interface ComposerState {
    * back under one. Read through {@link machineInForce}, never directly.
    */
   compacting: boolean;
-  signIn: SignIn | null;
   /** The push-to-talk key `forge.toml` configured, which is the one honoured. */
   bind: Bind;
   /** How a press of that key maps onto a take, from the same section. */
@@ -227,7 +220,6 @@ export function composerFrom(value: unknown): ComposerState {
     // Derived from the same reading, so a stale old key cannot resurrect a
     // compaction a v16 record has already ended.
     compacting: machineFrom(held) === 'compacting',
-    signIn: signInFrom(held['sign_in']),
     bind: bindFrom(held['bind']),
     mode: modeFrom(held['mode']),
   };
@@ -271,15 +263,6 @@ function noticeFrom(value: unknown): Notice | null {
     };
   }
   return { kind: 'line', tone: text(held['tone']) ?? 'q', text: text_, ...kept };
-}
-
-function signInFrom(value: unknown): SignIn | null {
-  if (value === null || value === undefined) return null;
-  const held = record(value);
-  return {
-    methodName: text(held['method_name']) ?? '',
-    methodDescription: text(held['method_description']) ?? '',
-  };
 }
 
 /** The prompt the seat is parked on, or `null` when nothing waits. */
@@ -531,7 +514,6 @@ export const NO_COMPOSER: ComposerState = {
   notice: null,
   machine: null,
   compacting: false,
-  signIn: null,
   bind: 'right_cmd',
   mode: 'auto',
 };

@@ -28,8 +28,8 @@ forge-test-harness->  primitives + sdk
 | `forge-sdk`          | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `forge-agent`        | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-workspace`    | The multi-session orchestrator and the server's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from. The browser tools it carries reach the fleet through the `BrowserHost` port this crate defines.                                                                                                                                                                                                                                                                                                                                                                                   |
-| `forge-browser`      | The server's browser. One CEF host process per org profile, shipped as its own signed `Forge Browser.app` so the server never links CEF; the host owns that profile's tabs and paints each one into a WebP stream on a local socket; the vendored Playwright driver it speaks MCP to, tab-addressed; the org profile store under `profiles/<org>/<name>` and its one-time legacy-tree deletion; the idle release; and the service that keeps each session's current tab and answers the tool surface and every viewer call. Depends on primitives and sdk, and nothing above it knows CEF exists.                                                                                                                                                                                                                                                                                                                                                 |
-| `forge-server`       | The server: what a client reads of the core, and no view of its own. The read surface a client uses, the session records as a view sees them, the peer envelope parsing, forge's own slash commands, the transcript fold that says where a conversation's turns sit and the task endings it carries, the sub-agent instance list the session task's own fold keeps and pushes, the `ReadCallOutput` verb (with the workspace's tail reader re-exported for views), and the socket that carries all of it. It also ships the `forge` binary - the whole core booted through the one boot function (`forge_server::boot`). Nothing here draws, so another client attaches beside the one that exists rather than duplicating it. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
+| `forge-browser`      | The server's browser. One CEF host process per org profile, shipped as its own signed `Forge Browser.app` so the server never links CEF; the host owns that profile's tabs and paints each one into a WebP stream on the profile's own local socket, multiplexed by tab; the vendored Playwright driver it speaks MCP to, tab-addressed; the org profile store under `profiles/<org>/<name>` and its one-time legacy-tree deletion; the idle release; and the service that keeps each session's current tab and answers the tool surface and every viewer call. Depends on primitives and sdk, and nothing above it knows CEF exists.                                                                                                                                                                                                                                                                                                                                                 |
+| `forge-server`       | The server: what a client reads of the core, and no view of its own. The read surface a client uses, the session records as a view sees them, the peer envelope parsing, forge's own slash commands, the transcript fold that says where a conversation's turns sit and the task endings it carries, the sub-agent instance list the session task's own fold keeps and pushes, the call-output read the socket answers from its held conversation (with the workspace's tail reader re-exported for views), and the socket that carries all of it. It also ships the `forge` binary - the whole core booted through the one boot function (`forge_server::boot`). Nothing here draws, so another client attaches beside the one that exists rather than duplicating it. The name is this crate; forge's in-process MCP server is unrelated and is named as the `forge` MCP server. |
 | `forge-test-harness` | The wire-conformance harness. Replay tests plus opt-in live capture. Dev tooling, not in the runtime path.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 The client - a Svelte page inside a Rust shell - lives in `client/`,
@@ -107,7 +107,7 @@ through named verbs by subject - `roster`, `session`, `agents`,
 `processes`, `work`, `board`, `background_tasks`, `monitors`, `pending_asks`,
 `fatal_error`, `service_status`
 and `usage` - receives changes through
-`subscribe()`, and acts through `dispatch()`, which is a verb rather than
+`subscribe_client()`, and acts through `dispatch()`, which is a verb rather than
 an accessor so a view is handed the commands it needs and not the whole
 core. All of them exist in `forge-server`, and the client reads
 its project roster and agent rows, the
@@ -196,29 +196,31 @@ One entry point in each direction, and the workspace's stream fans out
 to however many views subscribe.
 
 ```
-the client  --  Workspace::dispatch(Command)  ->  forge-workspace
-the client  <-  SessionUpdate via subscribe()  --  forge-workspace
+the client  --  Workspace::dispatch(Command)          ->  forge-workspace
+the client  <-  SessionUpdate via subscribe_mirror()  --  forge-workspace
+                / subscribe_answerer()
 ```
 
-`subscribe()` hands every caller a stream of its own, so a second view
-attaches beside the one that exists rather than being refused the one
-receiver. A stream carries what the workspace emits after that call, so
-a view that attaches late is handed no backlog, and a view that drops
-its subscription leaves the fan-out. The first caller to attach is handed
-what was emitted before it as well, which is how a notice raised during
-boot reaches a view.
+`subscribe_mirror()` and `subscribe_answerer()` hand every caller a stream of
+its own, so a second view attaches beside the one that exists rather than
+being refused the one receiver. A stream carries what the workspace emits
+after that call and nothing before it, so a view that attaches late reads
+what it missed from the subject's snapshot; a view that drops its
+subscription leaves the fan-out. The old `Workspace::subscribe()` - the first
+caller took a pre-attach backlog - had no production caller and is gone. The
+socket's own fold takes the mirror at boot, before any session spawns, and
+each client takes `subscribe_client()` through the surface with the role it
+declared.
 
 A subscriber declares whether it can answer the workspace's prompts.
 A view that renders a dock does, so a permission or question request
 delivered to it keeps its turn alive; a consumer that only reads takes
-an observing subscription instead, which for a view is
-`subscribe_mirror()` through the surface (`subscribe_observer()` is the
-same stream for an observer that wants the pre-attach backlog), and a
-request that reaches no answering subscriber is resolved `Cancelled`
-rather than parked on a reply nobody will send.
+an observing subscription instead, and a request that reaches no answering
+subscriber is resolved `Cancelled` rather than parked on a reply nobody will
+send.
 
-That is the whole contract. There are no callback hooks and no shared
-mutable state. Query-style refreshes such
+That is the whole contract. There are no callback hooks, and no state shared
+between a view and the core. Query-style refreshes such
 as context usage and the MCP snapshot are plain
 `Workspace` methods rather than command variants, because they are
 reads rather than user actions.

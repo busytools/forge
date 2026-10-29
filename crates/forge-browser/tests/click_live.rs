@@ -27,7 +27,7 @@ use forge_browser::channel;
 use forge_browser::frame::Frame;
 use forge_browser::input::{HostInput, host_line};
 use forge_browser::osr::{MAX_HEIGHT, MAX_WIDTH, Ring};
-use forge_browser::window::Cdp;
+use forge_browser::window::{Backlog, Cdp, Events};
 use forge_primitives::browser::{InputModifiers, MouseAction};
 use serde_json::{Value, json};
 
@@ -112,7 +112,7 @@ struct Fixture {
     host: support::Host,
     _scratch: tempfile::TempDir,
     cdp: Cdp,
-    _events: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    _events: Events,
     ring: String,
     ring_handle: Option<Ring>,
     /// The frames the host encoded, off its own socket.
@@ -149,9 +149,13 @@ async fn fixture(name: &str) -> Fixture {
     let args = ["--frames".to_owned(), frames_path.display().to_string()];
     let host = support::Host::start(&exe, &profile, port, &ring, "1440x900", &args, &log);
     let id = support::wait_for_page(port, &log, BOUND);
-    let (cdp, events) = Cdp::connect_watch(port, &format!("/devtools/page/{id}"))
-        .await
-        .expect("the page's devtools endpoint accepts");
+    let (cdp, events) = Cdp::connect_watch(
+        port,
+        &format!("/devtools/page/{id}"),
+        Backlog::DropNewest(forge_browser::window::EVENT_BACKLOG),
+    )
+    .await
+    .expect("the page's devtools endpoint accepts");
     let mut fixture = Fixture {
         _scratch: scratch,
         host,

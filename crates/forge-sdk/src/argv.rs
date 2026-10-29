@@ -10,11 +10,6 @@ use crate::options::{Options, PermissionMode, SdkPluginConfig, SystemPromptKind}
 /// Build the subprocess argv from [`Options`], SDK's
 /// `_build_command` byte-for-byte where possible. Exposed `pub` so
 /// advanced callers can inspect the argv without spawning.
-///
-/// # Errors
-///
-/// [`Error::MessageParse`] when `options.sandbox` fails to serialise
-/// (refuses to spawn un-sandboxed when the caller asked for sandboxing).
 pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     let mut args: Vec<String> = Vec::new();
 
@@ -84,13 +79,6 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     if let Some(sid) = &options.session_id {
         args.push("--session-id".into());
         args.push(sid.clone());
-    }
-    // --settings (with optional sandbox merge). Resolves settings +
-    // sandbox into one CLI argument, either a file path or an inline
-    // JSON string.
-    if let Some(value) = options.build_settings_value()? {
-        args.push("--settings".into());
-        args.push(value);
     }
 
     // MCP: pass --mcp-config '<inline-json>' when servers are registered.

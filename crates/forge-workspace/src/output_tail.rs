@@ -3,8 +3,8 @@
 //! The CLI's local-bash tasks write the command's stdout to a file on disk
 //! rather than sending it over the wire (confirmed in
 //! `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/monitor.jsonl`),
-//! so the tail is a file read. The readers are the session task - which
-//! resolves the path from its own conversation and answers a view's
+//! so the tail is a file read. The readers are the transport - which
+//! resolves the path from its held conversation and answers a view's
 //! `ReadCallOutput` with the result - and the views that hold a path already
 //! (a view tails a Monitor's file on its own tick).
 //!
@@ -186,6 +186,53 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
     Some(ring.into_iter().collect())
 }
 
+/// How many lines of a call's output a `ReadCallOutput` answers with.
+pub const CALL_OUTPUT_MAX_LINES: usize = 12;
+
+/// The file a call's output went to, from the frames a conversation carries.
+///
+/// **Two ways to find it, and the ending frame's own word wins when both
+/// exist**: `task_notification.output_file` names the file when the task
+/// ends, and until then the path is composed from the task id the launch
+/// frame carries, under `task_output_base`. An empty `output_file` is a
+/// path the frame does not carry, not a path that is gone.
+pub fn resolve_call_output_path(
+    history: &[forge_primitives::Message],
+    call_id: &str,
+) -> Option<PathBuf> {
+    resolve_call_output_path_at(history, call_id, task_output_base)
+}
+
+/// [`resolve_call_output_path`] with the base named, so the composition can
+/// be exercised against a scratch tree without writing the process env.
+pub(crate) fn resolve_call_output_path_at(
+    history: &[forge_primitives::Message],
+    call_id: &str,
+    base: impl FnOnce() -> PathBuf,
+) -> Option<PathBuf> {
+    let named = history.iter().find_map(|message| match message {
+        forge_primitives::Message::TaskNotification {
+            tool_use_id: Some(id), output_file, ..
+        } if id == call_id && !output_file.is_empty() => Some(PathBuf::from(output_file)),
+        _ => None,
+    });
+    if named.is_some() {
+        return named;
+    }
+    let (session_id, task_id) = history.iter().find_map(|message| match message {
+        forge_primitives::Message::TaskStarted {
+            task_id,
+            tool_use_id: Some(id),
+            session_id,
+            ..
+        } if id == call_id => Some((session_id.clone(), task_id.clone())),
+        _ => None,
+    })?;
+    let base = base();
+    probe_task_output_layout(&base);
+    compose_task_output_path(&base, &session_id, &task_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +256,166 @@ mod tests {
             .join("tasks");
         std::fs::create_dir_all(&dir).expect("create the scratch tasks tree");
         std::fs::write(dir.join(format!("{task_id}.output")), contents).expect("plant the file");
+    }
+
+    /// A `task_started` frame naming `call` as the launch of `task_id`.
+    fn task_started(task_id: &str, call: &str, session_id: &str) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": task_id,
+            "description": "watch the run",
+            "uuid": format!("u-{task_id}"),
+            "session_id": session_id,
+            "tool_use_id": call,
+        }))
+        .expect("a task_started frame")
+    }
+
+    /// A `task_notification` frame naming the file a call's output went to.
+    fn task_notification(
+        task_id: &str,
+        call: &str,
+        session_id: &str,
+        output_file: &str,
+    ) -> forge_primitives::Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": task_id,
+            "status": "completed",
+            "output_file": output_file,
+            "summary": "Background command \"true\" completed",
+            "uuid": format!("u-{task_id}"),
+            "session_id": session_id,
+            "tool_use_id": call,
+        }))
+        .expect("a task_notification frame")
+    }
+
+    /// The ending frame's own path WINS over the composed one when both are
+    /// reachable: `task_notification` is the CLI's word for where the output
+    /// went, and the composed path is this build's reading of a layout the
+    /// CLI never promised.
+    #[test]
+    fn the_ending_frames_path_wins_over_the_composed_one() {
+        let base = scratch_base("resolve-wins");
+        plant_file(&base, "slug-any", "sess-live", "t-live", "composed\n");
+        let named = base.join("named-by-the-ending-frame.output");
+        std::fs::write(&named, "named\n").expect("write the named file");
+
+        let started = task_started("t-live", "tu-live", "sess-live");
+        let ended =
+            task_notification("t-live", "tu-live", "sess-live", &named.display().to_string());
+
+        assert_eq!(
+            resolve_call_output_path_at(std::slice::from_ref(&started), "tu-live", || base.clone()),
+            compose_task_output_path(&base, "sess-live", "t-live"),
+            "while it runs, the composed path is the one the read uses",
+        );
+        assert_eq!(
+            resolve_call_output_path_at(&[started, ended], "tu-live", || base.clone()),
+            Some(named),
+            "and once the ending frame lands, its own path overrides the composition",
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **Nothing reads the launch sentence.** The launch result says where the
+    /// output will be written in prose, and a resolver that took that path
+    /// would be reading text the CLI is free to reword - so the pin carries
+    /// the real sentence naming file A beside a task id that composes to file
+    /// B, and the answer must be B's path. The second half catches the other
+    /// mistake: with B gone the answer is no-path, never A.
+    #[test]
+    fn nothing_reads_the_launch_sentence_for_the_path() {
+        let base = scratch_base("resolve-prose");
+        plant_file(&base, "slug-any", "sess-prose", "t-prose", "from the composition\n");
+        let composed = compose_task_output_path(&base, "sess-prose", "t-prose")
+            .expect("the composition finds its file");
+        // File A, which only the sentence names, with bytes nothing else has.
+        let named_by_prose = base.join("named-by-the-launch-sentence.output");
+        std::fs::write(&named_by_prose, "from the launch sentence\n").expect("write file A");
+
+        let launch: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tu-prose",
+                    "is_error": false,
+                    "content": format!(
+                        "Command running in background with ID: t-prose. Output is being \
+                         written to: {}. You will be notified when it completes. To check \
+                         interim output, use Read on that file path.",
+                        named_by_prose.display(),
+                    ),
+                }],
+            },
+            "tool_use_result": { "backgroundTaskId": "t-prose" },
+            "uuid": "u-prose",
+            "session_id": "sess-prose",
+        }))
+        .expect("a launch result frame");
+        let started = task_started("t-prose", "tu-prose", "sess-prose");
+
+        assert_eq!(
+            resolve_call_output_path_at(&[launch.clone(), started.clone()], "tu-prose", || base
+                .clone()),
+            Some(composed.clone()),
+            "the composed path answers, not the one the launch sentence names",
+        );
+        std::fs::remove_file(&composed).expect("unplant the composed file");
+        assert_eq!(
+            resolve_call_output_path_at(&[launch, started], "tu-prose", || base.clone()),
+            None,
+            "and with the composed file gone the answer is no-path, never the sentence's file",
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// **Each task reads its own file.** Two backgrounded calls in one session
+    /// carry two `task_started` frames, and the link is the tool-use id:
+    /// without that guard, row B tails row A's file - wrong output shown as if
+    /// it were B's, which is worse than nothing.
+    #[test]
+    fn two_running_calls_each_read_their_own_task() {
+        let base = scratch_base("resolve-two");
+        plant_file(&base, "slug-any", "sess-two", "t-a", "task a\n");
+        plant_file(&base, "slug-any", "sess-two", "t-b", "task b\n");
+        let history =
+            vec![task_started("t-a", "tu-a", "sess-two"), task_started("t-b", "tu-b", "sess-two")];
+
+        assert_eq!(
+            resolve_call_output_path_at(&history, "tu-a", || base.clone()),
+            compose_task_output_path(&base, "sess-two", "t-a"),
+            "the first call reads its own task's file",
+        );
+        assert_eq!(
+            resolve_call_output_path_at(&history, "tu-b", || base.clone()),
+            compose_task_output_path(&base, "sess-two", "t-b"),
+            "and the second reads its own, not the first's",
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The read never answers blank: a call the conversation does not name is
+    /// the no-path reason, and an empty `output_file` is a path the frame does
+    /// not carry - not a path that is gone.
+    #[test]
+    fn a_call_with_no_frame_and_one_with_an_empty_path_are_both_no_path() {
+        assert_eq!(
+            resolve_call_output_path(&[], "tu-unknown"),
+            None,
+            "a call no frame names is no path at all",
+        );
+        let ended = task_notification("t-empty", "tu-empty", "sess-empty", "");
+        assert_eq!(
+            resolve_call_output_path(&[ended], "tu-empty"),
+            None,
+            "and an empty output_file is a path the frame does not carry, not one that is gone",
+        );
     }
 
     fn write_tmp(contents: &str) -> std::path::PathBuf {

@@ -1,15 +1,11 @@
-//! The window a session's conversation is kept in.
+//! The window a conversation is cut to when it is held or handed over.
 //!
-//! **One conversation, two copies, one window.** The session task accumulates
-//! the frames it receives and appends every one, because a replay has to
-//! answer with the conversation rather than with the history the connect
-//! carried; the transport holds a copy of the same conversation, seeded from
-//! that connect or replay, because a page and a fold read it long after the
-//! session is gone. Both stop growing with the transcript here.
-//!
-//! One definition rather than two, because one copy is the other's source: a
-//! replay kept shorter than the window its reader holds is a page that cannot
-//! reach the cap it was sized for, and the two would drift apart silently.
+//! **One window, applied at every boundary.** The transport's copy of a
+//! seat's conversation lives in one, and a `Connected` cuts a resume's whole
+//! transcript to one before it rides an update - so a read that was 2.5 GiB on
+//! the seat #2150 was filed from is not copied per subscriber. The fan-out's
+//! ring is sized from the same caps, because a ring exists to fill a copy that
+//! is behind.
 //!
 //! **A window is bounded by frames and by bytes.** The count alone let a giant
 //! seat's window weigh 319 MiB (measured 2026-10-17 on the seat #1637 was
@@ -40,8 +36,9 @@ use forge_primitives::Message;
 /// on a live machine that window spans 85 to 1,270 messages, with the heaviest
 /// twenty-turn run at 2,799 - so the cap holds every window any of them would
 /// serve. What it buys is a copy that stops tracking its transcript's length:
-/// the live heap grew a pair of ~90MB contiguous buffers an hour through these
-/// two structures, and one held in a cap-sized window cannot reach one.
+/// the live heap grew a pair of ~90MB contiguous buffers an hour through the
+/// copies that used to exist, and a copy held in a cap-sized window cannot
+/// reach one.
 ///
 /// **The count is one of two ceilings.** [`CONVERSATION_CAP_BYTES`] bounds the
 /// same window by weight, because on the seats that made #1637 four thousand

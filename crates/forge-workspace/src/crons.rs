@@ -541,7 +541,6 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SeatUpdate;
 
     use tempfile::tempdir;
 
@@ -637,7 +636,7 @@ mod tests {
     ) -> Vec<crate::protocol::SessionUpdate> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            out.push(frame.update);
+            out.push(std::sync::Arc::unwrap_or_clone(frame.update));
         }
         out
     }
@@ -693,10 +692,8 @@ mod tests {
     fn next_crons_changed(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> (SessionSlot, Vec<forge_primitives::cron::CronEntry>) {
-        match rx.try_recv() {
-            Ok(SeatUpdate {
-                update: SessionUpdate::CronSchedulesChanged { key, crons }, ..
-            }) => (key, crons),
+        match rx.try_recv().map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)) {
+            Ok(SessionUpdate::CronSchedulesChanged { key, crons }) => (key, crons),
             other => panic!("expected a CronSchedulesChanged on the stream, got {other:?}"),
         }
     }
@@ -1414,7 +1411,7 @@ mod tests {
 
         let (ws, _dir) = workspace_with_one_unsettled_account();
         ws.seed_test_ready_account("acct-a");
-        let mut rx = ws.subscribe();
+        let mut rx = ws.subscribe_answerer();
         ws.seed_test_cron(schedule("cool", "proj", "stand-up", None));
         let now = std::time::SystemTime::now();
         let reset_epoch = reset_mid_minute(now, std::time::Duration::from_secs(2 * 60 * 60));
@@ -1496,7 +1493,7 @@ mod tests {
     async fn a_cooling_episode_that_clears_warns_again_next_time() {
         let (ws, _dir) = workspace_with_one_unsettled_account();
         ws.seed_test_ready_account("acct-a");
-        let mut rx = ws.subscribe();
+        let mut rx = ws.subscribe_answerer();
         ws.seed_test_cron(schedule("cool", "proj", "stand-up", None));
         let now = std::time::SystemTime::now();
 

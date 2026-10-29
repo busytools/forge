@@ -33,7 +33,7 @@ use crate::input;
 use crate::profiles::Store;
 use crate::spawn::{self, ActiveHost};
 use crate::tabs::TabRegistry;
-use crate::window::Cdp;
+use crate::window::{Backlog, Cdp, EVENT_BACKLOG, Events};
 use crate::{channel, engine, osr, veto};
 
 /// What one call knows about the browser it looked up, and the page it drives.
@@ -564,7 +564,7 @@ impl BrowserService {
             rebuild: AsyncMutex::new(()),
             chooser_ledger: Mutex::new(ChooserLedger::default()),
             chooser_answer: Mutex::new(None),
-            downloads: broadcast::channel(16).0,
+            downloads: broadcast::channel(DOWNLOAD_BACKLOG).0,
             audio: broadcast::channel(64).0,
             recorded: watch::channel(None).0,
             recording: Mutex::new(None),
@@ -3567,6 +3567,17 @@ pub struct Profile {
 /// The most a finished download may carry to a viewer.
 const MAX_DOWNLOAD_BYTES: u64 = 32 * 1024 * 1024;
 
+/// How many finished downloads one profile may hold for a lagging viewer.
+///
+/// **The backlog is memory, and a download is bytes.** Every reader that is
+/// behind keeps up to this many `BrowserDownload`s, each up to
+/// [`MAX_DOWNLOAD_BYTES`], so the ceiling is this times 32 MiB per profile -
+/// 128 MiB here, against 512 at the sixteen this used to keep. A viewer that
+/// lags past it loses the oldest offers, which is already what a broadcast
+/// does; what it must not do is hold half a gigabyte per open profile for a
+/// page that saved sixteen files while nobody looked.
+const DOWNLOAD_BACKLOG: usize = 4;
+
 /// What the host last said about a recording: whether the writer opened, and -
 /// once it stopped - how the take ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5056,7 +5067,9 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
             let Some(path) = url.strip_prefix(&spawn::ws_prefix(port)).map(str::to_owned) else {
                 return;
             };
-            let Ok((mut cdp, mut events)) = Cdp::connect_watch(port, &path).await else {
+            let Ok((mut cdp, mut events)) =
+                Cdp::connect_watch(port, &path, Backlog::EveryEvent).await
+            else {
                 tokio::time::sleep(NAV_RETRY).await;
                 continue;
             };
@@ -5133,7 +5146,8 @@ async fn page_cdp<'a>(
         let Some(path) = path.strip_prefix(&spawn::ws_prefix(port)).map(str::to_owned) else {
             return Err("the page's websocket is not on the host's port".to_owned());
         };
-        let (cdp, events) = Cdp::connect_watch(port, &path).await?;
+        let (cdp, events) =
+            Cdp::connect_watch(port, &path, Backlog::DropNewest(EVENT_BACKLOG)).await?;
         state.cdp.insert(target.to_owned(), cdp);
         state.cdp_events.insert(target.to_owned(), events);
     }
@@ -5142,7 +5156,7 @@ async fn page_cdp<'a>(
     // a live one, and an unread backlog on a page that reports many events is
     // growth nobody would see.
     if let Some(events) = state.cdp_events.get_mut(target) {
-        while events.try_recv().is_ok() {}
+        events.drain();
     }
     state.cdp.get_mut(target).ok_or_else(|| "the page's input connection is not open".to_owned())
 }
@@ -5185,7 +5199,7 @@ struct State {
     /// tab switch opens the new target's connection rather than reusing the
     /// old one.
     cdp: HashMap<String, Cdp>,
-    cdp_events: HashMap<String, mpsc::UnboundedReceiver<Value>>,
+    cdp_events: HashMap<String, Events>,
     /// The focused tab's navigation watch: the bar's arrows after a link
     /// click.
     nav_watch: Option<tokio::task::JoinHandle<()>>,
@@ -5788,15 +5802,16 @@ fn device_pixels(css: u32, scale: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome,
-        DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, State, UploadRequest,
-        agent_upload_paths, agent_upload_refused, begin_upload, captured_generation, clear_if_dead,
-        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
-        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DOWNLOAD_BACKLOG,
+        DeadDriverOutcome, DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, State,
+        UploadRequest, agent_upload_paths, agent_upload_refused, begin_upload, captured_generation,
+        clear_if_dead, dead_driver_answer, dead_host_answer, dead_page_answer, death_cause,
+        device_pixels, file_name, installed_generation, note_agent_answered, note_surfaced_opened,
         note_upload_finished, owner_size, pair_tab_events, stage_agent_uploads, upload_request,
         window_dimension, write_uploads,
     };
     use forge_primitives::SessionSlot;
+    use forge_primitives::browser::BrowserDownload;
     use forge_primitives::browser::ProfileKey;
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -10212,6 +10227,36 @@ mod tests {
 
         let rows = service.tabs(&worker).await.expect("rows").rows;
         assert!(rows.is_empty(), "the dead host's rows are gone");
+    }
+
+    /// **The download backlog is memory, and a download is bytes.** A viewer
+    /// that reads none must fall behind the fifth offer, so one profile holds
+    /// at most four 32 MiB payloads for a reader that is not looking.
+    ///
+    /// **The channel is built from [`DOWNLOAD_BACKLOG`], as the service
+    /// builds it, and the five sends are the pin**: at a backlog of sixteen
+    /// five offers do not lag, so a loosened constant fails here.
+    #[tokio::test]
+    async fn a_lagging_viewer_falls_behind_after_the_download_backlog() {
+        let (offers, mut viewer) =
+            tokio::sync::broadcast::channel::<BrowserDownload>(DOWNLOAD_BACKLOG);
+        for n in 0..5 {
+            let offer = BrowserDownload {
+                tab: 0,
+                name: format!("file-{n}"),
+                bytes: Vec::new(),
+                error: None,
+            };
+            offers.send(offer).expect("the viewer is attached");
+        }
+
+        assert!(
+            matches!(
+                viewer.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+            ),
+            "an offer past the backlog is dropped rather than held for the viewer",
+        );
     }
 }
 

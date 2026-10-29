@@ -416,7 +416,12 @@ pub enum ServerMessage {
         /// frame that is one update, and n for a run the batch folded into
         /// one - a run of token appends crosses as the single frame they
         /// draw as, and its span is what keeps the client from reading the
-        /// numbers it already drew as a gap. 0 on a frame that has no number.
+        /// numbers it already drew as a gap.
+        ///
+        /// **0 only on the turn the batch forges from a delivery**, which
+        /// has no number; every other frame stands for at least one, the
+        /// out-of-band `read_call_output` answer (`seq: null`, `span: 1`)
+        /// included.
         span: u64,
     },
     /// A page of one conversation, in answer to `more`: whole turns, each with
@@ -539,6 +544,12 @@ pub enum ServerMessage {
         /// The file's bytes, base64; absent when `error` says why not.
         data: Option<String>,
         error: Option<String>,
+        /// Whether the offer was dropped before the viewer read it, rather
+        /// than a save that failed: the shell titles the two differently.
+        /// Additive and defaulted - an older client reads the loss as the
+        /// refusal it already draws.
+        #[serde(default)]
+        dropped: bool,
     },
     Error {
         what: String,
@@ -736,10 +747,11 @@ mod tests {
             name: "report.pdf".to_owned(),
             data: Some("AAEC".to_owned()),
             error: None,
+            dropped: false,
         };
         let json = serde_json::to_string(&saved).expect("encode");
         assert!(json.contains("\"kind\":\"browser_download\""), "{json}");
-        let ServerMessage::BrowserDownload { tab, name, data, error } =
+        let ServerMessage::BrowserDownload { tab, name, data, error, dropped } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
@@ -748,21 +760,43 @@ mod tests {
         assert_eq!(name, "report.pdf");
         assert_eq!(data.as_deref(), Some("AAEC"));
         assert!(error.is_none());
+        assert!(!dropped, "a save the person can take is not a dropped offer");
 
         let refused = ServerMessage::BrowserDownload {
             tab: 2,
             name: "huge.bin".to_owned(),
             data: None,
             error: Some("this file is larger than 32 MiB".to_owned()),
+            dropped: false,
         };
         let json = serde_json::to_string(&refused).expect("encode");
-        let ServerMessage::BrowserDownload { data, error, .. } =
+        let ServerMessage::BrowserDownload { data, error, dropped, .. } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
         };
         assert!(data.is_none(), "a refusal carries no bytes");
         assert!(error.is_some_and(|why| why.contains("32 MiB")));
+        assert!(!dropped, "a write that failed is not a dropped offer");
+
+        // **A drop carries the flag the shell reads**, under that key: the
+        // two samples above both say false, and a rename or a skip would
+        // leave the shell's title silently wrong.
+        let lost = ServerMessage::BrowserDownload {
+            tab: 2,
+            name: "download".to_owned(),
+            data: None,
+            error: Some("2 finished download(s) were dropped".to_owned()),
+            dropped: true,
+        };
+        let json = serde_json::to_string(&lost).expect("encode");
+        assert!(json.contains("\"dropped\":true"), "the wire key the shell reads: {json}");
+        let ServerMessage::BrowserDownload { dropped, .. } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert!(dropped, "and it round-trips as a drop");
     }
 
     /// **A viewer's attach, its state, and the input it sends.**
@@ -1395,8 +1429,6 @@ mod tests {
             mark: Some("strike".to_owned()),
             theme: Some("dark".to_owned()),
             font: Some("system".to_owned()),
-            browser_idle_minutes: None,
-            browser_grace_minutes: None,
         };
         let axes = DictateAxes {
             styling: forge_dictate::normalize::Styling::Formal,

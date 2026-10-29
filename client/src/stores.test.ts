@@ -81,7 +81,7 @@ describe('the stores one connection holds', () => {
   it('holds nothing of the occupant a seat was replaced from', () => {
     // Written out rather than read off `REPLACES`, following `live.test.ts`:
     // a loop over the list under test cannot see the list change.
-    const replacing = ['spawning', 'connected', 'history_replayed', 'session_replaced'];
+    const replacing = ['spawning', 'connected', 'session_replaced'];
     expect(
       [...REPLACES].sort(),
       'the list the store reads is not the list this test covers',

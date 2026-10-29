@@ -403,10 +403,11 @@ thing.
 ## The two widths
 
 The page is checked at **1600** and at **430**, against the drawing beside
-it. **The rail is summoned at every width** - it is never a column, so
-nothing of the conversation is spent on it while it is away: a hover over
-the chip is a peek, Cmd+Left or the palette opens it to stay, and Escape
-or Back closes what it opened. At 430 the chat keeps its single column,
+it. **The rail is a column by default**, remembered per device; the hover mode,
+or a window below the width a column stops making sense at, gives the chip
+instead: hovering summons the peek, Cmd+Left or the palette opens it to
+stay, and Escape or Back closes it. At 430 the chat keeps its
+single column,
 the facts row folds under `more`, and nothing overflows horizontally at
 either width.
 

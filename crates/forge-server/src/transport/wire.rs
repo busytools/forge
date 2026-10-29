@@ -28,11 +28,10 @@ use forge_workspace::env::git_diff::resolver::{
     AnchorPlacement, OutdatedReason, place_anchor_in_content, place_anchor_in_lines_with,
 };
 use forge_workspace::env::processes::ProcessSnapshot;
-use forge_workspace::{Command, McpServers, ProjectView};
+use forge_workspace::{McpServers, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::composer::SignIn;
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, PendingAsk, ViewSurface};
 use crate::transcript::{Rendered, TaskEnding, TurnSpan};
@@ -513,7 +512,6 @@ pub struct ComposerWire {
     /// The machine turn running on the seat, which takes the composer away:
     /// absent for a seat taking input.
     pub machine: Option<forge_primitives::runtime::MachineTurn>,
-    pub sign_in: Option<SignIn>,
     /// The push-to-talk key and how a press maps onto a take, in the
     /// vocabulary `forge.toml` accepts.
     ///
@@ -1582,106 +1580,119 @@ pub fn page_within(
     Page { turns: page_turns, cursor }
 }
 
-/// How long a request waits for the seat's conversation before answering
-/// without one.
+/// How long a request waits for a live seat's first `Connected` before
+/// answering without a conversation.
 ///
-/// The session task answers a replay on its own next loop iteration, so this
-/// is a failure case rather than a pacing mechanism. **What it decides is the
+/// The fold applies the seal within a frame of it arriving, so this is a
+/// failure case rather than a pacing mechanism. **What it decides is the
 /// same for both readers and they answer differently**: a snapshot carries an
 /// empty conversation, which a client draws as a seat with nothing to show,
 /// while a page is REFUSED - an empty page carries `cursor: null`, and a
 /// client reads that as the end of the history rather than as a delay.
-const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+const SEED_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The seat's conversation, answering from its own transcript when the
-/// stream holds none, and asking the session task for it when there is one
-/// to ask.
+/// stream holds none.
 ///
 /// **A seat has two sources of history and each answers what it alone can.**
-/// The session task's own window is the truer copy - it carries every frame
-/// the session emitted, including the `Result` frames no transcript row
-/// carries - and it is what a replay hands back for a seat already running.
-/// The transcript on disk is what a seat LEFT: a sleeping seat has no task
-/// to replay from, and waiting for the spawn to carry the same history back
-/// would make a page opening on it wait seconds for something already
-/// written (measured live 2026-10-12: ~2.6s for a history on disk).
+/// The transport's held copy is the live one: the fold applies every
+/// `ChatAppended` the session emits, so a seat that has run in this process
+/// already has its conversation here. The transcript on disk is what a seat
+/// LEFT: a sleeping seat has no copy, and reading its file costs no wait
+/// (measured live 2026-10-12: ~2.6s for a history on disk).
 ///
-/// So the file goes first, because reading it costs no wait, and the replay
-/// still goes out beside it: a live session's copy REPLACES the seeded one
-/// through [`crate::transport::conversation::Reseed::Replay`], so nothing a
-/// sleeping read could not see is lost once the session is up. A seat whose
-/// file holds nothing yet - a fresh session that has not spoken - falls to
-/// the replay alone, which is the wait below.
+/// So a copy is returned as it stands, and a seat with none is seeded from
+/// the file. **A copy of another occupant is waited for, never replaced and
+/// never answered over**: the seal the header moved on from is the fold's to
+/// apply, and a transcript seed here would be a row subset - the `Result`
+/// frames a transcript never carries would go with the copy.
+///
+/// **The two paths do not cost the same on failure.** A held copy that never
+/// turns current spends the wait and is then answered as no conversation -
+/// refused rather than filled from a subset. A seat with no copy pays the
+/// file read and answers at once with what the read inserted, or with
+/// nothing when the read's own occupant is stale; a file that holds nothing
+/// yet falls through to the same bounded wait for its first `Connected`.
 ///
 /// No lock is held across the wait, and two callers on two cold seats do not
 /// serialise: each waits on its own seat's arrival, and the notice only says
-/// that some seat was seeded.
+/// that some seat's copy moved.
 pub async fn conversation_for(
     state: &TransportState,
     slot: &SessionSlot,
     timings: &mut OpenTimings,
 ) -> Option<Arc<Held>> {
-    // **A copy of another occupant is no copy.** A seal the fold has not
-    // applied yet leaves the previous run's conversation standing, and
-    // answering with it would pair the new epoch's count with rows it never
-    // wrote; the read falls through to the paths a seat with no copy takes.
+    // **A copy of another occupant is no copy.** Answering with it would pair
+    // the new epoch's count with rows it never wrote.
     let occupant = state.surface.header(slot).session_id;
     let current = |held: &Arc<Held>| held.holds_occupant(occupant.as_ref());
-    if let Some(held) = state.conversations.get(slot).filter(current) {
-        return Some(held);
+    if let Some(held) = state.conversations.get(slot) {
+        if current(&held) {
+            return Some(held);
+        }
+        // The seal is on its way; the fold's reseed lands on the copy the
+        // seat already holds and wakes this wait.
+        return await_current(state, slot, &current, SEED_WAIT).await;
     }
     // **The file seeds only a seat with NO copy.** `insert` keeps what is
-    // there, so on a mismatched copy it would hand back the previous run's
-    // rows - the very answer this function exists to refuse. A mismatch goes
-    // straight to the replay, whose reseed replaces the copy in place.
-    if state.conversations.get(slot).is_none()
-        && let Some(held) = seed_from_transcript(state, slot, timings).await
-    {
+    // there, so a copy that appeared while the file was read is the stream's
+    // and must not be overwritten.
+    if let Some(held) = seed_from_transcript(state, slot, timings).await {
         // **The seed must be the seat's copy too.** Its occupant is the
         // read's own resolution, which can lag a header that already moved
         // on: that copy would answer for the run it did not read.
-        if !current(&held) {
-            return None;
-        }
-        // **A live session's window is the truer copy** and this is how it
-        // lands: the task answers `HistoryReplayed` with the frames it holds,
-        // which reseeds the seat over what the file seeded. A seat with
-        // nothing running has nothing to replay from, and the dispatch's
-        // refusal there is the ordinary answer.
-        let _ = state.surface.dispatch(Command::ReplayConversation { key: slot.clone() });
-        return Some(held);
+        return current(&held).then_some(held);
     }
-    let deadline = std::time::Instant::now() + REPLAY_WAIT;
-    // Asked BEFORE the loop's first look, so a seat that resolves between
-    // the look and the wait is still seen on this pass rather than costing
-    // the caller its whole budget.
-    if state.surface.dispatch(Command::ReplayConversation { key: slot.clone() }).is_err() {
-        return None;
-    }
+    // **The file holds nothing yet.** A live session's first `Connected` may
+    // still be on its way; wait for the fold to apply it, bounded, so a page
+    // opening on a just-spawned seat draws it rather than an empty
+    // conversation.
+    await_current(state, slot, &current, SEED_WAIT).await
+}
+
+/// Wait, up to `within`, for `slot`'s held copy to satisfy `current`, and
+/// answer it when it does.
+///
+/// **The notice is enabled before the first look**, so a copy that moves
+/// between the look and the wait is still seen on this pass rather than
+/// costing the caller its whole budget. `None` when no current copy arrives,
+/// which the caller answers as a seat with no conversation.
+async fn await_current(
+    state: &TransportState,
+    slot: &SessionSlot,
+    current: &impl Fn(&Arc<Held>) -> bool,
+    within: std::time::Duration,
+) -> Option<Arc<Held>> {
+    let deadline = std::time::Instant::now() + within;
     loop {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() {
-            break;
-        }
+        // **A fresh notice every pass.** `Notified` is fused once it completes,
+        // and this one fires for any seat: a reused future would return Ready
+        // on every later poll (the timeout polls it first) and spin this loop
+        // to its deadline instead of waiting. Enabled before the look, so a
+        // copy that moves between the look and the wait is still seen.
         let seeded = state.conversations.seeded_notice();
         tokio::pin!(seeded);
         seeded.as_mut().enable();
         if let Some(held) = state.conversations.get(slot).filter(current) {
             return Some(held);
         }
-        if tokio::time::timeout(left, seeded).await.is_err() {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        if tokio::time::timeout(left, seeded.as_mut()).await.is_err() {
             break;
         }
     }
     let held = state.conversations.get(slot).filter(current);
     if held.is_none() {
-        tracing::warn!(
-            event_name = "conversation_replay_timed_out",
+        tracing::debug!(
+            event_name = "conversation_not_current",
             slot = %slot.display(),
-            waited_ms = REPLAY_WAIT.as_millis(),
-            "no conversation for this seat within the wait; the request is answered \
-             without one, which a client draws the same way it draws a seat that is \
-             not running",
+            waited_ms = within.as_millis(),
+            "no current conversation for this seat within the wait; the request is answered \
+             without one, which a client draws the same way it draws a seat that is not \
+             running",
         );
     }
     held
@@ -1700,6 +1711,11 @@ async fn seed_from_transcript(
     slot: &SessionSlot,
     timings: &mut OpenTimings,
 ) -> Option<Arc<Held>> {
+    // A test can hold the seed here, between the cache check that found no
+    // copy and the read: a `Connected` that lands while this is held is the
+    // race the insert below is written to lose.
+    #[cfg(any(test, feature = "testing"))]
+    state.conversations.pass_the_seed_hold().await;
     let at = std::time::Instant::now();
     let surface = Arc::clone(&state.surface);
     let seat = slot.clone();
@@ -1719,7 +1735,12 @@ async fn seed_from_transcript(
     // the seat ran one occupant must not answer under another: the seal the
     // fold has not applied yet leaves this copy standing while the header
     // already names the new run.
-    conversation.set_occupant(read.session_id.map(forge_primitives::SessionId::new));
+    let occupant = read.session_id.map(forge_primitives::SessionId::new);
+    conversation.set_occupant(occupant.clone());
+    // **A copy the stream inserted while the file was read is the live one,
+    // and it stays.** The seat held none when this read started, so a copy
+    // that appeared since came from the stream, which carries frames a
+    // transcript does not.
     Some(state.conversations.insert(slot, conversation))
 }
 
@@ -2068,8 +2089,6 @@ enum NotReady {
     Behind,
     /// The epoch's seal rows are unapplied, so its history cannot be reached.
     AwaitsSeal,
-    /// A replay's window is unapplied, and the ring never holds one.
-    AwaitsReplay,
 }
 
 /// Bring `slot`'s held conversation up to `want`, or report that it cannot.
@@ -2113,22 +2132,6 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
         return Ok(());
     }
     let from = state.conversations.consumed_for(slot).saturating_add(1);
-    // **A replay in the stretch is history the fill cannot apply.** Its window
-    // is not ringed, so no window serves it, and marking the copy past its
-    // number would have the fold skip the replay when it lands - the rows
-    // gone with nothing failing. Refused instead, for the fold to apply;
-    // counted apart from a frame that merely closes an epoch.
-    if state.surface.seat_replays_between(slot, from, want) > 0 {
-        tracing::error!(
-            event_name = "seat_copy_awaits_replay",
-            slot = %slot.display(),
-            want,
-            "the seat's copy is behind a replay the fold has not applied, and the ring cannot \
-             carry the window it hands over; the read is refused rather than answered with a \
-             hole",
-        );
-        return Err(NotReady::AwaitsReplay);
-    }
     let frames = state.surface.seat_frames_between(slot, from, want);
     // **A stretch holding only a seal is not a stretch the copy is behind on.**
     // The frames that close an epoch are numbered but never ringed, so no
@@ -2235,9 +2238,6 @@ async fn session(
             NotReady::AwaitsSeal => {
                 "the fold has not applied its epoch's seal, whose history an answer would be \
                  missing"
-            }
-            NotReady::AwaitsReplay => {
-                "the fold has not applied its replay, whose window an answer would be missing"
             }
         };
         anyhow::bail!("the seat's stream has not settled for {}; {why}", slot.display());
@@ -2562,7 +2562,6 @@ async fn session(
                     surface.handoff_in_flight(slot),
                     composer.compacting(slot),
                 ),
-                sign_in: composer.sign_in(slot).cloned(),
                 bind: surface.dictate_bind().label().to_owned(),
                 mode: surface.dictate_mode().label().to_owned(),
                 notice: composer.landed(slot).map(|landed| {

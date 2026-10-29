@@ -19,7 +19,7 @@
     projects = [],
   }: {
     connection: Connection | null;
-    /** The brand mark from the greeting; unused by this page's plain lockup. */
+    /** The brand mark from the greeting, drawn on the page's lockup. */
     mark?: string | null;
     /** The roster, for the install scope picker's project list. */
     projects?: ProjectView[];

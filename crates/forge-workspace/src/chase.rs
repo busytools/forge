@@ -1570,8 +1570,9 @@ mod tests {
             }
             other => panic!("the delivery wires one prompt; got {other:?}"),
         };
-        let drawn: Vec<SessionUpdate> =
-            std::iter::from_fn(|| rx.try_recv().ok()).map(|frame| frame.update).collect();
+        let drawn: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
         let frame = drawn.iter().find_map(|update| match update {
             SessionUpdate::ChatAppended { msg, origin, .. } => Some((msg, origin)),
             _ => None,
@@ -1613,7 +1614,7 @@ mod tests {
         }
         while let Ok(frame) = rx.try_recv() {
             assert!(
-                !matches!(frame.update, SessionUpdate::TasksChanged { .. }),
+                !matches!(&*frame.update, SessionUpdate::TasksChanged { .. }),
                 "a no-op chase pass announced a task set: {:?}",
                 frame.update,
             );
