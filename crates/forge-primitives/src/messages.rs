@@ -502,6 +502,69 @@ pub enum Message {
         extras: Extras,
     },
 
+    /// A foreground shell command mutated repository state. Subtype
+    /// `"vcs_state_changed"`.
+    ///
+    /// An event, not state: beyond the kind it names at most the branch the
+    /// mutation landed on, so a reader still re-reads the tree for what it
+    /// now holds.
+    VcsStateChanged {
+        /// What class of mutation was observed: `commit`, `push`, `merge`
+        /// or `rebase` today. The CLI calls this an open set and asks
+        /// consumers to treat an unrecognized kind as "something changed",
+        /// so it stays a string.
+        kind: String,
+        /// The branch a commit landed on or a push updated. Absent on merge
+        /// and rebase frames, and on a push whose branch could not be
+        /// attributed.
+        branch: Option<String>,
+        /// The directory the shell finished in, an inner `cd` reflected and
+        /// a `git -C` target not. A hint about where to look.
+        cwd: String,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
+    },
+
+    /// A change from this session went out for review, or linked the
+    /// session to one. Subtype `"code_change_published"`.
+    ///
+    /// The URL fields are scraped from the command's output and the CLI
+    /// calls them unverified, so forge uses the frame as a refresh trigger
+    /// and lets its own lookup fill what a PR row states.
+    CodeChangePublished {
+        /// Forge classification from the URL's shape: `github`,
+        /// `github-enterprise`, `gitlab`, `bitbucket`, `gerrit`, and values
+        /// for other review systems. Open set.
+        provider: String,
+        /// Web URL of the change, as printed in the command output.
+        url: String,
+        /// Repository path from the URL (`owner/name` on GitHub).
+        repo: String,
+        /// Provider-native change number, as a string.
+        identifier: String,
+        /// What the session did that produced the announcement: `created`,
+        /// `edited`, `merged`, `commented`, `closed`, `reopened`, `ready`,
+        /// `draft`, `auto-merge-enabled`, `auto-merge-disabled`, `pushed`,
+        /// `checked-out`, `started`. Absent only from older producers, and
+        /// free-form so a new verb decodes.
+        action: Option<String>,
+        /// The session's working branch when it produced the change. Sent
+        /// for gerrit always, and with `created` on any provider.
+        branch: Option<String>,
+        /// Unique identifier for this event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+        /// Fields of the frame forge does not model, kept verbatim so a
+        /// decode is lossless for whatever draws the raw frame.
+        extras: Extras,
+    },
+
     /// Rate-limit state transition. The CLI emits this when the current
     /// rate-limit window changes state (e.g. `allowed` → `allowed_warning`).
     /// Wire shape mirrors +
@@ -690,6 +753,8 @@ impl Message {
             | Message::HookResponse { session_id, .. }
             | Message::Notification { session_id, .. }
             | Message::CompactBoundary { session_id, .. }
+            | Message::VcsStateChanged { session_id, .. }
+            | Message::CodeChangePublished { session_id, .. }
             | Message::Result { session_id, .. }
             | Message::CommandLifecycle { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
@@ -780,6 +845,8 @@ impl Message {
             | Message::Notification { extras, .. }
             | Message::PermissionDenied { extras, .. }
             | Message::CompactBoundary { extras, .. }
+            | Message::VcsStateChanged { extras, .. }
+            | Message::CodeChangePublished { extras, .. }
             | Message::RateLimitEvent { extras, .. }
             | Message::CommandLifecycle { extras, .. }
             | Message::Result { extras, .. }
@@ -1489,6 +1556,30 @@ enum TypedSystemRepr {
         #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
         extras: Extras,
     },
+    VcsStateChanged {
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        cwd: String,
+        uuid: String,
+        session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
+    },
+    CodeChangePublished {
+        provider: String,
+        url: String,
+        repo: String,
+        identifier: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        uuid: String,
+        session_id: String,
+        #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extras: Extras,
+    },
 }
 
 /// The subset of `compact_boundary`'s `compact_metadata` forge reads,
@@ -1780,6 +1871,35 @@ impl From<MessageRepr> for Message {
                 uuid,
                 session_id,
                 metadata_extras,
+                extras,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::VcsStateChanged {
+                kind,
+                branch,
+                cwd,
+                uuid,
+                session_id,
+                extras,
+            })) => Message::VcsStateChanged { kind, branch, cwd, uuid, session_id, extras },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CodeChangePublished {
+                provider,
+                url,
+                repo,
+                identifier,
+                action,
+                branch,
+                uuid,
+                session_id,
+                extras,
+            })) => Message::CodeChangePublished {
+                provider,
+                url,
+                repo,
+                identifier,
+                action,
+                branch,
+                uuid,
+                session_id,
                 extras,
             },
             MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
@@ -2171,6 +2291,37 @@ impl From<Message> for MessageRepr {
                     post_tokens,
                     extras: metadata_extras,
                 },
+                uuid,
+                session_id,
+                extras,
+            })),
+            Message::VcsStateChanged { kind, branch, cwd, uuid, session_id, extras } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::VcsStateChanged {
+                    kind,
+                    branch,
+                    cwd,
+                    uuid,
+                    session_id,
+                    extras,
+                }))
+            }
+            Message::CodeChangePublished {
+                provider,
+                url,
+                repo,
+                identifier,
+                action,
+                branch,
+                uuid,
+                session_id,
+                extras,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::CodeChangePublished {
+                provider,
+                url,
+                repo,
+                identifier,
+                action,
+                branch,
                 uuid,
                 session_id,
                 extras,
@@ -3969,5 +4120,122 @@ mod tests_stamp {
             Some(AT),
             "the first stamp is the row's own; a later one does not walk it forward",
         );
+    }
+
+    /// The commit and merge frames below are verbatim from the committed
+    /// `vcs_state_changed` baseline. **`branch` is absent on merge and
+    /// rebase**, measured on the capture - a fold that required it would
+    /// refuse two of the four kinds.
+    #[test]
+    fn vcs_state_changed_decodes_every_captured_kind() {
+        let commit = json!({
+            "type": "system",
+            "subtype": "vcs_state_changed",
+            "kind": "commit",
+            "branch": "main",
+            "cwd": "/tmp/repo",
+            "uuid": "u1",
+            "session_id": "s1",
+        });
+        let msg: Message = serde_json::from_value(commit.clone()).expect("decode");
+        let Message::VcsStateChanged { kind, branch, cwd, uuid, session_id, .. } = msg else {
+            panic!("expected VcsStateChanged, got {msg:?}");
+        };
+        assert_eq!(kind, "commit");
+        assert_eq!(branch.as_deref(), Some("main"));
+        assert_eq!(cwd, "/tmp/repo");
+        assert_eq!(uuid, "u1");
+        assert_eq!(session_id, "s1");
+
+        let merged = json!({
+            "type": "system",
+            "subtype": "vcs_state_changed",
+            "kind": "merge",
+            "cwd": "/tmp/repo",
+            "uuid": "u2",
+            "session_id": "s1",
+        });
+        let msg: Message = serde_json::from_value(merged).expect("decode");
+        let Message::VcsStateChanged { kind, branch, .. } = msg else {
+            panic!("a branchless mutation still reaches the typed variant");
+        };
+        assert_eq!(kind, "merge");
+        assert_eq!(branch, None);
+    }
+
+    /// Verbatim from the committed `code_change_published` baseline.
+    #[test]
+    fn code_change_published_decodes_the_captured_frame() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "code_change_published",
+            "provider": "github",
+            "url": "https://github.com/example/example/pull/123",
+            "repo": "example/example",
+            "identifier": "123",
+            "action": "created",
+            "branch": "main",
+            "uuid": "u1",
+            "session_id": "s1",
+        });
+        let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+        let Message::CodeChangePublished {
+            provider, url, repo, identifier, action, branch, ..
+        } = &msg
+        else {
+            panic!("expected CodeChangePublished, got {msg:?}");
+        };
+        assert_eq!(provider, "github");
+        assert_eq!(url, "https://github.com/example/example/pull/123");
+        assert_eq!(repo, "example/example");
+        assert_eq!(identifier, "123");
+        assert_eq!(action.as_deref(), Some("created"));
+        assert_eq!(branch.as_deref(), Some("main"));
+
+        // A decode that keeps only what this build reads is a decode that
+        // drops CLI data: both frames go back out byte-identical.
+        let encoded = serde_json::to_value(&msg).expect("encode");
+        assert_eq!(encoded, raw);
+    }
+
+    /// The CLI calls both `kind` and `provider` open sets, and `action`
+    /// carries verbs this build has no arm for. None of the three may fail a
+    /// decode or be replaced by a catch-all marker.
+    #[test]
+    fn repository_frames_keep_values_this_build_does_not_know() {
+        let raw = json!({
+            "type": "system",
+            "subtype": "vcs_state_changed",
+            "kind": "worktree-moved",
+            "branch": "topic",
+            "cwd": "/tmp/repo",
+            "uuid": "u1",
+            "session_id": "s1",
+        });
+        let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+        let Message::VcsStateChanged { kind, .. } = &msg else {
+            panic!("expected VcsStateChanged, got {msg:?}");
+        };
+        assert_eq!(kind, "worktree-moved", "an unknown kind is carried, not refused");
+        assert_eq!(serde_json::to_value(&msg).expect("encode"), raw);
+
+        let raw = json!({
+            "type": "system",
+            "subtype": "code_change_published",
+            "provider": "some-new-forge",
+            "url": "https://example.test/change/9",
+            "repo": "a/b",
+            "identifier": "9",
+            "action": "auto-merge-enabled",
+            "uuid": "u2",
+            "session_id": "s1",
+        });
+        let msg: Message = serde_json::from_value(raw.clone()).expect("decode");
+        let Message::CodeChangePublished { provider, action, .. } = &msg else {
+            panic!("expected CodeChangePublished, got {msg:?}");
+        };
+        assert_eq!(provider, "some-new-forge");
+        assert_eq!(action.as_deref(), Some("auto-merge-enabled"));
+        assert_eq!(serde_json::to_value(&msg).expect("encode"), raw);
     }
 }

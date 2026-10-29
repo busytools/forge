@@ -162,6 +162,47 @@ fn the_compact_baseline_carries_a_real_compaction() {
     );
 }
 
+/// The two repository-state frames arrived unmodelled and drew as raw rows,
+/// so these baselines are the only evidence of the payload the CLI sends.
+/// Pinned through the typed variants rather than by subtype: a recapture
+/// that dropped a frame, or a shape drift back to the generic bucket, leaves
+/// every other gate green while the fold reads nothing.
+#[test]
+fn committed_baselines_carry_the_repository_state_frames() {
+    let vcs = load_baseline("vcs_state_changed");
+    let mut kinds = Vec::new();
+    for line in vcs.inbound() {
+        if let DecodedLine::Message(msg) = decode_dispatch(line, 1)
+            && let Message::VcsStateChanged { kind, .. } = &*msg
+        {
+            kinds.push(kind.clone());
+        }
+    }
+    assert_eq!(
+        kinds,
+        ["commit", "push", "commit", "merge", "commit", "rebase"],
+        "the vcs baseline no longer reaches the typed variant with every kind the frame declares",
+    );
+
+    let published = load_baseline("code_change_published");
+    let mut found = 0;
+    for line in published.inbound() {
+        if let DecodedLine::Message(msg) = decode_dispatch(line, 1)
+            && let Message::CodeChangePublished {
+                provider, url, identifier, action, branch, ..
+            } = &*msg
+        {
+            found += 1;
+            assert_eq!(provider, "github");
+            assert_eq!(url, "https://github.com/example/example/pull/123");
+            assert_eq!(identifier, "123");
+            assert_eq!(action.as_deref(), Some("created"));
+            assert_eq!(branch.as_deref(), Some("main"));
+        }
+    }
+    assert_eq!(found, 1, "the published baseline carries no code_change_published frame");
+}
+
 #[test]
 fn all_baselines_decode_cleanly() {
     assert_corpus_decodes(&baseline_dir());
