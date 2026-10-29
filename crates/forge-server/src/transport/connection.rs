@@ -258,7 +258,12 @@ enum ViewEvent {
     Nav(forge_primitives::browser::BrowserNavState),
     Failed(String),
     File(forge_primitives::browser::BrowserFileAsk),
-    Download(forge_primitives::browser::BrowserDownload),
+    Download {
+        download: forge_primitives::browser::BrowserDownload,
+        /// The offer was dropped before a viewer read it, so its words name a
+        /// loss rather than a save that failed.
+        dropped: bool,
+    },
     Audio(forge_primitives::browser::BrowserAudio),
 }
 
@@ -282,7 +287,7 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
             changed = viewing.nav.changed() => changed.map(|()| 3_u8).map_err(|_| 13_u8),
             changed = viewing.files.changed() => changed.map(|()| 4_u8).map_err(|_| 14_u8),
             download = viewing.downloads.recv() => match download {
-                Ok(download) => return ViewEvent::Download(download),
+                Ok(download) => return ViewEvent::Download { download, dropped: false },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(lost)) => {
                     tracing::warn!(
                         event_name = "browser_download_lagged",
@@ -296,17 +301,21 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
                     // The shell has one user-facing channel for a download
                     // that will not arrive - the refusal the save door
                     // raises - and a second, non-modal surface for a corner
-                    // case is machinery this cut does not add. The words name
-                    // the loss, so the alert is not read as a failed write.
-                    return ViewEvent::Download(forge_primitives::browser::BrowserDownload {
-                        tab: viewing.tab,
-                        name: "download".to_owned(),
-                        bytes: Vec::new(),
-                        error: Some(format!(
-                            "{lost} finished download(s) were dropped before this viewer read \
-                             them: the browser held at most the profile's backlog"
-                        )),
-                    });
+                    // case is machinery this cut does not add. `dropped`
+                    // tells the shell to title it as a loss rather than as a
+                    // save that failed.
+                    return ViewEvent::Download {
+                        download: forge_primitives::browser::BrowserDownload {
+                            tab: viewing.tab,
+                            name: "download".to_owned(),
+                            bytes: Vec::new(),
+                            error: Some(format!(
+                                "{lost} finished download(s) were dropped before this viewer \
+                                 read them: the browser held at most the profile's backlog"
+                            )),
+                        },
+                        dropped: true,
+                    };
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     std::future::pending().await
@@ -1133,7 +1142,7 @@ where
                     // **A finished download goes to the person driving.** A
                     // watcher's connection receives the broadcast and drops
                     // it; the save door is the controller's.
-                    ViewEvent::Download(download) => {
+                    ViewEvent::Download { download, dropped } => {
                         let Some(viewing) = browser.viewing.as_ref() else { continue };
                         // **A save is the tab's too**: a controller watching
                         // another tab is not offered this file.
@@ -1153,6 +1162,7 @@ where
                                 name: download.name,
                                 data,
                                 error: download.error,
+                                dropped,
                             },
                         )
                         .await?;
@@ -6383,14 +6393,18 @@ mod tests {
         }
 
         match next_view_event(&mut viewing).await {
-            ViewEvent::Download(dropped) => {
-                assert_eq!(dropped.tab, 3, "the notice stays on the viewer's own tab");
-                let why = dropped.error.expect("a lag is answered with its own reason");
+            ViewEvent::Download { download, dropped } => {
+                assert!(
+                    dropped,
+                    "the shell is told this is a dropped offer, so it can title it as a loss",
+                );
+                assert_eq!(download.tab, 3, "the notice stays on the viewer's own tab");
+                let why = download.error.expect("a lag is answered with its own reason");
                 assert!(
                     why.contains("dropped") && why.contains("backlog"),
                     "the words name the loss rather than a failed write: {why}",
                 );
-                assert!(dropped.bytes.is_empty(), "there are no bytes to save");
+                assert!(download.bytes.is_empty(), "there are no bytes to save");
             }
             _ => panic!("a lagged download is answered as a download with a reason"),
         }

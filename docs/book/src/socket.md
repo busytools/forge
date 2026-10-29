@@ -672,12 +672,16 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   does not cancel it. With no controller the chooser waits for the agent's
   own `browser_file_upload`; CEF's own dialog is the fallback when no
   driver is attached.
-- **`browser_download {tab, name, data, error}`** - a page's download
-  finished on the server. The shell opens this machine's save door and
-  writes `data` (base64), or says `error` and writes nothing; a file past
-  32 MiB is refused in words rather than handed over. **Only the
-  controller of `tab` is sent one**, and the server's own copy is removed
-  once it has crossed, whether or not a viewer took it.
+- **`browser_download {tab, name, data, error, dropped}`** - a page's
+  download finished on the server. The shell opens this machine's save door
+  and writes `data` (base64), or says `error` and writes nothing; a file past
+  32 MiB is refused in words rather than handed over. `dropped` is true when
+  the offer was lost before this viewer read it (the backlog's ceiling), so
+  the shell titles the notice as a loss rather than a save that failed; it is
+  false, and absent from an older server, for every download the host
+  actually finished. **Only the controller of `tab` is sent one**, and the
+  server's own copy is removed once it has crossed, whether or not a viewer
+  took it.
 - **`error {what, why, seat, dispatch_id}`** - `what` failed and `why`, in
   the core's own words. `seat` names the conversation a refusal belongs to
   where it belongs to one - a refused `subscribe` names the seat it refused

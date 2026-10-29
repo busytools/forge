@@ -1292,10 +1292,11 @@ impl Bridge {
                     message.get("name").and_then(Value::as_str).unwrap_or("download").to_owned();
                 let data = message.get("data").and_then(Value::as_str).map(str::to_owned);
                 let error = message.get("error").and_then(Value::as_str).map(str::to_owned);
+                let dropped = message.get("dropped").and_then(Value::as_bool).unwrap_or(false);
                 if let Some(app) = self.app.as_ref() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        save_download(&app, name, data, error).await;
+                        save_download(&app, name, data, error, dropped).await;
                     });
                 }
                 self.forward(&message, None);
@@ -1511,11 +1512,12 @@ async fn save_download(
     name: String,
     data: Option<String>,
     error: Option<String>,
+    dropped: bool,
 ) {
     use tauri_plugin_dialog::DialogExt as _;
 
     if let Some(error) = error {
-        say_not_saved(app, &error);
+        say_download_refused(app, &error, dropped);
         return;
     }
     let Some(data) = data else { return };
@@ -1523,7 +1525,11 @@ async fn save_download(
     let bytes = match base64::engine::general_purpose::STANDARD.decode(data) {
         Ok(bytes) => bytes,
         Err(why) => {
-            say_not_saved(app, &format!("the download's bytes did not arrive intact: {why}"));
+            say_download_refused(
+                app,
+                &format!("the download's bytes did not arrive intact: {why}"),
+                false,
+            );
             return;
         }
     };
@@ -1540,25 +1546,37 @@ async fn save_download(
         file.write_all(&bytes)
     });
     if let Err(why) = written {
-        say_not_saved(app, &format!("the file could not be saved: {why}"));
+        say_download_refused(app, &format!("the file could not be saved: {why}"), false);
     }
 }
 
-/// Tell the person a download was not saved, and why.
+/// The title a download's refusal shows.
+///
+/// **A dropped offer is not a failed save.** An offer the backlog dropped
+/// never reached a save door at all, so it says so; anything that did reach
+/// one - a write that failed, bytes that did not arrive intact - keeps the
+/// words it always had.
+fn refusal_title(dropped: bool) -> &'static str {
+    if dropped { "a download was dropped before it was read" } else { "the download was not saved" }
+}
+
+/// Tell the person a download did not arrive, and why.
 ///
 /// **The line is the dialog's shadow**: a person who never saw the alert can
 /// still find out what happened, and the reason is the same sentence.
 #[cfg(target_os = "macos")]
-fn say_not_saved(app: &tauri::AppHandle, why: &str) {
+fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication};
     use objc2_foundation::NSString;
 
     tauri_plugin_log::log::info!(
-        "a download was not saved (event_name client_browser_download_refused): {why}"
+        "{} (event_name client_browser_download_refused): {why}",
+        refusal_title(dropped)
     );
     let app = app.clone();
     let why = why.to_owned();
+    let title = refusal_title(dropped);
     // **The alert is AppKit's own, run modally.** The dialog plugin's alert
     // picked a window of its own and was never seen (measured 2026-10-24);
     // one started from the app's own event loop is the one a person sees.
@@ -1568,7 +1586,7 @@ fn say_not_saved(app: &tauri::AppHandle, why: &str) {
         application.activate();
         let alert = NSAlert::new(mtm);
         alert.setAlertStyle(NSAlertStyle::Critical);
-        alert.setMessageText(&NSString::from_str("the download was not saved"));
+        alert.setMessageText(&NSString::from_str(title));
         alert.setInformativeText(&NSString::from_str(&why));
         let _ = alert.addButtonWithTitle(&NSString::from_str("OK"));
         alert.runModal();
@@ -1582,14 +1600,15 @@ fn say_not_saved(app: &tauri::AppHandle, why: &str) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn say_not_saved(app: &tauri::AppHandle, why: &str) {
+fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
     use tauri_plugin_dialog::DialogExt as _;
     tauri_plugin_log::log::info!(
-        "a download was not saved (event_name client_browser_download_refused): {why}"
+        "{} (event_name client_browser_download_refused): {why}",
+        refusal_title(dropped)
     );
     app.dialog()
         .message(why)
-        .title("the download was not saved")
+        .title(refusal_title(dropped))
         .kind(tauri_plugin_dialog::MessageDialogKind::Error)
         .show(|_| {});
 }
@@ -1714,6 +1733,23 @@ mod tests {
     fn bridge() -> (Arc<Bridge>, mpsc::UnboundedReceiver<ClientEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Bridge::new(None, tx), rx)
+    }
+
+    /// **A dropped offer is not a failed save.** The alert's title says
+    /// which it is: an offer the backlog dropped never reached a save door,
+    /// and a write that failed keeps the words a person already knows.
+    #[test]
+    fn a_dropped_download_does_not_claim_a_failed_save() {
+        assert_eq!(
+            refusal_title(true),
+            "a download was dropped before it was read",
+            "the dropped offer's own title",
+        );
+        assert_eq!(
+            refusal_title(false),
+            "the download was not saved",
+            "and a genuine save failure keeps the words it had",
+        );
     }
 
     /// **A refused gesture is one line a second, not one a frame.** The
