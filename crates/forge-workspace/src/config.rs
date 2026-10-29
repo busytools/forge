@@ -3710,6 +3710,11 @@ provider = "anthropic"
                 ),
                 "endpoint",
             ),
+            (
+                "[client]",
+                format!("{base}\n[client]\nbrowser_idle_minutes = 45\n"),
+                "browser_idle_minutes",
+            ),
         ];
         // Collected rather than asserted one at a time: a section that
         // started ignoring keys again should be named alongside the
