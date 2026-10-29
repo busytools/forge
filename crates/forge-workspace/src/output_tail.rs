@@ -3,8 +3,8 @@
 //! The CLI's local-bash tasks write the command's stdout to a file on disk
 //! rather than sending it over the wire (confirmed in
 //! `~/Projects/forge/.claude/skills/claude-cli-upgrade/reference-captures/monitor.jsonl`),
-//! so the tail is a file read. The readers are the session task - which
-//! resolves the path from its own conversation and answers a view's
+//! so the tail is a file read. The readers are the transport - which
+//! resolves the path from its held conversation and answers a view's
 //! `ReadCallOutput` with the result - and the views that hold a path already
 //! (a view tails a Monitor's file on its own tick).
 //!
@@ -184,6 +184,53 @@ pub fn read_output_file_tail(path: &Path, max_lines: usize) -> Option<Vec<String
         }
     }
     Some(ring.into_iter().collect())
+}
+
+/// How many lines of a call's output a `ReadCallOutput` answers with.
+pub const CALL_OUTPUT_MAX_LINES: usize = 12;
+
+/// The file a call's output went to, from the frames a conversation carries.
+///
+/// **Two ways to find it, and the ending frame's own word wins when both
+/// exist**: `task_notification.output_file` names the file when the task
+/// ends, and until then the path is composed from the task id the launch
+/// frame carries, under [`task_output_base`]. An empty `output_file` is a
+/// path the frame does not carry, not a path that is gone.
+pub fn resolve_call_output_path(
+    history: &[forge_primitives::Message],
+    call_id: &str,
+) -> Option<PathBuf> {
+    resolve_call_output_path_at(history, call_id, task_output_base)
+}
+
+/// [`resolve_call_output_path`] with the base named, so the composition can
+/// be exercised against a scratch tree without writing the process env.
+pub(crate) fn resolve_call_output_path_at(
+    history: &[forge_primitives::Message],
+    call_id: &str,
+    base: impl FnOnce() -> PathBuf,
+) -> Option<PathBuf> {
+    let named = history.iter().find_map(|message| match message {
+        forge_primitives::Message::TaskNotification {
+            tool_use_id: Some(id), output_file, ..
+        } if id == call_id && !output_file.is_empty() => Some(PathBuf::from(output_file)),
+        _ => None,
+    });
+    if named.is_some() {
+        return named;
+    }
+    let (session_id, task_id) = history.iter().find_map(|message| match message {
+        forge_primitives::Message::TaskStarted {
+            task_id,
+            tool_use_id: Some(id),
+            session_id,
+            ..
+        } if id == call_id => Some((session_id.clone(), task_id.clone())),
+        _ => None,
+    })?;
+    let base = base();
+    probe_task_output_layout(&base);
+    compose_task_output_path(&base, &session_id, &task_id)
 }
 
 #[cfg(test)]

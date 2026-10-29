@@ -74,52 +74,6 @@ pub(crate) struct SessionTask {
     pub(crate) teardown_done: Option<tokio::sync::watch::Sender<bool>>,
 }
 
-/// The file a call's own output sits at, off what its conversation holds:
-/// the path the task's ending frame named, else the path composed from the
-/// task id the launch frame carries while the task still runs.
-///
-/// **The ending frame's own path wins when both are reachable** - it is the
-/// CLI's word for where the output went, while the composed path is this
-/// build's reading of a layout the CLI never promised. `None` when the
-/// conversation names neither - and a composition that finds no file is the
-/// same answer rather than a third one, so the caller has one miss to draw.
-///
-/// **`base` is a thunk because a settled read never needs it**: resolving it
-/// costs a `realpath` syscall, and a call whose ending frame named the file
-/// answers off that frame alone. Only the composition's own lookup pays for
-/// it. It is a parameter rather than read here so the composition can be
-/// exercised against a scratch tree; the arm passes the real base's function.
-fn resolve_call_output_path(
-    history: &[forge_primitives::Message],
-    call_id: &str,
-    base: impl FnOnce() -> std::path::PathBuf,
-) -> Option<std::path::PathBuf> {
-    let named = history.iter().find_map(|message| match message {
-        forge_primitives::Message::TaskNotification {
-            tool_use_id: Some(id), output_file, ..
-        // An empty path is a path the frame does not carry: the wire sends
-        // `output_file: ""` for a task with no file, and reading that as a
-        // path would answer "gone" about a file that never existed.
-        } if id == call_id && !output_file.is_empty() => Some(std::path::PathBuf::from(output_file)),
-        _ => None,
-    });
-    if named.is_some() {
-        return named;
-    }
-    let (session_id, task_id) = history.iter().find_map(|message| match message {
-        forge_primitives::Message::TaskStarted {
-            task_id,
-            tool_use_id: Some(id),
-            session_id,
-            ..
-        } if id == call_id => Some((session_id.clone(), task_id.clone())),
-        _ => None,
-    })?;
-    let base = base();
-    crate::output_tail::probe_task_output_layout(&base);
-    crate::output_tail::compose_task_output_path(&base, &session_id, &task_id)
-}
-
 impl SessionTask {
     pub(crate) async fn run(mut self) {
         tracing::debug!(
@@ -1232,11 +1186,6 @@ impl SessionTask {
         });
     }
 
-    /// How many lines of a call's own output a read answers with, matching
-    /// a view's Monitor tail: the row is about what the command is
-    /// doing, not a transcript of everything it printed.
-    const CALL_OUTPUT_MAX_LINES: usize = 12;
-
     fn execute_command(&mut self, cmd: Command) {
         // **The judgment prompt is the one the swap's gate lets through.**
         // Recognised by the id the handoff recorded for it, so nothing else
@@ -1404,17 +1353,13 @@ impl SessionTask {
             // blank.
             Command::ReadCallOutput { key: _, call_id } => {
                 let path = self.conversation.as_ref().and_then(|(window, _)| {
-                    resolve_call_output_path(
-                        window.messages(),
-                        &call_id,
-                        crate::output_tail::task_output_base,
-                    )
+                    crate::output_tail::resolve_call_output_path(window.messages(), &call_id)
                 });
                 let output = match path {
                     None => forge_primitives::CallOutput::NoPath,
                     Some(path) => match crate::output_tail::read_output_file_tail(
                         &path,
-                        Self::CALL_OUTPUT_MAX_LINES,
+                        crate::output_tail::CALL_OUTPUT_MAX_LINES,
                     ) {
                         None => forge_primitives::CallOutput::FileGone,
                         Some(lines) => forge_primitives::CallOutput::Lines(lines),
@@ -9721,12 +9666,17 @@ provider = "anthropic"
         .expect("a task_notification frame");
 
         assert_eq!(
-            resolve_call_output_path(std::slice::from_ref(&started), "tu-live", || base.clone()),
+            crate::output_tail::resolve_call_output_path_at(
+                std::slice::from_ref(&started),
+                "tu-live",
+                || base.clone()
+            ),
             Some(tasks.join("t-live.output")),
             "while it runs, the composed path is the one the read uses",
         );
         assert_eq!(
-            resolve_call_output_path(&[started, ended], "tu-live", || base.clone()),
+            crate::output_tail::resolve_call_output_path_at(&[started, ended], "tu-live", || base
+                .clone()),
             Some(named),
             "and once the ending frame lands, its own path overrides the composition",
         );
@@ -9789,14 +9739,19 @@ provider = "anthropic"
         .expect("a task_started frame");
 
         assert_eq!(
-            resolve_call_output_path(&[launch.clone(), started.clone()], "tu-prose", || base
-                .clone()),
+            crate::output_tail::resolve_call_output_path_at(
+                &[launch.clone(), started.clone()],
+                "tu-prose",
+                || base.clone()
+            ),
             Some(composed.clone()),
             "the composed path answers, not the one the launch sentence names",
         );
         std::fs::remove_file(&composed).expect("unplant the composed file");
         assert_eq!(
-            resolve_call_output_path(&[launch, started], "tu-prose", || base.clone()),
+            crate::output_tail::resolve_call_output_path_at(&[launch, started], "tu-prose", || {
+                base.clone()
+            }),
             None,
             "and with the composed file gone the answer is no-path, never the sentence's file",
         );
@@ -9836,12 +9791,12 @@ provider = "anthropic"
         let history = vec![started("t-a", "tu-a"), started("t-b", "tu-b")];
 
         assert_eq!(
-            resolve_call_output_path(&history, "tu-a", || base.clone()),
+            crate::output_tail::resolve_call_output_path_at(&history, "tu-a", || base.clone()),
             Some(tasks.join("t-a.output")),
             "the first call reads its own task's file",
         );
         assert_eq!(
-            resolve_call_output_path(&history, "tu-b", || base.clone()),
+            crate::output_tail::resolve_call_output_path_at(&history, "tu-b", || base.clone()),
             Some(tasks.join("t-b.output")),
             "and the second reads its own, not the first's",
         );

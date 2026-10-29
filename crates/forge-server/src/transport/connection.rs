@@ -1407,6 +1407,26 @@ where
                 }
                 (None, false) => {
                     dispatched(me, &command);
+                    // **The transport answers this one from its own copy.**
+                    // The frames that name a call's output file arrive as
+                    // `ChatAppended` and are folded into the seat's held
+                    // conversation, which is the copy a read needs; the
+                    // session task keeps none of its own.
+                    if let Command::ReadCallOutput { key, call_id } = &command {
+                        return send(
+                            socket,
+                            ServerMessage::Update {
+                                update: Box::new(SessionUpdate::CallOutput {
+                                    key: key.clone(),
+                                    call_id: call_id.clone(),
+                                    output: call_output(state, key, call_id),
+                                }),
+                                seq: None,
+                                span: 1,
+                            },
+                        )
+                        .await;
+                    }
                     match state.surface.dispatch(command) {
                         Ok(()) => {
                             // Claimed as soon as the dispatch answers - Ok for a
@@ -3173,6 +3193,35 @@ fn dispatched(me: u64, command: &Command) {
 /// These five are the ones with nothing behind them on the wire: a client
 /// that omits `reply_to` for one of them has no second way to learn what
 /// happened.
+/// A call's own output, read from the transport's held copy of its seat.
+///
+/// The frame that names the file is a `ChatAppended` row the fold has already
+/// applied, so the held conversation is where the read resolves it; a seat
+/// this transport holds nothing for has no conversation to name one.
+fn call_output(
+    state: &TransportState,
+    key: &SessionSlot,
+    call_id: &str,
+) -> forge_primitives::CallOutput {
+    use forge_primitives::CallOutput;
+    let Some(held) = state.conversations.get(key) else {
+        return CallOutput::NoPath;
+    };
+    let conversation = held.lock();
+    let Some(path) =
+        forge_workspace::output_tail::resolve_call_output_path(conversation.messages(), call_id)
+    else {
+        return CallOutput::NoPath;
+    };
+    match forge_workspace::output_tail::read_output_file_tail(
+        &path,
+        forge_workspace::output_tail::CALL_OUTPUT_MAX_LINES,
+    ) {
+        None => CallOutput::FileGone,
+        Some(lines) => CallOutput::Lines(lines),
+    }
+}
+
 fn answers_through_a_reply(command: &Command) -> bool {
     matches!(
         command,
@@ -3221,6 +3270,60 @@ mod tests {
     use super::*;
     use crate::transport::Heartbeat;
     use crate::work::WorkCache;
+
+    /// The transport answers a call's output read from its own held copy: the
+    /// frame that names the file is a `ChatAppended` row the fold has applied,
+    /// and the session task keeps no conversation to ask.
+    #[tokio::test]
+    async fn a_call_output_read_resolves_from_the_transports_held_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let conversations = Arc::new(crate::transport::conversation::Conversations::new());
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::clone(&conversations),
+            live: Mutex::new(crate::live::Live::new()),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        conversations
+            .insert(&seat, crate::transport::conversation::Conversation::new(Vec::new(), 0, 0));
+
+        let path = std::env::temp_dir()
+            .join(format!("forge-call-output-transport-{}.log", std::process::id()));
+        std::fs::write(&path, "one\ntwo\n").expect("write the output file");
+        let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "t-1",
+            "tool_use_id": "tu-1",
+            "status": "completed",
+            "output_file": path.display().to_string(),
+            "summary": "done",
+            "session_id": "sess-1",
+            "uuid": "u-1",
+        }))
+        .expect("a task notification frame");
+        conversations.apply(
+            &SessionUpdate::ChatAppended { key: seat.clone(), msg, origin: None, source: None },
+            Some(1),
+        );
+
+        assert_eq!(
+            call_output(&state, &seat, "tu-1"),
+            forge_primitives::CallOutput::Lines(vec!["one".to_owned(), "two".to_owned()]),
+            "the copy's own frame names the file the read returns",
+        );
+        assert_eq!(
+            call_output(&state, &seat, "tu-unknown"),
+            forge_primitives::CallOutput::NoPath,
+            "a call the copy does not name is the no-path reason",
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 
     /// **Only a ping that went out can go unanswered.** The state holds no
     /// read clock at all, so a quiet read - a connection busy in one long
