@@ -7,9 +7,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The offer decision and the release name the install check compares: one
- * parse serves both, and a version it cannot read must never be treated as
- * one it can.
+ * The offer decision and the release name a manifest is read as: one parse
+ * serves both, and a version it cannot read must never be treated as one it
+ * can.
  */
 class VersionTest {
   @Test
