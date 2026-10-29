@@ -902,7 +902,12 @@ fn judgment_heading(line: &str) -> Option<(String, String)> {
         return None;
     }
     let body = rest.map_or_else(String::new, |rest| {
-        strip_emphasis(rest.trim_start().trim_start_matches(':')).trim().to_owned()
+        // The label's closing emphasis comes off only when the body begins
+        // with it, then the delimiter's own colon (`**Next**: run`). A body
+        // that opens with its own bold or colon keeps it (`Next: **run**`,
+        // `Next: ::1`).
+        let rest = strip_emphasis(rest);
+        rest.strip_prefix(':').unwrap_or(rest).trim().to_owned()
     });
     Some((label.to_owned(), body))
 }
@@ -2246,6 +2251,20 @@ mod tests {
         assert_eq!(sections.len(), 1, "one section: {sections:?}");
         assert_eq!(sections[0].label, "Next");
         assert_eq!(sections[0].lines, vec!["run the gate".to_owned()]);
+
+        // A body that opens with its own bold keeps it: only the label's
+        // closing pair comes off, and only when the body begins with it.
+        let sections = parse_judgment("Next: **run** the gate.");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "Next");
+        assert_eq!(sections[0].lines, vec!["**run** the gate.".to_owned()]);
+
+        // Only the delimiter's own colon comes off, so a body that opens
+        // with one (`::1`) is not trimmed into a number.
+        let sections = parse_judgment("Next: ::1 is the address");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "Next");
+        assert_eq!(sections[0].lines, vec!["::1 is the address".to_owned()]);
     }
 
     /// **The label's own emphasis comes off; the body's stays.** Stripping a
