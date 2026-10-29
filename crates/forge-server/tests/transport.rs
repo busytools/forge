@@ -16,6 +16,7 @@ use forge_server::testing::{Fleet, ViewFacts};
 use forge_server::transport::conversation::Conversation;
 use forge_server::transport::envelope::{ClientMessage, ServerMessage, Subject};
 use forge_server::transport::serve;
+use forge_server::transport::wire::{self, OpenTimings};
 use forge_server::transport::{Heartbeat, TransportState};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -4744,7 +4745,9 @@ async fn a_read_during_a_lagging_seal_answers_once_the_fold_catches_up() {
 /// restarts at the mint while the copy reseeds at the apply. A read landing
 /// between the two pairs the restarted count with the previous run's rows
 /// unless the copy carries its occupant - and one that is not the seat's is
-/// no copy at all.
+/// no copy at all. The read waits its bounded window for the reseed and,
+/// never given one, answers with no conversation rather than the previous
+/// run's.
 #[tokio::test]
 async fn an_answer_inside_the_seal_window_is_not_the_previous_runs_conversation() {
     let (url, fleet, state) = a_server_with_state().await;
@@ -4812,33 +4815,26 @@ async fn an_answer_inside_the_seal_window_is_not_the_previous_runs_conversation(
     );
 }
 
-/// **A mismatched copy is replaced by the transcript the header names.** The
-/// same window as the test above, with a transcript to answer from: the read
-/// does not wait for the seal it has not seen, and it does not keep the
-/// previous run's rows either - the header occupant's own file takes the
-/// seat's copy.
+/// **A copy of another occupant is waited for, and the reseed that lands in
+/// time is the answer.** The transcript the seat holds is the live one: it
+/// carries frames a transcript never does, so a header that has moved on is
+/// the fold's to reconcile with a reseed, never the file's to replace.
 #[tokio::test]
-async fn a_mismatched_copy_is_replaced_by_the_transcripts_occupant() {
-    let (url, fleet, state) = a_server_with_state().await;
+async fn a_mismatched_copy_is_answered_by_the_reseed_that_lands_in_time() {
+    let (_url, fleet, state) = a_server_with_state().await;
     wait_for_the_fold(&fleet).await;
     let seat = lead_seat();
+    let old = SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab");
+    let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
 
-    // The new occupant's transcript, whose id the seat's own record names.
-    let new_occupant = SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45");
-    let new_row =
-        r#"{"type":"user","uuid":"u-new","message":{"role":"user","content":"the new run's row"}}"#;
-    fleet.seed_transcript("TestOrg", "proj", "lead", &[new_row]).expect("the transcript seeds");
-    fleet
-        .seed_view_facts(&seat, ViewFacts { session_id: Some(new_occupant), ..Default::default() });
-
-    // The previous run's copy, folded without touching the header: its
-    // occupant is the old run, and the header already names the new one.
+    // The previous run's copy, folded under its own header.
     let notice = state.conversations.seeded_notice();
     tokio::pin!(notice);
     notice.as_mut().enable();
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(old.clone()), ..Default::default() });
     fleet.emit(SessionUpdate::Connected {
         key: seat.clone(),
-        session_id: SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab"),
+        session_id: old.clone(),
         cwd: "/tmp".to_owned(),
         current_model: a_current_model(),
         available_models: Vec::new(),
@@ -4851,27 +4847,96 @@ async fn a_mismatched_copy_is_replaced_by_the_transcripts_occupant() {
         .await
         .expect("the previous run's copy is held");
 
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            review: false,
-        },
-    )
-    .await;
-    let (_, data, _) = snapshot_answering(&mut socket).await;
+    // The header moves on with the seal still on its way to the fold.
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
 
-    assert_eq!(
-        says_times(&data, "the new run's row"),
-        1,
-        "the answer carries the header occupant's transcript",
+    let mut timings = OpenTimings::default();
+    let mut read = Box::pin(wire::conversation_for(&state, &seat, &mut timings));
+    assert!(
+        futures_util::poll!(read.as_mut()).is_pending(),
+        "a copy of another occupant is waited for, not answered with",
     );
-    assert_eq!(
-        says_times(&data, "the old run's row"),
-        0,
-        "and the mismatched copy was replaced rather than kept",
+    // The poll above parked the read inside its wait, with nothing left to
+    // wake it but the fold's reseed.
+    assert!(
+        futures_util::poll!(read.as_mut()).is_pending(),
+        "and still waiting rather than answering on a re-poll",
+    );
+
+    // The fold applies the seal it was holding; the reseed lands on the copy
+    // the reader is waiting on, in place.
+    state.conversations.apply(
+        &SessionUpdate::SessionReplaced {
+            key: seat.clone(),
+            session_id: new.clone(),
+            cwd: "/tmp".to_owned(),
+            current_model: a_current_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history: vec![a_said_frame("the new run's row")],
+            dropped: 0,
+            compaction_count: 0,
+        },
+        None,
+    );
+
+    let held = match futures_util::poll!(read.as_mut()) {
+        std::task::Poll::Ready(answered) => answered,
+        std::task::Poll::Pending => panic!("the reseed wakes the waiting read, and it answers"),
+    }
+    .expect("the reseeded copy is answered");
+    assert!(held.holds_occupant(Some(&new)), "the answer is the copy the header names");
+    let rows = held
+        .read(|conversation| serde_json::to_string(conversation.messages()).unwrap_or_default());
+    assert!(rows.contains("the new run's row"), "the reseed's rows are answered: {rows}");
+    assert!(
+        !rows.contains("the old run's row"),
+        "and the previous run's rows went with the seal: {rows}",
+    );
+}
+
+/// **A mismatched copy that never reseeds is answered over, not served.** No
+/// transcript replaces it either: the read waits its bounded window, and a
+/// copy that never turns current leaves the request answered without a
+/// conversation - the refusal a client already retries - rather than with
+/// another run's rows under this epoch's count.
+#[tokio::test]
+async fn a_mismatched_copy_that_never_reseeds_is_not_served() {
+    let (_url, fleet, state) = a_server_with_state().await;
+    wait_for_the_fold(&fleet).await;
+    let seat = lead_seat();
+    let old = SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab");
+    let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+
+    let notice = state.conversations.seeded_notice();
+    tokio::pin!(notice);
+    notice.as_mut().enable();
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(old.clone()), ..Default::default() });
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: old.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the old run's row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    tokio::time::timeout(SEED_WAIT, notice.as_mut())
+        .await
+        .expect("the previous run's copy is held");
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new), ..Default::default() });
+
+    let mut timings = OpenTimings::default();
+    let answered =
+        tokio::time::timeout(SEED_WAIT, wire::conversation_for(&state, &seat, &mut timings))
+            .await
+            .expect("the wait is bounded");
+    assert!(answered.is_none(), "a copy that never turns current is not answered");
+    assert!(
+        state.conversations.get(&seat).is_some_and(|held| held.holds_occupant(Some(&old))),
+        "and the copy was left as it stood rather than replaced",
     );
 }
 

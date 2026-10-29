@@ -1592,8 +1592,7 @@ pub fn page_within(
 const SEED_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The seat's conversation, answering from its own transcript when the
-/// stream holds none, and asking the session task for it when there is one
-/// to ask.
+/// stream holds none.
 ///
 /// **A seat has two sources of history and each answers what it alone can.**
 /// The transport's held copy is the live one: the fold applies every
@@ -1603,31 +1602,37 @@ const SEED_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 /// (measured live 2026-10-12: ~2.6s for a history on disk).
 ///
 /// So a copy is returned as it stands, and a seat with none is seeded from
-/// the file. A file that holds nothing yet - a fresh session that has not
-/// spoken - falls to the wait below, for the first `Connected` the fold has
-/// not applied.
+/// the file. **A copy of another occupant is waited for, never replaced and
+/// never answered over**: the seal the header moved on from is the fold's to
+/// apply, and a transcript seed here would be a row subset - the `Result`
+/// frames a transcript never carries would go with the copy. A copy that
+/// never turns current, and a file that holds nothing yet, are both answered
+/// the way a seat with no copy is.
 ///
 /// No lock is held across the wait, and two callers on two cold seats do not
 /// serialise: each waits on its own seat's arrival, and the notice only says
-/// that some seat was seeded.
+/// that some seat's copy moved.
 pub async fn conversation_for(
     state: &TransportState,
     slot: &SessionSlot,
     timings: &mut OpenTimings,
 ) -> Option<Arc<Held>> {
-    // **A copy of another occupant is no copy.** A seal the fold has not
-    // applied yet leaves the previous run's conversation standing, and
-    // answering with it would pair the new epoch's count with rows it never
-    // wrote. The transcript for the occupant the header names replaces it.
+    // **A copy of another occupant is no copy.** Answering with it would pair
+    // the new epoch's count with rows it never wrote.
     let occupant = state.surface.header(slot).session_id;
     let current = |held: &Arc<Held>| held.holds_occupant(occupant.as_ref());
-    if let Some(held) = state.conversations.get(slot).filter(current) {
-        return Some(held);
+    if let Some(held) = state.conversations.get(slot) {
+        if current(&held) {
+            return Some(held);
+        }
+        // The seal is on its way; the fold's reseed lands on the copy the
+        // seat already holds and wakes this wait.
+        return await_current(state, slot, &current, SEED_WAIT).await;
     }
-    // **A mismatch is replaced, not kept.** `insert` keeps what is there, so
-    // a stale copy would answer for the run it did not read; the seed writes
-    // over it.
-    if let Some(held) = seed_from_transcript(state, slot, timings, true).await {
+    // **The file seeds only a seat with NO copy.** `insert` keeps what is
+    // there, so a copy that appeared while the file was read is the stream's
+    // and must not be overwritten.
+    if let Some(held) = seed_from_transcript(state, slot, timings).await {
         // **The seed must be the seat's copy too.** Its occupant is the
         // read's own resolution, which can lag a header that already moved
         // on: that copy would answer for the run it did not read.
@@ -1636,10 +1641,24 @@ pub async fn conversation_for(
     // **The file holds nothing yet.** A live session's first `Connected` may
     // still be on its way; wait for the fold to apply it, bounded, so a page
     // opening on a just-spawned seat draws it rather than an empty
-    // conversation. The notice is enabled before the first look, so a seat
-    // that resolves between the look and the wait is still seen on this
-    // pass rather than costing the caller its whole budget.
-    let deadline = std::time::Instant::now() + SEED_WAIT;
+    // conversation.
+    await_current(state, slot, &current, SEED_WAIT).await
+}
+
+/// Wait, up to `within`, for `slot`'s held copy to satisfy `current`, and
+/// answer it when it does.
+///
+/// **The notice is enabled before the first look**, so a copy that moves
+/// between the look and the wait is still seen on this pass rather than
+/// costing the caller its whole budget. `None` when no current copy arrives,
+/// which the caller answers as a seat with no conversation.
+async fn await_current(
+    state: &TransportState,
+    slot: &SessionSlot,
+    current: &impl Fn(&Arc<Held>) -> bool,
+    within: std::time::Duration,
+) -> Option<Arc<Held>> {
+    let deadline = std::time::Instant::now() + within;
     let seeded = state.conversations.seeded_notice();
     tokio::pin!(seeded);
     seeded.as_mut().enable();
@@ -1658,12 +1677,12 @@ pub async fn conversation_for(
     let held = state.conversations.get(slot).filter(current);
     if held.is_none() {
         tracing::debug!(
-            event_name = "conversation_not_yet_held",
+            event_name = "conversation_not_current",
             slot = %slot.display(),
-            waited_ms = SEED_WAIT.as_millis(),
-            "no conversation for this seat within the wait; the request is answered \
-             without one, which a client draws the same way it draws a seat that is \
-             not running",
+            waited_ms = within.as_millis(),
+            "no current conversation for this seat within the wait; the request is answered \
+             without one, which a client draws the same way it draws a seat that is not \
+             running",
         );
     }
     held
@@ -1681,7 +1700,6 @@ async fn seed_from_transcript(
     state: &TransportState,
     slot: &SessionSlot,
     timings: &mut OpenTimings,
-    replace: bool,
 ) -> Option<Arc<Held>> {
     let at = std::time::Instant::now();
     let surface = Arc::clone(&state.surface);
@@ -1704,18 +1722,10 @@ async fn seed_from_transcript(
     // already names the new run.
     let occupant = read.session_id.map(forge_primitives::SessionId::new);
     conversation.set_occupant(occupant.clone());
-    if replace {
-        // **A copy the stream inserted while the file was read is the live
-        // one.** Keep it when it belongs to the same run; otherwise the file
-        // is what the header names and it takes the seat's place.
-        if occupant.is_some()
-            && let Some(held) = state.conversations.get(slot)
-            && held.holds_occupant(occupant.as_ref())
-        {
-            return Some(held);
-        }
-        return Some(state.conversations.replace(slot, conversation));
-    }
+    // **A copy the stream inserted while the file was read is the live one,
+    // and it stays.** The seat held none when this read started, so a copy
+    // that appeared since came from the stream, which carries frames a
+    // transcript does not.
     Some(state.conversations.insert(slot, conversation))
 }
 

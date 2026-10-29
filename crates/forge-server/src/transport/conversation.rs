@@ -723,8 +723,9 @@ impl Conversations {
 
     /// Replace a seat's copy outright.
     ///
-    /// **What a mismatched copy needs**: `insert` keeps what is there, and a
-    /// copy of the previous run must not survive as the new run's record.
+    /// **What a copy built from a ring stretch needs**: `insert` keeps what is
+    /// there, and the stretch replaces it so the frames after it apply to the
+    /// copy the read is served from.
     pub fn replace(&self, slot: &SessionSlot, conversation: Conversation) -> Arc<Held> {
         let held = {
             let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
@@ -736,12 +737,16 @@ impl Conversations {
         held
     }
 
-    /// A future that resolves when some seat is newly held.
+    /// A future that resolves when some seat's copy is first held or reseeded.
     ///
     /// **Enable it before looking the seat up**, or a seat seeded between the
     /// lookup and the wait leaves the caller waiting for something that has
     /// already happened - and bound the wait, because a seat whose session is
     /// gone never answers at all.
+    ///
+    /// A reseed counts: a seal the header has already moved on from lands on
+    /// the copy the seat holds, in place, so a reader waiting for that copy
+    /// to become current is woken by it rather than by the seat's first hold.
     pub fn seeded_notice(&self) -> tokio::sync::futures::Notified<'_> {
         self.seeded.notified()
     }
@@ -851,12 +856,17 @@ impl Conversations {
         occupant: Option<&forge_primitives::SessionId>,
     ) {
         if let Some(held) = self.get(slot) {
-            let mut conversation = held.lock();
-            conversation.seed(history.to_vec(), compaction_count, carried);
-            conversation.set_watermark(0);
-            if let Some(occupant) = occupant {
-                conversation.set_occupant(Some(occupant.clone()));
+            {
+                let mut conversation = held.lock();
+                conversation.seed(history.to_vec(), compaction_count, carried);
+                conversation.set_watermark(0);
+                if let Some(occupant) = occupant {
+                    conversation.set_occupant(Some(occupant.clone()));
+                }
             }
+            // A reader waiting for a copy of another occupant is waiting for
+            // exactly this, and it landed in place.
+            self.seeded.notify_waiters();
         } else {
             let mut conversation = Conversation::new(history.to_vec(), compaction_count, carried);
             conversation.set_watermark(0);
