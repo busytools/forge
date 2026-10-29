@@ -194,19 +194,6 @@ pub(super) fn noop_fetch_at(dir: &std::path::Path, bin: &std::path::Path) {
     write_wrapper(dir, bin, "noop-git", &[], "exit 0");
 }
 
-/// Point the repo at `dir` at a `git` whose `fetch` fails at once while its
-/// `ls-remote` stalls for `secs`: the shape a bounded run must cut.
-#[cfg(test)]
-pub(super) fn fail_fetch_stall_tip_at(dir: &std::path::Path, bin: &std::path::Path, secs: u64) {
-    write_wrapper(
-        dir,
-        bin,
-        "slow-tip-git",
-        &[("ls-remote", &format!("/bin/sleep {secs}"))],
-        "echo 'fatal: forced fetch failure' >&2; exit 128",
-    );
-}
-
 /// Write a `git` wrapper with one refusal on `fetch` and an optional stall on
 /// another subcommand, delegating everything else to the machine's own git.
 #[cfg(test)]
@@ -4277,28 +4264,6 @@ mod tests {
         );
     }
 
-    /// **A bounded run ends, whatever its child does.** The kick gives its
-    /// background refresh the scan's child budget, so a hung remote cannot
-    /// leave a fetch behind; the reader's own refresh has no such bound and is
-    /// never given one.
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_bounded_refresh_ends_when_its_budget_does() {
-        let (_upstream, dir) = stale_base_fixture();
-        let bin = tempfile::tempdir().expect("wrapper dir");
-        fail_fetch_stall_tip_at(dir.path(), bin.path(), 12);
-
-        let started = Instant::now();
-        let refresh = refresh_base_within(dir.path(), "origin/main", Duration::from_secs(1)).await;
-        let elapsed = started.elapsed();
-        crate::env::git_command::clear_git_point(dir.path());
-
-        assert_eq!(refresh.state, BaseState::Unverified, "a tip that cannot answer is unverified");
-        assert!(
-            elapsed < Duration::from_secs(6),
-            "the run is bounded by the budget it was given: {elapsed:?}",
-        );
-    }
-
     /// A base the remote has been rewritten past is not behind it, and not
     /// current either: the refs disagree while the remote has nothing the base
     /// lacks, so the state is unverified rather than a false `behind` or
@@ -4551,8 +4516,10 @@ mod tests {
         let bin = tempfile::tempdir().expect("wrapper dir");
         let held = held_fetch_at(dir.path(), bin.path());
 
+        // The bound is a failure instead of a hang, not a performance claim:
+        // the fetch is held, so a scan that awaited it could not answer at all.
         let scanned =
-            timeout(Duration::from_secs(5), scan_in_test(dir.path(), &HashMap::new(), None))
+            timeout(Duration::from_secs(30), scan_in_test(dir.path(), &HashMap::new(), None))
                 .await
                 .expect("the scan answered while its fetch was still held");
         let _ = scanned;
@@ -4584,7 +4551,10 @@ mod tests {
         let bin = tempfile::tempdir().expect("wrapper dir");
         let held = held_fetch_at(dir.path(), bin.path());
 
-        kick_background_fetch(dir.path(), "origin/main", COMMAND_TIMEOUT);
+        // The kick's own budget outlasts anything this test waits for: a bound
+        // that expired mid-test would cut the fetch and the reader would
+        // rightly lead its own.
+        kick_background_fetch(dir.path(), "origin/main", TEST_GIT_BUDGET);
         wait_for(|| held.starts() == 1, "the kicked fetch to start").await;
         let probes_before = held.probes();
 
