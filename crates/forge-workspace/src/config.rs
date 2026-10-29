@@ -925,8 +925,6 @@ fn same_models(
 }
 
 fn same_client(previous: &ClientConfig, next: &ClientConfig) -> bool {
-    // The two browser_idle ghosts are not read by anything: comparing them
-    // would report a change the config does not carry.
     previous.mark == next.mark && previous.theme == next.theme && previous.font == next.font
 }
 
@@ -1290,17 +1288,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             event_name = "ui_section_ignored",
             "[ui] is no longer read; the spinner and its cadence retired with the \
              terminal crate, so the section and its keys can be deleted",
-        );
-    }
-
-    if parsed.client.browser_idle_minutes.is_some() || parsed.client.browser_grace_minutes.is_some()
-    {
-        tracing::warn!(
-            target: "forge_workspace::config",
-            event_name = "client_browser_idle_keys_ignored",
-            "[client] browser_idle_minutes and browser_grace_minutes are no longer read; \
-             [browser] idle_minutes is the authority, so the two keys and their values \
-             can be deleted",
         );
     }
 
@@ -2201,25 +2188,6 @@ max_size_mib = 0
         assert_eq!(config.client.mark, None, "an unset key is the built-in, not a pinned value");
         assert_eq!(config.client.theme, None);
         assert_eq!(config.client.font, None, "and the built-in face is what an unset font draws");
-    }
-
-    /// **A config written before the idle pair moved still boots.** The old
-    /// `[client]` keys are declared ghosts, and `[browser]` stays the
-    /// authority: a synced `forge.toml` carrying both loads with the new
-    /// section's value.
-    #[test]
-    fn the_old_client_idle_keys_do_not_fail_the_load() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            &format!(
-                "{}\n[client]\nbrowser_idle_minutes = 45\nbrowser_grace_minutes = 15\n\n\
-                 [browser]\nidle_minutes = 5\n",
-                minimal_config()
-            ),
-        );
-        let config = load_from_dir(dir.path()).expect("the old keys are ignored, not refused");
-        assert_eq!(config.browser.idle_minutes, 5, "[browser] is the authority");
     }
 
     /// **`[browser]` carries the encoding and the idle release.** An absent
@@ -3742,6 +3710,11 @@ provider = "anthropic"
                 ),
                 "endpoint",
             ),
+            (
+                "[client]",
+                format!("{base}\n[client]\nbrowser_idle_minutes = 45\n"),
+                "browser_idle_minutes",
+            ),
         ];
         // Collected rather than asserted one at a time: a section that
         // started ignoring keys again should be named alongside the
@@ -5219,11 +5192,6 @@ provider = "anthropic"
                 "[dictate] device",
                 "\n[dictate]\ndevice = \"shure-id\"\n",
                 "dictate_device_key_ignored",
-            ),
-            (
-                "the [client] idle pair",
-                "\n[client]\nbrowser_idle_minutes = 45\nbrowser_grace_minutes = 15\n",
-                "client_browser_idle_keys_ignored",
             ),
             (
                 "a gateway key in an env layer",

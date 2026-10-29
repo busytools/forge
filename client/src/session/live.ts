@@ -18,8 +18,9 @@
  * RECORD is kept with it.** The first page to draw a seat opens the
  * subscription - its own answer is the whole record - and leaving no longer
  * gives it back, so every frame keeps folding into a record that is current
- * the moment the seat is drawn again. Only two things release it: its session
- * ending (`releaseSeat`), and the connection closing. **Showing a seat is a
+ * the moment the seat is drawn again. Three things release it: its session
+ * ending (`releaseSeat`), the connection closing, and the server refusing the
+ * seat. **Showing a seat is a
  * separate message**, sent by the route, and that is what spends a seat's
  * marks; the subscription spends nothing.
  */
@@ -245,8 +246,8 @@ const PAINT_WATCHDOG_MS = 250;
  *
  * **Nothing arrives to resolve a refusal, so the page has to ask.** A seat's
  * read is refused while the transport's copy is behind the number an answer
- * would carry - a seal or a replay the fold has not applied (#2446, #2514) -
- * and the fold catching up is transport state that emits no frame. The
+ * would carry - a seal the fold has not applied yet (#2446, #2514) - and the
+ * fold catching up is transport state that emits no frame. The
  * refused seat is watched by nobody, so no frame could carry the cue either,
  * and the re-ask is what finds the answer ("asking again may find it", as a
  * refused `more` already says).
@@ -328,7 +329,8 @@ function noteRepositoryEvent(update: SessionUpdate, slot: SessionSlot): void {
  * page to show a seat opens its subscription - that answer is what fills its
  * history - and no visit gives it back: every later visit is handed what the
  * seat holds, and the frames never stopped. Only a session ending
- * ([`releaseSeat`]) and the connection closing release it.
+ * ([`releaseSeat`]), the connection closing, and the server refusing the seat
+ * release it.
  *
  * **The subscribe happens with the first reader**, not at this call: a caller
  * that takes the store and never subscribes opens nothing of its own, and a
@@ -498,7 +500,8 @@ function createSeat(
     // **A visited seat is subscribed once and stays subscribed** (Ved,
     // 2026-10-25): the first visit opens it, and leaving no longer gives it
     // back, so a return draws the record the frames kept current. Only a
-    // session ending and the connection closing release it.
+    // session ending, the connection closing, and the server refusing the seat
+    // release it.
     if (seat.opened === 0) open();
     if (seat.wire === null) read();
     return leaving;
@@ -530,8 +533,10 @@ function createSeat(
    * Release the seat because its session has ended: no subscription outlives
    * it.
    *
-   * **This is one of only two doors that give a visited seat back**, the
-   * other being the connection closing. A page leaving does not. `release`
+   * **A visited seat is given back by three doors**: its session ending
+   * (here), the connection closing, and the server refusing the seat - which
+   * releases this connection's hold while the seat itself stays. A page
+   * leaving does not. `release`
    * gives back what the CONNECTION holds for the seat, not what `opened`
    * remembers: after a resume the server holds one where the page may hold
    * two readers, and a release that walked the readers would leave one
@@ -879,8 +884,8 @@ function createSeat(
    * Ask a refused seat again, once a beat, while a page shows it.
    *
    * **A refusal is sometimes an answer and sometimes a wait**: a seat forge
-   * holds no session for clears when it starts, and a copy behind a seal or a
-   * replay clears when the fold applies it (#2514). Nothing announces either,
+   * holds no session for clears when it starts, and a copy behind a seal
+   * clears when the fold applies it (#2514). Nothing announces either,
    * so the page's own re-ask is the recovery - and the ask that comes back
    * refused arms the next beat, so the two continue until an answer lands.
    */

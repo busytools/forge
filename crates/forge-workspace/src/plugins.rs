@@ -715,11 +715,13 @@ mod tests {
     async fn next_update(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> SessionUpdate {
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("an update lands")
-            .expect("the stream is open")
-            .update
+        std::sync::Arc::unwrap_or_clone(
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("an update lands")
+                .expect("the stream is open")
+                .update,
+        )
     }
 
     /// The home directory every user-scope call runs in.
@@ -761,7 +763,7 @@ provider = \"anthropic\"
             fake_cli(&PluginsInventorySnapshot::default(), &PluginsInventorySnapshot::default());
         ws.set_plugin_cli(cli);
         let declared = ws.list_projects()[0].path.to_string_lossy().into_owned();
-        let mut rx = ws.subscribe();
+        let mut rx = ws.subscribe_answerer();
 
         ws.dispatch(Command::PluginInstall {
             plugin_id: "demo@probe".to_owned(),

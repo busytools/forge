@@ -505,8 +505,12 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
                 %bound,
                 "the server's socket is listening",
             );
+            // **Taken before the serve task is spawned**, so the fold is
+            // attached before this returns and the boot wave can spawn a
+            // session whose first `Connected` finds a copy to land on.
+            let updates = state.surface.subscribe_mirror();
             let handle = tokio::spawn(async move {
-                if let Err(error) = crate::transport::serve(state, listener).await {
+                if let Err(error) = crate::transport::serve(state, listener, updates).await {
                     tracing::error!(
                         target: crate::logging::targets::APP_LIFECYCLE,
                         event_name = "server_socket_failed",
@@ -671,10 +675,22 @@ mod tests {
     /// then handed on - a busy box can take it in between, and the listener's
     /// failed bind is logged rather than read here.
     fn boot_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        fixture(false)
+    }
+
+    /// The same boot, with the socket serving on a port the OS hands out.
+    fn socket_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        fixture(true)
+    }
+
+    fn fixture(serve: bool) -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let port = listener.local_addr().expect("the port the OS handed out").port();
         drop(listener);
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let socket_port = socket.local_addr().expect("the port the OS handed out").port();
+        drop(socket);
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/");
         std::fs::write(
@@ -697,7 +713,8 @@ base_url = \"http://127.0.0.1:9/api\"
 models = [\"claude-sonnet-5\"]
 
 [server]
-enabled = false
+enabled = {serve}
+port = {socket_port}
 
 [gateway]
 port = {port}
@@ -709,12 +726,43 @@ port = {port}
         (Arc::new(workspace), dir)
     }
 
+    /// **`serve_socket` returns with the fold already subscribed.** The boot
+    /// wave runs after this returns, so a session spawned there emits its
+    /// first `Connected` into a fan-out nobody is holding yet unless the
+    /// subscription was taken before the serve task was spawned - and a
+    /// dropped `Connected` is a seat whose conversation the transport never
+    /// holds. Nothing has connected here: the subscriber is the fold's own.
+    #[tokio::test]
+    async fn the_socket_returns_with_the_fold_subscribed() {
+        let (workspace, _dir) = socket_fixture();
+        assert_eq!(workspace.test_subscriber_count(), 0, "nothing is attached before the socket");
+
+        let serving = super::serve_socket(&workspace).await.expect("the socket serves");
+        let super::SocketServing::Bound(handle) = serving else {
+            panic!("the socket binds on a port the OS handed out");
+        };
+        // Read before anything awaits: the claim is the order the call returns in.
+        assert_eq!(
+            workspace.test_subscriber_count(),
+            1,
+            "the fold's subscription is held when serve_socket returns",
+        );
+        // **And it is a stream something reads.** One subscriber taking the
+        // frame is what tells this count from a subscription taken and then
+        // dropped; nothing else has attached, so the reader is the fold's.
+        assert!(
+            workspace.emit_for_test_reported(forge_workspace::SessionUpdate::CatalogLoaded),
+            "the fold's own stream takes the frame the boot wave would emit",
+        );
+        handle.abort();
+    }
+
     /// A write to the watched file applies to the running workspace, with no
     /// restart and no call from the test: the watch is the only path.
     #[tokio::test]
     async fn a_config_edit_reaches_the_running_workspace() {
         let (workspace, _dir) = boot_fixture();
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         start_config_watch(&workspace, |_workspace| {});
 
         let path = workspace.config_path();
@@ -724,7 +772,8 @@ port = {port}
         let applied = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let frame = updates.recv().await.expect("the update stream stays open");
-                if matches!(frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. }) {
+                if matches!(&*frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. })
+                {
                     break;
                 }
             }

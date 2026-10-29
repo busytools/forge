@@ -952,8 +952,9 @@ describe('a seat removed under the reader', () => {
   /**
    * **A seat whose session ended gives its subscription back, exactly once.**
    * A visited seat is otherwise kept subscribed for the connection's life, so
-   * the session ending is one of the two doors that release it (the other is
-   * the connection closing). The removal frame is this door.
+   * the session ending is one of the three doors that release it (the others
+   * are the connection closing and the server refusing the seat). The removal
+   * frame is this door.
    */
   it('releases the subscription of a seat the fleet no longer holds', async () => {
     const W1: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };

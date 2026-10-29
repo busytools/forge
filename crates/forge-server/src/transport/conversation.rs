@@ -7,47 +7,41 @@
 //! holds the read's own output and shares it: a page slices a window out of
 //! it, and a subscribe encodes the newest of it.
 //!
-//! **A seat's history has two sources, and neither races the other.** The
-//! first is the session task, which produces the conversation: the fold sees
-//! `Connected` for every seat that starts or resumes while the transport
-//! runs, and asks for [`SessionUpdate::HistoryReplayed`] for a seat whose
-//! connect it missed (a session already running when this transport started).
-//! Both are emitted by the task in its own sequence, so the seed and the
-//! frames that follow it have one producer and one order.
+//! **A seat's history has two sources, and the seed never overwrites the
+//! stream's.** The first is the session task, which produces the conversation:
+//! the fold sees `Connected` for every seat that starts or resumes while the
+//! transport runs, so the frames and the copy they build have one producer and
+//! one order.
 //!
 //! The second is the seat's own transcript, read when the transport holds
-//! nothing and a page opens on it - a sleeping seat has no task to replay
-//! from, and waiting for the spawn that would carry the same history back
-//! is the wait this exists to remove (`transport::wire::seed_from_transcript`).
-//! It cannot race the first: it inserts only where nothing is held, the
-//! replay that follows REPLACES what it seeded, and a connect's own reseed
-//! does the same when the spawn is the thing that was coming.
+//! nothing and a page opens on it - a sleeping seat has no live copy, and
+//! waiting for the spawn that would carry the same history back is the wait
+//! this exists to remove (`transport::wire::seed_from_transcript`). It only
+//! ever inserts: a copy the stream inserted while the file was being read is
+//! kept, and a copy of another occupant is waited for rather than replaced. A
+//! transcript is a row subset - it carries no `Result` frames - so a seed over
+//! a live copy would drop frames the stream had already delivered.
 //!
 //! **That is what makes a buffer unnecessary rather than merely deleted.** A
-//! frame emitted before the replay reaches the fold first, finds no
-//! conversation, and is dropped - and it is inside the replay's cut, because
-//! the task emitted it before it handled the command. A frame emitted after
-//! is applied to what the replay left. Two producers of FRAMES is what made
-//! the earlier design race with itself; there is one here.
+//! frame emitted before a seat is held finds no conversation and is dropped -
+//! the precondition is that the fold is attached before the first
+//! `Connected`, which the transport's own test asserts. A frame emitted
+//! after is applied to what the seed left.
 //!
 //! **What is released is the front, and no more of it than the cap.** A page
 //! cursor names a message in the conversation's own numbering rather than in
 //! the held list's, so a cursor a drop has passed is answered as what it is -
 //! the floor, with nothing above it - rather than as a window the client did
-//! not ask for; and a held copy let go is rebuilt from a replay, which the
-//! session task answers out of its own stream - so a frame forge itself
-//! forged, which never passes through that stream, would be discarded with
-//! it. The seat's copy is therefore kept for the seat's life, and what that
-//! costs is bounded by the cap below rather than by the transcript.
+//! not ask for. The seat's copy is therefore kept for the seat's life, and
+//! what that costs is bounded by the cap below rather than by the transcript.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use forge_primitives::{Message, SessionSlot};
-// The window this copy is kept in, which is the session task's window too: the
-// two hold the same conversation, and a source kept shorter than the copy that
-// reads it is a page that cannot reach its cap. The ceilings' why, and what
-// the drop costs, are stated there.
+// The window this copy is kept in. The fan-out's ring is sized from the same
+// caps, because a ring exists to fill a copy that is behind; the ceilings' why,
+// and what the drop costs, are stated there.
 use forge_workspace::conversation_window::Window;
 // The delivered liveness rule, folded off the frames this copy sees - the same
 // one the client's `inFlightOf` keeps and the core folds into a seat's own
@@ -56,28 +50,6 @@ use forge_workspace::{TurnLiveness, liveness_of};
 
 use crate::SessionUpdate;
 use crate::transcript::Rendered;
-
-/// Which route a reseed came in by, which is what decides whether the page
-/// numbering can be carried over it.
-///
-/// **The distinction is where the frames came from, not what they say.** A
-/// replay is the session task's answer with its own stream: the frames this
-/// seat was seeded from, in the order they arrived, so a reseed by it leaves
-/// the window - and therefore every cursor a client holds - where it was. A
-/// connect, a resume or a `/new` carries a history the CLI handed over or a
-/// scan read off the transcript, which is a row subset rather than this
-/// copy's frame sequence: an index carried over it would be off by however
-/// far the two diverge, so the numbering restarts - a cursor from before
-/// resolves by its own number again, as it did before the numbering existed,
-/// and is answered from the floor when that number falls below the front the
-/// new window starts at.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Reseed {
-    /// `SessionUpdate::HistoryReplayed`.
-    Replay,
-    /// `SessionUpdate::Connected` and `SessionUpdate::SessionReplaced`.
-    Fresh,
-}
 
 /// One seat's conversation: the messages, where its turns sit and how many
 /// times it has compacted.
@@ -168,8 +140,7 @@ pub struct Conversation {
 }
 
 impl Conversation {
-    /// A conversation from the history a connect, a resume or a replay
-    /// carried.
+    /// A conversation from the history a connect or a resume carried.
     ///
     /// **It does not fold.** The spans come from the next
     /// [`Held::fold`], which runs on a blocking task; folding here would run
@@ -235,14 +206,11 @@ impl Conversation {
     }
 
     /// Replace the whole conversation, which is what a connect, a resume or a
-    /// replay says: the history it carries is the truth about this seat.
+    /// `/new` says: the history it carries is the truth about this seat.
     ///
     /// **It marks the fold rather than running it**, for the reason
     /// [`Conversation::new`] gives: this is reached from the stream fold, and
     /// a render there stalls every seat rather than this one.
-    ///
-    /// `route` decides whether the numbering may be carried over the reseed:
-    /// see [`Reseed`].
     ///
     /// `carried` is the floor the history arrives with - the messages the read
     /// it came from left behind a window taken before it crossed, which
@@ -251,42 +219,21 @@ impl Conversation {
     /// reseeded from a window reports the window's own front as the
     /// conversation's, and a client's walk below it stops there instead of
     /// crossing into the transcript.
-    pub fn seed(
-        &mut self,
-        messages: Vec<Message>,
-        compaction_count: u32,
-        route: Reseed,
-        carried: usize,
-    ) {
-        // **Converted before the comparison.** The copy a seat already holds
-        // went through `as_blocks` at its own seed, so a `<task-notification>`
-        // row and the block it converts to are one frame - and compared raw
-        // they would read a reseed of the same window as a different one. The
-        // cut then runs over the converted history, so the window it keeps is
-        // the one weighed.
+    ///
+    /// **The numbering restarts**, because a connect or a resume carries a
+    /// transcript READ - a row subset, not this copy's frame sequence - so an
+    /// index carried over it would be off by however far the two diverge. A
+    /// cursor from before resolves by its own number again and is answered
+    /// from the floor when that number falls below the front the new window
+    /// starts at.
+    pub fn seed(&mut self, messages: Vec<Message>, compaction_count: u32, carried: usize) {
+        // **Converted before the cut.** The copy a seat already holds went
+        // through `as_blocks` at its own seed, so a `<task-notification>` row
+        // and the block it converts to are one frame. The cut then runs over
+        // the converted history, so the window it keeps is the one weighed.
         let live = live_of_seed(&messages);
         let (kept, left) = Window::tail_of(&as_blocks(messages));
         self.live = live;
-        let seeded = carried.saturating_add(left);
-        // **The numbering is carried over a replay, and only when the window
-        // did not move.** The replay is the seat's own stream: the same frames
-        // in the same order, ending at the same one, so a client's cursors
-        // still name the turns they named - and the offset moves by however
-        // much further back - or shorter - the new window reaches from that
-        // end, no further than zero allows. A window that ends elsewhere
-        // restarts the numbering instead: a delivery row the transport forged
-        // and the task never saw makes one, and so does a tail the reseed
-        // dropped. A connect or a resume restarts it always, because the
-        // history it carries is a transcript READ - a row subset, not this
-        // copy's frame sequence - and an offset carried over that is an offset
-        // off by however the two diverged.
-        let shifted = self
-            .dropped
-            .saturating_sub(kept.len().saturating_sub(self.window.len()))
-            .saturating_add(self.window.len().saturating_sub(kept.len()));
-        let carried = route == Reseed::Replay
-            && self.window.messages().last().is_some()
-            && self.window.messages().last() == kept.messages().last();
         self.window = kept;
         // **The boundaries go with the messages they describe.** The fold's
         // turns name a prefix of the messages, and a reader that saw the new
@@ -295,7 +242,7 @@ impl Conversation {
         // fold rebuilds them.
         self.rendered.turns.clear();
         self.rendered.endings.clear();
-        self.dropped = if carried { shifted } else { seeded };
+        self.dropped = carried.saturating_add(left);
         // A frame whose id is no longer held cannot be met again, so the set
         // that answers "did forge forge this" holds only what the seat keeps.
         self.forged.retain(|id| self.window.messages().iter().any(|m| frame_id(m) == Some(id)));
@@ -339,7 +286,7 @@ impl Conversation {
 
     fn push(&mut self, message: Message) {
         // **A boundary that arrives moves the count**, the same way the
-        // session task's own retain does. Without this the record reports the
+        // session task's own count does. Without this the record reports the
         // value its last SEED carried, which is stale for every compaction
         // since - and the header reads the count while the boundary draws its
         // own row.
@@ -451,7 +398,7 @@ pub(crate) fn frame_id(message: &Message) -> Option<&str> {
 ///
 /// **The read converts these and the seed must too.** `notices_as_blocks` is
 /// applied where a conversation is READ off disk, and a held copy seeded from
-/// a connect or a replay takes the history as the WIRE carries it - so a
+/// a connect takes the history as the WIRE carries it - so a
 /// resumed seat would serve a `<task-notification>` row as the reader's own
 /// words, with the ending unread and, for a notice in the same turn as its
 /// call, nothing ending that call at all. Idempotent, so a history that came
@@ -493,8 +440,8 @@ impl Held {
     /// Whether this copy belongs to the seat's current occupant.
     ///
     /// **A copy with no occupant matches anything, and so does a header
-    /// naming nobody**: a copy the replay route materialised carries no
-    /// occupant, and a sleeping seat's header names no run - neither is
+    /// naming nobody**: a transcript that named no session seeds a copy with
+    /// no occupant, and a sleeping seat's header names no run - neither is
     /// discarded for lacking a fact nothing ever recorded.
     pub fn holds_occupant(&self, occupant: Option<&forge_primitives::SessionId>) -> bool {
         match (self.lock().occupant.as_ref(), occupant) {
@@ -522,7 +469,7 @@ impl Held {
     /// Fold if needed, then read, retrying once if a reseed landed in between.
     ///
     /// **Two acquisitions, and the gap between them is why this retries.** A
-    /// `Connected`, a `/resume` or a replay can replace the conversation
+    /// `Connected` or a `/resume` can replace the conversation
     /// between the fold and the read, and what a reader then holds is the new
     /// messages against boundaries the fold cleared - one turn covering the
     /// whole conversation rather than a window of them. The retry closes the
@@ -639,8 +586,8 @@ impl Drop for Folding<'_> {
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Held>>>,
-    /// Fires when a seat is first held, so a request that had to ask for a
-    /// replay knows when its answer has landed.
+    /// Fires when a seat's copy is first held or reseeded, so a read waiting
+    /// for it to become current knows it moved.
     seeded: tokio::sync::Notify,
     /// The newest number the fold loop has consumed for each seat, in a watch
     /// so an encode can wait on it.
@@ -666,6 +613,30 @@ pub struct Conversations {
     /// rather than raced: while it is set, the loop does not consume.
     #[cfg(any(test, feature = "testing"))]
     fold_held: std::sync::atomic::AtomicBool,
+    /// A test's hold on the next transcript seed, so a stream copy that lands
+    /// inside the seed's window is driven rather than raced.
+    #[cfg(any(test, feature = "testing"))]
+    seed_hold: Mutex<Option<Arc<SeedHold>>>,
+}
+
+/// Where a held transcript seed parks.
+///
+/// The seed announces it has arrived and waits to be let go, so a test can
+/// put the seat's own `Connected` into that window on purpose.
+#[cfg(any(test, feature = "testing"))]
+pub struct SeedHold {
+    /// Signalled once the seed has parked. A notify with nobody waiting keeps
+    /// its permit, so the test may start waiting after the seed arrives.
+    pub entered: tokio::sync::Notify,
+    /// Taken by the seed once the test lets it go.
+    pub release: tokio::sync::Semaphore,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl Default for SeedHold {
+    fn default() -> Self {
+        Self { entered: tokio::sync::Notify::new(), release: tokio::sync::Semaphore::new(0) }
+    }
 }
 
 impl Conversations {
@@ -748,6 +719,24 @@ impl Conversations {
         self.fold_held.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// Hold the next transcript seed before its read, so a test can land the
+    /// seat's own copy inside that window. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_the_seed(&self, hold: Arc<SeedHold>) {
+        *self.seed_hold.lock().unwrap_or_else(PoisonError::into_inner) = Some(hold);
+    }
+
+    /// Park at a test's seed hold, when one is set: say it has arrived, then
+    /// wait to be let go.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn pass_the_seed_hold(&self) {
+        let hold = self.seed_hold.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(hold) = hold {
+            hold.entered.notify_one();
+            let _release = hold.release.acquire().await;
+        }
+    }
+
     /// The seat's conversation if one is held.
     pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone)
@@ -776,8 +765,9 @@ impl Conversations {
 
     /// Replace a seat's copy outright.
     ///
-    /// **What a mismatched copy needs**: `insert` keeps what is there, and a
-    /// copy of the previous run must not survive as the new run's record.
+    /// **What a copy built from a ring stretch needs**: `insert` keeps what is
+    /// there, and the stretch replaces it so the frames after it apply to the
+    /// copy the read is served from.
     pub fn replace(&self, slot: &SessionSlot, conversation: Conversation) -> Arc<Held> {
         let held = {
             let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
@@ -789,12 +779,16 @@ impl Conversations {
         held
     }
 
-    /// A future that resolves when some seat is newly held.
+    /// A future that resolves when some seat's copy is first held or reseeded.
     ///
     /// **Enable it before looking the seat up**, or a seat seeded between the
     /// lookup and the wait leaves the caller waiting for something that has
     /// already happened - and bound the wait, because a seat whose session is
     /// gone never answers at all.
+    ///
+    /// A reseed counts: a seal the header has already moved on from lands on
+    /// the copy the seat holds, in place, so a reader waiting for that copy
+    /// to become current is woken by it rather than by the seat's first hold.
     pub fn seeded_notice(&self) -> tokio::sync::futures::Notified<'_> {
         self.seeded.notified()
     }
@@ -808,15 +802,11 @@ impl Conversations {
             return;
         };
         match update {
-            // A connect, a resume and a replay all say the same thing about
-            // this seat - here is its conversation - so they all RESEED it,
-            // materialising it if this is the first word about the seat.
-            // Appending a replay instead would put the history in front of
-            // the frames the seat already carried.
-            //
-            // **Which of them it is decides whether the page numbering
-            // survives the reseed**, so the two routes are named apart even
-            // though the work is one: see [`Reseed`].
+            // A connect and a resume say the same thing about this seat -
+            // here is its conversation - so they RESEED it, materialising it
+            // if this is the first word about the seat. Appending instead
+            // would put the history in front of the frames the seat already
+            // carried.
             SessionUpdate::Connected { history, compaction_count, dropped, session_id, .. }
             | SessionUpdate::SessionReplaced {
                 history,
@@ -825,28 +815,7 @@ impl Conversations {
                 session_id,
                 ..
             } => {
-                self.reseed(
-                    slot,
-                    history,
-                    *compaction_count,
-                    Reseed::Fresh,
-                    *dropped,
-                    Some(session_id),
-                    0,
-                );
-            }
-            SessionUpdate::HistoryReplayed { history, compaction_count, .. } => {
-                // No carried floor: a replay hands over the task's own window,
-                // which is where the seat's numbering is already measured from.
-                self.reseed(
-                    slot,
-                    history,
-                    *compaction_count,
-                    Reseed::Replay,
-                    0,
-                    None,
-                    seq.unwrap_or(0),
-                );
+                self.reseed(slot, history, *compaction_count, *dropped, Some(session_id));
             }
             // The row between two conversations. Held on the copy rather
             // than appended, so the successor's reseed below keeps it - and
@@ -863,12 +832,12 @@ impl Conversations {
             }
             SessionUpdate::ChatAppended { msg, .. } => {
                 // **A compaction boundary is a frame like any other.** It
-                // once dropped the seat so the next ask would replay it, and
-                // that is the door this change closed everywhere else: a
-                // replay replaces a copy it did not produce, so dropping to
-                // refresh something is how a frame the task never sees gets
-                // lost. The boundary is appended, the task counts it, and a
-                // reader keeps the history a compaction did not take away.
+                // once dropped the seat so the next ask would reseed it, and
+                // that is the door this change closed everywhere else:
+                // replacing a copy the task did not produce is how a frame it
+                // never sees gets lost. The boundary is appended, the task
+                // counts it, and a reader keeps the history a compaction did
+                // not take away.
                 if let Some(held) = self.get(slot) {
                     let mut conversation = held.lock();
                     conversation.append(msg.clone());
@@ -918,31 +887,31 @@ impl Conversations {
     /// a connect on a seat already carrying a conversation would leave that
     /// conversation in place and the new history discarded.
     ///
-    /// `watermark` is how far the history reaches: nothing for a seal, whose
-    /// run opens its frame count at 1, and the replay's own number for a
-    /// replay, whose window is the seat's stream up to that frame.
+    /// The watermark goes to zero: a seal opens a new epoch, whose frame
+    /// count starts at 1.
     fn reseed(
         &self,
         slot: &SessionSlot,
         history: &[Message],
         compaction_count: u32,
-        route: Reseed,
         carried: usize,
         occupant: Option<&forge_primitives::SessionId>,
-        watermark: u64,
     ) {
         if let Some(held) = self.get(slot) {
-            let mut conversation = held.lock();
-            conversation.seed(history.to_vec(), compaction_count, route, carried);
-            conversation.set_watermark(watermark);
-            // A replay restates no occupant, so it leaves whatever the copy
-            // already says; a seal names its own.
-            if let Some(occupant) = occupant {
-                conversation.set_occupant(Some(occupant.clone()));
+            {
+                let mut conversation = held.lock();
+                conversation.seed(history.to_vec(), compaction_count, carried);
+                conversation.set_watermark(0);
+                if let Some(occupant) = occupant {
+                    conversation.set_occupant(Some(occupant.clone()));
+                }
             }
+            // A reader waiting for a copy of another occupant is waiting for
+            // exactly this, and it landed in place.
+            self.seeded.notify_waiters();
         } else {
             let mut conversation = Conversation::new(history.to_vec(), compaction_count, carried);
-            conversation.set_watermark(watermark);
+            conversation.set_watermark(0);
             if let Some(occupant) = occupant {
                 conversation.set_occupant(Some(occupant.clone()));
             }
@@ -972,9 +941,9 @@ mod tests {
     }
 
     /// **A copy with no occupant answers for any occupant.** The arm is
-    /// load-bearing, not defensive: the replay route materialises a copy
-    /// with no occupant, and reading it as "not the seat's" would drop that
-    /// copy's history.
+    /// load-bearing, not defensive: a transcript that named no session seeds
+    /// a copy with no occupant, and reading it as "not the seat's" would drop
+    /// that copy's history.
     #[test]
     fn a_copy_with_no_occupant_matches_any_occupant() {
         let bare = Held::new(Conversation::empty());
@@ -1122,10 +1091,6 @@ mod tests {
         }
     }
 
-    fn a_replay(history: Vec<Message>, compaction_count: u32) -> SessionUpdate {
-        SessionUpdate::HistoryReplayed { key: a_seat(), history, compaction_count }
-    }
-
     fn a_swap_to(occupant: &str) -> SessionUpdate {
         SessionUpdate::SessionReplaced {
             key: a_seat(),
@@ -1188,37 +1153,26 @@ mod tests {
         );
     }
 
-    /// **The property the whole seed rests on: both routes are a reseed, not
-    /// an append.**
-    ///
-    /// A connect the fold witnessed and a replay it asked for have to leave
-    /// the seat in the same state. If either appended instead of replacing, a
-    /// seat would carry its history in front of the frames it already had -
-    /// and a test that only compared the two messages lists would pass while
-    /// the conversation held both.
+    /// **The property the whole seed rests on: a seal is a reseed, not an
+    /// append.** If it appended instead of replacing, a seat would carry its
+    /// history in front of the frames it already had.
     #[test]
-    fn a_seat_seeded_by_a_connect_and_by_a_replay_are_the_same_conversation() {
+    fn a_connect_replaces_what_the_seat_held() {
         let history = vec![a_frame("first"), a_frame("second")];
 
-        let by_connect = Conversations::new();
-        by_connect.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0, 0));
-        by_connect.apply(&a_connect(history.clone(), 0), None);
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0, 0));
+        held.apply(&a_connect(history, 0), None);
 
-        let by_replay = Conversations::new();
-        by_replay.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0, 0));
-        by_replay.apply(&a_replay(history.clone(), 0), None);
-
-        let read = |held: &Conversations| {
-            let held = held.get(&a_seat()).expect("the seat is held");
-            let held = held.lock();
-            held.messages().iter().map(said).collect::<Vec<_>>()
+        let read: Vec<String> = {
+            let conversation = held.get(&a_seat()).expect("the seat is held");
+            let conversation = conversation.lock();
+            conversation.messages().iter().map(said).collect()
         };
-        let expected = vec!["first".to_owned(), "second".to_owned()];
-        assert_eq!(read(&by_connect), expected, "a connect replaces what the seat held");
         assert_eq!(
-            read(&by_replay),
-            expected,
-            "and a replay replaces it the same way - not appends it in front of what was there",
+            read,
+            vec!["first".to_owned(), "second".to_owned()],
+            "a connect replaces what the seat held",
         );
     }
 
@@ -1354,7 +1308,7 @@ mod tests {
         );
         assert!(!held.live_of(&a_seat()), "and the turn's report closes it");
 
-        held.apply(&a_replay(vec![a_frame("mid-turn"), a_working_frame()], 0), None);
+        held.apply(&a_connect(vec![a_frame("mid-turn"), a_working_frame()], 0), None);
         assert!(held.live_of(&a_seat()), "a seed materialised mid-turn reads live");
     }
 
@@ -1364,7 +1318,7 @@ mod tests {
     fn a_frame_after_a_seed_joins_the_conversation() {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::empty());
-        held.apply(&a_replay(vec![a_frame("from the replay")], 0), None);
+        held.apply(&a_connect(vec![a_frame("from the replay")], 0), None);
 
         held.apply(
             &SessionUpdate::ChatAppended {
@@ -1392,7 +1346,7 @@ mod tests {
     fn a_compact_boundary_frame_moves_the_seats_count() {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::empty());
-        held.apply(&a_replay(vec![a_frame("before the compaction")], 0), None);
+        held.apply(&a_connect(vec![a_frame("before the compaction")], 0), None);
 
         held.apply(
             &SessionUpdate::ChatAppended {
@@ -1435,7 +1389,7 @@ mod tests {
 
         let reseeded = Conversations::new();
         reseeded.insert(&a_seat(), Conversation::new(vec![a_frame("stale")], 0, 0));
-        reseeded.apply(&a_replay(vec![a_frame("replayed")], 2), None);
+        reseeded.apply(&a_connect(vec![a_frame("replayed")], 2), None);
         let conversation = reseeded.get(&a_seat()).expect("the seat is held");
         assert_eq!(
             conversation.lock().compaction_count(),
@@ -1481,7 +1435,7 @@ mod tests {
         conversation.fold();
         assert_eq!(conversation.lock().rendered().turns.len(), 2, "precondition: two turns folded");
 
-        held.apply(&a_replay(Vec::new(), 0), None);
+        held.apply(&a_connect(Vec::new(), 0), None);
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let held = conversation.lock();
@@ -1580,7 +1534,7 @@ mod tests {
         // A reseed with no fold after it: the boundaries are cleared, so what
         // a reader gets is the whole list as one turn rather than a slice past
         // the end of it.
-        held.apply(&a_replay(vec![a_frame("replaced")], 0), None);
+        held.apply(&a_connect(vec![a_frame("replaced")], 0), None);
 
         let conversation = held.get(&a_seat()).expect("the seat is held");
         let page = conversation.read(|held| {
@@ -1612,7 +1566,7 @@ mod tests {
         // itself, and either could be the one that forgot.
         let fresh = Conversation::new(vec![a_frame(notice)], 0, 0);
         let mut reseeded = Conversation::new(vec![a_frame("stale")], 0, 0);
-        reseeded.seed(vec![a_frame(notice)], 0, Reseed::Fresh, 0);
+        reseeded.seed(vec![a_frame(notice)], 0, 0);
 
         for (conversation, route) in [(&fresh, "a connect"), (&reseeded, "a reseed")] {
             let Message::User { message, .. } = &conversation.messages()[0] else {
@@ -1632,8 +1586,8 @@ mod tests {
     }
 
     /// A frame on a seat nothing has seeded is dropped rather than inventing
-    /// a conversation: a seat whose connect this transport never saw is asked
-    /// for a replay, and until that lands there is nothing to append to.
+    /// a conversation: a seat whose connect this transport never saw has no
+    /// copy, and there is nothing to append to.
     #[test]
     fn a_frame_before_a_seat_is_seeded_holds_nothing() {
         let held = Conversations::new();
@@ -1742,133 +1696,12 @@ mod tests {
         );
     }
 
-    /// **A replay reseed of a seat already held keeps the numbering.** The
-    /// transport asks for a replay on a seat it believes nothing holds, and a
-    /// connect can land first - so one seat is seeded twice with the same
-    /// conversation, from two histories of different lengths. The window does
-    /// not move, so the numbering may not either: a client's cursor taken
-    /// before the reseed still names the turn it named.
-    ///
-    /// It is the REPLAY route that carries, and the assertions at the end pin
-    /// the other one: a connect's history is a transcript read rather than
-    /// this seat's own frames, so it restarts the numbering whatever its
-    /// window looks like.
+    /// **A connect restarts the numbering.** It hands over a history read off
+    /// the transcript, which is a row subset rather than this seat's own frame
+    /// sequence, so an offset carried over it would be off by however far the
+    /// two diverge.
     #[test]
-    fn a_reseed_of_the_same_conversation_carries_the_numbering_over() {
-        let held = Held::new(Conversation::new(
-            a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK),
-            0,
-            0,
-        ));
-        let dropped = held.lock().dropped();
-        assert!(dropped > 0, "precondition: the connect was over the cap");
-
-        let cursor = newest_page(&held, 2).cursor.expect("a page above the newest one");
-
-        // The replay: the same conversation, ending at the same frame, handed
-        // over as the window the session task keeps rather than the transcript
-        // the connect carried.
-        let window = held.lock().messages().to_vec();
-        held.lock().seed(window.clone(), 0, Reseed::Replay, 0);
-
-        let above = held.read(|held| {
-            crate::transport::wire::page(
-                held.messages(),
-                held.rendered(),
-                held.dropped(),
-                Some(&cursor),
-                2,
-            )
-        });
-        let carried = held.read(|held| {
-            crate::transport::wire::page(held.messages(), held.rendered(), held.dropped(), None, 4)
-        });
-        assert_eq!(
-            turn_texts(&above),
-            turn_texts(&carried)[..2].to_vec(),
-            "the page above a cursor is the page above the turn it named, reseed or no reseed",
-        );
-        assert_eq!(
-            held.lock().dropped(),
-            dropped,
-            "and the numbering did not move under the client holding it",
-        );
-
-        // The other direction: the same conversation reseeded as a window that
-        // reaches LESS far back. The offset moves with it, so the turn a
-        // cursor names still resolves to the turn it named rather than to
-        // whatever sits where it used to.
-        let short_by = 1_000;
-        let shorter = held.lock().messages()[short_by..].to_vec();
-        held.lock().seed(shorter, 0, Reseed::Replay, 0);
-        assert_eq!(
-            held.lock().dropped(),
-            dropped + short_by,
-            "a shorter window of the same conversation renumbers its front, not its tail",
-        );
-        let shorter_above = held.read(|held| {
-            crate::transport::wire::page(
-                held.messages(),
-                held.rendered(),
-                held.dropped(),
-                Some(&cursor),
-                2,
-            )
-        });
-        assert_eq!(
-            turn_texts(&shorter_above),
-            turn_texts(&carried)[..2].to_vec(),
-            "and the page above the cursor is still that page",
-        );
-
-        // A CONNECT hands over a history read off the transcript, which is a
-        // row subset rather than this seat's own frame sequence - so the same
-        // window by inspection still restarts the numbering, and a cursor from
-        // the last one is not resolved against an offset that does not hold.
-        held.lock().seed(window, 0, Reseed::Fresh, 0);
-        assert_eq!(
-            held.lock().dropped(),
-            0,
-            "a connect's history restarts the numbering whatever its window looks like",
-        );
-    }
-
-    /// **The window is compared as the seat HOLDS it, not as it arrived.** The
-    /// copy a seat carries went through the conversion at its own seed, and a
-    /// replay hands its window over raw - so a tail that is one frame in two
-    /// shapes (`<task-notification>` as written, and the block it becomes)
-    /// would read as a different window and renumber a seat a client is
-    /// paging.
-    #[test]
-    fn a_reseed_whose_raw_tail_is_the_held_tail_still_carries() {
-        let notice = "<task-notification><tool-use-id>tu1</tool-use-id>\
-                      <status>completed</status><summary>done</summary></task-notification>";
-        let mut history = a_long_history(CONVERSATION_CAP);
-        history.push(a_frame(notice));
-
-        let held = Held::new(Conversation::new(history, 0, 0));
-        let dropped = held.lock().dropped();
-        assert!(dropped > 0, "precondition: the history was over the cap");
-
-        // The same window as the seat carries, with the notice in the shape a
-        // replay hands over rather than the shape the seed converted it to.
-        let mut window = held.lock().messages()[..CONVERSATION_CAP - 1].to_vec();
-        window.push(a_frame(notice));
-        held.lock().seed(window, 0, Reseed::Replay, 0);
-
-        assert_eq!(
-            held.lock().dropped(),
-            dropped,
-            "the seat's own window handed over raw is still the seat's window",
-        );
-    }
-
-    /// **Which update arrived decides the route**, pinned where the update is
-    /// read rather than where the seed is called: a record that passed the
-    /// wrong one would renumber a seat a client is paging, or carry an offset
-    /// a transcript read never earned.
-    #[test]
-    fn the_update_decides_whether_the_numbering_survives_the_reseed() {
+    fn a_connects_history_restarts_the_numbering() {
         let held = Conversations::new();
         held.apply(&a_connect(a_long_history(CONVERSATION_CAP + CONVERSATION_SLACK), 0), None);
         let conversation = held.get(&a_seat()).expect("the seat is held");
@@ -1876,18 +1709,11 @@ mod tests {
         assert!(dropped > 0, "precondition: the connect was over the cap");
 
         let window = conversation.lock().messages().to_vec();
-        held.apply(&a_replay(window.clone(), 0), None);
-        assert_eq!(
-            conversation.lock().dropped(),
-            dropped,
-            "a replay of the seat's own frames carries the numbering",
-        );
-
         held.apply(&a_connect(window, 0), None);
         assert_eq!(
             conversation.lock().dropped(),
             0,
-            "and a connect's history restarts it, however its window looks",
+            "a connect's history restarts it, however its window looks",
         );
     }
 
@@ -2002,48 +1828,6 @@ mod tests {
         assert!(
             floor.cursor.is_none(),
             "and with no page above it to ask for: the turn it named is not held any more",
-        );
-    }
-
-    /// **A carried replay that reaches less far back moves the floor with
-    /// it.** The frames this seed takes off the seat's own front are below the
-    /// new floor as soon as it lands, and the numbering the held window's
-    /// cursors live in moves by exactly what it took.
-    #[test]
-    fn a_shorter_carried_seed_moves_the_floor_by_what_it_took() {
-        // A live-shaped copy: every turn's row, then the result frame the CLI
-        // sent and never wrote.
-        let mut frames = Vec::new();
-        for at in 0..2_600 {
-            frames.push(a_frame(&format!("turn {at}")));
-            frames.push(
-                serde_json::from_value(serde_json::json!({
-                    "type": "result",
-                    "subtype": "success",
-                    "uuid": format!("r{at}"),
-                    "session_id": "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
-                    "is_error": false,
-                    "num_turns": at + 1,
-                    "duration_ms": 12,
-                    "duration_api_ms": 9,
-                }))
-                .expect("a result frame"),
-            );
-        }
-        let held = Held::new(Conversation::new(frames, 0, 0));
-        let dropped = held.lock().dropped();
-        assert!(dropped > 0, "precondition: the copy outgrew its window");
-
-        // The same conversation, ending at the same frame, reaching four
-        // hundred frames less far back.
-        let window = held.lock().messages()[400..].to_vec();
-        held.lock().seed(window, 0, Reseed::Replay, 0);
-
-        assert_eq!(
-            held.lock().dropped(),
-            dropped + 400,
-            "the shorter window moved the floor up by what it took, so a cursor below it answers \
-             with the floor rather than with whatever moved into its place",
         );
     }
 }

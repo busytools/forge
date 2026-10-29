@@ -171,7 +171,7 @@ export function patchLines(
 }
 
 /** The change as markdown source, the change marked with sentinels. */
-export function markdownDiffSource(lines: readonly SourceLine[]): string {
+function markdownDiffSource(lines: readonly SourceLine[]): string {
   const out: string[] = [];
   let insideFence = false;
   let i = 0;

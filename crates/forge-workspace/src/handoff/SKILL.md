@@ -32,23 +32,21 @@ write it to /tmp (invisible to a fresh session and wiped on reboot) and never in
 workspace's tracked tree (it is a generated doc; committing it pollutes git - the memory dir is
 the gitignored home for exactly this).
 
-**The document has these parts, in order:**
+**Write the continuation the next session needs, in your own shape.** There is no set of parts
+or headings to fill in. Whatever shape reads best, it has to carry:
 
-1. **State snapshot** - what is done and verified, what is in flight, what is clean/unchanged.
-   Any work claimed as complete must have been verified (tests run, /health checked, output
-   read) before the handoff says so.
-2. **Next steps / open threads** - each with a pointer to where its context lives (memory file,
-   commit, PR, plan path). The handoff references, it does not duplicate: do not restate content
-   already captured in memory files, specs, plans, ADRs, issues, commits or diffs - name them by
-   path or URL.
-3. **Process facts** - anything the next session must know to work the way this one did
-   (authorizations, review-loop requirements, watch/verify patterns), only what is not already
-   recorded in memory.
-4. **Suggested skills** - which skills the next agent should call the Skill tool for, by name.
+- where things stand: what is done and verified, what is in flight, what is unchanged.
+- what is in flight, with the id that names it: the board row, PR, branch or session.
+- what you tried that failed, and what stopped it.
+- the exact next action, and the file, command or row it starts at.
+
+Point at what you recorded rather than retelling it - the memory files by name, the board rows
+by id, the PR numbers, the transcript. Anything the session was expected to handle and could not
+finish belongs here with the reason it stopped.
 
 Redact sensitive information (API keys, passwords, PII).
 
-If the user passed arguments, treat them as the next session's focus and tailor parts 2 and 4
+If the user passed arguments, treat them as the next session's focus and tailor the note
 accordingly.
 
 ## Step 3 - Index
@@ -59,7 +57,7 @@ line is what the next session actually sees; the file is only reachable through 
 
 ## Forge: close out and exit
 
-When forge hands the seat over, two things happen on top of the steps above.
+When forge hands the seat over, three things happen on top of the steps above.
 
 **Close out what is running.** Anything this session started and did not finish must not outlive
 it: a live sub-agent, a background command, a monitor, a process it spawned. For each one,
@@ -72,13 +70,8 @@ not finish in this turn - a blocked ask, a deferred fix, a call that was refused
 open - with the reason it stopped and where its context lives. The next session starts exactly
 where this one stopped; anything left out is lost when the turn ends.
 
-**Exit through the tool.** Forge asks for the handoff under five headings - Now, Where it stood,
-Pointers, Next, Done means - and your Step 2 document is that same note, so its parts land as:
-the state snapshot in Now, the exact position and process facts in Where it stood, the paths they
-live at in Pointers, the next steps and open threads in Next, and the suggested skills in Next.
-The note is the position and the index rather than a retelling: `Pointers` names the memory
-files, the handoff document, the board rows and the PRs so the successor opens them instead of
-reading a summary of them. Give the note the five headings, with the last line under Now naming
-what you recorded in memory and where. Write it where Step 2 says and pass the same text to
-`agents__handoff` as `brief` as the turn's last act. Do not call `agents__handoff` for any other
-reason - a handoff starts at `/handoff` or at the automatic trigger (fill or compaction).
+**Exit through the tool.** Forge takes the note as you wrote it - there are no headings to fill
+in, and your Step 2 document is the note. Write it where Step 2 says, then pass the same text to
+`agents__handoff` as `brief` as the turn's last act. Memory first, then close out what is
+running, then the note. Do not call `agents__handoff` for any other reason - a handoff starts at
+`/handoff` or at the automatic trigger (fill or compaction).

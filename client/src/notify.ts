@@ -124,7 +124,7 @@ let armed = false;
  * reject and nothing would ever show; the first gesture after a would-notify
  * ask carries it instead. A denial is respected silently and never retried.
  */
-export function notifyPage(notice: AskNotice, words: { title: string; body: string }): void {
+function notifyPage(notice: AskNotice, words: { title: string; body: string }): void {
   if (typeof Notification === 'undefined') return;
   if (Notification.permission === 'denied') return;
   if (Notification.permission === 'granted') {

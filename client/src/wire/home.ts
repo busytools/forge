@@ -403,7 +403,7 @@ export interface AccountsWire {
  * failing the whole home: a missing `accounts` is a home with no pool stated,
  * exactly as the snapshot path has always read it.
  */
-export function accountsFrom(value: unknown): AccountsWire {
+function accountsFrom(value: unknown): AccountsWire {
   const data = (value ?? {}) as {
     all_loaded?: unknown;
     gateway?: unknown;

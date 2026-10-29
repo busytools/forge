@@ -2,7 +2,10 @@
 //!
 //! One route, `/socket`, at the address the caller bound. Every connection
 //! gets its own subscription, so a second client changes nothing about the
-//! first and the server sends only what a client asked for.
+//! first. **Every subscriber is delivered every update; the connection then
+//! filters to the subjects it asked for**, which is what makes subject
+//! delivery correct and why the fan-out shares one update rather than copying
+//! it per reader.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,10 +15,10 @@ use axum::routing::get;
 use forge_primitives::{Message, SessionSlot};
 use tokio::net::TcpListener;
 
-use crate::SessionUpdate;
 use crate::live::Live;
 use crate::surface::ViewSurface;
 use crate::work::WorkCache;
+use crate::{SeatUpdate, SessionUpdate};
 
 pub mod batch;
 mod connection;
@@ -172,10 +175,18 @@ pub mod wire;
 /// stands the box down; the bump is what tells an old client its server has
 /// moved. `baselines/socket/15/` is the record a v15 server emitted.
 ///
+/// **v17 is a bump for the replay sub-protocol's removal.** The transport's
+/// held copy is the one conversation a seat has: `HistoryReplayed` and the
+/// `ReplayConversation` command it answered are gone, and `AuthRequired`
+/// goes with the event that never produced it. A v16 client holds both names
+/// in its replace list and its composer record; neither frame arrives, so it
+/// draws a seat that never re-reads rather than one that breaks - which is
+/// why the bump, not the client's decode, is what tells it the server moved.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
@@ -309,16 +320,27 @@ impl TransportState {
 /// port 0 and know the address it bound, and so a caller that cannot bind
 /// decides for itself whether that is fatal - which is what keeps a busy
 /// port from becoming a new way for forge to refuse to start.
-pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow::Result<()> {
+pub async fn serve(
+    state: Arc<TransportState>,
+    listener: TcpListener,
+    updates: tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+) -> anyhow::Result<()> {
     // The stream is folded ONCE, here, rather than by each connection: the
     // marks and the composer's state are what the core has said, so they
     // advance whether or not a client is attached - and a connection folding
     // its own copy would both multiply the work by the number of clients and
     // stop the state advancing the moment the last one left.
     //
-    // Observing, and without the backlog: the fold renders no prompt, and the
-    // boot notice belongs to the view that does.
-    tokio::spawn(fold_the_stream(Arc::clone(&state)));
+    // **The subscription arrives from the caller, taken before this task was
+    // spawned.** The boot wave runs after `serve_socket` returns, so a seal
+    // the first spawned session emits finds the fold already attached; a
+    // subscription taken in here would be a race the boot order has no reason
+    // to win, and a dropped `Connected` is a seat whose conversation the
+    // transport never holds.
+    //
+    // Observing: the fold renders no prompt, and the boot notice belongs to
+    // the view that does.
+    tokio::spawn(fold_the_stream(Arc::clone(&state), updates));
 
     let router = Router::new().route("/socket", get(connection::upgrade)).with_state(state);
     // Each connection carries the peer it was accepted from: the log names
@@ -332,11 +354,14 @@ pub async fn serve(state: Arc<TransportState>, listener: TcpListener) -> anyhow:
 /// transport holds.
 ///
 /// **One fold for the whole socket rather than one per connection**, and it
-/// is what seeds a seat: `Connected` and `HistoryReplayed` both arrive here,
-/// emitted by the session task in its own order, so a conversation and the
-/// frames that follow it have one producer.
-async fn fold_the_stream(state: Arc<TransportState>) {
-    let mut updates = state.surface.subscribe_mirror();
+/// is what seeds a seat: `Connected` arrives here, emitted by the session
+/// task in its own order, so a conversation and the frames that follow it
+/// have one producer. It attaches at boot, before any session spawns, which
+/// is what lets every seat's seal land on a copy.
+async fn fold_the_stream(
+    state: Arc<TransportState>,
+    mut updates: tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+) {
     let mut probes = probe::ContextProbe::default();
     while let Some(frame) = updates.recv().await {
         // A test's hold, so an encode's catch-up is driven rather than raced.
@@ -361,7 +386,7 @@ async fn fold_the_stream(state: Arc<TransportState>) {
         // frame must not take the seal's history away with it: the reseed it
         // carries is the only path the new epoch's rows have into the copy.
         let epoch_frame = matches!(
-            update,
+            &*update,
             crate::SessionUpdate::Connected { .. } | crate::SessionUpdate::SessionReplaced { .. }
         );
         if !epoch_frame

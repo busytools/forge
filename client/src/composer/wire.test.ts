@@ -143,7 +143,6 @@ describe('the composer record', () => {
         carried: true,
       },
       machine: null,
-      sign_in: null,
     });
     expect(composer.notice).toEqual({
       kind: 'landed',
@@ -155,7 +154,7 @@ describe('the composer record', () => {
   });
 
   it('reads no notice as none', () => {
-    const composer = composerFrom({ take: null, notice: null, machine: null, sign_in: null });
+    const composer = composerFrom({ take: null, notice: null, machine: null });
     expect(composer.notice).toBeNull();
   });
 
@@ -167,7 +166,7 @@ describe('the composer record', () => {
    */
   it('narrows the machine turn and reads a state it does not know as none', () => {
     const at = (machine: unknown): unknown =>
-      composerFrom({ take: null, notice: null, machine, sign_in: null }).machine;
+      composerFrom({ take: null, notice: null, machine }).machine;
 
     expect(at('handoff')).toBe('handoff');
     expect(at('compacting')).toBe('compacting');
@@ -177,10 +176,10 @@ describe('the composer record', () => {
     // **A v15 server names the compaction only.** No `machine` key at all, so
     // the old boolean is the record's only word and a newer client beside an
     // older server is not blind.
-    const old = composerFrom({ take: null, notice: null, compacting: true, sign_in: null });
+    const old = composerFrom({ take: null, notice: null, compacting: true });
     expect(old.machine, 'the v15 key is read as a compaction').toBe('compacting');
     expect(old.compacting, 'and it owns the box').toBe(true);
-    const settled = composerFrom({ take: null, notice: null, compacting: false, sign_in: null });
+    const settled = composerFrom({ take: null, notice: null, compacting: false });
     expect(settled.machine, 'and a v15 settle is no machine turn').toBeNull();
 
     // **A record that carries `machine` is authoritative**, including when it
@@ -191,7 +190,6 @@ describe('the composer record', () => {
       notice: null,
       machine: null,
       compacting: true,
-      sign_in: null,
     });
     expect(authoritative.machine, 'the present key wins over the leftover').toBeNull();
     expect(authoritative.compacting, 'and the leftover is not a compaction').toBe(false);
@@ -216,7 +214,6 @@ describe('the composer record', () => {
           surface,
         },
         machine: null,
-        sign_in: null,
       }).notice;
 
     expect(at('review')).toEqual({

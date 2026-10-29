@@ -2,7 +2,8 @@
 //! (`AgentHandle::take_events`) plus a per-session `Command`
 //! receiver. Translates each [`AgentEvent`] into the matching
 //! [`SessionUpdate`] envelope and emits onto the workspace-wide
-//! fan-in channel. Mutates [`DomainSession`] inline before each
+//! fan-out, which hands one update to every subscriber. Mutates
+//! [`DomainSession`] inline before each
 //! emit so workspace-side projections stay current.
 //!
 //! `SessionTask::run` is the sole consumer of the AgentHandle event
@@ -45,21 +46,9 @@ pub(crate) struct SessionTask {
     /// reference cycle (Workspace holds Task's command_tx; Task
     /// holds Workspace).
     pub(crate) workspace: std::sync::Weak<crate::Workspace>,
-    /// The conversation this task is carrying, kept so
-    /// `Command::ReplayConversation` can hand it to a consumer that joined
-    /// after this session started.
-    ///
-    /// **Held here because here is where it is produced.** The task is handed
-    /// the history at connect and emits every frame after it, so what it keeps
-    /// is in one order with the frames around it. A consumer reading the
-    /// transcript instead would be a second producer, and a read and a stream
-    /// cannot be reconciled: the read picks up rows written while it runs,
-    /// which the stream also delivers.
-    ///
-    /// It is the same conversation a view holds, so the cost is proportional
-    /// to what is RUNNING rather than to what is being read - which is the
-    /// price of having one producer rather than two.
-    pub(crate) conversation: Option<(crate::conversation_window::Window, u32)>,
+    /// Compactions this run has crossed, for the handoff policy's
+    /// `after_compactions` backstop.
+    pub(crate) compaction_count: u32,
     /// The handoff this session arrived by, while its first ten turns are
     /// measured. `None` for a session that arrived another way - the counts
     /// exist to tune the trigger, and a session nobody handed to has
@@ -72,52 +61,6 @@ pub(crate) struct SessionTask {
     /// returns and panics included, so a waiter never hangs on a task that
     /// ended some other way.
     pub(crate) teardown_done: Option<tokio::sync::watch::Sender<bool>>,
-}
-
-/// The file a call's own output sits at, off what its conversation holds:
-/// the path the task's ending frame named, else the path composed from the
-/// task id the launch frame carries while the task still runs.
-///
-/// **The ending frame's own path wins when both are reachable** - it is the
-/// CLI's word for where the output went, while the composed path is this
-/// build's reading of a layout the CLI never promised. `None` when the
-/// conversation names neither - and a composition that finds no file is the
-/// same answer rather than a third one, so the caller has one miss to draw.
-///
-/// **`base` is a thunk because a settled read never needs it**: resolving it
-/// costs a `realpath` syscall, and a call whose ending frame named the file
-/// answers off that frame alone. Only the composition's own lookup pays for
-/// it. It is a parameter rather than read here so the composition can be
-/// exercised against a scratch tree; the arm passes the real base's function.
-fn resolve_call_output_path(
-    history: &[forge_primitives::Message],
-    call_id: &str,
-    base: impl FnOnce() -> std::path::PathBuf,
-) -> Option<std::path::PathBuf> {
-    let named = history.iter().find_map(|message| match message {
-        forge_primitives::Message::TaskNotification {
-            tool_use_id: Some(id), output_file, ..
-        // An empty path is a path the frame does not carry: the wire sends
-        // `output_file: ""` for a task with no file, and reading that as a
-        // path would answer "gone" about a file that never existed.
-        } if id == call_id && !output_file.is_empty() => Some(std::path::PathBuf::from(output_file)),
-        _ => None,
-    });
-    if named.is_some() {
-        return named;
-    }
-    let (session_id, task_id) = history.iter().find_map(|message| match message {
-        forge_primitives::Message::TaskStarted {
-            task_id,
-            tool_use_id: Some(id),
-            session_id,
-            ..
-        } if id == call_id => Some((session_id.clone(), task_id.clone())),
-        _ => None,
-    })?;
-    let base = base();
-    crate::output_tail::probe_task_output_layout(&base);
-    crate::output_tail::compose_task_output_path(&base, &session_id, &task_id)
 }
 
 impl SessionTask {
@@ -385,13 +328,12 @@ impl SessionTask {
                 let read = history_updates.unwrap_or_default();
                 // **The read becomes a window HERE, and the update carries
                 // it.** A resume hands over the whole transcript, and every
-                // consumer of it - the copy kept here for a replay, the
-                // transport's copy seeded from the update, every subscriber
-                // taking a clone of the update - cuts it to the same window
-                // anyway. So the read's own size (2.5GiB on the seat #2150
-                // was filed from) may not ride the update or be paid again
-                // per consumer: one cut, and the window is what is kept and
-                // what is handed over alike.
+                // consumer of it - the transport's copy seeded from the
+                // update, every subscriber taking a clone of the update -
+                // cuts it to the same window anyway. So the read's own size
+                // (2.5GiB on the seat #2150 was filed from) may not ride the
+                // update or be paid again per consumer: one cut, and the
+                // window is what is handed over.
                 let (window, left_behind) = crate::conversation_window::Window::tail_of(&read);
                 // **And the cut itself rides along.** A consumer holding the
                 // window alone reads it as the conversation's front, and a
@@ -404,7 +346,7 @@ impl SessionTask {
                 // the peak is the window's rather than the transcript plus it.
                 drop(read);
                 let history = window.messages().to_vec();
-                self.conversation = Some((window, compaction_count));
+                self.compaction_count = compaction_count;
                 // The slot the task was spawned under, which the CLI's
                 // own id never moves: it names the occupant, this names
                 // the seat.
@@ -730,13 +672,6 @@ impl SessionTask {
                         minted_row,
                     );
                 }
-            }
-            AgentEvent::AuthRequired { method_name, method_description } => {
-                self.emit(SessionUpdate::AuthRequired {
-                    key: self.key.clone(),
-                    method_name,
-                    method_description,
-                });
             }
             AgentEvent::ConnectionFailed { message, kind } => {
                 let key = self.key.clone();
@@ -1184,13 +1119,12 @@ impl SessionTask {
                         state: state.clone(),
                     });
                 } else {
-                    // The frame joins the conversation this task is carrying,
-                    // BEFORE it is emitted: the replay answers with that
-                    // conversation, so a frame missing from it is a frame a
-                    // consumer joining later never sees - and a compaction is
-                    // the case that makes it plain, because the boundary drops
-                    // the transport's copy and the replay is what rebuilds it.
-                    self.retain(&msg);
+                    // **A compaction boundary is a frame like any other.** It
+                    // stays in the conversation the transport holds; the count
+                    // is the scalar the handoff policy reads.
+                    if matches!(&msg, forge_primitives::Message::CompactBoundary { .. }) {
+                        self.compaction_count = self.compaction_count.saturating_add(1);
+                    }
                     // `None` either way: a frame off the wire is the CLI's
                     // own, and carries neither a prompt origin nor a sender.
                     self.emit(SessionUpdate::ChatAppended {
@@ -1251,11 +1185,6 @@ impl SessionTask {
             text: text.to_owned(),
         });
     }
-
-    /// How many lines of a call's own output a read answers with, matching
-    /// a view's Monitor tail: the row is about what the command is
-    /// doing, not a transcript of everything it printed.
-    const CALL_OUTPUT_MAX_LINES: usize = 12;
 
     fn execute_command(&mut self, cmd: Command) {
         // **The judgment prompt is the one the swap's gate lets through.**
@@ -1398,50 +1327,6 @@ impl SessionTask {
                     );
                 }
             }
-            // Answered by this task rather than the agent: the conversation
-            // is the task's own, so it never leaves this loop.
-            Command::ReplayConversation { key: _ } => {
-                let Some((window, compaction_count)) = self.conversation.as_ref() else {
-                    tracing::debug!(
-                        target: "forge_workspace::session_task",
-                        slot = %self.key.display(),
-                        "a replay was asked for before this session connected; nothing to hand back",
-                    );
-                    return;
-                };
-                self.emit(SessionUpdate::HistoryReplayed {
-                    key: self.key.clone(),
-                    history: window.messages().to_vec(),
-                    compaction_count: *compaction_count,
-                });
-            }
-            // Answered here for the same reason a replay is: the frames that
-            // name the call's output file - the ending one that names it, the
-            // launch one its task id composes from - are in the conversation
-            // this task carries, and nowhere a read could reach without
-            // walking the transcript. A call the conversation no longer names
-            // - or the window has carried off - is the no-path reason, not a
-            // blank.
-            Command::ReadCallOutput { key: _, call_id } => {
-                let path = self.conversation.as_ref().and_then(|(window, _)| {
-                    resolve_call_output_path(
-                        window.messages(),
-                        &call_id,
-                        crate::output_tail::task_output_base,
-                    )
-                });
-                let output = match path {
-                    None => forge_primitives::CallOutput::NoPath,
-                    Some(path) => match crate::output_tail::read_output_file_tail(
-                        &path,
-                        Self::CALL_OUTPUT_MAX_LINES,
-                    ) {
-                        None => forge_primitives::CallOutput::FileGone,
-                        Some(lines) => forge_primitives::CallOutput::Lines(lines),
-                    },
-                };
-                self.emit(SessionUpdate::CallOutput { key: self.key.clone(), call_id, output });
-            }
             // Answered by this task's own state machine: a handoff asks for
             // its brief in a turn of its own and only swaps at a turn end.
             // **The entry opens the handoff; the exit completes it.** A call
@@ -1554,7 +1439,7 @@ impl SessionTask {
         self.domain.lock().session_id.as_ref().map(std::string::ToString::to_string)
     }
 
-    /// Send `update` to the workspace fan-in; log when no subscriber
+    /// Send `update` to the workspace fan-out; log when no subscriber
     /// took it, so a regression there leaves a trail.
     // TODO(ved): gate emits on a per-task session epoch so a superseded
     // task (its slot re-spawned by a resume or an account switch) can't
@@ -1570,36 +1455,6 @@ impl SessionTask {
                 "no SessionUpdate subscriber took the event"
             );
         }
-    }
-
-    /// Add one frame to the conversation this task is carrying.
-    ///
-    /// **The accumulator, and it is what makes a replay a conversation rather
-    /// than a photograph of the connect.** The history handed over at connect
-    /// is empty for a fresh session and stops at the connect for a resumed
-    /// one, so a replay answering with it alone would hand a consumer joining
-    /// late a seat that never spoke - worse than the read it replaced.
-    ///
-    /// A compaction boundary bumps the count rather than the frame list: the
-    /// CLI's boundary frame is a `ChatAppended` like any other and stays in
-    /// the conversation, and the count is what the header reads.
-    ///
-    /// **And the copy is a window, not the run.** Its one reader cuts it to
-    /// the newest turns, so a session up for days would otherwise carry a run
-    /// that nothing reads (see [`crate::conversation_window`]). The window's
-    /// own push is what holds both ceilings - the frames and their weight -
-    /// and the drop it runs before the push is why the copy pays for the room
-    /// it makes rather than for a doubling it is about to throw away.
-    fn retain(&mut self, message: &forge_primitives::Message) {
-        let Some((window, compaction_count)) = self.conversation.as_mut() else {
-            // Before the first connect there is no conversation to add to,
-            // and no frame to add: the CLI says nothing until it connects.
-            return;
-        };
-        if matches!(message, forge_primitives::Message::CompactBoundary { .. }) {
-            *compaction_count = compaction_count.saturating_add(1);
-        }
-        window.push(message.clone());
     }
 
     /// Flush `caller`'s buffered review activity into its batched
@@ -1938,35 +1793,60 @@ impl SessionTask {
             }
             let judgment = {
                 let mut domain = self.domain.lock();
-                // **A note is only a note if it parses.** The exit call's
-                // note wins when it is one; a malformed exit must not discard
-                // a valid captured note, and prose with no headings - from
-                // either source - is not the brief at all.
+                // **A note is whatever the turn ended on.** forge prescribes
+                // no shape for it, so any non-empty note is the brief; the
+                // exit call's note wins when both sources have one.
                 let supplied = domain.handoff.supplied.take();
                 let captured = domain.handoff.judgment.take();
+                // **Whether the exit call carried a note at all**, which is not
+                // the same as whether its note carried content: a shell like
+                // `## Next` parses to nothing but is not an absent call.
                 let from_tool_call = supplied.is_some();
                 let from_turn_text = captured.is_some();
                 domain.handoff.judgment_started = false;
-                let note = supplied
-                    .filter(|text| handoff::parses_as_note(text))
-                    .or_else(|| captured.filter(|text| handoff::parses_as_note(text)));
-                if let Some(text) = note {
+                // **The exit call is the deliberate act; a turn that simply
+                // ended is not.** Both are accepted for their text, but a note
+                // taken from the closing text is marked so the successor can
+                // tell it from one its predecessor chose to pass.
+                if let Some(text) = supplied.filter(|text| handoff::parses_as_note(text)) {
                     handoff::parse_judgment(&text)
+                } else if let Some(text) = captured.filter(|text| handoff::parses_as_note(text)) {
+                    let why = if from_tool_call {
+                        "the exit call's note carried no content; this is the session's closing \
+                         text"
+                    } else {
+                        "the exit call carried no note; this is the session's closing text"
+                    };
+                    tracing::info!(
+                        target: "forge_workspace::session_task",
+                        event_name = "handoff_note_from_turn_text",
+                        slot = %self.key.display(),
+                        from_tool_call,
+                        chars = text.chars().count(),
+                        "the turn's closing text is the judgment half; the exit call's own note \
+                         was absent or carried no content",
+                    );
+                    let mut sections = handoff::parse_judgment(&text);
+                    sections.insert(
+                        0,
+                        forge_primitives::HandoffSection {
+                            label: "source".to_owned(),
+                            lines: vec![why.to_owned()],
+                        },
+                    );
+                    sections
                 } else {
                     // **The successor is told the note is missing; this is the
-                    // trail that says so.** A note whose headings this build
-                    // cannot read reads exactly like one that never arrived,
-                    // and only a line here tells the two apart. The two fields
-                    // name what forge had in hand: no tool call at all is a
-                    // different failure from a call whose note it could not
-                    // read.
+                    // trail that says so.** Either source can be a shell with
+                    // no content - a headings-only reply parses to nothing -
+                    // so the two fields name what forge had in hand.
                     tracing::warn!(
                         target: "forge_workspace::session_task",
                         event_name = "handoff_note_rejected",
                         slot = %self.key.display(),
                         from_tool_call,
                         from_turn_text,
-                        "forge could not read a handoff note; the successor is told the note did \
+                        "the handoff turn produced no note; the successor is told the note did \
                          not arrive",
                     );
                     handoff::missing_note()
@@ -2197,7 +2077,7 @@ impl SessionTask {
             return;
         }
         let fill = fill_of(reported, total_tokens, effective_max_tokens);
-        let compaction_count = self.conversation.as_ref().map_or(0, |(_, count)| *count);
+        let compaction_count = self.compaction_count;
         let reason = if compaction_count >= policy.after_compactions {
             // The backstop: a huge turn crossed the window and the CLI
             // compacted before a boundary could carry the handoff.
@@ -2224,18 +2104,13 @@ impl SessionTask {
         judgment: Vec<forge_primitives::HandoffSection>,
     ) {
         let Some(workspace) = self.workspace.upgrade() else { return };
-        let (from, model, permission_mode, fill, token) = {
+        let (from, fill, token) = {
             let mut domain = self.domain.lock();
             let from = domain.session_id.as_ref().map(std::string::ToString::to_string);
-            let model = domain.current_model.as_ref().map(|model| model.display_name_short.clone());
-            let mode = domain
-                .observed_permission_mode
-                .or(domain.configured_permission_mode)
-                .map(|mode| mode.as_wire().to_owned());
             let fill = domain.handoff.fill;
             let token = domain.handoff.swap_token;
             domain.handoff = crate::domain_session::HandoffState::default();
-            (from, model, mode, fill, token)
+            (from, fill, token)
         };
         let Some(from) = from else {
             // Nothing to hand over: close the gate this beginning opened and
@@ -2306,9 +2181,6 @@ impl SessionTask {
             fill,
             at_percent: policy.at_percent,
             role,
-            account: self.handle.display_name(),
-            model,
-            permission_mode,
             judgment,
             cwd,
             launch_settings,
@@ -2681,14 +2553,8 @@ pub(crate) fn execute_command_via_handle(
     cmd: Command,
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
-        // Answered by the task before it reaches here: the conversation is
-        // the task's own and never crosses to the agent, and a handoff runs
-        // the task's own state machine. A caller reading this as dead code
-        // should note the arms in `SessionTask::execute_command` are what
-        // handle them - the match here is exhaustive, not a route.
-        Command::ReplayConversation { key: _ }
-        | Command::ReadCallOutput { .. }
-        | Command::Handoff { .. } => Ok(()),
+        // A handoff runs the task's own state machine, before it reaches here.
+        Command::Handoff { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
@@ -2745,10 +2611,12 @@ pub(crate) fn execute_command_via_handle(
             );
             Ok(())
         }
-        // App-level commands are caught in Workspace::dispatch's
-        // app-level branch; they never reach this helper.
-        // Handled inline in `Workspace::dispatch`; never agent traffic.
-        misrouted @ (Command::SetDictateOverride { .. }
+        // No per-session route: app-level commands are caught in
+        // `Workspace::dispatch`'s own branches, and `ReadCallOutput` is
+        // answered by the transport from its held conversation before any
+        // dispatch. A command of either kind arriving here is a wiring bug.
+        misrouted @ (Command::ReadCallOutput { .. }
+        | Command::SetDictateOverride { .. }
         | Command::ResetDictateOverrides { .. }
         | Command::DictateStream { .. }
         | Command::DictateStop { .. }
@@ -2797,7 +2665,7 @@ pub(crate) fn execute_command_via_handle(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),
                 command = ?misrouted,
-                "App-level command unexpectedly routed via per-session path"
+                "command has no per-session route"
             );
             Ok(())
         }
@@ -3214,9 +3082,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     // The login wait, from the two signals the CLI actually sends: it
     // attributes the failure to the assistant message, or names it on the
     // retry frame. `AssistantMessageError` is typed, so nothing here keys
-    // on prose. `AgentEvent::AuthRequired` is constructed nowhere in the
-    // tree, and its arm stays for the state's own name rather than for a
-    // producer that exists.
+    // on prose.
     if let AgentEvent::SdkMessage { msg, .. } = event {
         match msg {
             forge_primitives::Message::Assistant {
@@ -3236,9 +3102,6 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
             }
             _ => {}
         }
-    }
-    if let AgentEvent::AuthRequired { .. } = event {
-        domain.awaiting_login = true;
     }
     // A `TurnError` the classifier reads as auth-required holds the session
     // on `/login`. The class is derived where the event is built, so it is
@@ -3439,11 +3302,10 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
             drain_settled_monitors(domain);
         }
     }
-    // The two events that end a run leave the session with no runtime
-    // identity: a login wait, and a connection that died. The core blanks
-    // what a view reads through it - a mode or a model left standing
-    // describes a run that is gone.
-    if matches!(event, AgentEvent::ConnectionFailed { .. } | AgentEvent::AuthRequired { .. }) {
+    // A connection that died leaves the session with no runtime identity.
+    // The core blanks what a view reads through it - a mode or a model left
+    // standing describes a run that is gone.
+    if matches!(event, AgentEvent::ConnectionFailed { .. }) {
         clear_runtime_identity(domain);
     }
     if let AgentEvent::HookObservation { permission_mode, effort, .. } = event {
@@ -3785,8 +3647,6 @@ mod tests {
     use crate::update_fanout::{SeatUpdate, SubscriberRole};
     use forge_agent::Agent;
     use forge_agent::client::SpawnFailureKind;
-    // For the write! macros the output-file fixtures build their lines with.
-    use std::fmt::Write as _;
 
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
@@ -3874,7 +3734,7 @@ mod tests {
             update_tx: workspace.update_sender(),
             connected_once,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -3905,7 +3765,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while let Some(frame) = update_rx.recv().await {
                 if let crate::protocol::SessionUpdate::WorkerStatusChanged { action, .. } =
-                    frame.update
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && action == crate::protocol::WorkerStatusAction::Removed
                 {
                     return;
@@ -4030,7 +3890,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -4058,7 +3918,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -4099,7 +3959,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -4130,10 +3992,10 @@ mod tests {
             "with what it is and its id: {:?}",
             live.lines,
         );
-        assert_eq!(
-            record.brief.judgment.first().map(|section| section.label.as_str()),
-            Some("Now"),
-            "the caller's brief is the judgment half",
+        assert!(
+            record.brief.judgment.iter().any(|section| section.label == "Now"),
+            "the caller's brief is the judgment half: {:?}",
+            record.brief.judgment,
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -4261,7 +4123,9 @@ mod tests {
         task.after_turn_ended();
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -4316,7 +4180,7 @@ mod tests {
         let mut said = Vec::new();
         let mut turns = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { text, .. } => said.push(text),
                 SessionUpdate::MachineTurn { machine, .. } => turns.push(machine),
                 _ => {}
@@ -4383,7 +4247,8 @@ mod tests {
 
         let mut told = None;
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && wrapped.kind == crate::mcp::peers::types::WrappedKind::DeliveryFailureNotice
             {
                 told = Some((key, wrapped));
@@ -4451,7 +4316,9 @@ mod tests {
     ) -> Vec<Option<forge_primitives::runtime::MachineTurn>> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+            if let SessionUpdate::MachineTurn { machine, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 out.push(machine);
             }
         }
@@ -4978,7 +4845,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -4986,10 +4855,10 @@ mod tests {
         })
         .await
         .expect("the handoff lands");
-        assert_eq!(
-            record.brief.judgment.first().map(|section| section.label.as_str()),
-            Some("Next"),
-            "the judgment is the reply, parsed by its heading",
+        assert!(
+            record.brief.judgment.iter().any(|section| section.label == "Next"),
+            "the judgment is the reply, parsed by its heading: {:?}",
+            record.brief.judgment,
         );
     }
 
@@ -5086,7 +4955,7 @@ mod tests {
             let mut domain = task.domain.lock();
             domain.handoff.awaiting = true;
             domain.handoff.swap_token = Some(token);
-            // Prose the capture would otherwise take as the brief.
+            // The turn's closing text, which the exit call's note outranks.
             domain.handoff.judgment = Some("I am still working".to_owned());
         }
 
@@ -5098,7 +4967,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -5115,6 +4986,11 @@ mod tests {
         assert!(
             record.brief.judgment[0].lines.iter().any(|line| line.contains("the cut is in.")),
             "and its text, not the captured prose",
+        );
+        assert!(
+            record.brief.judgment.iter().all(|section| section.label != "source"),
+            "an exit-call note carries no source row: {:?}",
+            record.brief.judgment,
         );
 
         // **The successor's own text carries PART 2.** A record that holds
@@ -5134,9 +5010,9 @@ mod tests {
         );
     }
 
-    /// **No note means no note.** A turn that ends with prose and no exit
-    /// call hands the successor an explicit "the note did not arrive" section,
-    /// never the prose dressed as the brief.
+    /// **No note means no note.** A turn that ends on nothing hands the
+    /// successor an explicit "the note did not arrive" section, never filler
+    /// dressed as the brief.
     #[tokio::test]
     async fn a_handoff_without_a_note_states_it() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -5151,14 +5027,16 @@ mod tests {
             let mut domain = task.domain.lock();
             domain.handoff.awaiting = true;
             domain.handoff.swap_token = Some(token);
-            domain.handoff.judgment = Some("Memory updated.".to_owned());
+            domain.handoff.judgment = Some("   \n".to_owned());
         }
 
         task.after_turn_ended();
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -5173,10 +5051,123 @@ mod tests {
             "and says so: {:?}",
             section.lines,
         );
+        assert_eq!(
+            record.brief.judgment.len(),
+            1,
+            "an empty turn states the note once: {:?}",
+            record.brief.judgment,
+        );
+    }
+
+    /// **A note taken from the turn's closing text says so.** Nothing in a
+    /// capture distinguishes prose the predecessor chose to pass from a turn
+    /// that simply ended, so the judgment carries a `source` row when the exit
+    /// call had no note.
+    #[tokio::test]
+    async fn a_note_taken_from_the_turn_text_is_marked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        let token = workspace.begin_swap(&task.key);
+        {
+            let mut domain = task.domain.lock();
+            domain.handoff.awaiting = true;
+            domain.handoff.swap_token = Some(token);
+            domain.handoff.judgment =
+                Some("Memory is updated and the monitor is stopped.".to_owned());
+        }
+
+        task.after_turn_ended();
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+        assert_eq!(
+            record.brief.judgment.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            ["source", "note"],
+            "the capture is marked, then drawn as the note it is: {:?}",
+            record.brief.judgment,
+        );
         assert!(
-            !section.lines.iter().any(|line| line.contains("Memory updated.")),
-            "the turn's prose is not dressed as the note: {:?}",
-            section.lines,
+            record.brief.judgment[0]
+                .lines
+                .iter()
+                .any(|line| line.contains("the exit call carried no note")),
+            "the source row says where it came from: {:?}",
+            record.brief.judgment[0].lines,
+        );
+        assert!(
+            record.brief.judgment[1].lines.iter().any(|line| line.contains("Memory is updated")),
+            "and the turn's text is the note: {:?}",
+            record.brief.judgment[1].lines,
+        );
+    }
+
+    /// **A note that carried no content is not an absent call.** An exit call
+    /// whose brief was a shell like `## Next` was made; the source row must
+    /// say the note had no content rather than that no call arrived.
+    #[tokio::test]
+    async fn a_content_free_exit_note_is_named_as_such() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        let token = workspace.begin_swap(&task.key);
+        {
+            let mut domain = task.domain.lock();
+            domain.handoff.awaiting = true;
+            domain.handoff.swap_token = Some(token);
+            domain.handoff.judgment =
+                Some("Memory is updated and the monitor is stopped.".to_owned());
+        }
+
+        task.execute_command(Command::Handoff {
+            key: slot.clone(),
+            brief: Some("## Next".to_owned()),
+        });
+        task.after_turn_ended();
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+        assert_eq!(
+            record.brief.judgment.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            ["source", "note"],
+            "the capture is marked: {:?}",
+            record.brief.judgment,
+        );
+        assert!(
+            record.brief.judgment[0]
+                .lines
+                .iter()
+                .any(|line| line.contains("the exit call's note carried no content")),
+            "the row names the call that was made: {:?}",
+            record.brief.judgment[0].lines,
         );
     }
 
@@ -5197,7 +5188,8 @@ mod tests {
         assert!(task.domain.lock().handoff.supplied.is_none(), "no note is stored");
         let mut stated = false;
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::Notice { text, .. } = frame.update
+            if let SessionUpdate::Notice { text, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && text.contains("/handoff")
                 && text.contains("automatic trigger")
             {
@@ -5207,10 +5199,10 @@ mod tests {
         assert!(stated, "the seat is told where a handoff starts");
     }
 
-    /// **A malformed exit does not discard a valid captured note.** The exit
-    /// call's note is tried first; when it is not a note, the capture is.
+    /// **An empty exit does not discard a valid captured note.** The exit
+    /// call's note is tried first; when it carries nothing, the capture is.
     #[tokio::test]
-    async fn a_malformed_exit_falls_back_to_the_captured_note() {
+    async fn an_empty_exit_falls_back_to_the_captured_note() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, mut update_rx) =
             crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
@@ -5226,15 +5218,14 @@ mod tests {
             domain.handoff.judgment = Some("Now: the captured note.".to_owned());
         }
 
-        task.execute_command(Command::Handoff {
-            key: slot.clone(),
-            brief: Some("half a sentence, no headings".to_owned()),
-        });
+        task.execute_command(Command::Handoff { key: slot.clone(), brief: Some("   ".to_owned()) });
         task.after_turn_ended();
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -5243,14 +5234,14 @@ mod tests {
         .await
         .expect("the handoff lands");
         assert_eq!(
-            record.brief.judgment.first().map(|section| section.label.as_str()),
-            Some("Now"),
-            "the captured note is PART 2: {:?}",
+            record.brief.judgment.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            ["source", "Now"],
+            "the captured note is PART 2, marked as a capture: {:?}",
             record.brief.judgment,
         );
         assert!(
-            record.brief.judgment[0].lines.iter().any(|line| line.contains("the captured note")),
-            "and its text, not the malformed exit",
+            record.brief.judgment[1].lines.iter().any(|line| line.contains("the captured note")),
+            "and its text, not the empty exit",
         );
     }
 
@@ -5289,8 +5280,8 @@ mod tests {
         assert!(task.domain.lock().handoff.awaiting, "the reply is waited for");
     }
 
-    /// A turn boundary in a fresh task with a session id, a window and the
-    /// stub workspace: the shape the trigger reads.
+    /// A turn boundary in a fresh task with a session id, a compaction count
+    /// and the stub workspace: the shape the trigger reads.
     fn trigger_task(
         workspace: &Arc<crate::Workspace>,
         compaction_count: u32,
@@ -5298,8 +5289,7 @@ mod tests {
         let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
         let (mut task, agent_rx) = command_task_for(workspace, &slot);
         task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
-        let (window, _) = crate::conversation_window::Window::tail_of(&[]);
-        task.conversation = Some((window, compaction_count));
+        task.compaction_count = compaction_count;
         (task, agent_rx)
     }
 
@@ -5588,7 +5578,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -5596,10 +5588,10 @@ mod tests {
         })
         .await
         .expect("the handoff lands");
-        assert_eq!(
-            record.brief.judgment.first().map(|section| section.label.as_str()),
-            Some("Next"),
-            "the judgment is that turn's reply",
+        assert!(
+            record.brief.judgment.iter().any(|section| section.label == "Next"),
+            "the judgment is that turn's reply: {:?}",
+            record.brief.judgment,
         );
     }
 
@@ -6218,7 +6210,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -6238,7 +6230,8 @@ mod tests {
 
         let mut echoed = None;
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::SlackMessageAppended { key, prose, .. } = frame.update
+            if let SessionUpdate::SlackMessageAppended { key, prose, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && key == session_key
                 && prose.contains("the buffered text")
             {
@@ -6283,7 +6276,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -6304,7 +6297,7 @@ mod tests {
         let mut connected = false;
         let mut echo_after_connected = false;
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Connected { .. } => connected = true,
                 SessionUpdate::SlackMessageAppended { key, .. } if key == slot => {
                     assert!(
@@ -6326,7 +6319,7 @@ mod tests {
         let mut notice = None;
         while let Ok(frame) = update_rx.try_recv() {
             if let SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
             {
                 notice = Some((key, branch, waiting, message));
             }
@@ -6450,7 +6443,7 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::TurnComplete { key, terminal_reason } => {
                     said.push(("complete", key, terminal_reason));
                 }
@@ -6485,7 +6478,9 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::TurnComplete { terminal_reason, .. } = frame.update {
+            if let SessionUpdate::TurnComplete { terminal_reason, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 said.push(terminal_reason);
             }
         }
@@ -6515,7 +6510,7 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::TurnComplete { .. } => said.push("complete"),
                 SessionUpdate::TurnCancelled { .. } => said.push("cancelled"),
                 _ => {}
@@ -6541,7 +6536,7 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::TurnComplete { .. } => said.push("complete"),
                 SessionUpdate::TurnCancelled { .. } => said.push("cancelled"),
                 _ => {}
@@ -6750,7 +6745,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -6870,7 +6865,7 @@ mod tests {
     fn drain_updates(rx: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<SessionUpdate> {
         let mut seen = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            seen.push(frame.update);
+            seen.push(std::sync::Arc::unwrap_or_clone(frame.update));
         }
         seen
     }
@@ -6920,9 +6915,7 @@ mod tests {
         );
     }
 
-    /// **A live frame crosses the task stamped, and the stamp rides both
-    /// places a page reads a row from**: the update a watching client is
-    /// sent, and the window a replay hands one that attached late.
+    /// **A live frame crosses the task stamped.**
     ///
     /// The kinds a turn OPENS with are exactly the ones the CLI does not
     /// stamp - the prompt frame carries no timestamp at all, and neither do
@@ -6936,7 +6929,6 @@ mod tests {
         let (workspace, _updates) = crate::Workspace::testing_stub();
         let key = SessionSlot::from_str_for_test("stamp-crossing");
         let (mut task, mut updates, _to_agent) = nudge_task_for(&workspace, &key);
-        task.conversation = Some((crate::conversation_window::Window::empty(), 0));
 
         let send = |task: &mut SessionTask, msg: forge_primitives::Message| {
             task.translate_event(AgentEvent::SdkMessage {
@@ -6995,23 +6987,6 @@ mod tests {
             serde_json::to_value(&drawn[1]).expect("encode")["timestamp"].as_str(),
             Some("2026-10-15T05:18:15.544Z"),
             "while the frame the CLI stamped keeps its own",
-        );
-
-        // The window half: the replay a late page is answered with carries
-        // the same stamps, so a page attaching mid-turn anchors where a page
-        // that watched the turn opens does.
-        let (history, _count) = task.conversation.as_ref().expect("the window is held");
-        let held: Vec<Option<String>> = history
-            .messages()
-            .iter()
-            .map(|msg| {
-                serde_json::to_value(msg).expect("encode")["timestamp"].as_str().map(str::to_owned)
-            })
-            .collect();
-        assert_eq!(
-            held,
-            vec![Some(prompt_stamp), Some("2026-10-15T05:18:15.544Z".to_owned())],
-            "the window a replay hands over is what a page folds, stamps and all",
         );
     }
 
@@ -7229,7 +7204,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -7248,8 +7223,8 @@ mod tests {
         let update = update_rx.try_recv().expect("an update emits");
         assert!(
             matches!(
-                update.update,
-                SessionUpdate::ConnectionFailed { key: ref emitted, .. } if *emitted == key
+                &*update.update,
+                SessionUpdate::ConnectionFailed { key: emitted, .. } if *emitted == key
             ),
             "the ConnectionFailed envelope still goes out"
         );
@@ -7258,7 +7233,7 @@ mod tests {
         // stand-down follows the death so a client reads it second.
         assert!(
             matches!(
-                update_rx.try_recv().map(|frame| frame.update),
+                update_rx.try_recv().map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)),
                 Ok(SessionUpdate::MachineTurn { machine: None, .. })
             ),
             "the machine turn ends with the session",
@@ -7296,7 +7271,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -7353,7 +7328,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -7607,7 +7582,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -7676,7 +7651,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -7693,8 +7668,8 @@ mod tests {
         assert!(
             matches!(
                 observer.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::PermissionRequest { tool_id, .. }, .. })
-                    if tool_id == "tu-obs"
+                Ok(SeatUpdate { update, .. })
+                    if matches!(&*update, SessionUpdate::PermissionRequest { tool_id, .. } if tool_id == "tu-obs")
             ),
             "the observer is still delivered the request it cannot answer",
         );
@@ -7746,7 +7721,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -7763,8 +7738,8 @@ mod tests {
         assert!(
             matches!(
                 observer.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::QuestionRequest { tool_id, .. }, .. })
-                    if tool_id == "tu-q-obs"
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::QuestionRequest { tool_id, .. } if tool_id == "tu-q-obs")
             ),
             "the observer is still delivered the question it cannot answer",
         );
@@ -7815,7 +7790,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -7871,7 +7846,7 @@ mod tests {
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -7888,7 +7863,9 @@ mod tests {
 
         let mut resolved = None;
         while let Ok(frame) = observer.try_recv() {
-            if let SessionUpdate::PendingInteractionResolved { question_index, .. } = frame.update {
+            if let SessionUpdate::PendingInteractionResolved { question_index, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 resolved = Some(question_index);
             }
         }
@@ -7958,10 +7935,8 @@ mod tests {
         assert!(
             matches!(
                 update_rx.try_recv(),
-                Ok(SeatUpdate {
-                    update: SessionUpdate::SetModelFailed { model, message, .. },
-                    ..
-                }) if model == "claude-attempted" && message == "not available"
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::SetModelFailed { model, message, .. } if model == "claude-attempted" && message == "not available")
             ),
             "SetModelFailed keeps model + message for the rollback reducer"
         );
@@ -7974,8 +7949,8 @@ mod tests {
         assert!(
             matches!(
                 update_rx.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::TurnError { message, .. }, .. })
-                    if message == "stdin write failed"
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::TurnError { message, .. } if message == "stdin write failed")
             ),
             "TurnError carries the failure text so the spinner unwinds"
         );
@@ -8002,10 +7977,8 @@ mod tests {
             assert!(
                 matches!(
                     update_rx.try_recv(),
-                    Ok(SeatUpdate {
-                        update: SessionUpdate::TurnError { class: Some(on_wire), .. },
-                        ..
-                    }) if on_wire == class
+                    Ok(frame)
+                        if matches!(&*frame.update, SessionUpdate::TurnError { class: Some(on_wire), .. } if *on_wire == class)
                 ),
                 "the class has to reach the stream as {class:?}, not as None a reader must guess past",
             );
@@ -8213,7 +8186,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_primitives::MonitorRecord>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::MonitorsChanged { monitors, .. } = frame.update {
+            if let SessionUpdate::MonitorsChanged { monitors, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(monitors);
             }
         }
@@ -8226,7 +8201,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_workspace::BackgroundTask>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::BackgroundTasksChanged { tasks, .. } = frame.update {
+            if let SessionUpdate::BackgroundTasksChanged { tasks, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(tasks);
             }
         }
@@ -8268,7 +8245,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_primitives::runtime::SubagentCard>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::SubagentCardsChanged { cards, .. } = frame.update {
+            if let SessionUpdate::SubagentCardsChanged { cards, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(cards);
             }
         }
@@ -8382,7 +8361,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_primitives::runtime::AvailableCommand>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::SlashCommandsChanged { commands, .. } = frame.update {
+            if let SessionUpdate::SlashCommandsChanged { commands, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(commands);
             }
         }
@@ -8395,7 +8376,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_primitives::runtime::AvailableAgent>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::SubagentsChanged { subagents, .. } = frame.update {
+            if let SessionUpdate::SubagentsChanged { subagents, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(subagents);
             }
         }
@@ -8590,7 +8573,9 @@ provider = "anthropic"
     ) -> Vec<forge_agent::env::processes::ProcessSnapshot> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::ProcessesChanged { snapshot, .. } = frame.update {
+            if let SessionUpdate::ProcessesChanged { snapshot, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(snapshot);
             }
         }
@@ -8738,7 +8723,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: std::sync::Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -8880,7 +8865,7 @@ provider = "anthropic"
             update_tx,
             connected_once: true,
             workspace: std::sync::Weak::new(),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -8921,7 +8906,7 @@ provider = "anthropic"
         // it folded keeps offering a prompt the core has let go, and every
         // click on it reaches nothing.
         let announced: Vec<String> = std::iter::from_fn(|| update_rx.try_recv().ok())
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::PendingInteractionResolved { key, tool_id, .. } => {
                     assert_eq!(key, SessionSlot::from_str_for_test("old-uuid"));
                     Some(tool_id)
@@ -8983,7 +8968,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -9148,7 +9133,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -9173,7 +9158,7 @@ provider = "anthropic"
         let mut echoed = None;
         while let Ok(frame) = update_rx.try_recv() {
             if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && key == session_key
                 && text == "morning reminder"
             {
@@ -9225,7 +9210,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -9281,7 +9266,7 @@ provider = "anthropic"
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -9292,7 +9277,7 @@ provider = "anthropic"
         let mut heard: Vec<(String, String, Option<String>)> = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
             if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && key == session_key
             {
                 heard.push((text, cron_id, description));
@@ -9314,104 +9299,6 @@ provider = "anthropic"
         );
     }
 
-    /// **A session that runs long does not carry its whole run.** The copy a
-    /// replay answers with is a window, for the reason the transport's held
-    /// copy is: what its reader does with it is cut it to the newest turns,
-    /// so a copy that grows with the transcript is a transcript-sized
-    /// allocation per session, cloned again per replay.
-    ///
-    /// Both routes in are asserted apart - the history a connect hands over,
-    /// and the frames the session emits after it - because each is its own
-    /// call site and either could keep the whole run while the other does not.
-    #[tokio::test]
-    async fn a_session_keeps_its_conversation_in_the_same_window() {
-        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionSlot::from_str_for_test("window-uuid");
-        let domain =
-            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
-        let (handle, _agent_cmd_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let mut task = SessionTask {
-            key: session_key.clone(),
-            handle: Arc::new(handle),
-            command_rx,
-            domain,
-            update_tx: workspace.update_sender(),
-            connected_once: false,
-            workspace: Arc::downgrade(&workspace),
-            conversation: None,
-            successor: None,
-            teardown_done: None,
-        };
-        let cap = crate::conversation_window::CONVERSATION_CAP;
-        let slack = crate::conversation_window::CONVERSATION_SLACK;
-        let frame = |at: usize| {
-            serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
-                "type": "user",
-                "message": {"role": "user", "content": format!("frame {at}")},
-                "session_id": session_key.display(),
-            }))
-            .expect("a user frame")
-        };
-        // A resume, which hands over a transcript twice the cap - the shape
-        // the clone this replaced was worst on.
-        let mut event = connected_event(&session_key.display(), "/tmp/window");
-        if let AgentEvent::Connected { history_updates, .. } = &mut event {
-            *history_updates = Some((0..cap * 2).map(frame).collect());
-        }
-        task.translate_event(event);
-
-        let (seeded, _) = task.conversation.as_ref().expect("the task keeps a conversation");
-        assert_eq!(
-            seeded.len(),
-            cap,
-            "a connect hands over a transcript and the copy keeps a window"
-        );
-
-        // And the frames that arrive after it, which is where a long-running
-        // session's copy grows.
-        for at in 0..=(cap * 2 + slack) {
-            task.translate_event(AgentEvent::SdkMessage {
-                session_id: session_key.display(),
-                msg: frame(at),
-            });
-        }
-        while update_rx.try_recv().is_ok() {}
-
-        task.execute_command(crate::protocol::Command::ReplayConversation {
-            key: session_key.clone(),
-        });
-        let mut replayed = None;
-        while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::HistoryReplayed { history, .. } = frame.update {
-                replayed = Some(history);
-            }
-        }
-        let history = replayed.expect("a replay is answered with the conversation");
-
-        assert!(
-            (cap..=cap + slack).contains(&history.len()),
-            "however long the session has run, the replay answers with a window: {} messages",
-            history.len(),
-        );
-        assert!(
-            !history.iter().any(|message| {
-                matches!(message, forge_primitives::Message::User { message, .. }
-                    if message.content.iter().any(|block| matches!(block,
-                        forge_primitives::ContentBlock::Text { text, .. }
-                            if text == "frame 0")))
-            }),
-            "and the frames it dropped are the oldest ones",
-        );
-
-        // The copy the replay was answered from is the same window, held on
-        // (the store's own shape is the window module's business; what this
-        // pins is which frames it holds).
-        let (held, _) = task.conversation.as_ref().expect("the task keeps a conversation");
-        assert_eq!(held.len(), history.len(), "and holds the frames the replay answered with");
-    }
-
     /// **A resumed connect hands the WINDOW on, not the read.**
     ///
     /// `history_updates` is a resume's whole transcript - 51,274 rows and
@@ -9419,8 +9306,8 @@ provider = "anthropic"
     /// it on whole. The update is what the transport's copy is seeded from and
     /// what every subscriber takes a clone of, so the read was paid again per
     /// subscriber to hand over what each of them cuts to a window anyway. The
-    /// task keeps that window here for a replay; the update carries the same
-    /// one, on both routes a resumed identity takes in.
+    /// update carries the cut window on both routes a resumed identity takes
+    /// in.
     #[tokio::test]
     async fn a_resumed_connect_hands_the_window_not_the_whole_read() {
         let cap = crate::conversation_window::CONVERSATION_CAP;
@@ -9445,7 +9332,7 @@ provider = "anthropic"
                 update_tx: workspace.update_sender(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
-                conversation: None,
+                compaction_count: 0,
                 successor: None,
                 teardown_done: None,
             };
@@ -9465,7 +9352,7 @@ provider = "anthropic"
 
             let mut handed = None;
             while let Ok(frame) = update_rx.try_recv() {
-                match frame.update {
+                match std::sync::Arc::unwrap_or_clone(frame.update) {
                     SessionUpdate::Connected { history, dropped, .. }
                     | SessionUpdate::SessionReplaced { history, dropped, .. } => {
                         handed = Some((history, dropped));
@@ -9499,521 +9386,6 @@ provider = "anthropic"
         }
     }
 
-    /// The on-open read of a call's own output: a view asks with the call's
-    /// id, and the task answers from its own conversation - the frame that
-    /// named the output file is there, and nothing else a read could reach
-    /// holds it without walking the transcript.
-    #[tokio::test]
-    async fn a_calls_output_is_answered_from_the_tasks_own_conversation() {
-        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionSlot::from_str_for_test("call-output-uuid");
-        let domain =
-            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
-        let (handle, _agent_cmd_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let mut task = SessionTask {
-            key: session_key.clone(),
-            handle: Arc::new(handle),
-            command_rx,
-            domain,
-            update_tx: workspace.update_sender(),
-            connected_once: false,
-            workspace: Arc::downgrade(&workspace),
-            conversation: None,
-            successor: None,
-            teardown_done: None,
-        };
-        task.translate_event(connected_event(&session_key.display(), "/tmp/call-output"));
-
-        // The frame that ended a backgrounded call, in the shape the wire
-        // carries it: the call's own id, its status, and the file the
-        // command's output went to. More lines than the read answers with,
-        // so the bound is pinned rather than incidental.
-        let path =
-            std::env::temp_dir().join(format!("forge-call-output-{}.log", std::process::id()));
-        let written = (0..15).fold(String::new(), |mut all, at| {
-            let _ = writeln!(all, "line-{at:02}");
-            all
-        });
-        std::fs::write(&path, written).expect("write the output file");
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: session_key.display(),
-            msg: serde_json::from_value(serde_json::json!({
-                "type": "system",
-                "subtype": "task_notification",
-                "task_id": "t-1",
-                "tool_use_id": "tu-1",
-                "status": "completed",
-                "output_file": path.display().to_string(),
-                "summary": "Background command \"sleep 2\" completed",
-                "session_id": session_key.display(),
-                "uuid": "u-1",
-            }))
-            .expect("a task notification frame"),
-        });
-        while update_rx.try_recv().is_ok() {}
-
-        task.execute_command(crate::protocol::Command::ReadCallOutput {
-            key: session_key.clone(),
-            call_id: "tu-1".to_owned(),
-        });
-
-        let mut answered = None;
-        while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::CallOutput { key, call_id, output } = frame.update {
-                answered = Some((key, call_id, output));
-            }
-        }
-        let (key, call_id, output) = answered.expect("the read is answered by the task");
-        assert_eq!(key, session_key, "the answer names the seat it routes on");
-        assert_eq!(call_id, "tu-1", "the answer names the call it answers");
-        let expected: Vec<String> = (3..15).map(|at| format!("line-{at:02}")).collect();
-        assert_eq!(
-            output,
-            forge_primitives::CallOutput::Lines(expected),
-            "and carries the command's own bytes, bounded to the newest twelve lines",
-        );
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// The read never answers blank: a call the conversation does not name is
-    /// the no-path reason, an empty path the frame carries is the same
-    /// reason, and a file that is gone is its own.
-    #[tokio::test]
-    async fn a_calls_output_read_names_what_is_missing() {
-        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionSlot::from_str_for_test("call-output-reasons");
-        let domain =
-            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
-        let (handle, _agent_cmd_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let mut task = SessionTask {
-            key: session_key.clone(),
-            handle: Arc::new(handle),
-            command_rx,
-            domain,
-            update_tx: workspace.update_sender(),
-            connected_once: false,
-            workspace: Arc::downgrade(&workspace),
-            conversation: None,
-            successor: None,
-            teardown_done: None,
-        };
-        task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-reasons"));
-
-        // A call the conversation names, whose file is not there.
-        let gone =
-            std::env::temp_dir().join(format!("forge-call-output-gone-{}.log", std::process::id()));
-        let _ = std::fs::remove_file(&gone);
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: session_key.display(),
-            msg: serde_json::from_value(serde_json::json!({
-                "type": "system",
-                "subtype": "task_notification",
-                "task_id": "t-gone",
-                "tool_use_id": "tu-gone",
-                "status": "completed",
-                "output_file": gone.display().to_string(),
-                "summary": "Background command \"true\" completed",
-                "session_id": session_key.display(),
-                "uuid": "u-gone",
-            }))
-            .expect("a task notification frame"),
-        });
-        // A call whose frame carries no path at all: the wire really sends an
-        // empty string, and reading that as a path would answer "gone" about
-        // a file that never existed.
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: session_key.display(),
-            msg: serde_json::from_value(serde_json::json!({
-                "type": "system",
-                "subtype": "task_notification",
-                "task_id": "t-empty",
-                "tool_use_id": "tu-empty",
-                "status": "completed",
-                "output_file": "",
-                "summary": "Background command \"true\" completed",
-                "session_id": session_key.display(),
-                "uuid": "u-empty",
-            }))
-            .expect("a task notification frame"),
-        });
-        while update_rx.try_recv().is_ok() {}
-
-        for call_id in ["tu-unknown", "tu-empty", "tu-gone"] {
-            task.execute_command(crate::protocol::Command::ReadCallOutput {
-                key: session_key.clone(),
-                call_id: call_id.to_owned(),
-            });
-        }
-
-        let mut answers = Vec::new();
-        while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::CallOutput { key, call_id, output } = frame.update {
-                answers.push((key, call_id, output));
-            }
-        }
-        assert_eq!(
-            answers,
-            vec![
-                (
-                    session_key.clone(),
-                    "tu-unknown".to_owned(),
-                    forge_primitives::CallOutput::NoPath
-                ),
-                (session_key.clone(), "tu-empty".to_owned(), forge_primitives::CallOutput::NoPath),
-                (session_key.clone(), "tu-gone".to_owned(), forge_primitives::CallOutput::FileGone),
-            ],
-            "each answer names the seat it routes on and the call it answers; a call with no \
-             frame and a call with an empty path are both no-path, and a call whose file is gone \
-             is gone - none of them blanks",
-        );
-    }
-
-    /// A running backgrounded call's own output, through the arm a view
-    /// reaches: nothing on the wire names the file yet - only the ending
-    /// frame does, and it has not arrived - so the path is composed from the
-    /// task id the start frame carries, under the base the child runs with.
-    ///
-    /// The tree is planted under the REAL base (a unique slug beside the live
-    /// CLI's own), because the composition resolves that base from the
-    /// process's env and nothing in-crate can stand in for it.
-    #[tokio::test]
-    async fn a_running_calls_output_is_read_from_the_path_composed_from_its_task_id() {
-        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionSlot::from_str_for_test("call-output-running");
-        let domain =
-            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
-        let (handle, _agent_cmd_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let mut task = SessionTask {
-            key: session_key.clone(),
-            handle: Arc::new(handle),
-            command_rx,
-            domain,
-            update_tx: workspace.update_sender(),
-            connected_once: false,
-            workspace: Arc::downgrade(&workspace),
-            conversation: None,
-            successor: None,
-            teardown_done: None,
-        };
-        task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-running"));
-
-        let nonce = std::process::id();
-        let frame_session = format!("run-session-{nonce}");
-        let task_id = format!("t-run-{nonce}");
-        let slug = format!("forge-test-{nonce}");
-        let tree = crate::output_tail::task_output_base()
-            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
-            .join(&slug);
-        let tasks = tree.join(&frame_session).join("tasks");
-        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
-        let written = (0..15).fold(String::new(), |mut all, at| {
-            let _ = writeln!(all, "run-line-{at:02}");
-            all
-        });
-        std::fs::write(tasks.join(format!("{task_id}.output")), &written).expect("write the file");
-
-        // The launch frame only: no ending frame, so no frame names the file.
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: session_key.display(),
-            msg: serde_json::from_value(serde_json::json!({
-                "type": "system",
-                "subtype": "task_started",
-                "task_id": task_id,
-                "description": "watch the run",
-                "uuid": "u-run",
-                "session_id": frame_session,
-                "tool_use_id": "tu-run",
-            }))
-            .expect("a task_started frame"),
-        });
-        while update_rx.try_recv().is_ok() {}
-
-        task.execute_command(crate::protocol::Command::ReadCallOutput {
-            key: session_key.clone(),
-            call_id: "tu-run".to_owned(),
-        });
-
-        let mut answered = None;
-        while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::CallOutput { key, call_id, output } = frame.update {
-                answered = Some((key, call_id, output));
-            }
-        }
-        let (key, call_id, output) = answered.expect("the read is answered by the task");
-        assert_eq!(key, session_key, "the answer names the seat it routes on");
-        assert_eq!(call_id, "tu-run", "the answer names the call it answers");
-        let expected: Vec<String> = (3..15).map(|at| format!("run-line-{at:02}")).collect();
-        assert_eq!(
-            output,
-            forge_primitives::CallOutput::Lines(expected),
-            "and reads the file composed from the task id, bounded to the newest twelve lines",
-        );
-        let _ = std::fs::remove_dir_all(&tree);
-    }
-
-    /// A running call whose file is not there yet is no-path - the reason the
-    /// client draws as "not appeared yet" - never the gone-file reason about a
-    /// file that was never read.
-    ///
-    /// **And the miss is not remembered.** The read is answered twice: the
-    /// first before the file exists, the second after it is planted, and the
-    /// second must answer the tail - a memo of the first answer would freeze
-    /// the row at "not yet" for the rest of the call.
-    #[tokio::test]
-    async fn a_running_calls_output_answers_no_path_until_the_file_is_there() {
-        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionSlot::from_str_for_test("call-output-not-yet");
-        let domain =
-            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
-        let (handle, _agent_cmd_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let mut task = SessionTask {
-            key: session_key.clone(),
-            handle: Arc::new(handle),
-            command_rx,
-            domain,
-            update_tx: workspace.update_sender(),
-            connected_once: false,
-            workspace: Arc::downgrade(&workspace),
-            conversation: None,
-            successor: None,
-            teardown_done: None,
-        };
-        task.translate_event(connected_event(&session_key.display(), "/tmp/call-output-not-yet"));
-        let nonce = std::process::id();
-        let frame_session = format!("late-session-{nonce}");
-        let task_id = format!("t-absent-{nonce}");
-        let tree = crate::output_tail::task_output_base()
-            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
-            .join(format!("forge-test-{nonce}"));
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: session_key.display(),
-            msg: serde_json::from_value(serde_json::json!({
-                "type": "system",
-                "subtype": "task_started",
-                "task_id": task_id,
-                "description": "just started",
-                "uuid": "u-absent",
-                "session_id": frame_session,
-                "tool_use_id": "tu-absent",
-            }))
-            .expect("a task_started frame"),
-        });
-        while update_rx.try_recv().is_ok() {}
-
-        let read = |task: &mut SessionTask| {
-            task.execute_command(crate::protocol::Command::ReadCallOutput {
-                key: session_key.clone(),
-                call_id: "tu-absent".to_owned(),
-            });
-        };
-        let mut take_answer = || {
-            let mut answered = None;
-            while let Ok(frame) = update_rx.try_recv() {
-                if let SessionUpdate::CallOutput { output, .. } = frame.update {
-                    answered = Some(output);
-                }
-            }
-            answered
-        };
-
-        read(&mut task);
-        assert_eq!(
-            take_answer(),
-            Some(forge_primitives::CallOutput::NoPath),
-            "a file that is not there yet is the no-path reason, not a blank and not gone",
-        );
-
-        // The command writes its first line: the same read now answers the
-        // tail rather than a remembered miss.
-        let tasks = tree.join(&frame_session).join("tasks");
-        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
-        std::fs::write(tasks.join(format!("{task_id}.output")), "first line\n")
-            .expect("write the file");
-        read(&mut task);
-        assert_eq!(
-            take_answer(),
-            Some(forge_primitives::CallOutput::Lines(vec!["first line".to_owned()])),
-            "and once the file is there the read answers its tail",
-        );
-        let _ = std::fs::remove_dir_all(&tree);
-    }
-
-    /// The ending frame's own path WINS over the composed one when both are
-    /// reachable: `task_notification` is the CLI's word for where the output
-    /// went, and the composed path is this build's reading of a layout the CLI
-    /// never promised. Held at the resolver rather than through the arm so
-    /// both sides of the choice are real paths.
-    #[test]
-    fn the_ending_frames_path_wins_over_the_composed_one() {
-        let nonce = std::process::id();
-        let base = std::env::temp_dir().join(format!("forge-call-output-override-{nonce}"));
-        let _ = std::fs::remove_dir_all(&base);
-        let slug = format!("claude-{}", rustix::process::getuid().as_raw());
-        let tasks = base.join(&slug).join("slug-any").join("sess-live").join("tasks");
-        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
-        std::fs::write(tasks.join("t-live.output"), "composed\n").expect("write the composed file");
-        let named = base.join("named-by-the-ending-frame.output");
-        std::fs::write(&named, "named\n").expect("write the named file");
-
-        let started: forge_primitives::Message = serde_json::from_value(serde_json::json!({
-            "type": "system",
-            "subtype": "task_started",
-            "task_id": "t-live",
-            "description": "watch the run",
-            "uuid": "u-s",
-            "session_id": "sess-live",
-            "tool_use_id": "tu-live",
-        }))
-        .expect("a task_started frame");
-        let ended: forge_primitives::Message = serde_json::from_value(serde_json::json!({
-            "type": "system",
-            "subtype": "task_notification",
-            "task_id": "t-live",
-            "status": "completed",
-            "output_file": named.display().to_string(),
-            "summary": "Background command \"true\" completed",
-            "uuid": "u-n",
-            "session_id": "sess-live",
-            "tool_use_id": "tu-live",
-        }))
-        .expect("a task_notification frame");
-
-        assert_eq!(
-            resolve_call_output_path(std::slice::from_ref(&started), "tu-live", || base.clone()),
-            Some(tasks.join("t-live.output")),
-            "while it runs, the composed path is the one the read uses",
-        );
-        assert_eq!(
-            resolve_call_output_path(&[started, ended], "tu-live", || base.clone()),
-            Some(named),
-            "and once the ending frame lands, its own path overrides the composition",
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    /// **Nothing reads the launch sentence.** The launch result says where the
-    /// output will be written in prose, and a resolver that took that path
-    /// would be reading text the CLI is free to reword - so the pin carries
-    /// the real sentence naming file A beside a task id that composes to file
-    /// B, and the answer must be B's path. The second half catches the other
-    /// mistake: with B gone the answer is no-path, never A.
-    #[test]
-    fn nothing_reads_the_launch_sentence_for_the_path() {
-        let nonce = std::process::id();
-        let base = std::env::temp_dir().join(format!("forge-call-output-prose-{nonce}"));
-        let _ = std::fs::remove_dir_all(&base);
-        let tasks = base
-            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
-            .join("slug-any")
-            .join("sess-prose")
-            .join("tasks");
-        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
-        let composed = tasks.join("t-prose.output");
-        std::fs::write(&composed, "from the composition\n").expect("write the composed file");
-        // File A, which only the sentence names, with bytes nothing else has.
-        let named_by_prose = base.join("named-by-the-launch-sentence.output");
-        std::fs::write(&named_by_prose, "from the launch sentence\n").expect("write file A");
-
-        let launch: forge_primitives::Message = serde_json::from_value(serde_json::json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tu-prose",
-                    "is_error": false,
-                    "content": format!(
-                        "Command running in background with ID: t-prose. Output is being \
-                         written to: {}. You will be notified when it completes. To check \
-                         interim output, use Read on that file path.",
-                        named_by_prose.display(),
-                    ),
-                }],
-            },
-            "tool_use_result": { "backgroundTaskId": "t-prose" },
-            "uuid": "u-prose",
-            "session_id": "sess-prose",
-        }))
-        .expect("a launch result frame");
-        let started: forge_primitives::Message = serde_json::from_value(serde_json::json!({
-            "type": "system",
-            "subtype": "task_started",
-            "task_id": "t-prose",
-            "description": "watch the run",
-            "uuid": "u-s",
-            "session_id": "sess-prose",
-            "tool_use_id": "tu-prose",
-        }))
-        .expect("a task_started frame");
-
-        assert_eq!(
-            resolve_call_output_path(&[launch.clone(), started.clone()], "tu-prose", || base
-                .clone()),
-            Some(composed.clone()),
-            "the composed path answers, not the one the launch sentence names",
-        );
-        std::fs::remove_file(&composed).expect("unplant the composed file");
-        assert_eq!(
-            resolve_call_output_path(&[launch, started], "tu-prose", || base.clone()),
-            None,
-            "and with the composed file gone the answer is no-path, never the sentence's file",
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    /// **Each task reads its own file.** Two backgrounded calls in one session
-    /// carry two `task_started` frames, and the arm's link is the tool-use id:
-    /// without that guard, row B tails row A's file - wrong output shown as if
-    /// it were B's, which is worse than nothing.
-    #[test]
-    fn two_running_calls_each_read_their_own_task() {
-        let nonce = std::process::id();
-        let base = std::env::temp_dir().join(format!("forge-call-output-two-{nonce}"));
-        let _ = std::fs::remove_dir_all(&base);
-        let tasks = base
-            .join(format!("claude-{}", rustix::process::getuid().as_raw()))
-            .join("slug-any")
-            .join("sess-two")
-            .join("tasks");
-        std::fs::create_dir_all(&tasks).expect("plant the tasks tree");
-        std::fs::write(tasks.join("t-a.output"), "task a\n").expect("write a's file");
-        std::fs::write(tasks.join("t-b.output"), "task b\n").expect("write b's file");
-
-        let started = |task_id: &str, call: &str| -> forge_primitives::Message {
-            serde_json::from_value(serde_json::json!({
-                "type": "system",
-                "subtype": "task_started",
-                "task_id": task_id,
-                "description": "watch the run",
-                "uuid": format!("u-{task_id}"),
-                "session_id": "sess-two",
-                "tool_use_id": call,
-            }))
-            .expect("a task_started frame")
-        };
-        let history = vec![started("t-a", "tu-a"), started("t-b", "tu-b")];
-
-        assert_eq!(
-            resolve_call_output_path(&history, "tu-a", || base.clone()),
-            Some(tasks.join("t-a.output")),
-            "the first call reads its own task's file",
-        );
-        assert_eq!(
-            resolve_call_output_path(&history, "tu-b", || base.clone()),
-            Some(tasks.join("t-b.output")),
-            "and the second reads its own, not the first's",
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
     /// The count has coverage at both ends - the scan produces it, the
     /// client reads it - and this is the layer in between. Both emitted
     /// arms are checked because a task that has connected before emits
@@ -10037,7 +9409,7 @@ provider = "anthropic"
                 update_tx: workspace.update_sender(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
-                conversation: None,
+                compaction_count: 0,
                 successor: None,
                 teardown_done: None,
             };
@@ -10050,7 +9422,7 @@ provider = "anthropic"
 
             let mut seen = None;
             while let Ok(frame) = update_rx.try_recv() {
-                match frame.update {
+                match std::sync::Arc::unwrap_or_clone(frame.update) {
                     SessionUpdate::Connected { compaction_count, .. }
                     | SessionUpdate::SessionReplaced { compaction_count, .. } => {
                         seen = Some(compaction_count);
@@ -10062,22 +9434,18 @@ provider = "anthropic"
         }
     }
 
-    /// A replay answers with the conversation the task has CARRIED, not with
-    /// the history it was handed at connect.
+    /// A compaction boundary moves the task's count, which is the handoff
+    /// policy's `after_compactions` backstop.
     ///
-    /// **This is the mechanism the transport's seed rests on and nothing else
-    /// observed it**: with `retain` mutated to a no-op the whole workspace
-    /// suite stays green, and a replay then hands back the connect alone -
-    /// which is empty for a fresh session and stops at the connect for a
-    /// resumed one, so a consumer joining late gets a seat that never spoke.
-    ///
-    /// The two halves are asserted apart so a change to either fails on its
-    /// own message: the frames the session emitted after its connect, and the
-    /// count the connect carried as the boundary moved it.
+    /// **The count has two sources and both must land on one scalar**: the
+    /// connect seeds it from the transcript it resumed, and a boundary frame
+    /// the session emits after it moves it. A store that kept only the
+    /// connect's number would report the count from before every compaction
+    /// since.
     #[tokio::test]
-    async fn a_replay_answers_with_the_conversation_the_task_has_carried() {
-        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
-        let session_key = SessionSlot::from_str_for_test("replay-carries-uuid");
+    async fn a_compaction_boundary_moves_the_tasks_count() {
+        let (workspace, _update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::from_str_for_test("compaction-count-uuid");
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         let (handle, _agent_cmd_rx) = Agent::testing_stub();
@@ -10091,33 +9459,21 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
 
-        // A FRESH session, which is the case that makes this load-bearing: the
-        // CLI hands over an empty history, so a replay answering from the
-        // connect alone would hand back nothing at all.
-        // A resumed connect carries the count it has already compacted, so the
-        // STORE has to keep it and not only the emit: with it zeroed here the
-        // replay answers from a count that never saw those compactions.
-        let mut event = connected_event(&session_key.display(), "/tmp/replay");
-        if let AgentEvent::Connected { history_updates, compaction_count, .. } = &mut event {
-            *history_updates = Some(Vec::new());
+        let mut event = connected_event(&session_key.display(), "/tmp/count");
+        if let AgentEvent::Connected { compaction_count, .. } = &mut event {
             *compaction_count = 4;
         }
         task.translate_event(event);
+        assert_eq!(task.compaction_count, 4, "a resumed connect seeds the count it carries");
 
-        // One frame the session emitted after it, and one compaction boundary.
-        for msg in [
-            serde_json::from_value::<forge_primitives::Message>(serde_json::json!({
-                "type": "user",
-                "message": {"role": "user", "content": "carried"},
-                "session_id": session_key.display(),
-            }))
-            .expect("a user frame"),
-            forge_primitives::Message::CompactBoundary {
+        task.translate_event(AgentEvent::SdkMessage {
+            session_id: session_key.display(),
+            msg: forge_primitives::Message::CompactBoundary {
                 trigger: "auto".to_owned(),
                 pre_tokens: 1,
                 post_tokens: 1,
@@ -10126,34 +9482,8 @@ provider = "anthropic"
                 metadata_extras: serde_json::Map::new(),
                 extras: serde_json::Map::new(),
             },
-        ] {
-            task.translate_event(AgentEvent::SdkMessage { session_id: session_key.display(), msg });
-        }
-        while update_rx.try_recv().is_ok() {}
-
-        task.execute_command(crate::protocol::Command::ReplayConversation {
-            key: session_key.clone(),
         });
-
-        let mut replayed = None;
-        while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::HistoryReplayed { history, compaction_count, .. } = frame.update {
-                replayed = Some((history, compaction_count));
-            }
-        }
-        let (history, compaction_count) =
-            replayed.expect("a replay is answered with the conversation");
-
-        assert_eq!(
-            history.len(),
-            2,
-            "the frames the session emitted after its connect are in the replay, not only the \
-             empty history the connect carried",
-        );
-        assert_eq!(
-            compaction_count, 5,
-            "the count the connect carried survives to the replay, moved by the boundary",
-        );
+        assert_eq!(task.compaction_count, 5, "and the boundary the session emits moves it");
     }
 
     /// A re-spawn that replaces the session seeds `connected_once =
@@ -10183,7 +9513,7 @@ provider = "anthropic"
             // The seed a session-replacing re-spawn installs.
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -10219,7 +9549,7 @@ provider = "anthropic"
         let mut replaced_history_len = None;
         let mut saw_plain_connected = false;
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::SessionReplaced { key, history, .. } => {
                     assert_eq!(key, session_key, "SessionReplaced targets the re-spawned session");
                     replaced_history_len = Some(history.len());
@@ -10261,7 +9591,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -10291,7 +9621,7 @@ provider = "anthropic"
 
         let mut replaced_seen = false;
         while let Ok(frame) = update_rx.try_recv() {
-            replaced_seen |= matches!(frame.update, SessionUpdate::SessionReplaced { .. });
+            replaced_seen |= matches!(&*frame.update, SessionUpdate::SessionReplaced { .. });
         }
         assert!(
             replaced_seen,
@@ -10824,26 +10154,10 @@ provider = "anthropic"
         assert_eq!(domain.context_usage, None, "nor the context it had filled");
     }
 
-    /// A login wait and a dead connection both blank the session's
-    /// runtime identity, and a view renders that: what the core holds has
-    /// to go with the run it described, or the read answers with a mode
-    /// and a model the session no longer has.
-    #[test]
-    fn a_login_wait_clears_the_held_view_facts() {
-        let mut domain = seeded_view_facts();
-
-        apply_event_to_domain(
-            &mut domain,
-            &AgentEvent::AuthRequired {
-                method_name: "oauth".to_owned(),
-                method_description: "sign in".to_owned(),
-            },
-        );
-
-        assert_view_facts_cleared(&domain, "no credential");
-    }
-
-    /// The same, for the other event that ends a run.
+    /// A dead connection blanks the session's runtime identity, and a view
+    /// renders that: what the core holds has to go with the run it
+    /// described, or the read answers with a mode and a model the session no
+    /// longer has.
     #[test]
     fn a_dead_connection_clears_the_held_view_facts() {
         let mut domain = seeded_view_facts();
@@ -11175,7 +10489,7 @@ provider = "anthropic"
                 update_tx: workspace.update_sender(),
                 connected_once,
                 workspace: Arc::downgrade(&workspace),
-                conversation: None,
+                compaction_count: 0,
                 successor: None,
                 teardown_done: None,
             };
@@ -11240,7 +10554,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: true, // a session-replacing re-spawn
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -11253,7 +10567,9 @@ provider = "anthropic"
 
         let mut saw_nonfatal = false;
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } = frame.update {
+            if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 assert!(!fatal, "a failed re-spawn is recoverable, not fatal");
                 assert_eq!(failed_key, key);
                 saw_nonfatal = true;
@@ -11334,7 +10650,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -11410,7 +10726,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -11436,7 +10752,9 @@ provider = "anthropic"
         );
 
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
         assert!(
             announced.iter().any(|update| matches!(
                 update,
@@ -11469,7 +10787,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -11530,7 +10848,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -11591,7 +10909,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -11625,7 +10943,9 @@ provider = "anthropic"
             "the prompt itself still reaches the agent: the pile is a view, not the send",
         );
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
         assert!(
             !announced.iter().any(|update| matches!(
                 update,
@@ -11661,7 +10981,7 @@ provider = "anthropic"
             update_tx: workspace.update_sender(),
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -11711,7 +11031,9 @@ provider = "anthropic"
             "and a row is kept for a CLI that can settle it",
         );
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
         assert!(
             announced.iter().any(|update| matches!(
                 update,

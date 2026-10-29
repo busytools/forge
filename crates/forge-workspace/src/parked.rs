@@ -315,7 +315,9 @@ mod tests {
 
         let mut echo = None;
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 echo = Some((key, wrapped));
             }
         }
@@ -348,7 +350,9 @@ mod tests {
 
         let mut echo = None;
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 echo = Some((key, wrapped));
             }
         }

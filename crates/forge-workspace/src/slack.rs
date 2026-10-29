@@ -1551,7 +1551,9 @@ mod tests {
 
         let mut addressed = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::SlackPostPending { key, .. } = frame.update {
+            if let crate::protocol::SessionUpdate::SlackPostPending { key, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 addressed.push(key);
             }
         }
@@ -1594,7 +1596,7 @@ mod tests {
     async fn a_draft_with_only_an_observer_fails_closed() {
         let (ws, _dir, rx) = workspace_with_one_slack_workspace("acme");
         drop(rx);
-        let mut observer = ws.subscribe_observer();
+        let mut observer = ws.subscribe_mirror();
         let caller = SessionSlot::from_str_for_test("caller-uuid");
 
         let (_id, decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
@@ -1606,10 +1608,8 @@ mod tests {
         assert!(
             matches!(
                 observer.try_recv(),
-                Ok(crate::SeatUpdate {
-                    update: crate::protocol::SessionUpdate::SlackPostPending { .. },
-                    ..
-                })
+                Ok(frame)
+                    if matches!(&*frame.update, crate::protocol::SessionUpdate::SlackPostPending { .. })
             ),
             "the observer is still delivered the draft it cannot answer",
         );
@@ -1642,7 +1642,7 @@ mod tests {
         let mut resolved = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
             {
                 resolved.push((key, id, ending));
             }
@@ -2382,7 +2382,7 @@ mod tests {
         for _ in 0..600 {
             while let Ok(frame) = update_rx.try_recv() {
                 if let crate::protocol::SessionUpdate::SlackMessageAppended { prose, .. } =
-                    frame.update
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                 {
                     delivered = Some(prose);
                 }
@@ -2909,11 +2909,11 @@ mod tests {
     fn next_connectors_changed(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>,
     ) -> (SessionSlot, Vec<forge_primitives::GotifySubscription>, Vec<SlackSubscription>) {
-        match rx.try_recv() {
-            Ok(crate::SeatUpdate {
-                update:
-                    crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged { key, gotify, slack },
-                ..
+        match rx.try_recv().map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)) {
+            Ok(crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged {
+                key,
+                gotify,
+                slack,
             }) => (key, gotify, slack),
             other => {
                 panic!("expected a ConnectorSubscriptionsChanged on the stream, got {other:?}")

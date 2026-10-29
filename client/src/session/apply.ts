@@ -356,24 +356,6 @@ export const HANDLERS: Record<string, Apply> = {
     return { ...held, pending_asks };
   },
 
-  auth_required: (held, payload) => {
-    const method = text(payload['method_name']);
-    const description = text(payload['method_description']);
-    // A payload naming neither says nothing about how to sign in, and writing
-    // blanks would narrow a hint the record already holds.
-    if (method === null && description === null) return held;
-    return {
-      ...held,
-      composer: {
-        ...held.composer,
-        sign_in: {
-          method_name: method ?? '',
-          method_description: description ?? '',
-        },
-      },
-    };
-  },
-
   dictate_started: (held, payload) => {
     const floor = number(payload['floor_db']);
     if (floor === null) return held;
@@ -453,12 +435,7 @@ export const HANDLERS: Record<string, Apply> = {
  * a client through the read it makes, never as an update payload - so a page
  * answers them with a read.
  */
-export const REPLACES: readonly string[] = [
-  'spawning',
-  'connected',
-  'history_replayed',
-  'session_replaced',
-];
+export const REPLACES: readonly string[] = ['spawning', 'connected', 'session_replaced'];
 
 /**
  * The variants that touch nothing on this record.

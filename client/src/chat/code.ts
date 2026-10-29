@@ -154,7 +154,7 @@ export function codePanel(label: string | null, language: string | null, text: s
  * stable node and only the `<pre>` body is replaced - a builder that returned
  * the whole panel would swap the element itself.
  */
-export function panelHtml(label: string | null, body: string): string {
+function panelHtml(label: string | null, body: string): string {
   const header = label === null ? '' : `<div class="lang">${escaped(label)}</div>`;
   return `<div class="code panel">${header}<pre>${body}</pre></div>`;
 }

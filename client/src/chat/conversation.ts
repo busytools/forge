@@ -1325,8 +1325,10 @@ const PAINT_WATCHDOG_MS = 250;
  * One conversation, over one connection.
  *
  * It asks for a page, holds what comes back and follows the seat's frames.
- * `start` is what puts it to work and `stop` is what takes it off again, so a
- * page that unmounts leaves neither a subscription nor a listener behind.
+ * `start` is what puts it to work and `stop` takes it off again, so a page
+ * that unmounts leaves no listener drawing it behind. **The conversation is
+ * kept** (`chat/conversations.ts`): the seat's subscription outlives the page,
+ * so a Home round trip finds the frames already applied.
  */
 export class Chat {
   private readonly connection: Connection;

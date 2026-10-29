@@ -2300,7 +2300,8 @@ token = "y"
         let mut seen = None;
         for _ in 0..200 {
             while let Ok(frame) = rx.try_recv() {
-                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } = frame.update
+                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                 {
                     seen = Some(draft.conversation_label);
                 }
@@ -2733,7 +2734,8 @@ token = "y"
         let mut seen = None;
         for _ in 0..200 {
             while let Ok(frame) = rx.try_recv() {
-                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } = frame.update
+                if let crate::protocol::SessionUpdate::SlackPostPending { draft, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                 {
                     seen = Some(draft.text);
                 }
@@ -2809,7 +2811,8 @@ token = "y"
 
         let mut resolved = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::SlackDraftResolved { ending, .. } = frame.update
+            if let crate::protocol::SessionUpdate::SlackDraftResolved { ending, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
             {
                 resolved.push(ending);
             }
@@ -2881,7 +2884,7 @@ token = "y"
         let mut resolved = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
             {
                 resolved.push((key, id, ending));
             }

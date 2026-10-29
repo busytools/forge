@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 16;
+export const PROTOCOL_VERSION = 17;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -420,9 +420,11 @@ export type ServerMessage =
    * `seq` is the number its OLDEST update was minted under, and `span` how
    * many of the seat's numbers the frame stands for: a run of token appends
    * crosses as the single frame they draw as, and counting only its oldest
-   * would leave the client asking for numbers it had already drawn. Both are
-   * absent from a frame belonging to no seat, and from a server older than the
-   * fields.
+   * would leave the client asking for numbers it had already drawn. `seq` is
+   * absent from a frame belonging to no seat, and `span` is 0 only on the
+   * turn the batch forges from a delivery - a frame with no number - and 1
+   * everywhere else, the out-of-band `read_call_output` answer included.
+   * Both are absent from a server older than the fields.
    */
   | { kind: 'update'; update: SessionUpdate; seq?: number | null; span?: number }
   /**

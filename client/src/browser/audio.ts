@@ -22,7 +22,7 @@ function bytesOf(base64: string): Uint8Array {
  * The packet's samples as a playable buffer: interleaved 16-bit little-endian
  * becomes the format's planar float, scaled the way the wire scaled it.
  */
-export function soundBuffer(
+function soundBuffer(
   make: (channels: number, frames: number, rate: number) => AudioBuffer,
   base64: string,
   rate: number,

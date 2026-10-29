@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use forge_browser::channel::{self, ChannelMessage};
 use forge_browser::osr::Ring;
-use forge_browser::window::Cdp;
+use forge_browser::window::{Backlog, Cdp};
 use serde_json::json;
 
 /// How long CEF is given to boot, play and answer.
@@ -49,7 +49,9 @@ async fn a_pages_sound_crosses_the_socket() {
     let mut host = support::Host::start(&exe, &profile, port, &ring_name, "800x600", &args, &log);
     let id = support::wait_for_page(port, &log, BOUND);
     let (mut cdp, _events) =
-        Cdp::connect_watch(port, &format!("/devtools/page/{id}")).await.expect("devtools");
+        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent)
+            .await
+            .expect("devtools");
 
     // **A viewer is watching**, which is what lets the host's sink pass
     // audio rather than drop it with the frames.

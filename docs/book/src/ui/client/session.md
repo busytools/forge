@@ -217,25 +217,24 @@ crossed, or the compaction that forced it (a manual ask says so). Opened, it
 carries both full session ids, each with the control that copies it - the
 recovery `/resume <old-id>` needs is on the row itself - and the brief the
 successor was given: the ground truth forge read off the transcript, git and
-the board - including what was still running when the seat changed: the live
+the board - the seat, the working directory, the branch, the role, the files
+read and changed, the rows the seat owns and their links, the transcript the
+record names, and what was still running when the seat changed: the live
 agents, background tasks, monitors and the session's process tree, so the
-successor knows what to resume - then the judgment the handing-over session
-wrote: where the work stood, the index of what it left - memory files, board
-rows, PRs and the transcript - and the next actions, so the successor opens what
-the note names rather than reading a retelling of it. **The brief is one
-table.** Each section takes its own labelled row, and the judgment's five
-headings sit on the same label column; the value takes the width the pane has
-and wraps inside its own row. Under the meta sit the record's own numbers:
-when the swap happened, what the cycle counted (requests, turns and prompt
-tokens) and how the successor's first turns went once they have been
+successor knows what to resume - then
+the note the handing-over session wrote, or its closing text under a `source`
+row when the exit call carried none: where things stand, what is in
+flight with the id that names it, what failed, and the exact next action with
+the file, command or row it starts at, so the successor opens what the note
+names rather than reading a retelling of it. **The brief is one
+table.** Each section takes its own labelled row, and the note's own headings,
+when it writes any, sit on the same label column; the value takes the width the
+pane has and wraps inside its own row. Under the meta sit the record's own
+numbers: when the swap happened, what the cycle counted (requests, turns and
+prompt tokens) and how the successor's first turns went once they have been
 measured - an unmeasured successor is absent rather than a row of zeros. The
-ground truth names the forge actions the session took as well as its files
-and commands: one line each for the agents, tasks, crons, Slack, Gotify,
-documents, reviews, System One decisions and browser pages it used, so work a
-successor cannot infer from the transcript it does not hold does not vanish
-with the handover. The previous
-conversation stays above it, so a swap reads as a seam in the page rather
-than a seat that emptied, and the old session is one `/resume` away.
+previous conversation stays above it, so a swap reads as a seam in the page
+rather than a seat that emptied, and the old session is one `/resume` away.
 
 **The turn that ran the handoff draws above the row.** Its first row is the
 procedure forge wrote - the prompt that asks the handing-over session to run
@@ -404,10 +403,11 @@ thing.
 ## The two widths
 
 The page is checked at **1600** and at **430**, against the drawing beside
-it. **The rail is summoned at every width** - it is never a column, so
-nothing of the conversation is spent on it while it is away: a hover over
-the chip is a peek, Cmd+Left or the palette opens it to stay, and Escape
-or Back closes what it opened. At 430 the chat keeps its single column,
+it. **The rail is a column by default**, remembered per device; the hover mode,
+or a window below the width a column stops making sense at, gives the chip
+instead: hovering summons the peek, Cmd+Left or the palette opens it to
+stay, and Escape or Back closes it. At 430 the chat keeps its
+single column,
 the facts row folds under `more`, and nothing overflows horizontally at
 either width.
 

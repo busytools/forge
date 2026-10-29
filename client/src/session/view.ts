@@ -28,6 +28,7 @@ import {
   placeOf,
   projectRows,
   rankOf,
+  seatMark,
   stateOf,
   whenOf,
 } from '../home/view';
@@ -486,30 +487,9 @@ export interface ComposerProps {
  * while the rail and the header put the state's own name on a bare dot.
  */
 export function railMark(state: RowState): string {
-  if (state.kind === 'unseen') return 'unseen';
-  // A failed turn draws the failure mark, the same answer the view this
-  // client replaced gave: its cross replaces the state glyph until the seat
-  // is opened. A death wears the same one - one failure vocabulary on the
-  // rail, and the seat's own page says which it was.
-  if (state.kind === 'failed-turn' || state.kind === 'died') return 'failed';
-  if (state.kind === 'never-started') return 'off';
-  switch (state.lifecycle) {
-    case 'Running':
-    case 'Spawning':
-      return 'live';
-    case 'Idle':
-      return 'idle';
-    case 'Attention':
-      return 'needs';
-    // Sign-in needed is a failure a person has to act on, and neither the
-    // rail nor the header has an auth shape of its own.
-    case 'AuthRequired':
-    case 'Failed':
-      return 'failed';
-    case 'Sleeping':
-    case 'LoggedOut':
-      return 'off';
-  }
+  // The state-to-meaning mapping is `seatMark`'s, shared with the home's row
+  // so the rail and the fleet cannot drift; this is its rail spelling.
+  return seatMark(state).rail;
 }
 
 /**
@@ -868,7 +848,7 @@ export function railGroups(
  * is where work lands, not work. A dirty default branch draws, and so does
  * a tree that could not be read - the gate line is a state.
  */
-export function treeShows(record: SessionRecord): boolean {
+function treeShows(record: SessionRecord): boolean {
   const { branch } = placeOf(record.work);
   const gate = gateLine(record.work.gate);
   const view = record.git;
