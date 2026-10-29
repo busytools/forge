@@ -138,10 +138,9 @@ export class ReadBounds {
    * would buy an extra whole record per reconnect on exactly the slow link
    * this bound stopped feeding.
    *
-   * **The pass is the read's own**, which the caller holds: a review read
-   * re-armed with the plain pass would land its retry inside the server's
-   * longer bounds and buy the second whole review read that deadline exists
-   * to prevent.
+   * **The pass is the read's own**, which the caller holds: a review read has
+   * no deadline at all (its server-side wait for the base fetch has no cap),
+   * so `passFor` answers `null` for it and nothing is armed.
    */
   rearmLoading(passFor: (what: Subject) => number | null = () => this.boundMs): void {
     for (const subject of this.stores.subjects()) {

@@ -172,13 +172,11 @@ pub mod wire;
 /// stands the box down; the bump is what tells an old client its server has
 /// moved. `baselines/socket/15/` is the record a v15 server emitted.
 ///
-/// **v17 is a bump for the diff record's base failure.** `diff.base_error`
-/// carries git's own words for a base fetch that could not run, beside the
-/// `base` state the page already draws. A v16 client reads no such key and
-/// says only that the base could not be checked, which is the vaguer line the
-/// field exists to replace; nothing it sends changes.
-/// `baselines/socket/16/` is the record a v16 server emitted.
-pub const PROTOCOL_VERSION: u32 = 17;
+/// **Additive fields do not bump.** `diff.base_error` is one: a client older
+/// than the field draws the vaguer line it always drew, and nothing it sends
+/// changes, so this speaks 16 with or without it (as v11's paragraph below
+/// says).
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

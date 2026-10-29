@@ -1256,6 +1256,27 @@ describe('the connection', () => {
     ).toBe(3);
   });
 
+  /**
+   * **A review ask clears the timer an ordinary read of the subject left.**
+   * Skipping the arm instead of arming none would let the ordinary read's
+   * timer fire mid-review, and its refresh re-asks with the review scope - the
+   * second whole review read that the review read's wait exists to prevent.
+   */
+  it('clears a standing read timer when a review ask supersedes it', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url, SHORT_READ_BOUND_MS);
+    opened.push(conn);
+    const seat: Subject = { session: LEAD };
+    conn.subscribe(seat);
+    await until(() => server.received.length === 1, 'the ordinary subscribe');
+    conn.subscribe(seat, { review: true });
+    await until(() => server.received.length === 2, 'the review subscribe');
+
+    await quiet(SHORT_READ_BOUND_MS * 6);
+    expect(server.received.length, 'the cleared timer never asks again').toBe(2);
+  });
+
   it('asks nothing again for a read that was answered', async () => {
     const server = await stubServer();
     servers.push(server);

@@ -1769,7 +1769,7 @@ pub struct OpenTimings {
     pub cards_ms: f64,
     pub work_ms: f64,
     /// The review read's base refresh: the fetch and the tip it is checked
-    /// against, bounded by the display budget.
+    /// against, waited on with no cap and served off the connection's loop.
     pub base_ms: f64,
     /// The scan pinned to the sha that refresh resolved.
     pub rescan_ms: f64,

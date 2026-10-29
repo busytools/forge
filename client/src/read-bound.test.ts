@@ -48,6 +48,22 @@ describe('the pass a read gets', () => {
     vi.advanceTimersByTime(600_000);
     expect(asked, 'a review read is never presumed lost').toEqual([]);
   });
+
+  /**
+   * **A bounded read's timer does not survive the unbounded read that
+   * supersedes it**: the ordinary ask's pass is not the review read's to keep,
+   * and one left standing would fire mid-review.
+   */
+  it('clears the timer an earlier read of the subject left', () => {
+    vi.useFakeTimers();
+    const { stores, bounds, asked } = bounded();
+    stores.open(HOME);
+    bounds.arm(HOME);
+    bounds.arm(HOME, null);
+
+    vi.advanceTimersByTime(600_000);
+    expect(asked, 'the superseded timer never asks').toEqual([]);
+  });
 });
 
 describe('a read that is not answered', () => {

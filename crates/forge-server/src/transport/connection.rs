@@ -517,10 +517,17 @@ where
     // The tab this connection is viewing and the seat's tab rows it follows,
     // each once the client asks.
     let mut browser = BrowserViewing::default();
-    // Answers to reply-carrying commands, sent by the tasks that ran them:
-    // the read loop hands a reply off rather than awaiting it, so a slow
-    // handler holds nothing behind it (#2445).
+    // Answers the read loop hands off rather than awaiting, so a slow handler
+    // holds nothing behind it (#2445): a reply-carrying command's answer, or a
+    // subscribe's record when that read ran off the loop.
     let (reply_tx, mut answers) = mpsc::unbounded_channel();
+    // The one subscribe read in flight off this loop, and the subscribes that
+    // arrived behind it. A subscribe is answered in the order it was asked,
+    // because a client attributes a refusal to the oldest ask it still holds;
+    // everything else - updates, commands, pings, a disconnect - keeps moving
+    // while a review read waits for its base.
+    let mut reads =
+        Reads { one: None, waiting: std::collections::VecDeque::new(), reply: reply_tx };
 
     let outcome = run_connection(
         socket,
@@ -530,7 +537,7 @@ where
         &mut updates,
         &mut dictate,
         &mut browser,
-        &reply_tx,
+        &mut reads,
         &mut answers,
         caller,
     )
@@ -664,6 +671,64 @@ impl Streaming {
     }
 }
 
+/// What a task off this loop asks it to send.
+enum Answer {
+    /// A reply-carrying command's answer, sent by the task that ran it.
+    Reply(Box<ServerMessage>),
+    /// The record, or the refusal, of a subscribe read served off the loop.
+    Read(Box<ReadAnswer>),
+}
+
+/// The connection's subscribe reads: the one served off the loop, the asks
+/// that queued behind it, and the channel its task answers on.
+struct Reads {
+    one: Option<Reading>,
+    waiting: std::collections::VecDeque<ClientMessage>,
+    reply: mpsc::UnboundedSender<Answer>,
+}
+
+/// One subscribe read finished off the loop.
+struct ReadAnswer {
+    subject: Subject,
+    seat: Option<SessionSlot>,
+    peer: std::net::SocketAddr,
+    /// When the subscribe that began this read was taken off the socket, and
+    /// the slices between it and the read's start.
+    open_at: Instant,
+    prelude_ms: f64,
+    queued_ms: f64,
+    hold_ms: f64,
+    outcome: anyhow::Result<(serde_json::Value, OpenTimings)>,
+}
+
+/// The subscribe read this connection is waiting on, and what arrived for it
+/// while it ran.
+///
+/// **A read off the loop cannot let its seat's updates overtake its record.**
+/// The record is encoded while those frames are already in flight, so they are
+/// held here and handed on after the snapshot: a frame is never drawn over a
+/// page that has not arrived. The seq each carries is what tells the client
+/// which the snapshot already covers.
+struct Reading {
+    subject: Subject,
+    frames: Vec<SeatUpdate>,
+    /// The client let the seat go while its read was in flight. The answer is
+    /// dropped rather than written for a view that has left.
+    abandoned: bool,
+    /// Held for its drop: the task is aborted when the connection ends.
+    _task: AbortOnDrop,
+}
+
+/// A task that is aborted when the connection ends, so an abandoned read does
+/// not outlive the socket that asked for it.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// The connection's own loop, so that every way out of it runs the detach
 /// above rather than only the clean one.
 async fn run_connection<S>(
@@ -674,8 +739,8 @@ async fn run_connection<S>(
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     browser: &mut BrowserViewing,
-    reply_tx: &mpsc::UnboundedSender<ServerMessage>,
-    answers: &mut mpsc::UnboundedReceiver<ServerMessage>,
+    reads: &mut Reads,
+    answers: &mut mpsc::UnboundedReceiver<Answer>,
     caller: Caller,
 ) -> anyhow::Result<()>
 where
@@ -717,20 +782,34 @@ where
                 // core emitted before it would land older news on newer.
                 batch::flush(socket, held.take()).await?;
                 handle_client(
-                    socket, state, watching, holds, updates, dictate, browser, reply_tx, caller,
-                    msg,
+                    socket, state, watching, holds, updates, dictate, browser, reads, caller, msg,
                 )
                 .await?;
             }
-            // **A reply-carrying command's answer, sent by the task that ran
-            // it.** The read loop never waits for one, so a slow handler
-            // leaves this connection reading; the client tells the answers
-            // apart by `reply_to`. The core's news goes out first, as every
-            // send here keeps.
-            reply = answers.recv() => {
-                let Some(reply) = reply else { break };
+            // **An answer sent by a task this loop did not wait for.** A
+            // reply-carrying command's, or a subscribe's record when that read
+            // ran off the loop; the core's news goes out first, as every send
+            // here keeps.
+            answer = answers.recv() => {
+                let Some(answer) = answer else { break };
                 batch::flush(socket, held.take()).await?;
-                send(socket, reply).await?;
+                match answer {
+                    Answer::Reply(message) => send(socket, *message).await?,
+                    Answer::Read(read) => {
+                        finish_read(socket, state, watching, holds, &mut reads.one, &mut held, *read)
+                            .await?;
+                        // **And the asks that queued behind it**, in the order
+                        // they were asked: one may start the next read.
+                        while reads.one.is_none() {
+                            let Some(msg) = reads.waiting.pop_front() else { break };
+                            handle_message(
+                                socket, state, watching, holds, updates, dictate, browser, reads,
+                                caller, msg,
+                            )
+                            .await?;
+                        }
+                    }
+                }
             }
             // Deliberately NOT `Some(update) = updates.recv()`. A pattern that stops matching
             // DISABLES its branch in `select!` rather than ending the loop, so a closed channel
@@ -767,6 +846,19 @@ where
                     && *id == me
                 {
                     dictate.retire(key, outcome, *generation);
+                }
+                // **A seat whose record is being read off this loop has its
+                // frames held, not lost.** The record is encoded while these
+                // are already in flight; handing them on after the snapshot
+                // keeps a frame from drawing over a page that has not arrived,
+                // and each carries the seq that says whether the snapshot
+                // already covers it.
+                if let Some(read) = reads.one.as_mut()
+                    && read.subject.covers(&update)
+                {
+                    read.frames
+                        .push(SeatUpdate { seq: frame.seq, update: for_a_client(update, cap) });
+                    continue;
                 }
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
@@ -1079,6 +1171,203 @@ fn stamp(command: Command, me: u64) -> Command {
     }
 }
 
+/// One subscribe's open, as its write and its log state it.
+struct OpenReport {
+    seat: Option<SessionSlot>,
+    peer: std::net::SocketAddr,
+    /// When the subscribe was taken off the socket, and the slices between it
+    /// and the read's start.
+    open_at: Instant,
+    prelude_ms: f64,
+    queued_ms: f64,
+    hold_ms: f64,
+    timings: OpenTimings,
+}
+
+/// Write a subscribe's snapshot, register the subject, log the open and spend
+/// the showing marks the snapshot completes.
+///
+/// **One body for the loop's reads and the ones served off it**: what a
+/// client hears and what the trace records must not depend on which side the
+/// record was built.
+async fn write_snapshot<S>(
+    socket: &mut S,
+    state: &Arc<TransportState>,
+    watching: &mut Watching,
+    subject: Subject,
+    data: serde_json::Value,
+    report: Option<OpenReport>,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    // Watched only once the subject is one this server can answer for: a
+    // refused subscribe leaves nothing to hear, and the client's own re-ask is
+    // what recovers it (`client/src/session/live.ts`).
+    //
+    // **A subscription is not a showing.** This connection hears the seat's
+    // frames from here, and the marks are spent when it says the seat is on
+    // screen (`Showing`), not when it starts listening.
+    let seat = report.as_ref().and_then(|report| report.seat.clone());
+    watching.subjects.push(subject.clone());
+    let write =
+        send_frame_timed(socket, ServerMessage::Snapshot { subject, data }, &SystemClock).await?;
+    if let Some(report) = &report {
+        log_open(report, &write);
+    }
+    // **The subscribe that completes a showing pair spends its marks here**,
+    // after the seat's own record is on its way: the snapshot was encoded
+    // before the death trace is spent, so its row still carries the death, and
+    // the home re-send that follows carries it cleared.
+    if let Some(slot) = &seat
+        && watching.showing.as_ref() == Some(slot)
+        && !watching.showing_attached
+    {
+        spend_showing(socket, state, watching, slot).await?;
+    }
+    Ok(())
+}
+
+/// The open's two records: the snapshot's write, and the session's slices.
+fn log_open(report: &OpenReport, write: &FrameWrite) {
+    let Some(slot) = &report.seat else { return };
+    // The snapshot's own write, its own record: the open below keeps the
+    // slices, so the write's numbers are not repeated there (#2506).
+    tracing::debug!(
+        event_name = "frame_write",
+        slot = %slot.display(),
+        peer = %report.peer,
+        bytes = write.bytes,
+        prep_ms = write.prep_ms,
+        write_ms = write.write_ms,
+        waited = write.waited,
+        "the snapshot's write: prep is the record serialised into the \
+         bytes the socket takes, write_ms is the socket's share after \
+         that, and waited says the write yielded at least once before it \
+         was done (a prior frame's flush, kernel send-buffer pressure or \
+         a slow reader)",
+    );
+    // The session's open, in its own slices: the numbers a reader places a
+    // slow switch with, beside the client's own marks and the client it
+    // served. Debug, and for one session's work rather than a problem of
+    // forge's - but a record a reader acts on, so it names what its remainder
+    // is.
+    let timings = &report.timings;
+    tracing::debug!(
+        event_name = "session_open",
+        slot = %slot.display(),
+        peer = %report.peer,
+        open_ms = report.open_at.elapsed().as_secs_f64() * 1000.0,
+        prelude_ms = report.prelude_ms,
+        queued_ms = report.queued_ms,
+        hold_ms = report.hold_ms,
+        prologue_ms = timings.prologue_ms,
+        header_ms = timings.header_ms,
+        catch_up_ms = timings.catch_up_ms,
+        seed_ms = timings.seed_ms,
+        conversation_ms = timings.conversation_ms,
+        page_ms = timings.page_ms,
+        cards_ms = timings.cards_ms,
+        work_ms = timings.work_ms,
+        base_ms = timings.base_ms,
+        rescan_ms = timings.rescan_ms,
+        content_ms = timings.content_ms,
+        reviews_ms = timings.reviews_ms,
+        tree_reviews_ms = timings.tree_reviews_ms,
+        state_ms = timings.state_ms,
+        index_ms = timings.index_ms,
+        resume_ms = timings.resume_ms,
+        tail_ms = timings.tail_ms,
+        encode_ms = timings.encode_ms,
+        pr_age_s = timings.pr_age_s,
+        "the subscribe's own work, in DISJOINT slices: prelude is the \
+         client line and the browser role, queued the frames already \
+         waiting for this subject, hold the seat's watch, prologue the \
+         roster and its asks, header the seat's header, catch_up the \
+         copy's wait, seed the transcript read a cold seat pays, \
+         conversation the copy's arrival, page its cut and fold, cards \
+         the subagent cards, work the tree scan, base the review read's base \
+         refresh, rescan the scan pinned to the sha it resolved, content the \
+         diff's changed files, reviews and tree_reviews the review reads, state \
+         the seat's own state, index the file walk, resume the `/resume` \
+         list's read, tail the process read \
+         and the \
+         record's assembly, and encode the record's value; pr_age_s is \
+         how old the PR attempt the record carries is, absent until one \
+         has run; open_ms ends when the snapshot's write returns, so \
+         frame_write's prep_ms and write_ms are inside it, and what the \
+         slices and those two do not sum to is the subscribe path's own \
+         glue",
+    );
+}
+
+/// Answer a subscribe read that ran off the loop: its record, its refusal, or
+/// nothing when the client let the seat go while it ran.
+async fn finish_read<S>(
+    socket: &mut S,
+    state: &Arc<TransportState>,
+    watching: &mut Watching,
+    holds: &mut Holds<'_>,
+    reads: &mut Option<Reading>,
+    held: &mut Batch,
+    done: ReadAnswer,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    let Some(read) = reads.take() else { return Ok(()) };
+    if read.abandoned {
+        return Ok(());
+    }
+    match done.outcome {
+        Ok((data, timings)) => {
+            write_snapshot(
+                socket,
+                state,
+                watching,
+                done.subject,
+                data,
+                Some(OpenReport {
+                    seat: done.seat,
+                    peer: done.peer,
+                    open_at: done.open_at,
+                    prelude_ms: done.prelude_ms,
+                    queued_ms: done.queued_ms,
+                    hold_ms: done.hold_ms,
+                    timings,
+                }),
+            )
+            .await?;
+            // **The frames held while the record was built go out behind it.**
+            for frame in read.frames {
+                held.push(Instant::now(), frame);
+            }
+            Ok(())
+        }
+        // A seat nobody has started is an ANSWER rather than a silence: the
+        // client learns why, and never draws an empty snapshot as a broken
+        // page.
+        Err(refusal) => {
+            // The hold every session subscribe takes goes back with the
+            // refusal, or a view of a seat that does not exist would keep its
+            // loop running behind nothing.
+            if let Some(slot) = &done.seat {
+                holds.give_back(slot);
+            }
+            send(
+                socket,
+                ServerMessage::Error {
+                    what: "subscribe".to_owned(),
+                    why: refusal.to_string(),
+                    seat: done.seat.clone(),
+                    dispatch_id: None,
+                },
+            )
+            .await
+        }
+    }
+}
+
 /// Answer one client message.
 async fn handle_client<S>(
     socket: &mut S,
@@ -1088,19 +1377,14 @@ async fn handle_client<S>(
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     browser: &mut BrowserViewing,
-    reply_tx: &mpsc::UnboundedSender<ServerMessage>,
+    reads: &mut Reads,
     caller: Caller,
     msg: Message,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
-    let viewing = &mut browser.viewing;
-    let tabs = &mut browser.tabs;
     let me = caller.id;
-    // The served-record bound every frame to a client takes (#2374), read once
-    // rather than per frame.
-    let cap = state.surface.tool_record_cap_bytes();
     let text = match msg {
         Message::Text(text) => text,
         // **A client's binary frame is audio, or it is not a frame this
@@ -1145,6 +1429,33 @@ where
         )
         .await;
     };
+    handle_message(socket, state, watching, holds, updates, dictate, browser, reads, caller, client)
+        .await
+}
+
+/// [`handle_client`] with the message already read, so a subscribe that
+/// queued behind a read off the loop takes the same path the socket's own did.
+async fn handle_message<S>(
+    socket: &mut S,
+    state: &Arc<TransportState>,
+    watching: &mut Watching,
+    holds: &mut Holds<'_>,
+    updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
+    dictate: &mut Streaming,
+    browser: &mut BrowserViewing,
+    reads: &mut Reads,
+    caller: Caller,
+    client: ClientMessage,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    let viewing = &mut browser.viewing;
+    let tabs = &mut browser.tabs;
+    let me = caller.id;
+    // The served-record bound every frame to a client takes (#2374), read once
+    // rather than per frame.
+    let cap = state.surface.tool_record_cap_bytes();
     match client {
         ClientMessage::Subscribe { what, answering, review } => {
             // **The open path's own clock (#2374).** From this message being
@@ -1162,6 +1473,15 @@ where
                     peer = %caller.peer,
                     "a client subscribed a seat, from the address it is attached on",
                 );
+            }
+            // **A subscribe that arrives while a review read is in flight
+            // waits its turn.** Answers keep the order the asks were made in,
+            // because a client attributes a refusal to the oldest ask it still
+            // holds, and the loop above answers these in that order; every
+            // other message on this connection keeps moving.
+            if reads.one.is_some() {
+                reads.waiting.push_back(ClientMessage::Subscribe { what, answering, review });
+                return Ok(());
             }
             // Forwarded before the snapshot: they were emitted before it was
             // taken, and the client reads them in the order it receives them.
@@ -1199,116 +1519,65 @@ where
             // The subscribe's own opening: the client line, the browser
             // role's answer and the seat set a first declaration carries.
             let prelude_ms = queued_at.saturating_duration_since(open_at).as_secs_f64() * 1000.0;
+            // **The review read runs off this loop.** It waits for a base
+            // fetch with no cap, and awaiting that here would stop this
+            // connection reading updates, commands, or even the client going
+            // away, for as long as the remote takes. The record is built by a
+            // task and answered through the same channel the reply-carrying
+            // commands use, and the asks behind it wait in `waiting`.
+            if review {
+                let seat = match &what {
+                    Subject::Session(slot) => Some(slot.clone()),
+                    _ => None,
+                };
+                let reply = reads.reply.clone();
+                let state = Arc::clone(state);
+                let subject = what.clone();
+                let peer = caller.peer;
+                let task = tokio::spawn(async move {
+                    let outcome = encode_subject_timed(&state, &subject, true).await;
+                    let _ = reply.send(Answer::Read(Box::new(ReadAnswer {
+                        subject,
+                        seat,
+                        peer,
+                        open_at,
+                        prelude_ms,
+                        queued_ms,
+                        hold_ms,
+                        outcome,
+                    })));
+                });
+                reads.one = Some(Reading {
+                    subject: what,
+                    frames: Vec::new(),
+                    abandoned: false,
+                    _task: AbortOnDrop(task),
+                });
+                return Ok(());
+            }
             match encode_subject_timed(state, &what, review).await {
                 Ok((data, timings)) => {
-                    // Watched only once the subject is one this server can
-                    // answer for: a refused subscribe leaves nothing to hear,
-                    // and the client's own re-ask is what recovers it
-                    // (`client/src/session/live.ts`). For a seat the server
-                    // can answer for, the refusal is the transport copy's
-                    // own - the fold catching up is state, not a frame - so
-                    // no frame could be waited for; a sessionless seat's
-                    // refusal clears when the seat starts, which the re-ask
-                    // finds without a subscription to hear it on.
-                    //
-                    // **A subscription is not a showing.** This connection
-                    // hears the seat's frames from here, and the marks are
-                    // spent when it says the seat is on screen (`Showing`),
-                    // not when it starts listening.
                     let seat = match &what {
                         Subject::Session(slot) => Some(slot.clone()),
                         _ => None,
                     };
-                    watching.subjects.push(what.clone());
-                    let write = send_frame_timed(
+                    write_snapshot(
                         socket,
-                        ServerMessage::Snapshot { subject: what, data },
-                        &SystemClock,
-                    )
-                    .await?;
-                    // **The subscribe that completes a showing pair spends
-                    // its marks here**, after the seat's own record is on its
-                    // way: the snapshot was encoded before the death trace is
-                    // spent, so its row still carries the death, and the home
-                    // re-send that follows carries it cleared.
-                    if let Some(slot) = &seat
-                        && watching.showing.as_ref() == Some(slot)
-                        && !watching.showing_attached
-                    {
-                        spend_showing(socket, state, watching, slot).await?;
-                    }
-                    if let Some(slot) = &seat {
-                        // The snapshot's own write, its own record: the open
-                        // below keeps the slices, so the write's numbers are
-                        // not repeated there (#2506).
-                        tracing::debug!(
-                            event_name = "frame_write",
-                            slot = %slot.display(),
-                            peer = %caller.peer,
-                            bytes = write.bytes,
-                            prep_ms = write.prep_ms,
-                            write_ms = write.write_ms,
-                            waited = write.waited,
-                            "the snapshot's write: prep is the record serialised into the \
-                             bytes the socket takes, write_ms is the socket's share after \
-                             that, and waited says the write yielded at least once before it \
-                             was done (a prior frame's flush, kernel send-buffer pressure or \
-                             a slow reader)",
-                        );
-                        // The session's open, in its own slices: the numbers a
-                        // reader places a slow switch with, beside the
-                        // client's own marks and the client it served. Debug,
-                        // and for one session's work rather than a problem of
-                        // forge's - but a record a reader acts on, so it names
-                        // what its remainder is.
-                        tracing::debug!(
-                            event_name = "session_open",
-                            slot = %slot.display(),
-                            peer = %caller.peer,
-                            open_ms = open_at.elapsed().as_secs_f64() * 1000.0,
+                        state,
+                        watching,
+                        what,
+                        data,
+                        Some(OpenReport {
+                            seat,
+                            peer: caller.peer,
+                            open_at,
                             prelude_ms,
                             queued_ms,
                             hold_ms,
-                            prologue_ms = timings.prologue_ms,
-                            header_ms = timings.header_ms,
-                            catch_up_ms = timings.catch_up_ms,
-                            seed_ms = timings.seed_ms,
-                            conversation_ms = timings.conversation_ms,
-                            page_ms = timings.page_ms,
-                            cards_ms = timings.cards_ms,
-                            work_ms = timings.work_ms,
-                            base_ms = timings.base_ms,
-                            rescan_ms = timings.rescan_ms,
-                            content_ms = timings.content_ms,
-                            reviews_ms = timings.reviews_ms,
-                            tree_reviews_ms = timings.tree_reviews_ms,
-                            state_ms = timings.state_ms,
-                            index_ms = timings.index_ms,
-                            resume_ms = timings.resume_ms,
-                            tail_ms = timings.tail_ms,
-                            encode_ms = timings.encode_ms,
-                            pr_age_s = timings.pr_age_s,
-                            "the subscribe's own work, in DISJOINT slices: prelude is the \
-                             client line and the browser role, queued the frames already \
-                             waiting for this subject, hold the seat's watch, prologue the \
-                             roster and its asks, header the seat's header, catch_up the \
-                             copy's wait, seed the transcript read a cold seat pays, \
-                             conversation the copy's arrival, page its cut and fold, cards \
-                             the subagent cards, work the tree scan, base the review read's base \
-                             refresh, rescan the scan pinned to the sha it resolved, content the \
-                             diff's changed files, reviews and tree_reviews the review reads, state \
-                             the seat's own state, index the file walk, resume the `/resume` \
-                             list's read, tail the process read \
-                             and the \
-                             record's assembly, and encode the record's value; pr_age_s is \
-                             how old the PR attempt the record carries is, absent until one \
-                             has run; open_ms ends when the snapshot's write returns, so \
-                             frame_write's prep_ms and write_ms are inside it, and what the \
-                             slices and those two do not sum to is the subscribe path's own \
-                             glue",
-                        );
-                    }
-                    Ok(())
+                            timings,
+                        }),
+                    )
+                    .await
                 }
                 // A seat nobody has started is an ANSWER rather than a
                 // silence: the client learns why, and never draws an empty
@@ -1375,7 +1644,7 @@ where
             match (reply_to, answers_through_a_reply(&command)) {
                 (Some(to), true) => {
                     dispatched(me, &command);
-                    dispatch_answering(state, command, to, reply_tx);
+                    dispatch_answering(state, command, to, &reads.reply);
                     Ok(())
                 }
                 (None, true) => {
@@ -2194,6 +2463,15 @@ where
                     holds.give_back(slot);
                 }
             }
+            // **A read still running for the subject is abandoned, not
+            // answered.** Its view has left; writing its record would arrive
+            // for a page nobody is drawing, and its hold was given back just
+            // above.
+            if let Some(read) = reads.one.as_mut()
+                && read.subject == what
+            {
+                read.abandoned = true;
+            }
             Ok(())
         }
         ClientMessage::Showing { seat } => set_showing(socket, state, watching, seat).await,
@@ -2977,7 +3255,7 @@ fn dispatch_answering(
     state: &TransportState,
     command: Command,
     to: u64,
-    reply_tx: &mpsc::UnboundedSender<ServerMessage>,
+    reply_tx: &mpsc::UnboundedSender<Answer>,
 ) {
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
@@ -3067,7 +3345,8 @@ fn dispatch_answering(
             );
             if let Err(refusal) = state.surface.dispatch(other) {
                 let body = serde_json::Value::String(refusal.to_string());
-                let _ = reply_tx.send(ServerMessage::Reply { reply_to: to, body });
+                let _ = reply_tx
+                    .send(Answer::Reply(Box::new(ServerMessage::Reply { reply_to: to, body })));
             }
         }
     }
@@ -3194,7 +3473,7 @@ fn answered<T: serde::Serialize + Send + 'static>(
     command: Command,
     to: u64,
     answer: oneshot::Receiver<T>,
-    reply_tx: &mpsc::UnboundedSender<ServerMessage>,
+    reply_tx: &mpsc::UnboundedSender<Answer>,
 ) {
     let outcome = state.surface.dispatch(command);
     let reply_tx = reply_tx.clone();
@@ -3210,7 +3489,7 @@ fn answered<T: serde::Serialize + Send + 'static>(
         };
         // A connection that has gone has nothing to send to; the command's
         // outcome is the core's, and the socket's death is its own.
-        let _ = reply_tx.send(ServerMessage::Reply { reply_to: to, body });
+        let _ = reply_tx.send(Answer::Reply(Box::new(ServerMessage::Reply { reply_to: to, body })));
     });
 }
 

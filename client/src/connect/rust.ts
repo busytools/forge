@@ -597,9 +597,9 @@ class RustConnection implements Connection {
     // everything held, and that answer is fresher than this ask would be.
     if (this.state !== 'open') return false;
     // **A re-ask that states no scope keeps the shell's held one**, and its
-    // deadline follows that held scope: a notice-driven read states nothing
-    // and still resolves to the review read the seat was asked as, so it gets
-    // the longer pass rather than presuming a lost read at five seconds.
+    // deadline follows that held scope: a review-scoped read has none at all,
+    // so this arms nothing for it rather than presuming a lost read at five
+    // seconds.
     const stated = options?.review;
     const key = subjectKey(what);
     if (stated !== undefined) this.scopes.set(key, stated);

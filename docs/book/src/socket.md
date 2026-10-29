@@ -47,7 +47,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 17,
+  "version": 16,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -171,11 +171,11 @@ before the record is encoded the server fetches the branch diff's base
 (`origin/<default>`) and waits for it with no cap, then reads the branch layer
 and the files pinned to the sha that fetch resolved - so the `diff` the record
 carries, and its `base`, describe one commit read at the moment the page
-asked. A fetch already in flight for that repository is joined rather than
-repeated. When it cannot run, `diff.base_error` carries git's own words for
-why. Every other read of a seat that has a session serves the stores and never
-waits for the base; a record answered without it carries `base: unverified`
-beside a branch layer and no `base_error`. (A seat with no session is the
+asked. A fetch already in flight for that repository and base branch is joined
+rather than repeated. When it cannot run, `diff.base_error` carries git's own
+words for why. Every other read of a seat that has a session serves the stores
+and never waits for the base; a record answered without it carries `base:
+unverified` beside a branch layer and no `base_error`. (A seat with no session is the
 exception the `pr` row below already states: its record looks the PR up on the
 read, because there is no loop to defer that to.)
 

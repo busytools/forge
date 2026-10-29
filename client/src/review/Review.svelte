@@ -225,7 +225,11 @@
       return `${name} is ${n} commit${n === 1 ? '' : 's'} behind upstream, so this diff may include work already on ${name}.${why}`;
     }
     if (base?.state === 'unverified') {
-      return `${name} could not be refreshed, so this diff may include work already on ${name}.${why}`;
+      // **"Checked", not "refreshed".** The fetch may have run and the remote
+      // tip still not answered, and then the state is unverified with no fetch
+      // failure to name; what is true in both cases is that the base was not
+      // checked.
+      return `${name} could not be checked, so this diff may include work already on ${name}.${why}`;
     }
     if (base?.state === 'unknown') {
       // The server answered a state this build cannot name. Drawing nothing
@@ -1181,7 +1185,7 @@
   {:else if reviews === null}
     <p class="pending">
       <span class="ring" aria-hidden="true"></span>
-      Fetching the base for the diff...
+      Reading the base for the diff...
     </p>
   {:else}
     {#if reviews.threads.outcome === 'failed'}

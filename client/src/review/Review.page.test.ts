@@ -1485,13 +1485,11 @@ describe('the steppers', () => {
   });
 
   /** A base that could not be checked is said plainly, with no invented count. */
-  it('says an unrefreshed base was not checked, without a number', async () => {
+  it('says an unchecked base was not checked, without a number', async () => {
     await draw([], [], true, DIFF, [], 0, { state: 'unverified' });
 
     const text = document.querySelector('.rv-base')?.textContent ?? '';
-    expect(text, 'the page says the base could not be refreshed').toContain(
-      'could not be refreshed',
-    );
+    expect(text, 'the page says the base could not be checked').toContain('could not be checked');
     expect(text, 'and claims no count it does not have').not.toMatch(/\d+ commits? behind/);
   });
 
@@ -1516,8 +1514,8 @@ describe('the steppers', () => {
     );
 
     const text = document.querySelector('.rv-base')?.textContent ?? '';
-    expect(text, 'the state is said first').toContain('could not be refreshed');
-    expect(text, "and git's own words follow it").toContain(
+    expect(text, 'the state is said first').toContain('could not be checked');
+    expect(text, "and the fetch's own words follow it").toContain(
       'fatal: could not resolve host: github.com',
     );
   });
@@ -1537,7 +1535,7 @@ describe('the steppers', () => {
 
     const pending = document.querySelector('.pending');
     expect(pending?.textContent, 'the open names the wait').toContain(
-      'Fetching the base for the diff',
+      'Reading the base for the diff',
     );
     expect(pending?.querySelector('.ring'), 'with the work spinner beside it').not.toBeNull();
 

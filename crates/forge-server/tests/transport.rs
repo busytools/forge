@@ -6133,6 +6133,89 @@ async fn a_review_read_names_why_the_base_fetch_failed() {
 
 /// **A refused pin is re-read locally, so the count and the files still share
 /// the base the refresh left.** The store's count predates the fetch; serving
+/// **A review read never holds its connection.** That read waits for a base
+/// fetch with no cap, and it is served off the loop: a second ask on the same
+/// socket is answered while the read is still in flight, and a client going
+/// away is visible rather than queued behind it.
+#[tokio::test]
+async fn a_subscribe_behind_a_review_read_is_answered_while_it_waits() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    // The seat is held by a plain open first, which is what the gate below
+    // needs; the review read's own wait is then held open by that gate.
+    let mut conn = connect(&url).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut conn).await;
+    forge_workspace::work::set_pinned_gate_wait(3_000);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    // While that read waits on the seat's gate, the loop keeps answering: a
+    // reply-carrying command is dispatched and its refusal answered.
+    send(
+        &mut conn,
+        ClientMessage::Command {
+            command: Box::new(Command::DeleteReviewThread {
+                project: "no-such-project".to_owned(),
+                branch: "no-such-branch".to_owned(),
+                thread_id: "t1".to_owned(),
+                respond: None,
+            }),
+            reply_to: Some(7),
+        },
+    )
+    .await;
+    match next_server_within(&mut conn, 1_500).await {
+        Some(ServerMessage::Reply { reply_to, .. }) => {
+            assert_eq!(reply_to, 7, "the command was answered while the read waited");
+        }
+        other => panic!("no reply arrived while the review read waited: {other:?}"),
+    }
+
+    drop(in_flight);
+    // And the review read's own record follows once its wait ends.
+    match next_server_within(&mut conn, 5_000).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => {
+            assert_eq!(subject, Subject::Session(lead_seat()), "the read itself answered");
+        }
+        other => panic!("the review read's snapshot did not arrive: {other:?}"),
+    }
+    forge_workspace::work::set_pinned_gate_wait(0);
+}
+
 /// it beside content read at the post-fetch ref is the Granite symptom in the
 /// path meant to be the safe degradation.
 #[tokio::test]

@@ -563,6 +563,25 @@ describe('frames from the bridge', () => {
   });
 
   /**
+   * **A review-scoped re-ask arms nothing either**, not only a subscribe: the
+   * refresh keeps the shell's held scope, and a review read has no deadline
+   * at all, so a timer here would ask a second whole review read mid-wait.
+   */
+  it('never arms a review read on a refresh that states no scope', async () => {
+    vi.useFakeTimers();
+    const connection = await opened();
+    connection.subscribe(subject, { review: true });
+    invoke.mockClear();
+    connection.refresh(subject);
+    const refreshes = () => invoke.mock.calls.filter(([command]) => command === 'client_refresh');
+    await vi.waitFor(() => expect(refreshes()).toHaveLength(1));
+    const sent = refreshes().length;
+
+    vi.advanceTimersByTime(600_000);
+    expect(refreshes(), 'the review refresh armed a timer that asks again').toHaveLength(sent);
+  });
+
+  /**
    * **A closed connection owes no read.** A page that goes closed keeps its
    * loading store but must not keep its bound ticking: a refresh cannot go on
    * a socket that is gone, and the next open is the one that re-arms (#2540).
