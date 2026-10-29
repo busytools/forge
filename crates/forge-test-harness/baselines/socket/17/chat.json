@@ -1,10 +1,12 @@
 {
   "": [
+    "action",
     "agents",
     "analytics_disabled",
     "apiBlockIndex",
     "apiKeySource",
     "api_error_status",
+    "branch",
     "capabilities",
     "claude_code_version",
     "command_uuid",
@@ -35,11 +37,13 @@
     "hook_event",
     "hook_id",
     "hook_name",
+    "identifier",
     "isReplay",
     "isSynthetic",
     "is_backgrounded",
     "is_error",
     "key",
+    "kind",
     "last_tool_name",
     "level",
     "local_command",
@@ -66,8 +70,10 @@
     "priority",
     "product_feedback_disabled",
     "prompt",
+    "provider",
     "queued_turn_count",
     "rate_limit_info",
+    "repo",
     "request_id",
     "request_sent_wall_ms",
     "result",
@@ -106,6 +112,7 @@
     "ttft_ms",
     "ttft_stream_ms",
     "type",
+    "url",
     "usage",
     "user_message_uuid",
     "user_message_uuids",
@@ -386,6 +393,7 @@
     "description",
     "file",
     "filePath",
+    "gitOperation",
     "harnessNoteCount",
     "harnessSectionHash",
     "harnessTailCount",
@@ -436,6 +444,29 @@
     "numLines",
     "startLine",
     "totalLines"
+  ],
+  "/tool_use_result/gitOperation": [
+    "branch",
+    "commit",
+    "pr",
+    "push"
+  ],
+  "/tool_use_result/gitOperation/branch": [
+    "action",
+    "ref"
+  ],
+  "/tool_use_result/gitOperation/commit": [
+    "branch",
+    "kind",
+    "sha"
+  ],
+  "/tool_use_result/gitOperation/pr": [
+    "action",
+    "number",
+    "url"
+  ],
+  "/tool_use_result/gitOperation/push": [
+    "branch"
   ],
   "/tool_use_result/questions[]": [
     "header",
