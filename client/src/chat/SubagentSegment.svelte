@@ -1,7 +1,7 @@
 <script lang="ts">
   import Icon from '../components/Icon.svelte';
   import { askReveal } from '../session/scroll-ask';
-  import { duration } from './numbers';
+  import { duration, tokens } from './numbers';
   import { subagents, transcribable } from './subagents.svelte';
   import { panelStyle, portal } from './strip-panel';
   import { firstLine } from './text';
@@ -293,6 +293,7 @@
                   {card.usage.tool_uses === 1 ? 'tool' : 'tools'}
                 </span>
               {/if}
+              <span class="n">{tokens(card.usage.total_tokens)} tokens</span>
               <span class="n">{duration(card.usage.duration_ms)}</span>
             {/if}
           </button>

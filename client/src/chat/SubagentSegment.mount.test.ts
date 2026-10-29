@@ -38,7 +38,7 @@ const card = (over: Partial<SubagentCard> = {}): SubagentCard => ({
   failed: false,
   backgrounded: false,
   ended_at: null,
-  calls: 2,
+  calls: 5,
   tail: [],
   usage: null,
   ...over,
@@ -64,11 +64,12 @@ function pointer(type: string, pointerType: string): PointerEvent {
 describe("the segment's interaction state machine", () => {
   // **The progress a tick carried is drawn where the card is**, which is what
   // lets the chat stop rowing that tick.
-  it('draws the tool count the frame reported on the card', () => {
+  it('draws the figures the frame reported on the card', () => {
     draw([card({ usage: { total_tokens: 10340, tool_uses: 2, duration_ms: 1848 } })]);
     toggle()?.click();
     flushSync();
     expect(said(), 'two tools, as the frame said').toContain('2 tools');
+    expect(said(), 'the tokens the tick spent').toContain('10.3k tokens');
   });
 
   it('says one tool, not "1 tools"', () => {
@@ -76,6 +77,7 @@ describe("the segment's interaction state machine", () => {
     toggle()?.click();
     flushSync();
     expect(said(), 'the first tick carries one').toContain('1 tool');
+    expect(said(), 'and not the plural').not.toContain('1 tools');
   });
 
   it('reads a tap as open: the synthesised enter must not eat the click', () => {
