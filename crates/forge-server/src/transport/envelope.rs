@@ -1395,8 +1395,6 @@ mod tests {
             mark: Some("strike".to_owned()),
             theme: Some("dark".to_owned()),
             font: Some("system".to_owned()),
-            browser_idle_minutes: None,
-            browser_grace_minutes: None,
         };
         let axes = DictateAxes {
             styling: forge_dictate::normalize::Styling::Formal,
