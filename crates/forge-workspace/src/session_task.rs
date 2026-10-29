@@ -266,10 +266,12 @@ impl SessionTask {
         // lock is released before the handoff runs.
         let turn_completed;
         let turn_cancelled;
+        let repo_nudge;
         {
             let mut guard = self.domain.lock();
             let moved = apply_event_to_domain(&mut guard, &event);
             nudge_armed = moved.nudge;
+            repo_nudge = moved.repo_nudge;
             turn_completed = matches!(moved.turn_ended, Some(MovedTurnEnd::Complete { .. }));
             turn_cancelled = matches!(moved.turn_ended, Some(MovedTurnEnd::Cancelled));
             // The two sets that move whole are announced from the scope the
@@ -328,6 +330,17 @@ impl SessionTask {
                         self.emit(SessionUpdate::TurnCancelled { key: self.key.clone() });
                     }
                 }
+            }
+        }
+        // The CLI reported a repository mutation: re-read the seat's tree on
+        // the frame, and for a published change look the PR up again.
+        if let Some(pr_stale) = repo_nudge
+            && let Some(workspace) = self.workspace.upgrade()
+        {
+            if pr_stale {
+                workspace.note_code_change_published(&self.key);
+            } else {
+                workspace.note_repository_activity(&self.key);
             }
         }
         // A handoff acts only on a turn boundary: never mid-turn, and never
@@ -2915,6 +2928,10 @@ pub(crate) struct Moved {
     /// A failed turn armed the continuation, which the caller fires the
     /// moment this fold returns.
     pub nudge: bool,
+    /// The CLI reported a repository mutation. `Some(false)` re-reads the
+    /// tree, `Some(true)` also re-runs the PR lookup because the held block
+    /// was looked up before the change existed.
+    pub repo_nudge: Option<bool>,
     /// The seat's turn ended in this event, as the caller announces it.
     /// `None` while no turn ended here.
     pub turn_ended: Option<MovedTurnEnd>,
@@ -2951,6 +2968,22 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     let held_cards = domain.cards_snapshot.clone();
     let mut nudge = false;
     let mut turn_ended = None;
+    // **The CLI's own report of a repository mutation is the one signal the
+    // file watch cannot produce**: a commit or a stage touches only `.git`,
+    // which the watch filters out, so the tree is re-read on the frame rather
+    // than at the next staleness window. A published change is the same wake
+    // plus a PR lookup, because the block the seat holds was looked up before
+    // the PR existed.
+    let repo_nudge = match event {
+        AgentEvent::SdkMessage {
+            msg: forge_primitives::Message::VcsStateChanged { .. }, ..
+        } => Some(false),
+        AgentEvent::SdkMessage {
+            msg: forge_primitives::Message::CodeChangePublished { .. },
+            ..
+        } => Some(true),
+        _ => None,
+    };
     hold_view_facts(domain, event);
     if let AgentEvent::ConnectionFailed { .. } = event {
         // The subprocess is gone - drop the runtime/turn mirrors so the
@@ -3341,6 +3374,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
         cards: domain.cards_snapshot != held_cards
             && matches!(event, AgentEvent::SdkMessage { .. }),
         nudge,
+        repo_nudge,
         turn_ended,
     }
 }
