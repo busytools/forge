@@ -175,8 +175,8 @@ read as one system.
   row re-read on the frame rather than at its next staleness window. A
   `code_change_published` frame says this session put a change up for review
   or linked itself to one: the row names the action, the repository and the
-  change number, with the URL a reader opens as the quiet tail of that same
-  line, and it is what makes the tree row look the PR up again. Opened, each
+  change number, with the URL a reader opens as the quiet tail of the header,
+  and it is what makes the tree row look the PR up again. Opened, each
   lists the fields the frame carried -
   the kind and branch, the action, provider, repository, change and URL - so
   a fact the line does not spell is still reachable, and a kind or action

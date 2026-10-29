@@ -752,14 +752,13 @@ impl Workspace {
         // The read path serves the stored PR and never waits, so
         // the loop is what refreshes it; without this leg the correction
         // would wait for the tree's own 10 s window instead of its own.
+        // No `force_pr` leg here: a forced scan arrives with `dirty = true`,
+        // so this condition is already true for it. The force does its work
+        // by handing the scan a previous block without an attempt stamp.
         let pr_due = pr == PrRefresh::Fetch
-            && (force_pr
-                || held.as_ref().is_some_and(|held| {
-                    forge_agent::env::git_diff::pr_refresh_due(
-                        &held.diff,
-                        std::time::SystemTime::now(),
-                    )
-                }));
+            && held.as_ref().is_some_and(|held| {
+                forge_agent::env::git_diff::pr_refresh_due(&held.diff, std::time::SystemTime::now())
+            });
         if should_scan(held.as_ref(), dirty, Instant::now()) || pr_due {
             #[cfg(any(test, feature = "testing"))]
             self.pass_test_scan_gate().await;
@@ -1600,10 +1599,12 @@ provider = "anthropic"
     }
 
     /// **The CLI's repository-mutation report is the one signal the file watch
-    /// cannot produce.** A commit touches only `.git`, which the watch filters
-    /// out, so without the nudge the row keeps drawing the tree it read before
-    /// until `SNAPSHOT_STALENESS` expires. The window below is past a poke and
-    /// inside that staleness bound, so a watch that fired would announce in it.
+    /// cannot produce.** A commit moves only the git dir, which the fixture
+    /// keeps outside the tree, so nothing watches it and the row keeps drawing
+    /// the tree it read before until `SNAPSHOT_STALENESS` expires - unless the
+    /// frame re-reads it. The store assertions below stand in for a quiet
+    /// window: they say the loop's own rules are not due at the moment of the
+    /// nudge, so the wake that follows is the only thing that can read.
     #[tokio::test]
     async fn a_reported_mutation_re_reads_a_git_only_change_on_the_frame() {
         let (branch, _shim) = PushedBranch::new_with_git_dir_outside_the_tree();
@@ -1614,31 +1615,31 @@ provider = "anthropic"
         hold_for_a_page(&workspace, &seat);
         announced_work(&mut updates).await;
 
-        let window = || tokio::time::Instant::now() + POKE_INTERVAL * 5 / 2;
-        let until = window();
-        while let Ok(Some(moved)) = tokio::time::timeout_at(until, updates.recv()).await {
-            assert!(
-                !matches!(moved.update, SessionUpdate::WorkChanged { .. }),
-                "a still tree announces nothing",
-            );
-        }
-
-        // A commit on the branch the row measures: only `.git` moves, and the
-        // ahead count is what the re-read is for.
+        // A commit on the branch the row measures: only the git dir moves, and
+        // the fixture keeps it outside the tree, so no backend can report it.
         git(branch.repo.path(), &["commit", "--allow-empty", "-qm", "second"]);
-        let until = window();
-        while let Ok(Some(moved)) = tokio::time::timeout_at(until, updates.recv()).await {
-            assert!(
-                !matches!(moved.update, SessionUpdate::WorkChanged { .. }),
-                "a `.git`-only change is invisible to the watch, so nothing is announced",
-            );
-        }
+
+        // **The store is asserted, not a wall clock.** A negative window proved
+        // nothing a slower runner could not overturn - it said no poke happened
+        // to fire, not that the nudge did. At the moment of the nudge the store
+        // must still hold the pre-commit row, its read too young for the
+        // staleness rule and its PR attempt inside its own window: the loop's
+        // own rules then cannot read the tree for the next several seconds, so
+        // the re-read inside the bound below can only be the nudge.
+        let held = workspace.work_snapshot(&seat).expect("the first pass stored a scan");
         assert!(
-            !matches!(
-                workspace.work_snapshot(&seat).map(|held| held.diff.branch_ahead),
-                Some(LayerState::Populated(_))
-            ),
-            "and the store still holds the row read before the commit",
+            !matches!(held.diff.branch_ahead, LayerState::Populated(_)),
+            "nothing has re-read the tree since the commit",
+        );
+        assert!(
+            held.read_at.elapsed() < SNAPSHOT_STALENESS,
+            "and the read is too young for the tree's own rule to fire",
+        );
+        assert!(
+            held.diff
+                .pr_fetched_at
+                .is_some_and(|at| at.elapsed().is_ok_and(|age| age < Duration::from_secs(300))),
+            "nor is the PR attempt due",
         );
 
         // The nudge arrives as the frame does, through the task's own fold:
@@ -1671,7 +1672,10 @@ provider = "anthropic"
             },
         });
 
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+        // The store above is fresh, so the tree's own rule is not due for
+        // `SNAPSHOT_STALENESS`; a bound inside that is still only the nudge's
+        // to meet, with room for a scan on a loaded machine.
+        let deadline = tokio::time::Instant::now() + SNAPSHOT_STALENESS - Duration::from_secs(4);
         loop {
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the reported mutation did not re-read the tree");
@@ -1703,22 +1707,27 @@ provider = "anthropic"
         workspace
             .store_work_snapshot(&seat, branch.stored_scan(None, std::time::SystemTime::now()));
 
+        // The stored read is past its window, so the first pass scans. Wait on
+        // the store it writes rather than on a clock: the scan landing is the
+        // condition, and a loaded machine only makes it slower.
+        let seeded_read =
+            workspace.work_snapshot(&seat).expect("the fixture stored a scan").read_at;
         hold_for_a_page(&workspace, &seat);
-        let quiet = tokio::time::Instant::now() + POKE_INTERVAL * 5 / 2;
-        while let Ok(Some(moved)) = tokio::time::timeout_at(quiet, updates.recv()).await {
-            assert!(
-                !matches!(moved.update, SessionUpdate::WorkChanged { .. }),
-                "a fresh PR block is served, not looked up again",
-            );
-        }
-        assert!(!branch.marker.exists(), "and no lookup ran to answer the first pass");
+        wait_until(Duration::from_secs(15), || {
+            workspace.work_snapshot(&seat).is_some_and(|held| held.read_at > seeded_read)
+        })
+        .await;
+        assert!(!branch.marker.exists(), "a fresh PR block is served, not looked up again");
 
         workspace.note_code_change_published(&seat);
 
-        // **A bound under the poke interval pins the wake itself.** A scan the
-        // poke would have taken cannot land inside it, so a nudge whose
-        // `notify_one` went missing fails here rather than at the next tick.
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+        // **The bound only says the lookup landed, not that the wake fired.**
+        // The cleared stamp makes `pr_refresh_due` true, so the ordinary poke
+        // would look the PR up too; the wake itself is pinned by
+        // `a_nudge_wakes_a_held_seat`, which needs no clock. This is wide
+        // enough for the lookup on a loaded machine and still catches a path
+        // that never runs it at all.
+        let deadline = tokio::time::Instant::now() + SNAPSHOT_STALENESS - Duration::from_secs(4);
         loop {
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the published change did not re-run the PR lookup");
@@ -1733,6 +1742,33 @@ provider = "anthropic"
             );
             return;
         }
+    }
+
+    /// **The wake itself, with no clock in it.** The published-change test
+    /// pins the stamp clear, but a cleared stamp leaves `pr_refresh_due` true,
+    /// so the ordinary poke would look the PR up anyway and that test would
+    /// pass with no wake at all. Only this says the `notify_one` is there:
+    /// nothing else can complete the future, so the short bound is sound.
+    #[tokio::test]
+    async fn a_nudge_wakes_a_held_seat_and_marks_only_a_published_one_stale() {
+        let seats = HeldSeats::default();
+        let slot = seat();
+        let taken = seats.acquire(&slot);
+
+        seats.nudge(&slot, false);
+        tokio::time::timeout(Duration::from_millis(50), taken.nudged.notified())
+            .await
+            .expect("a plain nudge wakes the seat's loop");
+        assert!(!seats.take_pr_stale(&slot), "and asks for no PR lookup");
+
+        seats.nudge(&slot, true);
+        tokio::time::timeout(Duration::from_millis(50), taken.nudged.notified())
+            .await
+            .expect("a published nudge wakes it too");
+        assert!(seats.take_pr_stale(&slot), "carrying the PR refresh");
+        assert!(!seats.take_pr_stale(&slot), "and the mark is spent once");
+
+        seats.release(&slot);
     }
 
     /// **The stamp is dropped when the change is noted, not when a scan runs.**
@@ -1806,7 +1842,7 @@ provider = "anthropic"
 
         hold_for_a_page(&workspace, &seat);
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the next open served the cache the published change invalidated");
@@ -2532,6 +2568,18 @@ provider = "anthropic"
             if let SessionUpdate::FileIndexChanged { index, .. } = moved.update {
                 return index;
             }
+        }
+    }
+
+    /// Wait until `condition` holds, panicking at `within`.
+    ///
+    /// **A condition, not a fixed sleep**: the poll returns the moment the
+    /// store moves, so a loaded machine makes the wait slower rather than red.
+    async fn wait_until(within: Duration, mut condition: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + within;
+        while !condition() {
+            assert!(tokio::time::Instant::now() < deadline, "the condition never held");
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
