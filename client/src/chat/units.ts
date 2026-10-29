@@ -722,6 +722,8 @@ interface Frame {
   memories?: unknown;
   contextUsage?: unknown;
   usageReport?: unknown;
+  /** `system/local_command`'s modern name carrier: `{command, args}`. */
+  commandRun?: unknown;
   /** `system/vcs_state_changed`: what moved. */
   kind?: unknown;
   /**
@@ -2112,6 +2114,14 @@ export function fold(
    * that follows it lands on that row rather than drawing as the reader's.
    */
   let lastCompaction: number | null = null;
+  /**
+   * The row the last local command opened, by index.
+   *
+   * **The CLI sends a command as two frames**: one names it, a second carries
+   * what it printed. The second fills the first's row rather than drawing a
+   * second, vague command - so a command is one row, not two.
+   */
+  let localCommandAt: number | null = null;
   /** The stage each notice key sits at, so a walk-back cannot soften a line. */
   const noticeStages = new Map<string, number>();
   /**
@@ -2596,19 +2606,55 @@ export function fold(
       // names the command, and the twin carries what it printed. The wire's
       // own name is `local_command`; the schema's `local_command_output` is
       // stale and no producer emits it.
+      // **A local slash command arrives as two frames, and no twin.** The CLI
+      // names the command in one - its own `<command-name>` tag, or the modern
+      // `commandRun: {command, args}` - and prints in a second
+      // (`<local-command-stdout>` or stderr). The print fills the row the name
+      // opened rather than drawing a second, vague command. **Forge receives
+      // the raw system frames, not the assistant message the CLI's SDK adapter
+      // synthesises for other hosts**, so there is no twin carrying the output.
       if (frame.subtype === 'local_command') {
         const content = str(frame, 'content') ?? '';
-        const named = /<command-name>([\s\S]*?)<\/command-name>/.exec(content)?.[1]?.trim();
-        const command = named === undefined || named === '' ? 'a local command' : named;
+        const run = obj(frame['commandRun']);
+        const runCommand = str(run, 'command');
+        const tag = /<command-name>([\s\S]*?)<\/command-name>/.exec(content)?.[1]?.trim();
+        const named =
+          runCommand !== null && runCommand !== ''
+            ? runCommand
+            : tag !== undefined && tag !== ''
+              ? tag
+              : null;
+        const printed = [
+          ...content.matchAll(/<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/g),
+        ]
+          .map((match) => match[2]?.trim() ?? '')
+          .filter((line) => line !== '');
+        const output = printed.length === 0 ? null : printed.join('\n');
+        if (output !== null && named === null && localCommandAt !== null) {
+          const row = units[localCommandAt];
+          if (row?.kind === 'notice') {
+            units[localCommandAt] = {
+              kind: 'notice',
+              key: row.key,
+              notice: {
+                ...row.notice,
+                fields: [...facts(fact('output', output)), ...(row.notice.fields ?? [])],
+              },
+            };
+          }
+          continue;
+        }
         push({
           kind: 'notice',
           key: keyOf(at, frame, 'local_command'),
           notice: provisional(
             'local_command',
             noticeSeverity(str(frame, 'level')),
-            `Ran ${command}`,
+            `Ran ${named ?? 'a local command'}`,
             frame,
             facts(
+              fact('args', run['args'] === undefined ? null : brief(run['args'])),
+              fact('output', output),
               fact('level', str(frame, 'level')),
               fact(
                 'context usage',
@@ -2621,6 +2667,7 @@ export function fold(
             ),
           ),
         });
+        localCommandAt = units.length - 1;
         continue;
       }
       // **A sticky fact about the project, not a turn event.** The CLI names

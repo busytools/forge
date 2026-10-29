@@ -174,9 +174,11 @@ read as one system.
   a warning whose words are the CLI's own `content` and whose open body names
   the trigger, the model it left and the model it fell to. A memory recall
   draws one line saying how many memories the turn was given, with the paths
-  in the open body rather than one row per memory. A local command draws the
-  command it ran, beside the assistant twin that carries its output - the raw
-  frame no longer draws a second copy of the same words. A project
+  in the open body rather than one row per memory. A local command draws one
+  row: the command it ran, with the command's output in its open body. The CLI
+  sends the name and the print as two frames, and the second fills the first's
+  row - so a command is one row and not two, and there is no assistant message
+  carrying the output, because forge reads the raw system frames. A project
   development-intent frame draws one quiet line naming the platform the CLI
   saw, with the evidence in its open body.
 - **The CLI's own repository events belong to the working-tree strip, not

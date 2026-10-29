@@ -2678,12 +2678,15 @@ docs: The sprite a row draws, by the class it belongs to.</div>
           </div>
         </details>
 
-        <!-- A local command: the row names the command, and the assistant
-             twin the CLI sends carries what it printed. The raw frame no
-             longer draws a second copy of the same output. -->
+        <!-- A local command: the row names the command, and the print frame
+             fills its open body with what it printed. The CLI sends the two
+             as separate frames; the second fills the first's row, so a
+             command is one row - and there is no assistant twin on forge's
+             stream. -->
         <details class="notice info">
           <summary><span class="mark">local_command</span><span class="sev">Info</span>Ran /usage<svg class="ic arw"><use href="#i-chev"/></svg></summary>
           <div class="nbody">
+            <div class="nfact"><span class="k">output</span><span class="v">Session cost: $1.23</span></div>
             <div class="nfact"><span class="k">level</span><span class="v">info</span></div>
             <div class="nfact"><span class="k">context usage</span><span class="v">{"percent":12}</span></div>
             <div class="nfact"><span class="k">usage report</span><span class="v">{"total_cost_usd":1.23}</span></div>
