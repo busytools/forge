@@ -1292,7 +1292,7 @@ impl Bridge {
                     message.get("name").and_then(Value::as_str).unwrap_or("download").to_owned();
                 let data = message.get("data").and_then(Value::as_str).map(str::to_owned);
                 let error = message.get("error").and_then(Value::as_str).map(str::to_owned);
-                let dropped = message.get("dropped").and_then(Value::as_bool).unwrap_or(false);
+                let dropped = dropped_of(&message);
                 if let Some(app) = self.app.as_ref() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -1550,6 +1550,24 @@ async fn save_download(
     }
 }
 
+/// Whether a download message says the offer was dropped before a viewer
+/// read it.
+///
+/// **Absent means a save the host finished.** An older server sends no
+/// field, and a value that is not a bool is not a drop, so both read the way
+/// they always did.
+fn dropped_of(message: &Value) -> bool {
+    message.get("dropped").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The event name a download's refusal is logged under.
+///
+/// **A drop is not a refusal**, and a triage count of refusals must not grow
+/// when the backlog sends one.
+fn download_event(dropped: bool) -> &'static str {
+    if dropped { "client_browser_download_dropped" } else { "client_browser_download_refused" }
+}
+
 /// The title a download's refusal shows.
 ///
 /// **A dropped offer is not a failed save.** An offer the backlog dropped
@@ -1571,8 +1589,9 @@ fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
     use objc2_foundation::NSString;
 
     tauri_plugin_log::log::info!(
-        "{} (event_name client_browser_download_refused): {why}",
-        refusal_title(dropped)
+        "{} (event_name {}): {why}",
+        refusal_title(dropped),
+        download_event(dropped)
     );
     let app = app.clone();
     let why = why.to_owned();
@@ -1603,8 +1622,9 @@ fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
 fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
     use tauri_plugin_dialog::DialogExt as _;
     tauri_plugin_log::log::info!(
-        "{} (event_name client_browser_download_refused): {why}",
-        refusal_title(dropped)
+        "{} (event_name {}): {why}",
+        refusal_title(dropped),
+        download_event(dropped)
     );
     app.dialog()
         .message(why)
@@ -1737,7 +1757,9 @@ mod tests {
 
     /// **A dropped offer is not a failed save.** The alert's title says
     /// which it is: an offer the backlog dropped never reached a save door,
-    /// and a write that failed keeps the words a person already knows.
+    /// and a write that failed keeps the words a person already knows. The
+    /// AppKit call that shows the title needs a window, so this pins the
+    /// decision the call makes and not the modal itself.
     #[test]
     fn a_dropped_download_does_not_claim_a_failed_save() {
         assert_eq!(
@@ -1750,6 +1772,24 @@ mod tests {
             "the download was not saved",
             "and a genuine save failure keeps the words it had",
         );
+    }
+
+    /// **Only an explicit true marks a dropped offer.** The flag is what the
+    /// shell reads off the message; an older server sends none, and a value
+    /// that is not a bool is not a drop.
+    #[test]
+    fn only_an_explicit_true_marks_a_dropped_offer() {
+        assert!(dropped_of(&json!({ "dropped": true })), "the server says so");
+        assert!(!dropped_of(&json!({})), "an older server's message is a delivered save");
+        assert!(!dropped_of(&json!({ "dropped": "yes" })), "a non-bool is not a drop");
+    }
+
+    /// **A drop is not logged as a refusal.** Triage that counts refusals
+    /// must not grow when the backlog drops an offer.
+    #[test]
+    fn a_drop_has_its_own_event_name() {
+        assert_eq!(download_event(true), "client_browser_download_dropped");
+        assert_eq!(download_event(false), "client_browser_download_refused");
     }
 
     /// **A refused gesture is one line a second, not one a frame.** The

@@ -10141,10 +10141,11 @@ async fn a_chooser_and_a_download_for_another_tab_are_not_delivered() {
     );
     let _ = stub.downloads.send(download(1, "mine.txt"));
     let saved = next_server(&mut socket).await;
-    let ServerMessage::BrowserDownload { tab, name, .. } = saved else {
+    let ServerMessage::BrowserDownload { tab, name, dropped, .. } = saved else {
         panic!("this tab's save is sent, got {saved:?}")
     };
     assert_eq!((tab, name.as_str()), (1, "mine.txt"));
+    assert!(!dropped, "a delivered save is not a dropped offer");
 }
 
 /// **Only the controller can answer, and only the outstanding ask.** An

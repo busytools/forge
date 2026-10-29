@@ -606,9 +606,10 @@ of prose on either side.
   reader joins. `seq` is the number the frame's OLDEST update was minted
   under and `span` how many of the seat's numbers it stands for - 1 for a
   frame that is one update, and n for a run of token appends the batch folded
-  into the one frame they draw as. Both are absent from a frame belonging to
-  no seat, and from a server older than the fields, which leaves a client
-  with the frames alone. `seq` alone is absent from a seat's frame the server
+  into the one frame they draw as. `seq` is absent from a frame belonging to
+  no seat, and `span` is always present, 0 on a frame with no number. Both
+  are absent from a server older than the fields, which leaves a client with
+  the frames alone. `seq` alone is absent from a seat's frame the server
   answers out of band rather than emitting into the stream: the
   `read_call_output` answer carries its seat, `seq: null` and `span: 1`,
   because it stands nowhere in the sequence.

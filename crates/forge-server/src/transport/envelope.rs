@@ -773,6 +773,25 @@ mod tests {
         assert!(data.is_none(), "a refusal carries no bytes");
         assert!(error.is_some_and(|why| why.contains("32 MiB")));
         assert!(!dropped, "a write that failed is not a dropped offer");
+
+        // **A drop carries the flag the shell reads**, under that key: the
+        // two samples above both say false, and a rename or a skip would
+        // leave the shell's title silently wrong.
+        let lost = ServerMessage::BrowserDownload {
+            tab: 2,
+            name: "download".to_owned(),
+            data: None,
+            error: Some("2 finished download(s) were dropped".to_owned()),
+            dropped: true,
+        };
+        let json = serde_json::to_string(&lost).expect("encode");
+        assert!(json.contains("\"dropped\":true"), "the wire key the shell reads: {json}");
+        let ServerMessage::BrowserDownload { dropped, .. } =
+            serde_json::from_str(&json).expect("decode")
+        else {
+            panic!("{json} decoded into another message")
+        };
+        assert!(dropped, "and it round-trips as a drop");
     }
 
     /// **A viewer's attach, its state, and the input it sends.**
