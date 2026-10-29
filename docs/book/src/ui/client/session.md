@@ -156,8 +156,8 @@ read as one system.
 - **A frame the page has no face for yet draws as itself, marked
   provisional.** An unknown top-level frame and an unknown content block, and
   the CLI's own system lines for a permission refusal, an API error, an
-  informational line, a notification, a repository mutation and a published
-  change, each draw as a notice whose mark is the wire's own type. The open body lists what the frame carried as one-line
+  informational line and a notification, each draw as a notice whose mark is
+  the wire's own type. The open body lists what the frame carried as one-line
   labelled values - the tool and call a refusal names, an error's message,
   status and retry, an unknown frame's fields - and the frame itself sits
   behind a second control under them, so the payload stays reachable while
