@@ -4978,8 +4978,13 @@ async fn a_connect_during_the_transcript_read_is_the_copy_answered() {
         .await
         .expect("the seed reaches its hold");
 
-    // The seat's own stream lands inside that window.
+    // The seat's own stream lands inside that window. The notice is enabled
+    // before the emit, so the copy's arrival is the signal rather than a
+    // polled clock.
     let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+    let landed = state.conversations.seeded_notice();
+    tokio::pin!(landed);
+    landed.as_mut().enable();
     fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
     fleet.emit(SessionUpdate::Connected {
         key: seat.clone(),
@@ -4992,12 +4997,13 @@ async fn a_connect_during_the_transcript_read_is_the_copy_answered() {
         dropped: 0,
         compaction_count: 0,
     });
-    for _ in 0..200 {
-        if state.conversations.get(&seat).is_some_and(|held| held.holds_occupant(Some(&new))) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    tokio::time::timeout(SEED_WAIT, landed.as_mut())
+        .await
+        .expect("the fold's copy lands while the seed is held");
+    assert!(
+        state.conversations.get(&seat).is_some_and(|held| held.holds_occupant(Some(&new))),
+        "the copy the seat holds belongs to the run that just connected",
+    );
 
     // The seed reads the file and inserts now: it must keep the copy the
     // stream gave it rather than overwrite it with the file's rows.
