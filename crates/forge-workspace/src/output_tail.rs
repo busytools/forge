@@ -194,7 +194,7 @@ pub const CALL_OUTPUT_MAX_LINES: usize = 12;
 /// **Two ways to find it, and the ending frame's own word wins when both
 /// exist**: `task_notification.output_file` names the file when the task
 /// ends, and until then the path is composed from the task id the launch
-/// frame carries, under [`task_output_base`]. An empty `output_file` is a
+/// frame carries, under `task_output_base`. An empty `output_file` is a
 /// path the frame does not carry, not a path that is gone.
 pub fn resolve_call_output_path(
     history: &[forge_primitives::Message],

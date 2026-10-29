@@ -471,9 +471,8 @@ pub struct Workspace {
     /// the real app-support dir. Not present in production builds.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_read_aloud_dir: Mutex<Option<std::path::PathBuf>>,
-    /// Fan-in [`SessionUpdate`] sender: every producer inside the
-    /// workspace holds a clone, and it fans each update out to whatever
-    /// subscribed at [`Self::subscribe`].
+    /// Fan-out [`SessionUpdate`] sender: every producer inside the workspace
+    /// holds a clone, and it hands each update to every subscriber.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) update_tx: UpdateFanout,
     /// Per-session [`Command`] sender map. Populated when

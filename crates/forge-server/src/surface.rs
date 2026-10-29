@@ -4,7 +4,7 @@
 //!
 //! [`ViewSurface::dispatch`] is a verb rather than an accessor, so a second
 //! view is handed the commands it needs and not the whole core, and changes
-//! arrive on [`ViewSurface::subscribe`].
+//! arrive on [`ViewSurface::subscribe_client`].
 
 pub mod accounts;
 pub mod agents;
