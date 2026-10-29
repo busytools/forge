@@ -584,9 +584,9 @@ pub struct BaseRefresh {
 /// **This waits for the fetch with no cap**, because a cap can only be a lie
 /// about a network this side does not control: a three-second bound sat below
 /// a bare SSH handshake on the maintainer's link and cut every fetch before it
-/// began (#2666). A page open may wait as long as the remote takes; leaving
-/// the page is the escape. Every git child is non-interactive, so a credential
-/// prompt ends in an error rather than a wait on a person.
+/// began. A page open may wait as long as the remote takes; leaving the page
+/// is the escape. Every git child is non-interactive, so a credential prompt
+/// ends in an error rather than a wait on a person.
 pub async fn refresh_base_for_display(cwd: &Path, default_branch: &str) -> BaseRefresh {
     refresh_base(cwd, default_branch, None).await
 }
@@ -4112,7 +4112,8 @@ mod tests {
     /// **The drawing read waits for its fetch, however long it takes.** A
     /// fetch slower than any bound the old code carried still lands, and the
     /// answer is the refreshed base rather than a labelled one. The sleep is
-    /// just past the three-second budget #2666 removed; a bound that came back
+    /// just past the three-second budget the drawing read used to carry; a
+    /// bound that came back
     /// would cut this fetch and answer unverified.
     #[tokio::test(flavor = "current_thread")]
     async fn the_drawing_read_waits_for_a_slow_fetch() {
