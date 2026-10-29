@@ -4,7 +4,7 @@
   import type { ServiceReport } from '../wire/fleet';
   import type { BoardRow, ByWire, TaskStatus } from '../wire/home';
   import { followable } from '../home/view';
-  import { artifactOf, fmtSecs, waitOnUser, type WaitingView } from './view';
+  import { artifactOf, fmtSecs, waitOnUser, waitSentence, type WaitingView } from './view';
 
   /**
    * One row's own page, over the board: what the row IS (its fields and
@@ -276,33 +276,15 @@
              is the row's own words - else the state's own sentence. A seeded
              or legacy wait with no detail keeps that sentence. -->
         <div class="q">
-          {#if ask !== ''}
-            {ask}
-          {:else if waitOnUser(task) && task.waiting_on.verification}
-            This row is finished and waits on your approval.
-          {:else if waitOnUser(task) && task.waiting_on.kind === 'decision'}
-            A decision is waiting on you.
-          {:else if task.waiting_on.kind === 'dependency'}
-            Waiting on {task.waiting_on.on ?? 'another row'}.
-          {:else if task.waiting_on.kind === 'resource'}
-            Waiting on a resource.
-          {:else}
-            Waiting.
-          {/if}
+          {ask !== '' ? ask : waitSentence(task)}
         </div>
         {#if ask !== ''}
           <!-- What the ask is, in the state's own words, under the ask itself. -->
           <div class="from">
             {#if waitOnUser(task) && task.waiting_on.verification}
               A look: this row is finished and waits on your approval.
-            {:else if waitOnUser(task) && task.waiting_on.kind === 'decision'}
-              A decision is waiting on you.
-            {:else if task.waiting_on.kind === 'dependency'}
-              Waiting on {task.waiting_on.on ?? 'another row'}.
-            {:else if task.waiting_on.kind === 'resource'}
-              Waiting on a resource.
             {:else}
-              Waiting.
+              {waitSentence(task)}
             {/if}
           </div>
         {/if}

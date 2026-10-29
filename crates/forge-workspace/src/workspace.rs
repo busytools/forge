@@ -342,6 +342,9 @@ pub struct Workspace {
     /// straddled the swap retries rather than pairing an old project pin
     /// with the new pool.
     reload_generation: std::sync::atomic::AtomicU64,
+    /// Held across a reload's odd-to-even swap, so a spawn that sees an odd
+    /// generation waits on this rather than spinning on the counter.
+    reload_gate: std::sync::Mutex<()>,
     /// The `[systemone]` decision client, built at boot when the section
     /// is present and enabled; the session MCP servers are handed a
     /// facade over it. `None` keeps the systemone tools out of every
@@ -1948,6 +1951,7 @@ impl Workspace {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
             reload_generation: std::sync::atomic::AtomicU64::new(0),
+            reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
             catalog,
             app_support,
@@ -2131,19 +2135,25 @@ impl Workspace {
             .collect();
 
         // Odd while the swap runs. A spawn that resolves across it retries;
-        // see `resolution_held`.
-        self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        self.accounts.replace_accounts(&next.accounts);
-        self.gateway.set_org_pins(org_pins(&next));
-        // The setter rebuilds the rotation state, which would empty the
-        // live cooldowns and streaks. Only a reload that moved the numbers
-        // is allowed to do that.
-        if reload.changed.contains(&"gateway") {
-            self.gateway.set_rotation_numbers(next.gateway_rotation);
+        // see `resolution_held`. **The gate is held for exactly that window**,
+        // so a spawn that sees the odd number waits on it rather than
+        // spinning on the counter.
+        {
+            let _settling =
+                self.reload_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.accounts.replace_accounts(&next.accounts);
+            self.gateway.set_org_pins(org_pins(&next));
+            // The setter rebuilds the rotation state, which would empty the
+            // live cooldowns and streaks. Only a reload that moved the numbers
+            // is allowed to do that.
+            if reload.changed.contains(&"gateway") {
+                self.gateway.set_rotation_numbers(next.gateway_rotation);
+            }
+            *self.systemone.write() = systemone;
+            *self.config.write() = Arc::new(next);
+            self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         }
-        *self.systemone.write() = systemone;
-        *self.config.write() = Arc::new(next);
-        self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
         // A new account starts `Loading`; kick the same probe a boot runs
         // so it does not wait for the poller's next tick.
@@ -2623,7 +2633,9 @@ impl Workspace {
         let (project, account_key) = loop {
             let generation = self.reload_generation.load(std::sync::atomic::Ordering::Acquire);
             if !generation.is_multiple_of(2) {
-                std::thread::yield_now();
+                // The swap holds `reload_gate` from odd to even, so taking it
+                // is waiting for the generation to settle - no spin.
+                drop(self.reload_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
                 continue;
             }
             let Some(project) = self.project_for_target(&target) else {

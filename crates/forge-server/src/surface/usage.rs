@@ -32,6 +32,16 @@ impl ViewSurface {
         if let Some(report) = self.held_usage() {
             return Ok(report);
         }
+        // **One scan for every concurrent miss.** Two readers asking with a
+        // cold cache would otherwise walk the whole pool side by side and
+        // remember the same answer twice; the second waits here and finds the
+        // first's report when it looks again.
+        let _scan = self.usage_scan.lock().await;
+        if let Some(report) = self.held_usage() {
+            return Ok(report);
+        }
+        #[cfg(any(test, feature = "testing"))]
+        self.usage_scans.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let workspace = Arc::clone(&self.workspace);
         let report = tokio::task::spawn_blocking(move || workspace.scan_usage())
             .await
@@ -115,6 +125,51 @@ mod tests {
 
     fn surface(workspace: Arc<forge_workspace::Workspace>) -> Arc<ViewSurface> {
         Arc::new(ViewSurface::new(workspace))
+    }
+
+    /// **Two concurrent misses run one scan.** Both callers answer with the
+    /// pool's report, and only one walk of it happened - a reader that
+    /// skipped the guard would double exactly the work the cache exists to
+    /// avoid. The pool is large enough that the first scan is still running
+    /// when the second ask arrives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_usage_misses_run_one_scan() {
+        let (workspace, dir) = crate::surface::testing::workspace();
+        let pool = dir.path().join("projects").join("-tmp-slow");
+        std::fs::create_dir_all(&pool).expect("the pool's project dir");
+        for at in 0..2_000 {
+            std::fs::write(pool.join(format!("s-{at}.jsonl")), A_RECORD).expect("write a record");
+        }
+        let surface = Arc::new(ViewSurface::new(workspace));
+
+        let first = tokio::spawn({
+            let surface = Arc::clone(&surface);
+            async move { surface.usage().await }
+        });
+        // The scan has started, not merely been queued: the counter is
+        // bumped before the walk, so this waits on the work itself.
+        while surface.test_usage_scans() == 0 {
+            tokio::task::yield_now().await;
+        }
+        let second = surface.usage();
+
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(
+            first
+                .expect("the first ask's task")
+                .expect("the first ask answers")
+                .lifetime
+                .total
+                .input,
+            2_000 * 7,
+            "every record in the pool reaches the first reader",
+        );
+        assert_eq!(
+            second.expect("the second ask answers").lifetime.total.input,
+            2_000 * 7,
+            "and the one scan's report reaches the reader that waited for it",
+        );
+        assert_eq!(surface.test_usage_scans(), 1, "two misses ran one pool scan");
     }
 
     /// Catches a read that answers an empty report rather than the pool's:

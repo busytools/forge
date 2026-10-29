@@ -54,6 +54,12 @@ pub struct ViewSurface {
     /// network, so the ask that finds one running is not a reason for a
     /// second.
     pricing_refill: std::sync::atomic::AtomicBool,
+    /// The one scan a cold cache runs: a second reader waits here rather than
+    /// walking the pool beside the first.
+    usage_scan: tokio::sync::Mutex<()>,
+    /// How many scans were started, so a test can prove two misses ran one.
+    #[cfg(any(test, feature = "testing"))]
+    usage_scans: std::sync::atomic::AtomicU64,
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -87,7 +93,17 @@ impl ViewSurface {
             workspace,
             usage_cache: std::sync::Mutex::new(None),
             pricing_refill: std::sync::atomic::AtomicBool::new(false),
+            usage_scan: tokio::sync::Mutex::new(()),
+            #[cfg(any(test, feature = "testing"))]
+            usage_scans: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// How many pool scans this surface started. Test-only: the single-flight
+    /// guard's whole claim is that two concurrent misses start one.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_usage_scans(&self) -> u64 {
+        self.usage_scans.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The byte cap one frame's `tool_use_result` may reach in a served

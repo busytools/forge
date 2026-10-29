@@ -112,7 +112,7 @@ const OFFLINE: BrowserLink = {
 let active: BrowserLink | null = null;
 
 /** The link this page draws through. */
-export function browserLink(): BrowserLink {
+function browserLink(): BrowserLink {
   return active ?? OFFLINE;
 }
 

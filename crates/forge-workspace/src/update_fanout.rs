@@ -47,60 +47,39 @@ const SEAT_RING: usize = crate::conversation_window::CONVERSATION_CAP;
 /// files that is 15 MB per retained frame.
 const SEAT_RING_BYTES: usize = crate::conversation_window::CONVERSATION_CAP_BYTES;
 
-/// What a frame costs against [`SEAT_RING_BYTES`], counted from the payloads
-/// that can grow rather than from its serialization.
+/// What a frame costs against [`SEAT_RING_BYTES`]: the bytes its own JSON
+/// would write, plus the envelope around it.
 ///
-/// The big frames are big in their entries and messages; paying a JSON pass at
-/// mint would double the cost of exactly the frames this ceiling exists for. A
-/// frame whose payload is not counted here is charged a frame's fixed
-/// overhead, which is what keeps a long run of small frames bounded too.
+/// **Measured, not hand-listed.** A walk over the fields that can grow charged
+/// only the variants it named: a frame outside that list, and a field added to
+/// one inside it, cost a fixed weight however large it was - so a new field
+/// silently under-charged the ceiling that exists to bound memory. The count is
+/// taken through a sink that keeps nothing, so the number is the memory
+/// without a second copy of it.
 fn frame_bytes(update: &SessionUpdate) -> usize {
-    /// Fields, numbers and names a wire entry carries beside its strings.
-    const ENTRY: usize = 96;
-    /// A frame's own fields, its slot and its envelope.
+    /// The frame's own envelope: its tag, slot, seq and span.
     const FRAME: usize = 256;
-    let payload = match update {
-        SessionUpdate::FileIndexChanged { index, .. } => index
-            .entries
-            .iter()
-            .map(|(key, candidate)| {
-                key.len()
-                    + candidate.rel_path.len()
-                    + candidate.rel_path_lower.len()
-                    + candidate.basename_lower.len()
-                    + ENTRY
-            })
-            .sum(),
-        SessionUpdate::ProcessesChanged { snapshot, .. } => snapshot
-            .processes
-            .iter()
-            .map(|entry| entry.name.len() + entry.command.len() + ENTRY)
-            .sum(),
-        SessionUpdate::ChatAppended { msg, .. } => crate::conversation_window::wire_bytes(msg),
-        SessionUpdate::CallOutput { output, .. } => match output {
-            forge_primitives::CallOutput::Lines(lines) => {
-                lines.iter().map(|line| line.len() + ENTRY).sum()
-            }
-            forge_primitives::CallOutput::FileGone | forge_primitives::CallOutput::NoPath => 0,
-        },
-        SessionUpdate::SubagentCardsChanged { cards, .. } => cards
-            .iter()
-            .map(|card| {
-                card.name.len()
-                    + card.dispatch_id.len()
-                    + card.agent_type.as_deref().map_or(0, str::len)
-                    + card
-                        .tail
-                        .iter()
-                        .map(|call| call.name.len() + call.title.len() + ENTRY)
-                        .sum::<usize>()
-                    + ENTRY
-            })
-            .sum(),
-        // Anything else is a frame of its own fixed weight.
-        _ => 0,
-    };
-    payload.saturating_add(FRAME)
+    let mut count = ByteCount(0);
+    match serde_json::to_writer(&mut count, update) {
+        Ok(()) => count.0.saturating_add(FRAME),
+        // A payload that cannot serialise is a defect the wire would show
+        // anyway; charge it the envelope rather than nothing.
+        Err(_) => FRAME,
+    }
+}
+
+/// A `Write` that keeps the number of bytes written and nothing else.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// One frame in a seat's ring, with the weight it was charged when it was
@@ -513,6 +492,7 @@ mod tests {
 
     use super::*;
     use crate::SessionSlot;
+    use crate::protocol::NoticeSeverity;
 
     fn status(message: &str) -> SessionUpdate {
         SessionUpdate::ServiceStatus {
@@ -1102,6 +1082,33 @@ mod tests {
             both > output_bytes + 12_000,
             "the card tail's calls are charged too: {both} bytes over the {output_bytes} before \
              it",
+        );
+    }
+
+    /// **A frame is charged by its serialised size, not by a hand-listed set
+    /// of fields.** `Notice` was not on the old walk, so a notice carrying ten
+    /// kilobytes was charged a frame's fixed weight - the shape of failure a
+    /// field added to any frame would repeat. Its own bytes are what it costs
+    /// now.
+    #[test]
+    fn a_frame_is_charged_by_its_serialised_size() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(
+            fanout.send(SessionUpdate::Notice {
+                key: seat.clone(),
+                severity: NoticeSeverity::Info,
+                text: "x".repeat(10_000),
+            }),
+            "a subscribed fan-out delivers",
+        );
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the notice");
+        let charged = fanout.ring_bytes(&seat);
+        assert!(
+            charged >= 10_000,
+            "a 10 KB notice is charged its own bytes rather than a frame's weight: {charged}",
         );
     }
 
