@@ -1574,7 +1574,8 @@ describe('the session page over a socket', () => {
    * **A visited seat keeps its subscription between visits.** The first visit
    * opens it and the leave no longer gives it back, so a return draws the
    * record the frames kept current without a second subscribe. Only a session
-   * ending and the connection closing release it.
+   * ending, the connection closing, and the server refusing the seat release
+   * it.
    */
   it('subscribes on the first visit and keeps the seat between visits', async () => {
     await open(sessionFixture);
@@ -2524,8 +2525,8 @@ describe('the record a page holds over an update stream', () => {
 
   /**
    * **A page leaving keeps its seat subscribed** - the record and the frames
-   * both stay - and only a session ending or the connection closing releases
-   * it (Ved, 2026-10-25).
+   * both stay - and only a session ending, the connection closing or the
+   * server refusing the seat releases it (Ved, 2026-10-25).
    */
   it('keeps the subscription when the last reader leaves, and the record with it', () => {
     const connection = drivable();

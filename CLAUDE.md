@@ -67,9 +67,10 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   commands, the transcript
   fold that says where a conversation's turns sit and the task endings it
   carries, the sub-agent instance list the session task's own fold keeps and
-  pushes, the `ReadCallOutput` verb (with the workspace's tail reader
-  re-exported for views), the boot path the `forge` binary runs, and the
-  socket that carries all of it to whatever is drawing.
+  pushes, the call-output read the socket answers from its held conversation
+  (with the workspace's tail reader re-exported for views), the boot path the
+  `forge` binary runs, and the socket that carries all of it to whatever is
+  drawing.
   Sits between `forge-workspace` and the clients, so another client
   attaches beside the one that exists rather than duplicating it.
   Nothing here may depend on a view. It reaches the workspace for the one
@@ -211,8 +212,8 @@ through named verbs by subject - `roster`, `session`, `agents`,
 `processes`, `work`, `board`, `background_tasks`, `monitors`, `pending_asks`,
 `fatal_error`, `service_status`
 and `usage` - receives changes through
-`subscribe()`, and acts through `dispatch()`, which is a verb rather than
-an accessor so a view is handed the commands it needs and not the whole
+`subscribe_client()`, and acts through `dispatch()`, which is a verb rather
+than an accessor so a view is handed the commands it needs and not the whole
 core. All of them exist in `forge-server`, and the client reads its
 project roster and agent rows, the
 task board's fleet and per-project rows through `board`, the
