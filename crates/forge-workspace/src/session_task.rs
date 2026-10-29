@@ -5085,7 +5085,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -5143,7 +5145,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
