@@ -810,7 +810,17 @@ mod plugin_manifest_removals {
         let plugin = plugin_manifest();
         let app = read("gen/android/app/src/main/AndroidManifest.xml");
         for name in STRIPPED {
-            assert!(app.contains(name), "the app manifest no longer strips {name}",);
+            // The element the name rides, not a window around the text: the
+            // removal attribute has to sit in this element and no other.
+            let element = app
+                .split('<')
+                .find(|chunk| chunk.contains(name))
+                .unwrap_or_else(|| panic!("the app manifest no longer names {name}"));
+            assert!(
+                element.contains("tools:node=\"remove\""),
+                "the app manifest names {name} without tools:node=\"remove\", so nothing is \
+                 stripped",
+            );
             assert!(
                 plugin.contains(name),
                 "the notification plugin no longer declares {name}, so its removal is a \
