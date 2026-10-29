@@ -65,6 +65,25 @@ const CONNECTION_WINDOW_MS = 1_000;
  */
 export type DrawnState = 'conversation' | 'empty' | 'waking' | 'refused';
 
+/**
+ * What the column measured where a drawn mark is written.
+ *
+ * **A drawn mark is a state, not a pixel**: it is read off the record, so a
+ * frame whose rows reached the model and not the screen still marks as drawn.
+ * The geometry is what tells the two apart - the viewport's own scroll
+ * numbers, the turns in the DOM against those with a box, and whether the
+ * foot's pin refused itself on an undrawn newest row.
+ */
+export interface DrawnGeometry {
+  scroll_top: number;
+  scroll_height: number;
+  client_height: number;
+  /** Turns the list rendered, and how many of them the browser gave a box. */
+  rows: number;
+  rows_visible: number;
+  pin_refused: boolean;
+}
+
 /** One line of the perf log, as the shell writes it. */
 export interface PerfRecord {
   schema: string;
@@ -98,6 +117,14 @@ export interface PerfRecord {
    * as the content arriving (#2374).
    */
   state?: DrawnState;
+  /** A `drawn`: what the column measured when the mark was written, so a
+   *  frame that marked drawn and painted nothing names itself. */
+  scroll_top?: number;
+  scroll_height?: number;
+  client_height?: number;
+  rows?: number;
+  rows_visible?: number;
+  pin_refused?: boolean;
   /**
    * **The Web Worker's heartbeat, spanning a slow `frame`** (#2374). The
    * worker ticks once a second and the page times each arrival, so the pair
@@ -201,8 +228,15 @@ interface PerfProbe {
    *  reconnect or a palette move, written where the column takes the seat on
    *  (#2374). */
   noteConversationOpened(seat: string): void;
-  /** The open seat's terminal drawing has landed, in `state` (#2374). */
-  noteDrawn(state: DrawnState): void;
+  /**
+   * The open seat's terminal drawing has landed, in `state` (#2374), with
+   * `geometry` where the mark is the rows' own.
+   *
+   * **`geometry` is a thunk because measuring the column forces layout**, and
+   * the column marks a state on every update it holds while the probe writes
+   * one record per open: called here, the measure runs only on the write.
+   */
+  noteDrawn(state: DrawnState, geometry?: () => DrawnGeometry | undefined): void;
   /** A click on a seat, at the handler that takes it (#2513). */
   noteSeatClick(seat: string): void;
   /** A subscribe written to the socket, with the seat its subject names when
@@ -531,8 +565,14 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   let connStart = 0;
   let connSubscribes = 0;
   let connSnapshotChars = 0;
-  /** Where the CONNECTION window began, so a window spanning a switch names
-   *  the page the counts happened on rather than the one it ended on. */
+  /**
+   * The page the window's newest count happened on.
+   *
+   * **Stamped where the count is taken.** These used to be set when a window
+   * OPENED, so a record named the seat the reader had already left and not the
+   * one whose subscribes and snapshots it carried: a 3.17 MB answer read as
+   * one seat's while it was another's record and a home read.
+   */
   let connSurface: string | null = null;
   let connSession: string | null = null;
 
@@ -623,8 +663,6 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     const windowMs = at - connStart;
     if (connSubscribes === 0 && connSnapshotChars === 0) {
       connStart = at;
-      connSurface = surface;
-      connSession = session;
       return;
     }
     const seconds = windowMs / 1000;
@@ -644,8 +682,6 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     connSubscribes = 0;
     connSnapshotChars = 0;
     connStart = at;
-    connSurface = surface;
-    connSession = session;
   }
 
   function tick(): void {
@@ -850,7 +886,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         session: seat,
       });
     },
-    noteDrawn(state: DrawnState): void {
+    noteDrawn(state: DrawnState, geometry?: () => DrawnGeometry | undefined): void {
       if (openAt === null) return;
       const content = state === 'conversation' || state === 'empty';
       // **One placeholder and one content drawing per open** (#2374): the
@@ -869,6 +905,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         ts_ms: Date.now(),
         ms: now() - openAt,
         state,
+        ...(geometry?.() ?? {}),
         surface: 'session',
         session: openSeat,
       });
@@ -893,6 +930,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       // repeated re-subscribe shape a switch's delay can hide in (#2513).
       const auto = lastSnapshotAt !== null && lastSnapshotAt > (lastUserActionAt ?? -Infinity);
       connSubscribes += 1;
+      connSurface = surface;
+      connSession = session;
       // **A click is spent by the first subscribe it causes.** Left armed,
       // every later subscribe - the automatic home loop included - would
       // report its gap since some old click as its own (#2513).
@@ -914,6 +953,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     noteSnapshot(seat: string | null, chars: number, parseMs: number): void {
       lastSnapshotAt = now();
       connSnapshotChars += chars;
+      connSurface = surface;
+      connSession = session;
       emit({
         schema: SCHEMA,
         kind: 'snapshot',
@@ -976,9 +1017,12 @@ export function noteConversationOpened(slot: SessionSlot): void {
  * than where the click happened (#2374). **An open can carry two of these**:
  * a placeholder first (`waking`/`refused`) and the seat's content after it
  * (`conversation`/`empty`) - only the content drawing lets a `quiet` follow.
+ *
+ * `geometry` rides the rows' own mark, which is where a drawn state and a
+ * drawn pixel can disagree.
  */
-export function noteDrawn(state: DrawnState): void {
-  running?.noteDrawn(state);
+export function noteDrawn(state: DrawnState, geometry?: () => DrawnGeometry | undefined): void {
+  running?.noteDrawn(state, geometry);
 }
 
 /** A click landed on `slot`, in the shell's delegated handler (#2513). */

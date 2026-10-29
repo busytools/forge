@@ -143,15 +143,6 @@ export interface ComposerProps {
    * than both.
    */
   dictation: boolean;
-  /**
-   * Whether the seat's conversation is still on its way.
-   *
-   * The page owns the conversation column and reads this off the seat's own
-   * conversation, so the band under it can say "Reading the conversation..."
-   * while the first page is out - the column used to draw that line itself,
-   * and every narrative hold now draws in one place.
-   */
-  reading: boolean;
 }
 
 /**
@@ -249,6 +240,10 @@ const STOPPED: Pick<Blocker, 'bad' | 'shimmer'> = { bad: false, shimmer: false }
  * it, the same rule the view this client replaced applied: a long command is a
  * wait the reader caused, and naming it is what tells them what they are
  * waiting for.
+ *
+ * **A conversation whose first page is still out does not block the box.** The
+ * seat is up and takes a prompt; the column says it is reading, and the words
+ * a send puts there are drawn as the reader's echo under that line.
  */
 export function blocked(
   seat: SeatRead,
@@ -256,7 +251,6 @@ export function blocked(
   command: string | null,
   lead: boolean,
   askPending: boolean,
-  reading: boolean,
 ): Blocker | null {
   // Sign-in keeps its box: the hint above it is where the reader is told.
   if (seat.lifecycle === 'AuthRequired') return null;
@@ -290,12 +284,6 @@ export function blocked(
   }
   if (seat.lifecycle === 'Spawning') {
     return { line: 'Waking up agent...', sub: null, bad: false, shimmer: true };
-  }
-  // **The conversation's own wait**, which the column used to draw. The seat is
-  // up and its first page is still out; the band says so rather than the chat
-  // leaving an empty column that reads as a seat with nothing in it.
-  if (reading) {
-    return { line: 'Reading the conversation...', sub: null, bad: false, shimmer: true };
   }
   // **A parked ask outranks the machine turn.** Both machine turns are
   // ordinary tool-using turns - the judgment turn writes memory files and

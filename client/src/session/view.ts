@@ -476,14 +476,6 @@ export interface ComposerProps {
   /** The seat behind the page, which its blocked states read. */
   seat: SeatState;
   connection: Connection;
-  /**
-   * Whether the seat's conversation is still on its way.
-   *
-   * The page owns the conversation column and reads this off the seat's own
-   * conversation, so the band under it can say "Reading the conversation..."
-   * while the first page is out.
-   */
-  reading: boolean;
 }
 
 /**

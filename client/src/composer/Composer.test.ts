@@ -1323,7 +1323,6 @@ describe('the box', () => {
     const cases: [Partial<ComposerProps>, string][] = [
       [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Waking up agent...'],
       [{ seat: seatRead({ waking: true, lifecycle: null, reason: null }) }, 'Waking up agent...'],
-      [{ reading: true }, 'Reading the conversation...'],
       [
         {
           record: record({

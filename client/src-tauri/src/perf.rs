@@ -12,8 +12,26 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use tauri::Manager as _;
+
+/// One append at a time.
+///
+/// **`client_perf` is an async command, so two batches can be in flight at
+/// once**, and a file write is several syscalls: two appends interleaving put
+/// two records on one line and a blank line after it. The guard covers
+/// the roll as well as the write, which is a rename.
+static APPEND: Mutex<()> = Mutex::new(());
+
+fn append_guard() -> MutexGuard<'static, ()> {
+    match APPEND.lock() {
+        Ok(guard) => guard,
+        // **A panic in one append is not the file's fault**, and poisoning
+        // every later batch would be a silent loss. The guard holds no state.
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 /// Where the perf log sits beside the shell's own `forge.log`.
 const PERF_LOG_NAME: &str = "forge-perf.log";
@@ -46,6 +64,22 @@ pub struct ClientPerfRecord {
     /// over one unknown word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// What the column measured at a `drawn` mark: the list's own
+    /// scroll numbers, the turns it rendered against those with a box, and
+    /// whether the foot's pin refused itself on an undrawn newest row. Absent
+    /// on every other kind, and on a mark that draws no rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_top: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows_visible: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_refused: Option<bool>,
     /// The Web Worker heartbeat spanning a slow frame (#2374): how many
     /// ticks arrived, the WORST lateness among them, when the last one
     /// landed, and the tick interval those are read against.
@@ -124,6 +158,7 @@ pub fn client_perf(app: tauri::AppHandle, records: Vec<ClientPerfRecord>) -> Res
 
 /// The write itself, over a directory a test can hand it.
 fn append(dir: &Path, records: &[ClientPerfRecord], max_bytes: u64) -> std::io::Result<()> {
+    let _guard = append_guard();
     std::fs::create_dir_all(dir)?;
     let path = dir.join(PERF_LOG_NAME);
     let current = std::fs::metadata(&path).map_or(0, |meta| meta.len());
@@ -133,10 +168,15 @@ fn append(dir: &Path, records: &[ClientPerfRecord], max_bytes: u64) -> std::io::
         std::fs::rename(&path, &rolled)?;
     }
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    // **One buffer for the batch and one write**, so a record's line and its
+    // newline can never be parted by another append: a `writeln!` writes the
+    // two separately, which is how they came apart.
+    let mut batch = String::new();
     for record in records {
-        let line = serde_json::to_string(record).map_err(std::io::Error::other)?;
-        writeln!(file, "{line}")?;
+        batch.push_str(&serde_json::to_string(record).map_err(std::io::Error::other)?);
+        batch.push('\n');
     }
+    file.write_all(batch.as_bytes())?;
     Ok(())
 }
 
@@ -158,6 +198,12 @@ mod tests {
             frame: Some(3),
             ms: Some(120.0),
             state: None,
+            scroll_top: None,
+            scroll_height: None,
+            client_height: None,
+            rows: None,
+            rows_visible: None,
+            pin_refused: None,
             worker_beats: None,
             worker_max_late_ms: None,
             worker_since_beat_ms: None,
@@ -182,6 +228,67 @@ mod tests {
             subscribe_rate: None,
             snapshot_chars_per_s: None,
         }
+    }
+
+    /// **Two batches in flight at once must not share a line.**
+    /// `client_perf` is an async command, so two appends can run together, and
+    /// a `writeln!` on a file is several writes: two of them interleaving put
+    /// two records on one line with a blank line after it, and a reader of the
+    /// log parsed neither.
+    #[test]
+    fn two_batches_in_flight_land_as_whole_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writers = 8;
+        let per_writer = 40;
+        std::thread::scope(|scope| {
+            for _ in 0..writers {
+                let dir = dir.path();
+                scope.spawn(move || {
+                    for _ in 0..per_writer {
+                        append(dir, &[record("frame")], MAX_BYTES).expect("append");
+                    }
+                });
+            }
+        });
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        // **Every line, blank ones included**: a parted pair leaves a blank
+        // line behind it, and a filter for empties would miss exactly that.
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), writers * per_writer, "one line per record: {text}");
+        for line in &lines {
+            serde_json::from_str::<serde_json::Value>(line).expect("every line parses whole");
+        }
+    }
+
+    /// **The guard's real job is the roll.** A cap of one byte rolls on every
+    /// append, and the roll is `metadata` then `remove_file` then `rename`:
+    /// without the lock two threads both find the file at the cap, both
+    /// rename, and the loser's append fails on the file the other took. The
+    /// write half alone cannot fail this way - a whole batch in one
+    /// `write_all` keeps its lines together - so this is the property the
+    /// mutex exists for.
+    #[test]
+    fn two_batches_in_flight_do_not_race_the_roll() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writers = 8;
+        let per_writer = 40;
+        let failures = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..writers {
+                let dir = dir.path();
+                let failures = &failures;
+                scope.spawn(move || {
+                    for _ in 0..per_writer {
+                        if let Err(why) = append(dir, &[record("frame")], 1) {
+                            failures.lock().expect("count").push(why.to_string());
+                        }
+                    }
+                });
+            }
+        });
+        let failures = failures.into_inner().expect("count");
+        assert!(failures.is_empty(), "every append rolled without losing a batch: {failures:?}",);
     }
 
     #[test]
@@ -229,6 +336,37 @@ mod tests {
             parsed["state"], "waking",
             "the shell must write the state the page marked: {text}",
         );
+    }
+
+    /// **The column's geometry on a drawn mark survives the write.**
+    /// This struct is the boundary: a field it does not name is parsed away,
+    /// so a page that starts reporting where the column was would reach the
+    /// log with nothing - and the black column is exactly what these fields
+    /// exist to name. A record that measures nothing writes no key at all.
+    #[test]
+    fn the_drawn_marks_geometry_survives_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut mark = record("drawn");
+        mark.state = Some("conversation".to_owned());
+        mark.scroll_top = Some(17_402.5);
+        mark.scroll_height = Some(31_204.0);
+        mark.client_height = Some(812.0);
+        mark.rows = Some(9);
+        mark.rows_visible = Some(0);
+        mark.pin_refused = Some(true);
+        append(dir.path(), &[mark, record("frame")], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let lines: Vec<serde_json::Value> =
+            text.lines().map(|line| serde_json::from_str(line).expect("a JSON line")).collect();
+        assert_eq!(lines[0]["scroll_top"], 17_402.5, "the scroll's own offset: {text}");
+        assert_eq!(lines[0]["scroll_height"], 31_204.0, "and its height: {text}");
+        assert_eq!(lines[0]["client_height"], 812.0, "and the room it had: {text}");
+        assert_eq!(lines[0]["rows"], 9, "the turns it rendered: {text}");
+        assert_eq!(lines[0]["rows_visible"], 0, "and the ones with a box: {text}");
+        assert_eq!(lines[0]["pin_refused"], true, "and a pin that refused itself: {text}");
+        assert!(lines[1].get("scroll_top").is_none(), "no geometry on a frame: {text}");
+        assert!(lines[1].get("rows").is_none(), "and no row count: {text}");
     }
 
     /// A state the page has not been taught yet is carried rather than

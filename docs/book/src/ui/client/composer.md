@@ -129,7 +129,6 @@ being refused as busy.
 | Compacting | `compacting this session`, the sweep, no field |
 | A command in flight | `Running <name>` for the slash command the turn is still working on, the sweep |
 | Waking | `Waking up agent...` while the lead's seat comes up, the sweep |
-| Reading | `Reading the conversation...` while the seat's first page is out, the sweep |
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
 | A take that does not come up | the box stays, with the line above it: the microphone did not come up |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
@@ -139,7 +138,12 @@ order the states are read in is the one a reader has to be told: a failing
 seat first, then a seat nothing has started, then the more specific truth
 about a turn the reader caused.
 
-**Every narrative hold is one draw.** Waking, reading, a command in flight, a
+**A conversation still being read is not one of them.** The seat is up and
+takes a prompt, so the box keeps its field while the column says
+`Reading the conversation...` - and the words a send puts there are drawn
+under that line as the reader's own row, not lost until the page lands.
+
+**Every narrative hold is one draw.** Waking, a command in flight, a
 compaction and a handoff all replace the box with one line and the same sweep
 moving through its words - only the text changes - so a hold reads the same
 wherever it comes from. The two states that are not progress carry no motion:

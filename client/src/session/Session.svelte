@@ -18,7 +18,6 @@
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
-  import { conversationsFor } from '../chat/conversations';
   import { emptyComposer } from '../composer/view';
   import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
@@ -117,19 +116,6 @@
   });
 
   const record: SessionRecord | null = $derived(read.wire);
-
-  /**
-   * Whether the seat's conversation is still on its way.
-   *
-   * Read off the conversation the column keeps for this seat, so the line the
-   * composer's band draws and the column's own state are one fact. Before the
-   * column has opened a conversation there is nothing to wait on, and the
-   * seat's own lifecycle carries the state.
-   */
-  const reading = $derived.by(() => {
-    const held = conversationsFor(connection).kept.get(subjectKey({ session: slot }));
-    return held !== undefined && !held.loaded;
-  });
 
   /**
    * The dispatch join follows the record: the chat's rows read their cards
@@ -825,13 +811,7 @@
        made in the gap goes to the right place. -->
   {#if composer !== null}
     <div class="composer">
-      {@render composer({
-        record: record ?? emptyComposer(slot),
-        slot,
-        seat,
-        connection,
-        reading,
-      })}
+      {@render composer({ record: record ?? emptyComposer(slot), slot, seat, connection })}
     </div>
   {/if}
 </div>

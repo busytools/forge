@@ -5,7 +5,7 @@
 
   import Icon from '../components/Icon.svelte';
   import { cannotPaint } from '../paint';
-  import { noteConversationOpened, noteDrawn } from '../perf';
+  import { noteConversationOpened, noteDrawn, type DrawnGeometry } from '../perf';
   import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
@@ -830,9 +830,53 @@
     return held.turns.length === 0 ? 'empty' : 'conversation';
   }
 
+  /**
+   * What the column measured where the drawn mark is written.
+   *
+   * **A drawn mark is a state, not a pixel**: this reads `held`, so a frame
+   * where the record holds rows and the column drew none scores as drawn. The
+   * geometry is what tells the two apart - a black column is one whose model
+   * holds turns and whose viewport has no row with a box, or whose pin refused
+   * itself on an undrawn newest row. Written once per open, never per frame.
+   */
+  function drawnGeometry(): DrawnGeometry {
+    // **No list is a reading, not an absence.** A conversation mark with no
+    // geometry at all cannot be told from one whose measure was skipped, and
+    // `rows: 0` says the column drew no list to measure.
+    if (viewport === null) {
+      return {
+        scroll_top: 0,
+        scroll_height: 0,
+        client_height: 0,
+        rows: 0,
+        rows_visible: 0,
+        pin_refused: false,
+      };
+    }
+    const rows = viewport.querySelectorAll('[data-t]');
+    let visible = 0;
+    for (const row of rows) {
+      if (row instanceof HTMLElement && row.offsetHeight > 0) visible += 1;
+    }
+    return {
+      scroll_top: viewport.scrollTop,
+      scroll_height: viewport.scrollHeight,
+      client_height: viewport.clientHeight,
+      rows: rows.length,
+      rows_visible: visible,
+      pin_refused: undrawnOverhang() > 0,
+    };
+  }
+
   $effect(() => {
     const state = terminalState();
-    if (state !== null) noteDrawn(state);
+    // **Only the rows' mark has a list to measure.** A waking or refused line
+    // draws no list, and the empty state draws no turns. The measure is handed
+    // over as a thunk: this effect runs on every update the column holds, and
+    // the probe writes the mark once per open.
+    if (state !== null) {
+      noteDrawn(state, state === 'conversation' ? drawnGeometry : undefined);
+    }
   });
 
   // The first page is drawn at the end rather than the start, and that is not
@@ -1602,12 +1646,24 @@
        asks again. -->
   <div class="conv">
     <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
+    {#if echo !== undefined}
+      <Echo {echo} onretry={retry} />
+    {/if}
   </div>
 {:else if !held.loaded}
-  <!-- Connected, and the first page has not come back. **The band says so**:
-       the empty copy here would claim the seat has no history when the truth
-       is that nothing has answered yet, so the column draws nothing. -->
-  <div class="conv"></div>
+  <!-- Connected, and the first page has not come back. **The column says so
+       itself**: it used to draw an empty box and leave the words to the
+       composer's band, which read as a dead column wherever the band's line
+       was not there yet. The same hold the band draws, on the column's own
+       ground - and the reader's own words ride under it, because the box
+       stays live while the page is out and a send whose row is nowhere is a
+       send the reader cannot see. -->
+  <div class="conv" role="status">
+    <div class="hold"><span class="shimmer">Reading the conversation...</span></div>
+    {#if echo !== undefined}
+      <Echo {echo} onretry={retry} />
+    {/if}
+  </div>
 {:else if held.turns.length === 0}
   <div class="conv">
     {#if echo !== undefined}
