@@ -526,12 +526,6 @@ function str(value: unknown, key: string): string | null {
   return typeof held === 'string' ? held : null;
 }
 
-/** A boolean field as the word a fact carries, or nothing when absent. */
-function bool(value: unknown, key: string): string | null {
-  const held = (value as Record<string, unknown> | null)?.[key];
-  return typeof held === 'boolean' ? String(held) : null;
-}
-
 /** The CLI's development kind as a reader says it; an unknown kind as itself. */
 function devIntentLabel(kind: string): string {
   switch (kind) {
@@ -724,6 +718,8 @@ interface Frame {
   usageReport?: unknown;
   /** `system/local_command`'s modern name carrier: `{command, args}`. */
   commandRun?: unknown;
+  /** `system/model_consent_fallback`'s evidence that the decline rewrote the default. */
+  persisted_as_default?: unknown;
   /** `system/vcs_state_changed`: what moved. */
   kind?: unknown;
   /**
@@ -2570,7 +2566,10 @@ export function fold(
               fact('fallback model', str(frame, 'fallback_model')),
               fact('scope', str(frame, 'scope')),
               fact('refusal category', str(frame, 'api_refusal_category')),
-              fact('persisted as default', bool(frame, 'persisted_as_default')),
+              fact(
+                'persisted as default',
+                frame['persisted_as_default'] === true ? 'true' : null,
+              ),
             ),
           ),
         });
@@ -2583,10 +2582,22 @@ export function fold(
       // the line, so a recall of twenty files is still one readable row.
       if (frame.subtype === 'memory_recall') {
         const memories = Array.isArray(frame['memories']) ? frame['memories'] : [];
-        const paths = memories
-          .map((memory) => str(obj(memory), 'path'))
-          .filter((path): path is string => path !== null);
-        const count = paths.length;
+        // A recall with nothing in it is not a line; the emitter sends none,
+        // and a frame whose list is empty has nothing to report.
+        if (memories.length === 0) continue;
+        const fields: NoticeField[] = [];
+        for (const memory of memories) {
+          const held = obj(memory);
+          const path = str(held, 'path');
+          const content = str(held, 'content');
+          // A `<synthesis:DIR>` path is a sentinel, not a file; the body is
+          // the memory a reader can use.
+          if (path !== null && !path.startsWith('<synthesis:')) {
+            fields.push({ label: 'path', value: path });
+          }
+          if (content !== null && content !== '') fields.push({ label: 'content', value: content });
+        }
+        const count = memories.length;
         push({
           kind: 'notice',
           key: keyOf(at, frame, 'memory_recall'),
@@ -2595,7 +2606,7 @@ export function fold(
             'info',
             `Recalled ${count} ${count === 1 ? 'memory' : 'memories'}`,
             frame,
-            facts(...paths.map((path) => fact('path', path))),
+            fields,
           ),
         });
         continue;

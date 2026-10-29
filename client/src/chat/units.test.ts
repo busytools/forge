@@ -4212,9 +4212,20 @@ describe('the frames the fold had no row for', () => {
         persisted_as_default: true,
         uuid: 'mcf1',
       },
+      {
+        type: 'system',
+        subtype: 'model_consent_fallback',
+        content: 'The session continues on the standard model.',
+        choice: 'cancelled',
+        original_model: 'claude-fable-5-1',
+        fallback_model: 'claude-opus-5-5',
+        persisted_as_default: false,
+        uuid: 'mcf2',
+      },
     ]);
 
-    expect(kinds(units), 'four swaps, four lines').toEqual([
+    expect(kinds(units), 'five swaps, five lines').toEqual([
+      'notice',
       'notice',
       'notice',
       'notice',
@@ -4260,6 +4271,13 @@ describe('the frames the fold had no row for', () => {
       { label: 'fallback model', value: 'claude-opus-5-5' },
       { label: 'persisted as default', value: 'true' },
     ]);
+
+    const plain = noticeOf(units[4]);
+    expect(plain?.mark).toBe('model_consent_fallback');
+    expect(plain?.fields, 'an ordinary decline does not claim a default rewrite').toEqual([
+      { label: 'original model', value: 'claude-fable-5-1' },
+      { label: 'fallback model', value: 'claude-opus-5-5' },
+    ]);
   });
 
   it('draws a memory recall as one line naming how many and which', () => {
@@ -4301,6 +4319,43 @@ describe('the frames the fold had no row for', () => {
       ])[0],
     );
     expect(single?.text, 'one memory is singular').toBe('Recalled 1 memory');
+
+    // A synthesized memory has a sentinel path and a body; the body is the
+    // memory a reader can use, and it must not be hidden behind the count.
+    const synth = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'memory_recall',
+          mode: 'synthesize',
+          memories: [
+            {
+              path: '<synthesis:DIR>',
+              scope: 'organization',
+              content: 'A distilled paragraph from the memory store.',
+            },
+          ],
+          uuid: 'mr3',
+        },
+      ])[0],
+    );
+    expect(synth?.text).toBe('Recalled 1 memory');
+    expect(synth?.fields, 'the body is drawn, and the sentinel is not a path').toEqual([
+      { label: 'content', value: 'A distilled paragraph from the memory store.' },
+    ]);
+
+    expect(
+      fold([
+        {
+          type: 'system',
+          subtype: 'memory_recall',
+          mode: 'select',
+          memories: [],
+          uuid: 'mr4',
+        },
+      ]),
+      'an empty recall is not a line',
+    ).toEqual([]);
   });
 
   it('draws a local command as one row from its name and print frames', () => {

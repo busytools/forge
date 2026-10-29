@@ -174,7 +174,8 @@ read as one system.
   a warning whose words are the CLI's own `content` and whose open body names
   the trigger, the model it left and the model it fell to. A memory recall
   draws one line saying how many memories the turn was given, with the paths
-  in the open body rather than one row per memory. A local command draws one
+  and, where the CLI supplies it, the recalled body in the open body rather
+  than one row per memory. A local command draws one
   row: the command it ran, with the command's output in its open body. The CLI
   sends the name and the print as two frames, and the second fills the first's
   row - so a command is one row and not two, and there is no assistant message
