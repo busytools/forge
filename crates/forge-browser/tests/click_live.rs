@@ -27,7 +27,7 @@ use forge_browser::channel;
 use forge_browser::frame::Frame;
 use forge_browser::input::{HostInput, host_line};
 use forge_browser::osr::{MAX_HEIGHT, MAX_WIDTH, Ring};
-use forge_browser::window::Cdp;
+use forge_browser::window::{Cdp, Events};
 use forge_primitives::browser::{InputModifiers, MouseAction};
 use serde_json::{Value, json};
 
@@ -112,7 +112,7 @@ struct Fixture {
     host: support::Host,
     _scratch: tempfile::TempDir,
     cdp: Cdp,
-    _events: tokio::sync::mpsc::Receiver<Value>,
+    _events: Events,
     ring: String,
     ring_handle: Option<Ring>,
     /// The frames the host encoded, off its own socket.

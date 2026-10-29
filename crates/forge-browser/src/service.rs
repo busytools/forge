@@ -33,7 +33,7 @@ use crate::input;
 use crate::profiles::Store;
 use crate::spawn::{self, ActiveHost};
 use crate::tabs::TabRegistry;
-use crate::window::Cdp;
+use crate::window::{Cdp, EVENT_BACKLOG, Events};
 use crate::{channel, engine, osr, veto};
 
 /// What one call knows about the browser it looked up, and the page it drives.
@@ -5144,7 +5144,7 @@ async fn page_cdp<'a>(
         let Some(path) = path.strip_prefix(&spawn::ws_prefix(port)).map(str::to_owned) else {
             return Err("the page's websocket is not on the host's port".to_owned());
         };
-        let (cdp, events) = Cdp::connect_watch(port, &path).await?;
+        let (cdp, events) = Cdp::connect_watch_bounded(port, &path, EVENT_BACKLOG).await?;
         state.cdp.insert(target.to_owned(), cdp);
         state.cdp_events.insert(target.to_owned(), events);
     }
@@ -5153,7 +5153,7 @@ async fn page_cdp<'a>(
     // a live one, and an unread backlog on a page that reports many events is
     // growth nobody would see.
     if let Some(events) = state.cdp_events.get_mut(target) {
-        while events.try_recv().is_ok() {}
+        events.drain();
     }
     state.cdp.get_mut(target).ok_or_else(|| "the page's input connection is not open".to_owned())
 }
@@ -5196,7 +5196,7 @@ struct State {
     /// tab switch opens the new target's connection rather than reusing the
     /// old one.
     cdp: HashMap<String, Cdp>,
-    cdp_events: HashMap<String, mpsc::Receiver<Value>>,
+    cdp_events: HashMap<String, Events>,
     /// The focused tab's navigation watch: the bar's arrows after a link
     /// click.
     nav_watch: Option<tokio::task::JoinHandle<()>>,

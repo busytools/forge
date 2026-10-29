@@ -21,7 +21,7 @@ mod support;
 use std::time::{Duration, Instant};
 
 use forge_browser::osr::Ring;
-use forge_browser::window::Cdp;
+use forge_browser::window::{Cdp, Events};
 use serde_json::{Value, json};
 
 /// How long CEF is given to boot, paint and answer a gesture.
@@ -35,7 +35,7 @@ struct Fixture {
     host: support::Host,
     _scratch: tempfile::TempDir,
     cdp: Cdp,
-    _events: tokio::sync::mpsc::Receiver<Value>,
+    _events: Events,
     ring: String,
 }
 

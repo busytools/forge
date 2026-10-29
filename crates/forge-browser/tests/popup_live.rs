@@ -530,7 +530,7 @@ fn wait_for_ring(name: &str, host: &support::Host) -> Ring {
 
 /// A DevTools connection bounded like every other wait here, so a target that
 /// accepts a socket and never upgrades names the failure instead of hanging.
-async fn connect(port: u16, path: &str) -> Option<(Cdp, tokio::sync::mpsc::Receiver<Value>)> {
+async fn connect(port: u16, path: &str) -> Option<(Cdp, forge_browser::window::Events)> {
     match tokio::time::timeout(Duration::from_secs(5), Cdp::connect_watch(port, path)).await {
         Ok(Ok(pair)) => Some(pair),
         _ => None,
