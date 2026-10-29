@@ -14,7 +14,8 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("update_manifest.py")
-RELEASE = "https://github.com/busytools/forge/releases/download/v9.9.9"
+REPOSITORY = "https://github.com/busytools/forge"
+RELEASE = f"{REPOSITORY}/releases/download/v9.9.9"
 SIGNATURE = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkK\n"
 
 
@@ -55,6 +56,9 @@ class UpdateManifestTest(unittest.TestCase):
             manifest["platforms"]["darwin-aarch64"]["url"], f"{RELEASE}/forge.app.tar.gz"
         )
         self.assertEqual(manifest["android"]["url"], f"{RELEASE}/forge-9.9.9-arm64.apk")
+        self.assertEqual(
+            manifest["android"]["release"], f"{REPOSITORY}/releases/tag/v9.9.9"
+        )
         self.assertEqual(manifest["web"]["url"], f"{RELEASE}/forge-web-9.9.9.tar.gz")
 
         # Hashing the wrong file still exits 0, and the puller refuses every

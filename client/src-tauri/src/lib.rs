@@ -11,14 +11,14 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(desktop)]
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The stages that finish an install, named by the platform that needs them.
-/// The client's line draws its words per stage, so this is a fact rather than
-/// copy: the desktop restarts into the swapped bundle, the phone's install is
-/// the system prompt and the app is replaced with it.
+/// The stages that finish an update tap, named by the platform that needs
+/// them. The client's line draws its words per stage, so this is a fact rather
+/// than copy: the desktop restarts into the swapped bundle, the phone opens the
+/// release page whose APK the person installs by hand.
 #[cfg(desktop)]
 const STAGE_RESTART: &str = "restart";
 #[cfg(target_os = "android")]
-const STAGE_INSTALL: &str = "install";
+const STAGE_BROWSER: &str = "browser";
 
 #[cfg(desktop)]
 fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
@@ -789,8 +789,7 @@ const ANDROID_FILE_NAME_PLUGIN: &str = "androidfilenames";
 
 /// The phone's half of the updater, as a Kotlin plugin the commands below
 /// bridge to. Everything the update does on Android is Android's own: the
-/// manifest fetch, the download, the signer read of this install, and the
-/// installer intent.
+/// manifest fetch and the browser intent the offer opens.
 #[cfg(target_os = "android")]
 mod android {
     use std::sync::Mutex;
@@ -798,10 +797,10 @@ mod android {
     use tauri::plugin::{Builder, PluginHandle, TauriPlugin};
     use tauri::{Manager, Runtime};
 
-    /// The Kotlin handle, and the release the last check offered. The install
+    /// The Kotlin handle, and the release the last check offered. The hand-off
     /// works from the remembered one rather than asking again: the line the
     /// reader tapped names that version, and a check between the two would
-    /// install a release the line never named.
+    /// open a release the line never named.
     pub struct Updater<R: Runtime>(pub PluginHandle<R>, pub Mutex<Option<Found>>);
 
     /// The Kotlin handle for a picked content URI's document name.
@@ -818,6 +817,7 @@ mod android {
         pub endpoint: String,
     }
 
+    /// The offered release: its version, and the page that offers it.
     #[derive(Clone, serde::Deserialize)]
     pub struct Found {
         pub version: String,
@@ -825,8 +825,7 @@ mod android {
     }
 
     #[derive(serde::Serialize)]
-    pub struct InstallArgs {
-        pub version: String,
+    pub struct OpenArgs {
         pub url: String,
     }
 
@@ -879,7 +878,7 @@ async fn android_check(app: &tauri::AppHandle) -> Result<Option<android::Found>,
 }
 
 /// The version an update check found, or `None` when this build is current.
-/// What it found is remembered for the install that line-offering may follow.
+/// What it found is remembered for the hand-off that tapping the line makes.
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
@@ -890,9 +889,9 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
     Ok(found.map(|found| found.version))
 }
 
-/// Download the remembered release, check it, and hand it to the system
-/// installer, answering with the stage that finishes it: the phone's install
-/// IS the prompt, and the app is replaced with it.
+/// Open the remembered release's page in the phone's browser, answering with
+/// the stage that finishes the tap. The app installs nothing itself: a
+/// sideloaded APK is the person's own to install from that page.
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
@@ -905,13 +904,10 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
         .ok_or_else(|| "no update is available".to_string())?;
     handle
         .0
-        .run_mobile_plugin_async::<()>(
-            "install",
-            android::InstallArgs { version: found.version, url: found.url },
-        )
+        .run_mobile_plugin_async::<()>("open", android::OpenArgs { url: found.url })
         .await
         .map_err(|err| err.to_string())?;
-    Ok(STAGE_INSTALL.to_string())
+    Ok(STAGE_BROWSER.to_string())
 }
 
 /// Where the log plugin's file target lands, named from the product rather than

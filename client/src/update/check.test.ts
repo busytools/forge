@@ -61,10 +61,10 @@ describe('installUpdate', () => {
     expect(mockInvoke).toHaveBeenCalledWith('install_update');
   });
 
-  it('carries the phone installer stage through', async () => {
-    mockInvoke.mockResolvedValue('install');
+  it('carries the phone browser stage through', async () => {
+    mockInvoke.mockResolvedValue('browser');
 
-    await expect(installUpdate()).resolves.toBe('install');
+    await expect(installUpdate()).resolves.toBe('browser');
   });
 
   /**

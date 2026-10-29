@@ -131,13 +131,6 @@
           aria-label={`client v${$updateState.version} ready - restart to finish`}
           >v{$updateState.version} ready - restart to finish</button
         >
-      {:else if $updateState.stage === 'install'}
-        <button
-          class="upd"
-          onclick={install}
-          aria-label={`client v${$updateState.version} ready - install it`}
-          >v{$updateState.version} ready - install it</button
-        >
       {:else if $updateState.stage === 'failed'}
         <button
           class="upd"

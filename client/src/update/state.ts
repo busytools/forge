@@ -8,7 +8,7 @@ import { latestPublished } from './web';
 
 /**
  * What the client's own update is doing, as the home header draws it: one
- * check at launch, the install a reader asks for, and the restart that
+ * check at launch, the tap a reader makes on the offer, and the stage that
  * finishes it.
  *
  * `checking` is where it starts: the launch check is a network fetch on the
@@ -31,7 +31,6 @@ type UpdateState =
   | { stage: 'available'; version: string }
   | { stage: 'installing'; version: string }
   | { stage: 'restart'; version: string }
-  | { stage: 'install'; version: string }
   | { stage: 'failed'; version: string; detail: string }
   | { stage: 'check-failed'; detail: string }
   | { stage: 'web'; latest: string | null };
@@ -62,17 +61,22 @@ export async function watchUpdate(): Promise<void> {
   });
 }
 
-/** Install the found update, landing on the stage the shell says finishes it. */
+/**
+ * Act on the found update, landing on the stage the shell says finishes it.
+ * The phone's stage is the release page opening, which leaves the offer
+ * itself unmoved: the line goes back to where it was and a second tap
+ * reopens the page.
+ */
 export async function install(): Promise<void> {
   const held = get(updateState);
-  if (held.stage !== 'available' && held.stage !== 'failed' && held.stage !== 'install') {
+  if (held.stage !== 'available' && held.stage !== 'failed') {
     return;
   }
   const { version } = held;
   updateState.set({ stage: 'installing', version });
   try {
     const stage = await installUpdate();
-    updateState.set({ stage, version });
+    updateState.set(stage === 'browser' ? { stage: 'available', version } : { stage, version });
   } catch (err) {
     updateState.set({
       stage: 'failed',

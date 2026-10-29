@@ -5,9 +5,6 @@
          so a missing one denies the getUserMedia prompt outright. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-    <!-- The app hands a downloaded APK to the system installer (UpdatePlugin);
-         without this the install intent is refused. -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- An ask raised on a seat the person is not looking at is a notification;
          API 33+ needs this declared as well as granted at runtime. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -33,15 +30,5 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <provider
-          android:name="androidx.core.content.FileProvider"
-          android:authorities="${applicationId}.fileprovider"
-          android:exported="false"
-          android:grantUriPermissions="true">
-          <meta-data
-            android:name="android.support.FILE_PROVIDER_PATHS"
-            android:resource="@xml/file_paths" />
-        </provider>
     </application>
 </manifest>

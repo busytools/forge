@@ -485,12 +485,6 @@ describe("the client's own update", () => {
     expect(draw()).toContain('restart to finish');
   });
 
-  it('offers the installer once the download is checked on the phone', () => {
-    updateState.set({ stage: 'install', version: '9.9.9' });
-
-    expect(draw()).toContain('ready - install it');
-  });
-
   it('draws a check that could not run as a labelled line, with the reason', () => {
     updateState.set({
       stage: 'check-failed',
