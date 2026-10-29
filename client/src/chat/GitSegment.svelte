@@ -43,6 +43,8 @@
   });
 
   const strip = $derived(git.strip());
+  /** A repository event the strip says for a moment, then gives back to the tree. */
+  const note = $derived(git.noteNow());
 
   /**
    * The commit whose own files the reveal is showing. Hover and focus set
@@ -176,6 +178,7 @@
     >
       <Icon name="git" />
       <span class="lab">{strip.label}</span>
+      {#if note !== null}<span class="note" title={note.line}>{note.line}</span>{/if}
     </button>
 
     {#if open}

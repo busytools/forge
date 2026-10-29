@@ -1951,6 +1951,12 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    strip's nowrap instead of running under the segment beside it. */
 .sg-seg .sg-tog .lab { flex: 0 1 auto; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
+/* The repository event the strip carries for a moment, beside the branch it
+   moved: the label's own box and ellipsis, dimmer, so the tree is the row's
+   subject again once the event clears. */
+.sg-seg .sg-tog .note { flex: 0 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; color: var(--dim);
+  font-size: var(--fs-label); }
 /* The panel's rows FILL it: no padding of its own, and the hairline drawn as
    an inset outline rather than a border, so every pixel a pointer can cross
    belongs to a row and carries that row's leave. A padded panel leaves strips

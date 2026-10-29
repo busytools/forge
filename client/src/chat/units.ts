@@ -2657,46 +2657,30 @@ export function fold(
         });
         continue;
       }
-      // **The CLI's own report that a command moved the repository.** The
-      // line names the kind and at most the branch, and the open body lists
-      // those same fields; the tree it changed is what the tree row above the
-      // composer draws, and this row is the event that made that row re-read.
-      if (frame.subtype === 'vcs_state_changed') {
-        const kind = str(frame, 'kind');
-        const branch = str(frame, 'branch');
-        const said =
-          kind === 'commit'
-            ? 'committed'
-            : kind === 'push'
-              ? 'pushed'
-              : kind === 'merge'
-                ? 'merged'
-                : kind === 'rebase'
-                  ? 'rebased'
-                  : // The CLI calls `kind` an open set and asks a reader to
-                    // treat an unrecognized one as "something changed", so the
-                    // value itself is what the row shows.
-                    `repository changed${kind === null ? '' : ` (${kind})`}`;
-        push({
-          kind: 'notice',
-          key: keyOf(at, frame, 'repository'),
-          notice: provisional(
-            'vcs_state_changed',
-            'info',
-            branch === null ? said : kind === 'push' ? `${said} ${branch}` : `${said} on ${branch}`,
-            frame,
-            facts(fact('kind', kind), fact('branch', branch)),
-          ),
-        });
-        continue;
-      }
+      // **The CLI's own report that a command moved the repository belongs to
+      // the tree, not the conversation.** The strip above the composer states
+      // it for a moment and the tree row re-reads on the frame; a chat row
+      // would be a second place for the same fact. The frame keeps its role
+      // as the re-read trigger (the server's `repo_nudge`), and the strip is
+      // where a reader meets it.
+      if (frame.subtype === 'vcs_state_changed') continue;
       // **A change from this session went out for review, or linked the
-      // session to one.** The row names what the session did, with the URL a
-      // reader opens as its quiet tail, and the open body lists the rest of
-      // the frame.
+      // session to one.** The four transitions a reader would otherwise miss
+      // - the change appearing, landing, closing and reopening - keep a row;
+      // every other action is state of the change itself, and the strip's PR
+      // row carries it after the core's own lookup. The row names what the
+      // session did, with the URL a reader opens as its quiet tail.
       if (frame.subtype === 'code_change_published') {
-        const provider = str(frame, 'provider');
         const action = str(frame, 'action');
+        if (
+          action !== 'created' &&
+          action !== 'merged' &&
+          action !== 'closed' &&
+          action !== 'reopened'
+        ) {
+          continue;
+        }
+        const provider = str(frame, 'provider');
         const repo = str(frame, 'repo');
         const identifier = str(frame, 'identifier');
         const branch = str(frame, 'branch');
@@ -2714,9 +2698,9 @@ export function fold(
             ...provisional(
               'code_change_published',
               'info',
-              `${noun}${identifier === null ? '' : ` #${identifier}`}${
-                action === null ? '' : ` ${action}`
-              }${repo === null ? '' : ` in ${repo}`}`,
+              `${noun}${identifier === null ? '' : ` #${identifier}`} ${action}${
+                repo === null ? '' : ` in ${repo}`
+              }`,
               frame,
               facts(
                 fact('action', action),

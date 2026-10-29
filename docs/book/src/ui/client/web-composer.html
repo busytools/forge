@@ -105,6 +105,9 @@
     row-gap: 2px; }
   .strip .seg { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
   .strip .seg .cnt { color: var(--dim); }
+  /* The repository event the git segment says for a moment, beside the
+     branch it moved. */
+  .strip .seg .ev { color: var(--dim); font-size: 11px; }
   .strip .dot { width: 7px; height: 7px; flex: none; border-radius: 50%;
     background: var(--accent); }
   .strip .dot.off { background: var(--dim); }
@@ -438,7 +441,7 @@ distinction.</p>
             <span class="fill">
               <span class="seg"><svg class="ic"><use href="#i-web"/></svg><span class="dot ok"></span> browser <span class="cnt">1</span></span>
               <span class="seg"><span class="dot"></span> agents <span class="cnt">2</span></span>
-              <span class="seg"><span class="dot"></span> git <span style="color:var(--ok)">+312</span> <span style="color:var(--bad)">&minus;48</span></span>
+              <span class="seg"><span class="dot"></span> git <span style="color:var(--ok)">+312</span> <span style="color:var(--bad)">&minus;48</span> <span class="ev">committed on main</span></span>
               <span class="seg"><span class="dot off"></span> tasks <span class="cnt">4</span></span>
             </span>
           </div>

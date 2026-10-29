@@ -2625,26 +2625,14 @@ docs: The sprite a row draws, by the class it belongs to.</div>
             <span class="typed">"and keep the multiSelect case too"</span></div>
         </div>
 
-        <!-- The CLI's own report that a foreground command moved the
-             repository: one line naming the kind and branch, opening onto
-             the frame's own fields. The tree it changed is the tree row
-             above the composer, and this row is what made that row re-read
-             on the frame. -->
-        <details class="notice info">
-          <summary><span class="mark">vcs_state_changed</span><span class="sev">Info</span>committed on e2e<svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">kind</span><span class="v">commit</span></div>
-            <div class="nfact"><span class="k">branch</span><span class="v">e2e</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
-          </div>
-        </details>
-        <!-- The other repository event: this session published a change for
-             review, or linked itself to one. The action, repository and
-             change number are the line, the URL a reader opens rides that
-             line as its quiet tail, and the open body carries the rest of
-             the frame. Drawn open, which is the face this row exists for. -->
+        <!-- A published change's four transitions - created, merged, closed,
+             reopened - keep a chat row. The action, repository and change
+             number are the line, the URL a reader opens rides that line as
+             its quiet tail, and the open body carries the rest of the frame.
+             Every other action is the strip's PR row, not a conversation
+             row; a tree mutation is the strip's transient line and draws
+             nothing here. Drawn open, which is the face this row exists
+             for. -->
         <details class="notice info" open>
           <summary><span class="mark">code_change_published</span><span class="sev">Info</span>PR #2688 created in busytools/forge<span class="sub2">https://github.com/busytools/forge/pull/2688</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
           <div class="nbody">

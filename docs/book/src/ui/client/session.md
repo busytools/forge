@@ -179,22 +179,20 @@ read as one system.
   frame no longer draws a second copy of the same words. A project
   development-intent frame draws one quiet line naming the platform the
   CLI's scan found, with the evidence in its open body.
-- **The CLI's own repository events draw one line each, and open onto their
-  own fields.** A `vcs_state_changed` frame says a foreground command
-  committed, pushed, merged or rebased: the row names the kind and, where
-  the CLI attributed it, the branch, and it is the event that makes the tree
-  row re-read on the frame rather than at its next staleness window. A
-  `code_change_published` frame says this session put a change up for review
-  or linked itself to one: the row names the action, the repository and the
-  change number, with the URL a reader opens as the quiet tail of the header,
-  and it is what makes the tree row look the PR up again. Opened, each
-  lists the fields the frame carried -
-  the kind and branch, the action, provider, repository, change and URL - so
-  a fact the line does not spell is still reachable, and a kind or action
-  this build has no word for is shown as the wire's own value rather than
-  dropped. **Both are events from the live window**: the CLI writes neither
-  to the transcript, so a conversation reopened from it shows the command
-  and its output under the call, and the tree row, but not the event line.
+- **The CLI's own repository events belong to the working-tree strip, not
+  the conversation.** A `vcs_state_changed` frame is the tree's own news: the
+  strip above the composer says what moved for a moment - the kind and, where
+  the CLI attributed it, the branch - and the tree row re-reads on the frame
+  rather than at its next staleness window, so no chat row is drawn. A
+  `code_change_published` frame keeps a chat row only for the four
+  transitions a reader would otherwise miss - `created`, `merged`, `closed`
+  and `reopened` - naming the action, the repository and the change number,
+  with the URL a reader opens as the quiet tail; every other action is the
+  change's own state, and the strip's PR row carries it after the core's own
+  lookup. A chat row's open lists the frame's own fields, so a fact the line
+  does not spell is still reachable. **Both are events from the live
+  window**: the CLI writes neither to the transcript, so a conversation
+  reopened from it shows the tree and the PR row, but not the transient line.
 
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it

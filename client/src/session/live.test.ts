@@ -358,6 +358,7 @@ afterEach(async () => {
   await server?.close();
   server = null;
   document.body.innerHTML = '';
+  git.clear();
   // And a case that hid the page must not leave it hidden for the next one.
   delete (document as { hidden?: boolean }).hidden;
 });
@@ -2046,6 +2047,29 @@ describe('the record a page holds over an update stream', () => {
     expect(page.read().wire, 'the update never reached the record').not.toBe(before);
     expect(page.read().wire?.conversation.turns, 'the frame is not in the record').toHaveLength(1);
     expect(page.reads(), 'the page asked for a read on an update').toBe(asked);
+    page.stop();
+  });
+
+  it('puts a repository mutation on the strip, not in the conversation', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.land(
+      updateOf({
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'system',
+            subtype: 'vcs_state_changed',
+            kind: 'commit',
+            branch: 'main',
+            uuid: 'v1',
+          },
+        },
+      }),
+    );
+
+    expect(git.noteNow()?.line, 'the strip carries the event').toBe('committed on main');
     page.stop();
   });
 

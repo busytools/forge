@@ -23,6 +23,14 @@ every list it opens is a live read.
 | Autocomplete | one popover over the box: the five lists below | the CLI's advertised commands, this seat's file index, the subagent catalogue, the bundle's emoji set, the sessions this seat can resume |
 | Dictation | the take card and the panel: the axes, the models each role runs, the input device | the greeting's dictate axes; `dictate` subject |
 
+**A repository mutation is the git segment's news.** A `vcs_state_changed`
+frame from a foreground command puts its kind and, where the CLI attributed
+it, the branch on the segment for a moment - "committed on main", "pushed
+main", "rebased on topic" - and the tree row re-reads on the same frame; the
+conversation keeps no row for it. The segment's PR row is the same surface's
+state: a published change's number, draft flag and closes list move there
+after the core's own lookup.
+
 **The field's row is the whole composer when there is nothing else to
 say.** Idle, it is the placeholder and the mic; typing grows the draft and
 the send appears; while the turn runs the figures lead the strip lane and
