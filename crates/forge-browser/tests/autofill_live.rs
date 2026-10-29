@@ -26,7 +26,7 @@ use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use forge_browser::window::Cdp;
+use forge_browser::window::{Backlog, Cdp};
 use serde_json::{Value, json};
 
 /// How long CEF is given to boot, paint and answer.
@@ -197,7 +197,11 @@ async fn a_submitted_card_form_does_not_kill_the_host() {
 
     let mut host = support::Host::start(&exe, &profile, port, &ring, "1440x900", &[], &log);
     let id = support::wait_for_page(port, &log, BOUND);
-    let (mut cdp, _events) = Cdp::connect_watch(port, &format!("/devtools/page/{id}"))
+    let (mut cdp, _events) = Cdp::connect_watch(
+        port,
+        &format!("/devtools/page/{id}"),
+        Backlog::EveryEvent,
+    )
         .await
         .expect("the page's devtools endpoint accepts");
     cdp.call("Page.navigate", json!({ "url": page.url }), None).await.expect("the page navigates");

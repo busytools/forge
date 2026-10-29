@@ -20,18 +20,30 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type Replies = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
-/// How many unsolicited events the input connection may fall behind by.
+/// How many unsolicited events a connection may fall behind by, where its
+/// backlog is bounded.
 ///
 /// **A page reports whether anyone listens.** Events are drained only when a
 /// call touches the page, so a page that keeps reporting between calls would
 /// grow an unbounded queue for as long as nothing looks. Past this bound the
 /// reader drops the newest event and keeps reading the socket, so replies
 /// still arrive; a connection that is being drained never reaches it.
-///
-/// **Only the input connection takes this bound.** The navigation watch and
-/// the passkey veto read every event, and a dropped `Target.attachedToTarget`
-/// leaves that target paused for the host's life.
-pub(crate) const EVENT_BACKLOG: usize = 256;
+pub const EVENT_BACKLOG: usize = 256;
+
+/// What a connection's watcher may fall behind by, and what it may not lose.
+pub enum Backlog {
+    /// Every event, with no ceiling. The navigation watch's shape: its reader
+    /// drains between events without waiting on a round trip.
+    EveryEvent,
+    /// The newest event past `ceiling` is dropped. The input connection's
+    /// shape: it drains whatever arrived on each call and ignores it.
+    DropNewest(usize),
+    /// A ceiling on the events outside `methods`, while every event naming one
+    /// of them is queued whatever the depth. The passkey veto's shape: its
+    /// loop awaits a CDP round trip per target report, and a dropped target
+    /// report leaves that target paused for the host's life.
+    KeepNamed { methods: &'static [&'static str], ceiling: usize },
+}
 
 /// What became of one unsolicited event handed to the page's watcher.
 #[derive(Debug, PartialEq, Eq)]
@@ -45,15 +57,15 @@ enum Forwarded {
 }
 
 /// The events one connection delivers, in the shape its reader needs.
-///
-/// **Two shapes because a dropped event is only safe for the input
-/// connection.** It drains and drops on every call, so a backlog ceiling is
-/// growth insurance there; the navigation watch and the passkey veto read
-/// every event, and the veto's `Target.attachedToTarget` is what releases a
-/// paused target.
 pub enum Events {
     Bounded(mpsc::Receiver<Value>),
     Unbounded(mpsc::UnboundedReceiver<Value>),
+    /// An unbounded queue whose non-`methods` events stop being queued past
+    /// `ceiling`; `queued` is what the reader has not taken yet.
+    Keeping {
+        events: mpsc::UnboundedReceiver<Value>,
+        queued: Arc<std::sync::atomic::AtomicUsize>,
+    },
 }
 
 impl Events {
@@ -61,6 +73,13 @@ impl Events {
         match self {
             Self::Bounded(events) => events.recv().await,
             Self::Unbounded(events) => events.recv().await,
+            Self::Keeping { events, queued } => {
+                let event = events.recv().await;
+                if event.is_some() {
+                    queued.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                event
+            }
         }
     }
 
@@ -69,6 +88,11 @@ impl Events {
         match self {
             Self::Bounded(events) => while events.try_recv().is_ok() {},
             Self::Unbounded(events) => while events.try_recv().is_ok() {},
+            Self::Keeping { events, queued } => {
+                while events.try_recv().is_ok() {
+                    queued.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
         }
     }
 }
@@ -76,6 +100,14 @@ impl Events {
 enum EventSink {
     Bounded(mpsc::Sender<Value>),
     Unbounded(mpsc::UnboundedSender<Value>),
+    /// An unbounded queue whose non-`methods` events are dropped past
+    /// `ceiling`; the named ones are always queued.
+    Keeping {
+        events: mpsc::UnboundedSender<Value>,
+        methods: &'static [&'static str],
+        ceiling: usize,
+        queued: Arc<std::sync::atomic::AtomicUsize>,
+    },
 }
 
 fn forward_event(tx: &EventSink, message: Value) -> Forwarded {
@@ -89,6 +121,21 @@ fn forward_event(tx: &EventSink, message: Value) -> Forwarded {
         // has gone.
         EventSink::Unbounded(tx) => {
             tx.send(message).map_or(Forwarded::Closed, |()| Forwarded::Sent)
+        }
+        EventSink::Keeping { events, methods, ceiling, queued } => {
+            let method = message.get("method").and_then(Value::as_str).unwrap_or_default();
+            if !methods.contains(&method)
+                && queued.load(std::sync::atomic::Ordering::Relaxed) >= *ceiling
+            {
+                return Forwarded::Dropped;
+            }
+            match events.send(message) {
+                Ok(()) => {
+                    queued.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    Forwarded::Sent
+                }
+                Err(_) => Forwarded::Closed,
+            }
         }
     }
 }
@@ -177,29 +224,32 @@ impl Cdp {
     }
 
     /// Connect to the endpoint a host's page target names, answering the
-    /// connection and every event the endpoint reports.
-    ///
-    /// **Unbounded on purpose**: neither caller of this shape can afford a
-    /// dropped event. See [`Self::connect_watch_bounded`] for the one that
-    /// can.
-    pub async fn connect_watch(port: u16, path: &str) -> Result<(Self, Events), String> {
-        let (events_tx, events_rx) = mpsc::unbounded_channel();
-        Self::connect(port, path, EventSink::Unbounded(events_tx), Events::Unbounded(events_rx))
-            .await
-    }
-
-    /// Connect the same way, with a ceiling on how far the reader may fall
-    /// behind before the newest event is dropped.
-    ///
-    /// The input connection's shape: it drains whatever arrived on each call
-    /// and ignores it, so a lost event costs nothing.
-    pub async fn connect_watch_bounded(
+    /// connection and the endpoint's events, with [`Backlog`] deciding what
+    /// its reader may fall behind by and what it must not lose.
+    pub async fn connect_watch(
         port: u16,
         path: &str,
-        backlog: usize,
+        backlog: Backlog,
     ) -> Result<(Self, Events), String> {
-        let (events_tx, events_rx) = mpsc::channel(backlog);
-        Self::connect(port, path, EventSink::Bounded(events_tx), Events::Bounded(events_rx)).await
+        let (events_tx, events) = match backlog {
+            Backlog::EveryEvent => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                (EventSink::Unbounded(tx), Events::Unbounded(rx))
+            }
+            Backlog::DropNewest(ceiling) => {
+                let (tx, rx) = mpsc::channel(ceiling);
+                (EventSink::Bounded(tx), Events::Bounded(rx))
+            }
+            Backlog::KeepNamed { methods, ceiling } => {
+                let (tx, rx) = mpsc::unbounded_channel();
+                let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                (
+                    EventSink::Keeping { events: tx, methods, ceiling, queued: Arc::clone(&queued) },
+                    Events::Keeping { events: rx, queued },
+                )
+            }
+        };
+        Self::connect(port, path, events_tx, events).await
     }
 
     async fn connect(
@@ -330,9 +380,9 @@ mod tests {
         );
     }
 
-    /// **The unbounded sink never drops**, which is the property the veto's
-    /// `Target.attachedToTarget` depends on: one dropped release leaves that
-    /// target paused for the host's life.
+    /// **The unbounded sink never drops**: every event past the bounded
+    /// ceiling is still queued. This pins the sink's own shape; which caller
+    /// takes it is the `Backlog` each one names at its `connect_watch` call.
     #[test]
     fn an_unbounded_watcher_keeps_every_event() {
         let (events, mut watcher) = mpsc::unbounded_channel();
@@ -346,5 +396,50 @@ mod tests {
             kept += 1;
         }
         assert_eq!(kept, EVENT_BACKLOG + 1, "every event past the bounded ceiling is kept");
+    }
+
+    /// **A keeping watcher never loses the events it acts on.** The veto's
+    /// queue has a ceiling for the noise and none for the two methods it
+    /// acts on: one dropped `Target.attachedToTarget` leaves that target
+    /// paused for the host's life, and one dropped context report leaves an
+    /// existing world unpatched.
+    #[test]
+    fn a_keeping_watcher_drops_the_noise_and_keeps_what_it_acts_on() {
+        let (events, mut watcher) = mpsc::unbounded_channel();
+        let events = EventSink::Keeping {
+            events,
+            methods: &["Target.attachedToTarget"],
+            ceiling: 2,
+            queued: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let attach = |n: u8| json!({ "method": "Target.attachedToTarget", "params": { "n": n } });
+        let noise = |n: u8| json!({ "method": "Network.dataReceived", "params": { "n": n } });
+
+        assert_eq!(forward_event(&events, attach(1)), Forwarded::Sent);
+        assert_eq!(forward_event(&events, noise(1)), Forwarded::Sent);
+        assert_eq!(
+            forward_event(&events, noise(2)),
+            Forwarded::Dropped,
+            "the queue is at its ceiling for the events it does not act on",
+        );
+        assert_eq!(
+            forward_event(&events, attach(2)),
+            Forwarded::Sent,
+            "and a target report is never the event dropped",
+        );
+
+        let mut methods = Vec::new();
+        while let Ok(event) = watcher.try_recv() {
+            methods.push(event["method"].as_str().unwrap_or_default().to_owned());
+        }
+        assert_eq!(
+            methods,
+            vec![
+                "Target.attachedToTarget".to_owned(),
+                "Network.dataReceived".to_owned(),
+                "Target.attachedToTarget".to_owned(),
+            ],
+            "both target reports arrive, in the order the endpoint sent them",
+        );
     }
 }

@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use forge_browser::control::{HostEvent, parse};
 use forge_browser::input::{HostInput, host_line};
 use forge_browser::osr::Ring;
-use forge_browser::window::Cdp;
+use forge_browser::window::{Backlog, Cdp};
 use serde_json::json;
 
 /// How long CEF is given to boot, paint and answer a take.
@@ -62,7 +62,9 @@ async fn a_recording_writes_the_viewport_to_an_mp4() {
         support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
     let id = support::wait_for_page(port, &log, BOUND);
     let (mut cdp, _events) =
-        Cdp::connect_watch(port, &format!("/devtools/page/{id}")).await.expect("devtools");
+        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent)
+            .await
+            .expect("devtools");
     cdp.call(
         "Runtime.evaluate",
         json!({ "expression": "document.body.style.margin='0'; \

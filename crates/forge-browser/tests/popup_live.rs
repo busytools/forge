@@ -27,7 +27,7 @@ use forge_browser::control::{HostEvent, parse};
 use forge_browser::frame::Frame;
 use forge_browser::input::{HostInput, host_line};
 use forge_browser::osr::Ring;
-use forge_browser::window::Cdp;
+use forge_browser::window::{Backlog, Cdp};
 use forge_primitives::browser::{InputModifiers, MouseAction};
 use serde_json::{Value, json};
 
@@ -274,7 +274,7 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
     let left = wait_for_pages(port, 1, BOUND).await;
     assert_eq!(left.len(), 1, "the popup is the page left standing: {left:?}");
     let (mut popup_cdp, _popup_events) =
-        Cdp::connect_watch(port, &format!("/devtools/page/{}", left[0]))
+        Cdp::connect_watch(port, &format!("/devtools/page/{}", left[0]), Backlog::EveryEvent)
             .await
             .expect("the popup still answers its devtools endpoint");
     assert_eq!(
@@ -531,7 +531,12 @@ fn wait_for_ring(name: &str, host: &support::Host) -> Ring {
 /// A DevTools connection bounded like every other wait here, so a target that
 /// accepts a socket and never upgrades names the failure instead of hanging.
 async fn connect(port: u16, path: &str) -> Option<(Cdp, forge_browser::window::Events)> {
-    match tokio::time::timeout(Duration::from_secs(5), Cdp::connect_watch(port, path)).await {
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        Cdp::connect_watch(port, path, Backlog::EveryEvent),
+    )
+    .await
+    {
         Ok(Ok(pair)) => Some(pair),
         _ => None,
     }

@@ -33,7 +33,7 @@ use crate::input;
 use crate::profiles::Store;
 use crate::spawn::{self, ActiveHost};
 use crate::tabs::TabRegistry;
-use crate::window::{Cdp, EVENT_BACKLOG, Events};
+use crate::window::{Backlog, Cdp, EVENT_BACKLOG, Events};
 use crate::{channel, engine, osr, veto};
 
 /// What one call knows about the browser it looked up, and the page it drives.
@@ -5067,7 +5067,9 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
             let Some(path) = url.strip_prefix(&spawn::ws_prefix(port)).map(str::to_owned) else {
                 return;
             };
-            let Ok((mut cdp, mut events)) = Cdp::connect_watch(port, &path).await else {
+            let Ok((mut cdp, mut events)) =
+                Cdp::connect_watch(port, &path, Backlog::EveryEvent).await
+            else {
                 tokio::time::sleep(NAV_RETRY).await;
                 continue;
             };
@@ -5144,7 +5146,8 @@ async fn page_cdp<'a>(
         let Some(path) = path.strip_prefix(&spawn::ws_prefix(port)).map(str::to_owned) else {
             return Err("the page's websocket is not on the host's port".to_owned());
         };
-        let (cdp, events) = Cdp::connect_watch_bounded(port, &path, EVENT_BACKLOG).await?;
+        let (cdp, events) =
+            Cdp::connect_watch(port, &path, Backlog::DropNewest(EVENT_BACKLOG)).await?;
         state.cdp.insert(target.to_owned(), cdp);
         state.cdp_events.insert(target.to_owned(), events);
     }
