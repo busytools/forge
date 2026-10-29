@@ -64,9 +64,30 @@ export function changeLine(
       : provider?.startsWith('github') === true || provider === 'bitbucket'
         ? 'PR'
         : 'change';
-  const named = identifier === null ? noun : `${noun} #${identifier}`;
-  const did = action === null ? 'changed' : action;
-  return repo === null ? `${named} ${did}` : `${named} ${did} in ${repo}`;
+  const named = identifier === null || identifier === '' ? noun : `${noun} #${identifier}`;
+  const did = changeVerb(action);
+  return repo === null || repo === '' ? `${named} ${did}` : `${named} ${did} in ${repo}`;
+}
+
+/** The CLI's action in the strip's own words; an unknown one as the wire's. */
+function changeVerb(action: string | null): string {
+  switch (action) {
+    case null:
+    case '':
+      return 'changed';
+    case 'checked-out':
+      return 'checked out';
+    case 'auto-merge-enabled':
+      return 'auto-merge on';
+    case 'auto-merge-disabled':
+      return 'auto-merge off';
+    case 'ready':
+      return 'marked ready';
+    case 'draft':
+      return 'marked draft';
+    default:
+      return action;
+  }
 }
 
 class Git {
