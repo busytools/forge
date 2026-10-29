@@ -1934,22 +1934,21 @@ impl SessionTask {
                 let note = supplied
                     .filter(|text| handoff::parses_as_note(text))
                     .or_else(|| captured.filter(|text| handoff::parses_as_note(text)));
-                match note {
-                    Some(text) => handoff::parse_judgment(&text),
-                    None => {
-                        // **The successor is told the note is missing; this is
-                        // the trail that says so.** A note whose headings this
-                        // build cannot read reads exactly like one that never
-                        // arrived, and only a line here tells the two apart.
-                        tracing::warn!(
-                            target: "forge_workspace::session_task",
-                            event_name = "handoff_note_rejected",
-                            slot = %self.key.display(),
-                            "the handoff note carries none of the five headings; the successor \
-                             is told the note did not arrive",
-                        );
-                        handoff::missing_note()
-                    }
+                if let Some(text) = note {
+                    handoff::parse_judgment(&text)
+                } else {
+                    // **The successor is told the note is missing; this is the
+                    // trail that says so.** A note whose headings this build
+                    // cannot read reads exactly like one that never arrived,
+                    // and only a line here tells the two apart.
+                    tracing::warn!(
+                        target: "forge_workspace::session_task",
+                        event_name = "handoff_note_rejected",
+                        slot = %self.key.display(),
+                        "the handoff note carries none of the five headings; the successor is \
+                         told the note did not arrive",
+                    );
+                    handoff::missing_note()
                 }
             };
             self.swap(reason, judgment);
