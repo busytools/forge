@@ -833,6 +833,44 @@ describe('the open a conversation begins', () => {
   });
 
   /**
+   * **The column's geometry rides the rows' own mark.** A drawn mark
+   * reads the record, not the screen, so a frame whose rows never reached the
+   * DOM still marks as drawn - the geometry is what tells the two apart. A
+   * placeholder draws no rows, so it carries none.
+   */
+  it('writes the column geometry with the rows mark, and none on a placeholder', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'Busytools/forge/lead');
+    h.probe.noteConversationOpened('Busytools/forge/lead');
+    h.frame(16);
+    h.probe.noteDrawn('waking');
+
+    const measure = vi.fn(() => ({
+      scroll_top: 17_402.5,
+      scroll_height: 31_204,
+      client_height: 812,
+      rows: 9,
+      rows_visible: 0,
+      pin_refused: true,
+    }));
+    h.probe.noteDrawn('conversation', measure);
+    // **A redraw of a settled open writes nothing, so it pays no measure.**
+    // The column marks a state on every update it holds, and measuring it
+    // forces layout - the thunk is what keeps that cost on the one write.
+    h.probe.noteDrawn('conversation', measure);
+
+    const drawn = h.records.flat().filter((record) => record.kind === 'drawn');
+    expect(drawn.map((record) => record.state)).toEqual(['waking', 'conversation']);
+    expect(drawn[0], 'a placeholder draws no rows to measure').not.toHaveProperty('rows');
+    expect(drawn[1]?.rows, 'the turns the list rendered').toBe(9);
+    expect(drawn[1]?.rows_visible, 'and the ones the browser gave a box').toBe(0);
+    expect(drawn[1]?.scroll_top, 'and where the list was scrolled').toBe(17_402.5);
+    expect(drawn[1]?.client_height, 'and the room it had').toBe(812);
+    expect(drawn[1]?.pin_refused, 'and a pin that refused itself').toBe(true);
+    expect(measure, 'the measure ran once, on the mark that was written').toHaveBeenCalledTimes(1);
+  });
+
+  /**
    * **A placeholder does not end the open** (#2374): a waking line is the
    * column saying the seat is coming up, not its content arriving. The open
    * stays armed, no quiet may fire while the content is still on its way,
@@ -1105,19 +1143,28 @@ describe('the switch gap marks (#2513)', () => {
     expect(windows[1]?.subscribes).toBe(1);
   });
 
-  it('names the page the connection window opened on', () => {
+  /**
+   * **A window names the page its counts happened on.** It used to be stamped
+   * when the window OPENED, so a record named the seat the reader had already
+   * left: a 3.17 MB answer was `forge/lead`'s record and a home read, written
+   * under the seat the reader had just left.
+   */
+  it('names the page the window counted on, not the one it opened on', () => {
     const h = harness();
     h.probe.setSurface('session', 'forge/lead');
     // Boot's own window rolls quiet, so the counted one opens on forge/lead.
     h.frame(1_000);
-    h.probe.noteSubscribe('forge/lead', false);
+    // The reader switches before the window closes; both counts are the new
+    // seat's.
     h.probe.setSurface('session', 'forge/busymail');
     h.probe.noteSubscribe('forge/busymail', false);
+    h.probe.noteSnapshot('forge/busymail', 3_094_048, 4);
     h.frame(1_000);
 
     const connection = h.records.flat().find((record) => record.kind === 'connection');
-    expect(connection?.session).toBe('forge/lead');
-    expect(connection?.subscribes).toBe(2);
+    expect(connection?.session, 'the seat whose counts the window carries').toBe('forge/busymail');
+    expect(connection?.subscribes).toBe(1);
+    expect(connection?.snapshot_chars).toBe(3_094_048);
   });
 
   it('counts subscribes and snapshot chars per second of connection', () => {

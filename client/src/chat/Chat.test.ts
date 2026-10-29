@@ -18,6 +18,7 @@ import { subagents } from './subagents.svelte';
 import { PRE_RESUME, RESUME, RESUME_END, RESUME_KEY } from './testing/resume-2503';
 import SeatSwitch from './testing/seat-switch.svelte';
 import { installResizeObserver, resized } from './testing/viewport';
+import { clear, measured as listMeasured, setMeasured } from './testing/records';
 
 installResizeObserver();
 
@@ -40,11 +41,43 @@ vi.mock('./conversation', async (importOriginal) => {
 // opening the mark where a conversation actually opens and calling the
 // drawn mark where its terminal state actually draws, which is what these
 // watch.
-const drawnMark = vi.hoisted(() => vi.fn());
+const drawnMark = vi.hoisted(() =>
+  vi.fn<(state: string, geometry?: () => ColumnMeasure | undefined) => void>(),
+);
 const openedMark = vi.hoisted(() => vi.fn());
 vi.mock('../perf', () => ({ noteDrawn: drawnMark, noteConversationOpened: openedMark }));
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
+
+/** The column's own measure, as the drawn mark carries it. */
+interface ColumnMeasure {
+  scroll_top: number;
+  scroll_height: number;
+  client_height: number;
+  rows: number;
+  rows_visible: number;
+  pin_refused: boolean;
+}
+
+/** jsdom lays nothing out: the turns are in the DOM and none of them has a box. */
+const NOTHING_LAID_OUT: ColumnMeasure = {
+  scroll_top: 0,
+  scroll_height: 0,
+  client_height: 0,
+  rows: 1,
+  rows_visible: 0,
+  pin_refused: false,
+};
+
+/**
+ * The column's own measure off the last drawn mark, read by calling the thunk
+ * the column hands over - the mark itself is written once per open, so the
+ * measure is deferred to that write.
+ */
+function columnMeasure(mark: typeof drawnMark): ColumnMeasure | undefined {
+  const last = mark.mock.calls.at(-1);
+  return last?.[1]?.();
+}
 
 /** The seat key the pinned-row store is read under, which is what the composer draws from. */
 const PIN = subjectKey({ session: LEAD });
@@ -196,6 +229,13 @@ afterEach(async () => {
   // next test as its own.
   pinnedRow.set(PIN, null);
   subagents.sync(null);
+  // The list's model is module state, so one test's measurement would be the
+  // next test's opening geometry unless it is put back.
+  clear();
+  setMeasured(0, 0);
+  // And the reader's own words are held per seat by the client, so a send one
+  // test posts would draw in the next test's column.
+  echoes.clear(PIN);
 });
 
 describe('the chat column as it draws', () => {
@@ -342,29 +382,49 @@ describe('the chat column as it draws', () => {
       'the lead said this',
     );
     // And the new seat's own state is what draws, not a blank page: the
-    // column is there, and it neither claims the seat is empty nor stands in
-    // for the wait the band under it carries.
+    // column is there, it says it is still reading, and it does not claim the
+    // seat is empty.
     expect(drawn(), 'the empty copy stood in for a page still on its way').not.toContain(
       'Nothing said yet',
+    );
+    expect(drawn(), 'the switched column drew no wait of its own').toContain(
+      'Reading the conversation',
     );
     expect(document.querySelector('.conv'), 'the column went with the switch').not.toBeNull();
   });
 
-  it('leaves the read wait to the band rather than claiming the seat is empty', () => {
+  it('says it is reading rather than claiming the seat is empty', () => {
     const server = stub();
     draw({}, server);
 
     // A page that has not answered yet is not an empty conversation: saying
     // "nothing said yet" here tells the reader the seat is new when the truth
-    // is that nothing has come back. **The composer's band carries the wait**
-    // - one hold for every narrative state - so the column draws nothing.
+    // is that nothing has come back. **The column says so itself** -
+    // it used to leave the wait to the composer's band, and a column with no
+    // line of its own read as a dead screen wherever the band's was absent.
     expect(drawn(), 'the column claimed a seat whose page is still out').not.toContain(
       'Nothing said yet',
     );
-    expect(drawn(), 'the read wait came back into the column').not.toContain(
+    expect(drawn(), 'the read wait has no line in the column').toContain(
       'Reading the conversation',
     );
     expect(document.querySelector('.conv'), 'the column went missing').not.toBeNull();
+  });
+
+  it('draws the words a reader sends while the column is still reading', () => {
+    const server = stub();
+    draw({}, server);
+    expect(drawn(), 'precondition: the column says it is reading').toContain(
+      'Reading the conversation',
+    );
+
+    // **The box stays live while the first page is out**, so a send happens
+    // here - and its row has to be drawn under the wait, or the words the
+    // reader just sent are nowhere at all until the page lands.
+    echoes.post(PIN, 'sent during the read', false, 'e-read');
+    flushSync();
+
+    expect(drawn(), 'the send vanished behind the read wait').toContain('sent during the read');
   });
 
   it('hands back the words the server turned the conversation down with', () => {
@@ -1677,7 +1737,13 @@ describe('the drawn mark', () => {
 
     server.answer([turn('t1')]);
     await painted();
-    expect(drawnMark, 'the rows a seat draws are the mark').toHaveBeenCalledWith('conversation');
+    expect(drawnMark, 'the rows a seat draws are the mark').toHaveBeenCalledWith(
+      'conversation',
+      expect.any(Function),
+    );
+    expect(columnMeasure(drawnMark), 'the rows mark carries the column measure').toEqual(
+      NOTHING_LAID_OUT,
+    );
 
     // The switch: the new seat's own conversation opens, and its own page is
     // what puts the drawn mark down for it.
@@ -1704,7 +1770,44 @@ describe('the drawn mark', () => {
     await painted();
     expect(drawnMark, "the switched-to seat's own drawing is the second mark").toHaveBeenCalledWith(
       'conversation',
+      expect.any(Function),
     );
+    expect(columnMeasure(drawnMark), "and it carries that seat's own measure").toEqual(
+      NOTHING_LAID_OUT,
+    );
+  });
+
+  /**
+   * **The measure reads the list it was handed, not only zeroes.** jsdom lays
+   * nothing out, so every field would pass at 0 / false: a measure that
+   * reported a constant zero would survive, and the geometry the PR body
+   * names as this occurrence's evidence would be the one field never given a
+   * positive case. The container's commitment and the row's drawn height are
+   * the test's to give, exactly as the pin's own tests give them.
+   */
+  it('reports the room it had, the rows with a box, and a pin that refused itself', async () => {
+    const server = stub();
+    drawnMark.mockClear();
+    // The container committed room past the newest row, and the row drew
+    // short of it: the refused pin the mark exists to name.
+    listMeasured(400, [{ top: 100, height: 100 }]);
+    setMeasured(1_000, 300);
+    draw({}, server);
+    server.answer([turn('t1')]);
+    await painted();
+
+    const row = document.querySelector('[data-t]');
+    if (row instanceof HTMLElement) {
+      Object.defineProperty(row, 'offsetHeight', { configurable: true, get: () => 40 });
+    }
+
+    expect(columnMeasure(drawnMark), 'the measure reads the list it was handed').toMatchObject({
+      scroll_height: 1_000,
+      client_height: 300,
+      rows: 1,
+      rows_visible: 1,
+      pin_refused: true,
+    });
   });
 
   it('marks a seat whose conversation is empty, once its own state has drawn', async () => {
@@ -1716,7 +1819,10 @@ describe('the drawn mark', () => {
 
     server.answer([]);
     await painted();
-    expect(drawnMark, 'the empty state is the column answering').toHaveBeenCalledWith('empty');
+    expect(drawnMark, 'the empty state is the column answering').toHaveBeenCalledWith(
+      'empty',
+      undefined,
+    );
   });
 
   it('marks a seat that is only waking, and says that is what drew', () => {
@@ -1727,7 +1833,7 @@ describe('the drawn mark', () => {
     expect(
       drawnMark,
       'a waking seat draws its own line, and the mark says so',
-    ).toHaveBeenCalledWith('waking');
+    ).toHaveBeenCalledWith('waking', undefined);
   });
 
   it('marks a refusal with no rows as refused, not as content', async () => {
@@ -1740,7 +1846,7 @@ describe('the drawn mark', () => {
     expect(
       drawnMark,
       'a refusal is the column answering, but it is no content',
-    ).toHaveBeenCalledWith('refused');
+    ).toHaveBeenCalledWith('refused', undefined);
     expect(
       drawnMark.mock.calls[0]?.[0],
       'the refusal is the FIRST mark: nothing drew before it',
@@ -1755,7 +1861,7 @@ describe('the drawn mark', () => {
     expect(
       drawnMark,
       'the not-running and waking lines share the state the mark carries',
-    ).toHaveBeenCalledWith('waking');
+    ).toHaveBeenCalledWith('waking', undefined);
   });
 
   it('marks waking before refused when a seat is both', async () => {

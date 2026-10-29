@@ -35,7 +35,6 @@ describe("the composer's props as the session page builds them", () => {
       // Read the way the router reads it, so the seam covers the whole prop
       // set rather than the four the record carries.
       dictation: dictationOffered(homeWire.dictate),
-      reading: false,
     };
 
     expect(
