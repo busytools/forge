@@ -782,7 +782,7 @@ impl Workspace {
                     .map(|refresh| refresh.state);
             }
             return Ok(self
-                .scan_work_at_with_base(slot, Path::new(&cwd), pr, None, measured, false)
+                .scan_work_at_with_base(slot, Path::new(&cwd), pr, None, measured, false, force_pr)
                 .await);
         }
         self.work_snapshot(slot).ok_or_else(|| format!("{} has no stored scan", slot.display()))
@@ -799,7 +799,7 @@ impl Workspace {
         cwd: &Path,
         pr: PrRefresh,
     ) -> WorkSnapshot {
-        self.scan_work_at_with_base(slot, cwd, pr, None, None, false).await
+        self.scan_work_at_with_base(slot, cwd, pr, None, None, false, false).await
     }
 
     /// A sessionless seat's fetching scan with **no background kick**: the
@@ -811,7 +811,7 @@ impl Workspace {
         slot: &SessionSlot,
         cwd: &Path,
     ) -> WorkSnapshot {
-        self.scan_work_at_with_base(slot, cwd, PrRefresh::Fetch, None, None, true).await
+        self.scan_work_at_with_base(slot, cwd, PrRefresh::Fetch, None, None, true, false).await
     }
 
     /// A local scan pinned to `base`, taken **without the seat's gate**: the
@@ -824,7 +824,8 @@ impl Workspace {
         base: Option<&str>,
         measured: Option<BaseState>,
     ) -> WorkSnapshot {
-        self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured, false).await
+        self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured, false, false)
+            .await
     }
 
     /// [`Self::scan_work_at`] pinned to one base revision: the branch-ahead
@@ -843,9 +844,27 @@ impl Workspace {
         base: Option<&str>,
         measured: Option<BaseState>,
         quiet: bool,
+        force_pr: bool,
     ) -> WorkSnapshot {
         let held = self.work_snapshot(slot);
-        let previous = held.as_ref().map(|held| &held.diff);
+        // **A forced read must not consult the cache at all.** Clearing the
+        // stored stamp is not enough on its own: a Fetch scan already in
+        // flight when the change was published can store a fresh stamp after
+        // the clear, and the forced pass would then serve the pre-publication
+        // answer. Dropping the stamp from the previous block it is handed is
+        // what makes the force mean what its name says.
+        let forced_previous;
+        let previous = match held.as_ref() {
+            Some(held) if force_pr => {
+                forced_previous = forge_primitives::git_diff::GitDiffSnapshot {
+                    pr_fetched_at: None,
+                    ..held.diff.clone()
+                };
+                Some(&forced_previous)
+            }
+            Some(held) => Some(&held.diff),
+            None => None,
+        };
         let env = self.project_env(slot.project());
         let diff = match (pr, base) {
             (_, Some(base)) => {
@@ -915,7 +934,7 @@ impl Workspace {
             None => None,
         };
         Ok(self
-            .scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured, false)
+            .scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured, false, false)
             .await)
     }
 
@@ -1253,6 +1272,8 @@ provider = "anthropic"
         /// The shim directory, as the project's `PATH`.
         path: String,
         marker: std::path::PathBuf,
+        /// The git dir's holder, when the fixture keeps it outside the tree.
+        _git_dir: Option<tempfile::TempDir>,
     }
 
     /// One open PR, as GitHub's `commits/<sha>/pulls` answers it.
@@ -1262,9 +1283,63 @@ provider = "anthropic"
         /// The fixture and the shim's directory, which the caller has to keep
         /// alive for as long as `gh` may run.
         fn new() -> (Self, tempfile::TempDir) {
+            Self::new_over(false)
+        }
+
+        /// The same fixture with its git directory outside the tree.
+        ///
+        /// **What makes "a commit is invisible to the tree watch" true by
+        /// construction.** The watch filters paths under `.git`, but how a
+        /// backend reports a write inside it is the backend's business, and
+        /// the Linux CI runner's marked the tree moved for a commit. With the
+        /// git dir outside the root there is nothing for any backend to
+        /// report, so a test of the frame's nudge cannot pass on the watch's
+        /// speed instead of the wake.
+        fn new_with_git_dir_outside_the_tree() -> (Self, tempfile::TempDir) {
+            Self::new_over(true)
+        }
+
+        fn new_over(git_dir_outside: bool) -> (Self, tempfile::TempDir) {
             use std::os::unix::fs::PermissionsExt;
 
-            let repo = a_repo();
+            let git_dir_holder = git_dir_outside.then(|| tempfile::tempdir().expect("a temp dir"));
+            let repo = if let Some(holder) = &git_dir_holder {
+                let tree = tempfile::tempdir().expect("a temp dir");
+                let out = Command::new("git")
+                    .env_remove("GIT_DIR")
+                    .env_remove("GIT_WORK_TREE")
+                    .env_remove("GIT_COMMON_DIR")
+                    .args([
+                        "init",
+                        "-q",
+                        "-b",
+                        "main",
+                        &format!("--separate-git-dir={}", holder.path().join("git").display()),
+                        tree.path().to_str().expect("a utf-8 path"),
+                    ])
+                    .output()
+                    .expect("run git init");
+                assert!(
+                    out.status.success(),
+                    "git init --separate-git-dir: {}",
+                    String::from_utf8_lossy(&out.stderr),
+                );
+                for args in [
+                    &["config", "user.email", "test@example.test"][..],
+                    &["config", "user.name", "test"],
+                    &["config", "commit.gpgsign", "false"],
+                    &["config", "maintenance.auto", "false"],
+                    &["config", "gc.auto", "0"],
+                ] {
+                    git(tree.path(), args);
+                }
+                std::fs::write(tree.path().join("kept.txt"), "one").expect("write");
+                git(tree.path(), &["add", "."]);
+                git(tree.path(), &["commit", "-qm", "first"]);
+                tree
+            } else {
+                a_repo()
+            };
             git(repo.path(), &["checkout", "-q", "-b", "feature"]);
             let tip = rev_parse(repo.path(), "HEAD");
             git(repo.path(), &["update-ref", "refs/remotes/origin/main", &tip]);
@@ -1289,7 +1364,7 @@ provider = "anthropic"
             .expect("write the shim");
             std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
             let path = shim.path().to_string_lossy().into_owned();
-            (Self { repo, tip, path, marker }, shim)
+            (Self { repo, tip, path, marker, _git_dir: git_dir_holder }, shim)
         }
 
         /// The project's env, which is the identity the scan's `gh` runs as.
@@ -1531,7 +1606,7 @@ provider = "anthropic"
     /// inside that staleness bound, so a watch that fired would announce in it.
     #[tokio::test]
     async fn a_reported_mutation_re_reads_a_git_only_change_on_the_frame() {
-        let (branch, _shim) = PushedBranch::new();
+        let (branch, _shim) = PushedBranch::new_with_git_dir_outside_the_tree();
         let (workspace, mut updates, _config) =
             a_workspace_with_env(branch.repo.path(), &branch.env());
         let seat = seat();
@@ -1566,7 +1641,35 @@ provider = "anthropic"
             "and the store still holds the row read before the commit",
         );
 
-        workspace.note_repository_activity(&seat);
+        // The nudge arrives as the frame does, through the task's own fold:
+        // the arm that reads it and the wake it fires are pinned together,
+        // which a direct `note_repository_activity` call cannot do.
+        let (handle, _agent_cmds) = forge_agent::Agent::testing_stub();
+        let (_cmd_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let domain = workspace.domain_session_for(&seat).expect("the seat holds a session");
+        let mut task = crate::session_task::SessionTask {
+            key: seat.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain,
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            conversation: None,
+            successor: None,
+            teardown_done: None,
+        };
+        task.translate_event(forge_agent::AgentEvent::SdkMessage {
+            session_id: "s".to_owned(),
+            msg: forge_primitives::Message::VcsStateChanged {
+                kind: "commit".to_owned(),
+                branch: Some("feature".to_owned()),
+                cwd: branch.repo.path().display().to_string(),
+                uuid: "u1".to_owned(),
+                session_id: "s".to_owned(),
+                extras: forge_primitives::messages::Extras::new(),
+            },
+        });
 
         let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
         loop {
@@ -1656,6 +1759,34 @@ provider = "anthropic"
         assert!(
             workspace.work_snapshot(&seat).is_some_and(|held| held.diff.pr_fetched_at.is_none()),
             "a published change clears the attempt even with no seat held",
+        );
+    }
+
+    /// **A forced scan must not consult the cache at all.** Clearing the
+    /// stamp is not enough by itself: a Fetch scan already in flight when the
+    /// publish frame landed can store a fresh stamp after the clear, and a
+    /// force that only trusted the clear would then serve the pre-publication
+    /// answer - this feature's own defect, reopened in that window.
+    #[tokio::test]
+    async fn a_forced_scan_looks_the_pr_up_past_a_fresh_cache() {
+        let (branch, _shim) = PushedBranch::new();
+        let (workspace, _updates, _config) =
+            a_workspace_with_env(branch.repo.path(), &branch.env());
+        let seat = seat();
+
+        // The stored read AND its attempt are both fresh: nothing about the
+        // store says a lookup is due.
+        let mut fresh = branch.stored_scan(None, std::time::SystemTime::now());
+        fresh.read_at = Instant::now();
+        workspace.store_work_snapshot(&seat, fresh);
+
+        let scanned = workspace.scan_work_now(&seat, true).await.expect("a live seat scans");
+
+        assert!(branch.marker.exists(), "the forced pass ran the lookup");
+        assert_eq!(
+            scanned.diff.pr.map(|found| found.number),
+            Some(108),
+            "and answered with the PR the fresh cache denied",
         );
     }
 
@@ -1869,6 +2000,7 @@ provider = "anthropic"
                 PrRefresh::ServeCached,
                 None,
                 Some(BaseState::Behind { behind: 2 }),
+                false,
                 false,
             )
             .await;

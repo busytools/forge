@@ -247,7 +247,7 @@ impl SessionTask {
     /// Returns `true` to keep the run loop running; `false` when the
     /// event is terminal for this task and the loop must exit (so the
     /// exit path releases the session and disconnects the subprocess).
-    fn translate_event(&mut self, event: AgentEvent) -> bool {
+    pub(crate) fn translate_event(&mut self, event: AgentEvent) -> bool {
         // **A frame is stamped as it crosses, before either half reads it.**
         // The CLI stamps assistant frames and tool results and nothing else -
         // not the prompt that OPENS a turn, not a system frame, not the result
