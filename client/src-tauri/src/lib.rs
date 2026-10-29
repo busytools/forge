@@ -787,6 +787,91 @@ const ANDROID_UPDATE_PLUGIN: &str = "androidupdate";
 #[cfg(any(test, target_os = "android"))]
 const ANDROID_FILE_NAME_PLUGIN: &str = "androidfilenames";
 
+/// The names the app manifest strips from the notification plugin's own
+/// manifest. A `tools:node="remove"` naming a component the plugin no longer
+/// declares is a silent no-op, and the boot and wake-lock machinery this cut
+/// clears would come back with it, so both sides are checked against the
+/// locked crate.
+#[cfg(test)]
+mod plugin_manifest_removals {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    const STRIPPED: [&str; 5] = [
+        "app.tauri.notification.TimedNotificationPublisher",
+        "app.tauri.notification.NotificationDismissReceiver",
+        "app.tauri.notification.LocalNotificationRestoreReceiver",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.WAKE_LOCK",
+    ];
+
+    #[test]
+    fn every_stripped_name_is_declared_by_the_locked_plugin_and_removed_here() {
+        let plugin = plugin_manifest();
+        let app = read("gen/android/app/src/main/AndroidManifest.xml");
+        for name in STRIPPED {
+            assert!(app.contains(name), "the app manifest no longer strips {name}",);
+            assert!(
+                plugin.contains(name),
+                "the notification plugin no longer declares {name}, so its removal is a \
+                 silent no-op",
+            );
+        }
+    }
+
+    fn read(relative: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("{} could not be read: {why}", path.display()))
+    }
+
+    /// The locked plugin's Android manifest, from the registry copy this
+    /// crate's own build already unpacked.
+    fn plugin_manifest() -> String {
+        let version = locked_version();
+        let home = std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+            .expect("a cargo home to find the unpacked plugin in");
+        let sources = home.join("registry").join("src");
+        let entries = fs::read_dir(&sources)
+            .unwrap_or_else(|why| panic!("{} could not be read: {why}", sources.display()));
+        for entry in entries {
+            let entry = entry.expect("a registry entry");
+            let manifest = entry
+                .path()
+                .join(format!("tauri-plugin-notification-{version}"))
+                .join("android/src/main/AndroidManifest.xml");
+            if manifest.is_file() {
+                return fs::read_to_string(&manifest).unwrap_or_else(|why| {
+                    panic!("{} could not be read: {why}", manifest.display())
+                });
+            }
+        }
+        panic!(
+            "tauri-plugin-notification-{version} is not unpacked under {}, so the stripped \
+             names cannot be checked against it",
+            sources.display(),
+        );
+    }
+
+    /// The version `Cargo.lock` pins, so a plugin bump moves the path with it.
+    fn locked_version() -> String {
+        let text = read("Cargo.lock");
+        let mut named = false;
+        for line in text.lines().map(str::trim) {
+            if line == "[[package]]" {
+                named = false;
+            } else if line == "name = \"tauri-plugin-notification\"" {
+                named = true;
+            } else if named && line.starts_with("version = ") {
+                return line.trim_start_matches("version = ").trim_matches('"').to_owned();
+            }
+        }
+        panic!("tauri-plugin-notification is not pinned in the shell's Cargo.lock")
+    }
+}
+
 /// The phone's half of the updater, as a Kotlin plugin the commands below
 /// bridge to. Everything the update does on Android is Android's own: the
 /// manifest fetch and the browser intent the offer opens.
