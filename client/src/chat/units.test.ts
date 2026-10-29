@@ -4363,6 +4363,53 @@ describe('the frames the fold had no row for', () => {
     expect(intent?.fields, 'the evidence the scan fired on').toEqual([
       { label: 'trigger', value: 'android_manifest' },
     ]);
+
+    const ios = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'dev_intent',
+          kind: 'ios_app',
+          trigger: 'xcode_project',
+          uuid: 'di2',
+        },
+      ])[0],
+    );
+    expect(ios?.text, 'the other known kind reads in words too').toBe('Project: iOS app');
+
+    const other = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'dev_intent',
+          kind: 'vision_os',
+          trigger: 'project_scan',
+          uuid: 'di3',
+        },
+      ])[0],
+    );
+    expect(other?.text, 'a kind this build has no word for is named as itself').toBe(
+      'Project: vision_os',
+    );
+  });
+
+  it('gives a model swap with no words a sentence of its own', () => {
+    const row = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'model_fallback',
+          trigger: 'overloaded',
+          original_model: 'claude-fable-5-1',
+          fallback_model: 'claude-opus-5-5',
+          uuid: 'milent',
+        },
+      ])[0],
+    );
+
+    expect(row?.text, 'the row never draws blank when the frame carries no content').toBe(
+      'The session changed model.',
+    );
   });
 
   it('draws a notification, warning only when its priority is immediate', () => {
