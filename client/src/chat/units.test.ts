@@ -1822,21 +1822,30 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('draws the card for a question the reader dismissed, once its result lands', () => {
-    // Dismissing the dock sends a result with no answer record ("The user did
-    // not answer the questions."). The dock has nothing left to show, so the
-    // card is the question's only row for the rest of the turn.
-    const asked = said([
-      use('toolu_q', 'AskUserQuestion', {
-        questions: [{ question: 'Which colour?', options: [{ label: 'Red' }] }],
-      }),
-    ]);
-    const dismissed = heard([result('toolu_q', 'The user did not answer the questions.')]);
+    // The pinned capture's own dismissal (`ask_user_question.jsonl`): the
+    // result carries the questions and an EMPTY answers map. The dock has
+    // nothing left to show, so the card is the question's only row for the
+    // rest of the turn.
+    const question = {
+      question: 'Which colour do you prefer?',
+      header: 'Colour',
+      multiSelect: false,
+      options: [
+        { label: 'Red', description: 'Warm, bold, high-energy.' },
+        { label: 'Blue', description: 'Cool, calm, classic.' },
+        { label: 'Green', description: 'Natural, fresh, balanced.' },
+      ],
+    };
+    const asked = said([use('toolu_q', 'AskUserQuestion', { questions: [question] })]);
+    const dismissed = heard([result('toolu_q', 'The user did not answer the questions.')], {
+      tool_use_result: { questions: [question], answers: {} },
+    });
 
     const units = fold([asked, dismissed]);
     expect(kinds(units), 'the card, with no call row beside it').toEqual(['question']);
     const card = units[0];
     const pairs = card?.kind === 'question' ? card.asked : [];
-    expect(pairs[0]?.question, 'the question it asked').toBe('Which colour?');
+    expect(pairs[0]?.question, 'the question it asked').toBe('Which colour do you prefer?');
     expect(pairs[0]?.state, 'marked unanswered').toBe('unanswered');
   });
 

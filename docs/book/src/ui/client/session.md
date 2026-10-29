@@ -164,10 +164,12 @@ read as one system.
   the row's face is the facts. The frame is seen the day it arrives and can
   be given a real face later, rather than being dropped. A refusal also
   settles the call it names, which no result frame will ever settle. **A
-  question draws nothing here while it waits**: the dock is its row. A turn
-  that closes on it without an answer clears the dock, so the question draws
+  question draws nothing here while it waits**: the dock is its row. It draws
   as a card instead - the words the reader was asked, marked `unanswered`,
-  with nothing picked or typed under them.
+  with nothing picked or typed under them - the moment its own result lands
+  with no answer on record (the reader dismissing the dock), or the turn
+  closes on it. A question whose result came back an error, or one the CLI
+  refused before it ran, keeps its call row instead.
 - **A model swap, a memory recall, a local command and a project's
   development intent each draw a row of their own.** A model fallback (and a
   refusal retry, a refusal with no fallback, and the Fable consent gate) draws
