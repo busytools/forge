@@ -1117,6 +1117,7 @@
     border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
     font: inherit; color: var(--muted); }
   .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
+  .sg-seg .sg-tog .note { color: var(--dim); font-size: 11px; }
   /* The status depth under a server row: the tools it offers and what backs
      it, wrapping rather than eliding - the strip is nowrap, so the wrap has
      to be asked for here. */
@@ -3416,12 +3417,14 @@ branch main, nothing to commit</div>
                its own files on hover, focus or a tap. On the default branch
                with nothing on it the row does not draw at all: that is where
                work lands, not work. The toggle reads branch, commits, PR and
-               `dirty` - figures live in the open list. Drawn CLOSED here,
-               like its siblings. -->
+               `dirty`, and for a moment the CLI's last repository event -
+               figures live in the open list. Drawn CLOSED here, like its
+               siblings. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-git"/></svg>
-              web-home-layout &#183; 3 commits &#183; PR #1203 &#183; dirty</button>
+              web-home-layout &#183; 3 commits &#183; PR #1203 &#183; dirty
+              <span class="note">committed on main</span></button>
           </span>
           <!-- The review row, eighth: this seat's branch under review - the
                answers waiting to be read on the toggle, the thread count
