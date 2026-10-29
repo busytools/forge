@@ -171,18 +171,20 @@ read as one system.
 - **A model swap, a memory recall, a local command and a project's
   development intent each draw a row of their own.** A model fallback (and a
   refusal retry, a refusal with no fallback, and the Fable consent gate) draws
-  a warning whose words are the CLI's own `content` and whose open body names
-  the trigger, the model it left and the model it fell to. A memory recall
-  draws one line saying how many memories the turn was given, with the paths
-  and, where the CLI supplies it, the recalled body in the open body rather
-  than one row per memory. A local command draws one
+  a warning whose words are the CLI's own `content` - or, for the refusal
+  retry, which carries none, a line saying the session changed model - and
+  whose open body names the trigger, the model it left and the model it fell
+  to. A memory recall draws one line saying how many memories the turn was
+  given, with the paths and, where the CLI supplies it, the recalled body in
+  the open body rather than one row per memory. A local command draws one
   row: the command it ran, with the command's output in its open body. The CLI
-  sends the name and the print as two frames, and the second fills the first's
-  row - so a command is one row and not two, and there is no assistant message
-  carrying the output, because forge reads the raw system frames. A project
-  development-intent frame draws one quiet line naming the platform the CLI
-  saw, with the evidence in its open body; a conversation reset may send it
-  again, so the line is a fact about the project, not a count of turns.
+  sends the name and the print as one frame (2.1.280) or two (older), and a
+  print fills the row the name opened - so a command is one row and not two,
+  and there is no assistant message carrying the output, because forge reads
+  the raw system frames. A project development-intent frame draws one quiet
+  line naming the platform the CLI saw, with the evidence in its open body;
+  the CLI's emit cadence is not captured, so the line is a fact about the
+  project, not a count of turns.
 - **The CLI's own repository events belong to the working-tree strip, not
   the conversation.** A `vcs_state_changed` frame is the tree's own news: the
   strip above the composer says what moved for a moment - the kind and, where
@@ -191,13 +193,16 @@ read as one system.
   `code_change_published` frame keeps a chat row only for the four
   transitions a reader would otherwise miss - `created`, `merged`, `closed`
   and `reopened` - naming the action, the repository and the change number,
-  with the URL a reader opens as the quiet tail; every other action rides the
+  with the URL a reader opens as the quiet tail; every action rides the
   strip's transient line, and the PR row carries its state after the core's
-  own lookup, so an edit, a comment or a checkout is not silent. A chat row's
-  open lists the frame's own fields, so a fact the line does not spell is
-  still reachable. **Both are events from the live window**: the CLI writes
-  neither to the transcript, so a conversation reopened from it shows the
-  tree and the PR row, but not the transient line.
+  own lookup, so an edit, a comment or a checkout is not silent - and the four
+  that keep a chat row ride both. **The strip is the shown seat's**: a
+  mutation on a seat you are not looking at is not drawn, its frame belonging
+  to the seat but the line to the one on screen. A chat row's open lists the
+  frame's own fields, so a fact the line does not spell is still reachable.
+  **Both are events from the live window**: the CLI writes neither to the
+  transcript, so a conversation reopened from it shows the tree and the PR
+  row, but not the transient line.
 
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it
