@@ -60,6 +60,16 @@ internal fun isNewerVersion(candidate: String, current: String): Boolean {
 internal fun normalizeVersion(version: String): String? = versionParts(version)?.joinToString(".")
 
 /**
+ * The release page a manifest names, or `null` when its value is one no
+ * intent can open. `optString` answers "null" for a JSON null, and an offer
+ * whose tap always fails is worse than no line.
+ */
+internal fun releasePage(raw: String?): String? =
+  raw?.takeIf {
+    it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
+  }
+
+/**
  * The phone's half of the client's own update: reads the release manifest and
  * opens the release page the header's line offers.
  *
@@ -75,13 +85,7 @@ class UpdatePlugin(private val activity: Activity) : Plugin(activity) {
       val manifest = fetch(args.endpoint)
       val android = manifest.optJSONObject("android")
       val version = normalizeVersion(manifest.optString("version"))
-      // A manifest with no usable `release` offers nothing: only an http(s)
-      // URL has a handler to open, and an offer whose tap always fails is
-      // worse than no line. `optString` also answers "null" for a JSON null.
-      val release =
-        android
-          ?.optString("release")
-          ?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
+      val release = releasePage(android?.optString("release"))
       if (version != null && release != null && isNewerVersion(version, args.version)) {
         invoke.resolve(JSObject().put("version", version).put("url", release))
       } else {
