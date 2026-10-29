@@ -4020,6 +4020,10 @@ describe('a page seam that re-serves a result', () => {
   });
 });
 
+/** The notice a unit draws, when it draws one. */
+const noticeOf = (unit: Unit | undefined): Notice | null =>
+  unit?.kind === 'notice' ? unit.notice : null;
+
 /**
  * Frames the CLI sends that the fold had no row for.
  *
@@ -4029,10 +4033,6 @@ describe('a page seam that re-serves a result', () => {
  * dropped in silence. Each test asserts the ROW: its mark, what it says, the
  * facts its body lists, and that the raw payload stays reachable.
  */
-/** The notice a unit draws, when it draws one. */
-const noticeOf = (unit: Unit | undefined): Notice | null =>
-  unit?.kind === 'notice' ? unit.notice : null;
-
 describe('the frames the fold had no row for', () => {
   it('draws an unknown top-level frame as a marked notice with its payload', () => {
     const units = fold([
@@ -4328,9 +4328,13 @@ describe("the CLI's repository events", () => {
     expect(noticeOf(units[2])?.fields, 'a branchless mutation draws no empty fact').toEqual([
       { label: 'kind', value: 'merge' },
     ]);
+    expect(
+      noticeOf(units[0])?.raw,
+      'the frame itself stays reachable, which is rule 25 for these rows',
+    ).toContain('"kind":"commit"');
   });
 
-  it('draws a published change with its action, repo and identifier, and the URL under it', () => {
+  it('draws a published change with its action, repo and identifier, and the URL on its line', () => {
     const units = fold([
       {
         type: 'system',
@@ -4403,5 +4407,9 @@ describe("the CLI's repository events", () => {
       { label: 'branch', value: 'main' },
       { label: 'url', value: 'https://github.com/example/example/pull/123' },
     ]);
+    expect(
+      noticeOf(units[0])?.raw,
+      'the frame itself stays reachable, which is rule 25 for these rows',
+    ).toContain('"identifier":"123"');
   });
 });

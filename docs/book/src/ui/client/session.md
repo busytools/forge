@@ -156,8 +156,8 @@ read as one system.
 - **A frame the page has no face for yet draws as itself, marked
   provisional.** An unknown top-level frame and an unknown content block, and
   the CLI's own system lines for a permission refusal, an API error, an
-  informational line and a notification, each draw as a notice whose mark is
-  the wire's own type. The open body lists what the frame carried as one-line
+  informational line, a notification, a repository mutation and a published
+  change, each draw as a notice whose mark is the wire's own type. The open body lists what the frame carried as one-line
   labelled values - the tool and call a refusal names, an error's message,
   status and retry, an unknown frame's fields - and the frame itself sits
   behind a second control under them, so the payload stays reachable while
@@ -175,8 +175,9 @@ read as one system.
   row re-read on the frame rather than at its next staleness window. A
   `code_change_published` frame says this session put a change up for review
   or linked itself to one: the row names the action, the repository and the
-  change number, with the URL under it, and it is what makes the tree row
-  look the PR up again. Opened, each lists the fields the frame carried -
+  change number, with the URL a reader opens as the quiet tail of that same
+  line, and it is what makes the tree row look the PR up again. Opened, each
+  lists the fields the frame carried -
   the kind and branch, the action, provider, repository, change and URL - so
   a fact the line does not spell is still reachable, and a kind or action
   this build has no word for is shown as the wire's own value rather than

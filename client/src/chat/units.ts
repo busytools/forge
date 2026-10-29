@@ -700,8 +700,12 @@ interface Frame {
   /** `system/informational`'s body and level. */
   level?: unknown;
   content?: unknown;
-  /** `system/vcs_state_changed`: what moved, and the branch it landed on. */
+  /** `system/vcs_state_changed`: what moved. */
   kind?: unknown;
+  /**
+   * The branch on both repository frames: the one a mutation landed on, or
+   * the one a published change went up from.
+   */
   branch?: unknown;
   /** `system/code_change_published`: the change that went up for review. */
   provider?: unknown;
@@ -2526,10 +2530,10 @@ export function fold(
         });
         continue;
       }
-      // **The CLI's own report that a command moved the repository.** One
-      // line, because the frame names the kind and at most the branch; the
-      // tree it changed is what the working-tree row above the composer
-      // draws, and this row is the event that made that row re-read.
+      // **The CLI's own report that a command moved the repository.** The
+      // line names the kind and at most the branch, and the open body lists
+      // those same fields; the tree it changed is what the tree row above the
+      // composer draws, and this row is the event that made that row re-read.
       if (frame.subtype === 'vcs_state_changed') {
         const kind = str(frame, 'kind');
         const branch = str(frame, 'branch');
@@ -2560,9 +2564,9 @@ export function fold(
         continue;
       }
       // **A change from this session went out for review, or linked the
-      // session to one.** The row names what the session did; the URL rides
-      // under it because it is what a reader opens, and the rest of the frame
-      // is plumbing.
+      // session to one.** The row names what the session did, with the URL a
+      // reader opens as its quiet tail, and the open body lists the rest of
+      // the frame.
       if (frame.subtype === 'code_change_published') {
         const provider = str(frame, 'provider');
         const action = str(frame, 'action');
