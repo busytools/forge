@@ -3718,6 +3718,7 @@ async fn call_output(
     let conversations = Arc::clone(&state.conversations);
     let key = key.clone();
     let logged = key.clone();
+    let logged_call = call_id.to_owned();
     let call_id = call_id.to_owned();
     let read = tokio::task::spawn_blocking(move || {
         let Some(held) = conversations.get(&key) else {
@@ -3748,6 +3749,7 @@ async fn call_output(
             tracing::warn!(
                 event_name = "call_output_read_failed",
                 slot = %logged.display(),
+                call_id = %logged_call,
                 %error,
                 "the call-output read did not finish; the request is answered as no-path",
             );

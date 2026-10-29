@@ -32,8 +32,9 @@ pub const EVENT_BACKLOG: usize = 256;
 
 /// What a connection's watcher may fall behind by, and what it may not lose.
 pub enum Backlog {
-    /// Every event, with no ceiling. The navigation watch's shape: its reader
-    /// drains between events without waiting on a round trip.
+    /// Every event, with no ceiling. The navigation watch's shape: it reads
+    /// every event and acts only on a history one, so its queue drains
+    /// between the frames it does anything about.
     EveryEvent,
     /// The newest event past `ceiling` is dropped. The input connection's
     /// shape: it drains whatever arrived on each call and ignores it.
