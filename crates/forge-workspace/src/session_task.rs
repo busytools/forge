@@ -8646,6 +8646,125 @@ provider = "anthropic"
         );
     }
 
+    /// **The fold is the only place a repository frame becomes a nudge.** The
+    /// work tests drive `note_repository_activity` and
+    /// `note_code_change_published` directly, so a missing arm, a swapped
+    /// flag, or a deleted block would leave them green while the wiring did
+    /// nothing.
+    #[test]
+    fn repository_frames_ask_for_the_nudge_they_need() {
+        let mut domain = empty_domain();
+
+        let vcs = apply_event_to_domain(
+            &mut domain,
+            &sdk_message(forge_primitives::Message::VcsStateChanged {
+                kind: "commit".to_owned(),
+                branch: Some("main".to_owned()),
+                cwd: "/tmp/repo".to_owned(),
+                uuid: "u1".to_owned(),
+                session_id: "s".to_owned(),
+                extras: forge_primitives::messages::Extras::new(),
+            }),
+        );
+        assert_eq!(vcs.repo_nudge, Some(false), "a mutation re-reads the tree only");
+
+        let published = apply_event_to_domain(
+            &mut domain,
+            &sdk_message(forge_primitives::Message::CodeChangePublished {
+                provider: "github".to_owned(),
+                url: "https://example.test/pull/1".to_owned(),
+                repo: "a/b".to_owned(),
+                identifier: "1".to_owned(),
+                action: Some("created".to_owned()),
+                branch: Some("main".to_owned()),
+                uuid: "u2".to_owned(),
+                session_id: "s".to_owned(),
+                extras: forge_primitives::messages::Extras::new(),
+            }),
+        );
+        assert_eq!(published.repo_nudge, Some(true), "a published change also looks the PR up");
+
+        let other = apply_event_to_domain(
+            &mut domain,
+            &sdk_message(forge_primitives::Message::System {
+                subtype: "init".to_owned(),
+                session_id: Some("s".to_owned()),
+                data: serde_json::json!({}),
+            }),
+        );
+        assert_eq!(other.repo_nudge, None, "every other event asks for neither");
+    }
+
+    /// **The flag is only half the wiring.** The fallback above proves the fold
+    /// answers *what*; this pins the call that acts on the answer, because
+    /// deleting the block that reads it leaves every other test green. A
+    /// published frame clears the attempt stamp on the seat's stored snapshot
+    /// through the task's own workspace handle.
+    #[test]
+    fn a_published_frame_clears_the_stored_pr_attempt_through_the_task() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let slot = SessionSlot::from_str_for_test("test");
+        let (handle, _agent_cmds) = Agent::testing_stub();
+        let arc = Arc::new(handle);
+        let domain = workspace.register_domain_session(slot.clone(), Some(Arc::clone(&arc)));
+        domain.lock().work_snapshot = Some(crate::work::WorkSnapshot {
+            diff: forge_primitives::git_diff::GitDiffSnapshot {
+                branch: forge_primitives::git::GitBranch::Detached,
+                pushed_sha: None,
+                pr_fetched_at: Some(std::time::SystemTime::now()),
+                default_branch: None,
+                repo_gate: forge_primitives::git_diff::RepoGate::InRepo,
+                worktree: forge_primitives::git_diff::LayerState::Clean,
+                branch_ahead: forge_primitives::git_diff::LayerState::Clean,
+                pr: None,
+                closes: Vec::new(),
+            },
+            cwd: std::path::PathBuf::from("/tmp/repo"),
+            read_at: std::time::Instant::now(),
+            base: None,
+        });
+
+        let (_cmd_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut task = SessionTask {
+            key: slot.clone(),
+            handle: arc,
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: std::sync::Arc::downgrade(&workspace),
+            conversation: None,
+            successor: None,
+            teardown_done: None,
+        };
+
+        task.translate_event(sdk_message(forge_primitives::Message::CodeChangePublished {
+            provider: "github".to_owned(),
+            url: "https://example.test/pull/1".to_owned(),
+            repo: "a/b".to_owned(),
+            identifier: "1".to_owned(),
+            action: Some("created".to_owned()),
+            branch: Some("main".to_owned()),
+            uuid: "u2".to_owned(),
+            session_id: "s".to_owned(),
+            extras: forge_primitives::messages::Extras::new(),
+        }));
+
+        assert!(
+            domain
+                .lock()
+                .work_snapshot
+                .as_ref()
+                .is_some_and(|held| held.diff.pr_fetched_at.is_none()),
+            "the frame's nudge reached the workspace that clears the attempt",
+        );
+    }
+
     /// A monitor still running when the connection dies can never be settled,
     /// and the session page reads this set directly through the view surface,
     /// so a dead one draws as live on both surfaces until the next connect
