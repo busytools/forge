@@ -2419,6 +2419,28 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **A machine turn ending is re-read, and one beginning is not.**
+   *
+   * The core's abort says only "not a handoff" - a CLI compaction that was
+   * running under the handoff is still running, and only the record folds
+   * both sources into the one `machine`. The begin needs no read: the frame
+   * carries all of it.
+   */
+  it('re-reads the seat when a machine turn ends, and not when one begins', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+
+    const began = page.reads();
+    page.land(updateOf({ machine_turn: { key: LEAD, machine: 'handoff' } }));
+    expect(page.reads(), 'a handoff beginning carries everything the page needs').toBe(began);
+
+    page.land(updateOf({ machine_turn: { key: LEAD, machine: null } }));
+    expect(page.reads(), 'the machine turn ending is the record to state').toBe(began + 1);
+    page.stop();
+  });
+
+  /**
    * **A review touched on the seat re-reads it.** Reviews ride the record
    * rather than a frame - the notice carries no field the record has - so the
    * notice is the one cue to take the read again. The reviewer's own writes

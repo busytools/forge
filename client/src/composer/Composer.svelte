@@ -336,7 +336,9 @@
     dockPresent: dockOpen,
   } satisfies Where);
 
-  const blocker = $derived(blocked(seat, composer, box.sent, slot.label === 'lead'));
+  const blocker = $derived(
+    blocked(seat, composer, box.sent, slot.label === 'lead', dockAsk !== null),
+  );
   const filled = $derived(box.draft.trim() !== '');
 
   /**
@@ -994,6 +996,7 @@
     offered: () => dictation,
     bind: () => composer.bind,
     mode: () => composer.mode,
+    machine: () => composer.machine !== null,
     onBegin: () => {
       // Never scrolls: the box is already on screen, and a key press that
       // scrolled the page would move the chat under the reader.

@@ -110,9 +110,8 @@ pub(crate) async fn ground_truth(
         let config_dir = config_dir.to_path_buf();
         let session_id = seat.from.to_owned();
         let cwd = seat.cwd.to_path_buf();
-        // The read is the whole transcript; the brief needs its first ask,
-        // its newest asks and the calls between, which only a pass over the
-        // file can answer.
+        // The read is the whole transcript; the brief needs its newest asks
+        // and the calls between, which only a pass over the file can answer.
         tokio::task::spawn_blocking(move || {
             forge_agent::session_history(&config_dir, &session_id, &cwd.to_string_lossy())
         })
@@ -1258,24 +1257,61 @@ pub(crate) fn missing_note() -> Vec<HandoffSection> {
 
 /// The heading a line opens, and its body when the line carries one.
 ///
-/// A model writes a heading as `Now: ...`, `## Now` or `**Now:** ...`, and a
-/// note in any of those forms is the note. The label still has to open the
-/// line, so prose that happens to begin with the word stays body text.
+/// A model writes a heading as `Now: ...`, `## Now`, `**Now:** ...`,
+/// `## Now.` or `1. **Now**` - the shipped skill numbers its own parts, and a
+/// heading written to match it must still open. The label still has to open
+/// the line, so prose that happens to begin with the word stays body text.
 fn judgment_heading(line: &str) -> Option<(&'static str, &str)> {
-    let stripped = line.trim_start_matches(['#', '*', '-', ' ']);
+    let text = heading_text(line);
     for heading in JUDGMENT_HEADINGS {
-        let Some(rest) = stripped.strip_prefix(heading) else { continue };
-        // `**Now:**` closes the emphasis after the colon, `**Now**` instead
-        // of it.
-        let rest = rest.trim_start_matches('*');
+        let Some(rest) = text.strip_prefix(heading) else { continue };
+        // `**Now:**` closes the emphasis around the label. Only that literal
+        // pair comes off, so a body's own `*emphasis*` survives.
+        let rest = strip_emphasis(rest);
         if let Some(body) = rest.strip_prefix(':') {
-            return Some((heading, body.trim_start_matches(['*', ' ']).trim()));
+            return Some((heading, strip_emphasis(body).trim()));
+        }
+        if let Some(body) = rest.strip_prefix('.') {
+            // A full stop ends the heading only when nothing follows it:
+            // `Now. the work stands` is prose, not a heading with no body.
+            if strip_emphasis(body).trim().is_empty() {
+                return Some((heading, ""));
+            }
+            continue;
         }
         if rest.trim().is_empty() {
             return Some((heading, ""));
         }
     }
     None
+}
+
+/// The line with the markdown furniture a heading may wear taken off: the
+/// `#`/`*` markers, and an ordered-list number (`1.`, `1)`).
+fn heading_text(line: &str) -> &str {
+    let text = line.trim_start_matches(['#', '*', '-', ' ']);
+    match ordered_marker(text) {
+        Some(rest) => rest.trim_start_matches(['#', '*', '-', ' ']),
+        None => text,
+    }
+}
+
+/// The text after a leading `1.` / `1)` marker, or `None` when there is none.
+///
+/// A list marker is followed by a space, which is what keeps `2024 report`
+/// and `1.5 million` prose.
+fn ordered_marker(text: &str) -> Option<&str> {
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let rest = text[digits..].strip_prefix('.').or_else(|| text[digits..].strip_prefix(')'))?;
+    rest.starts_with(' ').then(|| rest.trim_start())
+}
+
+/// The label's own closing `**`, and only that literal pair.
+fn strip_emphasis(text: &str) -> &str {
+    text.strip_prefix("**").unwrap_or(text)
 }
 
 /// Keep the whole half under its ceiling. A cut is stated - the brief never
@@ -1555,6 +1591,28 @@ impl crate::Workspace {
         self.swapping.lock().contains_key(slot)
     }
 
+    /// Whether a handoff owns this seat's composer right now: its judgment
+    /// turn is running, or the swap it opened is still building or spawning.
+    ///
+    /// **The domain's own flag is cleared at the swap**, before the successor
+    /// connects - so a page attaching in that window would otherwise read a
+    /// live composer over a seat that has no session at all.
+    pub fn handoff_in_flight(&self, slot: &SessionSlot) -> bool {
+        self.swap_in_progress(slot)
+            || self.domain_session_for(slot).is_some_and(|domain| domain.lock().handoff.awaiting)
+    }
+
+    /// End the machine turn a handoff raised, wherever its build stops.
+    ///
+    /// **Every path out of the build that leaves no successor needs this.**
+    /// The frame at the handoff's begin is the live page's only source, and a
+    /// successor's record read is what normally clears it - so a build that
+    /// stops without one would leave the seat's composer down for good.
+    fn end_machine_turn(&self, slot: &SessionSlot) {
+        let _ =
+            self.update_tx.send(SessionUpdate::MachineTurn { key: slot.clone(), machine: None });
+    }
+
     /// Whether `token` still owns the seat's swap.
     ///
     /// **A build that lost the seat must not spawn.** A replacement during
@@ -1747,6 +1805,7 @@ impl crate::Workspace {
                 slot = %request.slot.display(),
                 "a handoff build had no swap token; it is not run",
             );
+            self.end_machine_turn(&request.slot);
             return;
         };
         if !self.swap_is_current(&request.slot, token) {
@@ -1756,6 +1815,7 @@ impl crate::Workspace {
                 slot = %request.slot.display(),
                 "the swap gate closed before the build began; the handoff is not run",
             );
+            self.end_machine_turn(&request.slot);
             return;
         }
         let cwd = PathBuf::from(&request.cwd);
@@ -1818,6 +1878,7 @@ impl crate::Workspace {
                 slot = %request.slot.display(),
                 "the swap gate closed while the brief was built; the handoff is not run",
             );
+            self.end_machine_turn(&request.slot);
             return;
         }
         self.record_handoff(&record, &reads);
@@ -1869,6 +1930,7 @@ impl crate::Workspace {
                 severity: NoticeSeverity::Error,
                 text: format!("the handoff could not start a new session: {error}"),
             });
+            self.end_machine_turn(&request.slot);
         }
     }
 }
@@ -2748,7 +2810,17 @@ mod tests {
                 assert_eq!(sections[0].label, label, "the heading for {line}");
                 assert_eq!(sections[0].lines, vec![body.to_owned()], "its body for {line}");
             }
-            for line in [format!("## {label}"), format!("**{label}**"), label.to_owned()] {
+            // A heading alone on its line takes the body from the lines
+            // below, including the numbered and punctuated spellings the
+            // shipped skill invites by numbering its own parts.
+            for line in [
+                format!("## {label}"),
+                format!("**{label}**"),
+                label.to_owned(),
+                format!("## {label}."),
+                format!("1. **{label}**"),
+                format!("## 1. {label}"),
+            ] {
                 let sections = parse_judgment(&format!("{line}\n{body}"));
                 assert_eq!(sections.len(), 1, "one section for {line}");
                 assert_eq!(sections[0].label, label, "the heading for {line}");
@@ -2759,6 +2831,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The label's own emphasis comes off; the body's stays.** Stripping a
+    /// leading asterisk run rather than the matched pair left a note reading
+    /// `nothing*` where its author wrote `*nothing*`.
+    #[test]
+    fn a_heading_strips_its_own_emphasis_and_leaves_the_body_s() {
+        let sections = parse_judgment("**Now:** *nothing* has changed.");
+        assert_eq!(sections.len(), 1, "one section");
+        assert_eq!(sections[0].label, "Now");
+        assert_eq!(sections[0].lines, vec!["*nothing* has changed.".to_owned()]);
     }
 
     /// **A note written in markdown is the judgment half.** The regression
@@ -2811,12 +2894,18 @@ both gates green.";
     fn a_note_past_the_cap_states_the_cut() {
         let note = format!("Now: {}\nNext: {}", "x".repeat(JUDGMENT_CAP - 200), "y".repeat(400));
         let sections = parse_judgment(&note);
+        assert_eq!(sections.len(), 1, "one section survives the cut: {sections:?}");
+        assert_eq!(sections[0].label, "Now", "and it is the note's own front: {sections:?}");
         assert!(
-            sections
-                .iter()
-                .flat_map(|section| &section.lines)
-                .any(|line| line.contains("in the transcript named above")),
-            "the cut is named: {sections:?}",
+            sections[0].lines.first().is_some_and(|line| line.starts_with("xxx")),
+            "the cap keeps the front of the note, not its tail: {sections:?}",
+        );
+        assert!(
+            sections[0]
+                .lines
+                .last()
+                .is_some_and(|line| line.contains("in the transcript named above")),
+            "the cut is stated as the kept section's last line: {sections:?}",
         );
     }
 
@@ -2873,6 +2962,28 @@ both gates green.";
                 frame.update,
             );
         }
+    }
+
+    /// **A handoff owns the seat from its begin until its successor lands.**
+    /// The domain's own flag is cleared at the swap, so the gate is what
+    /// carries the build and spawn window - a page attaching there must not
+    /// read a live composer over a seat with no session.
+    #[test]
+    fn a_handoff_is_in_flight_from_its_begin_until_the_swap_closes() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        workspace.register_domain_session(slot.clone(), None);
+
+        assert!(!workspace.handoff_in_flight(&slot), "an idle seat takes input");
+
+        workspace.domain_session_for(&slot).expect("the domain").lock().handoff.awaiting = true;
+        assert!(workspace.handoff_in_flight(&slot), "the judgment turn owns it");
+        workspace.domain_session_for(&slot).expect("the domain").lock().handoff.awaiting = false;
+
+        workspace.begin_swap(&slot);
+        assert!(workspace.handoff_in_flight(&slot), "the swap's build and spawn own it");
+        workspace.end_swap(&slot);
+        assert!(!workspace.handoff_in_flight(&slot), "the successor hands the seat back");
     }
 
     /// Every machinery delivery goes through one gate, so a cron, a peer

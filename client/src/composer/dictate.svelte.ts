@@ -62,6 +62,15 @@ export interface PushToTalk {
   /** How a press of it maps onto a take, from the same section. */
   mode: () => Mode;
   /**
+   * Whether a machine turn owns this surface's box right now.
+   *
+   * **A box standing down for a machine turn takes no keys, and that includes
+   * this one.** Otherwise a press opens the microphone under the disabled box,
+   * the only cue is the surface's own ring, and the words land in a draft
+   * nobody can see.
+   */
+  machine: () => boolean;
+  /**
    * Where the keyboard goes when a press begins a take: the shortcut is how a
    * reader begins without the mouse, so the transcript lands where their keys
    * already are.
@@ -116,6 +125,9 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
     // under the bar, so a press of the binding must not start a take behind
     // it - on the web that is a microphone opened under a page being driven.
     if (surface.phase !== 'closed') return;
+    // A box standing down for a machine turn takes no keys, and the binding
+    // is a key: a take opened there would capture words nobody can see.
+    if (wiring.machine()) return;
     // A held key repeats, and a repeat carries no instruction - without
     // this a toggle take stops once per repeat.
     if (event.repeat) return;

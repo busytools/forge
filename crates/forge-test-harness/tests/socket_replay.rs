@@ -933,6 +933,16 @@ fn frames_record() -> Value {
 
     let mut payload_sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     payload_sampled.insert("ChatAppended".to_owned(), shape_of(&an_update(update_sample)));
+    // **The machine turn's value, not only its tag.** A rename of `machine`
+    // or of `handoff` makes the client's `machineTurn()` read null, the
+    // composer never stands down, and every other test stays green.
+    payload_sampled.insert(
+        "MachineTurn".to_owned(),
+        shape_of(&an_update(SessionUpdate::MachineTurn {
+            key: seat.clone(),
+            machine: Some(forge_primitives::runtime::MachineTurn::Handoff),
+        })),
+    );
     payload_sampled.insert(
         "Page".to_owned(),
         shape_of(&ServerMessage::Page {

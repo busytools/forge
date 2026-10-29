@@ -689,6 +689,26 @@
         "styling"
       ]
     },
+    "MachineTurn": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "machine_turn"
+      ],
+      "/update/machine_turn": [
+        "key",
+        "machine"
+      ],
+      "/update/machine_turn/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "Page": {
       "": [
         "conversation",

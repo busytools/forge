@@ -250,6 +250,7 @@ export function blocked(
   composer: ComposerState,
   command: string | null,
   lead: boolean,
+  askPending: boolean,
 ): Blocker | null {
   // Sign-in keeps its box: the hint above it is where the reader is told.
   if (seat.lifecycle === 'AuthRequired') return null;
@@ -285,6 +286,13 @@ export function blocked(
   if (seat.lifecycle === 'Spawning') {
     return { line: 'Waking up agent...', sub: null, bad: false, waiting: false, shimmer: true };
   }
+  // **A parked ask outranks the machine turn.** Both machine turns are
+  // ordinary tool-using turns - the judgment turn writes memory files and
+  // stops processes - so they raise permission asks, and this composer is the
+  // only surface that answers them. A machine line drawn over one would wedge
+  // the seat: the dock could not draw, the CLI would wait for an answer nobody
+  // can give, and the handoff would never end.
+  if (composer.machine !== null && askPending) return null;
   // **A machine turn takes the box and says which one it is.** Both are turns
   // the reader cannot type into: forge's own judgment prompt, which replaces
   // the seat when it ends, and the CLI's compaction. The draft survives on the

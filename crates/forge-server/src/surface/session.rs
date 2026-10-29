@@ -43,15 +43,16 @@ pub struct SessionState {
 }
 
 impl ViewSurface {
-    /// Whether forge is waiting on this seat's judgment turn.
+    /// Whether a handoff owns this seat: its judgment turn is running, or the
+    /// swap it opened is still building or spawning.
     ///
-    /// From the moment the judgment prompt is sent until the swap or the
-    /// abort, the seat is mid-handover and its session is about to be
-    /// replaced - which is what tells the composer to stand down. A handoff
-    /// merely *parked* on a running turn is not this: the person still has
-    /// the seat until the boundary, when it begins for real.
-    pub fn handoff_awaiting(&self, slot: &SessionSlot) -> bool {
-        self.workspace.domain_session_for(slot).is_some_and(|domain| domain.lock().handoff.awaiting)
+    /// From the moment the judgment prompt is sent until the successor
+    /// connects, the seat has no composer to take input for - which is what
+    /// tells the page to stand down. A handoff merely *parked* on a running
+    /// turn is not this: the person still has the seat until the boundary,
+    /// when it begins for real.
+    pub fn handoff_in_flight(&self, slot: &SessionSlot) -> bool {
+        self.workspace.handoff_in_flight(slot)
     }
 }
 
@@ -112,7 +113,7 @@ mod tests {
         let mut composer = crate::composer::Composer::default();
 
         let turn = |surface: &ViewSurface, composer: &crate::composer::Composer| {
-            machine_turn(surface.handoff_awaiting(&seat), composer.compacting(&seat))
+            machine_turn(surface.handoff_in_flight(&seat), composer.compacting(&seat))
         };
 
         assert_eq!(turn(&surface, &composer), None, "an idle seat takes input");

@@ -27,6 +27,7 @@ function wiring(over: Partial<PushToTalk> = {}): {
       offered: () => true,
       bind: () => 'right_cmd',
       mode: () => 'auto',
+      machine: () => false,
       onBegin: began,
       ...over,
     },
@@ -55,6 +56,20 @@ describe('the push-to-talk key', () => {
     press(handlers);
     expect(act, 'a press under a live takeover acts on nothing').not.toHaveBeenCalled();
     expect(began, 'and the keyboard is not moved to the composer').not.toHaveBeenCalled();
+  });
+
+  /// **A box standing down for a machine turn takes no keys.** The field is
+  /// drawn as a line there; a press of the binding would open the microphone,
+  /// and the words would land in a draft nobody can see.
+  it('starts no take while a machine turn owns the box', () => {
+    const { wiring: w, act, began } = wiring({ machine: () => true });
+    const handlers = pushToTalkHandlers(w);
+    press(handlers);
+    expect(act, 'a press on a stood-down box acts on nothing').not.toHaveBeenCalled();
+    expect(
+      began,
+      'and it does not move the keyboard into a box that is not drawn',
+    ).not.toHaveBeenCalled();
   });
 
   /// **The stand-down is the takeover's, not the key's**: with no surface up

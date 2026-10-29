@@ -767,6 +767,11 @@ impl SessionTask {
                 // message in it back to its sender, before the
                 // user-visible ConnectionFailed lands.
                 if let Some(workspace) = self.workspace.upgrade() {
+                    // **No machine turn survives the session's death.** A
+                    // handoff whose successor never came up and a compaction
+                    // both end with the subprocess, and a seat left holding
+                    // the blocker would be one nobody can type into.
+                    self.emit(SessionUpdate::MachineTurn { key: self.key.clone(), machine: None });
                     workspace.expire_parked_for_slot(
                         &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
@@ -1931,7 +1936,20 @@ impl SessionTask {
                     .or_else(|| captured.filter(|text| handoff::parses_as_note(text)));
                 match note {
                     Some(text) => handoff::parse_judgment(&text),
-                    None => handoff::missing_note(),
+                    None => {
+                        // **The successor is told the note is missing; this is
+                        // the trail that says so.** A note whose headings this
+                        // build cannot read reads exactly like one that never
+                        // arrived, and only a line here tells the two apart.
+                        tracing::warn!(
+                            target: "forge_workspace::session_task",
+                            event_name = "handoff_note_rejected",
+                            slot = %self.key.display(),
+                            "the handoff note carries none of the five headings; the successor \
+                             is told the note did not arrive",
+                        );
+                        handoff::missing_note()
+                    }
                 }
             };
             self.swap(reason, judgment);
@@ -4438,6 +4456,29 @@ mod tests {
             drain_machine_turns(&mut rx),
             vec![None],
             "the cancelled handoff hands the seat back",
+        );
+    }
+
+    /// **A judgment prompt the core refuses hands the seat straight back.**
+    /// The begin announced the handoff, so without the failure's own clear a
+    /// composer would stay down for a handoff that never ran.
+    #[tokio::test]
+    async fn a_refused_judgment_prompt_clears_the_machine_turn() {
+        use forge_primitives::runtime::MachineTurn;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _workspace_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        // No dispatch intercept and no seat route: the prompt cannot be sent.
+        let (mut task, _agent_rx) = trigger_task(&workspace, 0);
+        let mut rx = task.update_tx.subscribe(SubscriberRole::Answering);
+
+        task.begin_handoff();
+
+        assert_eq!(
+            drain_machine_turns(&mut rx),
+            vec![Some(MachineTurn::Handoff), None],
+            "the begin announces the turn and the refused prompt undoes it",
         );
     }
 

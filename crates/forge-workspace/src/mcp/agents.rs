@@ -1288,6 +1288,25 @@ mod tests {
         }
     }
 
+    /// **The tool's own words name the five headings the parser reads.** A
+    /// heading renamed in the prompt but not here tells the model to write a
+    /// note the parser rejects, and the successor reads that it never arrived.
+    #[test]
+    fn the_handoff_tool_names_the_headings_the_parser_reads() {
+        let host = host();
+        let tool = Handoff { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let field = tool.input_schema()["properties"]["brief"]["description"]
+            .as_str()
+            .map(str::to_owned)
+            .expect("the brief's own description");
+
+        for text in [tool.description().to_owned(), field] {
+            for heading in crate::handoff::JUDGMENT_HEADINGS {
+                assert!(text.contains(heading), "the tool's words drop '{heading}': {text}");
+            }
+        }
+    }
+
     /// A call with no note, or a blank one, gets the explanation that names
     /// the two doors, not a schema error.
     #[tokio::test]

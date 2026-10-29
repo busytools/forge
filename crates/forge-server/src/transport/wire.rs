@@ -2553,7 +2553,7 @@ async fn session(
             let composer = &live.composer;
             ComposerWire {
                 machine: crate::surface::machine_turn(
-                    surface.handoff_awaiting(slot),
+                    surface.handoff_in_flight(slot),
                     composer.compacting(slot),
                 ),
                 sign_in: composer.sign_in(slot).cloned(),
@@ -4208,6 +4208,42 @@ mod tests {
             encoded["closes"],
             serde_json::json!([]),
             "and the issues it closes, empty when there is no PR: {encoded}"
+        );
+    }
+
+    /// **The record answers the machine turn a page attaching mid-handoff
+    /// needs.** The live page learns it from the update; this is what a
+    /// second client reads while the judgment turn runs.
+    #[tokio::test]
+    async fn a_record_attached_mid_handoff_carries_the_machine_turn() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.start("TestOrg", "proj").expect("the project starts");
+        let workspace = fleet.workspace();
+        let seat = fixture_seat();
+        let domain = match workspace.domain_session_for(&seat) {
+            Some(domain) => domain,
+            None => workspace.register_domain_session(seat.clone(), None),
+        };
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let subject = Subject::Session(seat);
+
+        let idle = encode_subject(&state, &subject).await.expect("the record encodes");
+        assert_eq!(idle["composer"]["machine"], Value::Null, "an idle seat takes input");
+
+        domain.lock().handoff.awaiting = true;
+        let mid = encode_subject(&state, &subject).await.expect("the record encodes");
+        assert_eq!(
+            mid["composer"]["machine"],
+            serde_json::json!("handoff"),
+            "a page attaching mid-handoff reads the machine turn",
         );
     }
 

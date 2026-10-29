@@ -1344,6 +1344,7 @@ describe('the box', () => {
       expect(document.querySelector('textarea'), 'a machine turn takes the box').toBeNull();
       expect(document.querySelector('.send'), 'and the send').toBeNull();
       expect(document.querySelector('.mic'), 'and the mic').toBeNull();
+      expect(document.querySelector('.b1 .ring'), 'and it draws the wait').not.toBeNull();
     }
 
     harness.page.record = record({
@@ -1353,6 +1354,42 @@ describe('the box', () => {
     expect(field().value, "the reader's words come back with the box").toBe(
       'the next thing I want to say',
     );
+  });
+
+  /**
+   * **A parked ask outranks the machine blocker.** Both machine turns are
+   * ordinary tool-using turns - the judgment turn writes memory files and
+   * stops processes - so they raise permission asks, and this composer is the
+   * only surface that answers them. A machine line drawn over one would wedge
+   * the seat: the dock could not draw, and the CLI would wait for an answer
+   * nobody can give for ever.
+   */
+  it('draws and answers a parked ask through a machine turn', () => {
+    const harness = open({
+      record: record({
+        composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+        pending_asks: [permissionAsk()],
+      }),
+    });
+
+    expect(drawn(), 'the ask is what the slot draws').toContain('Allow once');
+    expect(drawn(), 'and the machine line stays out of its way').not.toContain(
+      'handing this session over',
+    );
+
+    const allow = [...document.querySelectorAll('.dock .acts .btn')].find((button) =>
+      button.textContent?.includes('Allow once'),
+    );
+    if (!(allow instanceof HTMLElement)) throw new Error('the dock drew no allow');
+    allow.click();
+    flushSync();
+
+    const [sent] = harness.sent;
+    expect(sent?.command['respond_permission'], 'the answer reaches the core').toMatchObject({
+      key: { org: 'Busytools', project: 'forge', label: 'lead' },
+      tool_id: 'tu-1',
+      outcome: { outcome: 'selected', option_id: 'opt-once' },
+    });
   });
 
   /**
