@@ -680,6 +680,8 @@ interface Frame {
   stdout?: unknown;
   stderr?: unknown;
   task_id?: unknown;
+  /** The Workflow tool's phase and agent snapshot, on its `task_progress` tick. */
+  workflow_progress?: unknown;
   tool_use_id?: unknown;
   is_backgrounded?: unknown;
   patch?: unknown;
@@ -2197,16 +2199,33 @@ export function fold(
   /**
    * Hang the harness's line about an image on the call that read it.
    *
-   * The note arrives as a user frame right after the result, while the call
-   * is still pending, so the last pending call holding an image is the row
-   * the note belongs to. A note no call holds draws as its own line instead.
+   * The note arrives as a user frame right after the result. The first call
+   * still owed a caption takes it - live calls before settled rows, each in
+   * draw order - and a note no call holds draws as its own line instead.
    */
   const attachImageNote = (note: string): boolean => {
-    for (let at = pending.length - 1; at >= 0; at -= 1) {
-      const item = pending[at];
+    // **In draw order within each list.** A turn can read two pictures, whose
+    // notes arrive in the order the pictures were read; taking the nearest
+    // owed picture instead would swap the captions on a turn whose results
+    // land in one frame.
+    for (const item of pending) {
       if (item?.tag === 'call' && item.leaf.image !== null && item.leaf.imageNote === null) {
         item.leaf.imageNote = note;
         return true;
+      }
+    }
+    // **The call may already have settled.** A unit drawn between the result
+    // and the harness's line flushes the call out of `pending`, so the
+    // picture is in a drawn row before its caption arrives. The first picture
+    // still owed one takes it; with none anywhere the note draws its own line
+    // below.
+    for (const unit of units) {
+      if (unit.kind !== 'leaves') continue;
+      for (const item of unit.rows) {
+        if (item?.tag === 'call' && item.leaf.image !== null && item.leaf.imageNote === null) {
+          item.leaf.imageNote = note;
+          return true;
+        }
       }
     }
     return false;
@@ -2503,6 +2522,13 @@ export function fold(
       // seen on the day it arrives rather than waiting for an arm. Only the
       // subtypes whose row is drawn elsewhere stay silent here.
       const system = str(frame, 'subtype');
+      // **A dispatch's progress is its card's; a workflow's has no card.** A
+      // `Task`/`Agent` subagent gets a card on the agents surface, carrying
+      // its state, its activity, its call tail, its duration and its counts,
+      // so its progress ticks draw nothing here. A `Workflow` call builds no
+      // card, so its phase and agent tree has no other surface and keeps the
+      // row below - a tick drawn nowhere is a tick the reader never sees.
+      if (system === 'task_progress' && !Array.isArray(frame['workflow_progress'])) continue;
       if (system === null || !SYSTEM_DRAWN_ELSEWHERE.has(system)) {
         push({
           kind: 'notice',
