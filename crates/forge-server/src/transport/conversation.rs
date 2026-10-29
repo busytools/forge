@@ -7,19 +7,20 @@
 //! holds the read's own output and shares it: a page slices a window out of
 //! it, and a subscribe encodes the newest of it.
 //!
-//! **A seat's history has two sources, and neither races the other.** The
-//! first is the session task, which produces the conversation: the fold sees
-//! `Connected` for every seat that starts or resumes while the transport
-//! runs, so the seed and the frames that follow it have one producer and one
-//! order.
+//! **A seat's history has two sources, and the seed never overwrites the
+//! stream's.** The first is the session task, which produces the conversation:
+//! the fold sees `Connected` for every seat that starts or resumes while the
+//! transport runs, so the frames and the copy they build have one producer and
+//! one order.
 //!
 //! The second is the seat's own transcript, read when the transport holds
 //! nothing and a page opens on it - a sleeping seat has no live copy, and
 //! waiting for the spawn that would carry the same history back is the wait
-//! this exists to remove (`transport::wire::seed_from_transcript`). It cannot
-//! race the first: it replaces only a copy of another occupant, and a
-//! connect's own reseed does the same when the spawn is the thing that was
-//! coming.
+//! this exists to remove (`transport::wire::seed_from_transcript`). It only
+//! ever inserts: a copy the stream inserted while the file was being read is
+//! kept, and a copy of another occupant is waited for rather than replaced. A
+//! transcript is a row subset - it carries no `Result` frames - so a seed over
+//! a live copy would drop frames the stream had already delivered.
 //!
 //! **That is what makes a buffer unnecessary rather than merely deleted.** A
 //! frame emitted before a seat is held finds no conversation and is dropped -
@@ -38,10 +39,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use forge_primitives::{Message, SessionSlot};
-// The window this copy is kept in, which is the session task's window too: the
-// two hold the same conversation, and a source kept shorter than the copy that
-// reads it is a page that cannot reach its cap. The ceilings' why, and what
-// the drop costs, are stated there.
+// The window this copy is kept in. The fan-out's ring is sized from the same
+// caps, because a ring exists to fill a copy that is behind; the ceilings' why,
+// and what the drop costs, are stated there.
 use forge_workspace::conversation_window::Window;
 // The delivered liveness rule, folded off the frames this copy sees - the same
 // one the client's `inFlightOf` keeps and the core folds into a seat's own
@@ -286,7 +286,7 @@ impl Conversation {
 
     fn push(&mut self, message: Message) {
         // **A boundary that arrives moves the count**, the same way the
-        // session task's own retain does. Without this the record reports the
+        // session task's own count does. Without this the record reports the
         // value its last SEED carried, which is stale for every compaction
         // since - and the header reads the count while the boundary draws its
         // own row.

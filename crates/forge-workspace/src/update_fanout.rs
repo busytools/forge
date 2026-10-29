@@ -30,10 +30,10 @@ pub struct SeatUpdate {
 /// How many frames one seat's stream keeps for repair.
 ///
 /// **Sized from the window a client is served from**, like the conversation
-/// copy the task holds: it is the stretch a repair is answered from memory,
-/// and what falls past it is the transcript's own read. A ring is shed whole
-/// at an occupant change - the numbers start over, so the frames before one
-/// are unreachable.
+/// copy the transport holds: it is the stretch a repair is answered from
+/// memory, and what falls past it is the transcript's own read. A ring is shed
+/// whole at an occupant change - the numbers start over, so the frames before
+/// one are unreachable.
 const SEAT_RING: usize = crate::conversation_window::CONVERSATION_CAP;
 
 /// The byte ceiling on one seat's ring: the same 64 MiB the conversation copy
