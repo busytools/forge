@@ -18,22 +18,29 @@
     <div class="q">
       <Icon name="question" class="qm" />
       {pair.question}
+      {#if pair.state === 'unanswered'}
+        <!-- A question the turn closed on draws no answer under it: the word
+             says what the cleared dock would otherwise leave ambiguous. -->
+        <span class="fam-chip warn">unanswered</span>
+      {/if}
     </div>
-    {#each pair.picked_labels as picked, at (at)}
-      <div class="a">
-        <Icon name="check" class="am" />
-        <span class="picked">{picked}</span>
-      </div>
-    {/each}
-    {#if pair.typed_note !== null}
-      <div class="a">
-        <!-- The typed row holds the slot the picked rows mark in - empty - so
-             its label starts in the column the picked labels do rather than a
-             step to their left. -->
-        <span class="gap"></span>
-        <span class="am">you typed:</span>
-        <span class="typed">{pair.typed_note}</span>
-      </div>
+    {#if pair.state === 'answered'}
+      {#each pair.picked_labels as picked, at (at)}
+        <div class="a">
+          <Icon name="check" class="am" />
+          <span class="picked">{picked}</span>
+        </div>
+      {/each}
+      {#if pair.typed_note !== null}
+        <div class="a">
+          <!-- The typed row holds the slot the picked rows mark in - empty - so
+               its label starts in the column the picked labels do rather than
+               a step to their left. -->
+          <span class="gap"></span>
+          <span class="am">you typed:</span>
+          <span class="typed">{pair.typed_note}</span>
+        </div>
+      {/if}
     {/if}
   </div>
 {/each}

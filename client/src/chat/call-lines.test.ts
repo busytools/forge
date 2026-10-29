@@ -16,7 +16,6 @@ const edited = (): ToolLeaf => ({
   backgrounded: false,
   note: null,
   stop: null,
-  unanswered: false,
   body: [
     {
       kind: 'hunk',
@@ -60,7 +59,6 @@ const refusedBash = (): ToolLeaf => ({
   backgrounded: false,
   note: null,
   stop: null,
-  unanswered: false,
   body: [{ kind: 'error', message: 'Command failed with exit code 2', detail: '' }],
   mutation: null,
   decision: null,
@@ -170,7 +168,6 @@ describe("the lines a call's row draws", () => {
       backgrounded: false,
       note: null,
       stop: null,
-      unanswered: false,
       body: [
         {
           kind: 'text',

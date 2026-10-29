@@ -1788,27 +1788,18 @@ describe('one turn folded into the units a view draws', () => {
     expect(pairs[0]?.picked_labels, 'and nothing was picked').toEqual([]);
   });
 
-  it('draws no question card until somebody answered it', () => {
-    // The dock is the question's row while it waits, so a card carrying it too
-    // drew the same prompt twice. It appears the moment an answer lands, which
-    // the answer's own frame brings.
-    //
-    // **The call row still draws**: the card never did, so dropping the call
-    // too would leave a question with no row while the dock still shows it.
-    // The `unanswered` mark waits for the turn to close - while it waits, the
-    // dock is the row, and the mark would call a wait a verdict.
+  it('draws no row at all while the dock holds the question', () => {
+    // The dock is the question's row while it waits, so anything drawn here
+    // repeats the prompt: the card did, and the call leaf did too. The
+    // question becomes a row the moment an answer lands, which the answer's
+    // own frame brings.
     const asked = said([
       use('toolu_q', 'AskUserQuestion', {
         questions: [{ question: 'Which colour?', options: [{ label: 'Red' }] }],
       }),
     ]);
 
-    const units = fold([asked]);
-    expect(kinds(units), 'a waiting question draws no card').not.toContain('question');
-    expect(
-      callsOf(units[0])[0]?.leaf.unanswered,
-      'and a still-waiting question is not marked unanswered',
-    ).toBe(false);
+    expect(fold([asked]), 'a waiting question draws nothing at all').toEqual([]);
   });
 
   it('draws the turn hooks after the run they followed, and nothing when none fired', () => {
@@ -4709,27 +4700,34 @@ describe('the frames the fold had no row for', () => {
     expect(noticeOf(workflow[0])?.text).toBe('unhandled frame: system/task_progress');
   });
 
-  it('marks a question unanswered only once its turn has closed', () => {
+  it("draws a closed turn's unanswered question as a card, not a call row", () => {
+    // The turn closed and the dock cleared without an answer, so the card is
+    // the question's only trace: it keeps the words the reader was asked,
+    // where the call leaf named only the tool. The mark says what the cleared
+    // dock would otherwise leave ambiguous: nobody replied, it did not fail.
     const asked = said([
       use('toolu_q', 'AskUserQuestion', {
-        questions: [{ question: 'which way?', options: [{ label: 'a' }, { label: 'b' }] }],
+        questions: [
+          { question: 'which way?', options: [{ label: 'a' }, { label: 'b' }] },
+          { question: 'and how fast?', options: [{ label: 'now' }] },
+        ],
       }),
     ]);
 
-    // The closed form: the turn ended with the question still unanswered.
     const units = fold([asked], null, false, true);
-    expect(kinds(units), 'the call row draws rather than being dropped').toEqual(['leaves']);
-    const leaf = callsOf(units[0])[0]?.leaf;
-    expect(leaf?.unanswered, 'the closed row carries the mark').toBe(true);
-    expect(leaf?.status, 'and is settled failed by the closed-turn sweep').toBe('failed');
-    expect(leaf?.title, 'it still names what it asked').toContain('AskUserQuestion');
-
-    // The waiting form: the dock is its row, so the call wears no verdict.
-    const waiting = fold([asked]);
+    expect(kinds(units), 'the card, with no call row beside it').toEqual(['question']);
+    const card = units[0];
+    const pairs = card?.kind === 'question' ? card.asked : [];
     expect(
-      callsOf(waiting[0])[0]?.leaf.unanswered,
-      'a question still waiting in the dock is not marked unanswered',
-    ).toBe(false);
+      pairs.map((pair) => pair.question),
+      'every question it asked',
+    ).toEqual(['which way?', 'and how fast?']);
+    expect(
+      pairs.map((pair) => pair.state),
+      'each marked unanswered',
+    ).toEqual(['unanswered', 'unanswered']);
+    expect(pairs[0]?.picked_labels, 'with nothing picked').toEqual([]);
+    expect(pairs[0]?.typed_note, 'and nothing typed').toBeNull();
   });
 });
 

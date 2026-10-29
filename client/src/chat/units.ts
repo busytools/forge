@@ -126,6 +126,8 @@ export function stopsOf(turns: readonly { messages: readonly unknown[] }[]): Pag
 /** One question the assistant asked, with what was answered. */
 export interface AnsweredQuestion {
   question: string;
+  /** Whether the reader answered it; a question the turn closed on wears the mark. */
+  state: 'answered' | 'unanswered';
   picked_labels: string[];
   typed_note: string | null;
 }
@@ -1619,8 +1621,13 @@ function address(fields: Record<string, unknown>): string | null {
   return label === null || label === 'lead' ? project : `${project}/${label}`;
 }
 
-/** The card a question call draws, with whatever the person answered. */
-function questionCard(input: unknown, answer: unknown, key: string): Unit | null {
+/**
+ * The card a question call draws, with whatever the person answered.
+ *
+ * `closed` says the turn ended before any answer could land, where the card is
+ * the question's last trace rather than a record of the answer.
+ */
+function questionCard(input: unknown, answer: unknown, key: string, closed: boolean): Unit | null {
   const questions = obj(input)['questions'];
   const answers = obj(obj(answer)['answers']);
   const annotations = obj(obj(answer)['annotations']);
@@ -1663,16 +1670,29 @@ function questionCard(input: unknown, answer: unknown, key: string): Unit | null
       ) ??
       null;
 
-    asked.push({ question: text, picked_labels: picked, typed_note: typed === '' ? null : typed });
+    asked.push({
+      question: text,
+      state: 'answered',
+      picked_labels: picked,
+      typed_note: typed === '' ? null : typed,
+    });
   }
-  // A question still waiting is not drawn here at all: the dock is its row
-  // while it waits, and the card that carried both the question and its answer
-  // read as a second copy of the prompt rather than as the record of one. It
-  // appears the moment an answer lands.
-  if (!asked.some((entry) => entry.picked_labels.length > 0 || entry.typed_note !== null)) {
-    return null;
+  if (asked.some((entry) => entry.picked_labels.length > 0 || entry.typed_note !== null)) {
+    return { kind: 'question', key, asked };
   }
-  return { kind: 'question', key, asked };
+  // **A closed turn's question was never answered**, and the dock that held it
+  // has cleared: the card is its only trace, so every question wears the mark.
+  if (closed) {
+    return {
+      kind: 'question',
+      key,
+      asked: asked.map((entry) => ({ ...entry, state: 'unanswered' as const })),
+    };
+  }
+  // Anything else is a question still waiting, and the dock is its row: a card
+  // here would draw the prompt twice and precede the answer that has not
+  // landed. It appears the moment the answer's own frame arrives.
+  return null;
 }
 
 /** One settled turn's report, from the frame that recorded it. */
@@ -3259,29 +3279,27 @@ export function fold(
           pending.push({ tag: 'card', card });
           continue;
         }
-        /** Whether this call is a question the CLI left unanswered. */
-        let unanswered = false;
         if (isQuestion(name)) {
           const record = records.get(id);
+          // A record the page capped has no answers to read (#2374), and a
+          // call the CLI refused never ran: each keeps its own leaf rather
+          // than becoming a card.
+          const ownLeaf = omittedRecord(record) !== null || denied.has(id);
           const card = questionCard(
             block.input,
             record,
             id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
+            abandoned && !ownLeaf,
           );
           if (card !== null) {
             push(card);
             continue;
           }
-          // An omitted record is not a question nobody answered: the card has
-          // no answers to read, so the call falls through to its leaf, which
-          // opens on the omission rather than the row vanishing (#2374).
-          // **Anything else is a question nobody answered**, and its call row
-          // is the only trace of it - the card never drew, so dropping the
-          // call too would lose the question entirely (rule 25). **Only
-          // once the turn has closed**: a question still waiting is the
-          // dock's row, and marking that unanswered would state as a verdict
-          // what is only the wait.
-          unanswered = abandoned && omittedRecord(record) === null;
+          if (!ownLeaf) {
+            // The question is still waiting and the dock is its row: drawing
+            // a call here repeats the prompt the dock already holds.
+            continue;
+          }
         }
         const leaf = leafOf(
           id,
@@ -3295,7 +3313,6 @@ export function fold(
           abandoned || denied.has(id),
           stops.settled.get(id) ?? null,
         );
-        leaf.unanswered = unanswered;
         if (name.toLowerCase() === 'skill') {
           // A skill's body follows its call as a user frame; the claim is
           // recorded here, and the body attaches to this row when it arrives.

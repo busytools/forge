@@ -1474,12 +1474,14 @@
      rows found, or a review comment with the code it was filed against.
      The names are `fam-`-prefixed so no bare name of another surface
      catches them, the same rule the dispatch row's `sg-` fields follow. */
-  details.leaf > summary .fam-chip { font-family: var(--mono); font-size: var(--fs-label);
+  details.leaf > summary .fam-chip,
+  .card .q .fam-chip { font-family: var(--mono); font-size: var(--fs-label);
     border-radius: 99px; padding: 0 8px; flex: none; border: 1px solid var(--line);
     color: var(--muted); line-height: 1.7; white-space: nowrap; }
   details.leaf > summary .fam-chip.info { color: var(--blue); border-color: rgba(97,160,224,.4); }
   details.leaf > summary .fam-chip.ok { color: var(--ok); border-color: rgba(130,199,107,.4); }
-  details.leaf > summary .fam-chip.warn { color: var(--warn); border-color: rgba(201,161,59,.4); }
+  details.leaf > summary .fam-chip.warn,
+  .card .q .fam-chip.warn { color: var(--warn); border-color: rgba(201,161,59,.4); }
   details.leaf > summary .fam-chip.bad { color: var(--bad); border-color: rgba(224,104,62,.4); }
   details.leaf > summary .fam-chip.dim { color: var(--dim); }
   details.leaf > summary .fam-fig { margin-left: auto; color: var(--dim); flex: none;
@@ -2279,12 +2281,14 @@ Set `service_key` per environment in the bot's own config.</pre>
             </div>
           </details>
 
-          <!-- A question nobody answered has no card, so its call row is the
-               only trace of it once the dock clears. The mark says what the
-               spinner would leave ambiguous: it did not fail, nobody replied. -->
-          <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-question"/></svg><span class="tn">AskUserQuestion</span><span class="fam-chip warn">unanswered</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          </details>
+          <!-- A question nobody answered: while it waits the dock is its row,
+               and nothing is drawn here. A turn that closes on it clears the
+               dock, so the card is the question's last trace. The mark says
+               what the cleared dock would otherwise leave ambiguous: nobody
+               replied, it did not fail. -->
+          <div class="card">
+            <div class="q"><svg class="ic qm"><use href="#i-question"/></svg>Should a waiting question draw a chat row?<span class="fam-chip warn">unanswered</span></div>
+          </div>
 
           <details class="leaf">
             <summary><svg class="ic gl ok"><use href="#i-square-terminal"/></svg><span class="tn">run the full workspace gate, then the feature-config build</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>

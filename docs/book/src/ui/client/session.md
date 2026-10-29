@@ -163,11 +163,11 @@ read as one system.
   behind a second control under them, so the payload stays reachable while
   the row's face is the facts. The frame is seen the day it arrives and can
   be given a real face later, rather than being dropped. A refusal also
-  settles the call it names, which no result frame will ever settle, and an
-  assistant question nobody answered keeps its call row marked `unanswered`
-  once the turn has closed. Until then the dock is the question's row, so the
-  mark waits for the close; after it, the answer card never drew and the dock
-  has cleared, and the call row is the only trace left.
+  settles the call it names, which no result frame will ever settle. **A
+  question draws nothing here while it waits**: the dock is its row. A turn
+  that closes on it without an answer clears the dock, so the question draws
+  as a card instead - the words the reader was asked, marked `unanswered`,
+  with nothing picked or typed under them.
 - **A model swap, a memory recall, a local command and a project's
   development intent each draw a row of their own.** A model fallback (and a
   refusal retry, a refusal with no fallback, and the Fable consent gate) draws

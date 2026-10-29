@@ -133,15 +133,6 @@ export interface ToolLeaf {
    * it by this task id.
    */
   stop: string | null;
-  /**
-   * Whether this row is a question the CLI left unanswered.
-   *
-   * A question the assistant asked draws as a card once it has an answer;
-   * one that never got an answer has no card, and its call row is the only
-   * trace of it. The mark says so on the row rather than leaving a spinner
-   * that reads as a call still working.
-   */
-  unanswered: boolean;
   /** What the row opens on. Empty for a call that has not come back yet. */
   body: CallBody[];
   /**
@@ -780,7 +771,6 @@ export function leafOf(
     backgrounded: task?.backgrounded === true,
     note: task?.backgrounded === true ? task.note : null,
     stop,
-    unanswered: false,
     body: shown,
     mutation: marksOf(name, input, body, record),
     decision: decisionOf(name, input, result),
