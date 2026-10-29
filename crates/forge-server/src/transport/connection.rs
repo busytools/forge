@@ -2475,8 +2475,7 @@ fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
 fn for_a_client(mut update: SessionUpdate, cap: usize) -> SessionUpdate {
     match &mut update {
         SessionUpdate::Connected { history, .. }
-        | SessionUpdate::SessionReplaced { history, .. }
-        | SessionUpdate::HistoryReplayed { history, .. } => *history = Vec::new(),
+        | SessionUpdate::SessionReplaced { history, .. } => *history = Vec::new(),
         // **A live frame draws what a reload draws** (#2374): a record is
         // bounded on its way to a client wherever it comes from, or an
         // over-cap edit draws its hunks live and the marker after a switch.

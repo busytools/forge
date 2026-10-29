@@ -51,7 +51,7 @@ const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The updates that replace the seat's whole record rather than patching it:
 /// a new occupant under the slot, or the first connect. Answering them is a
 /// fresh read, which the app half performs (a subscribe's own snapshot).
-const REPLACES: [&str; 4] = ["spawning", "connected", "history_replayed", "session_replaced"];
+const REPLACES: [&str; 3] = ["spawning", "connected", "session_replaced"];
 
 /// One subject's held state.
 pub enum Held {

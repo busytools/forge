@@ -284,28 +284,11 @@ pub enum Command {
         key: SessionSlot,
         uuid: String,
     },
-    /// Ask the session task to emit the conversation it is carrying, as
-    /// [`SessionUpdate::HistoryReplayed`].
-    ///
-    /// **The task is asked rather than the transcript read**, because the task
-    /// is what PRODUCES the conversation: it is handed the history at connect
-    /// and it emits every frame after it, so a history it hands back is in its
-    /// own order with the frames around it. A reader that walked the file
-    /// instead would be a second producer of the same truth, and the two
-    /// cannot be reconciled - the read picks up rows written while it runs,
-    /// which the stream also delivers, and no identity ties them together.
-    ///
-    /// A no-op for a seat whose session is gone: nothing is emitted and the
-    /// asker's wait times out.
-    ReplayConversation {
-        key: SessionSlot,
-    },
     /// A view opened the row of a finished call and asks for the command's
     /// own output: the tail of the file the CLI streamed it to.
     ///
-    /// Answered by this task rather than the agent, for the same reason a
-    /// replay is: the conversation is the task's own, and the frame that
-    /// named the call's `output_file` is still in it. The answer is
+    /// Answered by the transport from its held conversation, which carries
+    /// the frame that named the call's `output_file`. The answer is
     /// [`SessionUpdate::CallOutput`] - the tail, or a named reason there is
     /// none. Asking again re-reads, which is the whole of what a running
     /// tail would need.
@@ -840,7 +823,6 @@ impl Command {
             | Self::PromptUnder { key, .. }
             | Self::Cancel { key }
             | Self::CancelQueuedPrompt { key, .. }
-            | Self::ReplayConversation { key }
             | Self::ReadCallOutput { key, .. }
             | Self::SetMode { key, .. }
             | Self::SetModel { key, .. }
@@ -925,9 +907,6 @@ impl std::fmt::Debug for Command {
             Self::Cancel { key } => f.debug_struct("Cancel").field("key", key).finish(),
             Self::CancelQueuedPrompt { key, uuid } => {
                 f.debug_struct("CancelQueuedPrompt").field("key", key).field("uuid", uuid).finish()
-            }
-            Self::ReplayConversation { key } => {
-                f.debug_struct("ReplayConversation").field("key", key).finish()
             }
             Self::ReadCallOutput { key, call_id } => f
                 .debug_struct("ReadCallOutput")
@@ -1365,25 +1344,6 @@ pub enum SessionUpdate {
         dropped: usize,
         /// Compactions the resumed transcript records. Seeds the
         /// per-session count, which has no other durable source.
-        compaction_count: u32,
-    },
-    /// The conversation a seat is carrying, asked for by
-    /// `Command::ReplayConversation`.
-    ///
-    /// **It is not a `Connected`, and the difference is not bookkeeping.** A
-    /// view reads `Connected` as a session STARTING - it seeds the bucket,
-    /// adopts the id, resets the mode and re-tags - so a replay wearing that
-    /// shape would make every attached view re-seed the seat as though it had
-    /// just launched. This says only: here is the conversation you asked for.
-    ///
-    /// It exists so a consumer joining a session it did not watch begin can be
-    /// handed the history by the task that PRODUCES it, in that task's own
-    /// emission order, rather than reading the transcript alongside the
-    /// frames - two producers of one truth, which is a race no reconciliation
-    /// closes.
-    HistoryReplayed {
-        key: SessionSlot,
-        history: Vec<Message>,
         compaction_count: u32,
     },
     /// A call's own output, asked for by `Command::ReadCallOutput`: the tail
@@ -2118,7 +2078,6 @@ impl SessionUpdate {
         match self {
             Self::Spawning { key, .. }
             | Self::Connected { key, .. }
-            | Self::HistoryReplayed { key, .. }
             | Self::CallOutput { key, .. }
             | Self::SessionReplaced { key, .. }
             | Self::Handoff { key, .. }
@@ -2204,9 +2163,6 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish_non_exhaustive(),
             Self::Connected { key, .. } => {
                 f.debug_struct("Connected").field("key", key).finish_non_exhaustive()
-            }
-            Self::HistoryReplayed { key, .. } => {
-                f.debug_struct("HistoryReplayed").field("key", key).finish_non_exhaustive()
             }
             Self::CallOutput { key, call_id, .. } => f
                 .debug_struct("CallOutput")

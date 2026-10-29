@@ -2985,7 +2985,7 @@ impl Workspace {
                 workspace: Arc::downgrade(self),
                 // Filled by the first `Connected`, which is where this task
                 // is handed the history it can later replay.
-                conversation: None,
+                compaction_count: 0,
                 successor: None,
                 teardown_done: Some(teardown_done),
             };
@@ -4564,13 +4564,6 @@ impl Workspace {
     /// out of what it must account for.
     pub fn seat_unringed_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
         self.update_tx.unringed_between(key, from, to)
-    }
-
-    /// How many numbers in `from..=to` on `key`'s stream a replay was minted
-    /// under: history the ring cannot serve, so a fill that spans one must
-    /// refuse rather than mark past it.
-    pub fn seat_replays_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
-        self.update_tx.replays_between(key, from, to)
     }
 
     /// Whether `key`'s latest epoch-opening seal carried rows, which no ring
@@ -15123,7 +15116,7 @@ provider = "anthropic"
             update_tx,
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };

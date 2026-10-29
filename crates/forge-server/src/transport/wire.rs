@@ -28,7 +28,7 @@ use forge_workspace::env::git_diff::resolver::{
     AnchorPlacement, OutdatedReason, place_anchor_in_content, place_anchor_in_lines_with,
 };
 use forge_workspace::env::processes::ProcessSnapshot;
-use forge_workspace::{Command, McpServers, ProjectView};
+use forge_workspace::{McpServers, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -1580,36 +1580,32 @@ pub fn page_within(
     Page { turns: page_turns, cursor }
 }
 
-/// How long a request waits for the seat's conversation before answering
-/// without one.
+/// How long a request waits for a live seat's first `Connected` before
+/// answering without a conversation.
 ///
-/// The session task answers a replay on its own next loop iteration, so this
-/// is a failure case rather than a pacing mechanism. **What it decides is the
+/// The fold applies the seal within a frame of it arriving, so this is a
+/// failure case rather than a pacing mechanism. **What it decides is the
 /// same for both readers and they answer differently**: a snapshot carries an
 /// empty conversation, which a client draws as a seat with nothing to show,
 /// while a page is REFUSED - an empty page carries `cursor: null`, and a
 /// client reads that as the end of the history rather than as a delay.
-const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+const SEED_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The seat's conversation, answering from its own transcript when the
 /// stream holds none, and asking the session task for it when there is one
 /// to ask.
 ///
 /// **A seat has two sources of history and each answers what it alone can.**
-/// The session task's own window is the truer copy - it carries every frame
-/// the session emitted, including the `Result` frames no transcript row
-/// carries - and it is what a replay hands back for a seat already running.
-/// The transcript on disk is what a seat LEFT: a sleeping seat has no task
-/// to replay from, and waiting for the spawn to carry the same history back
-/// would make a page opening on it wait seconds for something already
-/// written (measured live 2026-10-12: ~2.6s for a history on disk).
+/// The transport's held copy is the live one: the fold applies every
+/// `ChatAppended` the session emits, so a seat that has run in this process
+/// already has its conversation here. The transcript on disk is what a seat
+/// LEFT: a sleeping seat has no copy, and reading its file costs no wait
+/// (measured live 2026-10-12: ~2.6s for a history on disk).
 ///
-/// So the file goes first, because reading it costs no wait, and the replay
-/// still goes out beside it: a live session's copy REPLACES the seeded one
-/// through [`crate::transport::conversation::Reseed::Replay`], so nothing a
-/// sleeping read could not see is lost once the session is up. A seat whose
-/// file holds nothing yet - a fresh session that has not spoken - falls to
-/// the replay alone, which is the wait below.
+/// So a copy is returned as it stands, and a seat with none is seeded from
+/// the file. A file that holds nothing yet - a fresh session that has not
+/// spoken - falls to the wait below, for the first `Connected` the fold has
+/// not applied.
 ///
 /// No lock is held across the wait, and two callers on two cold seats do not
 /// serialise: each waits on its own seat's arrival, and the notice only says
@@ -1622,61 +1618,49 @@ pub async fn conversation_for(
     // **A copy of another occupant is no copy.** A seal the fold has not
     // applied yet leaves the previous run's conversation standing, and
     // answering with it would pair the new epoch's count with rows it never
-    // wrote; the read falls through to the paths a seat with no copy takes.
+    // wrote. The transcript for the occupant the header names replaces it.
     let occupant = state.surface.header(slot).session_id;
     let current = |held: &Arc<Held>| held.holds_occupant(occupant.as_ref());
     if let Some(held) = state.conversations.get(slot).filter(current) {
         return Some(held);
     }
-    // **The file seeds only a seat with NO copy.** `insert` keeps what is
-    // there, so on a mismatched copy it would hand back the previous run's
-    // rows - the very answer this function exists to refuse. A mismatch goes
-    // straight to the replay, whose reseed replaces the copy in place.
-    if state.conversations.get(slot).is_none()
-        && let Some(held) = seed_from_transcript(state, slot, timings).await
-    {
+    // **A mismatch is replaced, not kept.** `insert` keeps what is there, so
+    // a stale copy would answer for the run it did not read; the seed writes
+    // over it.
+    if let Some(held) = seed_from_transcript(state, slot, timings, true).await {
         // **The seed must be the seat's copy too.** Its occupant is the
         // read's own resolution, which can lag a header that already moved
         // on: that copy would answer for the run it did not read.
-        if !current(&held) {
-            return None;
-        }
-        // **A live session's window is the truer copy** and this is how it
-        // lands: the task answers `HistoryReplayed` with the frames it holds,
-        // which reseeds the seat over what the file seeded. A seat with
-        // nothing running has nothing to replay from, and the dispatch's
-        // refusal there is the ordinary answer.
-        let _ = state.surface.dispatch(Command::ReplayConversation { key: slot.clone() });
-        return Some(held);
+        return current(&held).then_some(held);
     }
-    let deadline = std::time::Instant::now() + REPLAY_WAIT;
-    // Asked BEFORE the loop's first look, so a seat that resolves between
-    // the look and the wait is still seen on this pass rather than costing
-    // the caller its whole budget.
-    if state.surface.dispatch(Command::ReplayConversation { key: slot.clone() }).is_err() {
-        return None;
-    }
+    // **The file holds nothing yet.** A live session's first `Connected` may
+    // still be on its way; wait for the fold to apply it, bounded, so a page
+    // opening on a just-spawned seat draws it rather than an empty
+    // conversation. The notice is enabled before the first look, so a seat
+    // that resolves between the look and the wait is still seen on this
+    // pass rather than costing the caller its whole budget.
+    let deadline = std::time::Instant::now() + SEED_WAIT;
+    let seeded = state.conversations.seeded_notice();
+    tokio::pin!(seeded);
+    seeded.as_mut().enable();
     loop {
+        if let Some(held) = state.conversations.get(slot).filter(current) {
+            return Some(held);
+        }
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         if left.is_zero() {
             break;
         }
-        let seeded = state.conversations.seeded_notice();
-        tokio::pin!(seeded);
-        seeded.as_mut().enable();
-        if let Some(held) = state.conversations.get(slot).filter(current) {
-            return Some(held);
-        }
-        if tokio::time::timeout(left, seeded).await.is_err() {
+        if tokio::time::timeout(left, seeded.as_mut()).await.is_err() {
             break;
         }
     }
     let held = state.conversations.get(slot).filter(current);
     if held.is_none() {
-        tracing::warn!(
-            event_name = "conversation_replay_timed_out",
+        tracing::debug!(
+            event_name = "conversation_not_yet_held",
             slot = %slot.display(),
-            waited_ms = REPLAY_WAIT.as_millis(),
+            waited_ms = SEED_WAIT.as_millis(),
             "no conversation for this seat within the wait; the request is answered \
              without one, which a client draws the same way it draws a seat that is \
              not running",
@@ -1697,6 +1681,7 @@ async fn seed_from_transcript(
     state: &TransportState,
     slot: &SessionSlot,
     timings: &mut OpenTimings,
+    replace: bool,
 ) -> Option<Arc<Held>> {
     let at = std::time::Instant::now();
     let surface = Arc::clone(&state.surface);
@@ -1717,7 +1702,20 @@ async fn seed_from_transcript(
     // the seat ran one occupant must not answer under another: the seal the
     // fold has not applied yet leaves this copy standing while the header
     // already names the new run.
-    conversation.set_occupant(read.session_id.map(forge_primitives::SessionId::new));
+    let occupant = read.session_id.map(forge_primitives::SessionId::new);
+    conversation.set_occupant(occupant.clone());
+    if replace {
+        // **A copy the stream inserted while the file was read is the live
+        // one.** Keep it when it belongs to the same run; otherwise the file
+        // is what the header names and it takes the seat's place.
+        if occupant.is_some()
+            && let Some(held) = state.conversations.get(slot)
+            && held.holds_occupant(occupant.as_ref())
+        {
+            return Some(held);
+        }
+        return Some(state.conversations.replace(slot, conversation));
+    }
     Some(state.conversations.insert(slot, conversation))
 }
 
@@ -2066,8 +2064,6 @@ enum NotReady {
     Behind,
     /// The epoch's seal rows are unapplied, so its history cannot be reached.
     AwaitsSeal,
-    /// A replay's window is unapplied, and the ring never holds one.
-    AwaitsReplay,
 }
 
 /// Bring `slot`'s held conversation up to `want`, or report that it cannot.
@@ -2111,22 +2107,6 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
         return Ok(());
     }
     let from = state.conversations.consumed_for(slot).saturating_add(1);
-    // **A replay in the stretch is history the fill cannot apply.** Its window
-    // is not ringed, so no window serves it, and marking the copy past its
-    // number would have the fold skip the replay when it lands - the rows
-    // gone with nothing failing. Refused instead, for the fold to apply;
-    // counted apart from a frame that merely closes an epoch.
-    if state.surface.seat_replays_between(slot, from, want) > 0 {
-        tracing::error!(
-            event_name = "seat_copy_awaits_replay",
-            slot = %slot.display(),
-            want,
-            "the seat's copy is behind a replay the fold has not applied, and the ring cannot \
-             carry the window it hands over; the read is refused rather than answered with a \
-             hole",
-        );
-        return Err(NotReady::AwaitsReplay);
-    }
     let frames = state.surface.seat_frames_between(slot, from, want);
     // **A stretch holding only a seal is not a stretch the copy is behind on.**
     // The frames that close an epoch are numbered but never ringed, so no
@@ -2233,9 +2213,6 @@ async fn session(
             NotReady::AwaitsSeal => {
                 "the fold has not applied its epoch's seal, whose history an answer would be \
                  missing"
-            }
-            NotReady::AwaitsReplay => {
-                "the fold has not applied its replay, whose window an answer would be missing"
             }
         };
         anyhow::bail!("the seat's stream has not settled for {}; {why}", slot.display());

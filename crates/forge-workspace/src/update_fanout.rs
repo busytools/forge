@@ -93,8 +93,7 @@ fn frame_bytes(update: &SessionUpdate) -> usize {
                     + ENTRY
             })
             .sum(),
-        // `HistoryReplayed` is not ringed (see `numbered`), so it is charged
-        // nothing; anything else is a frame of its own fixed weight.
+        // Anything else is a frame of its own fixed weight.
         _ => 0,
     };
     payload.saturating_add(FRAME)
@@ -166,14 +165,6 @@ struct Shared {
     /// count: a number older than that lies beyond any window a fill could
     /// serve, where the count it underwrites is a refusal rather than a hole.
     unringed: HashMap<SessionSlot, VecDeque<u64>>,
-    /// The numbers each seat has minted for a `HistoryReplayed`.
-    ///
-    /// **Not ringed, and not folded into [`Self::unringed`].** A replay's
-    /// window is history the ring cannot serve, so a fill that spans one is
-    /// refused for the fold to land - where a frame that merely closes an
-    /// epoch is a number the copy loses nothing by skipping. Bounded like
-    /// `unringed`, and for the same reason.
-    replays: HashMap<SessionSlot, VecDeque<u64>>,
     /// The seats whose latest epoch-opening seal carried rows.
     ///
     /// **A seal's history is not in the ring**, so a reader filling a copy
@@ -200,7 +191,6 @@ impl Default for Shared {
             rings: HashMap::new(),
             ring_bytes: HashMap::new(),
             unringed: HashMap::new(),
-            replays: HashMap::new(),
             sealed_with_rows: HashSet::new(),
             ring_cap: SEAT_RING,
             ring_cap_bytes: SEAT_RING_BYTES,
@@ -233,17 +223,11 @@ impl Shared {
         // epoch hands over - so a ring that kept one would report a front
         // number the new run cannot answer for, and let that old number
         // collide with a new one as the count climbs back to it.
-        //
-        // **A replay's window is not ringed either.** It carries a whole
-        // conversation window (bounded only by the window's own 64 MiB) and a
-        // re-open reads a fresh one, so a ring that kept it would pin that
-        // window per retained frame for a value no repair serves.
         let epoch_frame = matches!(
             update,
             SessionUpdate::Connected { .. }
                 | SessionUpdate::SessionReplaced { .. }
                 | SessionUpdate::Releasing { .. }
-                | SessionUpdate::HistoryReplayed { .. }
         );
         if matches!(update, SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. })
         {
@@ -256,7 +240,6 @@ impl Shared {
             self.rings.remove(&slot);
             self.ring_bytes.remove(&slot);
             self.unringed.remove(&slot);
-            self.replays.remove(&slot);
             // **The mark describes the LATEST seal, so each mint replaces
             // it.** Only a seal that carried rows leaves a gap the ring cannot
             // fill, and a later blank epoch must not inherit the previous
@@ -286,13 +269,6 @@ impl Shared {
             // occupant's seal, which is where the numbers start over.
             self.sequences.insert(slot.clone(), seq);
             remember(self.unringed.entry(slot.clone()).or_default(), seq, self.ring_cap);
-        } else if matches!(update, SessionUpdate::HistoryReplayed { .. }) {
-            // **Not ringed, and recorded where a fill can find it.** A reader
-            // whose stretch holds one must know the window it carries is not
-            // in the ring: treating it as merely unringed would let a fill
-            // mark past it, losing rows only the fold can apply.
-            self.sequences.insert(slot.clone(), seq);
-            remember(self.replays.entry(slot.clone()).or_default(), seq, self.ring_cap);
         } else {
             self.sequences.insert(slot.clone(), seq);
         }
@@ -340,16 +316,6 @@ impl Shared {
     /// holds no frame for.
     fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
         let Some(numbers) = self.unringed.get(slot) else {
-            return 0;
-        };
-        u64::try_from(numbers.iter().filter(|number| (from..=to).contains(number)).count())
-            .unwrap_or(u64::MAX)
-    }
-
-    /// How many of the numbers in `from..=to` on `slot`'s stream a
-    /// `HistoryReplayed` was minted under.
-    fn replays_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
-        let Some(numbers) = self.replays.get(slot) else {
             return 0;
         };
         u64::try_from(numbers.iter().filter(|number| (from..=to).contains(number)).count())
@@ -428,12 +394,6 @@ impl UpdateFanout {
     /// How many numbers in `from..=to` on `slot`'s stream no window can hold.
     pub(crate) fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
         self.shared.lock().unringed_between(slot, from, to)
-    }
-
-    /// How many numbers in `from..=to` on `slot`'s stream a replay was minted
-    /// under, whose window the ring cannot serve.
-    pub(crate) fn replays_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
-        self.shared.lock().replays_between(slot, from, to)
     }
 
     /// Whether `slot`'s latest epoch-opening seal carried rows, which no ring
@@ -1033,38 +993,6 @@ mod tests {
             "and the ring states its true weight: {} bytes",
             fanout.ring_bytes(&seat),
         );
-    }
-
-    /// **A replay's window is not ringed.** It carries a whole conversation
-    /// window and a re-open reads a fresh one; a ring that kept it would pin
-    /// that window per retained frame while its charge read as a frame.
-    #[test]
-    fn a_replay_is_not_ringed() {
-        let fanout = UpdateFanout::default();
-        let mut rx = fanout.subscribe(SubscriberRole::Answering);
-        let seat = seat("lead");
-
-        assert!(
-            fanout.send(SessionUpdate::HistoryReplayed {
-                key: seat.clone(),
-                history: Vec::new(),
-                compaction_count: 0,
-            }),
-            "a subscribed fan-out delivers",
-        );
-        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the replay");
-        assert!(fanout.frames_between(&seat, 1, 1).is_empty(), "the ring holds no replay");
-        assert_eq!(
-            fanout.replays_between(&seat, 1, 1),
-            1,
-            "and its number is recorded as a replay a fill must not mark past",
-        );
-        assert_eq!(
-            fanout.unringed_between(&seat, 1, 1),
-            0,
-            "a replay is not a frame that merely closes an epoch",
-        );
-        assert_eq!(fanout.ring_bytes(&seat), 0, "so it is charged nothing");
     }
 
     /// **A call output and a card tail are charged by their payload.** Both

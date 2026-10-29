@@ -1237,7 +1237,6 @@ describe('applyUpdate', () => {
 const EVERY_VARIANT = [
   'spawning',
   'connected',
-  'history_replayed',
   'call_output',
   'session_replaced',
   'handoff',
@@ -1366,9 +1365,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (71 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (70 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(71);
+    ).toBe(70);
   });
 
   it('classifies every variant the core can send', () => {

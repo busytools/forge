@@ -435,12 +435,7 @@ export const HANDLERS: Record<string, Apply> = {
  * a client through the read it makes, never as an update payload - so a page
  * answers them with a read.
  */
-export const REPLACES: readonly string[] = [
-  'spawning',
-  'connected',
-  'history_replayed',
-  'session_replaced',
-];
+export const REPLACES: readonly string[] = ['spawning', 'connected', 'session_replaced'];
 
 /**
  * The variants that touch nothing on this record.

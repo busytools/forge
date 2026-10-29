@@ -547,7 +547,8 @@ async fn serve_one(args: &Args, transcript: &Path) -> anyhow::Result<()> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("pid {} listening on ws://{addr}/socket for {seat:?}", std::process::id());
-    serve(state, listener).await?;
+    let updates = state.surface.subscribe_mirror();
+    serve(state, listener, updates).await?;
     Ok(())
 }
 

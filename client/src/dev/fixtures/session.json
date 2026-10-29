@@ -15,7 +15,6 @@
   },
   "composer": {
     "machine": null,
-    "sign_in": null,
     "bind": "right_cmd",
     "mode": "auto",
     "notice": null

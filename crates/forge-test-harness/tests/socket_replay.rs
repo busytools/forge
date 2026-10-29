@@ -269,7 +269,7 @@ census!(Subject,
 
 census!(SessionUpdate,
     [
-        Spawning struct, Connected struct, HistoryReplayed struct, CallOutput struct,
+        Spawning struct, Connected struct, CallOutput struct,
         SessionReplaced struct, Handoff struct, MachineTurn struct,
         ConnectionFailed struct, Releasing struct,
         Notice struct,
@@ -307,7 +307,7 @@ census!(SessionUpdate,
 census!(Command,
     [
         Prompt struct, PromptUnder struct, Cancel struct, CancelQueuedPrompt struct,
-        ReplayConversation struct, ReadCallOutput struct, SetMode struct, SetModel struct,
+        ReadCallOutput struct, SetMode struct, SetModel struct,
         NewSession struct,
         ResumeSession struct, Handoff struct, RespondPermission struct, RespondSlackPost struct,
         RespondBrowserHandOff struct,

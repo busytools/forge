@@ -66,9 +66,10 @@ async fn serve_fleet(fleet: &Fleet, heartbeat: Heartbeat) -> (String, Arc<Transp
         Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(heartbeat));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = serve(served, listener).await;
+        let _ = serve(served, listener, updates).await;
     });
     (format!("ws://{addr}/socket"), state)
 }
@@ -92,6 +93,64 @@ async fn connect(url: &str) -> Client {
 async fn connected() -> Client {
     let (url, _fleet) = a_server().await;
     connect(&url).await
+}
+
+/// **The fold is attached before the first `Connected`.**
+///
+/// Every seat's copy comes from the seal the fold applies. A subscription
+/// taken inside the serve task rather than by its caller is a race the boot
+/// order has no reason to win: the boot wave spawns sessions as soon as
+/// `serve_socket` returns, and a `Connected` emitted before the fold is
+/// listening is dropped - the transport would answer that seat from the
+/// transcript alone, losing every frame a transcript never carries.
+#[tokio::test]
+async fn the_fold_is_attached_before_the_first_connected() {
+    let (url, fleet, state) = a_server_with_state().await;
+    // The serve path takes the subscription before it spawns, so the count is
+    // already one here - with no client attached, and no wait.
+    assert!(
+        fleet.subscriber_count() >= 1,
+        "the fold subscribes inside the serve task rather than before it",
+    );
+
+    let seat = lead_seat();
+    // The notice is armed before the emit, so a fold that seeds between the
+    // emit and the wait is still seen rather than waited out.
+    let seeded = state.conversations.seeded_notice();
+    tokio::pin!(seeded);
+    seeded.as_mut().enable();
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the seal's row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    tokio::time::timeout(SEED_WAIT, seeded.as_mut())
+        .await
+        .expect("the fold was not listening when the first Connected was emitted");
+
+    // A client that never saw the seat start reads that same copy.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert_eq!(
+        says_times(&data, "the seal's row"),
+        1,
+        "the copy the fold made is what a page reads",
+    );
 }
 
 /// [`connect`], with no message cap of its own.
@@ -4151,79 +4210,6 @@ async fn a_reconnect_answer_covers_every_frame_below_its_number() {
     );
 }
 
-/// **A fill that spans a replay is refused, never marked past.**
-///
-/// A `HistoryReplayed`'s window is never ringed, so a fill that rescues a read
-/// from a lagging fold has nothing to apply for its number. Marking the copy
-/// past it anyway would have the fold skip the replay when it lands - as a
-/// frame the copy already holds - and the window's rows would be gone with
-/// nothing failing. The fold is held here so the window is deterministic
-/// rather than raced; the second read proves the rows arrive once it lands.
-#[tokio::test]
-async fn a_fill_that_spans_a_replay_is_refused_rather_than_marked_past() {
-    let (url, fleet, state) = a_server_with_state().await;
-    let seat = lead_seat();
-    wait_for_the_fold(&fleet).await;
-
-    state.conversations.hold_the_fold(true);
-    fleet.emit(SessionUpdate::HistoryReplayed {
-        key: seat.clone(),
-        history: vec![a_said_frame("the replayed window row")],
-        compaction_count: 0,
-    });
-    let replay = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
-
-    // **The FIRST answer, not a poll.** The next subscribe would find the fold
-    // caught up whatever this one did.
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            review: false,
-        },
-    )
-    .await;
-    match next_server(&mut socket).await {
-        ServerMessage::Error { what, why, .. } => {
-            assert_eq!(what, "subscribe", "the refusal is the subscribe's own read");
-            assert!(
-                why.contains("replay"),
-                "and names the replay the copy is behind rather than a number: {why}",
-            );
-        }
-        other => panic!(
-            "a fill over a replay must refuse rather than mark the copy past its window, and \
-             this answered {other:?}"
-        ),
-    }
-
-    state.conversations.hold_the_fold(false);
-    assert!(
-        state.conversations.await_consumed(&seat, replay, SEED_WAIT).await,
-        "the fold never applied the replay the refusal left for it: the watermark is {}",
-        state.conversations.consumed_for(&seat),
-    );
-
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            review: false,
-        },
-    )
-    .await;
-    let (_, after, _) = snapshot_answering(&mut socket).await;
-    assert_eq!(
-        says_times(&after, "the replayed window row"),
-        1,
-        "the replay's row crosses once the fold has landed, and once only",
-    );
-}
-
 /// **A caught-up copy is never refused.** A seat that has emitted more than a
 /// window's worth of frames has a ring that shed its oldest, so the fallback's
 /// coverage guard cannot reach back - and a watermark that never advanced
@@ -4927,54 +4913,6 @@ async fn an_answer_through_a_reseed_carries_the_copys_own_number() {
     );
 }
 
-/// **A replay's answer carries the number its window reaches** (#2443).
-///
-/// The replay route reseeds with the seat's own frames, so the copy is current
-/// through the replay's number. An answer that did not take it would carry the
-/// new window's first number instead, and the client would draw frames the copy
-/// already holds. A seal's reset covers the Fresh route; this pins the other.
-#[tokio::test]
-async fn a_replay_answers_with_the_number_its_window_reaches() {
-    let (url, fleet, state) = a_server_with_state().await;
-    let seat = lead_seat();
-    wait_for_the_fold(&fleet).await;
-
-    fleet.emit(SessionUpdate::HistoryReplayed {
-        key: seat.clone(),
-        history: vec![a_said_frame("the replayed row")],
-        compaction_count: 0,
-    });
-    let settled = fleet.workspace().seat_next_seq(&seat).saturating_sub(1);
-    assert!(
-        state.conversations.await_consumed(&seat, settled, SEED_WAIT).await,
-        "the replay never reached the copy: the watermark is {}",
-        state.conversations.consumed_for(&seat),
-    );
-
-    let mut socket = connect(&url).await;
-    send(
-        &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(seat.clone()),
-            answering: true,
-            review: false,
-        },
-    )
-    .await;
-    let (_, data, _) = snapshot_answering(&mut socket).await;
-
-    assert_eq!(
-        data["header"]["seq"].as_u64(),
-        Some(2),
-        "the answer's number follows the replay's own, which its window covers: {data}",
-    );
-    assert_eq!(
-        says_times(&data, "the replayed row"),
-        1,
-        "and the replay's rows are what it carries: {data}",
-    );
-}
-
 /// **A seal the fold has not applied must not be answered with the previous
 /// run's transcript copy** (#2256).
 ///
@@ -5188,20 +5126,25 @@ async fn a_range_ask_after_an_occupant_change_reaches_the_new_epoch() {
     assert!(body.contains("the new epoch's first"), "and it is that frame: {body}");
 }
 
-/// **A repair never hands a replay's window back.** A `HistoryReplayed` is
-/// numbered but not ringed: its window is the task's own seed for the
-/// transport's copy and a client reads a fresh one on re-open, so the ring
-/// keeps nothing of it and a range ask over its number falls to the
-/// transcript. What crosses is the transcript's own rows, never the window
-/// the epoch handed over (#2157).
+/// **A repair never hands a seal's window back.** A `Connected` is numbered
+/// but not ringed: its window is the seed for the transport's copy and a
+/// client reads a fresh one on re-open, so the ring keeps nothing of it and a
+/// range ask over its number falls to the transcript. What crosses is the
+/// transcript's own rows, never the window the epoch handed over (#2157).
 #[tokio::test]
-async fn a_replay_is_never_handed_back_by_a_repair() {
+async fn a_connect_is_never_handed_back_by_a_repair() {
     let (url, fleet, _state) = a_server_with_state().await;
     let seat = lead_seat();
     wait_for_the_fold(&fleet).await;
-    fleet.emit(SessionUpdate::HistoryReplayed {
+    fleet.emit(SessionUpdate::Connected {
         key: seat.clone(),
-        history: vec![a_said_frame("the replayed words")],
+        session_id: SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the seal's words")],
+        dropped: 0,
         compaction_count: 0,
     });
 
@@ -5213,11 +5156,11 @@ async fn a_replay_is_never_handed_back_by_a_repair() {
         panic!("a range ask is answered with the frames it asked for")
     };
     assert!(
-        frames.iter().all(|frame| !matches!(&frame.update, SessionUpdate::HistoryReplayed { .. })),
-        "a repair handed the replay's window back: {frames:?}"
+        frames.iter().all(|frame| !matches!(&frame.update, SessionUpdate::Connected { .. })),
+        "a repair handed the seal's window back: {frames:?}"
     );
     let body = serde_json::to_string(&frames).unwrap_or_default();
-    assert!(!body.contains("the replayed words"), "the history crossed on a repair: {body}");
+    assert!(!body.contains("the seal's words"), "the history crossed on a repair: {body}");
 }
 
 /// **A live frame carries the same bound a page does** (#2374): an over-cap
@@ -5760,9 +5703,10 @@ async fn a_repo_server() -> (String, Fleet, Arc<TransportState>, tempfile::TempD
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     // The directory comes back with the server: it holds the repository the
     // seat's tree is, and dropping it here would unlink the tree under the
@@ -5899,9 +5843,10 @@ async fn a_subscribe_serves_the_stored_pr_and_the_watch_pushes_the_lookup() {
     let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     let url = format!("ws://{addr}/socket");
 
@@ -5989,9 +5934,10 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     let url = format!("ws://{addr}/socket");
 
@@ -6093,9 +6039,10 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
     let served = Arc::clone(&state);
     tokio::spawn(async move {
-        let _ = forge_server::transport::serve(served, listener).await;
+        let _ = forge_server::transport::serve(served, listener, updates).await;
     });
     let url = format!("ws://{addr}/socket");
 
@@ -8121,30 +8068,17 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     .await;
     assert_transcript_free(&frame, "replacement");
 
-    // A replay carries the task's own window rather than the read, and that
-    // window is still not a client's to receive: a window is bounded by the
-    // ceilings a seat keeps it in, not by the frame a client carries.
-    fleet.emit(SessionUpdate::HistoryReplayed {
+    // **One live frame after the handover, and it is the wait's mark.** An
+    // epoch frame resets the fold's watermark rather than advancing it, and
+    // each seal re-mints from 1, so there is no number on the handover itself
+    // to wake on. This row is the run's first counted frame, and reaching
+    // `1` proves both seals were applied.
+    fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
-        history: window,
-        compaction_count: 0,
+        origin: None,
+        source: None,
+        msg: a_said_frame("after the handover"),
     });
-    let frame = frame_until(
-        &mut socket,
-        "the replay",
-        |update| matches!(update, SessionUpdate::HistoryReplayed { key, .. } if key == &seat),
-    )
-    .await;
-    assert_transcript_free(&frame, "replay");
-
-    // The copy the transport KEEPS is the seat's cost, and it is inside the
-    // same ceiling the update crossed under - the shipped wiring, seed and
-    // cut together, on a shape where the count cap has nothing to say.
-    //
-    // **The wait is the fold's own mark**: the handover's two epoch frames
-    // reset the seat's watermark and the replay that follows marks it, so
-    // waking on `1` is waking on the fold having taken all three (`SEED_WAIT`
-    // only bounds a fold that never marks at all).
     assert!(
         state.conversations.await_consumed(&seat, 1, SEED_WAIT).await,
         "waited for the fold to take the handover, and it never marked it",
@@ -8190,8 +8124,7 @@ fn assert_transcript_free(frame: &str, what: &str) {
     };
     let carried = match &*update {
         SessionUpdate::Connected { history, .. }
-        | SessionUpdate::SessionReplaced { history, .. }
-        | SessionUpdate::HistoryReplayed { history, .. } => history.len(),
+        | SessionUpdate::SessionReplaced { history, .. } => history.len(),
         other => panic!("the {what} is a history-carrying update, and this is {other:?}"),
     };
     assert_eq!(

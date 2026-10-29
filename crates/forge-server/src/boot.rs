@@ -505,8 +505,12 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
                 %bound,
                 "the server's socket is listening",
             );
+            // **Taken before the serve task is spawned**, so the fold is
+            // attached before this returns and the boot wave can spawn a
+            // session whose first `Connected` finds a copy to land on.
+            let updates = state.surface.subscribe_mirror();
             let handle = tokio::spawn(async move {
-                if let Err(error) = crate::transport::serve(state, listener).await {
+                if let Err(error) = crate::transport::serve(state, listener, updates).await {
                     tracing::error!(
                         target: crate::logging::targets::APP_LIFECYCLE,
                         event_name = "server_socket_failed",
