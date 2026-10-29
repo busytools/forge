@@ -4812,6 +4812,69 @@ async fn an_answer_inside_the_seal_window_is_not_the_previous_runs_conversation(
     );
 }
 
+/// **A mismatched copy is replaced by the transcript the header names.** The
+/// same window as the test above, with a transcript to answer from: the read
+/// does not wait for the seal it has not seen, and it does not keep the
+/// previous run's rows either - the header occupant's own file takes the
+/// seat's copy.
+#[tokio::test]
+async fn a_mismatched_copy_is_replaced_by_the_transcripts_occupant() {
+    let (url, fleet, state) = a_server_with_state().await;
+    wait_for_the_fold(&fleet).await;
+    let seat = lead_seat();
+
+    // The new occupant's transcript, whose id the seat's own record names.
+    let new_occupant = SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45");
+    let new_row =
+        r#"{"type":"user","uuid":"u-new","message":{"role":"user","content":"the new run's row"}}"#;
+    fleet.seed_transcript("TestOrg", "proj", "lead", &[new_row]).expect("the transcript seeds");
+    fleet
+        .seed_view_facts(&seat, ViewFacts { session_id: Some(new_occupant), ..Default::default() });
+
+    // The previous run's copy, folded without touching the header: its
+    // occupant is the old run, and the header already names the new one.
+    let notice = state.conversations.seeded_notice();
+    tokio::pin!(notice);
+    notice.as_mut().enable();
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: SessionId::from("1f2e3d4c-5b6a-4978-8801-1234567890ab"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the old run's row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    tokio::time::timeout(SEED_WAIT, notice.as_mut())
+        .await
+        .expect("the previous run's copy is held");
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+
+    assert_eq!(
+        says_times(&data, "the new run's row"),
+        1,
+        "the answer carries the header occupant's transcript",
+    );
+    assert_eq!(
+        says_times(&data, "the old run's row"),
+        0,
+        "and the mismatched copy was replaced rather than kept",
+    );
+}
+
 /// **An answer whose copy is reseeded under it carries the copy's own number,
 /// not the pre-seal one** (#2443).
 ///
