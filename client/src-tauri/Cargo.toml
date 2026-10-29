@@ -65,8 +65,8 @@ forge-capture = { path = "../../crates/forge-capture" }
 # shared with the server that produces them.
 forge-primitives = { path = "../../crates/forge-primitives" }
 
-# Desktop-only: no plugin path exists for Android, where the APK updates
-# through the system installer instead (a Kotlin side of its own).
+# Desktop-only: no plugin path exists for Android, where the update line
+# opens the release page in a browser instead (a Kotlin side of its own).
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2"
 
