@@ -20,6 +20,34 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 type Replies = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
 
+/// How many unsolicited events one page's watcher may fall behind by.
+///
+/// **A page reports whether anyone listens.** Events are drained only when a
+/// call touches the page, so a page that keeps reporting between calls would
+/// grow an unbounded queue for as long as nothing looks. Past this bound the
+/// reader drops the newest event and keeps reading the socket, so replies
+/// still arrive; a watcher that is being drained never reaches it.
+const EVENT_BACKLOG: usize = 256;
+
+/// What became of one unsolicited event handed to the page's watcher.
+#[derive(Debug, PartialEq, Eq)]
+enum Forwarded {
+    Sent,
+    /// The watcher's backlog was full. The event is dropped and the reader
+    /// keeps reading the socket.
+    Dropped,
+    /// The watcher is gone, so there is nobody to read the endpoint for.
+    Closed,
+}
+
+fn forward_event(tx: &mpsc::Sender<Value>, message: Value) -> Forwarded {
+    match tx.try_send(message) {
+        Ok(()) => Forwarded::Sent,
+        Err(mpsc::error::TrySendError::Full(_)) => Forwarded::Dropped,
+        Err(mpsc::error::TrySendError::Closed(_)) => Forwarded::Closed,
+    }
+}
+
 pub struct Cdp {
     sink: SplitSink<Socket, Message>,
     replies: Replies,
@@ -108,14 +136,14 @@ impl Cdp {
     pub async fn connect_watch(
         port: u16,
         path: &str,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<Value>), String> {
+    ) -> Result<(Self, mpsc::Receiver<Value>), String> {
         let url = format!("ws://127.0.0.1:{port}{path}");
         let (socket, _) = tokio_tungstenite::connect_async(&url).await.map_err(|why| {
             format!("the browser's devtools endpoint at {url} did not accept: {why}")
         })?;
         let (sink, mut source) = socket.split();
         let replies: Replies = Arc::new(Mutex::new(HashMap::new()));
-        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (events_tx, events_rx) = mpsc::channel(EVENT_BACKLOG);
         let closed = Arc::new(Notify::new());
         let reader_replies = Arc::clone(&replies);
         let reader_closed = Arc::clone(&closed);
@@ -143,7 +171,7 @@ impl Cdp {
                         }
                     }
                     None => {
-                        if events_tx.send(message).is_err() {
+                        if matches!(forward_event(&events_tx, message), Forwarded::Closed) {
                             break;
                         }
                     }
@@ -186,5 +214,23 @@ impl Cdp {
             )),
             None => Ok(reply.get("result").cloned().unwrap_or(Value::Null)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_event_backlog_drops_the_newest_and_a_gone_watcher_stops_the_reader() {
+        let (events, watcher) = mpsc::channel(1);
+
+        assert_eq!(forward_event(&events, json!({ "n": 1 })), Forwarded::Sent);
+        // The watcher has not drained; the bound holds and the reader goes on.
+        assert_eq!(forward_event(&events, json!({ "n": 2 })), Forwarded::Dropped);
+
+        drop(watcher);
+        // Nobody is left to read the endpoint for, so the reader stops.
+        assert_eq!(forward_event(&events, json!({ "n": 3 })), Forwarded::Closed);
     }
 }

@@ -35,7 +35,7 @@ struct Fixture {
     host: support::Host,
     _scratch: tempfile::TempDir,
     cdp: Cdp,
-    _events: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    _events: tokio::sync::mpsc::Receiver<Value>,
     ring: String,
 }
 

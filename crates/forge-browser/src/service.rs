@@ -564,7 +564,7 @@ impl BrowserService {
             rebuild: AsyncMutex::new(()),
             chooser_ledger: Mutex::new(ChooserLedger::default()),
             chooser_answer: Mutex::new(None),
-            downloads: broadcast::channel(16).0,
+            downloads: broadcast::channel(DOWNLOAD_BACKLOG).0,
             audio: broadcast::channel(64).0,
             recorded: watch::channel(None).0,
             recording: Mutex::new(None),
@@ -3567,6 +3567,17 @@ pub struct Profile {
 /// The most a finished download may carry to a viewer.
 const MAX_DOWNLOAD_BYTES: u64 = 32 * 1024 * 1024;
 
+/// How many finished downloads one profile may hold for a lagging viewer.
+///
+/// **The backlog is memory, and a download is bytes.** Every reader that is
+/// behind keeps up to this many `BrowserDownload`s, each up to
+/// [`MAX_DOWNLOAD_BYTES`], so the ceiling is this times 32 MiB per profile -
+/// 128 MiB here, against 512 at the sixteen this used to keep. A viewer that
+/// lags past it loses the oldest offers, which is already what a broadcast
+/// does; what it must not do is hold half a gigabyte per open profile for a
+/// page that saved sixteen files while nobody looked.
+const DOWNLOAD_BACKLOG: usize = 4;
+
 /// What the host last said about a recording: whether the writer opened, and -
 /// once it stopped - how the take ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5185,7 +5196,7 @@ struct State {
     /// tab switch opens the new target's connection rather than reusing the
     /// old one.
     cdp: HashMap<String, Cdp>,
-    cdp_events: HashMap<String, mpsc::UnboundedReceiver<Value>>,
+    cdp_events: HashMap<String, mpsc::Receiver<Value>>,
     /// The focused tab's navigation watch: the bar's arrows after a link
     /// click.
     nav_watch: Option<tokio::task::JoinHandle<()>>,
