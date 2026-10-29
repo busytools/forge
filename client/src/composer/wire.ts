@@ -2,8 +2,8 @@
  * What the core sends the composer, narrowed once at the boundary.
  *
  * `crates/forge-server/src/transport/wire.rs` is the sender: `composer` carries
- * the machine turn and a sign-in, and `pending_asks` carries the prompts the
- * seat is holding. The take and the notice are NOT on the record - a take belongs to
+ * the machine turn, and `pending_asks` carries the prompts the seat is holding.
+ * The take and the notice are NOT on the record - a take belongs to
  * the connection that started it - so this client builds them from its own
  * take's updates, which no other connection receives. Everything here is a
  * narrowing rather than a decision about how any of it looks - the gather into

@@ -1605,9 +1605,14 @@ const SEED_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 /// the file. **A copy of another occupant is waited for, never replaced and
 /// never answered over**: the seal the header moved on from is the fold's to
 /// apply, and a transcript seed here would be a row subset - the `Result`
-/// frames a transcript never carries would go with the copy. A copy that
-/// never turns current, and a file that holds nothing yet, are both answered
-/// the way a seat with no copy is.
+/// frames a transcript never carries would go with the copy.
+///
+/// **The two paths do not cost the same on failure.** A held copy that never
+/// turns current spends the wait and is then answered as no conversation -
+/// refused rather than filled from a subset. A seat with no copy pays the
+/// file read and answers at once with what the read inserted, or with
+/// nothing when the read's own occupant is stale; a file that holds nothing
+/// yet falls through to the same bounded wait for its first `Connected`.
 ///
 /// No lock is held across the wait, and two callers on two cold seats do not
 /// serialise: each waits on its own seat's arrival, and the notice only says

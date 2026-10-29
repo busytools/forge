@@ -3,10 +3,10 @@
  * the gather the view this client replaced did across its own render functions.
  *
  * Pure, so a test can build a composer by hand. Nothing here recomputes a state
- * the core already decided: the take, the notice, the compaction, the sign-in
- * and the prompt all arrive in the record, and a state this module derives is
- * derived from the reader's own doing - what they typed, what they sent, and
- * which seat they are looking at.
+ * the core already decided: the machine turn, the compaction and the prompt's
+ * ask arrive in the record, the take and the notice on this connection's own
+ * updates, and a state this module derives is derived from the reader's own
+ * doing - what they typed, what they sent, and which seat they are looking at.
  */
 
 import type { Connection } from '../socket';
@@ -73,10 +73,10 @@ export interface ComposerRecord {
   /**
    * What this seat's composer is doing, as the wire sends it.
    *
-   * Left as it came rather than narrowed by the page: the take, the notice and
-   * the sign-in are the composer's own states, so the component that draws them
-   * is the one that narrows them, and no reader upstream has to re-narrow what
-   * only this one acts on.
+   * Left as it came rather than narrowed by the page: the take and the notice
+   * are the composer's own states, so the component that draws them is the one
+   * that narrows them, and no reader upstream has to re-narrow what only this
+   * one acts on.
    */
   composer: unknown;
   /**
