@@ -577,6 +577,9 @@ async fn resolve_author(
     if user == own.id
         && let Some(name) = own.resolve_name(api, workspace).await?
     {
+        // Kept for the sweeps whose `auth.test` fails: the fall-through
+        // below must not resurrect an app name the host remembered.
+        host.set_user_name(workspace, user, name);
         return Ok(Some(name.to_owned()));
     }
     if let Some(known) = host.user_name(workspace, user) {
@@ -3211,6 +3214,9 @@ mod tests {
         /// How many `auth.test` calls the sweep made, so a test can assert
         /// the identity is asked once rather than once per message.
         auth_test_calls: std::sync::Mutex<usize>,
+        /// Set to make `auth.test` fail with a transient error, the shape a
+        /// later sweep sees when the call blips.
+        auth_test_transient: std::sync::Mutex<bool>,
         /// Set to make `users.info` answer 429 instead.
         user_info_rate_limited: std::sync::Mutex<Option<Duration>>,
         /// Set to make `users.info` fail with a transient error instead of
@@ -3389,6 +3395,10 @@ mod tests {
 
         fn auth_test_calls(&self) -> usize {
             *self.auth_test_calls.lock().expect("lock")
+        }
+
+        fn fail_auth_test_transiently(&self) {
+            *self.auth_test_transient.lock().expect("lock") = true;
         }
 
         fn connected(&self) -> Option<bool> {
@@ -3675,6 +3685,12 @@ mod tests {
     impl SlackApi for FakeHost {
         async fn auth_test(&self) -> Result<AuthTest, SlackError> {
             *self.auth_test_calls.lock().expect("lock") += 1;
+            if *self.auth_test_transient.lock().expect("lock") {
+                return Err(SlackError::Transport {
+                    method: "auth.test".to_owned(),
+                    detail: "the socket is down".to_owned(),
+                });
+            }
             Ok(AuthTest {
                 team: "Test".to_owned(),
                 user: "tester".to_owned(),
@@ -5819,6 +5835,35 @@ mod tests {
             "one identity for the sweep, not one per message or per conversation",
         );
         assert_eq!(host.user_info_calls(), 0, "his own handle costs no users.info call");
+    }
+
+    /// The name a good `auth.test` gave is kept on the host, so a later
+    /// sweep whose call blips still shows his handle rather than the app's.
+    #[tokio::test]
+    async fn a_later_failed_auth_test_keeps_the_name_already_learned() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        let mut first = history_message("200.0", "U1", "first");
+        first.bot_name = Some("Forge".to_owned());
+        host.seed_history("C1", vec![first]);
+        sweep(&host, &host, "acme").await.expect("first sweep");
+        assert_eq!(
+            host.delivered().last().and_then(|message| message.author.as_deref()),
+            Some("tester"),
+            "the first sweep learns his handle",
+        );
+
+        host.fail_auth_test_transiently();
+        let mut second = history_message("300.0", "U1", "second");
+        second.bot_name = Some("Forge".to_owned());
+        host.seed_history("C1", vec![second]);
+        sweep(&host, &host, "acme").await.expect("second sweep");
+        assert_eq!(
+            host.delivered().last().and_then(|message| message.author.as_deref()),
+            Some("tester"),
+            "a failed auth.test does not bring the app's name back; the host remembers his",
+        );
     }
 
     /// An author the token cannot look up keeps no name, so the block falls
