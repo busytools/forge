@@ -561,12 +561,6 @@
            ending for it, so this is the stop's only mark without opening. -->
       <span class="fam-chip bad" title={`stopped task ${call.stop}`}>stopped</span>
     {/if}
-    {#if call.unanswered}
-      <!-- **A question nobody answered has no card**, so its call row is the
-           only trace of it. The word says what the spinner would otherwise
-           leave ambiguous: the call did not fail, nobody ever replied. -->
-      <span class="fam-chip warn">unanswered</span>
-    {/if}
     {#if card !== undefined && card.agent_type !== null}
       <span class="sg-ty">{card.agent_type}</span>
     {/if}

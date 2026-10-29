@@ -1788,27 +1788,90 @@ describe('one turn folded into the units a view draws', () => {
     expect(pairs[0]?.picked_labels, 'and nothing was picked').toEqual([]);
   });
 
-  it('draws no question card until somebody answered it', () => {
-    // The dock is the question's row while it waits, so a card carrying it too
-    // drew the same prompt twice. It appears the moment an answer lands, which
-    // the answer's own frame brings.
-    //
-    // **The call row still draws**: the card never did, so dropping the call
-    // too would leave a question with no row while the dock still shows it.
-    // The `unanswered` mark waits for the turn to close - while it waits, the
-    // dock is the row, and the mark would call a wait a verdict.
+  it('draws no row at all while the dock holds the question', () => {
+    // The dock is the question's row while it waits, so anything drawn here
+    // repeats the prompt: the card did, and the call leaf did too. The
+    // question becomes a row the moment an answer lands, which the answer's
+    // own frame brings.
     const asked = said([
       use('toolu_q', 'AskUserQuestion', {
         questions: [{ question: 'Which colour?', options: [{ label: 'Red' }] }],
       }),
     ]);
 
-    const units = fold([asked]);
-    expect(kinds(units), 'a waiting question draws no card').not.toContain('question');
-    expect(
-      callsOf(units[0])[0]?.leaf.unanswered,
-      'and a still-waiting question is not marked unanswered',
-    ).toBe(false);
+    expect(fold([asked]), 'a waiting question draws nothing at all').toEqual([]);
+  });
+
+  it("keeps a settled turn's answered question answered", () => {
+    // A real settled turn folds with its close flag set - the same flag the
+    // unanswered card keys on - so the answers must still win over it.
+    const asked = said([
+      use('toolu_q', 'AskUserQuestion', {
+        questions: [{ question: 'Which colour?', options: [{ label: 'Red' }] }],
+      }),
+    ]);
+    const answered = heard([result('toolu_q', 'answered')], {
+      tool_use_result: { answers: { 'Which colour?': 'Red' } },
+    });
+
+    const [card] = fold([asked, answered], null, false, true);
+    expect(card?.kind, 'a card, not a leaf').toBe('question');
+    const pairs = card?.kind === 'question' ? card.asked : [];
+    expect(pairs[0]?.state, 'answered wins over the closed turn').toBe('answered');
+    expect(pairs[0]?.picked_labels, 'and the pick still draws').toEqual(['Red']);
+  });
+
+  it('draws the card for a question the reader dismissed, once its result lands', () => {
+    // The pinned capture's own dismissal (`ask_user_question.jsonl`): the
+    // result carries the questions and an EMPTY answers map. The dock has
+    // nothing left to show, so the card is the question's only row for the
+    // rest of the turn.
+    const question = {
+      question: 'Which colour do you prefer?',
+      header: 'Colour',
+      multiSelect: false,
+      options: [
+        { label: 'Red', description: 'Warm, bold, high-energy.' },
+        { label: 'Blue', description: 'Cool, calm, classic.' },
+        { label: 'Green', description: 'Natural, fresh, balanced.' },
+      ],
+    };
+    const asked = said([use('toolu_q', 'AskUserQuestion', { questions: [question] })]);
+    const dismissed = heard([result('toolu_q', 'The user did not answer the questions.')], {
+      tool_use_result: { questions: [question], answers: {} },
+    });
+
+    const units = fold([asked, dismissed]);
+    expect(kinds(units), 'the card, with no call row beside it').toEqual(['question']);
+    const card = units[0];
+    const pairs = card?.kind === 'question' ? card.asked : [];
+    expect(pairs[0]?.question, 'the question it asked').toBe('Which colour do you prefer?');
+    expect(pairs[0]?.state, 'marked unanswered').toBe('unanswered');
+  });
+
+  it("keeps the call row when the result is an error, so the failure's words draw", () => {
+    // An errored result carries no answer record, and its words are the whole
+    // reason the row exists: a card would mark it unanswered and drop them.
+    const asked = said([
+      use('toolu_q', 'AskUserQuestion', {
+        questions: [{ question: 'Which colour?', options: [{ label: 'Red' }] }],
+      }),
+    ]);
+    const failed = heard([
+      {
+        type: 'tool_result',
+        tool_use_id: 'toolu_q',
+        content: 'the question tool failed',
+        is_error: true,
+      },
+    ]);
+
+    const units = fold([asked, failed]);
+    expect(kinds(units), 'the call row draws').toEqual(['leaves']);
+    expect(callsOf(units[0])[0]?.leaf.body, "the failure's own words").toContainEqual({
+      kind: 'text',
+      text: 'the question tool failed',
+    });
   });
 
   it('draws the turn hooks after the run they followed, and nothing when none fired', () => {
@@ -4709,27 +4772,42 @@ describe('the frames the fold had no row for', () => {
     expect(noticeOf(workflow[0])?.text).toBe('unhandled frame: system/task_progress');
   });
 
-  it('marks a question unanswered only once its turn has closed', () => {
+  it("draws a closed turn's unanswered question as a card, not a call row", () => {
+    // The turn closed and the dock cleared without an answer, so the card is
+    // the question's only trace: it keeps the words the reader was asked,
+    // where the call leaf named only the tool. The mark says what the cleared
+    // dock would otherwise leave ambiguous: nobody replied, it did not fail.
     const asked = said([
       use('toolu_q', 'AskUserQuestion', {
-        questions: [{ question: 'which way?', options: [{ label: 'a' }, { label: 'b' }] }],
+        questions: [
+          { question: 'which way?', options: [{ label: 'a' }, { label: 'b' }] },
+          { question: 'and how fast?', options: [{ label: 'now' }] },
+        ],
       }),
     ]);
 
-    // The closed form: the turn ended with the question still unanswered.
     const units = fold([asked], null, false, true);
-    expect(kinds(units), 'the call row draws rather than being dropped').toEqual(['leaves']);
-    const leaf = callsOf(units[0])[0]?.leaf;
-    expect(leaf?.unanswered, 'the closed row carries the mark').toBe(true);
-    expect(leaf?.status, 'and is settled failed by the closed-turn sweep').toBe('failed');
-    expect(leaf?.title, 'it still names what it asked').toContain('AskUserQuestion');
-
-    // The waiting form: the dock is its row, so the call wears no verdict.
-    const waiting = fold([asked]);
+    expect(kinds(units), 'the card, with no call row beside it').toEqual(['question']);
+    const card = units[0];
+    const pairs = card?.kind === 'question' ? card.asked : [];
     expect(
-      callsOf(waiting[0])[0]?.leaf.unanswered,
-      'a question still waiting in the dock is not marked unanswered',
-    ).toBe(false);
+      pairs.map((pair) => pair.question),
+      'every question it asked',
+    ).toEqual(['which way?', 'and how fast?']);
+    expect(
+      pairs.map((pair) => pair.state),
+      'each marked unanswered',
+    ).toEqual(['unanswered', 'unanswered']);
+    expect(pairs[0]?.picked_labels, 'with nothing picked').toEqual([]);
+    expect(pairs[0]?.typed_note, 'and nothing typed').toBeNull();
+  });
+
+  it('draws the call row for a question that asked nothing', () => {
+    // A closed turn with no readable questions has no card to build; the leaf
+    // named the call, where an empty card would draw nothing at all.
+    const asked = said([use('toolu_q', 'AskUserQuestion', { questions: [] })]);
+
+    expect(kinds(fold([asked], null, false, true)), 'the call row draws').toEqual(['leaves']);
   });
 });
 
