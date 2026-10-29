@@ -75,9 +75,13 @@ class UpdatePlugin(private val activity: Activity) : Plugin(activity) {
       val manifest = fetch(args.endpoint)
       val android = manifest.optJSONObject("android")
       val version = normalizeVersion(manifest.optString("version"))
-      // A manifest with no `release` offers nothing: the version still reads,
-      // but an offer whose tap has no page to open is worse than no line.
-      val release = android?.optString("release")?.takeIf { it.isNotEmpty() }
+      // A manifest with no usable `release` offers nothing: only an http(s)
+      // URL has a handler to open, and an offer whose tap always fails is
+      // worse than no line. `optString` also answers "null" for a JSON null.
+      val release =
+        android
+          ?.optString("release")
+          ?.takeIf { it.startsWith("https://") || it.startsWith("http://") }
       if (version != null && release != null && isNewerVersion(version, args.version)) {
         invoke.resolve(JSObject().put("version", version).put("url", release))
       } else {
