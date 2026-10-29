@@ -35,7 +35,7 @@ describe('the tree segment', () => {
     expect(body, 'no segment at all').not.toContain('sg-seg');
   });
 
-  it('puts a repository event on the shown seat\'s strip as one transient line', () => {
+  it("puts a repository event on the shown seat's strip as one transient line", () => {
     const slot = { org: 'TestOrg', project: 'forge', label: 'lead' };
     git.show(slot);
     git.sync({
@@ -59,7 +59,7 @@ describe('the tree segment', () => {
     expect(vcsLine('push', 'main')).toBe('pushed main');
   });
 
-  it('gives the row back to the tree after the event\'s moment, and with the record', () => {
+  it("gives the row back to the tree after the event's moment, and with the record", () => {
     vi.useFakeTimers();
     const slot = { org: 'TestOrg', project: 'forge', label: 'lead' };
     git.show(slot);
@@ -78,9 +78,7 @@ describe('the tree segment', () => {
     expect(changeLine('github', '123', 'created', 'example/example')).toBe(
       'PR #123 created in example/example',
     );
-    expect(changeLine('gitlab', '45', 'merged', 'group/proj')).toBe(
-      'MR #45 merged in group/proj',
-    );
+    expect(changeLine('gitlab', '45', 'merged', 'group/proj')).toBe('MR #45 merged in group/proj');
     expect(changeLine('github', '123', 'edited', 'example/example')).toBe(
       'PR #123 edited in example/example',
     );

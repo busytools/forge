@@ -2051,7 +2051,7 @@ describe('the record a page holds over an update stream', () => {
     page.stop();
   });
 
-  it('puts a repository mutation on the shown seat\'s strip, not in the conversation', () => {
+  it("puts a repository mutation on the shown seat's strip, not in the conversation", () => {
     const connection = drivable();
     // The page's own effect calls this; the store-only harness names the seat.
     git.show(LEAD);
@@ -2099,9 +2099,7 @@ describe('the record a page holds over an update stream', () => {
       }),
     );
 
-    expect(git.noteNow()?.line, 'the edit is not silent').toBe(
-      'PR #123 edited in example/example',
-    );
+    expect(git.noteNow()?.line, 'the edit is not silent').toBe('PR #123 edited in example/example');
     page.stop();
   });
 
@@ -2111,7 +2109,7 @@ describe('the record a page holds over an update stream', () => {
    * otherwise land beside the lead's branch. The note belongs to the shown
    * seat only.
    */
-  it('does not put an away seat\'s mutation on the shown seat\'s strip', () => {
+  it("does not put an away seat's mutation on the shown seat's strip", () => {
     const W1: SessionSlot = { ...LEAD, label: 'w1' };
     const connection = drivable();
     git.show(LEAD);

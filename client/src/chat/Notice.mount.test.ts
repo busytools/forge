@@ -118,10 +118,7 @@ describe('the provisional notice, mounted', () => {
       row.dispatchEvent(new Event('toggle'));
       flushSync();
 
-      expect(
-        row.querySelectorAll('.nfact').length,
-        'each memory draws its own fact line',
-      ).toBe(2);
+      expect(row.querySelectorAll('.nfact').length, 'each memory draws its own fact line').toBe(2);
       expect(row.textContent, 'the first path is drawn').toContain(
         '/home/ved/.claude/memory/one.md',
       );

@@ -2566,10 +2566,7 @@ export function fold(
               fact('fallback model', str(frame, 'fallback_model')),
               fact('scope', str(frame, 'scope')),
               fact('refusal category', str(frame, 'api_refusal_category')),
-              fact(
-                'persisted as default',
-                frame['persisted_as_default'] === true ? 'true' : null,
-              ),
+              fact('persisted as default', frame['persisted_as_default'] === true ? 'true' : null),
             ),
           ),
         });
