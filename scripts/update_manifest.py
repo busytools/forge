@@ -78,7 +78,7 @@ def main() -> None:
         },
         "android": {
             # An install predating the release page reads this with
-            # `getString("url")` and fails to parse the manifest without it.
+            # `getString("url")`, and its check fails without it.
             "url": f"{release}/forge-{version}-arm64.apk",
             "release": f"{REPOSITORY}/releases/tag/v{version}",
         },
