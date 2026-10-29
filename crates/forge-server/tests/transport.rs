@@ -4940,6 +4940,85 @@ async fn a_mismatched_copy_that_never_reseeds_is_not_served() {
     );
 }
 
+/// **A copy the fold inserts while the transcript is being read is the one
+/// answered.** A transcript is a row subset - it carries no `Result` frames -
+/// so a seed that landed over the stream's copy would drop frames the fold
+/// already applied. The seed is parked before its read, the seat's `Connected`
+/// lands while it is held there, and the answer is the stream's copy rather
+/// than the file's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connect_during_the_transcript_read_is_the_copy_answered() {
+    let (url, fleet, state) = a_server_with_state().await;
+    let seat = lead_seat();
+    wait_for_the_fold(&fleet).await;
+    fleet
+        .seed_asleep_transcript(
+            "TestOrg",
+            "proj",
+            "lead",
+            &[r#"{"type":"user","uuid":"u-file","message":{"role":"user","content":"the file's row"}}"#],
+        )
+        .expect("the transcript seeds");
+    let hold = Arc::new(forge_server::transport::conversation::SeedHold::default());
+    state.conversations.hold_the_seed(Arc::clone(&hold));
+
+    // The subscribe starts the transcript seed, and the seed parks before its
+    // read: the seat is known to hold no copy, and the file has not been read.
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(seat.clone()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), hold.entered.notified())
+        .await
+        .expect("the seed reaches its hold");
+
+    // The seat's own stream lands inside that window.
+    let new = SessionId::from("2a3b4c5d-6e7f-4809-9a1b-234567890abc");
+    fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
+    fleet.emit(SessionUpdate::Connected {
+        key: seat.clone(),
+        session_id: new.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: vec![a_said_frame("the live row")],
+        dropped: 0,
+        compaction_count: 0,
+    });
+    for _ in 0..200 {
+        if state.conversations.get(&seat).is_some_and(|held| held.holds_occupant(Some(&new))) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    // The seed reads the file and inserts now: it must keep the copy the
+    // stream gave it rather than overwrite it with the file's rows.
+    hold.release.add_permits(1);
+
+    let (_, data, _) = snapshot_answering(&mut socket).await;
+    assert!(
+        says_times(&data, "the live row") >= 1,
+        "the stream's own frame is in the answer: {data}",
+    );
+    assert_eq!(
+        says_times(&data, "the file's row"),
+        0,
+        "and the transcript's row subset never replaced the copy: {data}",
+    );
+    assert!(
+        state.conversations.get(&seat).is_some_and(|held| held.holds_occupant(Some(&new))),
+        "the held copy is still the stream's",
+    );
+}
+
 /// **An answer whose copy is reseeded under it carries the copy's own number,
 /// not the pre-seal one** (#2443).
 ///

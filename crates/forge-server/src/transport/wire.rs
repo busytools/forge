@@ -1659,10 +1659,15 @@ async fn await_current(
     within: std::time::Duration,
 ) -> Option<Arc<Held>> {
     let deadline = std::time::Instant::now() + within;
-    let seeded = state.conversations.seeded_notice();
-    tokio::pin!(seeded);
-    seeded.as_mut().enable();
     loop {
+        // **A fresh notice every pass.** `Notified` is fused once it completes,
+        // and this one fires for any seat: a reused future would return Ready
+        // on every later poll (the timeout polls it first) and spin this loop
+        // to its deadline instead of waiting. Enabled before the look, so a
+        // copy that moves between the look and the wait is still seen.
+        let seeded = state.conversations.seeded_notice();
+        tokio::pin!(seeded);
+        seeded.as_mut().enable();
         if let Some(held) = state.conversations.get(slot).filter(current) {
             return Some(held);
         }
@@ -1701,6 +1706,11 @@ async fn seed_from_transcript(
     slot: &SessionSlot,
     timings: &mut OpenTimings,
 ) -> Option<Arc<Held>> {
+    // A test can hold the seed here, between the cache check that found no
+    // copy and the read: a `Connected` that lands while this is held is the
+    // race the insert below is written to lose.
+    #[cfg(any(test, feature = "testing"))]
+    state.conversations.pass_the_seed_hold().await;
     let at = std::time::Instant::now();
     let surface = Arc::clone(&state.surface);
     let seat = slot.clone();

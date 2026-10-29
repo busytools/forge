@@ -440,8 +440,8 @@ impl Held {
     /// Whether this copy belongs to the seat's current occupant.
     ///
     /// **A copy with no occupant matches anything, and so does a header
-    /// naming nobody**: a copy the replay route materialised carries no
-    /// occupant, and a sleeping seat's header names no run - neither is
+    /// naming nobody**: a transcript that named no session seeds a copy with
+    /// no occupant, and a sleeping seat's header names no run - neither is
     /// discarded for lacking a fact nothing ever recorded.
     pub fn holds_occupant(&self, occupant: Option<&forge_primitives::SessionId>) -> bool {
         match (self.lock().occupant.as_ref(), occupant) {
@@ -586,8 +586,8 @@ impl Drop for Folding<'_> {
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Held>>>,
-    /// Fires when a seat is first held, so a request that had to ask for a
-    /// replay knows when its answer has landed.
+    /// Fires when a seat's copy is first held or reseeded, so a read waiting
+    /// for it to become current knows it moved.
     seeded: tokio::sync::Notify,
     /// The newest number the fold loop has consumed for each seat, in a watch
     /// so an encode can wait on it.
@@ -613,6 +613,30 @@ pub struct Conversations {
     /// rather than raced: while it is set, the loop does not consume.
     #[cfg(any(test, feature = "testing"))]
     fold_held: std::sync::atomic::AtomicBool,
+    /// A test's hold on the next transcript seed, so a stream copy that lands
+    /// inside the seed's window is driven rather than raced.
+    #[cfg(any(test, feature = "testing"))]
+    seed_hold: Mutex<Option<Arc<SeedHold>>>,
+}
+
+/// Where a held transcript seed parks.
+///
+/// The seed announces it has arrived and waits to be let go, so a test can
+/// put the seat's own `Connected` into that window on purpose.
+#[cfg(any(test, feature = "testing"))]
+pub struct SeedHold {
+    /// Signalled once the seed has parked. A notify with nobody waiting keeps
+    /// its permit, so the test may start waiting after the seed arrives.
+    pub entered: tokio::sync::Notify,
+    /// Taken by the seed once the test lets it go.
+    pub release: tokio::sync::Semaphore,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl Default for SeedHold {
+    fn default() -> Self {
+        Self { entered: tokio::sync::Notify::new(), release: tokio::sync::Semaphore::new(0) }
+    }
 }
 
 impl Conversations {
@@ -693,6 +717,24 @@ impl Conversations {
     #[cfg(any(test, feature = "testing"))]
     pub fn fold_is_held(&self) -> bool {
         self.fold_held.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Hold the next transcript seed before its read, so a test can land the
+    /// seat's own copy inside that window. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn hold_the_seed(&self, hold: Arc<SeedHold>) {
+        *self.seed_hold.lock().unwrap_or_else(PoisonError::into_inner) = Some(hold);
+    }
+
+    /// Park at a test's seed hold, when one is set: say it has arrived, then
+    /// wait to be let go.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn pass_the_seed_hold(&self) {
+        let hold = self.seed_hold.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if let Some(hold) = hold {
+            hold.entered.notify_one();
+            let _release = hold.release.acquire().await;
+        }
     }
 
     /// The seat's conversation if one is held.
@@ -790,12 +832,12 @@ impl Conversations {
             }
             SessionUpdate::ChatAppended { msg, .. } => {
                 // **A compaction boundary is a frame like any other.** It
-                // once dropped the seat so the next ask would replay it, and
-                // that is the door this change closed everywhere else: a
-                // replay replaces a copy it did not produce, so dropping to
-                // refresh something is how a frame the task never sees gets
-                // lost. The boundary is appended, the task counts it, and a
-                // reader keeps the history a compaction did not take away.
+                // once dropped the seat so the next ask would reseed it, and
+                // that is the door this change closed everywhere else:
+                // replacing a copy the task did not produce is how a frame it
+                // never sees gets lost. The boundary is appended, the task
+                // counts it, and a reader keeps the history a compaction did
+                // not take away.
                 if let Some(held) = self.get(slot) {
                     let mut conversation = held.lock();
                     conversation.append(msg.clone());
@@ -899,9 +941,9 @@ mod tests {
     }
 
     /// **A copy with no occupant answers for any occupant.** The arm is
-    /// load-bearing, not defensive: the replay route materialises a copy
-    /// with no occupant, and reading it as "not the seat's" would drop that
-    /// copy's history.
+    /// load-bearing, not defensive: a transcript that named no session seeds
+    /// a copy with no occupant, and reading it as "not the seat's" would drop
+    /// that copy's history.
     #[test]
     fn a_copy_with_no_occupant_matches_any_occupant() {
         let bare = Held::new(Conversation::empty());
