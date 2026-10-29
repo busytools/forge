@@ -5,7 +5,8 @@ import GitSegment from './GitSegment.svelte';
 import { changeLine, git, vcsLine } from './git.svelte';
 
 afterEach(() => {
-  git.clear();
+  git.show(null);
+  git.sync(null);
   vi.useRealTimers();
 });
 

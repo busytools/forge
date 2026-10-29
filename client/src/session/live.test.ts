@@ -358,7 +358,8 @@ afterEach(async () => {
   await server?.close();
   server = null;
   document.body.innerHTML = '';
-  git.clear();
+  git.show(null);
+  git.sync(null);
   // And a case that hid the page must not leave it hidden for the next one.
   delete (document as { hidden?: boolean }).hidden;
 });

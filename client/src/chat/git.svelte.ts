@@ -138,13 +138,6 @@ class Git {
     return this.#note;
   }
 
-  /** Drop the event and the tree: a test's reset, and a seat with no record. */
-  clear(): void {
-    this.clearNote();
-    this.#shown = null;
-    this.#strip = null;
-  }
-
   private clearNote(): void {
     if (this.#timer !== null) clearTimeout(this.#timer);
     this.#timer = null;
