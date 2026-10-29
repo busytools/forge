@@ -3218,6 +3218,8 @@ mod tests {
         /// Set to make `auth.test` fail with a transient error, the shape a
         /// later sweep sees when the call blips.
         auth_test_transient: std::sync::Mutex<bool>,
+        /// Set to make `auth.test` answer 429 instead.
+        auth_test_rate_limited: std::sync::Mutex<Option<Duration>>,
         /// Set to make `users.info` answer 429 instead.
         user_info_rate_limited: std::sync::Mutex<Option<Duration>>,
         /// Set to make `users.info` fail with a transient error instead of
@@ -3400,6 +3402,10 @@ mod tests {
 
         fn fail_auth_test_transiently(&self) {
             *self.auth_test_transient.lock().expect("lock") = true;
+        }
+
+        fn rate_limit_auth_test(&self, retry_after: Duration) {
+            *self.auth_test_rate_limited.lock().expect("lock") = Some(retry_after);
         }
 
         fn connected(&self) -> Option<bool> {
@@ -3686,6 +3692,12 @@ mod tests {
     impl SlackApi for FakeHost {
         async fn auth_test(&self) -> Result<AuthTest, SlackError> {
             *self.auth_test_calls.lock().expect("lock") += 1;
+            if let Some(retry_after) = *self.auth_test_rate_limited.lock().expect("lock") {
+                return Err(SlackError::RateLimited {
+                    method: "auth.test".to_owned(),
+                    retry_after,
+                });
+            }
             if *self.auth_test_transient.lock().expect("lock") {
                 return Err(SlackError::Transport {
                     method: "auth.test".to_owned(),
@@ -5606,6 +5618,26 @@ mod tests {
             outcome.rate_limited,
             Some(Duration::from_secs(9)),
             "a throttled lookup arms the pump's backoff instead of being swallowed",
+        );
+    }
+
+    /// The identity fetch is a call like any other, so its 429 arms the
+    /// pump's backoff too rather than being read as "no name".
+    #[tokio::test]
+    async fn a_rate_limited_auth_test_is_reported_to_the_pump() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        let mut message = history_message("200.0", "U1", "hello");
+        message.bot_name = Some("Forge".to_owned());
+        host.seed_history("C1", vec![message]);
+        host.rate_limit_auth_test(Duration::from_secs(7));
+
+        let outcome = sweep(&host, &host, "acme").await.expect("a 429 is not an error");
+        assert_eq!(
+            outcome.rate_limited,
+            Some(Duration::from_secs(7)),
+            "a throttled auth.test arms the pump's backoff instead of being swallowed",
         );
     }
 
