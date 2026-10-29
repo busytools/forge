@@ -278,7 +278,7 @@ function withNotice(
   held: Record<string, unknown> | null = null,
   slot: SessionSlot = SLOT,
 ): ComposerRecord {
-  return record({ slot, composer: { take: held, notice, machine: null, sign_in: null } });
+  return record({ slot, composer: { take: held, notice, machine: null } });
 }
 
 /** A take that landed, as the core sends one: the words, and whether they were cut. */
@@ -524,7 +524,6 @@ function landBarTake(
       take: null,
       notice: { kind: 'landed', text: 'the words', truncated: false },
       machine: null,
-      sign_in: null,
     },
   });
   flushSync();
@@ -748,7 +747,7 @@ describe('the box', () => {
     harness.sent.length = 0;
     harness.page.record = record({
       header: { turn_in_flight: true },
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
     press('Escape');
@@ -835,7 +834,7 @@ describe('the box', () => {
     const harness = open();
 
     harness.page.record = record({
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
 
@@ -915,7 +914,6 @@ describe('the box', () => {
           take: null,
           notice: { kind: 'landed', text: 'flaky retry test', truncated: false },
           machine: null,
-          sign_in: null,
         },
       });
       flushSync();
@@ -969,7 +967,6 @@ describe('the box', () => {
         take: null,
         notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -1106,7 +1103,6 @@ describe('the box', () => {
             truncated: false,
           },
           machine: null,
-          sign_in: null,
         },
       }),
     });
@@ -1127,7 +1123,6 @@ describe('the box', () => {
           take: null,
           notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
           machine: null,
-          sign_in: null,
         },
       }),
     });
@@ -1145,7 +1140,6 @@ describe('the box', () => {
         take: null,
         notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -1166,7 +1160,6 @@ describe('the box', () => {
         take: null,
         notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -1194,7 +1187,7 @@ describe('the box', () => {
 
     const watching = record({
       pending_asks: [permissionAsk()],
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     harness.page.record = watching;
     flushSync();
@@ -1207,7 +1200,6 @@ describe('the box', () => {
         take: null,
         notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -1231,7 +1223,6 @@ describe('the box', () => {
           text: 'nothing above -50 dBFS in 4s · loudest was -38.2 · try again',
         },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -1259,7 +1250,7 @@ describe('the box', () => {
       [
         {
           record: record({
-            composer: { take: null, notice: null, machine: 'compacting', sign_in: null },
+            composer: { take: null, notice: null, machine: 'compacting' },
           }),
         },
         'compacting this session',
@@ -1268,7 +1259,7 @@ describe('the box', () => {
       [
         {
           record: record({
-            composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+            composer: { take: null, notice: null, machine: 'handoff' },
           }),
         },
         'handing this session over',
@@ -1336,7 +1327,7 @@ describe('the box', () => {
       [
         {
           record: record({
-            composer: { take: null, notice: null, machine: 'compacting', sign_in: null },
+            composer: { take: null, notice: null, machine: 'compacting' },
           }),
         },
         'compacting this session',
@@ -1344,7 +1335,7 @@ describe('the box', () => {
       [
         {
           record: record({
-            composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+            composer: { take: null, notice: null, machine: 'handoff' },
           }),
         },
         'handing this session over',
@@ -1396,7 +1387,7 @@ describe('the box', () => {
       ['compacting', 'compacting this session'],
     ] as const) {
       harness.page.record = record({
-        composer: { take: null, notice: null, machine, sign_in: null },
+        composer: { take: null, notice: null, machine },
       });
       flushSync();
       expect(drawn(), 'the composer says what is running').toContain(line);
@@ -1408,7 +1399,7 @@ describe('the box', () => {
     }
 
     harness.page.record = record({
-      composer: { take: null, notice: null, machine: null, sign_in: null },
+      composer: { take: null, notice: null, machine: null },
     });
     flushSync();
     expect(field().value, "the reader's words come back with the box").toBe(
@@ -1445,7 +1436,7 @@ describe('the box', () => {
     const harness = open({
       dictation: true,
       record: record({
-        composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+        composer: { take: null, notice: null, machine: 'handoff' },
       }),
     });
 
@@ -1460,7 +1451,7 @@ describe('the box', () => {
   it('draws and answers a parked ask through a machine turn', () => {
     const harness = open({
       record: record({
-        composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+        composer: { take: null, notice: null, machine: 'handoff' },
         pending_asks: [permissionAsk()],
       }),
     });
@@ -1696,7 +1687,7 @@ describe('the box', () => {
   it("gives a recording the draft's own line, with the controls on it", () => {
     const harness = open({ dictation: true });
     harness.page.record = record({
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
 
@@ -1723,7 +1714,7 @@ describe('the box', () => {
     (resting as HTMLElement).focus();
     (resting as HTMLElement).click();
     harness.page.record = record({
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
 
@@ -1917,7 +1908,7 @@ describe('the key', () => {
 
   const bound = (bind: string, mode: string, take: Record<string, unknown> | null = null) =>
     record({
-      composer: { take, notice: null, machine: null, sign_in: null, bind, mode },
+      composer: { take, notice: null, machine: null, bind, mode },
     });
 
   it('brings the keyboard to the box before the take starts', async () => {
@@ -2577,7 +2568,6 @@ describe('the key', () => {
               take: null,
               notice: null,
               machine: null,
-              sign_in: null,
               bind: 'right_cmd',
               mode: 'auto',
             },
@@ -2872,7 +2862,7 @@ describe('the key', () => {
       dictation: true,
       record: record({
         pending_asks: [permissionAsk()],
-        composer: { take: take(), notice: null, machine: null, sign_in: null },
+        composer: { take: take(), notice: null, machine: null },
       }),
     });
     flushSync();
@@ -4887,7 +4877,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -4920,7 +4909,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'custom words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -4947,7 +4935,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'first words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -4962,7 +4949,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'second words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -4988,7 +4974,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'first words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5001,7 +4986,7 @@ describe('the dock', () => {
     // A question arrives mid-flight; this take's words are still the draft's.
     harness.page.record = record({
       pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
     harness.page.record = record({
@@ -5010,7 +4995,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'second words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5047,7 +5031,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'first words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5065,7 +5048,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'second words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5090,7 +5072,7 @@ describe('the dock', () => {
 
     await beginTake(harness);
     harness.page.record = record({
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
     harness.page.record = record({
@@ -5098,7 +5080,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'orphan words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5126,7 +5107,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5143,7 +5123,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5171,7 +5150,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'draft words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5193,7 +5171,7 @@ describe('the dock', () => {
 
     harness.page.record = record({
       pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
     expect(
@@ -5207,7 +5185,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'more', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5242,7 +5219,7 @@ describe('the dock', () => {
     await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
     harness.page.record = record({
@@ -5251,7 +5228,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5503,7 +5479,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -5730,7 +5705,7 @@ describe('the dock', () => {
     const harness = open({
       record: record({
         pending_asks: [permissionAsk()],
-        composer: { take: take(), notice: null, machine: null, sign_in: null },
+        composer: { take: take(), notice: null, machine: null },
       }),
     });
 
@@ -6347,7 +6322,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -7158,7 +7132,7 @@ describe('the dock', () => {
       // have watched it for the landing to be its own.
       harness.page.record = record({
         pending_asks: [held],
-        composer: { take: take(), notice: null, machine: null, sign_in: null },
+        composer: { take: take(), notice: null, machine: null },
       });
       flushSync();
       harness.page.record = record({
@@ -7167,7 +7141,6 @@ describe('the dock', () => {
           take: null,
           notice: { kind: 'landed', text: 'the dictated answer', truncated: false },
           machine: null,
-          sign_in: null,
         },
       });
       flushSync();
@@ -7197,7 +7170,7 @@ describe('the dock', () => {
     await micPress();
     harness.page.record = record({
       pending_asks: [held],
-      composer: { take: take(), notice: null, machine: null, sign_in: null },
+      composer: { take: take(), notice: null, machine: null },
     });
     flushSync();
     harness.page.record = record({
@@ -7206,7 +7179,6 @@ describe('the dock', () => {
         take: null,
         notice: { kind: 'landed', text: 'the dictated answer', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -7226,7 +7198,6 @@ describe('the dock', () => {
           carried: true,
         },
         machine: null,
-        sign_in: null,
       },
     });
     flushSync();
@@ -7480,7 +7451,7 @@ describe('the dock', () => {
     open({
       record: record({
         pending_asks: [slackDraftAsk()],
-        composer: { take: take(), notice: null, machine: null, sign_in: null },
+        composer: { take: take(), notice: null, machine: null },
       }),
     });
 
@@ -7838,7 +7809,6 @@ describe('two clients on one seat', () => {
         take: null,
         notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
         machine: null,
-        sign_in: null,
       },
     });
     one.page.record = landed;
@@ -8156,7 +8126,7 @@ describe('the dictation panel', () => {
   it('states the mode rather than offering it, because nothing can set it', () => {
     opened({
       record: record({
-        composer: { take: null, notice: null, machine: null, sign_in: null, mode: 'hold' },
+        composer: { take: null, notice: null, machine: null, mode: 'hold' },
       }),
     });
 
@@ -8287,7 +8257,7 @@ describe('the dictation panel', () => {
   it('advertises the bound key, and nothing when the binding is off', () => {
     opened({
       record: record({
-        composer: { take: null, notice: null, machine: null, sign_in: null, bind: 'left_cmd' },
+        composer: { take: null, notice: null, machine: null, bind: 'left_cmd' },
       }),
     });
     expect(document.querySelector('.pop .hd')?.textContent).toContain('left to talk');
@@ -8297,7 +8267,7 @@ describe('the dictation panel', () => {
     document.body.innerHTML = '';
     opened({
       record: record({
-        composer: { take: null, notice: null, machine: null, sign_in: null, bind: 'off' },
+        composer: { take: null, notice: null, machine: null, bind: 'off' },
       }),
     });
     expect(

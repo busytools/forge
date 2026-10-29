@@ -52,7 +52,7 @@
   function blank(): ComposerRecord {
     return {
       slot: { org: 'Busytools', project: 'forge', label: 'lead' },
-      composer: { take: null, notice: null, machine: null, sign_in: null },
+      composer: { take: null, notice: null, machine: null },
       pending_asks: [],
       header: { turn_in_flight: false },
       slash_commands: [
@@ -288,7 +288,7 @@
         dictation: true,
         record: {
           ...blank(),
-          composer: { take: take(), notice: null, machine: null, sign_in: null },
+          composer: { take: take(), notice: null, machine: null },
         },
       },
     },
@@ -302,7 +302,6 @@
             take: take({ phase: 'transcribing', progress: [2, 6], peak_db: -22 }),
             notice: null,
             machine: null,
-            sign_in: null,
           },
         },
       },
@@ -321,7 +320,6 @@
               text: 'nothing above -50 dBFS in 4s · loudest was -38.2 · try again',
             },
             machine: null,
-            sign_in: null,
           },
         },
       },
@@ -340,7 +338,6 @@
               text: 'microphone is held by another application',
             },
             machine: null,
-            sign_in: null,
           },
         },
       },
@@ -354,7 +351,6 @@
             take: null,
             notice: { kind: 'landed', text: 'fix the flaky retry test and', truncated: false },
             machine: null,
-            sign_in: null,
           },
         },
       },
@@ -377,7 +373,7 @@
       props: {
         record: {
           ...blank(),
-          composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+          composer: { take: null, notice: null, machine: 'handoff' },
         },
       },
     },
@@ -386,7 +382,7 @@
       props: {
         record: {
           ...blank(),
-          composer: { take: null, notice: null, machine: 'compacting', sign_in: null },
+          composer: { take: null, notice: null, machine: 'compacting' },
         },
       },
     },
@@ -409,7 +405,7 @@
         record: {
           ...blank(),
           pending_asks: [permission],
-          composer: { take: take(), notice: null, machine: null, sign_in: null },
+          composer: { take: take(), notice: null, machine: null },
         },
       },
     },
