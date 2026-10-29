@@ -680,6 +680,8 @@ interface Frame {
   stdout?: unknown;
   stderr?: unknown;
   task_id?: unknown;
+  /** The Workflow tool's phase and agent snapshot, on its `task_progress` tick. */
+  workflow_progress?: unknown;
   tool_use_id?: unknown;
   is_backgrounded?: unknown;
   patch?: unknown;
@@ -2197,15 +2199,15 @@ export function fold(
   /**
    * Hang the harness's line about an image on the call that read it.
    *
-   * The note arrives as a user frame right after the result, while the call
-   * is still pending, so the last pending call holding an image is the row
-   * the note belongs to. A note no call holds draws as its own line instead.
+   * The note arrives as a user frame right after the result. The first call
+   * still owed a caption takes it - live calls before settled rows, each in
+   * draw order - and a note no call holds draws as its own line instead.
    */
   const attachImageNote = (note: string): boolean => {
-    // **In draw order, both times.** A turn can read two pictures, whose notes
-    // arrive in the order the pictures were read; taking the nearest owed
-    // picture instead would swap the captions on a turn whose results land in
-    // one frame.
+    // **In draw order within each list.** A turn can read two pictures, whose
+    // notes arrive in the order the pictures were read; taking the nearest
+    // owed picture instead would swap the captions on a turn whose results
+    // land in one frame.
     for (const item of pending) {
       if (item?.tag === 'call' && item.leaf.image !== null && item.leaf.imageNote === null) {
         item.leaf.imageNote = note;
