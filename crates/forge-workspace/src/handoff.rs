@@ -121,8 +121,8 @@ pub(crate) async fn ground_truth(
             HandoffSection {
                 label: "note".to_owned(),
                 lines: vec![
-                    "the previous session's transcript could not be read; the files it names are \
-                     missing for that reason"
+                    "the previous session's transcript could not be read; the files this brief \
+                     would list cannot be read for that reason"
                         .to_owned(),
                 ],
             },
@@ -857,7 +857,8 @@ pub(crate) fn missing_note() -> Vec<HandoffSection> {
 /// `**Next:** ...`, `**Next** run the gate.`, `## Next.` or `1. **Next**`. The
 /// label still has to open the line: a marked line, or a short title-shaped
 /// label before a colon, is a heading. A sentence that carries a colon in the
-/// middle stays body text.
+/// middle stays body text, and a marked label still has to read as one -
+/// `**I fixed it. The gate:** is green` stays body.
 fn judgment_heading(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim();
     let unbulleted = trimmed.trim_start_matches(['#', '*', '-', ' ']);
@@ -875,11 +876,19 @@ fn judgment_heading(line: &str) -> Option<(String, String)> {
     if text.is_empty() {
         return None;
     }
-    let (label, rest) = match (marked, text.split_once("**")) {
-        // `**Next** run the gate.` closes its label on the emphasis: what
-        // follows is the body, not more label, colon or not.
-        (true, Some((label, rest))) if !rest.trim().is_empty() => (label, Some(rest)),
-        _ => match text.split_once(':') {
+    let emphasis = text.split_once("**").filter(|(_, rest)| !rest.trim().is_empty());
+    let colon = text.split_once(':');
+    let (label, rest) = match (marked, emphasis) {
+        // **Whichever delimiter opens first ends the label.** A colon before
+        // the closing emphasis wins, so `Where things stand: the **cut** is
+        // in` keeps its whole label.
+        (true, Some((label, rest))) => match colon {
+            Some((colon_label, colon_rest)) if colon_label.len() < label.len() => {
+                (colon_label, Some(colon_rest))
+            }
+            _ => (label, Some(rest)),
+        },
+        _ => match colon {
             Some((label, rest)) => (label, Some(rest)),
             None if marked => (text, None),
             None => return None,
@@ -892,7 +901,9 @@ fn judgment_heading(line: &str) -> Option<(String, String)> {
     if !heading_label(label, marked) {
         return None;
     }
-    let body = rest.map_or_else(String::new, |rest| strip_emphasis(rest).trim().to_owned());
+    let body = rest.map_or_else(String::new, |rest| {
+        strip_emphasis(rest.trim_start().trim_start_matches(':')).trim().to_owned()
+    });
     Some((label.to_owned(), body))
 }
 
@@ -982,13 +993,27 @@ fn cap_judgment(mut sections: Vec<HandoffSection>) -> Vec<HandoffSection> {
 /// that session chose.
 pub(crate) fn brief_text(pair: &str, brief: &forge_primitives::HandoffBrief) -> String {
     let mut out = format!("HANDOFF - {pair}\n");
-    out.push_str(
+    // **A source row is forge's sentence inside the session's half**, so both
+    // the precedence line and the part header name the exception rather than
+    // letting it read as the predecessor's words.
+    let sourced = brief.judgment.iter().any(|section| section.label == "source");
+    out.push_str(if sourced {
         "\nPART 1 is forge's own ground truth and is authoritative for facts; PART 2 is the \
-         handing-over session's own words.\n",
-    );
+         handing-over session's own words, apart from the source row forge added.\n"
+    } else {
+        "\nPART 1 is forge's own ground truth and is authoritative for facts; PART 2 is the \
+         handing-over session's own words.\n"
+    });
     out.push_str("\nPART 1: GROUND TRUTH (written by forge, not by a model)\n");
     render_sections(&mut out, &brief.ground_truth);
-    out.push_str("\nPART 2: JUDGMENT (written by the session that is handing over)\n");
+    if sourced {
+        out.push_str(
+            "\nPART 2: JUDGMENT (the source row is forge's; the rest is the session's own \
+             words)\n",
+        );
+    } else {
+        out.push_str("\nPART 2: JUDGMENT (written by the session that is handing over)\n");
+    }
     render_sections(&mut out, &brief.judgment);
     out
 }
@@ -2207,6 +2232,22 @@ mod tests {
         }
     }
 
+    /// **Whichever delimiter opens first ends the label.** A colon before the
+    /// closing emphasis keeps the label whole, and a colon that follows the
+    /// emphasis is the body's, not the label's.
+    #[test]
+    fn the_first_delimiter_ends_the_label() {
+        let sections = parse_judgment("## Where things stand: the **cut** is in");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "Where things stand");
+        assert_eq!(sections[0].lines, vec!["the **cut** is in".to_owned()]);
+
+        let sections = parse_judgment("**Next**: run the gate");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "Next");
+        assert_eq!(sections[0].lines, vec!["run the gate".to_owned()]);
+    }
+
     /// **The label's own emphasis comes off; the body's stays.** Stripping a
     /// leading asterisk run rather than the matched pair left a note reading
     /// `nothing*` where its author wrote `*nothing*`.
@@ -2333,6 +2374,40 @@ fix the parser, then the client row.";
         assert!(ground < judgment, "ground truth first: {text}");
         assert!(text.contains("seat: Busytools/forge/lead"), "the facts are rendered");
         assert!(text.contains("Next: the client row"), "and so is the judgment");
+        assert!(
+            text.contains("PART 2: JUDGMENT (written by the session that is handing over)"),
+            "a note the session wrote names it as the author: {text}",
+        );
+
+        // **A source row is forge's sentence in the session's half**, so the
+        // header names the exception rather than letting it read as the
+        // predecessor's words.
+        let sourced = HandoffBrief {
+            ground_truth: Vec::new(),
+            judgment: vec![
+                HandoffSection {
+                    label: "source".to_owned(),
+                    lines: vec![
+                        "the exit call carried no note; this is the session's closing \
+                                 text"
+                            .to_owned(),
+                    ],
+                },
+                HandoffSection {
+                    label: "note".to_owned(),
+                    lines: vec!["the cut is half in".to_owned()],
+                },
+            ],
+        };
+        let text = brief_text("9cfe315c -> 4b21e0a7", &sourced);
+        assert!(
+            text.contains("the source row is forge's; the rest is the session's own words"),
+            "the header names the exception: {text}",
+        );
+        assert!(
+            text.contains("apart from the source row forge added"),
+            "and so does the precedence line: {text}",
+        );
     }
 
     /// The brief reaches the successor as a prompt and nowhere else: its

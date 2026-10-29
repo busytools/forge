@@ -1943,6 +1943,9 @@ impl SessionTask {
                 // exit call's note wins when both sources have one.
                 let supplied = domain.handoff.supplied.take();
                 let captured = domain.handoff.judgment.take();
+                // **Whether the exit call carried a note at all**, which is not
+                // the same as whether its note carried content: a shell like
+                // `## Next` parses to nothing but is not an absent call.
                 let from_tool_call = supplied.is_some();
                 let from_turn_text = captured.is_some();
                 domain.handoff.judgment_started = false;
@@ -1950,44 +1953,38 @@ impl SessionTask {
                 // ended is not.** Both are accepted for their text, but a note
                 // taken from the closing text is marked so the successor can
                 // tell it from one its predecessor chose to pass.
-                let note = match supplied.filter(|text| handoff::parses_as_note(text)) {
-                    Some(text) => Some((text, false)),
-                    None => captured
-                        .filter(|text| handoff::parses_as_note(text))
-                        .map(|text| (text, true)),
-                };
-                if let Some((text, only_the_turn)) = note {
-                    if only_the_turn {
-                        tracing::info!(
-                            target: "forge_workspace::session_task",
-                            event_name = "handoff_note_from_turn_text",
-                            slot = %self.key.display(),
-                            chars = text.chars().count(),
-                            "the exit call carried no note; the turn's closing text is the \
-                             judgment half",
-                        );
-                    }
+                if let Some(text) = supplied.filter(|text| handoff::parses_as_note(text)) {
+                    handoff::parse_judgment(&text)
+                } else if let Some(text) = captured.filter(|text| handoff::parses_as_note(text)) {
+                    let why = if from_tool_call {
+                        "the exit call's note carried no content; this is the session's closing \
+                         text"
+                    } else {
+                        "the exit call carried no note; this is the session's closing text"
+                    };
+                    tracing::info!(
+                        target: "forge_workspace::session_task",
+                        event_name = "handoff_note_from_turn_text",
+                        slot = %self.key.display(),
+                        from_tool_call,
+                        chars = text.chars().count(),
+                        "the turn's closing text is the judgment half; the exit call's own note \
+                         was absent or carried no content",
+                    );
                     let mut sections = handoff::parse_judgment(&text);
-                    if only_the_turn {
-                        sections.insert(
-                            0,
-                            forge_primitives::HandoffSection {
-                                label: "source".to_owned(),
-                                lines: vec![
-                                    "the exit call carried no note; this is the session's closing \
-                                     text"
-                                        .to_owned(),
-                                ],
-                            },
-                        );
-                    }
+                    sections.insert(
+                        0,
+                        forge_primitives::HandoffSection {
+                            label: "source".to_owned(),
+                            lines: vec![why.to_owned()],
+                        },
+                    );
                     sections
                 } else {
                     // **The successor is told the note is missing; this is the
-                    // trail that says so.** The only way here is an empty
-                    // reply - the MCP layer refuses an empty brief, and any
-                    // non-empty turn text is a note - so the two fields name
-                    // what forge had in hand.
+                    // trail that says so.** Either source can be a shell with
+                    // no content - a headings-only reply parses to nothing -
+                    // so the two fields name what forge had in hand.
                     tracing::warn!(
                         target: "forge_workspace::session_task",
                         event_name = "handoff_note_rejected",
@@ -5258,6 +5255,59 @@ mod tests {
             record.brief.judgment[1].lines.iter().any(|line| line.contains("Memory is updated")),
             "and the turn's text is the note: {:?}",
             record.brief.judgment[1].lines,
+        );
+    }
+
+    /// **A note that carried no content is not an absent call.** An exit call
+    /// whose brief was a shell like `## Next` was made; the source row must
+    /// say the note had no content rather than that no call arrived.
+    #[tokio::test]
+    async fn a_content_free_exit_note_is_named_as_such() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        let token = workspace.begin_swap(&task.key);
+        {
+            let mut domain = task.domain.lock();
+            domain.handoff.awaiting = true;
+            domain.handoff.swap_token = Some(token);
+            domain.handoff.judgment =
+                Some("Memory is updated and the monitor is stopped.".to_owned());
+        }
+
+        task.execute_command(Command::Handoff {
+            key: slot.clone(),
+            brief: Some("## Next".to_owned()),
+        });
+        task.after_turn_ended();
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+        assert_eq!(
+            record.brief.judgment.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            ["source", "note"],
+            "the capture is marked: {:?}",
+            record.brief.judgment,
+        );
+        assert!(
+            record.brief.judgment[0]
+                .lines
+                .iter()
+                .any(|line| line.contains("the exit call's note carried no content")),
+            "the row names the call that was made: {:?}",
+            record.brief.judgment[0].lines,
         );
     }
 

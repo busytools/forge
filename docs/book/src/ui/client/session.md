@@ -222,7 +222,8 @@ read and changed, the rows the seat owns and their links, the transcript the
 record names, and what was still running when the seat changed: the live
 agents, background tasks, monitors and the session's process tree, so the
 successor knows what to resume - then
-the note the handing-over session wrote: where things stand, what is in
+the note the handing-over session wrote, or its closing text under a `source`
+row when the exit call carried none: where things stand, what is in
 flight with the id that names it, what failed, and the exact next action with
 the file, command or row it starts at, so the successor opens what the note
 names rather than reading a retelling of it. **The brief is one
