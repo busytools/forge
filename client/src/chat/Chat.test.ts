@@ -341,28 +341,30 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'the column kept drawing the conversation of the seat it left').not.toContain(
       'the lead said this',
     );
-    // And the new seat's own state is what draws, not a blank column: an empty
-    // column would satisfy the line above as readily as the right one.
-    expect(drawn(), 'the column drew nothing at all for the seat it moved to').toContain(
-      'Reading the conversation',
+    // And the new seat's own state is what draws, not a blank page: the
+    // column is there, and it neither claims the seat is empty nor stands in
+    // for the wait the band under it carries.
+    expect(drawn(), 'the empty copy stood in for a page still on its way').not.toContain(
+      'Nothing said yet',
     );
+    expect(document.querySelector('.conv'), 'the column went with the switch').not.toBeNull();
   });
 
-  it('says it is still reading rather than saying the seat is empty', () => {
+  it('leaves the read wait to the band rather than claiming the seat is empty', () => {
     const server = stub();
     draw({}, server);
 
     // A page that has not answered yet is not an empty conversation: saying
     // "nothing said yet" here tells the reader the seat is new when the truth
-    // is that nothing has come back.
-    expect(drawn()).toContain('Reading the conversation');
-    // Ved, 2026-10-18: the wait reads like the wake, not as a flat line - the
-    // same hold and shimmer, only the words differ. The selector pins the
-    // whole shape, the way the wake tests do.
-    const wait = document.querySelector('.hold .shimmer');
-    expect(wait?.textContent, "the reading wait lost the waking line's shimmer").toContain(
+    // is that nothing has come back. **The composer's band carries the wait**
+    // - one hold for every narrative state - so the column draws nothing.
+    expect(drawn(), 'the column claimed a seat whose page is still out').not.toContain(
+      'Nothing said yet',
+    );
+    expect(drawn(), 'the read wait came back into the column').not.toContain(
       'Reading the conversation',
     );
+    expect(document.querySelector('.conv'), 'the column went missing').not.toBeNull();
   });
 
   it('hands back the words the server turned the conversation down with', () => {
@@ -439,32 +441,29 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'and the reader own words drew above it').toContain('go');
   });
 
-  it('wakes a lead rather than drawing it as one nothing runs', () => {
+  it('leaves the wake to the band rather than drawing a lead as one nothing runs', () => {
     // A lead's page dispatches the spawn on open, so this state is a wait
-    // with a keeper: the waking line sweeps rather than refusing.
+    // with a keeper. **The composer's band carries the waking line**, so the
+    // column draws neither it nor the worker's refusal.
     const server = stub();
     draw({ waking: true, reason: 'no model declared' }, server);
 
-    expect(drawn()).toContain('Waking up agent...');
-    expect(document.querySelector('.hold .shimmer'), 'the wake does not sweep').not.toBeNull();
+    expect(drawn(), 'the column kept the wake').not.toContain('Waking up agent...');
     expect(drawn(), 'the wake line read as a refusal').not.toContain('not running');
   });
 
-  it('keeps the waking line up while the spawn is in flight', () => {
+  it('draws no refusal while the spawn is in flight', () => {
     // The wake reads as one state on both sides of the roster noticing:
     // before the row lands (waking) and while the core brings it up
     // (spawning), so the column never flashes a not-running line in between.
     const server = stub();
     draw({ spawning: true }, server);
 
-    expect(drawn(), 'the spawn in flight lost its waking line').toContain('Waking up agent...');
-    expect(
-      document.querySelector('.hold .shimmer'),
-      'the spawn line does not sweep',
-    ).not.toBeNull();
+    expect(drawn(), 'the spawn in flight drew the worker refusal').not.toContain('not running');
+    expect(drawn(), 'the column kept the waking line').not.toContain('Waking up agent...');
   });
 
-  it('keeps the waking line up for a worker seat the core is spawning', () => {
+  it('draws no refusal for a worker seat the core is spawning', () => {
     // The roster can name a WORKER Spawning (its lead's spawn), and the
     // not-running refusal there would read as a dead seat at the moment it is
     // coming up - the inner arm has to answer for any spawning seat, not
@@ -472,20 +471,20 @@ describe('the chat column as it draws', () => {
     const server = stub();
     draw({ spawning: true, slot: { ...LEAD, label: 'w1' } }, server);
 
-    expect(drawn(), 'a spawning worker read as a dead seat').toContain('Waking up agent...');
     expect(drawn(), 'a spawning worker drew the refusal').not.toContain('not running');
   });
 
-  it('draws the history a coming-up seat already holds instead of the waking line', () => {
+  it('draws the history a coming-up seat already holds', () => {
     // **A seat's history does not wait on the spawn.** The server can answer
     // the transcript a sleeping seat left, so a page lands while the seat is
-    // still coming up - and a column that held the waking line over it would
-    // make the reader wait again for something already in hand (Ved,
-    // 2026-10-12: "as soon as it has gone, I should fully be landed into the
-    // conversation"). The waking line is for a seat with nothing to draw yet.
+    // still coming up - and the column draws it at once rather than waiting
+    // again for something already in hand (Ved, 2026-10-12: "as soon as it
+    // has gone, I should fully be landed into the conversation").
     const server = stub();
     draw({ waking: true }, server);
-    expect(drawn(), 'precondition: the waking line drew first').toContain('Waking up agent...');
+    expect(drawn(), 'precondition: the column drew a state of its own').not.toContain(
+      'Waking up agent...',
+    );
 
     server.answer([
       {
@@ -507,10 +506,6 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'the history the page answered with did not draw').toContain(
       'the seat said this before it slept',
     );
-    expect(
-      drawn(),
-      'the column held the waking line over a conversation it already had',
-    ).not.toContain('Waking up agent...');
   });
 
   it('draws a seat that has no session behind it as its own state', () => {

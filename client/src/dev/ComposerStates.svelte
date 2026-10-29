@@ -371,6 +371,10 @@
       props: { seat: seat({ lifecycle: 'Spawning' }) },
     },
     {
+      label: 'blocking · reading the conversation',
+      props: { reading: true },
+    },
+    {
       label: 'blocking · a slash command in flight (typed, then sent)',
       props: { record: { ...blank(), header: { turn_in_flight: true } } },
       driven: '/compact',

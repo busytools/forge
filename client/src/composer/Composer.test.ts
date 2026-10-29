@@ -1322,6 +1322,65 @@ describe('the box', () => {
   });
 
   /**
+   * **Every narrative hold draws the same way: one band, the sweep, only the
+   * text changing.** The selector is the pin - a pin on the line alone would
+   * survive the animation being dropped, which is how it goes missing. The
+   * error state shares the band in its own tone, and the worker's stop draws
+   * no motion at all, because neither is progress.
+   */
+  it('draws every narrative hold with the one sweep, and no motion on a stop', () => {
+    const cases: [Partial<ComposerProps>, string][] = [
+      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Waking up agent...'],
+      [{ seat: seatRead({ waking: true, lifecycle: null, reason: null }) }, 'Waking up agent...'],
+      [{ reading: true }, 'Reading the conversation...'],
+      [
+        {
+          record: record({
+            composer: { take: null, notice: null, machine: 'compacting', sign_in: null },
+          }),
+        },
+        'compacting this session',
+      ],
+      [
+        {
+          record: record({
+            composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+          }),
+        },
+        'handing this session over',
+      ],
+    ];
+    for (const [props, line] of cases) {
+      open(props);
+      expect(drawn(), `the band says ${line}`).toContain(line);
+      expect(
+        document.querySelector('.blocked .b1 .shimmer')?.textContent,
+        `${line} lost the sweep`,
+      ).toBe(line);
+      void unmount(app as Record<string, unknown>);
+      app = null;
+      document.body.innerHTML = '';
+    }
+
+    // The error: the same band, its own tone, no motion.
+    open({ seat: seatRead({ lifecycle: 'Failed', reason: 'the CLI exited with status 1' }) });
+    expect(drawn(), 'the error line moved').toContain('Input disabled due to error');
+    expect(document.querySelector('.blocked.err'), 'the error lost its tone').not.toBeNull();
+    expect(document.querySelector('.blocked .shimmer'), 'the error is not progress').toBeNull();
+
+    // The worker's stop: a dead seat, said plainly.
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    open({
+      slot: { org: 'Busytools', project: 'forge', label: 'w1' },
+      seat: seatRead({ waking: true, lifecycle: null, reason: null }),
+    });
+    expect(drawn(), 'the stop line moved').toContain('not running');
+    expect(document.querySelector('.blocked .shimmer'), 'a stop is not progress').toBeNull();
+  });
+
+  /**
    * **A machine turn takes the box and hands it back with the draft.** The
    * handoff and a compaction are turns the person cannot type into, so the
    * box stands down while they run - and the words already typed are the
@@ -1344,7 +1403,8 @@ describe('the box', () => {
       expect(document.querySelector('textarea'), 'a machine turn takes the box').toBeNull();
       expect(document.querySelector('.send'), 'and the send').toBeNull();
       expect(document.querySelector('.mic'), 'and the mic').toBeNull();
-      expect(document.querySelector('.b1 .ring'), 'and it draws the wait').not.toBeNull();
+      expect(document.querySelector('.b1 .shimmer'), 'and it draws the sweep').not.toBeNull();
+      expect(document.querySelector('.b1 .ring'), 'and no second animation beside it').toBeNull();
     }
 
     harness.page.record = record({
@@ -1600,6 +1660,10 @@ describe('the box', () => {
     flushSync();
 
     expect(drawn(), 'the reader is told what they are waiting for').toContain('Running /compact');
+    expect(
+      document.querySelector('.blocked .b1 .shimmer')?.textContent,
+      'the command line lost the same sweep every hold draws',
+    ).toBe('Running /compact');
   });
 
   it('rests as one row when it has nothing to put in a footer', () => {

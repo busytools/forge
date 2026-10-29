@@ -814,11 +814,11 @@
    * time the wrong open.
    *
    * **Every terminal state draws a mark, and the mark says which one.** The
-   * chain below mirrors the column's own state chain: the waking line (a
-   * seat the roster does not name, or a spawn in flight - the not-running
-   * line is the same state and shares the word), then the refusal, then the
-   * wait ("Reading the conversation..."), then the empty state, then the
-   * rows. A waking or refused line is NOT the seat's content: the probe
+   * chain below mirrors the column's own state chain: the waking state (a
+   * seat the roster does not name, or a spawn in flight - the composer's band
+   * now draws its line, and the not-running line is the same state and shares
+   * the word), then the refusal, then the read wait (the band's too), then the
+   * empty state, then the rows. A waking or refused line is NOT the seat's content: the probe
    * records it as a placeholder and keeps the open armed, so the content's
    * later drawing is the one that measures click-to-first-row, and only it
    * lets a quiet follow.
@@ -1576,20 +1576,18 @@
        column's own rules: without them the copy is the one thing on the page
        drawn at no padding and no gutter, while the list beside it is not. -->
   <div class="conv">
-    <!-- A seat that is coming up, either side of the roster noticing: a
-         spawn the core is running, or - for a LEAD the roster does not name
-         yet - the one this page dispatched on open. Both draw the waking
-         line, so the wake reads as one state rather than two. A worker's
-         seat the roster does not name has no spawn coming toward it - only
-         its lead can start it - and its line claims nothing.
+    <!-- **The waking line is the composer band's.** Every narrative hold draws
+         there, one draw with only the text changing, so this column draws
+         nothing for a seat coming up - either side of the roster noticing: a
+         spawn the core is running, or the lead's own this page dispatched.
+         The worker's line stays: its seat has no spawn coming, which is a
+         stop rather than a wait.
          **A wake with history in hand draws the history instead** (Ved,
          2026-10-12): the server answers a sleeping seat's own transcript, so
          the page lands while the spawn is still in flight - and the waking
          line is for a seat with nothing to draw yet, not a cover over a
          conversation already loaded. -->
-    {#if spawning || slot.label === 'lead'}
-      <div class="hold"><span class="shimmer">Waking up agent...</span></div>
-    {:else}
+    {#if !(spawning || slot.label === 'lead')}
       <div class="hold off">
         not running
         <span class="sub">{reason ?? 'this seat has no session behind it'}</span>
@@ -1606,12 +1604,10 @@
     <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
   </div>
 {:else if !held.loaded}
-  <div class="conv">
-    <!-- Connected, and the first page has not come back. It is its own state:
-         the empty copy here would say the seat has no history when the truth
-         is that nothing has answered yet. -->
-    <div class="hold"><span class="shimmer">Reading the conversation...</span></div>
-  </div>
+  <!-- Connected, and the first page has not come back. **The band says so**:
+       the empty copy here would claim the seat has no history when the truth
+       is that nothing has answered yet, so the column draws nothing. -->
+  <div class="conv"></div>
 {:else if held.turns.length === 0}
   <div class="conv">
     {#if echo !== undefined}

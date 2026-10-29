@@ -143,6 +143,15 @@ export interface ComposerProps {
    * than both.
    */
   dictation: boolean;
+  /**
+   * Whether the seat's conversation is still on its way.
+   *
+   * The page owns the conversation column and reads this off the seat's own
+   * conversation, so the band under it can say "Reading the conversation..."
+   * while the first page is out - the column used to draw that line itself,
+   * and every narrative hold now draws in one place.
+   */
+  reading: boolean;
 }
 
 /**
@@ -212,6 +221,10 @@ export function pendingAsk(record: ComposerRecord): Ask | null {
  * started cannot tell whether a session is coming up or never will, and a
  * machine turn - forge's handoff or the CLI's compaction - is the more specific
  * truth about a turn the reader sent.
+ *
+ * **Every narrative hold draws the same way**: one line with the sweep moving
+ * through its words, and only the text changing. The error state carries its
+ * own tone instead, because it is not progress.
  */
 interface Blocker {
   line: string;
@@ -219,24 +232,15 @@ interface Blocker {
   sub: string | null;
   /** Whether the line reports a failure rather than a wait. */
   bad: boolean;
-  /** Whether the line is a wait, which draws the ring. */
-  waiting: boolean;
-  /**
-   * Whether the line itself carries the wait, sweeping a highlight through
-   * its words, where a ring would be a second animation beside it.
-   */
+  /** Whether the line carries the wait, sweeping through its words. */
   shimmer: boolean;
 }
 
 /** The line the box's own key hints draw, where the mockup draws them. */
 const SIGN_IN_FALLBACK = 'Run `claude auth login` in another terminal to authenticate';
 
-/** A blocked state draws no ring, and one that reports a failure draws none either. */
-const STOPPED: Pick<Blocker, 'bad' | 'waiting' | 'shimmer'> = {
-  bad: false,
-  waiting: false,
-  shimmer: false,
-};
+/** A stated stop carries no motion and no error tone. */
+const STOPPED: Pick<Blocker, 'bad' | 'shimmer'> = { bad: false, shimmer: false };
 
 /**
  * The reason the seat takes no input, or `null` when it does.
@@ -252,6 +256,7 @@ export function blocked(
   command: string | null,
   lead: boolean,
   askPending: boolean,
+  reading: boolean,
 ): Blocker | null {
   // Sign-in keeps its box: the hint above it is where the reader is told.
   if (seat.lifecycle === 'AuthRequired') return null;
@@ -260,7 +265,6 @@ export function blocked(
       line: 'Input disabled due to error',
       sub: seat.reason ?? 'Quit forge and start it again to recover this session.',
       bad: true,
-      waiting: false,
       shimmer: false,
     };
   }
@@ -276,7 +280,7 @@ export function blocked(
     seat.lifecycle === 'LoggedOut'
   ) {
     if (lead) {
-      return { line: 'Waking up agent...', sub: null, bad: false, waiting: false, shimmer: true };
+      return { line: 'Waking up agent...', sub: null, bad: false, shimmer: true };
     }
     return {
       line: 'not running',
@@ -285,7 +289,13 @@ export function blocked(
     };
   }
   if (seat.lifecycle === 'Spawning') {
-    return { line: 'Waking up agent...', sub: null, bad: false, waiting: false, shimmer: true };
+    return { line: 'Waking up agent...', sub: null, bad: false, shimmer: true };
+  }
+  // **The conversation's own wait**, which the column used to draw. The seat is
+  // up and its first page is still out; the band says so rather than the chat
+  // leaving an empty column that reads as a seat with nothing in it.
+  if (reading) {
+    return { line: 'Reading the conversation...', sub: null, bad: false, shimmer: true };
   }
   // **A parked ask outranks the machine turn.** Both machine turns are
   // ordinary tool-using turns - the judgment turn writes memory files and
@@ -300,25 +310,13 @@ export function blocked(
   // the seat when it ends, and the CLI's compaction. The draft survives on the
   // box's own state and comes back with the field.
   if (machine === 'handoff') {
-    return {
-      line: 'handing this session over',
-      sub: null,
-      bad: false,
-      waiting: true,
-      shimmer: false,
-    };
+    return { line: 'handing this session over', sub: null, bad: false, shimmer: true };
   }
   if (machine === 'compacting') {
-    return {
-      line: 'compacting this session',
-      sub: null,
-      bad: false,
-      waiting: true,
-      shimmer: false,
-    };
+    return { line: 'compacting this session', sub: null, bad: false, shimmer: true };
   }
   if (command !== null) {
-    return { line: `Running ${command}`, sub: null, bad: false, waiting: true, shimmer: false };
+    return { line: `Running ${command}`, sub: null, bad: false, shimmer: true };
   }
   return null;
 }
