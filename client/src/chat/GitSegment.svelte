@@ -336,7 +336,7 @@
         </div>
       {/if}
     {:else}
-      <span class="sg-tog" role="status" aria-label="the working tree this seat is on">
+      <span class="sg-note" role="status" aria-label="the working tree this seat is on">
         <Icon name="git" />
         <span class="note">{note?.line}</span>
       </span>
