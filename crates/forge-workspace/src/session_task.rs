@@ -1946,26 +1946,55 @@ impl SessionTask {
                 let from_tool_call = supplied.is_some();
                 let from_turn_text = captured.is_some();
                 domain.handoff.judgment_started = false;
-                let note = supplied
-                    .filter(|text| handoff::parses_as_note(text))
-                    .or_else(|| captured.filter(|text| handoff::parses_as_note(text)));
-                if let Some(text) = note {
-                    handoff::parse_judgment(&text)
+                // **The exit call is the deliberate act; a turn that simply
+                // ended is not.** Both are accepted for their text, but a note
+                // taken from the closing text is marked so the successor can
+                // tell it from one its predecessor chose to pass.
+                let note = match supplied.filter(|text| handoff::parses_as_note(text)) {
+                    Some(text) => Some((text, false)),
+                    None => captured
+                        .filter(|text| handoff::parses_as_note(text))
+                        .map(|text| (text, true)),
+                };
+                if let Some((text, only_the_turn)) = note {
+                    if only_the_turn {
+                        tracing::info!(
+                            target: "forge_workspace::session_task",
+                            event_name = "handoff_note_from_turn_text",
+                            slot = %self.key.display(),
+                            chars = text.chars().count(),
+                            "the exit call carried no note; the turn's closing text is the \
+                             judgment half",
+                        );
+                    }
+                    let mut sections = handoff::parse_judgment(&text);
+                    if only_the_turn {
+                        sections.insert(
+                            0,
+                            forge_primitives::HandoffSection {
+                                label: "source".to_owned(),
+                                lines: vec![
+                                    "the exit call carried no note; this is the session's closing \
+                                     text"
+                                        .to_owned(),
+                                ],
+                            },
+                        );
+                    }
+                    sections
                 } else {
                     // **The successor is told the note is missing; this is the
-                    // trail that says so.** A note whose headings this build
-                    // cannot read reads exactly like one that never arrived,
-                    // and only a line here tells the two apart. The two fields
-                    // name what forge had in hand: no tool call at all is a
-                    // different failure from a call whose note it could not
-                    // read.
+                    // trail that says so.** The only way here is an empty
+                    // reply - the MCP layer refuses an empty brief, and any
+                    // non-empty turn text is a note - so the two fields name
+                    // what forge had in hand.
                     tracing::warn!(
                         target: "forge_workspace::session_task",
                         event_name = "handoff_note_rejected",
                         slot = %self.key.display(),
                         from_tool_call,
                         from_turn_text,
-                        "forge could not read a handoff note; the successor is told the note did \
+                        "the handoff turn produced no note; the successor is told the note did \
                          not arrive",
                     );
                     handoff::missing_note()
@@ -4121,10 +4150,10 @@ mod tests {
             "with what it is and its id: {:?}",
             live.lines,
         );
-        assert_eq!(
-            record.brief.judgment.first().map(|section| section.label.as_str()),
-            Some("Now"),
-            "the caller's brief is the judgment half",
+        assert!(
+            record.brief.judgment.iter().any(|section| section.label == "Now"),
+            "the caller's brief is the judgment half: {:?}",
+            record.brief.judgment,
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
@@ -4977,10 +5006,10 @@ mod tests {
         })
         .await
         .expect("the handoff lands");
-        assert_eq!(
-            record.brief.judgment.first().map(|section| section.label.as_str()),
-            Some("Next"),
-            "the judgment is the reply, parsed by its heading",
+        assert!(
+            record.brief.judgment.iter().any(|section| section.label == "Next"),
+            "the judgment is the reply, parsed by its heading: {:?}",
+            record.brief.judgment,
         );
     }
 
@@ -5077,7 +5106,7 @@ mod tests {
             let mut domain = task.domain.lock();
             domain.handoff.awaiting = true;
             domain.handoff.swap_token = Some(token);
-            // Prose the capture would otherwise take as the brief.
+            // The turn's closing text, which the exit call's note outranks.
             domain.handoff.judgment = Some("I am still working".to_owned());
         }
 
@@ -5106,6 +5135,11 @@ mod tests {
         assert!(
             record.brief.judgment[0].lines.iter().any(|line| line.contains("the cut is in.")),
             "and its text, not the captured prose",
+        );
+        assert!(
+            record.brief.judgment.iter().all(|section| section.label != "source"),
+            "an exit-call note carries no source row: {:?}",
+            record.brief.judgment,
         );
 
         // **The successor's own text carries PART 2.** A record that holds
@@ -5164,10 +5198,66 @@ mod tests {
             "and says so: {:?}",
             section.lines,
         );
+        assert_eq!(
+            record.brief.judgment.len(),
+            1,
+            "an empty turn states the note once: {:?}",
+            record.brief.judgment,
+        );
+    }
+
+    /// **A note taken from the turn's closing text says so.** Nothing in a
+    /// capture distinguishes prose the predecessor chose to pass from a turn
+    /// that simply ended, so the judgment carries a `source` row when the exit
+    /// call had no note.
+    #[tokio::test]
+    async fn a_note_taken_from_the_turn_text_is_marked() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        let token = workspace.begin_swap(&task.key);
+        {
+            let mut domain = task.domain.lock();
+            domain.handoff.awaiting = true;
+            domain.handoff.swap_token = Some(token);
+            domain.handoff.judgment =
+                Some("Memory is updated and the monitor is stopped.".to_owned());
+        }
+
+        task.after_turn_ended();
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+        assert_eq!(
+            record.brief.judgment.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            ["source", "note"],
+            "the capture is marked, then drawn as the note it is: {:?}",
+            record.brief.judgment,
+        );
         assert!(
-            !section.lines.iter().any(|line| line.contains("Now: x")),
-            "an empty turn is not dressed as the note: {:?}",
-            section.lines,
+            record.brief.judgment[0]
+                .lines
+                .iter()
+                .any(|line| line.contains("the exit call carried no note")),
+            "the source row says where it came from: {:?}",
+            record.brief.judgment[0].lines,
+        );
+        assert!(
+            record.brief.judgment[1].lines.iter().any(|line| line.contains("Memory is updated")),
+            "and the turn's text is the note: {:?}",
+            record.brief.judgment[1].lines,
         );
     }
 
@@ -5201,7 +5291,7 @@ mod tests {
     /// **An empty exit does not discard a valid captured note.** The exit
     /// call's note is tried first; when it carries nothing, the capture is.
     #[tokio::test]
-    async fn a_malformed_exit_falls_back_to_the_captured_note() {
+    async fn an_empty_exit_falls_back_to_the_captured_note() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, mut update_rx) =
             crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
@@ -5231,14 +5321,14 @@ mod tests {
         .await
         .expect("the handoff lands");
         assert_eq!(
-            record.brief.judgment.first().map(|section| section.label.as_str()),
-            Some("Now"),
-            "the captured note is PART 2: {:?}",
+            record.brief.judgment.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            ["source", "Now"],
+            "the captured note is PART 2, marked as a capture: {:?}",
             record.brief.judgment,
         );
         assert!(
-            record.brief.judgment[0].lines.iter().any(|line| line.contains("the captured note")),
-            "and its text, not the malformed exit",
+            record.brief.judgment[1].lines.iter().any(|line| line.contains("the captured note")),
+            "and its text, not the empty exit",
         );
     }
 
@@ -5584,10 +5674,10 @@ mod tests {
         })
         .await
         .expect("the handoff lands");
-        assert_eq!(
-            record.brief.judgment.first().map(|section| section.label.as_str()),
-            Some("Next"),
-            "the judgment is that turn's reply",
+        assert!(
+            record.brief.judgment.iter().any(|section| section.label == "Next"),
+            "the judgment is that turn's reply: {:?}",
+            record.brief.judgment,
         );
     }
 

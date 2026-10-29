@@ -121,8 +121,8 @@ pub(crate) async fn ground_truth(
             HandoffSection {
                 label: "note".to_owned(),
                 lines: vec![
-                    "the previous session's transcript could not be read; the files, board and \
-                     record below are empty for that reason"
+                    "the previous session's transcript could not be read; the files it names are \
+                     missing for that reason"
                         .to_owned(),
                 ],
             },
@@ -854,9 +854,10 @@ pub(crate) fn missing_note() -> Vec<HandoffSection> {
 /// The heading a line opens, and its body when the line carries one.
 ///
 /// A model writes a heading as `Where things stand: ...`, `## Next`,
-/// `**Next:** ...`, `## Next.` or `1. **Next**`. The label still has to open
-/// the line: a marked line or a short title-shaped bare label is a heading,
-/// while a sentence that happens to carry a colon stays body text.
+/// `**Next:** ...`, `**Next** run the gate.`, `## Next.` or `1. **Next**`. The
+/// label still has to open the line: a marked line, or a short title-shaped
+/// label before a colon, is a heading. A sentence that carries a colon in the
+/// middle stays body text.
 fn judgment_heading(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim();
     let unbulleted = trimmed.trim_start_matches(['#', '*', '-', ' ']);
@@ -874,14 +875,20 @@ fn judgment_heading(line: &str) -> Option<(String, String)> {
     if text.is_empty() {
         return None;
     }
-    let (label, rest) = match text.split_once(':') {
-        Some((label, rest)) => (label, Some(rest)),
-        None if marked => (text.trim_end_matches('.'), None),
-        None => return None,
+    let (label, rest) = match (marked, text.split_once("**")) {
+        // `**Next** run the gate.` closes its label on the emphasis: what
+        // follows is the body, not more label, colon or not.
+        (true, Some((label, rest))) if !rest.trim().is_empty() => (label, Some(rest)),
+        _ => match text.split_once(':') {
+            Some((label, rest)) => (label, Some(rest)),
+            None if marked => (text, None),
+            None => return None,
+        },
     };
     // `**Now:**` closes the emphasis around the label. Only that literal pair
     // comes off, so a body's own `*emphasis*` survives.
-    let label = label.trim_end_matches("**").trim();
+    let label =
+        label.trim_end_matches("**").trim().trim_end_matches(':').trim_end_matches('.').trim();
     if !heading_label(label, marked) {
         return None;
     }
@@ -955,7 +962,7 @@ fn cap_judgment(mut sections: Vec<HandoffSection>) -> Vec<HandoffSection> {
                 .lines
                 .push("[the rest of this reply is in the transcript named above]".to_owned()),
             None => kept.push(HandoffSection {
-                label: "judgment".to_owned(),
+                label: "note".to_owned(),
                 lines: vec![
                     "[the reply was longer than the brief allows; it is in the transcript \
                      named above]"
@@ -1860,6 +1867,54 @@ mod tests {
             "and the count is stated: {:?}",
             section.lines,
         );
+        assert!(
+            section.lines.contains(&"diff:".to_owned()),
+            "the probe's diff keeps its own block: {:?}",
+            section.lines,
+        );
+        assert!(
+            section.lines.iter().any(|line| line.contains("src/handoff.rs | 10")),
+            "and carries the hunks under it: {:?}",
+            section.lines,
+        );
+    }
+
+    /// **PART 1 is exactly the mechanical sections, in order.** A section
+    /// added back (an account, a model, an ask) or dropped (the board) changes
+    /// this list.
+    #[test]
+    fn the_ground_truth_is_exactly_the_mechanical_sections() {
+        let messages = vec![
+            user("go"),
+            call("t1", "Edit", serde_json::json!({ "file_path": "src/a.rs" })),
+            call("t2", "Read", serde_json::json!({ "file_path": "src/b.rs" })),
+        ];
+        let git = HandoffGitState {
+            branch: Some("main".to_owned()),
+            head: Some("abc".to_owned()),
+            dirty: Vec::new(),
+            dirty_total: 0,
+            diff: vec![" src/a.rs | 2 ++".to_owned()],
+        };
+        let ground = assemble(&seat(), &messages, &git, &[], &[], live_work_sections(None));
+        let labels: Vec<&str> = ground.sections.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "seat",
+                "cwd",
+                "branch",
+                "role",
+                "files",
+                "board",
+                "agents",
+                "background",
+                "monitors",
+                "processes",
+                "record",
+            ],
+            "the brief is exactly the mechanical facts",
+        );
     }
 
     /// A long list keeps the first entry and the newest, and says what it
@@ -2119,6 +2174,18 @@ mod tests {
                 assert_eq!(sections[0].label, label, "the heading for {line}");
                 assert_eq!(sections[0].lines, vec![body.to_owned()], "its body for {line}");
             }
+            // A marked label closing on its emphasis takes the rest of the
+            // same line as its body, colon or not.
+            for line in [
+                format!("**{label}** {body}"),
+                format!("- **{label}** {body}"),
+                format!("1. **{label}** {body}"),
+            ] {
+                let sections = parse_judgment(&line);
+                assert_eq!(sections.len(), 1, "one section for {line}");
+                assert_eq!(sections[0].label, label, "the heading for {line}");
+                assert_eq!(sections[0].lines, vec![body.to_owned()], "its body for {line}");
+            }
             // A heading alone on its line takes the body from the lines
             // below.
             for line in [
@@ -2182,14 +2249,29 @@ fix the parser, then the client row.";
     /// one; only an empty reply is missing.
     #[test]
     fn any_reply_with_content_is_a_note() {
-        assert!(
-            parses_as_note("Tried and failed: the first spawn.\nDo not: delete the row."),
-            "prose with no heading is the note",
-        );
-        let sections = parse_judgment("as I said, Now: the work stands and Next: nothing else.");
-        assert_eq!(sections.len(), 1, "one section, not one per colon: {sections:?}");
-        assert_eq!(sections[0].label, "note", "a heading has to open its line");
+        let prose = "I tried the first spawn and it failed. The row is still there.";
+        assert!(parses_as_note(prose), "prose with no heading is the note");
+        let sections = parse_judgment(prose);
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "note");
+        assert_eq!(sections[0].lines, vec![prose.to_owned()], "the whole paragraph survives");
         assert!(!parses_as_note("   \n  "), "an empty reply is not the note");
+    }
+
+    /// **A short title-shaped label before a colon opens a section; a
+    /// sentence carrying a colon mid-line stays body.** The parser follows the
+    /// line's shape, not a list of known labels.
+    #[test]
+    fn a_title_shaped_label_opens_a_section_and_a_sentence_does_not() {
+        let sections = parse_judgment("The export format is still open: row 1d14d131");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "The export format is still open");
+        assert_eq!(sections[0].lines, vec!["row 1d14d131".to_owned()]);
+
+        let prose = parse_judgment("the parser fails: it drops the body.");
+        assert_eq!(prose.len(), 1, "one section: {prose:?}");
+        assert_eq!(prose[0].label, "note", "a lower-case sentence stays prose");
+        assert_eq!(prose[0].lines, vec!["the parser fails: it drops the body.".to_owned()]);
     }
 
     /// **The cap states its cut.** A note past the ceiling loses its tail,
@@ -2211,6 +2293,16 @@ fix the parser, then the client row.";
                 .last()
                 .is_some_and(|line| line.contains("in the transcript named above")),
             "the cut is stated as the kept section's last line: {sections:?}",
+        );
+
+        // A note with nothing that fits states the cut under the same `note`
+        // label every heading-less reply takes.
+        let huge = parse_judgment(&"x".repeat(JUDGMENT_CAP + 10));
+        assert_eq!(huge.len(), 1, "the cut is stated: {huge:?}");
+        assert_eq!(huge[0].label, "note", "the fallback is the note's own label");
+        assert!(
+            huge[0].lines[0].contains("longer than the brief allows"),
+            "and says what happened: {huge:?}",
         );
     }
 
@@ -2633,6 +2725,7 @@ fix the parser, then the client row.";
             "in whatever shape reads best",
             "there is no set of headings to fill in",
             "where things stand",
+            "what is done and verified",
             "what is in flight",
             "the row, PR, branch or session",
             "what you tried that failed",
@@ -2650,8 +2743,7 @@ fix the parser, then the client row.";
 
     /// **The shipped skill is Ved's handoff skill, verbatim, plus the forge
     /// additions.** Nothing above the appended section is rewritten: the
-    /// memory step, the handoff document, its four parts and the index line
-    /// are his text.
+    /// memory step, the handoff document and the index line are his text.
     #[test]
     fn the_shipped_skill_keeps_the_whole_handoff_procedure() {
         // Pinned on the words, not the wrap: the file is prose.
@@ -2671,6 +2763,7 @@ fix the parser, then the client row.";
                 "the shape is its author's",
             ),
             ("There is no set of parts or headings to fill in", "no prescribed parts"),
+            ("what is done and verified", "the verification clause"),
             ("the board row, PR, branch or session", "in-flight names its id"),
             ("what you tried that failed, and what stopped it", "dead ends are named"),
             (

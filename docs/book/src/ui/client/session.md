@@ -218,9 +218,10 @@ carries both full session ids, each with the control that copies it - the
 recovery `/resume <old-id>` needs is on the row itself - and the brief the
 successor was given: the ground truth forge read off the transcript, git and
 the board - the seat, the working directory, the branch, the role, the files
-read and changed, the rows the seat owns and their links, and what was still
-running when the seat changed: the live agents, background tasks, monitors
-and the session's process tree, so the successor knows what to resume - then
+read and changed, the rows the seat owns and their links, the transcript the
+record names, and what was still running when the seat changed: the live
+agents, background tasks, monitors and the session's process tree, so the
+successor knows what to resume - then
 the note the handing-over session wrote: where things stand, what is in
 flight with the id that names it, what failed, and the exact next action with
 the file, command or row it starts at, so the successor opens what the note
