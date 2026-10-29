@@ -71,8 +71,9 @@ async fn serve_over(fleet: &Fleet) -> String {
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
     tokio::spawn(async move {
-        let _ = serve(state, listener).await;
+        let _ = serve(state, listener, updates).await;
     });
     format!("ws://{addr}/socket")
 }

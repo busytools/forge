@@ -211,8 +211,8 @@ export interface Conversation {
  * this connection alone receives, fill it. `notice` IS on the record when the
  * words are the seat's - a landed take nobody has sent, re-handed so a page
  * that reloaded reads it back (#1360) - and is carried through as it came,
- * like `sign_in`, for the component that owns it. `machine` is narrowed
- * because the composer draws a line for it.
+ * for the component that owns it. `machine` is narrowed because the composer
+ * draws a line for it.
  *
  * **`compacting` is kept beside `machine`, not folded into it.** The wire
  * gives a handoff precedence over a compaction, so a handoff ending would
@@ -225,7 +225,6 @@ export interface ComposerState {
   notice: unknown;
   machine: MachineTurn | null;
   compacting: boolean;
-  sign_in: unknown;
 }
 
 /**
@@ -877,7 +876,6 @@ function composerFrom(value: unknown): ComposerState {
     // Derived from the same reading, so a stale old key cannot resurrect a
     // compaction a v16 record has already ended.
     compacting: machineFrom(held) === 'compacting',
-    sign_in: held['sign_in'] ?? null,
   };
 }
 

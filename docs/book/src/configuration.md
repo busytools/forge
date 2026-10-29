@@ -807,10 +807,7 @@ device`. In the tables above a stray key is a typo and is refused; a
 ghost is the exception,
 because its whole job is to accept what a live config still carries - so
 what a retired section holds is unconstrained and only the section
-itself warns. The retired `[client]` keys `browser_idle_minutes` and
-`browser_grace_minutes` are ghosts in the same way: the server reads
-`[browser] idle_minutes` now, and an old config's pair is accepted with a
-warning rather than failing the load.
+itself warns.
 
 **`[web]` is the one retired section that fails the load.** It is a
 declared ghost too, but a hard stop rather than a warning

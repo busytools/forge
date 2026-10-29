@@ -155,15 +155,15 @@ impl Tool for Handoff {
          work. **This is the exit, never the entry**: a handoff starts at `/handoff` or at the \
          automatic trigger (fill or compaction), and this call is the handoff skill's last act. \
          \
-         forge writes the ground truth itself - the seat, the asks, the constraints quoted \
-         verbatim, the files and the dirty list, the last gate and its verdict, the board rows \
-         and the transcript path - and the note you pass becomes the judgment half of the \
-         brief, delivered as the new session's first turn, below a handoff row that keeps the \
-         previous conversation on screen. The swap happens after the current turn ends, never \
-         in the middle of it, on the same order `/new` uses. \
+         forge writes the ground truth itself - the seat, the working directory, the branch, the \
+         role, the files and the dirty list, the board rows, what is still running and the \
+         transcript path - and the note you pass becomes the judgment half of the brief, \
+         delivered as the new session's first turn, below a handoff row that keeps the previous \
+         conversation on screen. The swap happens after the current turn ends, never in the \
+         middle of it, on the same order `/new` uses. \
          \
-         Pass the note the skill has you write, under the five headings: Now, Where it \
-         stood, Pointers, Next, Done means."
+         Pass the note the skill has you write: the continuation the next session needs, in \
+         whatever shape reads best."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -172,7 +172,7 @@ impl Tool for Handoff {
             "properties": {
                 "brief": {
                     "type": "string",
-                    "description": "The handoff note the skill has you write, under the headings Now, Where it stood, Pointers, Next and Done means.",
+                    "description": "The handoff note the skill has you write: the continuation the next session needs, in whatever shape reads best.",
                 },
             },
             "additionalProperties": false,
@@ -1288,11 +1288,12 @@ mod tests {
         }
     }
 
-    /// **The tool's own words name the five headings the parser reads.** A
-    /// heading renamed in the prompt but not here tells the model to write a
-    /// note the parser rejects, and the successor reads that it never arrived.
+    /// **The tool's own words do not prescribe a shape the skill no longer
+    /// asks for.** A heading list here tells the model to write a note shaped
+    /// by a contract forge retired; the note's shape is its author's, so both
+    /// strings have to say so.
     #[test]
-    fn the_handoff_tool_names_the_headings_the_parser_reads() {
+    fn the_handoff_tool_leaves_the_notes_shape_to_its_author() {
         let host = host();
         let tool = Handoff { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
         let field = tool.input_schema()["properties"]["brief"]["description"]
@@ -1301,8 +1302,12 @@ mod tests {
             .expect("the brief's own description");
 
         for text in [tool.description().to_owned(), field] {
-            for heading in crate::handoff::JUDGMENT_HEADINGS {
-                assert!(text.contains(heading), "the tool's words drop '{heading}': {text}");
+            assert!(
+                text.contains("in whatever shape reads best"),
+                "the tool's words name no shape: {text}",
+            );
+            for heading in ["five headings", "Where it stood", "Pointers", "Done means"] {
+                assert!(!text.contains(heading), "the tool prescribes '{heading}' again: {text}");
             }
         }
     }

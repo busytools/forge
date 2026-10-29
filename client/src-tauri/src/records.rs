@@ -51,7 +51,7 @@ const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The updates that replace the seat's whole record rather than patching it:
 /// a new occupant under the slot, or the first connect. Answering them is a
 /// fresh read, which the app half performs (a subscribe's own snapshot).
-const REPLACES: [&str; 4] = ["spawning", "connected", "history_replayed", "session_replaced"];
+const REPLACES: [&str; 3] = ["spawning", "connected", "session_replaced"];
 
 /// One subject's held state.
 pub enum Held {
@@ -61,15 +61,21 @@ pub enum Held {
     Refused(String),
 }
 
-/// Every subject this client holds: seats, the home, usage, the models page.
+/// Every subject the shell READS: a seat's record, and the home roster the
+/// ask rule folds. Nothing else is copied here.
 ///
-/// **The fold is for the reconcile, and nothing else rides on it.** The page
-/// is told about every frame as it arrives (the bridge forwards the stream),
-/// so a record here is not a notice - it is what a parked page is handed
-/// when it comes back. The fold re-reads nothing and replays no pile: the
-/// page's stores and folds do that off the frames, the one re-read this side
-/// asks for is a parked page's roster (`ask_arrived`), and the one caller of
-/// this fold is the catch-up.
+/// **The fold runs on every update; the catch-up is its only reader.** The
+/// page is told about every frame as it arrives (the bridge forwards the
+/// stream), so a record here is not a notice - `apply` keeps the copy current
+/// for the moment a parked page comes back. The fold re-reads nothing and
+/// replays no pile: the page's stores and folds do that off the frames, and
+/// the one re-read this side asks for is a parked page's roster
+/// (`ask_arrived`).
+///
+/// **Every other subject is asked for again instead.** The reconcile
+/// subscribes the board, models or extensions afresh and never reads a copy,
+/// so holding one was a second copy of every catalogue the page reads - the
+/// snapshot path copied it in and nothing ever read it back out.
 pub struct Records {
     subjects: HashMap<String, Held>,
 }
@@ -85,20 +91,22 @@ impl Records {
         Self { subjects: HashMap::new() }
     }
 
-    /// A snapshot for a subject: the read's own answer, and the point the
-    /// updates patch from.
+    /// A snapshot for a subject this side reads: a seat's record, or the home
+    /// roster the ask rule folds. Any other subject is dropped - the
+    /// reconcile asks for it again rather than reading a copy.
     pub fn snapshot(&mut self, subject: &Value, data: Value) {
         let key = subject_key(subject);
-        if key.is_empty() {
+        if key.is_empty() || (subject.get("session").is_none() && key != "home") {
             return;
         }
         self.subjects.insert(key, Held::Ready(data));
     }
 
-    /// A subscribe the core refused: the subject answers "refused" so a page
-    /// draws the reason rather than an empty seat.
+    /// A subscribe the core refused: the seat answers "refused" so a page
+    /// draws the reason rather than an empty seat. A non-seat refusal has no
+    /// record to answer - the reconcile asks for it again.
     pub fn refuse(&mut self, key: &str, why: &str) {
-        if key.is_empty() {
+        if !key.starts_with("session:") {
             return;
         }
         self.subjects.insert(key.to_owned(), Held::Refused(why.to_owned()));
@@ -434,24 +442,6 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
         }
         "slack_draft_resolved" => clear_ask(record, payload.get("id"), "slack"),
         "browser_hand_off_resolved" => clear_ask(record, payload.get("id"), "handoff"),
-        "auth_required" => {
-            let method = payload.get("method_name").and_then(Value::as_str);
-            let description = payload.get("method_description").and_then(Value::as_str);
-            if method.is_none() && description.is_none() {
-                return false;
-            }
-            let Some(composer) = record.get_mut("composer").and_then(Value::as_object_mut) else {
-                return false;
-            };
-            composer.insert(
-                "sign_in".to_owned(),
-                json!({
-                    "method_name": method.unwrap_or(""),
-                    "method_description": description.unwrap_or(""),
-                }),
-            );
-            true
-        }
         // **A take is never folded here.** It belongs to the connection that
         // started it - the wire's own composer says so ("no take and no
         // notice") - so a record has no place for one and the page's own
@@ -838,6 +828,26 @@ mod tests {
 
     fn words(text: &str) -> Value {
         json!({ "type": "user", "message": { "content": [{ "type": "text", "text": text }] } })
+    }
+
+    /// **Only what this side reads is copied.** The home roster is read by
+    /// the ask rule, so it is held; the usage, board and models snapshots are
+    /// asked for again, so they are not - the shell kept a second copy of
+    /// every catalogue the page reads and never read one back.
+    #[test]
+    fn a_snapshot_is_held_only_for_a_subject_this_side_reads() {
+        let mut records = Records::new();
+        records.snapshot(&json!("home"), json!({ "agents": [] }));
+        records.snapshot(&json!("usage"), json!({ "total": 1 }));
+        records.snapshot(&json!("board"), json!({ "rows": [] }));
+        assert!(records.read("home").is_some(), "the home is the ask rule's own read");
+        assert!(records.read("usage").is_none(), "the usage page is asked for again");
+        assert!(records.read("board").is_none(), "and so is the board");
+        records.refuse("home", "no roster");
+        assert!(records.read("home").is_some(), "a non-seat refusal does not replace the roster");
+
+        records.snapshot(&seat(), record());
+        assert!(records.read(key()).is_some(), "a seat's record is the mirror's own");
     }
 
     /// A snapshot is what a reader gets, and a seat update patches it in

@@ -490,7 +490,8 @@ mod tests {
 
         let mut addressed = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::BrowserHandOffPending { key, .. } = frame.update
+            if let crate::protocol::SessionUpdate::BrowserHandOffPending { key, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
             {
                 addressed.push(key);
             }
@@ -633,7 +634,7 @@ mod tests {
         );
         let resolved = rx.try_recv().expect("the views hear it left the registry");
         let crate::protocol::SessionUpdate::BrowserHandOffResolved { key, id: seen, answer: heard } =
-            resolved.update
+            std::sync::Arc::unwrap_or_clone(resolved.update)
         else {
             panic!("the update is the resolved one");
         };

@@ -27,7 +27,6 @@ pub mod live;
 pub mod logging;
 mod perf_log;
 pub mod startup;
-pub mod subagents;
 pub mod surface;
 #[cfg(test)]
 mod test_support;

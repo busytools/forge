@@ -342,6 +342,9 @@ pub struct Workspace {
     /// straddled the swap retries rather than pairing an old project pin
     /// with the new pool.
     reload_generation: std::sync::atomic::AtomicU64,
+    /// Held across a reload's odd-to-even swap, so a spawn that sees an odd
+    /// generation waits on this rather than spinning on the counter.
+    reload_gate: std::sync::Mutex<()>,
     /// The `[systemone]` decision client, built at boot when the section
     /// is present and enabled; the session MCP servers are handed a
     /// facade over it. `None` keeps the systemone tools out of every
@@ -468,9 +471,8 @@ pub struct Workspace {
     /// the real app-support dir. Not present in production builds.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_read_aloud_dir: Mutex<Option<std::path::PathBuf>>,
-    /// Fan-in [`SessionUpdate`] sender: every producer inside the
-    /// workspace holds a clone, and it fans each update out to whatever
-    /// subscribed at [`Self::subscribe`].
+    /// Fan-out [`SessionUpdate`] sender: every producer inside the workspace
+    /// holds a clone, and it hands each update to every subscriber.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) update_tx: UpdateFanout,
     /// Per-session [`Command`] sender map. Populated when
@@ -1948,6 +1950,7 @@ impl Workspace {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
             reload_generation: std::sync::atomic::AtomicU64::new(0),
+            reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
             catalog,
             app_support,
@@ -2131,19 +2134,25 @@ impl Workspace {
             .collect();
 
         // Odd while the swap runs. A spawn that resolves across it retries;
-        // see `resolution_held`.
-        self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        self.accounts.replace_accounts(&next.accounts);
-        self.gateway.set_org_pins(org_pins(&next));
-        // The setter rebuilds the rotation state, which would empty the
-        // live cooldowns and streaks. Only a reload that moved the numbers
-        // is allowed to do that.
-        if reload.changed.contains(&"gateway") {
-            self.gateway.set_rotation_numbers(next.gateway_rotation);
+        // see `resolution_held`. **The gate is held for exactly that window**,
+        // so a spawn that sees the odd number waits on it rather than
+        // spinning on the counter.
+        {
+            let _settling =
+                self.reload_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            self.accounts.replace_accounts(&next.accounts);
+            self.gateway.set_org_pins(org_pins(&next));
+            // The setter rebuilds the rotation state, which would empty the
+            // live cooldowns and streaks. Only a reload that moved the numbers
+            // is allowed to do that.
+            if reload.changed.contains(&"gateway") {
+                self.gateway.set_rotation_numbers(next.gateway_rotation);
+            }
+            *self.systemone.write() = systemone;
+            *self.config.write() = Arc::new(next);
+            self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         }
-        *self.systemone.write() = systemone;
-        *self.config.write() = Arc::new(next);
-        self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
         // A new account starts `Loading`; kick the same probe a boot runs
         // so it does not wait for the poller's next tick.
@@ -2623,7 +2632,9 @@ impl Workspace {
         let (project, account_key) = loop {
             let generation = self.reload_generation.load(std::sync::atomic::Ordering::Acquire);
             if !generation.is_multiple_of(2) {
-                std::thread::yield_now();
+                // The swap holds `reload_gate` from odd to even, so taking it
+                // is waiting for the generation to settle - no spin.
+                drop(self.reload_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
                 continue;
             }
             let Some(project) = self.project_for_target(&target) else {
@@ -2985,7 +2996,7 @@ impl Workspace {
                 workspace: Arc::downgrade(self),
                 // Filled by the first `Connected`, which is where this task
                 // is handed the history it can later replay.
-                conversation: None,
+                compaction_count: 0,
                 successor: None,
                 teardown_done: Some(teardown_done),
             };
@@ -4413,7 +4424,7 @@ impl Workspace {
             .map(|project| SessionSlot::lead(project.org, project.name))
     }
 
-    /// Internal accessor for the SessionUpdate fan-in sender. Used
+    /// Internal accessor for the SessionUpdate fan-out sender. Used
     /// by `spawn.rs` to emit `Spawning` / `ConnectionFailed` /
     /// `FatalError` from the App-level handlers.
     pub(crate) fn update_tx(&self) -> &UpdateFanout {
@@ -4491,37 +4502,22 @@ impl Workspace {
         entries.insert(0, entry);
     }
 
-    /// Subscribe to this workspace's [`SessionUpdate`] stream. Every
-    /// caller gets its own stream, so a second view attaches beside the
-    /// first rather than being refused, and the workspace drops the
-    /// matching subscription once its receiver goes.
-    ///
-    /// A stream carries what is emitted after this call. The first
-    /// caller to attach is handed whatever the workspace emitted before
-    /// it as well, which is how a notice raised during boot reaches a
-    /// view; a caller attaching after one already has inherits no
-    /// backlog.
-    ///
-    /// The stream answers the workspace's prompts, so a permission or
-    /// question request delivered here keeps its turn alive waiting for
-    /// the reply. A consumer that only reads the stream takes
-    /// [`Self::subscribe_observer`] instead.
-    ///
-    /// Every frame arrives as a [`SeatUpdate`], carrying the number its
-    /// seat minted for it.
-    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
-        self.update_tx.subscribe(SubscriberRole::Answering)
-    }
-
     /// Subscribe without answering the workspace's prompts: a logger, a
     /// mirror, anything that reads the stream but renders no prompt.
     ///
-    /// The distinction is load-bearing rather than descriptive. A
-    /// permission, question or Slack-draft request is parked on a reply,
-    /// and the paths that raise one resolve it `Cancelled` instead when
-    /// no subscriber can answer, so that a request nobody will reply to
-    /// fails the turn rather than hanging it. A subscriber that declares
-    /// itself an observer is not counted as an answer.
+    /// Every caller gets its own stream, so a second view attaches beside
+    /// the first rather than being refused, and the workspace drops the
+    /// matching subscription once its receiver goes. A stream carries what
+    /// is emitted after this call; a subscriber reads what it missed from
+    /// the subject's snapshot instead.
+    ///
+    /// The distinction from [`Self::subscribe_answerer`] is load-bearing
+    /// rather than descriptive. A permission, question or Slack-draft
+    /// request is parked on a reply, and the paths that raise one resolve it
+    /// `Cancelled` instead when no subscriber can answer, so that a request
+    /// nobody will reply to fails the turn rather than hanging it. A
+    /// subscriber that declares itself an observer is not counted as an
+    /// answer.
     ///
     /// **A browser hand-off fails closed differently**: nothing parks a
     /// decision for it to cancel, so its registration hands the blocked call
@@ -4529,45 +4525,25 @@ impl Workspace {
     /// client can show the hand-off - rather than holding a session on a
     /// prompt no view can draw.
     ///
-    /// Who takes the pre-attach backlog is positional, not role-aware:
-    /// an observer subscribing before any view is the first caller and
-    /// takes whatever the workspace emitted beforehand, the boot notice
-    /// included. The binary's `start_*` calls all run before any view
-    /// attaches, so this belongs after them rather than among them.
-    ///
-    /// Nothing calls this yet; the only observer in the tree is a test.
-    /// This exists so a consumer that reads without rendering a prompt
-    /// can say so instead of parking a turn by claiming a capability it
-    /// lacks.
-    pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
+    /// Every frame arrives as a [`SeatUpdate`], carrying the number its
+    /// seat minted for it.
+    pub fn subscribe_mirror(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
         self.update_tx.subscribe(SubscriberRole::Observing)
     }
 
-    /// Subscribe as an observer, carrying only what is emitted from here
-    /// on: a mirror of the stream, not a renderer of its prompts.
+    /// Subscribe as an answerer: the same stream, for a client that renders
+    /// prompts and can answer them.
     ///
-    /// The backlog goes to the first subscriber, so a mirror attaching at
-    /// boot must not take it - the view that renders prompts would lose
-    /// the boot notice. A mirror reads the rest of what it needs from the
-    /// read surface when it is asked, so it has nothing to replay.
-    pub fn subscribe_mirror(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
-        self.update_tx.subscribe_without_backlog(SubscriberRole::Observing)
-    }
-
-    /// Subscribe as an answerer, carrying only what is emitted from here on.
-    ///
-    /// The answering half of [`Self::subscribe_mirror`], for a client that
-    /// renders prompts and attaches beside another view: it can answer, and
-    /// the backlog still belongs to whoever was there first, because that is
-    /// the view drawing the boot notice.
+    /// The answering half of [`Self::subscribe_mirror`]. The role decides one
+    /// thing: whether the core may park a prompt on this subscriber's reply.
     pub fn subscribe_answerer(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
-        self.update_tx.subscribe_without_backlog(SubscriberRole::Answering)
+        self.update_tx.subscribe(SubscriberRole::Answering)
     }
 
     /// Clone the workspace's [`SessionUpdate`] sender. Internal to this
     /// crate: a view's own async work belongs on a channel of its own,
-    /// so that [`Self::subscribe`] is the whole of what the core owes a
-    /// frontend.
+    /// so that the subscription methods above are the whole of what the core
+    /// owes a frontend.
     pub(crate) fn update_sender(&self) -> UpdateFanout {
         self.update_tx.clone()
     }
@@ -4599,13 +4575,6 @@ impl Workspace {
     /// out of what it must account for.
     pub fn seat_unringed_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
         self.update_tx.unringed_between(key, from, to)
-    }
-
-    /// How many numbers in `from..=to` on `key`'s stream a replay was minted
-    /// under: history the ring cannot serve, so a fill that spans one must
-    /// refuse rather than mark past it.
-    pub fn seat_replays_between(&self, key: &SessionSlot, from: u64, to: u64) -> u64 {
-        self.update_tx.replays_between(key, from, to)
     }
 
     /// Whether `key`'s latest epoch-opening seal carried rows, which no ring
@@ -10152,12 +10121,15 @@ mod tests {
             scripted_prober(&calls, probed.clone()),
         )
         .expect("new");
-        let mut woken = workspace.subscribe();
+        let mut woken = workspace.subscribe_answerer();
 
         let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
 
         assert!(
-            matches!(event, Ok(Some(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. }))),
+            matches!(
+                event,
+                Ok(Some(frame)) if matches!(&*frame.update, SessionUpdate::CliVersionChanged)
+            ),
             "the constructor's launch probed and woke the views; without that launch the core reads no version for the life of the process",
         );
         assert_eq!(
@@ -10185,10 +10157,13 @@ mod tests {
 
         workspace.start_cli_version_probe(scripted_prober(&calls, first.clone()));
         workspace.start_cli_version_probe(scripted_prober(&calls, second));
-        let mut woken = workspace.subscribe();
+        let mut woken = workspace.subscribe_answerer();
         let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
         assert!(
-            matches!(event, Ok(Some(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. }))),
+            matches!(
+                event,
+                Ok(Some(frame)) if matches!(&*frame.update, SessionUpdate::CliVersionChanged)
+            ),
             "the first start probed and woke the views",
         );
 
@@ -10277,7 +10252,7 @@ mod tests {
         assert!(
             matches!(
                 woken.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. })
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::CliVersionChanged)
             ),
             "the first probe is a change from none",
         );
@@ -10296,7 +10271,7 @@ mod tests {
         assert!(
             matches!(
                 woken.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. })
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::CliVersionChanged)
             ),
             "a latest that appears where there was none is news",
         );
@@ -10597,7 +10572,8 @@ mod tests {
         .expect("accepted");
         let mut refused = false;
         while let Ok(frame) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = frame.update
+            if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && message.contains("refused a verdict")
             {
                 refused = true;
@@ -10658,7 +10634,8 @@ mod tests {
             ws.dispatch(command).expect("app-level commands are accepted");
             let mut said = false;
             while let Ok(frame) = rx.try_recv() {
-                if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = frame.update
+                if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && message.contains(named)
                 {
                     said = true;
@@ -11746,7 +11723,7 @@ provider = "anthropic"
         let project = tempdir().expect("project");
         let workspace = resume_workspace(dir.path(), project.path());
         forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
-        let mut updates = workspace.subscribe_observer();
+        let mut updates = workspace.subscribe_mirror();
         let key = SessionSlot::lead("Default", "forge");
         let known = "11111111-2222-3333-4444-555555555555";
 
@@ -11759,12 +11736,12 @@ provider = "anthropic"
 
         let connected = tokio::time::timeout(Duration::from_secs(30), async {
             while let Some(seat) = updates.recv().await {
-                if let SessionUpdate::Connected { key: seen, session_id, .. } = &seat.update
+                if let SessionUpdate::Connected { key: seen, session_id, .. } = &*seat.update
                     && *seen == key
                 {
                     return session_id.to_string();
                 }
-                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &seat.update
+                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &*seat.update
                     && *seen == key
                 {
                     panic!("the resume's start failed: {message}");
@@ -11925,7 +11902,7 @@ provider = "anthropic"
         );
         assert_eq!(workspace.count_live_workers(&project_key), 0, "the tombstone is not live");
         forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
-        let mut updates = workspace.subscribe_observer();
+        let mut updates = workspace.subscribe_mirror();
 
         let sent = workspace.dispatch_from_view(Command::Prompt {
             key: slot.clone(),
@@ -11936,12 +11913,12 @@ provider = "anthropic"
 
         let connected = tokio::time::timeout(Duration::from_secs(30), async {
             while let Some(seat) = updates.recv().await {
-                if let SessionUpdate::Connected { key: seen, session_id, .. } = &seat.update
+                if let SessionUpdate::Connected { key: seen, session_id, .. } = &*seat.update
                     && *seen == slot
                 {
                     return session_id.to_string();
                 }
-                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &seat.update
+                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &*seat.update
                     && *seen == slot
                 {
                     panic!("the restore's start failed: {message}");
@@ -12011,7 +11988,7 @@ provider = "anthropic"
                 kick: None,
             },
         );
-        let mut updates = workspace.subscribe_observer();
+        let mut updates = workspace.subscribe_mirror();
 
         let sent = workspace.dispatch_from_view(Command::Prompt {
             key: slot.clone(),
@@ -12022,7 +11999,7 @@ provider = "anthropic"
 
         let said = tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(seat) = updates.recv().await {
-                if let SessionUpdate::Notice { key: seen, severity, text } = &seat.update
+                if let SessionUpdate::Notice { key: seen, severity, text } = &*seat.update
                     && *seen == slot
                 {
                     return (*severity, text.clone());
@@ -12412,7 +12389,7 @@ provider = "anthropic"
     ) -> Vec<crate::protocol::SessionUpdate> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            out.push(frame.update);
+            out.push(std::sync::Arc::unwrap_or_clone(frame.update));
         }
         out
     }
@@ -12425,8 +12402,8 @@ provider = "anthropic"
     async fn subscribe_hands_every_caller_its_own_stream() {
         let dir = make_workspace_dir();
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
-        let mut first = workspace.subscribe();
-        let mut second = workspace.subscribe();
+        let mut first = workspace.subscribe_answerer();
+        let mut second = workspace.subscribe_answerer();
 
         assert!(
             workspace.update_tx().send(SessionUpdate::CatalogLoaded),
@@ -12434,13 +12411,16 @@ provider = "anthropic"
         );
 
         assert!(
-            matches!(first.try_recv(), Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })),
+            matches!(
+                first.try_recv(),
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::CatalogLoaded)
+            ),
             "the first subscriber receives the update",
         );
         assert!(
             matches!(
                 second.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::CatalogLoaded)
             ),
             "the second subscriber receives the same update",
         );
@@ -15158,7 +15138,7 @@ provider = "anthropic"
             update_tx,
             connected_once: true,
             workspace: Arc::downgrade(&workspace),
-            conversation: None,
+            compaction_count: 0,
             successor: None,
             teardown_done: None,
         };
@@ -15272,7 +15252,9 @@ provider = "anthropic"
     fn spawning_keys(update_rx: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<SessionSlot> {
         let mut keys: Vec<SessionSlot> = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::Spawning { key, .. } = frame.update {
+            if let SessionUpdate::Spawning { key, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 keys.push(key);
             }
         }
@@ -15492,7 +15474,9 @@ provider = "anthropic"
 
         let mut echo = None;
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 echo = Some((key, wrapped));
             }
         }
@@ -15851,9 +15835,8 @@ mod worker_activity_tests {
         );
 
         // The signal that actually arrives: a turn that died on a missing
-        // credential. `AgentEvent::AuthRequired` is constructed nowhere in
-        // the tree, so without this the state is unreachable and the row
-        // draws a calm idle for a session held on `/login`.
+        // credential. Without it the state is unreachable and the row draws
+        // a calm idle for a session held on `/login`.
         let by_error = SessionSlot::from_str_for_test("s-login-error");
         let domain = ws.register_domain_session(by_error.clone(), None);
         let auth_message = "authentication failed: please log in";
@@ -16130,7 +16113,7 @@ mod worker_activity_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::ServiceStatus { .. }, .. })
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::ServiceStatus { .. })
             ),
             "and the one update that carried it still goes out",
         );
@@ -16607,7 +16590,7 @@ provider = "anthropic"
     async fn release_session_on_lead_cascades_workers() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
         let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
         workspace
             .install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
@@ -16680,7 +16663,8 @@ provider = "anthropic"
         // WorkerStatusChanged for each worker.
         let mut removed_count = 0;
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+            if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 removed_count += 1;
@@ -16698,7 +16682,7 @@ provider = "anthropic"
     async fn a_release_is_announced_before_the_cascade_runs() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let project = workspace.list_projects().into_iter().next().expect("forge project");
         let project_key = project.key.clone();
@@ -16707,8 +16691,9 @@ provider = "anthropic"
 
         workspace.release_session_with_cascade(&lead_key);
 
-        let announced: Vec<SessionUpdate> =
-            std::iter::from_fn(|| rx.try_recv().ok()).map(|frame| frame.update).collect();
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
         let first = announced.first().expect("the release announces something");
         assert!(
             matches!(first, SessionUpdate::Releasing { key } if key == &lead_key),
@@ -17026,7 +17011,8 @@ mod tag_retry_tests {
         let status_changed =
             tokio::time::timeout(task_budget * 10 + Duration::from_secs(5), async {
                 loop {
-                    match rx.recv().await.map(|frame| frame.update) {
+                    match rx.recv().await.map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                    {
                         Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
                             if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                             {
@@ -17114,7 +17100,8 @@ mod tag_retry_tests {
 
         loop {
             let frame = rx.recv().await.expect("the rollback emits an update");
-            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = frame.update
+            if let SessionUpdate::WorkerStatusChanged { action, status, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 assert_eq!(status.label, "crashed", "the rolled-back worker is the one removed");
@@ -17205,7 +17192,8 @@ mod tag_retry_tests {
         // Wait for the StatusChanged emit.
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17259,7 +17247,8 @@ mod tag_retry_tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17325,7 +17314,8 @@ mod tag_retry_tests {
         );
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17372,7 +17362,8 @@ mod tag_retry_tests {
         );
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17456,7 +17447,8 @@ mod tag_retry_tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17519,7 +17511,8 @@ mod tag_retry_tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -20634,7 +20627,7 @@ mod async_worker_spawn_failure_tests {
         // handed on stdin, so without this the page shows nothing at all.
         let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|frame| {
             matches!(
-                frame.update,
+                std::sync::Arc::unwrap_or_clone(frame.update),
                 SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. }
                     if key == lead_key
                         && matches!(wrapped.kind, WrappedKind::WorkerSpawnFailedNotice)
@@ -20894,7 +20887,8 @@ mod async_worker_spawn_failure_tests {
 
         let mut dispositions = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = frame.update
+            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 dispositions.push(worktree);
@@ -21041,7 +21035,9 @@ mod async_worker_spawn_failure_tests {
 
         let mut echo = None;
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 echo = Some((key, wrapped));
             }
         }
@@ -21482,7 +21478,11 @@ mod git_scan_cwd_tests {
         // The ask crosses, carrying the id the answer will name.
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await.map(|frame| frame.update) {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
                     Some(SessionUpdate::DocumentHandOffPending {
                         id, path, reviewable, ..
                     }) => {
@@ -21509,8 +21509,8 @@ mod git_scan_cwd_tests {
         assert_eq!(ending, DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) });
         assert!(
             std::iter::from_fn(|| updates.try_recv().ok()).any(|frame| matches!(
-                frame.update,
-                SessionUpdate::DocumentHandOffResolved { id, .. } if id == ask.0
+                &*frame.update,
+                SessionUpdate::DocumentHandOffResolved { id, .. } if *id == ask.0
             )),
             "and the resolution crosses, so a view that did not answer closes its ask",
         );
@@ -21541,8 +21541,10 @@ mod git_scan_cwd_tests {
 
         assert!(refused.contains("no document at"), "{refused}");
         assert!(
-            std::iter::from_fn(|| updates.try_recv().ok())
-                .all(|frame| !matches!(frame.update, SessionUpdate::DocumentHandOffPending { .. })),
+            std::iter::from_fn(|| updates.try_recv().ok()).all(|frame| !matches!(
+                &*frame.update,
+                SessionUpdate::DocumentHandOffPending { .. }
+            )),
             "a refusal is not a hand-off",
         );
     }
@@ -21576,8 +21578,10 @@ mod git_scan_cwd_tests {
             .expect_err("no client, so nothing to open on");
         assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT, "the refusal is the named one");
         assert!(
-            std::iter::from_fn(|| updates.try_recv().ok())
-                .all(|frame| !matches!(frame.update, SessionUpdate::DocumentHandOffPending { .. })),
+            std::iter::from_fn(|| updates.try_recv().ok()).all(|frame| !matches!(
+                &*frame.update,
+                SessionUpdate::DocumentHandOffPending { .. }
+            )),
             "and nothing was asked of the terminal",
         );
 
@@ -21589,7 +21593,11 @@ mod git_scan_cwd_tests {
         };
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await.map(|frame| frame.update) {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
                     Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
                     Some(_) => {}
                     None => panic!("the stream ended before the ask"),
@@ -22160,7 +22168,7 @@ provider = "anthropic"
     async fn a_probe_that_writes_the_pool_announces_it() {
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         // The boot backlog, so what the assertion reads is this call's news
         // rather than something emitted before it.
         while updates.try_recv().is_ok() {}
@@ -22168,9 +22176,11 @@ provider = "anthropic"
         workspace.record_usage_success(&AccountKey("Stargate".to_owned()), usage_at(10.0));
 
         let frame = std::iter::from_fn(|| updates.try_recv().ok())
-            .find(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .find(|frame| matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }))
             .expect("a probe that wrote the pool announced nothing");
-        let SessionUpdate::AccountsChanged { accounts } = frame.update else {
+        let SessionUpdate::AccountsChanged { accounts } =
+            std::sync::Arc::unwrap_or_clone(frame.update)
+        else {
             unreachable!("the predicate above selected this variant")
         };
         // The frame and the snapshot's field are one builder, so a client that
@@ -22260,13 +22270,13 @@ provider = "anthropic"
     async fn a_probe_announces_only_a_pool_that_moved() {
         fn announced(updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>) -> usize {
             std::iter::from_fn(|| updates.try_recv().ok())
-                .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+                .filter(|frame| matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }))
                 .count()
         }
 
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         while updates.try_recv().is_ok() {}
 
         let key = AccountKey("Stargate".to_owned());
@@ -22297,7 +22307,7 @@ provider = "anthropic"
 
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         while updates.try_recv().is_ok() {}
         let key = AccountKey("Stargate".to_owned());
 
@@ -22310,7 +22320,7 @@ provider = "anthropic"
         workspace.record_usage_success(&key, same);
 
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .filter(|frame| matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }))
             .count();
         assert_eq!(announced, 1, "the Loading -> Ready move was not announced");
     }
@@ -22329,7 +22339,7 @@ provider = "anthropic"
 
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         while updates.try_recv().is_ok() {}
         let key = AccountKey("Stargate".to_owned());
 
@@ -22346,7 +22356,7 @@ provider = "anthropic"
         workspace.record_usage_success(&key, same);
 
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .filter(|frame| matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }))
             .count();
         assert_eq!(announced, 1, "the cleared probe failure was not announced");
     }
@@ -22882,7 +22892,7 @@ mod kick_dispatcher_tests {
         let mut echoed = None;
         while let Ok(frame) = update_rx.try_recv() {
             if let crate::protocol::SessionUpdate::ChatAppended { key: addressed, msg, .. } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && addressed == key
             {
                 echoed = Some(msg);
@@ -23146,7 +23156,7 @@ provider = "anthropic"
             Some("forge:worker:implementer"),
         );
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut update_rx = workspace.subscribe();
+        let mut update_rx = workspace.subscribe_answerer();
         assert!(workspace.list_projects()[0].sessions.is_empty(), "catalog starts empty");
 
         workspace.start_catalog_scan();
@@ -23156,7 +23166,7 @@ provider = "anthropic"
             .expect("scan finishes")
             .expect("channel open");
         assert!(
-            matches!(update, SeatUpdate { update: SessionUpdate::CatalogLoaded, .. }),
+            matches!(&*update.update, SessionUpdate::CatalogLoaded),
             "expected CatalogLoaded, got {update:?}"
         );
         assert!(workspace.catalog_ready());
@@ -23459,14 +23469,14 @@ provider = "anthropic"
     /// Run the boot catalog scan and wait for it, so the seat's read takes the
     /// catalog branch rather than the directory's own.
     async fn ready_catalog(workspace: &Arc<Workspace>) {
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         workspace.start_catalog_scan();
         loop {
             let update = tokio::time::timeout(std::time::Duration::from_secs(5), updates.recv())
                 .await
                 .expect("the scan finishes")
                 .expect("the stream is open");
-            if matches!(update.update, SessionUpdate::CatalogLoaded) {
+            if matches!(&*update.update, SessionUpdate::CatalogLoaded) {
                 break;
             }
         }
@@ -23681,15 +23691,13 @@ mod prompt_frame_origin_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SeatUpdate {
-                    update: SessionUpdate::ChatAppended {
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::ChatAppended {
                         origin: Some(PromptOrigin::Ui),
                         source: Some(PromptSource::You),
                         key,
                         ..
-                    },
-                    ..
-                }) if key == seat
+                    } if key == &seat)
             ),
             "the words the terminal drew at submit are marked as its own, or it draws them \
              twice - and as a person's send, which is the only thing a reader's follow arms \
@@ -23724,7 +23732,7 @@ mod prompt_frame_origin_tests {
             if let SessionUpdate::ChatAppended {
                 msg: forge_primitives::Message::User { uuid, .. },
                 ..
-            } = frame.update
+            } = std::sync::Arc::unwrap_or_clone(frame.update)
             {
                 frame_id = uuid;
             }
@@ -23851,7 +23859,7 @@ mod prompt_frame_origin_tests {
         // what this case is about (its ORDER is the case above, which does not
         // need the words' text).
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -23890,7 +23898,7 @@ mod prompt_frame_origin_tests {
         .expect("the core takes it");
 
         let first = rx.try_recv().expect("the echo is the first update on the stream");
-        let SessionUpdate::ChatAppended { key, msg, .. } = &first.update else {
+        let SessionUpdate::ChatAppended { key, msg, .. } = &*first.update else {
             panic!("the reader's own words are echoed before the answer: {first:?}")
         };
         assert_eq!(key, &seat, "the echo is for the seat that asked");
@@ -23908,7 +23916,7 @@ mod prompt_frame_origin_tests {
         let second = rx.try_recv().expect("the answer follows the echo");
         assert!(
             matches!(
-                &second.update,
+                &*second.update,
                 SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. }
                     if text == "Unknown mode: sideways"
             ),
@@ -23941,7 +23949,7 @@ mod prompt_frame_origin_tests {
         .expect("the document parses");
         assert_eq!(written["effortLevel"], serde_json::json!("high"));
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -23985,7 +23993,7 @@ mod prompt_frame_origin_tests {
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        let echoed = updates.iter().find_map(|frame| match &frame.update {
+        let echoed = updates.iter().find_map(|frame| match &*frame.update {
             SessionUpdate::ChatAppended { msg, .. } => Some(msg),
             _ => None,
         });
@@ -24002,7 +24010,7 @@ mod prompt_frame_origin_tests {
         );
         let notices: Vec<(SessionSlot, NoticeSeverity, String)> = updates
             .into_iter()
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
                 _ => None,
             })
@@ -24047,7 +24055,7 @@ mod prompt_frame_origin_tests {
         // The refusal is answered after the echo of the words, so the two are
         // read off the stream together (the order is the case above).
         let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        let echoed = updates.iter().find_map(|frame| match &frame.update {
+        let echoed = updates.iter().find_map(|frame| match &*frame.update {
             SessionUpdate::ChatAppended { msg, .. } => Some(msg),
             _ => None,
         });
@@ -24064,7 +24072,7 @@ mod prompt_frame_origin_tests {
         );
         let notices: Vec<(NoticeSeverity, String)> = updates
             .into_iter()
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -24120,7 +24128,7 @@ mod prompt_frame_origin_tests {
                 // is about.
                 let notices: Vec<(NoticeSeverity, String)> =
                     std::iter::from_fn(|| rx.try_recv().ok())
-                        .filter_map(|frame| match frame.update {
+                        .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                             SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                             _ => None,
                         })
@@ -24168,7 +24176,7 @@ mod prompt_frame_origin_tests {
         let document: serde_json::Value = serde_json::from_str(&written).expect("it parses");
         assert_eq!(document["effortLevel"], serde_json::json!("low"));
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -24321,15 +24329,13 @@ mod prompt_frame_origin_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SeatUpdate {
-                    update: SessionUpdate::ChatAppended {
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::ChatAppended {
                         origin: Some(PromptOrigin::View),
                         source: Some(PromptSource::You),
                         key,
                         ..
-                    },
-                    ..
-                }) if key == seat
+                    } if key == &seat)
             ),
             "no view has drawn a send made over the socket, so every view has to - and the \
              frame says it is a person's send, the one source a reader's follow arms on \

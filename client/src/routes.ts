@@ -3,8 +3,9 @@
  * root and a session at `/session/{org}/{project}/{label}`, so a session
  * stays addressable and a deep link works in a browser and a shell alike.
  *
- * The connect screen at `/connect` is the one addition, because the app can
- * point at any forge.
+ * The app adds more than the connect screen: `/connect` (point it at any
+ * forge), `/models`, `/extensions`, `/board/{org}/{project}`, a seat's
+ * `review/` and `files/` sub-paths, and one document's own path.
  */
 
 import { writable } from 'svelte/store';

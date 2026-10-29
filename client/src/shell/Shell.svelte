@@ -289,7 +289,7 @@
     const land = (seat: SessionSlot, spawnedBy: SessionSlot | null): void => {
       // **The seat's session has ended, so its subscription goes with it.**
       // A visited seat is otherwise kept for the connection's life, and this
-      // frame is one of the two doors that release it.
+      // frame is one of the three doors that release it.
       releaseSeat(open, seat);
       // Both reads are untracked, so the effect subscribes once per
       // connection rather than once per roster read and route change.

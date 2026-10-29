@@ -245,7 +245,6 @@ pub fn fleet_news(update: &SessionUpdate) -> FleetNews<'_> {
         | SessionUpdate::AccountsChanged { .. }
         | SessionUpdate::DictateAvailability
         | SessionUpdate::ConnectionFailed { .. }
-        | SessionUpdate::AuthRequired { .. }
         | SessionUpdate::TurnError { .. }
         | SessionUpdate::TurnCancelled { .. }
         // The turn's start, and the earliest frame that says a turn was

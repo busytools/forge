@@ -244,7 +244,7 @@ mod tests {
         let mut resolved = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             if let crate::protocol::SessionUpdate::BrowserHandOffResolved { answer, .. } =
-                frame.update
+                &*frame.update
             {
                 resolved.push(answer.ending);
             }

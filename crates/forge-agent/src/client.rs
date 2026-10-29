@@ -94,10 +94,6 @@ pub enum AgentEvent {
         /// per-session count. `0` for a fresh session.
         compaction_count: u32,
     },
-    AuthRequired {
-        method_name: String,
-        method_description: String,
-    },
     /// A spawn failure the bridge could name, carried beside the message
     /// so a consumer reads the variant rather than searching rendered
     /// prose for a word that a path can also contain.

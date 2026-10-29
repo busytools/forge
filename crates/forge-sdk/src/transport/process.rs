@@ -123,7 +123,7 @@ fn parse_semver_triple(s: &str) -> Option<(u32, u32, u32)> {
 /// name is not covered, except where it collides with one of these -
 /// forge routes `--effort` that way, so the collision is the common
 /// case rather than a corner.
-const LOGGABLE_FLAGS: [&str; 17] = [
+const LOGGABLE_FLAGS: [&str; 16] = [
     "output-format",
     "verbose",
     "system-prompt",
@@ -136,7 +136,6 @@ const LOGGABLE_FLAGS: [&str; 17] = [
     "permission-mode",
     "resume",
     "session-id",
-    "settings",
     "mcp-config",
     "plugin-dir",
     "effort",
@@ -870,8 +869,8 @@ mod tests {
 
     /// An `Options` carrying a sentinel on every surface that reaches
     /// argv or the child env with a value: the env map, all three
-    /// external MCP transports, `extra_args`, `settings`, and the
-    /// system prompt. `Preset { append }` is the shape forge builds.
+    /// external MCP transports, `extra_args`, and the system prompt.
+    /// `Preset { append }` is the shape forge builds.
     fn options_with_secrets() -> Options {
         let mut options = crate::OptionsBuilder::new()
             // Never spawns. The record under test is written before
@@ -882,7 +881,6 @@ mod tests {
             .system_prompt(crate::SystemPromptKind::preset_append(
                 "sentinel-append-prompt-must-never-be-logged",
             ))
-            .settings("sentinel-settings-must-never-be-logged")
             .env("ANTHROPIC_AUTH_TOKEN", "sentinel-auth-must-never-be-logged")
             .env("AIRMAIL_TOKEN", "sentinel-airmail-must-never-be-logged")
             .extra_arg("some-flag", Some("sentinel-extra-arg-must-never-be-logged".to_owned()))
@@ -933,7 +931,6 @@ mod tests {
     fn declared_secrets(options: &Options) -> Vec<String> {
         let mut secrets: Vec<String> = options.env.values().cloned().collect();
         secrets.extend(options.extra_args.values().flatten().cloned());
-        secrets.extend(options.settings.clone());
         for cfg in options.external_mcp_servers.values() {
             match cfg {
                 forge_primitives::McpServerConfig::Stdio { env, .. } => {
@@ -1022,7 +1019,7 @@ mod tests {
         // Without a floor the loop below is vacuous: emptying the
         // fixture leaves zero secrets and a green test.
         let secrets = declared_secrets(&options);
-        assert_eq!(secrets.len(), 9, "fixture lost a sentinel: {secrets:?}");
+        assert_eq!(secrets.len(), 8, "fixture lost a sentinel: {secrets:?}");
 
         let argv = build_args(&options).expect("fixture argv").join("\u{1}");
         for secret in &secrets {

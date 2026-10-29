@@ -748,7 +748,9 @@ mod tests {
     ) -> Option<crate::catalogue::DictateModelsSnapshot> {
         let mut found = None;
         while let Ok(frame) = updates.try_recv() {
-            if let crate::SessionUpdate::DictateModelsChanged { models } = frame.update {
+            if let crate::SessionUpdate::DictateModelsChanged { models } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 found = Some(models);
             }
         }
@@ -784,11 +786,12 @@ mod tests {
     ) -> crate::catalogue::DictateModelsSnapshot {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
-                match updates.recv().await {
-                    Some(SeatUpdate {
-                        update: crate::SessionUpdate::DictateModelsChanged { models },
-                        ..
-                    }) => {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
+                    Some(crate::SessionUpdate::DictateModelsChanged { models }) => {
                         if !models.read_aloud.recordings.is_empty() {
                             break models;
                         }

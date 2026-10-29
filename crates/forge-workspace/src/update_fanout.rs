@@ -20,16 +20,20 @@ use crate::protocol::SessionUpdate;
 #[derive(Clone, Debug)]
 pub struct SeatUpdate {
     pub seq: Option<u64>,
-    pub update: SessionUpdate,
+    /// **Shared rather than owned, so one delivery is one pointer.** A frame
+    /// goes to every subscriber of the fleet, and each of them filters it
+    /// afterwards - so a deep clone per subscriber paid for a payload most of
+    /// them drop. The ring holds the same pointer.
+    pub update: Arc<SessionUpdate>,
 }
 
 /// How many frames one seat's stream keeps for repair.
 ///
 /// **Sized from the window a client is served from**, like the conversation
-/// copy the task holds: it is the stretch a repair is answered from memory,
-/// and what falls past it is the transcript's own read. A ring is shed whole
-/// at an occupant change - the numbers start over, so the frames before one
-/// are unreachable.
+/// copy the transport holds: it is the stretch a repair is answered from
+/// memory, and what falls past it is the transcript's own read. A ring is shed
+/// whole at an occupant change - the numbers start over, so the frames before
+/// one are unreachable.
 const SEAT_RING: usize = crate::conversation_window::CONVERSATION_CAP;
 
 /// The byte ceiling on one seat's ring: the same 64 MiB the conversation copy
@@ -43,61 +47,53 @@ const SEAT_RING: usize = crate::conversation_window::CONVERSATION_CAP;
 /// files that is 15 MB per retained frame.
 const SEAT_RING_BYTES: usize = crate::conversation_window::CONVERSATION_CAP_BYTES;
 
-/// What a frame costs against [`SEAT_RING_BYTES`], counted from the payloads
-/// that can grow rather than from its serialization.
+/// Whether the frame is kept in its seat's ring for repair.
 ///
-/// The big frames are big in their entries and messages; paying a JSON pass at
-/// mint would double the cost of exactly the frames this ceiling exists for. A
-/// frame whose payload is not counted here is charged a frame's fixed
-/// overhead, which is what keeps a long run of small frames bounded too.
+/// **The frames that open or close an epoch stay out.** They carry the count
+/// of the run they end - and the history the epoch hands over - so a ring that
+/// kept one would report a front number the new run cannot answer for.
+fn ringed(update: &SessionUpdate) -> bool {
+    !matches!(
+        update,
+        SessionUpdate::Connected { .. }
+            | SessionUpdate::SessionReplaced { .. }
+            | SessionUpdate::Releasing { .. }
+    )
+}
+
+/// What a frame costs against [`SEAT_RING_BYTES`]: the bytes its own JSON
+/// would write, plus the envelope around it.
+///
+/// **Measured, not hand-listed.** A walk over the fields that can grow charged
+/// only the variants it named: a frame outside that list, and a field added to
+/// one inside it, cost a fixed weight however large it was - so a new field
+/// silently under-charged the ceiling that exists to bound memory. The count is
+/// taken through a sink that keeps nothing, so the number is the memory
+/// without a second copy of it.
 fn frame_bytes(update: &SessionUpdate) -> usize {
-    /// Fields, numbers and names a wire entry carries beside its strings.
-    const ENTRY: usize = 96;
-    /// A frame's own fields, its slot and its envelope.
+    /// The frame's own envelope: its tag, slot, seq and span.
     const FRAME: usize = 256;
-    let payload = match update {
-        SessionUpdate::FileIndexChanged { index, .. } => index
-            .entries
-            .iter()
-            .map(|(key, candidate)| {
-                key.len()
-                    + candidate.rel_path.len()
-                    + candidate.rel_path_lower.len()
-                    + candidate.basename_lower.len()
-                    + ENTRY
-            })
-            .sum(),
-        SessionUpdate::ProcessesChanged { snapshot, .. } => snapshot
-            .processes
-            .iter()
-            .map(|entry| entry.name.len() + entry.command.len() + ENTRY)
-            .sum(),
-        SessionUpdate::ChatAppended { msg, .. } => crate::conversation_window::wire_bytes(msg),
-        SessionUpdate::CallOutput { output, .. } => match output {
-            forge_primitives::CallOutput::Lines(lines) => {
-                lines.iter().map(|line| line.len() + ENTRY).sum()
-            }
-            forge_primitives::CallOutput::FileGone | forge_primitives::CallOutput::NoPath => 0,
-        },
-        SessionUpdate::SubagentCardsChanged { cards, .. } => cards
-            .iter()
-            .map(|card| {
-                card.name.len()
-                    + card.dispatch_id.len()
-                    + card.agent_type.as_deref().map_or(0, str::len)
-                    + card
-                        .tail
-                        .iter()
-                        .map(|call| call.name.len() + call.title.len() + ENTRY)
-                        .sum::<usize>()
-                    + ENTRY
-            })
-            .sum(),
-        // `HistoryReplayed` is not ringed (see `numbered`), so it is charged
-        // nothing; anything else is a frame of its own fixed weight.
-        _ => 0,
-    };
-    payload.saturating_add(FRAME)
+    let mut count = ByteCount(0);
+    match serde_json::to_writer(&mut count, update) {
+        Ok(()) => count.0.saturating_add(FRAME),
+        // A payload that cannot serialise is a defect the wire would show
+        // anyway; charge it the envelope rather than nothing.
+        Err(_) => FRAME,
+    }
+}
+
+/// A `Write` that keeps the number of bytes written and nothing else.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// One frame in a seat's ring, with the weight it was charged when it was
@@ -131,6 +127,16 @@ pub(crate) enum SubscriberRole {
 }
 
 /// One subscriber's end of the fan-out.
+///
+/// **The channel is unbounded, and what bounds it instead is the connection.**
+/// A bounded channel forces the sender to choose between blocking - which
+/// would hold every seat's stream behind one slow reader, under this fan-out's
+/// own lock - and dropping a frame, which rule 25 forbids. So the sender never
+/// waits, and the receiving connection drains continuously: a socket that
+/// stops accepting its frames is cut at `WRITE_BOUND` (60 s), so a subscriber
+/// that keeps up holds a batch's worth and one that does not is disconnected
+/// rather than queued against forever. The per-frame weight is a pointer now,
+/// shared with the ring below rather than copied per subscriber.
 struct Registration {
     tx: mpsc::UnboundedSender<SeatUpdate>,
     role: SubscriberRole,
@@ -138,13 +144,6 @@ struct Registration {
 
 struct Shared {
     subscribers: Vec<Registration>,
-    /// Updates emitted before the first subscriber attached, held for
-    /// whoever attaches first so a notice raised during boot is not lost.
-    pending: Vec<SeatUpdate>,
-    /// Set by the first [`UpdateFanout::subscribe`]. After that a send
-    /// that reaches nobody is dropped rather than held, so a subscriber
-    /// attaching later inherits no backlog.
-    attached: bool,
     /// Where each seat's stream has got to: the number its newest frame was
     /// minted under. Absent for a seat that has not emitted yet, and for one
     /// whose last frame opened a new epoch.
@@ -173,14 +172,6 @@ struct Shared {
     /// count: a number older than that lies beyond any window a fill could
     /// serve, where the count it underwrites is a refusal rather than a hole.
     unringed: HashMap<SessionSlot, VecDeque<u64>>,
-    /// The numbers each seat has minted for a `HistoryReplayed`.
-    ///
-    /// **Not ringed, and not folded into [`Self::unringed`].** A replay's
-    /// window is history the ring cannot serve, so a fill that spans one is
-    /// refused for the fold to land - where a frame that merely closes an
-    /// epoch is a number the copy loses nothing by skipping. Bounded like
-    /// `unringed`, and for the same reason.
-    replays: HashMap<SessionSlot, VecDeque<u64>>,
     /// The seats whose latest epoch-opening seal carried rows.
     ///
     /// **A seal's history is not in the ring**, so a reader filling a copy
@@ -203,13 +194,10 @@ impl Default for Shared {
     fn default() -> Self {
         Self {
             subscribers: Vec::new(),
-            pending: Vec::new(),
-            attached: false,
             sequences: HashMap::new(),
             rings: HashMap::new(),
             ring_bytes: HashMap::new(),
             unringed: HashMap::new(),
-            replays: HashMap::new(),
             sealed_with_rows: HashSet::new(),
             ring_cap: SEAT_RING,
             ring_cap_bytes: SEAT_RING_BYTES,
@@ -234,28 +222,14 @@ impl Shared {
     /// against its own numbers.
     fn numbered(&mut self, update: SessionUpdate, charge: usize) -> SeatUpdate {
         let Some(slot) = update.slot().cloned() else {
-            return SeatUpdate { seq: None, update };
+            return SeatUpdate { seq: None, update: Arc::new(update) };
         };
         let seq = self.next_seq(&slot);
-        // **The frames that open or close an epoch stay out of the ring.**
-        // They carry the count of the run they end - and the history the
-        // epoch hands over - so a ring that kept one would report a front
-        // number the new run cannot answer for, and let that old number
-        // collide with a new one as the count climbs back to it.
-        //
-        // **A replay's window is not ringed either.** It carries a whole
-        // conversation window (bounded only by the window's own 64 MiB) and a
-        // re-open reads a fresh one, so a ring that kept it would pin that
-        // window per retained frame for a value no repair serves.
-        let epoch_frame = matches!(
-            update,
-            SessionUpdate::Connected { .. }
-                | SessionUpdate::SessionReplaced { .. }
-                | SessionUpdate::Releasing { .. }
-                | SessionUpdate::HistoryReplayed { .. }
-        );
-        if matches!(update, SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. })
-        {
+        let epoch_frame = !ringed(&update);
+        if matches!(
+            &update,
+            SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. }
+        ) {
             self.sequences.remove(&slot);
             // **A new occupant starts counting again**, so the frames before
             // it belong to a stream no client holds any more - and a repair
@@ -265,7 +239,6 @@ impl Shared {
             self.rings.remove(&slot);
             self.ring_bytes.remove(&slot);
             self.unringed.remove(&slot);
-            self.replays.remove(&slot);
             // **The mark describes the LATEST seal, so each mint replaces
             // it.** Only a seal that carried rows leaves a gap the ring cannot
             // fill, and a later blank epoch must not inherit the previous
@@ -295,17 +268,10 @@ impl Shared {
             // occupant's seal, which is where the numbers start over.
             self.sequences.insert(slot.clone(), seq);
             remember(self.unringed.entry(slot.clone()).or_default(), seq, self.ring_cap);
-        } else if matches!(update, SessionUpdate::HistoryReplayed { .. }) {
-            // **Not ringed, and recorded where a fill can find it.** A reader
-            // whose stretch holds one must know the window it carries is not
-            // in the ring: treating it as merely unringed would let a fill
-            // mark past it, losing rows only the fold can apply.
-            self.sequences.insert(slot.clone(), seq);
-            remember(self.replays.entry(slot.clone()).or_default(), seq, self.ring_cap);
         } else {
             self.sequences.insert(slot.clone(), seq);
         }
-        let frame = SeatUpdate { seq: Some(seq), update };
+        let frame = SeatUpdate { seq: Some(seq), update: Arc::new(update) };
         if !epoch_frame {
             let ring = self.rings.entry(slot.clone()).or_default();
             ring.push_back(Kept { frame: frame.clone(), bytes: charge });
@@ -355,16 +321,6 @@ impl Shared {
             .unwrap_or(u64::MAX)
     }
 
-    /// How many of the numbers in `from..=to` on `slot`'s stream a
-    /// `HistoryReplayed` was minted under.
-    fn replays_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
-        let Some(numbers) = self.replays.get(slot) else {
-            return 0;
-        };
-        u64::try_from(numbers.iter().filter(|number| (from..=to).contains(number)).count())
-            .unwrap_or(u64::MAX)
-    }
-
     /// The number `slot`'s next frame will be minted under.
     ///
     /// A seat that has emitted nothing - and one whose last frame opened a new
@@ -392,33 +348,10 @@ pub(crate) struct UpdateFanout {
 
 impl UpdateFanout {
     /// Mint a subscriber stream, declaring what the caller can do with
-    /// it. The first caller also takes whatever was emitted before it
-    /// attached, whichever role it declares; every later one carries
-    /// what is emitted after its own call and nothing before it.
+    /// it. A stream carries what is emitted after this call and nothing
+    /// before it; a subscriber reads what it missed from the subject's
+    /// snapshot instead.
     pub(crate) fn subscribe(&self, role: SubscriberRole) -> mpsc::UnboundedReceiver<SeatUpdate> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let mut shared = self.shared.lock();
-        for held in std::mem::take(&mut shared.pending) {
-            let _ = tx.send(held);
-        }
-        shared.attached = true;
-        shared.subscribers.push(Registration { tx, role });
-        rx
-    }
-
-    /// Mint a subscriber that carries only what is emitted from here on,
-    /// and leaves the pre-attach backlog for whoever attaches next.
-    ///
-    /// A mirror - something that folds the stream into state of its own
-    /// and reads the rest from a snapshot when it is asked - has no use
-    /// for the backlog. Taking it would be worse than useless: the
-    /// backlog goes to the first caller, so a mirror attaching at boot
-    /// would silently take the boot notice out of the view that renders
-    /// prompts.
-    pub(crate) fn subscribe_without_backlog(
-        &self,
-        role: SubscriberRole,
-    ) -> mpsc::UnboundedReceiver<SeatUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.shared.lock().subscribers.push(Registration { tx, role });
         rx
@@ -426,14 +359,13 @@ impl UpdateFanout {
 
     /// Deliver `update` to every subscriber, and report whether one took
     /// it. `false` is the "no receiver" signal the single-take channel
-    /// gave, which `spawn::try_emit` and `SessionTask::emit` log on; an
-    /// update emitted before anything attached is held for the first
-    /// subscriber and reports `false` too, since no subscriber has it.
+    /// gave, which `spawn::try_emit` and `SessionTask::emit` log on.
     ///
-    /// The last subscriber is taken out of the registry to receive
-    /// `update` itself while the rest are sent a copy, so the common
-    /// one-subscriber case clones nothing. It goes back only if it took
-    /// the update, which is also where a dead one leaves.
+    /// **One update, one pointer.** The frame is wrapped once and each
+    /// subscriber is handed an `Arc` clone, so the fan-out never pays a
+    /// payload copy however many subscribers there are. The last subscriber
+    /// is taken out of the registry to receive it directly and goes back only
+    /// if it took it, which is also where a dead one leaves.
     pub(crate) fn send(&self, update: SessionUpdate) -> bool {
         self.deliver(update, None)
     }
@@ -462,12 +394,6 @@ impl UpdateFanout {
     /// How many numbers in `from..=to` on `slot`'s stream no window can hold.
     pub(crate) fn unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
         self.shared.lock().unringed_between(slot, from, to)
-    }
-
-    /// How many numbers in `from..=to` on `slot`'s stream a replay was minted
-    /// under, whose window the ring cannot serve.
-    pub(crate) fn replays_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
-        self.shared.lock().replays_between(slot, from, to)
     }
 
     /// Whether `slot`'s latest epoch-opening seal carried rows, which no ring
@@ -525,9 +451,8 @@ impl UpdateFanout {
     /// never replies, so counting it would leave the turn waiting on a
     /// response nobody will send.
     ///
-    /// Unlike [`Self::send`], an update emitted before anything attached
-    /// is not held for the first subscriber: replaying it would offer
-    /// the first view a reply that reaches nothing. So a caller must
+    /// An update emitted before anything attached reaches nobody: a
+    /// subscriber takes what follows its own subscribe. So a caller must
     /// fail its turn closed on a `false` return; one that parked the
     /// turn anyway belongs on [`Self::send`].
     pub(crate) fn send_answering(&self, update: SessionUpdate) -> bool {
@@ -535,27 +460,24 @@ impl UpdateFanout {
     }
 
     fn deliver(&self, update: SessionUpdate, required: Option<SubscriberRole>) -> bool {
-        // **Weighed before the lock.** A chat frame's charge is its JSON, and
-        // paying that inside the fan-out's guard would serialize every seat's
-        // stream behind it.
-        let charge = frame_bytes(&update);
+        // **Weighed before the lock, and only when it is kept.** A chat
+        // frame's charge is its JSON, and paying that inside the fan-out's
+        // guard would serialize every seat's stream behind it; an epoch frame
+        // is never ringed, and its history makes that the one serialisation
+        // worth skipping.
+        let charge = if ringed(&update) { frame_bytes(&update) } else { 0 };
         let mut shared = self.shared.lock();
         let update = shared.numbered(update, charge);
         let Some(tail) = shared.subscribers.pop() else {
-            // Hold what was emitted before anything attached, so a boot
-            // notice is not lost. A role-gated update is not held,
-            // because a caller of `send_answering` must fail its turn
-            // closed on a false return: replaying it would offer the
-            // first subscriber a reply that reaches nothing.
-            if !shared.attached && required.is_none() {
-                shared.pending.push(update);
-            }
             return false;
         };
         let counts = |role: SubscriberRole| required.is_none_or(|want| want == role);
         let mut took_it = false;
         shared.subscribers.retain(|subscriber| {
-            let live = subscriber.tx.send(update.clone()).is_ok();
+            let live = subscriber
+                .tx
+                .send(SeatUpdate { seq: update.seq, update: Arc::clone(&update.update) })
+                .is_ok();
             took_it |= live && counts(subscriber.role);
             live
         });
@@ -575,6 +497,7 @@ mod tests {
 
     use super::*;
     use crate::SessionSlot;
+    use crate::protocol::NoticeSeverity;
 
     fn status(message: &str) -> SessionUpdate {
         SessionUpdate::ServiceStatus {
@@ -640,7 +563,7 @@ mod tests {
     }
 
     fn said(frame: SeatUpdate) -> String {
-        match frame.update {
+        match std::sync::Arc::unwrap_or_clone(frame.update) {
             SessionUpdate::ServiceStatus { message, .. } => message,
             other => panic!("expected the ServiceStatus envelope this test sends, got {other:?}"),
         }
@@ -711,81 +634,34 @@ mod tests {
             "after",
             "the first subscriber also sees the later one"
         );
-        assert_eq!(next(&mut late, "late"), "after", "the late subscriber misses the backlog");
-        assert!(
-            late.try_recv().is_err(),
-            "the late subscriber is handed the backlog and nothing more",
-        );
+        assert_eq!(next(&mut late, "late"), "after", "the late subscriber sees only the later one");
+        assert!(late.try_recv().is_err(), "the late subscriber carries nothing from before it");
     }
 
-    /// Catches dropping the hold for what was emitted before anything
-    /// attached, which loses a notice the workspace raises during boot
-    /// and leaves the first subscriber starting empty.
+    /// **A delivery hands out the same update, not a copy of it.** The ring
+    /// and every subscriber hold one `Arc`: a payload nobody mutates is
+    /// shared, and a frame a subscriber filters out costs it a pointer rather
+    /// than a clone of a window.
     #[test]
-    fn the_first_subscriber_takes_what_was_emitted_before_it() {
+    fn a_delivery_shares_one_update_with_the_ring_and_every_subscriber() {
         let fanout = UpdateFanout::default();
-        assert!(!fanout.send(status("boot")), "nothing has attached to take it");
-
         let mut first = fanout.subscribe(SubscriberRole::Answering);
         let mut second = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
 
-        assert_eq!(
-            next(&mut first, "first"),
-            "boot",
-            "the first subscriber is handed the boot notice"
-        );
-        assert!(second.try_recv().is_err(), "the second subscriber is handed no boot backlog");
-    }
-
-    /// A mirror takes no backlog and leaves it for whoever attaches next.
-    ///
-    /// Both halves are the point. A view that folds the stream into state
-    /// of its own reads the rest from a snapshot, so replaying to it is
-    /// waste; and because the backlog goes to the FIRST caller, a mirror
-    /// attaching at boot would otherwise take the boot notice out of the
-    /// view that renders prompts. Catches either direction being changed:
-    /// a mirror pointed at the backlog-taking form, or a prompt-rendering
-    /// view pointed at the mirror's.
-    #[test]
-    fn a_mirror_takes_no_backlog_and_leaves_it_for_the_next_subscriber() {
-        let fanout = UpdateFanout::default();
-        assert!(!fanout.send(status("boot")), "nothing has attached to take it");
-
-        let mut mirror = fanout.subscribe_without_backlog(SubscriberRole::Observing);
+        assert!(fanout.send(a_turn_ends(&seat)), "both subscribers receive it");
+        let one = first.try_recv().expect("the first subscriber's frame");
+        let two = second.try_recv().expect("the second subscriber's frame");
         assert!(
-            mirror.try_recv().is_err(),
-            "a mirror is handed nothing that was emitted before it attached",
+            Arc::ptr_eq(&one.update, &two.update),
+            "the two subscribers were handed one payload, not two",
         );
-
-        let mut answering = fanout.subscribe(SubscriberRole::Answering);
-        assert_eq!(
-            next(&mut answering, "answering"),
-            "boot",
-            "the boot notice is still there for the view that renders prompts",
+        let ringed = fanout.frames_between(&seat, 1, 1);
+        assert_eq!(ringed.len(), 1, "the ring kept the frame");
+        assert!(
+            Arc::ptr_eq(&one.update, &ringed[0].update),
+            "and the ring holds the same payload rather than a second copy",
         );
-
-        assert!(fanout.send(status("later")), "an update after both attached reaches one of them");
-        assert_eq!(next(&mut mirror, "mirror"), "later", "and the mirror carries it too");
-    }
-
-    /// Catches holding a role-gated update for the first subscriber. The
-    /// guard that raised it has already failed it closed, so replaying
-    /// it would hand the first view a prompt whose slot is gone and
-    /// offer a reply that reaches nothing.
-    #[test]
-    fn a_role_gated_update_is_not_held_for_the_first_subscriber() {
-        let fanout = UpdateFanout::default();
-        assert!(!fanout.send(status("notice")), "a plain update is held");
-        assert!(!fanout.send_answering(status("prompt")), "nothing can answer it yet");
-
-        let mut first = fanout.subscribe(SubscriberRole::Answering);
-
-        assert_eq!(
-            next(&mut first, "first"),
-            "notice",
-            "the first subscriber is handed the plain update",
-        );
-        assert!(first.try_recv().is_err(), "the failed-closed prompt is not replayed to it");
     }
 
     /// Catches pointing a guard at `send`, which counts an observer as an
@@ -1150,38 +1026,6 @@ mod tests {
         );
     }
 
-    /// **A replay's window is not ringed.** It carries a whole conversation
-    /// window and a re-open reads a fresh one; a ring that kept it would pin
-    /// that window per retained frame while its charge read as a frame.
-    #[test]
-    fn a_replay_is_not_ringed() {
-        let fanout = UpdateFanout::default();
-        let mut rx = fanout.subscribe(SubscriberRole::Answering);
-        let seat = seat("lead");
-
-        assert!(
-            fanout.send(SessionUpdate::HistoryReplayed {
-                key: seat.clone(),
-                history: Vec::new(),
-                compaction_count: 0,
-            }),
-            "a subscribed fan-out delivers",
-        );
-        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the replay");
-        assert!(fanout.frames_between(&seat, 1, 1).is_empty(), "the ring holds no replay");
-        assert_eq!(
-            fanout.replays_between(&seat, 1, 1),
-            1,
-            "and its number is recorded as a replay a fill must not mark past",
-        );
-        assert_eq!(
-            fanout.unringed_between(&seat, 1, 1),
-            0,
-            "a replay is not a frame that merely closes an epoch",
-        );
-        assert_eq!(fanout.ring_bytes(&seat), 0, "so it is charged nothing");
-    }
-
     /// **A call output and a card tail are charged by their payload.** Both
     /// grow with what a person reads - a command's tail, an instance's calls -
     /// and a ceiling that counted them as a frame's fixed weight would let a
@@ -1246,10 +1090,37 @@ mod tests {
         );
     }
 
-    /// The boot backlog keeps the numbers its frames were minted with, so a
-    /// client joining at the first subscribe has no hole at the join.
+    /// **A frame is charged by its serialised size, not by a hand-listed set
+    /// of fields.** `Notice` was not on the old walk, so a notice carrying ten
+    /// kilobytes was charged a frame's fixed weight - the shape of failure a
+    /// field added to any frame would repeat. Its own bytes are what it costs
+    /// now.
     #[test]
-    fn the_backlog_keeps_the_numbers_its_frames_were_minted_with() {
+    fn a_frame_is_charged_by_its_serialised_size() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(
+            fanout.send(SessionUpdate::Notice {
+                key: seat.clone(),
+                severity: NoticeSeverity::Info,
+                text: "x".repeat(10_000),
+            }),
+            "a subscribed fan-out delivers",
+        );
+        assert_eq!(next_seq(&mut rx, "seat"), Some(1), "the notice");
+        let charged = fanout.ring_bytes(&seat);
+        assert!(
+            charged >= 10_000,
+            "a 10 KB notice is charged its own bytes rather than a frame's weight: {charged}",
+        );
+    }
+
+    /// A frame that reached nobody still takes its seat's number, so a client
+    /// joining at the first subscribe has no hole at the join.
+    #[test]
+    fn a_frame_that_reached_nobody_still_advances_its_seats_number() {
         let fanout = UpdateFanout::default();
         let seat = seat("lead");
         assert!(!fanout.send(a_turn_ends(&seat)), "nothing has attached to take it");
@@ -1258,12 +1129,10 @@ mod tests {
         let mut first = fanout.subscribe(SubscriberRole::Answering);
         assert!(fanout.send(a_turn_ends(&seat)), "the subscriber is attached");
 
-        assert_eq!(next_seq(&mut first, "first"), Some(1), "the held frame keeps its number");
-        assert_eq!(next_seq(&mut first, "first"), Some(2), "and so does the one after it");
         assert_eq!(
             next_seq(&mut first, "first"),
             Some(3),
-            "with the live frame continuing from the backlog rather than restarting",
+            "the delivered frame continues the count rather than reusing a number",
         );
     }
 }

@@ -4,7 +4,7 @@
 //!
 //! [`ViewSurface::dispatch`] is a verb rather than an accessor, so a second
 //! view is handed the commands it needs and not the whole core, and changes
-//! arrive on [`ViewSurface::subscribe`].
+//! arrive on [`ViewSurface::subscribe_client`].
 
 pub mod accounts;
 pub mod agents;
@@ -54,6 +54,16 @@ pub struct ViewSurface {
     /// network, so the ask that finds one running is not a reason for a
     /// second.
     pricing_refill: std::sync::atomic::AtomicBool,
+    /// The one scan a cold cache runs: a second reader waits here rather than
+    /// walking the pool beside the first.
+    usage_scan: tokio::sync::Mutex<()>,
+    /// How many scans were started, so a test can prove two misses ran one.
+    #[cfg(any(test, feature = "testing"))]
+    usage_scans: std::sync::atomic::AtomicU64,
+    /// Holds every miss at one point, so the race the guard covers is a
+    /// barrier rather than a large pool that might finish first.
+    #[cfg(any(test, feature = "testing"))]
+    usage_gate: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -87,6 +97,34 @@ impl ViewSurface {
             workspace,
             usage_cache: std::sync::Mutex::new(None),
             pricing_refill: std::sync::atomic::AtomicBool::new(false),
+            usage_scan: tokio::sync::Mutex::new(()),
+            #[cfg(any(test, feature = "testing"))]
+            usage_scans: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            usage_gate: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// How many pool scans this surface started. Test-only: the single-flight
+    /// guard's whole claim is that two concurrent misses start one.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn test_usage_scans(&self) -> u64 {
+        self.usage_scans.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Hold every usage miss here until the test lets it go. Test-only, and
+    /// `None` outside the tests that seed one.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_usage_gate(&self, gate: Arc<tokio::sync::Barrier>) {
+        *self.usage_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    async fn pass_test_usage_gate(&self) {
+        let gate =
+            self.usage_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(gate) = gate {
+            gate.wait().await;
         }
     }
 
@@ -141,45 +179,15 @@ impl ViewSurface {
         self.workspace.pending_asks(slot)
     }
 
-    /// The core's own update stream. Every caller gets a receiver of its
-    /// own, so a second view attaches beside the first rather than stealing
-    /// its events.
-    ///
-    /// **A caller on this verb is a frontend that renders AND answers
-    /// prompts.** A permission, question or Slack-draft request is parked on
-    /// a reply, and the paths that raise one resolve it `Cancelled` when no
-    /// subscriber can answer - so a view that draws a dock while declaring
-    /// itself an observer draws prompts that are already dead, and a turn
-    /// fails rather than waiting for the person looking at it. Whoever
-    /// subscribes here answers through `dispatch`, which is the same path
-    /// a view uses.
-    ///
-    /// This was the mirror's role while one view was the only frontend and
-    /// the only thing that answered. A second view that renders makes that
-    /// reason stop holding.
-    ///
-    /// The first caller to attach is handed what was emitted before it as
-    /// well, so a notice raised during boot is not lost; a caller attaching
-    /// after one already has inherits no backlog.
-    ///
-    /// A consumer that reads the stream and renders no prompt takes
-    /// [`Self::subscribe_mirror`] instead.
-    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
-        self.workspace.subscribe()
-    }
-
     /// The core's own update stream for a consumer that reads it WITHOUT
-    /// answering, and keeps no backlog.
+    /// answering.
     ///
     /// **The caller this exists for is a process-wide fold.** It folds into
     /// state of its own and never replies, so the answering role would park
     /// a permission, question or Slack draft waiting on an answer nobody
-    /// sends. And it attaches at boot, before any client does, so taking
-    /// the backlog would take the boot notice from the view that renders
-    /// prompts - the notice belongs to whichever subscription attaches
-    /// first, and a fold is not the view that draws it.
+    /// sends.
     ///
-    /// A view with a dock to answer from takes [`Self::subscribe`].
+    /// A view with a dock to answer from takes [`Self::subscribe_client`].
     pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
         self.workspace.subscribe_mirror()
     }
@@ -187,11 +195,9 @@ impl ViewSurface {
     /// The core's stream for a connecting client, registered with the
     /// role that client declared.
     ///
-    /// **Neither role takes the pre-attach backlog.** It goes to the first
-    /// subscriber - the view that renders the boot notice - so a client
-    /// attaching later must not take that notice away, whether or not the
-    /// client can answer. A client reads what it missed from the subject's
-    /// snapshot instead.
+    /// **A stream carries what follows its own subscribe and nothing
+    /// before it**, whatever the role: a client that attaches late reads what
+    /// it missed from the subject's snapshot.
     ///
     /// The role decides one thing: whether the core may park a prompt on this
     /// connection's reply. `answering` is the client's own statement that it
@@ -247,13 +253,6 @@ impl ViewSurface {
     /// out of what it must account for.
     pub fn seat_unringed_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
         self.workspace.seat_unringed_between(slot, from, to)
-    }
-
-    /// How many of the numbers in `from..=to` on `slot`'s stream a replay was
-    /// minted under: history the ring cannot serve, so a fill that spans one
-    /// is refused rather than marked past.
-    pub fn seat_replays_between(&self, slot: &SessionSlot, from: u64, to: u64) -> u64 {
-        self.workspace.seat_replays_between(slot, from, to)
     }
 
     /// Whether `slot`'s latest epoch-opening seal carried rows, which no ring
@@ -510,7 +509,7 @@ mod tests {
     use forge_primitives::SessionSlot;
     use forge_workspace::Workspace;
 
-    use super::{SeatUpdate, SessionUpdate, ViewSurface};
+    use super::ViewSurface;
     use crate::test_support::logged;
 
     /// The claude versions are facts about the world rather than about a
@@ -538,62 +537,27 @@ mod tests {
     /// `UpdateFanout`, whose own test pins its two halves; what this pins
     /// is which half each one calls.
     ///
-    /// **A view attaching through this verb renders AND answers prompts, and
-    /// it takes the stream whole.** The two travel together on purpose: the
-    /// verb that hands over the backlog is the verb that answers, because
-    /// both belong to the frontend that draws a dock. A view pointed at the
-    /// mirror instead draws prompts that are already dead - the workspace
-    /// resolves a permission, question or Slack draft `Cancelled` when no
-    /// subscriber can answer - and nothing in a build or a test would say so.
-    ///
-    /// This is the one place in the tree that tells the two apart: every
-    /// other test answers an update that was emitted after it attached, and
-    /// green either way.
+    /// **The role decides whether the core may park a prompt on a reply.**
+    /// A view that draws a dock while declaring itself an observer draws
+    /// prompts that are already dead - the workspace resolves a permission,
+    /// question or Slack draft `Cancelled` when no subscriber can answer -
+    /// and nothing in a build or a test would say so. This is the one place
+    /// in the tree that tells the two apart.
     #[tokio::test]
-    async fn a_surface_subscriber_answers_and_takes_the_stream_whole() {
+    async fn a_surface_client_subscribes_with_the_role_it_declared() {
         let (workspace, _dir) = crate::surface::testing::workspace();
         let surface = ViewSurface::new(Arc::clone(&workspace));
 
-        // Emitted with nothing attached, so the fanout holds it for
-        // whichever caller attaches first.
-        workspace.emit_for_test(SessionUpdate::CatalogLoaded);
+        let _answering = surface.subscribe_client(true);
+        let _mirror = surface.subscribe_client(false);
+        let _fold = surface.subscribe_mirror();
 
-        let mut subscribed = surface.subscribe();
-        assert!(
-            matches!(
-                subscribed.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
-            ),
-            "a view attaching through this verb takes the stream whole, held notice included",
+        assert_eq!(
+            workspace.test_answering_count(),
+            1,
+            "only the client that declared it answers counts as an answerer",
         );
-    }
-
-    /// The other half of the pair, and the reason both verbs exist: a fold
-    /// attaching through the mirror takes no backlog, so the notice held
-    /// before anyone attached reaches the view that renders prompts instead
-    /// of being swallowed by whichever subscription happened to attach
-    /// first - which at boot is the fold, not a view.
-    ///
-    /// The fold also does not answer, so putting it on the answering verb
-    /// would park every prompt it draws waiting on a reply nobody sends.
-    #[tokio::test]
-    async fn a_surface_mirror_leaves_the_backlog_for_the_view_that_renders_prompts() {
-        let (workspace, _dir) = crate::surface::testing::workspace();
-        let surface = ViewSurface::new(Arc::clone(&workspace));
-
-        workspace.emit_for_test(SessionUpdate::CatalogLoaded);
-
-        let mut mirror = surface.subscribe_mirror();
-        assert!(mirror.try_recv().is_err(), "a fold attaching through the mirror takes no backlog");
-
-        let mut answering = workspace.subscribe();
-        assert!(
-            matches!(
-                answering.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
-            ),
-            "the held notice is still there for the subscriber that renders prompts",
-        );
+        assert_eq!(workspace.test_subscriber_count(), 3, "each verb registers a stream of its own");
     }
 
     const SESSION_A: &str = "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45";

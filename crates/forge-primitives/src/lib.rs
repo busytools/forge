@@ -133,9 +133,8 @@ pub use project_key::ProjectKey;
 pub use public_types::{
     AccountInfo, ContextUsageResponse, ConversationHistory, ForgeAccountIdentity, McpServerConfig,
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpSetServersResponse,
-    McpStatusResponse, McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations,
-    SandboxNetworkConfig, SandboxSettings, SessionHistory, SessionMessage, SessionMessageKind,
-    StreamEvent, TranscriptAnchor, TranscriptSpan,
+    McpStatusResponse, McpToolAnnotations, McpToolInfo, SDKSessionInfo, SessionHistory,
+    SessionMessage, SessionMessageKind, StreamEvent, TranscriptAnchor, TranscriptSpan,
 };
 pub use question::{
     QuestionAnnotation, QuestionOption, QuestionOutcome, QuestionPrompt, QuestionRequest,

@@ -43,7 +43,7 @@
     joined,
     noticeLine,
     pendingAsk,
-    signInLine,
+    SIGN_IN_FALLBACK,
     type ComposerProps,
   } from './view';
   import {
@@ -1419,9 +1419,8 @@
     {:else}
       {#if seat.lifecycle === 'AuthRequired'}
         <div class="hint login">
-          Authentication required{#if composer.signIn !== null && composer.signIn.methodName !== ''}
-            · {composer.signIn.methodName}{/if}
-          <span class="sub">{signInLine(composer)}</span>
+          Authentication required
+          <span class="sub">{SIGN_IN_FALLBACK}</span>
         </div>
       {/if}
       <!-- The box's controls, drawn in one of two places: on the field's own line

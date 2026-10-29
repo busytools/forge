@@ -75,7 +75,6 @@ export const REDRAWS = new Set([
   // sends nothing else before the removal, so without this arm that viewer's
   // rail keeps reading the row as working through the teardown (#1930).
   'releasing',
-  'auth_required',
   'turn_error',
   'turn_cancelled',
   'permission_request',

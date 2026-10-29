@@ -21,7 +21,7 @@ mod support;
 use std::time::{Duration, Instant};
 
 use forge_browser::osr::Ring;
-use forge_browser::window::Cdp;
+use forge_browser::window::{Backlog, Cdp, Events};
 use serde_json::{Value, json};
 
 /// How long CEF is given to boot, paint and answer a gesture.
@@ -35,7 +35,7 @@ struct Fixture {
     host: support::Host,
     _scratch: tempfile::TempDir,
     cdp: Cdp,
-    _events: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    _events: Events,
     ring: String,
 }
 
@@ -56,9 +56,13 @@ async fn fixture(name: &str) -> Fixture {
     let log = scratch.path().join("host.log");
     let host = support::Host::start(&exe, &profile, port, &ring, "800x600", &[], &log);
     let id = support::wait_for_page(port, &log, BOUND);
-    let (cdp, events) = Cdp::connect_watch(port, &format!("/devtools/page/{id}"))
-        .await
-        .expect("the page's devtools endpoint accepts");
+    let (cdp, events) = Cdp::connect_watch(
+        port,
+        &format!("/devtools/page/{id}"),
+        Backlog::DropNewest(forge_browser::window::EVENT_BACKLOG),
+    )
+    .await
+    .expect("the page's devtools endpoint accepts");
     Fixture { _scratch: scratch, host, cdp, _events: events, ring }
 }
 

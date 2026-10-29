@@ -356,7 +356,7 @@ impl Fleet {
     /// own read of the file - which is a sleeping seat's path, and firing it
     /// here would make every held-window test pass through the other source.
     /// So it reads the transcript RAW - the shape a `Connected` carries and a
-    /// replay answers with - and lets the conversation convert it. Not
+    /// resume answers with - and lets the conversation convert it. Not
     /// through `ViewSurface::conversation`, which converts the task notices
     /// on the way out: a fixture built on the converted shape would exercise
     /// something production never seeds from, so a defect in the seed's own

@@ -67,9 +67,10 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   commands, the transcript
   fold that says where a conversation's turns sit and the task endings it
   carries, the sub-agent instance list the session task's own fold keeps and
-  pushes, the `ReadCallOutput` verb (with the workspace's tail reader
-  re-exported for views), the boot path the `forge` binary runs, and the
-  socket that carries all of it to whatever is drawing.
+  pushes, the call-output read the socket answers from its held conversation
+  (with the workspace's tail reader re-exported for views), the boot path the
+  `forge` binary runs, and the socket that carries all of it to whatever is
+  drawing.
   Sits between `forge-workspace` and the clients, so another client
   attaches beside the one that exists rather than duplicating it.
   Nothing here may depend on a view. It reaches the workspace for the one
@@ -85,7 +86,8 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   beside the server's state so the server never links CEF; the host owns
   the profile's tabs, and the service keeps each session's current tab; the
   vendored Playwright driver it speaks MCP to over that host's DevTools
-  endpoint; WebP frames per tab into a local socket; the org profile store
+  endpoint; WebP frames per tab over the profile's own local socket,
+  multiplexed by tab; the org profile store
   under `profiles/<org>/<name>` and its one-time legacy-tree deletion; the
   idle release; and the service the browser tools and every viewer call.
   `forge-workspace` carries only the `BrowserHost` port; the frame's wire
@@ -210,8 +212,8 @@ through named verbs by subject - `roster`, `session`, `agents`,
 `processes`, `work`, `board`, `background_tasks`, `monitors`, `pending_asks`,
 `fatal_error`, `service_status`
 and `usage` - receives changes through
-`subscribe()`, and acts through `dispatch()`, which is a verb rather than
-an accessor so a view is handed the commands it needs and not the whole
+`subscribe_client()`, and acts through `dispatch()`, which is a verb rather
+than an accessor so a view is handed the commands it needs and not the whole
 core. All of them exist in `forge-server`, and the client reads its
 project roster and agent rows, the
 task board's fleet and per-project rows through `board`, the
@@ -308,14 +310,18 @@ The core's contract to a view is **one entry point in each direction**:
 
 - **view -> core:** `Workspace::dispatch(Command)`. One enum, one
   entry point, every user-driven action.
-- **core -> view:** `SessionUpdate` via `Workspace::subscribe()`. Every
-  caller gets a stream of its own, so a second view attaches beside the
-  one that exists; a stream carries what
-  the workspace emits after that call, and the first caller to attach
-  is handed what was emitted before it as well, so a notice raised
-  during boot is not lost.
+- **core -> view:** `SessionUpdate` via `Workspace::subscribe_mirror()` or
+  `subscribe_answerer()`. Every caller gets a stream of its own, so a second
+  view attaches beside the one that exists; a stream carries what the
+  workspace emits after that call and nothing before it, so a view that
+  attaches late reads what it missed from the subject's snapshot. The old
+  `Workspace::subscribe()` - first caller took a pre-attach backlog - had no
+  production caller and is gone. The socket's fold takes the mirror at boot;
+  each client takes `subscribe_client()` through the surface with its role.
 
-That is the whole contract: no callback hooks, no shared mutable state.
+That is the whole contract: no callback hooks, and no state shared between a
+view and the core. (The transport keeps its own bookkeeping behind a mutex,
+which no view sees.)
 A view holds no `Arc<AgentHandle>`; query-style
 refreshes (`refresh_context_usage`, `refresh_mcp_snapshot`) are direct
 `Workspace` methods
@@ -508,6 +514,9 @@ inspected.
     `$CLAUDE_CODE_EFFORT_LEVEL`.
     Spotting one of these while doing other work means fixing it on the
     spot and auditing for the same pattern; they cluster.
+15. **The number is unused.** This list skipped it, and it is recorded here so
+    the gap reads as deliberate rather than as a lost rule. The numbers after
+    it stay as they are, because citations already use them.
 16. **A scoped change must not alter anything else observable.** A
     performance fix changes only speed. A UI change changes only that
     surface. If the scoped change *requires* touching behaviour

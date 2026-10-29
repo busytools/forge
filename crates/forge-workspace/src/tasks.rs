@@ -1240,10 +1240,8 @@ mod tests {
     fn next_tasks_changed(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
     ) -> (SessionSlot, Vec<Task>) {
-        match rx.try_recv() {
-            Ok(SeatUpdate { update: SessionUpdate::TasksChanged { key, tasks }, .. }) => {
-                (key, tasks)
-            }
+        match rx.try_recv().map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)) {
+            Ok(SessionUpdate::TasksChanged { key, tasks }) => (key, tasks),
             other => panic!("expected a TasksChanged on the stream, got {other:?}"),
         }
     }

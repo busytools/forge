@@ -258,7 +258,12 @@ enum ViewEvent {
     Nav(forge_primitives::browser::BrowserNavState),
     Failed(String),
     File(forge_primitives::browser::BrowserFileAsk),
-    Download(forge_primitives::browser::BrowserDownload),
+    Download {
+        download: forge_primitives::browser::BrowserDownload,
+        /// The offer was dropped before a viewer read it, so its words name a
+        /// loss rather than a save that failed.
+        dropped: bool,
+    },
     Audio(forge_primitives::browser::BrowserAudio),
 }
 
@@ -282,13 +287,35 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
             changed = viewing.nav.changed() => changed.map(|()| 3_u8).map_err(|_| 13_u8),
             changed = viewing.files.changed() => changed.map(|()| 4_u8).map_err(|_| 14_u8),
             download = viewing.downloads.recv() => match download {
-                Ok(download) => return ViewEvent::Download(download),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                Ok(download) => return ViewEvent::Download { download, dropped: false },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(lost)) => {
                     tracing::warn!(
-                        "a viewer fell behind a download and lost it (event_name \
-                         browser_download_lagged)"
+                        event_name = "browser_download_lagged",
+                        profile = %viewing.key,
+                        profile_id = viewing.id,
+                        tab = viewing.tab,
+                        lost,
+                        "a viewer fell behind a finished download and lost it"
                     );
-                    continue;
+                    // **A loss the person can see, through the save door.**
+                    // The shell has one user-facing channel for a download
+                    // that will not arrive - the refusal the save door
+                    // raises - and a second, non-modal surface for a corner
+                    // case is machinery this cut does not add. `dropped`
+                    // tells the shell to title it as a loss rather than as a
+                    // save that failed.
+                    return ViewEvent::Download {
+                        download: forge_primitives::browser::BrowserDownload {
+                            tab: viewing.tab,
+                            name: "download".to_owned(),
+                            bytes: Vec::new(),
+                            error: Some(format!(
+                                "{lost} finished download(s) were dropped before this viewer \
+                                 read them: the browser held at most the profile's backlog"
+                            )),
+                        },
+                        dropped: true,
+                    };
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     std::future::pending().await
@@ -478,9 +505,12 @@ where
 
 /// Read what a client sends, and hear what its subscriptions asked for.
 ///
-/// Every client message is answered: a client is never left waiting on a
-/// message this server chose to drop, which is the failure that reads as a
-/// hang rather than as an error.
+/// Every client message that carries a question is answered: a client is
+/// never left waiting on a message this server chose to drop, which is the
+/// failure that reads as a hang rather than as an error. Five carry none and
+/// are deliberately answered with nothing - `Showing`, `ClientPerf`,
+/// `Unsubscribe`, `BrowserDetach` and `BrowserResize` are statements the
+/// server books, not requests.
 async fn drive<S>(
     socket: &mut S,
     state: &Arc<TransportState>,
@@ -949,7 +979,7 @@ where
                     generation,
                     initiator: Some(id),
                     ..
-                } = &update
+                } = &*update
                     && *id == me
                 {
                     dictate.stamp(key, *generation);
@@ -960,7 +990,7 @@ where
                     outcome,
                     generation,
                     ..
-                } = &update
+                } = &*update
                     && *id == me
                 {
                     dictate.retire(key, outcome, *generation);
@@ -989,7 +1019,7 @@ where
                     }
                     read.frames.push(SeatUpdate {
                         seq: frame.seq,
-                        update: for_a_client(update.clone(), cap),
+                        update: Arc::new(for_a_client((*update).clone(), cap)),
                     });
                 }
                 // The fold is the transport's, not this connection's: it runs
@@ -1000,10 +1030,13 @@ where
                     // shutdown` follows the run loop's return - and a frame
                     // still waiting out its window when the process drops dies
                     // with it. Everything else can wait the interval.
-                    let fatal = matches!(update, SessionUpdate::FatalError { .. });
+                    let fatal = matches!(&*update, SessionUpdate::FatalError { .. });
                     held.push(
                         Instant::now(),
-                        SeatUpdate { seq: frame.seq, update: for_a_client(update, cap) },
+                        SeatUpdate {
+                            seq: frame.seq,
+                            update: Arc::new(for_a_client(Arc::unwrap_or_clone(update), cap)),
+                        },
                     );
                     if fatal {
                         batch::flush(socket, held.take()).await?;
@@ -1109,7 +1142,7 @@ where
                     // **A finished download goes to the person driving.** A
                     // watcher's connection receives the broadcast and drops
                     // it; the save door is the controller's.
-                    ViewEvent::Download(download) => {
+                    ViewEvent::Download { download, dropped } => {
                         let Some(viewing) = browser.viewing.as_ref() else { continue };
                         // **A save is the tab's too**: a controller watching
                         // another tab is not offered this file.
@@ -1129,6 +1162,7 @@ where
                                 name: download.name,
                                 data,
                                 error: download.error,
+                                dropped,
                             },
                         )
                         .await?;
@@ -1822,6 +1856,27 @@ where
                 }
                 (None, false) => {
                     dispatched(me, &command);
+                    // **The transport answers this one from its own copy.**
+                    // The frames that name a call's output file arrive as
+                    // `ChatAppended` and are folded into the seat's held
+                    // conversation, which is the copy a read needs; the
+                    // session task keeps none of its own.
+                    if let Command::ReadCallOutput { key, call_id } = &command {
+                        let output = call_output(state, key, call_id).await;
+                        return send(
+                            socket,
+                            ServerMessage::Update {
+                                update: Box::new(SessionUpdate::CallOutput {
+                                    key: key.clone(),
+                                    call_id: call_id.clone(),
+                                    output,
+                                }),
+                                seq: None,
+                                span: 1,
+                            },
+                        )
+                        .await;
+                    }
                     match state.surface.dispatch(command) {
                         Ok(()) => {
                             // Claimed as soon as the dispatch answers - Ok for a
@@ -1893,10 +1948,10 @@ where
                 // **A question that cannot be answered is REFUSED rather than
                 // answered with a value that looks like one.** An empty page
                 // carries `cursor: null`, and a client reads that as "nothing
-                // above" and stops asking - so a replay that did not arrive
-                // would make the seat's history unreachable rather than
-                // merely late, and a plausible `compaction_count: 0` would
-                // ride along with it.
+                // above" and stops asking - so a copy that did not become
+                // current would make the seat's history unreachable rather
+                // than merely late, and a plausible `compaction_count: 0`
+                // would ride along with it.
                 return send(
                     socket,
                     ServerMessage::Error {
@@ -2097,7 +2152,7 @@ where
                         // that can hold one.
                         Some(SeatFrameWire {
                             seq: frame.seq?,
-                            update: for_a_client(frame.update, cap),
+                            update: for_a_client(Arc::unwrap_or_clone(frame.update), cap),
                         })
                     })
                     .collect(),
@@ -2918,8 +2973,7 @@ fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
 fn for_a_client(mut update: SessionUpdate, cap: usize) -> SessionUpdate {
     match &mut update {
         SessionUpdate::Connected { history, .. }
-        | SessionUpdate::SessionReplaced { history, .. }
-        | SessionUpdate::HistoryReplayed { history, .. } => *history = Vec::new(),
+        | SessionUpdate::SessionReplaced { history, .. } => *history = Vec::new(),
         // **A live frame draws what a reload draws** (#2374): a record is
         // bounded on its way to a client wherever it comes from, or an
         // over-cap edit draws its hunks live and the marker after a switch.
@@ -2941,7 +2995,10 @@ fn forward_queued(
     frames
         .into_iter()
         .filter(|frame| forwards(&frame.update, watched, me))
-        .map(|frame| SeatUpdate { seq: frame.seq, update: for_a_client(frame.update, cap) })
+        .map(|frame| SeatUpdate {
+            seq: frame.seq,
+            update: Arc::new(for_a_client(Arc::unwrap_or_clone(frame.update), cap)),
+        })
         .collect()
 }
 
@@ -3627,10 +3684,6 @@ fn dispatched(me: u64, command: &Command) {
     );
 }
 
-/// Dispatch a reply-carrying command, and answer the client that asked.
-///
-/// A client that asked for an answer always hears one - INCLUDING a refusal,
-/// so it is never left watching a channel that stays empty.
 /// Whether a command reports its outcome through the reply rather than
 /// through an update on the subscription.
 ///
@@ -3646,6 +3699,63 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
     )
+}
+
+/// A call's own output, read from the transport's held copy of its seat.
+///
+/// The frame that names the file is a `ChatAppended` row the fold has already
+/// applied, so the held conversation is where the read resolves it; a seat
+/// this transport holds nothing for has no conversation to name one.
+///
+/// Both the copy's lock and the file read block, so they run off the
+/// connection's loop the way every other conversation read here does.
+async fn call_output(
+    state: &TransportState,
+    key: &SessionSlot,
+    call_id: &str,
+) -> forge_primitives::CallOutput {
+    use forge_primitives::CallOutput;
+    let conversations = Arc::clone(&state.conversations);
+    let key = key.clone();
+    let logged = key.clone();
+    let logged_call = call_id.to_owned();
+    let call_id = call_id.to_owned();
+    let read = tokio::task::spawn_blocking(move || {
+        let Some(held) = conversations.get(&key) else {
+            return CallOutput::NoPath;
+        };
+        let conversation = held.lock();
+        let Some(path) = forge_workspace::output_tail::resolve_call_output_path(
+            conversation.messages(),
+            &call_id,
+        ) else {
+            return CallOutput::NoPath;
+        };
+        match forge_workspace::output_tail::read_output_file_tail(
+            &path,
+            forge_workspace::output_tail::CALL_OUTPUT_MAX_LINES,
+        ) {
+            None => CallOutput::FileGone,
+            Some(lines) => CallOutput::Lines(lines),
+        }
+    })
+    .await;
+    match read {
+        Ok(output) => output,
+        Err(error) => {
+            // A panicked task is forge's own problem, not "the call named no
+            // file": the two read the same to a client and differently to a
+            // reader of the log.
+            tracing::warn!(
+                event_name = "call_output_read_failed",
+                slot = %logged.display(),
+                call_id = %logged_call,
+                %error,
+                "the call-output read did not finish; the request is answered as no-path",
+            );
+            CallOutput::NoPath
+        }
+    }
 }
 
 /// Dispatch one of those five, and answer the client that asked.
@@ -3685,6 +3795,65 @@ mod tests {
     use super::*;
     use crate::transport::Heartbeat;
     use crate::work::WorkCache;
+
+    /// The transport answers a call's output read from its own held copy: the
+    /// frame that names the file is a `ChatAppended` row the fold has applied,
+    /// and the session task keeps no conversation to ask.
+    #[tokio::test]
+    async fn a_call_output_read_resolves_from_the_transports_held_copy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let conversations = Arc::new(crate::transport::conversation::Conversations::new());
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::clone(&conversations),
+            live: Mutex::new(crate::live::Live::new()),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        conversations
+            .insert(&seat, crate::transport::conversation::Conversation::new(Vec::new(), 0, 0));
+
+        let path = std::env::temp_dir()
+            .join(format!("forge-call-output-transport-{}.log", std::process::id()));
+        std::fs::write(&path, "one\ntwo\n").expect("write the output file");
+        let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "t-1",
+            "tool_use_id": "tu-1",
+            "status": "completed",
+            "output_file": path.display().to_string(),
+            "summary": "done",
+            "session_id": "sess-1",
+            "uuid": "u-1",
+        }))
+        .expect("a task notification frame");
+        conversations.apply(
+            &SessionUpdate::ChatAppended { key: seat.clone(), msg, origin: None, source: None },
+            Some(1),
+        );
+
+        assert_eq!(
+            call_output(&state, &seat, "tu-1").await,
+            forge_primitives::CallOutput::Lines(vec!["one".to_owned(), "two".to_owned()]),
+            "the copy's own frame names the file the read returns",
+        );
+        assert_eq!(
+            call_output(&state, &seat, "tu-unknown").await,
+            forge_primitives::CallOutput::NoPath,
+            "a call the copy does not name is the no-path reason",
+        );
+        std::fs::remove_file(&path).expect("remove the output file");
+        assert_eq!(
+            call_output(&state, &seat, "tu-1").await,
+            forge_primitives::CallOutput::FileGone,
+            "a named file that has gone is its own reason, not an empty tail",
+        );
+    }
 
     /// **A panic in the encode answers the loop; a cancellation does not.** The
     /// release and the end of the connection cancel the read and send their own
@@ -4307,7 +4476,11 @@ mod tests {
         };
         let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await.map(|frame| frame.update) {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
                     Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
                     Some(_) => {}
                     None => panic!("the stream ended before the ask"),
@@ -4401,12 +4574,12 @@ mod tests {
         .expect("a user frame");
         let frame = SeatUpdate {
             seq: Some(9),
-            update: SessionUpdate::ChatAppended {
+            update: Arc::new(SessionUpdate::ChatAppended {
                 key: seat.clone(),
                 origin: None,
                 source: None,
                 msg,
-            },
+            }),
         };
 
         let queued = forward_queued(&state, vec![frame], &[Subject::Session(seat)], 1);
@@ -4415,7 +4588,7 @@ mod tests {
         let SessionUpdate::ChatAppended {
             msg: forge_primitives::Message::User { tool_use_result, .. },
             ..
-        } = &queued[0].update
+        } = &*queued[0].update
         else {
             panic!("the queued frame is the chat frame it was queued as")
         };
@@ -6167,6 +6340,75 @@ mod tests {
         match next_view_event(&mut viewing).await {
             ViewEvent::Failed(reason) => assert_eq!(reason, "tab 3 was closed"),
             _ => panic!("the tab's own end is the surface's refusal"),
+        }
+    }
+
+    /// **A viewer that fell behind the download backlog is told why.**
+    ///
+    /// The offer is gone, so the save door hears a download whose own error
+    /// names the loss rather than a write failure; the tab is the viewer's,
+    /// so the notice stays on the tab it belongs to. This is the one branch
+    /// the browser retention drops a person can feel, and it is driven here
+    /// rather than left to the constants' own tests.
+    #[tokio::test]
+    async fn a_viewer_that_fell_behind_the_downloads_is_told() {
+        use forge_primitives::browser::{BrowserDownload, BrowserTabList, BrowserViewState};
+
+        let (downloads, downloads_rx) = tokio::sync::broadcast::channel(1);
+        let (_frames, frames_rx) = tokio::sync::watch::channel(None);
+        let (_view, view_rx) = tokio::sync::watch::channel(BrowserViewState::default());
+        let (_nav, nav_rx) = tokio::sync::watch::channel(None);
+        let (_failures, failures_rx) = tokio::sync::watch::channel(None::<String>);
+        let (_files, files_rx) = tokio::sync::watch::channel(None);
+        let (_audio, audio_rx) = tokio::sync::broadcast::channel(4);
+        let (_tabs, tabs_rx) = tokio::sync::watch::channel(BrowserTabList {
+            profile: "O/default".to_owned(),
+            id: 1,
+            up: true,
+            connected: true,
+            closing_at_ms: None,
+            rows: Vec::new(),
+        });
+        let attachment = forge_workspace::browser::BrowserAttachment {
+            key: "O/default".to_owned(),
+            id: 1,
+            tab: 3,
+            frames: frames_rx,
+            view: view_rx,
+            tabs: tabs_rx,
+            nav: nav_rx,
+            failures: failures_rx,
+            files: files_rx,
+            downloads: downloads_rx,
+            audio: audio_rx,
+        };
+        let mut viewing = Some(Viewing::new(attachment));
+        // Two offers land while the viewer reads none: the first is evicted.
+        for n in 0..2 {
+            let offer = BrowserDownload {
+                tab: 3,
+                name: format!("file-{n}"),
+                bytes: Vec::new(),
+                error: None,
+            };
+            downloads.send(offer).expect("the viewer is attached");
+        }
+
+        match next_view_event(&mut viewing).await {
+            ViewEvent::Download { download, dropped } => {
+                assert!(
+                    dropped,
+                    "the shell is told this is a dropped offer, so it can title it as a loss",
+                );
+                assert_eq!(download.tab, 3, "the notice stays on the viewer's own tab");
+                let why = download.error.expect("a lag is answered with its own reason");
+                assert!(
+                    why.contains("dropped") && why.contains("backlog"),
+                    "the words name the loss rather than a failed write: {why}",
+                );
+                assert!(download.bytes.is_empty(), "there are no bytes to save");
+            }
+            _ => panic!("a lagged download is answered as a download with a reason"),
         }
     }
 }

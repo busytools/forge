@@ -15,9 +15,11 @@ import type { SessionSlot } from '../wire/types';
  * Whether this page runs inside the client shell: the Tauri marker is the one
  * gate.
  *
- * **The one platform check in the browser code**, and it is read only where a
- * link is chosen. What the surface, the strip and the dock talk to is the
- * link, never this.
+ * **The platform gate the browser code shares**: it picks the link the
+ * browser surface drives, and the notification path asks it too. It is not
+ * the only platform check in the code - the shell's own link also asks
+ * whether the phone paints its frames itself. What the surface, the strip and
+ * the dock talk to is the link, never this.
  */
 export function canHost(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;

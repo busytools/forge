@@ -409,34 +409,65 @@ function sameSlot(a: SessionSlot, b: SessionSlot): boolean {
   return a.org === b.org && a.project === b.project && a.label === b.label;
 }
 
+/**
+ * Every mark one state draws, in each surface's own vocabulary.
+ *
+ * **One decision tree, two spellings.** The home row takes a class and a dot
+ * shape; the rail takes a dot class. Those vocabularies differ, so the class
+ * lists do - the mapping from state to meaning must not, and a second switch
+ * is how the two came to disagree once already.
+ */
+export interface SeatMark {
+  /** The home row's class. */
+  class: string;
+  /** The dot shape the home row's mark draws. */
+  dot: string;
+  /** The rail row's dot class. */
+  rail: string;
+}
+
+const mark = (cls: string, dot: string, rail: string): SeatMark => ({
+  class: cls,
+  dot,
+  rail,
+});
+
 /** The mark a state draws: one class and one dot shape per meaning. */
-export function markOf(state: RowState): { class: string; dot: string } {
-  if (state.kind === 'unseen') return { class: 'unseen', dot: 'ok' };
+export function seatMark(state: RowState): SeatMark {
+  if (state.kind === 'unseen') return mark('unseen', 'ok', 'unseen');
   // The failed turn and the death draw the same mark a failed session does:
   // one failure vocabulary, and the seat's own page tells the three apart.
   if (state.kind === 'failed-turn' || state.kind === 'died') {
-    return { class: 'failed', dot: 'bad' };
+    return mark('failed', 'bad', 'failed');
   }
-  if (state.kind === 'never-started') return { class: 'never', dot: 'off' };
+  if (state.kind === 'never-started') return mark('never', 'off', 'off');
   switch (state.lifecycle) {
     case 'Running':
-      return { class: 'running', dot: 'live' };
+      return mark('running', 'live', 'live');
     case 'Spawning':
-      return { class: 'spawning', dot: 'live' };
+      return mark('spawning', 'live', 'live');
     case 'Idle':
-      return { class: 'idle', dot: 'live' };
+      return mark('idle', 'live', 'idle');
     case 'Attention':
-      return { class: 'needs', dot: 'warn' };
+      return mark('needs', 'warn', 'needs');
+    // Sign-in needed is a failure a person has to act on, and neither the
+    // rail nor the header has an auth shape of its own.
     case 'AuthRequired':
-      return { class: 'auth', dot: 'bad' };
+      return mark('auth', 'bad', 'failed');
     case 'Failed':
-      return { class: 'failed', dot: 'bad' };
+      return mark('failed', 'bad', 'failed');
     // Both are a session that is not there: the subprocess is gone, or
     // `/logout` took it. One mark, because the row says the same thing.
     case 'Sleeping':
     case 'LoggedOut':
-      return { class: 'asleep', dot: 'off' };
+      return mark('asleep', 'off', 'off');
   }
+}
+
+/** The home row's class and dot for a state. */
+export function markOf(state: RowState): { class: string; dot: string } {
+  const { class: cls, dot } = seatMark(state);
+  return { class: cls, dot };
 }
 
 /**
