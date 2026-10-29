@@ -60,6 +60,10 @@ pub struct ViewSurface {
     /// How many scans were started, so a test can prove two misses ran one.
     #[cfg(any(test, feature = "testing"))]
     usage_scans: std::sync::atomic::AtomicU64,
+    /// Holds every miss at one point, so the race the guard covers is a
+    /// barrier rather than a large pool that might finish first.
+    #[cfg(any(test, feature = "testing"))]
+    usage_gate: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -96,6 +100,8 @@ impl ViewSurface {
             usage_scan: tokio::sync::Mutex::new(()),
             #[cfg(any(test, feature = "testing"))]
             usage_scans: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            usage_gate: std::sync::Mutex::new(None),
         }
     }
 
@@ -104,6 +110,22 @@ impl ViewSurface {
     #[cfg(any(test, feature = "testing"))]
     pub fn test_usage_scans(&self) -> u64 {
         self.usage_scans.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Hold every usage miss here until the test lets it go. Test-only, and
+    /// `None` outside the tests that seed one.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_usage_gate(&self, gate: Arc<tokio::sync::Barrier>) {
+        *self.usage_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(gate);
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    async fn pass_test_usage_gate(&self) {
+        let gate =
+            self.usage_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(gate) = gate {
+            gate.wait().await;
+        }
     }
 
     /// The byte cap one frame's `tool_use_result` may reach in a served
