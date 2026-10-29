@@ -3243,8 +3243,9 @@ async fn call_output(
     use forge_primitives::CallOutput;
     let conversations = Arc::clone(&state.conversations);
     let key = key.clone();
+    let logged = key.clone();
     let call_id = call_id.to_owned();
-    tokio::task::spawn_blocking(move || {
+    let read = tokio::task::spawn_blocking(move || {
         let Some(held) = conversations.get(&key) else {
             return CallOutput::NoPath;
         };
@@ -3263,8 +3264,22 @@ async fn call_output(
             Some(lines) => CallOutput::Lines(lines),
         }
     })
-    .await
-    .unwrap_or(CallOutput::NoPath)
+    .await;
+    match read {
+        Ok(output) => output,
+        Err(error) => {
+            // A panicked task is forge's own problem, not "the call named no
+            // file": the two read the same to a client and differently to a
+            // reader of the log.
+            tracing::warn!(
+                event_name = "call_output_read_failed",
+                slot = %logged.display(),
+                %error,
+                "the call-output read did not finish; the request is answered as no-path",
+            );
+            CallOutput::NoPath
+        }
+    }
 }
 
 /// Dispatch one of those five, and answer the client that asked.
