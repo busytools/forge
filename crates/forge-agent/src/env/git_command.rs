@@ -18,6 +18,20 @@ use std::process::Command;
 pub(crate) fn command(program: &str) -> Command {
     let mut command = Command::new(program);
     command.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_COMMON_DIR");
+    if program == "git" {
+        // **No git child may wait on a person.** The review page's read waits
+        // for its base fetch to finish, so a prompt inherited from the shell
+        // forge was launched in would hold that page open until somebody
+        // answered it. Every interactive path ends in a git error instead.
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        command.env_remove("GIT_ASKPASS").env_remove("SSH_ASKPASS");
+        // ssh's own prompts are not git's, so `BatchMode` is what stops a
+        // passphrase or a first-use host key. Only when the environment names
+        // no command of its own: a user's ssh wrapper is theirs to keep.
+        if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+            command.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        }
+    }
     command
 }
 
@@ -164,6 +178,50 @@ mod tests {
             .and_then(|(_, value)| value)
             .and_then(|value| value.to_str());
         assert_eq!(carried, Some("project-token"), "the project's GH_TOKEN is on the spawn");
+    }
+
+    /// **A git child can never wait on a person.** The review page's read
+    /// waits for its base fetch to finish, so a credential or host-key prompt
+    /// inherited from the shell forge was launched in would hold the page
+    /// open for as long as nobody answers it. Every prompt path ends in a
+    /// git error instead: git's own terminal prompt is disabled, and the two
+    /// askpass hooks an editor's terminal exports are removed so neither is
+    /// run on this process's behalf. `GIT_SSH_COMMAND` gets `BatchMode` only
+    /// when the environment does not set one, so a user's own command is
+    /// left alone while ssh stops asking for a passphrase or a first-use host
+    /// key. The value is on the child, never on forge's own environment, so
+    /// no session inherits it.
+    #[test]
+    fn a_git_child_can_never_wait_on_a_person() {
+        let command = command("git");
+        let set = |key: &str| {
+            command
+                .get_envs()
+                .find(|(k, _)| *k == key)
+                .and_then(|(_, value)| value)
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            set("GIT_TERMINAL_PROMPT").as_deref(),
+            Some("0"),
+            "git's terminal prompt is disabled whatever the shell exported",
+        );
+        for key in ["GIT_ASKPASS", "SSH_ASKPASS"] {
+            assert!(
+                removed_keys(&command).iter().any(|k| k == key),
+                "{key} reaches the child from this process's environment",
+            );
+        }
+        match std::env::var_os("GIT_SSH_COMMAND") {
+            // The user's own command is left alone.
+            Some(_) => assert!(set("GIT_SSH_COMMAND").is_none(), "an ambient ssh command is kept"),
+            None => assert_eq!(
+                set("GIT_SSH_COMMAND").as_deref(),
+                Some("ssh -o BatchMode=yes"),
+                "ssh stops asking when the environment names no command of its own",
+            ),
+        }
     }
 
     /// And the server's identity never reaches it: a project that
