@@ -700,6 +700,15 @@ interface Frame {
   /** `system/informational`'s body and level. */
   level?: unknown;
   content?: unknown;
+  /** `system/vcs_state_changed`: what moved, and the branch it landed on. */
+  kind?: unknown;
+  branch?: unknown;
+  /** `system/code_change_published`: the change that went up for review. */
+  provider?: unknown;
+  action?: unknown;
+  repo?: unknown;
+  identifier?: unknown;
+  url?: unknown;
   /** `system/notification`'s body, kind and delivery priority. */
   text?: unknown;
   priority?: unknown;
@@ -2540,15 +2549,13 @@ export function fold(
         push({
           kind: 'notice',
           key: keyOf(at, frame, 'repository'),
-          notice: {
-            severity: 'info',
-            text:
-              branch === null
-                ? said
-                : kind === 'push'
-                  ? `${said} ${branch}`
-                  : `${said} on ${branch}`,
-          },
+          notice: provisional(
+            'vcs_state_changed',
+            'info',
+            branch === null ? said : kind === 'push' ? `${said} ${branch}` : `${said} on ${branch}`,
+            frame,
+            facts(fact('kind', kind), fact('branch', branch)),
+          ),
         });
         continue;
       }
@@ -2561,16 +2568,34 @@ export function fold(
         const action = str(frame, 'action');
         const repo = str(frame, 'repo');
         const identifier = str(frame, 'identifier');
+        const branch = str(frame, 'branch');
         const url = str(frame, 'url');
-        const noun = provider === 'gitlab' ? 'MR' : provider === 'github' ? 'PR' : 'change';
+        const noun =
+          provider === 'gitlab'
+            ? 'MR'
+            : provider?.startsWith('github') === true || provider === 'bitbucket'
+              ? 'PR'
+              : 'change';
         push({
           kind: 'notice',
           key: keyOf(at, frame, 'published'),
           notice: {
-            severity: 'info',
-            text: `${noun}${identifier === null ? '' : ` #${identifier}`}${
-              action === null ? '' : ` ${action}`
-            }${repo === null ? '' : ` in ${repo}`}`,
+            ...provisional(
+              'code_change_published',
+              'info',
+              `${noun}${identifier === null ? '' : ` #${identifier}`}${
+                action === null ? '' : ` ${action}`
+              }${repo === null ? '' : ` in ${repo}`}`,
+              frame,
+              facts(
+                fact('action', action),
+                fact('provider', provider),
+                fact('repository', repo),
+                fact('change', identifier),
+                fact('branch', branch),
+                fact('url', url),
+              ),
+            ),
             ...(url === null ? {} : { sub: url }),
           },
         });
