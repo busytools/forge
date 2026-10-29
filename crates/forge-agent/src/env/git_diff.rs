@@ -3865,6 +3865,7 @@ mod tests {
             &snapshot,
             Some(BaseState::Current),
             Some(&stale),
+            None,
             TEST_GIT_BUDGET,
         )
         .await;

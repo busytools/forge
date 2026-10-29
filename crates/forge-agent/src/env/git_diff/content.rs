@@ -68,6 +68,12 @@ pub struct DiffContent {
     /// How current the base the branch layer was read against is. `None` when
     /// there is no branch layer to describe.
     pub base: Option<BaseState>,
+    /// Why the base fetch did not run, in git's own words, beside `base` for
+    /// the same reason: a page says what failed rather than only that the base
+    /// could not be checked. `None` when the fetch ran or no branch layer is
+    /// drawn.
+    #[serde(default)]
+    pub base_error: Option<String>,
     /// Content this read withheld: a file cut by a cap, a file past the
     /// file cap, or a fetch that failed. The per-file flags say which.
     pub truncated: bool,
@@ -152,8 +158,9 @@ pub async fn scan<'a>(
     snapshot: &'a GitDiffSnapshot,
     base: Option<BaseState>,
     base_ref: Option<&str>,
+    base_error: Option<&str>,
 ) -> DiffContent {
-    scan_within(cwd, snapshot, base, base_ref, COMMAND_TIMEOUT).await
+    scan_within(cwd, snapshot, base, base_ref, base_error, COMMAND_TIMEOUT).await
 }
 
 /// [`scan`] with its command budget spelled; the budget bounds the
@@ -161,12 +168,14 @@ pub async fn scan<'a>(
 ///
 /// `base_ref` pins the branch range to one revision (a sha the drawing read
 /// resolved) instead of the snapshot's ref name, so this read and the stats
-/// scan beside it cannot straddle two refs.
+/// scan beside it cannot straddle two refs. `base_error` is why the refresh
+/// could not run, carried beside the state it left.
 pub async fn scan_within<'a>(
     cwd: &'a Path,
     snapshot: &'a GitDiffSnapshot,
     base: Option<BaseState>,
     base_ref: Option<&str>,
+    base_error: Option<&str>,
     budget: Duration,
 ) -> DiffContent {
     let mut caps = Caps::default();
@@ -186,11 +195,11 @@ pub async fn scan_within<'a>(
         LayerState::Clean => LayerState::Clean,
         LayerState::ScanFailed => LayerState::ScanFailed,
     };
-    let base = match &snapshot.branch_ahead {
-        LayerState::Populated(_) => base,
-        LayerState::Clean | LayerState::ScanFailed => None,
+    let (base, base_error) = match &snapshot.branch_ahead {
+        LayerState::Populated(_) => (base, base_error.map(str::to_owned)),
+        LayerState::Clean | LayerState::ScanFailed => (None, None),
     };
-    DiffContent { worktree, branch_ahead, base, truncated: caps.withheld }
+    DiffContent { worktree, branch_ahead, base, base_error, truncated: caps.withheld }
 }
 
 /// Read one layer: its file list, then one bounded fetch per file.
@@ -751,7 +760,7 @@ index 1111111..2222222 160000
         git(&dir, &["add", "added.rs", "blob.bin"]);
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         assert!(
             matches!(content.branch_ahead, LayerState::Clean),
@@ -798,7 +807,7 @@ index 1111111..2222222 160000
         write_file(&dir, "base.rs", "base\nedited\n");
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         let worktree = populated(content.worktree);
         assert_eq!(worktree.len(), 1);
@@ -844,7 +853,7 @@ index 1111111..2222222 160000
 
         // A branch read would carry both; the commit read must not.
         let snapshot = scan_stats(dir.path(), None).await;
-        let whole = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let whole = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
         let LayerState::Populated(entries) = whole.branch_ahead else {
             panic!("the branch layer is populated");
         };
@@ -871,7 +880,7 @@ index 1111111..2222222 160000
             closes: Vec::new(),
             pr_fetched_at: None,
         };
-        assert_send(scan(std::path::Path::new("/"), &snapshot, None, None));
+        assert_send(scan(std::path::Path::new("/"), &snapshot, None, None, None));
     }
 
     /// The wire spellings `socket.md`'s `diff` row names: a client narrows
@@ -913,7 +922,7 @@ index 1111111..2222222 160000
         write_file(&dir, "long.rs", &format!("{}\n", edited.join("\n")));
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         let files = populated(content.worktree);
         let file = files.iter().find(|file| file.path == "long.rs").expect("long.rs");
@@ -940,7 +949,7 @@ index 1111111..2222222 160000
         write_file(&dir, "long.rs", &format!("{}\n", edited.join("\n")));
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         assert!(content.truncated, "the read says its content was withheld");
         let files = populated(content.worktree);
@@ -970,7 +979,7 @@ index 1111111..2222222 160000
         // Cleaned between the two reads, so the content read finds nothing.
         write_file(&dir, "kept.rs", "one\n");
 
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(!content.truncated);
@@ -1004,7 +1013,7 @@ index 1111111..2222222 160000
         git(&dir, &["add", "-A"]);
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         assert!(content.truncated, "the read says its content was withheld");
         let files = populated(content.worktree);
@@ -1044,7 +1053,7 @@ index 1111111..2222222 160000
         commit_all(&dir, "base");
 
         let snapshot = scan_stats(dir.path(), None).await;
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(matches!(content.branch_ahead, LayerState::Clean));
@@ -1069,7 +1078,7 @@ index 1111111..2222222 160000
 
         let snapshot = scan_stats(dir.path(), None).await;
         let base = Some(BaseState::Behind { behind: 2 });
-        let content = scan_within(dir.path(), &snapshot, base, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, base, None, None, TEST_GIT_BUDGET).await;
 
         assert_eq!(populated(content.branch_ahead).len(), 1, "the branch's own file is read");
         assert_eq!(content.base, base, "the caller's base state crosses beside its files");
@@ -1083,7 +1092,7 @@ index 1111111..2222222 160000
 
         let snapshot = scan_stats(dir.path(), None).await;
         assert_eq!(snapshot.repo_gate, RepoGate::NotARepo);
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::Clean));
         assert!(matches!(content.branch_ahead, LayerState::Clean));
@@ -1108,7 +1117,7 @@ index 1111111..2222222 160000
             pr_fetched_at: None,
         };
 
-        let content = scan_within(dir.path(), &snapshot, None, None, TEST_GIT_BUDGET).await;
+        let content = scan_within(dir.path(), &snapshot, None, None, None, TEST_GIT_BUDGET).await;
 
         assert!(matches!(content.worktree, LayerState::ScanFailed), "a failed layer stays failed");
         assert!(matches!(content.branch_ahead, LayerState::Clean));
