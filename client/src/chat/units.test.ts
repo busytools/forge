@@ -4358,7 +4358,13 @@ describe('the frames the fold had no row for', () => {
     ).toEqual([]);
   });
 
-  it('draws a local command as one row from its name and print frames', () => {
+  /**
+   * **The real 2.1.280 shape**: a `<command-name>` frame, then a
+   * `<local-command-stdout>` frame that carries `commandRun` itself. The print
+   * names the command it belongs to, so a rule that opened a row on `named`
+   * would draw two - the duplication this rework exists to end.
+   */
+  it('draws the real two-frame command as one row, even when the print names itself', () => {
     const units = fold([
       {
         type: 'system',
@@ -4374,6 +4380,8 @@ describe('the frames the fold had no row for', () => {
         subtype: 'local_command',
         content: '<local-command-stdout>Session cost: $1.23</local-command-stdout>',
         level: 'info',
+        commandRun: { command: 'usage', args: '--verbose' },
+        contextUsage: { percent: 12 },
         uuid: 'lc2',
       },
     ]);
@@ -4382,28 +4390,25 @@ describe('the frames the fold had no row for', () => {
     const row = noticeOf(units[0]);
     expect(row?.severity, 'a local command is information').toBe('info');
     expect(row?.mark).toBe('local_command');
-    expect(row?.text, 'the row names the command, not its output').toBe('Ran /usage');
-    expect(row?.fields, 'the open body carries the print and the flags').toEqual([
+    expect(row?.text, 'the row names the command once, with the slash').toBe('Ran /usage');
+    expect(row?.fields, 'the print and the name frame together').toEqual([
       { label: 'output', value: 'Session cost: $1.23' },
       { label: 'level', value: 'info' },
       { label: 'context usage', value: '{"percent":12}' },
       { label: 'usage report', value: '{"total_cost_usd":1.23}' },
+      { label: 'args', value: '--verbose' },
     ]);
-    expect(row?.raw, 'the name frame stays reachable').toContain('command-name');
-    expect(
-      units.some((unit) => unit.kind === 'notice' && unit.notice.text.includes('unhandled frame')),
-      'the raw duplicate is gone',
-    ).toBe(false);
+    expect(row?.raw, 'the name frame is reachable').toContain('command-name');
+    expect(row?.raw, "and the print's own frame rides beside it").toContain('--verbose');
   });
 
-  it('names a command from its modern commandRun and keeps its args', () => {
+  it('draws the classic pair, a print with no commandRun, as one row', () => {
     const units = fold([
       {
         type: 'system',
         subtype: 'local_command',
-        content: '',
+        content: '<command-name>/compact</command-name>',
         level: 'info',
-        commandRun: { command: '/compact', args: '--fast' },
         uuid: 'lc3',
       },
       {
@@ -4415,29 +4420,111 @@ describe('the frames the fold had no row for', () => {
       },
     ]);
 
+    expect(kinds(units)).toEqual(['notice']);
     const row = noticeOf(units[0]);
-    expect(row?.text, 'the commandRun names the command').toBe('Ran /compact');
-    expect(row?.fields).toEqual([
-      { label: 'output', value: 'Compacted.' },
-      { label: 'args', value: '--fast' },
-      { label: 'level', value: 'info' },
-    ]);
+    expect(row?.text).toBe('Ran /compact');
+    expect(row?.fields).toContainEqual({ label: 'output', value: 'Compacted.' });
   });
 
-  it('draws a print frame with no name frame before it rather than dropping it', () => {
+  it('names a lone print from its commandRun, without the slash', () => {
     const units = fold([
       {
         type: 'system',
         subtype: 'local_command',
         content: '<local-command-stdout>no name frame</local-command-stdout>',
         level: 'info',
+        commandRun: { command: 'usage', args: '--fast' },
         uuid: 'lc5',
       },
     ]);
 
+    expect(kinds(units)).toEqual(['notice']);
     const row = noticeOf(units[0]);
-    expect(row?.text, 'a print with no name still draws').toBe('Ran a local command');
+    expect(row?.text, 'the print names its own command, normalised').toBe('Ran /usage');
     expect(row?.fields).toContainEqual({ label: 'output', value: 'no name frame' });
+  });
+
+  it('reads the headless bare name and its args', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '/usage --fast',
+        level: 'info',
+        uuid: 'lc6',
+      },
+    ]);
+
+    const row = noticeOf(units[0]);
+    expect(row?.text, 'a bare command line names the command and keeps its args').toBe(
+      'Ran /usage --fast',
+    );
+  });
+
+  it('does not attach a print to an older command across another unit', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<command-name>/usage</command-name>',
+        level: 'info',
+        uuid: 'lc7',
+      },
+      said([text('working')]),
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>late print</local-command-stdout>',
+        level: 'info',
+        commandRun: { command: 'usage' },
+        uuid: 'lc8',
+      },
+    ]);
+
+    expect(kinds(units), 'the name row, the text, and the print as its own row').toEqual([
+      'notice',
+      'text',
+      'notice',
+    ]);
+    expect(
+      noticeOf(units[0])?.fields?.some((field) => field.label === 'output'),
+      'the older command does not gain a late output',
+    ).toBe(false);
+    expect(noticeOf(units[2])?.fields).toContainEqual({ label: 'output', value: 'late print' });
+  });
+
+  it('spends the handle: a second print opens its own row', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<command-name>/usage</command-name>',
+        level: 'info',
+        uuid: 'lc9',
+      },
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>first</local-command-stdout>',
+        level: 'info',
+        uuid: 'lc10',
+      },
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>second</local-command-stdout>',
+        level: 'info',
+        commandRun: { command: 'usage' },
+        uuid: 'lc11',
+      },
+    ]);
+
+    expect(kinds(units), 'the first command and the second print').toEqual(['notice', 'notice']);
+    expect(
+      noticeOf(units[0])?.fields?.filter((field) => field.label === 'output'),
+      'the first row keeps one output',
+    ).toEqual([{ label: 'output', value: 'first' }]);
+    expect(noticeOf(units[1])?.fields).toContainEqual({ label: 'output', value: 'second' });
   });
 
   it('draws a development-intent fact as one low-key line', () => {

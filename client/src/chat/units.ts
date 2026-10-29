@@ -2114,8 +2114,10 @@ export function fold(
    * The row the last local command opened, by index.
    *
    * **The CLI sends a command as two frames**: one names it, a second carries
-   * what it printed. The second fills the first's row rather than drawing a
-   * second, vague command - so a command is one row, not two.
+   * what it printed (and often names it again in `commandRun`). The second
+   * fills the first's row, so a command is one row - and the handle is spent
+   * after the attach and dropped by any other unit, so a print cannot reach
+   * back to an older command.
    */
   let localCommandAt: number | null = null;
   /** The stage each notice key sits at, so a walk-back cannot soften a line. */
@@ -2325,6 +2327,9 @@ export function fold(
   const push = (unit: Unit): void => {
     flushWork();
     units.push(unit);
+    // Any unit between a command's name and its print closes the handle: the
+    // print belongs to the command it follows, not to an older row.
+    localCommandAt = null;
   };
 
   for (const [at, frame] of frames.entries()) {
@@ -2621,35 +2626,75 @@ export function fold(
       // opened rather than drawing a second, vague command. **Forge receives
       // the raw system frames, not the assistant message the CLI's SDK adapter
       // synthesises for other hosts**, so there is no twin carrying the output.
+      // **A local slash command is two frames, and no twin.** The CLI's name
+      // frame carries `<command-name>` (or, headless, a bare `/name args`);
+      // its print frame carries `<local-command-stdout>`/stderr and - in
+      // 2.1.280 - the `commandRun: {command, args}` that labels it. The print
+      // fills the row the name opened; `named` OPENS a row only, so a print
+      // naming itself cannot open a second. Forge receives the raw system
+      // frames, not the assistant message the CLI's SDK adapter synthesises
+      // for other hosts.
       if (frame.subtype === 'local_command') {
         const content = str(frame, 'content') ?? '';
         const run = obj(frame['commandRun']);
         const runCommand = str(run, 'command');
         const tag = /<command-name>([\s\S]*?)<\/command-name>/.exec(content)?.[1]?.trim();
-        const named =
+        const bare = /^\s*(\/[^\n]*)/.exec(content)?.[1]?.trim() ?? null;
+        const rawName =
           runCommand !== null && runCommand !== ''
             ? runCommand
             : tag !== undefined && tag !== ''
               ? tag
-              : null;
+              : bare !== null && bare !== ''
+                ? bare
+                : null;
+        // `commandRun.command` drops the leading slash; one command reads one
+        // way whichever carrier named it.
+        const named = rawName === null || rawName.startsWith('/') ? rawName : `/${rawName}`;
         const printed = [
           ...content.matchAll(/<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/g),
         ]
           .map((match) => match[2]?.trim() ?? '')
           .filter((line) => line !== '');
         const output = printed.length === 0 ? null : printed.join('\n');
-        if (output !== null && named === null && localCommandAt !== null) {
-          const row = units[localCommandAt];
-          if (row?.kind === 'notice') {
-            units[localCommandAt] = {
-              kind: 'notice',
-              key: row.key,
-              notice: {
-                ...row.notice,
-                fields: [...facts(fact('output', output)), ...(row.notice.fields ?? [])],
-              },
-            };
-          }
+        const open = localCommandAt === null ? null : (units[localCommandAt] ?? null);
+        const last = units[units.length - 1] ?? null;
+        if (
+          output !== null &&
+          localCommandAt !== null &&
+          open !== null &&
+          open === last &&
+          open.kind === 'notice' &&
+          open.notice.mark === 'local_command' &&
+          !(open.notice.fields ?? []).some((field) => field.label === 'output')
+        ) {
+          // The print's own facts and frame ride with the output; the row
+          // keeps the name frame's raw and gains the print's beside it.
+          const held = new Set(
+            (open.notice.fields ?? []).map((field) => `${field.label}\u0000${field.value}`),
+          );
+          const extra = facts(
+            fact('args', run['args'] === undefined ? null : brief(run['args'])),
+            fact('level', str(frame, 'level')),
+            fact(
+              'context usage',
+              frame['contextUsage'] === undefined ? null : brief(frame['contextUsage']),
+            ),
+            fact(
+              'usage report',
+              frame['usageReport'] === undefined ? null : brief(frame['usageReport']),
+            ),
+          ).filter((field) => !held.has(`${field.label}\u0000${field.value}`));
+          units[localCommandAt] = {
+            kind: 'notice',
+            key: open.key,
+            notice: {
+              ...open.notice,
+              fields: [...facts(fact('output', output)), ...(open.notice.fields ?? []), ...extra],
+              raw: `${open.notice.raw ?? ''}\n${JSON.stringify(frame)}`,
+            },
+          };
+          localCommandAt = null;
           continue;
         }
         push({
