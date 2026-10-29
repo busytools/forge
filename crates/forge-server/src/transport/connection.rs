@@ -286,13 +286,18 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(lost)) => {
                     tracing::warn!(
                         event_name = "browser_download_lagged",
+                        profile = %viewing.key,
+                        profile_id = viewing.id,
+                        tab = viewing.tab,
                         lost,
                         "a viewer fell behind a finished download and lost it"
                     );
-                    // **A loss the person can see.** The offer is gone, so the
-                    // save door is told rather than left to a log line nobody
-                    // reads; the tab is the viewer's own, and the words do not
-                    // claim whose download was dropped.
+                    // **A loss the person can see, through the save door.**
+                    // The shell has one user-facing channel for a download
+                    // that will not arrive - the refusal the save door
+                    // raises - and a second, non-modal surface for a corner
+                    // case is machinery this cut does not add. The words name
+                    // the loss, so the alert is not read as a failed write.
                     return ViewEvent::Download(forge_primitives::browser::BrowserDownload {
                         tab: viewing.tab,
                         name: "download".to_owned(),
@@ -5790,6 +5795,73 @@ mod tests {
         match next_view_event(&mut viewing).await {
             ViewEvent::Failed(reason) => assert_eq!(reason, "tab 3 was closed"),
             _ => panic!("the tab's own end is the surface's refusal"),
+        }
+    }
+
+    /// **A viewer that fell behind the download backlog is told why.**
+    ///
+    /// The offer is gone, so the save door hears a download whose own error
+    /// names the loss rather than a write failure; the tab is the viewer's,
+    /// so the notice stays on the tab it belongs to. This is the one branch
+    /// the browser retention drops a person can feel, and it is driven here
+    /// rather than left to the constants' own tests.
+    #[tokio::test]
+    async fn a_viewer_that_fell_behind_the_downloads_is_told() {
+        use forge_primitives::browser::{
+            BrowserDownload, BrowserTabList, BrowserViewState,
+        };
+
+        let (downloads, downloads_rx) = tokio::sync::broadcast::channel(1);
+        let (_frames, frames_rx) = tokio::sync::watch::channel(None);
+        let (_view, view_rx) = tokio::sync::watch::channel(BrowserViewState::default());
+        let (_nav, nav_rx) = tokio::sync::watch::channel(None);
+        let (_failures, failures_rx) = tokio::sync::watch::channel(None::<String>);
+        let (_files, files_rx) = tokio::sync::watch::channel(None);
+        let (_audio, audio_rx) = tokio::sync::broadcast::channel(4);
+        let (_tabs, tabs_rx) = tokio::sync::watch::channel(BrowserTabList {
+            profile: "O/default".to_owned(),
+            id: 1,
+            up: true,
+            connected: true,
+            closing_at_ms: None,
+            rows: Vec::new(),
+        });
+        let attachment = forge_workspace::browser::BrowserAttachment {
+            key: "O/default".to_owned(),
+            id: 1,
+            tab: 3,
+            frames: frames_rx,
+            view: view_rx,
+            tabs: tabs_rx,
+            nav: nav_rx,
+            failures: failures_rx,
+            files: files_rx,
+            downloads: downloads_rx,
+            audio: audio_rx,
+        };
+        let mut viewing = Some(Viewing::new(attachment));
+        // Two offers land while the viewer reads none: the first is evicted.
+        for n in 0..2 {
+            let offer = BrowserDownload {
+                tab: 3,
+                name: format!("file-{n}"),
+                bytes: Vec::new(),
+                error: None,
+            };
+            downloads.send(offer).expect("the viewer is attached");
+        }
+
+        match next_view_event(&mut viewing).await {
+            ViewEvent::Download(dropped) => {
+                assert_eq!(dropped.tab, 3, "the notice stays on the viewer's own tab");
+                let why = dropped.error.expect("a lag is answered with its own reason");
+                assert!(
+                    why.contains("dropped") && why.contains("backlog"),
+                    "the words name the loss rather than a failed write: {why}",
+                );
+                assert!(dropped.bytes.is_empty(), "there are no bytes to save");
+            }
+            _ => panic!("a lagged download is answered as a download with a reason"),
         }
     }
 }

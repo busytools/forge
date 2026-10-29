@@ -10230,9 +10230,9 @@ mod tests {
     /// that reads none must fall behind the fifth offer, so one profile holds
     /// at most four 32 MiB payloads for a reader that is not looking.
     ///
-    /// **Four is written out rather than read off [`DOWNLOAD_BACKLOG`]**: the
-    /// pin is that the backlog stays this small, and a test that resized
-    /// itself with the constant would pass at sixteen again.
+    /// **The channel is built from [`DOWNLOAD_BACKLOG`], as the service
+    /// builds it, and the five sends are the pin**: at a backlog of sixteen
+    /// five offers do not lag, so a loosened constant fails here.
     #[tokio::test]
     async fn a_lagging_viewer_falls_behind_after_the_download_backlog() {
         let (offers, mut viewer) =
