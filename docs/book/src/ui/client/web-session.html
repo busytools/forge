@@ -2660,6 +2660,62 @@ docs: The sprite a row draws, by the class it belongs to.</div>
           </div>
         </details>
 
+        <!-- A model swap: the CLI's own fallback line, a warning, opening
+             onto the trigger and the two model names. The header keeps the
+             seat's preferred model; this row is how a reader learns the words
+             above came from a different one. -->
+        <details class="notice warn">
+          <summary><span class="mark">model_fallback</span><span class="sev">Warning</span>Fable 5 is unavailable; continuing on Opus 5.<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">trigger</span><span class="v">overloaded</span></div>
+            <div class="nfact"><span class="k">original model</span><span class="v">claude-fable-5-1</span></div>
+            <div class="nfact"><span class="k">fallback model</span><span class="v">claude-opus-5-5</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
+        </details>
+
+        <!-- A memory recall: one line for the turn, the files in the open
+             body rather than one row per memory. -->
+        <details class="notice info">
+          <summary><span class="mark">memory_recall</span><span class="sev">Info</span>Recalled 2 memories<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-base-fetch-budget.md</span></div>
+            <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-switch-watch.md</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
+        </details>
+
+        <!-- A local command: the row names the command, and the assistant
+             twin below carries what it printed. The raw frame no longer
+             draws a second copy of the same output. -->
+        <details class="notice info">
+          <summary><span class="mark">local_command</span><span class="sev">Info</span>Ran /usage<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">level</span><span class="v">info</span></div>
+            <div class="nfact"><span class="k">context usage</span><span class="v">{"percent":12}</span></div>
+            <div class="nfact"><span class="k">usage report</span><span class="v">{"total_cost_usd":1.23}</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
+        </details>
+
+        <!-- A project's development intent: a quiet fact the CLI's scan
+             found, with the evidence in its open body. -->
+        <details class="notice info">
+          <summary><span class="mark">dev_intent</span><span class="sev">Info</span>Project: Android app<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">trigger</span><span class="v">android_manifest</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
+        </details>
+
         <div class="notice info"><span class="sev">Info</span>Mode changed: default &#8594; acceptEdits</div>
         <div class="notice warn"><span class="sev">Warning</span>Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</div>
         <div class="notice warn"><span class="chip">attempt 2 / 4</span><span class="sev">Warning</span>API retry after server_error HTTP 529<span class="sub2">retrying in 1.5s</span></div>

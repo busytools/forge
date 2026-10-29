@@ -168,6 +168,17 @@ read as one system.
   once the turn has closed. Until then the dock is the question's row, so the
   mark waits for the close; after it, the answer card never drew and the dock
   has cleared, and the call row is the only trace left.
+- **A model swap, a memory recall, a local command and a project's
+  development intent each draw a row of their own.** A model fallback (and a
+  refusal retry, a refusal with no fallback, and the Fable consent gate) draws
+  a warning whose words are the CLI's own `content` and whose open body names
+  the trigger, the model it left and the model it fell to. A memory recall
+  draws one line saying how many memories the turn was given, with the paths
+  in the open body rather than one row per memory. A local command draws the
+  command it ran, beside the assistant twin that carries its output - the raw
+  frame no longer draws a second copy of the same words. A project
+  development-intent frame draws one quiet line naming the platform the
+  CLI's scan found, with the evidence in its open body.
 - **The CLI's own repository events draw one line each, and open onto their
   own fields.** A `vcs_state_changed` frame says a foreground command
   committed, pushed, merged or rebased: the row names the kind and, where
