@@ -168,18 +168,21 @@ read as one system.
   once the turn has closed. Until then the dock is the question's row, so the
   mark waits for the close; after it, the answer card never drew and the dock
   has cleared, and the call row is the only trace left.
-- **The CLI's own repository events draw one line each.** A
-  `vcs_state_changed` frame says a foreground command committed, pushed,
-  merged or rebased: the row names the kind and, where the CLI attributed
-  it, the branch, and it is the event that makes the working-tree row
-  re-read on the frame rather than at its next staleness window. A
-  `code_change_published` frame says this session put a change up for
-  review or linked itself to one: the row names the action, the repository
-  and the change number, with the URL under it. Neither opens a body,
-  because neither frame carries anything the line does not show. A kind or
-  an action this build has no word for is shown as the wire's own value
-  rather than dropped, and a change number this build cannot name still
-  draws its line.
+- **The CLI's own repository events draw one line each, and open onto their
+  own fields.** A `vcs_state_changed` frame says a foreground command
+  committed, pushed, merged or rebased: the row names the kind and, where
+  the CLI attributed it, the branch, and it is the event that makes the tree
+  row re-read on the frame rather than at its next staleness window. A
+  `code_change_published` frame says this session put a change up for review
+  or linked itself to one: the row names the action, the repository and the
+  change number, with the URL under it, and it is what makes the tree row
+  look the PR up again. Opened, each lists the fields the frame carried -
+  the kind and branch, the action, provider, repository, change and URL - so
+  a fact the line does not spell is still reachable, and a kind or action
+  this build has no word for is shown as the wire's own value rather than
+  dropped. **Both are events from the live window**: the CLI writes neither
+  to the transcript, so a conversation reopened from it shows the command
+  and its output under the call, and the tree row, but not the event line.
 
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it

@@ -2593,15 +2593,32 @@ docs: The sprite a row draws, by the class it belongs to.</div>
         </div>
 
         <!-- The CLI's own report that a foreground command moved the
-             repository. One line, no body: the tree it changed is the
-             working-tree row above the composer, and this row is what made
-             that row re-read on the frame. -->
-        <div class="notice info"><span class="sev">Info</span>committed on main</div>
+             repository: one line naming the kind and branch, opening onto
+             the frame's own fields. The tree it changed is the tree row
+             above the composer, and this row is what made that row re-read
+             on the frame. -->
+        <details class="notice info">
+          <summary><span class="mark">vcs_state_changed</span><span class="sev">Info</span>committed on e2e<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">kind</span><span class="v">commit</span></div>
+            <div class="nfact"><span class="k">branch</span><span class="v">e2e</span></div>
+          </div>
+        </details>
         <!-- The other repository event: this session published a change for
              review, or linked itself to one. The action, repository and
-             change number are the line; the URL a reader opens sits under
-             it. -->
-        <div class="notice info"><span class="sev">Info</span>PR #2688 created in busytools/forge<span class="sub2">https://github.com/busytools/forge/pull/2688</span></div>
+             change number are the line, the URL a reader opens sits under
+             it, and the open body carries the rest of the frame. -->
+        <details class="notice info">
+          <summary><span class="mark">code_change_published</span><span class="sev">Info</span>PR #2688 created in busytools/forge<span class="sub2">https://github.com/busytools/forge/pull/2688</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">action</span><span class="v">created</span></div>
+            <div class="nfact"><span class="k">provider</span><span class="v">github</span></div>
+            <div class="nfact"><span class="k">repository</span><span class="v">busytools/forge</span></div>
+            <div class="nfact"><span class="k">change</span><span class="v">2688</span></div>
+            <div class="nfact"><span class="k">branch</span><span class="v">vcs-frames</span></div>
+            <div class="nfact"><span class="k">url</span><span class="v">https://github.com/busytools/forge/pull/2688</span></div>
+          </div>
+        </details>
 
         <div class="notice info"><span class="sev">Info</span>Mode changed: default &#8594; acceptEdits</div>
         <div class="notice warn"><span class="sev">Warning</span>Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</div>
