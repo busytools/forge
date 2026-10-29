@@ -33,7 +33,9 @@ describe('the tree segment', () => {
     expect(body, 'no segment at all').not.toContain('sg-seg');
   });
 
-  it('puts a repository event on the strip as one transient line', () => {
+  it('puts a repository event on the shown seat\'s strip as one transient line', () => {
+    const slot = { org: 'TestOrg', project: 'forge', label: 'lead' };
+    git.show(slot);
     git.sync({
       label: 'web-home-layout \u{b7} 3 files',
       head: "the project's tree",
@@ -42,7 +44,7 @@ describe('the tree segment', () => {
       pr: null,
       gate: null,
     });
-    git.note('commit', 'main');
+    git.note(slot, vcsLine('commit', 'main'));
     const body = render(GitSegment, {}).body;
 
     expect(body, 'the event rides beside the branch it moved').toContain('committed on main');

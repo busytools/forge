@@ -7,7 +7,12 @@
  * one fact the record cannot carry, the NAME of a tree the worker runs in
  * that is not its project's, which the strip's row states.
  */
+import type { SessionSlot } from '../wire/types';
 import type { GitStats, GitStrip } from '../session/view';
+
+/** The one shown seat's address, which is what the strip belongs to. */
+const seatKey = (slot: SessionSlot): string =>
+  `${slot.org}\u0000${slot.project}\u0000${slot.label}`;
 
 /** One stats block, copied off the record: the rows are arrays the view mutates never. */
 const statsOf = (stats: GitStats | null): GitStats | null =>
@@ -45,6 +50,15 @@ class Git {
   #strip = $state<GitStrip | null>(null);
   #note = $state<StripNote | null>(null);
   #timer: ReturnType<typeof setTimeout> | null = null;
+  /** The seat the strip is on screen for; a note from any other seat is not its. */
+  #shown: string | null = null;
+
+  /** Name the seat the strip is drawing; a different seat drops its event. */
+  show(slot: SessionSlot | null): void {
+    const key = slot === null ? null : seatKey(slot);
+    if (this.#shown !== key) this.clearNote();
+    this.#shown = key;
+  }
 
   /** Take the record's read whole: what the wire says is what the row shows. */
   sync(strip: GitStrip | null): void {
@@ -80,9 +94,16 @@ class Git {
     return this.#strip;
   }
 
-  /** Put a repository event on the strip; it clears itself. */
-  note(kind: string | null, branch: string | null): void {
-    this.#note = { line: vcsLine(kind, branch) };
+  /**
+   * Put a repository event on the strip, but only for the seat it belongs to.
+   *
+   * **A visited seat keeps folding in the background**, so a worker's commit
+   * would otherwise land on the lead's strip beside the lead's branch - the
+   * note is the SHOWN seat's, and an away seat's event is not this row's.
+   */
+  note(slot: SessionSlot, line: string): void {
+    if (this.#shown === null || this.#shown !== seatKey(slot)) return;
+    this.#note = { line };
     if (this.#timer !== null) clearTimeout(this.#timer);
     this.#timer = setTimeout(() => {
       this.#note = null;
@@ -97,6 +118,7 @@ class Git {
   /** Drop the event and the tree: a test's reset, and a seat with no record. */
   clear(): void {
     this.clearNote();
+    this.#shown = null;
     this.#strip = null;
   }
 

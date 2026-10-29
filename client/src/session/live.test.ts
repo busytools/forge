@@ -2050,8 +2050,10 @@ describe('the record a page holds over an update stream', () => {
     page.stop();
   });
 
-  it('puts a repository mutation on the strip, not in the conversation', () => {
+  it('puts a repository mutation on the shown seat\'s strip, not in the conversation', () => {
     const connection = drivable();
+    // The page's own effect calls this; the store-only harness names the seat.
+    git.show(LEAD);
     const page = watch(connection);
     page.land(snapshotOf(LEAD));
     page.land(
@@ -2071,6 +2073,37 @@ describe('the record a page holds over an update stream', () => {
 
     expect(git.noteNow()?.line, 'the strip carries the event').toBe('committed on main');
     page.stop();
+  });
+
+  /**
+   * **A visited seat keeps folding.** The store runs every subscribed seat's
+   * frames, and the strip is one singleton, so a worker's commit would
+   * otherwise land beside the lead's branch. The note belongs to the shown
+   * seat only.
+   */
+  it('does not put an away seat\'s mutation on the shown seat\'s strip', () => {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    const connection = drivable();
+    git.show(LEAD);
+    const away = watch(connection, W1);
+    away.land(snapshotOf(W1));
+    away.land(
+      updateOf({
+        chat_appended: {
+          key: W1,
+          msg: {
+            type: 'system',
+            subtype: 'vcs_state_changed',
+            kind: 'push',
+            branch: 'main',
+            uuid: 'v2',
+          },
+        },
+      }),
+    );
+
+    expect(git.noteNow(), "the away seat's commit is not the lead's news").toBeNull();
+    away.stop();
   });
 
   /**

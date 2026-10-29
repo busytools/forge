@@ -175,6 +175,7 @@
    * age re-derives on the page's clock rather than going stale between reads.
    */
   $effect(() => {
+    git.show(slot);
     git.sync(record === null ? null : gitStrip(record, slot, seatTree(wire, slot)));
   });
   /** The files slip is mandatory: it draws for every seat with a record,
