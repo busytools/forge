@@ -11,14 +11,14 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(desktop)]
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The stages that finish an install, named by the platform that needs them.
-/// The client's line draws its words per stage, so this is a fact rather than
-/// copy: the desktop restarts into the swapped bundle, the phone's install is
-/// the system prompt and the app is replaced with it.
+/// The stages that finish an update tap, named by the platform that needs
+/// them. The client's line draws its words per stage, so this is a fact rather
+/// than copy: the desktop restarts into the swapped bundle, the phone opens the
+/// release page whose APK the person installs by hand.
 #[cfg(desktop)]
 const STAGE_RESTART: &str = "restart";
 #[cfg(target_os = "android")]
-const STAGE_INSTALL: &str = "install";
+const STAGE_BROWSER: &str = "browser";
 
 #[cfg(desktop)]
 fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
@@ -787,10 +787,104 @@ const ANDROID_UPDATE_PLUGIN: &str = "androidupdate";
 #[cfg(any(test, target_os = "android"))]
 const ANDROID_FILE_NAME_PLUGIN: &str = "androidfilenames";
 
+/// The names the app manifest strips from the notification plugin's own
+/// manifest. A `tools:node="remove"` naming a component the plugin no longer
+/// declares is a silent no-op, and the boot and wake-lock machinery this cut
+/// clears would come back with it, so both sides are checked against the
+/// locked crate.
+#[cfg(test)]
+mod plugin_manifest_removals {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    const STRIPPED: [&str; 5] = [
+        "app.tauri.notification.TimedNotificationPublisher",
+        "app.tauri.notification.NotificationDismissReceiver",
+        "app.tauri.notification.LocalNotificationRestoreReceiver",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.WAKE_LOCK",
+    ];
+
+    #[test]
+    fn every_stripped_name_is_declared_by_the_locked_plugin_and_removed_here() {
+        let plugin = plugin_manifest();
+        let app = read("gen/android/app/src/main/AndroidManifest.xml");
+        for name in STRIPPED {
+            // The element the name rides, not a window around the text: the
+            // removal attribute has to sit in this element and no other.
+            let element = app
+                .split('<')
+                .find(|chunk| chunk.contains(name))
+                .unwrap_or_else(|| panic!("the app manifest no longer names {name}"));
+            assert!(
+                element.contains("tools:node=\"remove\""),
+                "the app manifest names {name} without tools:node=\"remove\", so nothing is \
+                 stripped",
+            );
+            assert!(
+                plugin.contains(name),
+                "the notification plugin no longer declares {name}, so its removal is a \
+                 silent no-op",
+            );
+        }
+    }
+
+    fn read(relative: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("{} could not be read: {why}", path.display()))
+    }
+
+    /// The locked plugin's Android manifest, from the registry copy this
+    /// crate's own build already unpacked.
+    fn plugin_manifest() -> String {
+        let version = locked_version();
+        let home = std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+            .expect("a cargo home to find the unpacked plugin in");
+        let sources = home.join("registry").join("src");
+        let entries = fs::read_dir(&sources)
+            .unwrap_or_else(|why| panic!("{} could not be read: {why}", sources.display()));
+        for entry in entries {
+            let entry = entry.expect("a registry entry");
+            let manifest = entry
+                .path()
+                .join(format!("tauri-plugin-notification-{version}"))
+                .join("android/src/main/AndroidManifest.xml");
+            if manifest.is_file() {
+                return fs::read_to_string(&manifest).unwrap_or_else(|why| {
+                    panic!("{} could not be read: {why}", manifest.display())
+                });
+            }
+        }
+        panic!(
+            "tauri-plugin-notification-{version} is not unpacked under {}, so the stripped \
+             names cannot be checked against it",
+            sources.display(),
+        );
+    }
+
+    /// The version `Cargo.lock` pins, so a plugin bump moves the path with it.
+    fn locked_version() -> String {
+        let text = read("Cargo.lock");
+        let mut named = false;
+        for line in text.lines().map(str::trim) {
+            if line == "[[package]]" {
+                named = false;
+            } else if line == "name = \"tauri-plugin-notification\"" {
+                named = true;
+            } else if named && line.starts_with("version = ") {
+                return line.trim_start_matches("version = ").trim_matches('"').to_owned();
+            }
+        }
+        panic!("tauri-plugin-notification is not pinned in the shell's Cargo.lock")
+    }
+}
+
 /// The phone's half of the updater, as a Kotlin plugin the commands below
 /// bridge to. Everything the update does on Android is Android's own: the
-/// manifest fetch, the download, the signer read of this install, and the
-/// installer intent.
+/// manifest fetch and the browser intent the offer opens.
 #[cfg(target_os = "android")]
 mod android {
     use std::sync::Mutex;
@@ -798,10 +892,10 @@ mod android {
     use tauri::plugin::{Builder, PluginHandle, TauriPlugin};
     use tauri::{Manager, Runtime};
 
-    /// The Kotlin handle, and the release the last check offered. The install
+    /// The Kotlin handle, and the release the last check offered. The hand-off
     /// works from the remembered one rather than asking again: the line the
     /// reader tapped names that version, and a check between the two would
-    /// install a release the line never named.
+    /// open a release the line never named.
     pub struct Updater<R: Runtime>(pub PluginHandle<R>, pub Mutex<Option<Found>>);
 
     /// The Kotlin handle for a picked content URI's document name.
@@ -818,6 +912,7 @@ mod android {
         pub endpoint: String,
     }
 
+    /// The offered release: its version, and the page that offers it.
     #[derive(Clone, serde::Deserialize)]
     pub struct Found {
         pub version: String,
@@ -825,8 +920,7 @@ mod android {
     }
 
     #[derive(serde::Serialize)]
-    pub struct InstallArgs {
-        pub version: String,
+    pub struct OpenArgs {
         pub url: String,
     }
 
@@ -879,7 +973,7 @@ async fn android_check(app: &tauri::AppHandle) -> Result<Option<android::Found>,
 }
 
 /// The version an update check found, or `None` when this build is current.
-/// What it found is remembered for the install that line-offering may follow.
+/// What it found is remembered for the hand-off that tapping the line makes.
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
@@ -890,9 +984,9 @@ async fn check_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
     Ok(found.map(|found| found.version))
 }
 
-/// Download the remembered release, check it, and hand it to the system
-/// installer, answering with the stage that finishes it: the phone's install
-/// IS the prompt, and the app is replaced with it.
+/// Open the remembered release's page in the phone's browser, answering with
+/// the stage that finishes the tap. The app installs nothing itself: a
+/// sideloaded APK is the person's own to install from that page.
 #[cfg(target_os = "android")]
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
@@ -905,13 +999,10 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
         .ok_or_else(|| "no update is available".to_string())?;
     handle
         .0
-        .run_mobile_plugin_async::<()>(
-            "install",
-            android::InstallArgs { version: found.version, url: found.url },
-        )
+        .run_mobile_plugin_async::<()>("open", android::OpenArgs { url: found.url })
         .await
         .map_err(|err| err.to_string())?;
-    Ok(STAGE_INSTALL.to_string())
+    Ok(STAGE_BROWSER.to_string())
 }
 
 /// Where the log plugin's file target lands, named from the product rather than

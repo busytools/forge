@@ -160,13 +160,13 @@ describe('install', () => {
     expect(get(updateState)).toEqual({ stage: 'restart', version: '1.0.116' });
   });
 
-  it("offers the installer when the phone's shell answers with it", async () => {
+  it("goes back to the offer when the phone's shell opens the release page", async () => {
     updateState.set({ stage: 'available', version: '1.0.116' });
-    mockInstall.mockResolvedValue('install');
+    mockInstall.mockResolvedValue('browser');
 
     await install();
 
-    expect(get(updateState)).toEqual({ stage: 'install', version: '1.0.116' });
+    expect(get(updateState)).toEqual({ stage: 'available', version: '1.0.116' });
   });
 
   it('draws the failure with its reason, keeping the version for a retry', async () => {

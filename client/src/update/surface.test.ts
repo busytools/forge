@@ -49,9 +49,9 @@ describe("the home header's update line", () => {
     }
   });
 
-  it('hands the update to the installer again from its line, without restarting', async () => {
-    updateState.set({ stage: 'install', version: '9.9.9' });
-    mockInstall.mockResolvedValue('install');
+  it('keeps the offer on the line when the phone opens the release page', async () => {
+    updateState.set({ stage: 'available', version: '9.9.9' });
+    mockInstall.mockResolvedValue('browser');
 
     const target = document.createElement('div');
     document.body.append(target);
@@ -60,10 +60,14 @@ describe("the home header's update line", () => {
       target.querySelector('button.upd')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       flushSync();
       await vi.waitFor(() => expect(mockInstall).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(get(updateState)).toEqual({ stage: 'available', version: '9.9.9' }),
+      );
       expect(
-        mockRestart,
-        'the install line restarted instead of installing',
-      ).not.toHaveBeenCalled();
+        target.querySelector('button.upd')?.textContent,
+        'the offer left the line after the browser opened',
+      ).toContain('v9.9.9 available');
+      expect(mockRestart, 'opening the release page restarted the client').not.toHaveBeenCalled();
     } finally {
       await unmount(app);
       target.remove();

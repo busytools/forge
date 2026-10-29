@@ -5,9 +5,10 @@ Usage: update_manifest.py <repo-root> <version>
 
 The one file all three halves read: the desktop updater (Tauri's static
 manifest - a `platforms` entry carries the `.sig`'s content with its trailing
-newline trimmed, and the asset URL), the phone (a top-level `android` block),
-and the web image's puller (a top-level `web` block whose sha256 is both its
-integrity check and its same-version skip).
+newline trimmed, and the asset URL), the phone (a top-level `android` block:
+the APK's URL and the release page its update line opens), and the web image's
+puller (a top-level `web` block whose sha256 is both its integrity check and
+its same-version skip).
 
 The trim is load-bearing: the plugin base64-decodes the manifest's value
 whole, so a trailing newline is an InvalidByte and every desktop install
@@ -76,7 +77,10 @@ def main() -> None:
             }
         },
         "android": {
+            # An install predating the release page reads this with
+            # `getString("url")`, and its check fails without it.
             "url": f"{release}/forge-{version}-arm64.apk",
+            "release": f"{REPOSITORY}/releases/tag/v{version}",
         },
         "web": {
             "version": version,
