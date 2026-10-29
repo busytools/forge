@@ -526,6 +526,24 @@ function str(value: unknown, key: string): string | null {
   return typeof held === 'string' ? held : null;
 }
 
+/** A boolean field as the word a fact carries, or nothing when absent. */
+function bool(value: unknown, key: string): string | null {
+  const held = (value as Record<string, unknown> | null)?.[key];
+  return typeof held === 'boolean' ? String(held) : null;
+}
+
+/** The CLI's development kind as a reader says it; an unknown kind as itself. */
+function devIntentLabel(kind: string): string {
+  switch (kind) {
+    case 'ios_app':
+      return 'iOS app';
+    case 'android_app':
+      return 'Android app';
+    default:
+      return kind;
+  }
+}
+
 /** One block's own JSON, when it is an object. */
 function obj(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
@@ -2508,6 +2526,115 @@ export function fold(
             str(frame, 'content') ?? '',
             frame,
             facts(fact('content', str(frame, 'content')), fact('level', level)),
+          ),
+        });
+        continue;
+      }
+      // **The turn ran on a different model than the seat's own.** The CLI's
+      // fallback chain, a refusal retry and the Fable consent gate all end in
+      // one of these; the row is the only place a reader learns that the
+      // words above came from a model the header does not name. One shape for
+      // the family, the subtype as the mark so the wire's own kind stays
+      // visible, and the frame itself behind the open.
+      if (
+        frame.subtype === 'model_fallback' ||
+        frame.subtype === 'model_refusal_fallback' ||
+        frame.subtype === 'model_refusal_no_fallback' ||
+        frame.subtype === 'model_consent_fallback'
+      ) {
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'model_fallback'),
+          notice: provisional(
+            frame.subtype,
+            'warning',
+            str(frame, 'content') ?? 'The session changed model.',
+            frame,
+            facts(
+              fact('trigger', str(frame, 'trigger')),
+              fact('original model', str(frame, 'original_model')),
+              fact('fallback model', str(frame, 'fallback_model')),
+              fact('scope', str(frame, 'scope')),
+              fact('refusal category', str(frame, 'api_refusal_category')),
+              fact('persisted as default', bool(frame, 'persisted_as_default')),
+            ),
+          ),
+        });
+        continue;
+      }
+      // **The memory subsystem surfaced files into this turn.** One line per
+      // recall frame, never one per memory: the frame already carries the
+      // list, and a reader wants to know that the turn was given context and
+      // where it came from. The paths stay in the open body rather than in
+      // the line, so a recall of twenty files is still one readable row.
+      if (frame.subtype === 'memory_recall') {
+        const memories = Array.isArray(frame['memories']) ? frame['memories'] : [];
+        const paths = memories
+          .map((memory) => str(obj(memory), 'path'))
+          .filter((path): path is string => path !== null);
+        const count = paths.length;
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'memory_recall'),
+          notice: provisional(
+            'memory_recall',
+            'info',
+            `Recalled ${count} ${count === 1 ? 'memory' : 'memories'}`,
+            frame,
+            facts(...paths.map((path) => fact('path', path))),
+          ),
+        });
+        continue;
+      }
+      // **A local slash command's output is the assistant twin's content;
+      // this frame is the command itself.** The CLI sends both, so drawing
+      // the raw frame beside the twin shows the same output twice - the row
+      // names the command, and the twin carries what it printed. The wire's
+      // own name is `local_command`; the schema's `local_command_output` is
+      // stale and no producer emits it.
+      if (frame.subtype === 'local_command') {
+        const content = str(frame, 'content') ?? '';
+        const named = /<command-name>([\s\S]*?)<\/command-name>/.exec(content)?.[1]?.trim();
+        const command = named === undefined || named === '' ? 'a local command' : named;
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'local_command'),
+          notice: provisional(
+            'local_command',
+            noticeSeverity(str(frame, 'level')),
+            `Ran ${command}`,
+            frame,
+            facts(
+              fact('level', str(frame, 'level')),
+              fact(
+                'context usage',
+                frame['contextUsage'] === undefined ? null : brief(frame['contextUsage']),
+              ),
+              fact(
+                'usage report',
+                frame['usageReport'] === undefined ? null : brief(frame['usageReport']),
+              ),
+            ),
+          ),
+        });
+        continue;
+      }
+      // **A sticky fact about the project, not a turn event.** The CLI scans
+      // the project once in print mode and names the platform it looks like;
+      // the row is quiet because the fact is background, and the trigger
+      // says what the scan saw. At most two of these arrive per conversation
+      // (one per kind), so the row never becomes a column.
+      if (frame.subtype === 'dev_intent') {
+        const kind = str(frame, 'kind');
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'dev_intent'),
+          notice: provisional(
+            'dev_intent',
+            'info',
+            kind === null ? 'Project development intent' : `Project: ${devIntentLabel(kind)}`,
+            frame,
+            facts(fact('trigger', str(frame, 'trigger'))),
           ),
         });
         continue;

@@ -4173,6 +4173,192 @@ describe('the frames the fold had no row for', () => {
     );
   });
 
+  it('draws a model swap as a warning and names the model it left and the one it fell to', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'model_fallback',
+        content: 'Fable 5 is unavailable; continuing on Opus 5.',
+        trigger: 'overloaded',
+        original_model: 'claude-fable-5-1',
+        fallback_model: 'claude-opus-5-5',
+        uuid: 'mf1',
+      },
+      {
+        type: 'system',
+        subtype: 'model_refusal_fallback',
+        content: 'The model refused; the response was retried on Opus 5.',
+        trigger: 'refusal',
+        scope: 'local',
+        original_model: 'claude-fable-5-1',
+        fallback_model: 'claude-opus-5-5',
+        uuid: 'mrf1',
+      },
+      {
+        type: 'system',
+        subtype: 'model_refusal_no_fallback',
+        content: 'The model refused and no fallback is configured.',
+        original_model: 'claude-opus-5-5',
+        api_refusal_category: 'cyber',
+        uuid: 'mrn1',
+      },
+      {
+        type: 'system',
+        subtype: 'model_consent_fallback',
+        content: 'The session continues on the standard model.',
+        choice: 'consent',
+        original_model: 'claude-fable-5-1',
+        fallback_model: 'claude-opus-5-5',
+        persisted_as_default: true,
+        uuid: 'mcf1',
+      },
+    ]);
+
+    expect(kinds(units), 'four swaps, four lines').toEqual([
+      'notice',
+      'notice',
+      'notice',
+      'notice',
+    ]);
+
+    const fallback = noticeOf(units[0]);
+    expect(fallback?.severity, 'a swap is a warning').toBe('warning');
+    expect(fallback?.mark).toBe('model_fallback');
+    expect(fallback?.text, "the CLI's own line is the row's words").toBe(
+      'Fable 5 is unavailable; continuing on Opus 5.',
+    );
+    expect(fallback?.fields, 'the open body names the swap').toEqual([
+      { label: 'trigger', value: 'overloaded' },
+      { label: 'original model', value: 'claude-fable-5-1' },
+      { label: 'fallback model', value: 'claude-opus-5-5' },
+    ]);
+    expect(fallback?.raw, 'and the frame stays reachable').toContain('claude-fable-5-1');
+
+    const refused = noticeOf(units[1]);
+    expect(refused?.severity).toBe('warning');
+    expect(refused?.mark).toBe('model_refusal_fallback');
+    expect(refused?.fields, 'the refusal keeps its scope').toEqual([
+      { label: 'trigger', value: 'refusal' },
+      { label: 'original model', value: 'claude-fable-5-1' },
+      { label: 'fallback model', value: 'claude-opus-5-5' },
+      { label: 'scope', value: 'local' },
+    ]);
+
+    const bare = noticeOf(units[2]);
+    expect(bare?.severity).toBe('warning');
+    expect(bare?.mark).toBe('model_refusal_no_fallback');
+    expect(bare?.fields, 'a refusal with no fallback still names why').toEqual([
+      { label: 'original model', value: 'claude-opus-5-5' },
+      { label: 'refusal category', value: 'cyber' },
+    ]);
+
+    const consent = noticeOf(units[3]);
+    expect(consent?.severity).toBe('warning');
+    expect(consent?.mark).toBe('model_consent_fallback');
+    expect(consent?.fields, 'a default rewritten by the decline is named').toEqual([
+      { label: 'original model', value: 'claude-fable-5-1' },
+      { label: 'fallback model', value: 'claude-opus-5-5' },
+      { label: 'persisted as default', value: 'true' },
+    ]);
+  });
+
+  it('draws a memory recall as one line naming how many and which', () => {
+    const paths = [
+      '/home/ved/.claude/projects/forge/memory/the-base-fetch-budget.md',
+      '/home/ved/.claude/projects/forge/memory/the-switch-watch.md',
+    ];
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'memory_recall',
+        mode: 'select',
+        memories: paths.map((path) => ({ path, scope: 'personal' })),
+        uuid: 'mr1',
+      },
+    ]);
+
+    expect(kinds(units), 'one frame, one line').toEqual(['notice']);
+    const recall = noticeOf(units[0]);
+    expect(recall?.severity, 'a recall is information, not a warning').toBe('info');
+    expect(recall?.mark).toBe('memory_recall');
+    expect(recall?.text, 'the row counts the memories, not the paths twice').toBe(
+      'Recalled 2 memories',
+    );
+    expect(recall?.fields, 'the open body names every path').toEqual([
+      { label: 'path', value: paths[0] },
+      { label: 'path', value: paths[1] },
+    ]);
+
+    const single = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'memory_recall',
+          mode: 'select',
+          memories: [{ path: paths[0], scope: 'personal' }],
+          uuid: 'mr2',
+        },
+      ])[0],
+    );
+    expect(single?.text, 'one memory is singular').toBe('Recalled 1 memory');
+  });
+
+  it('draws a local command as its own row, and keeps the assistant twin', () => {
+    const command =
+      '<command-name>/usage</command-name>' +
+      '<local-command-stdout>Session cost: $1.23</local-command-stdout>';
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: command,
+        level: 'info',
+        contextUsage: { percent: 12 },
+        usageReport: { total_cost_usd: 1.23 },
+        uuid: 'lc1',
+      },
+      said([text('Session cost: $1.23')], {
+        local_command_source: command,
+        uuid: 'lc2',
+      }),
+    ]);
+
+    const row = noticeOf(units[0]);
+    expect(row?.severity, 'a local command is information').toBe('info');
+    expect(row?.mark).toBe('local_command');
+    expect(row?.text, 'the row names the command, not its whole output').toBe('Ran /usage');
+    expect(row?.fields, 'the open body carries the flags the frame sent').toEqual([
+      { label: 'level', value: 'info' },
+      { label: 'context usage', value: '{"percent":12}' },
+      { label: 'usage report', value: '{"total_cost_usd":1.23}' },
+    ]);
+    expect(
+      units.some((unit) => unit.kind === 'notice' && unit.notice.text.includes('unhandled frame')),
+      'the raw duplicate is gone',
+    ).toBe(false);
+  });
+
+  it('draws a development-intent fact as one low-key line', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'dev_intent',
+        kind: 'android_app',
+        trigger: 'android_manifest',
+        uuid: 'di1',
+      },
+    ]);
+
+    expect(kinds(units), 'one frame, one line').toEqual(['notice']);
+    const intent = noticeOf(units[0]);
+    expect(intent?.severity, 'a project fact is quiet').toBe('info');
+    expect(intent?.mark).toBe('dev_intent');
+    expect(intent?.text, 'the kind in words').toBe('Project: Android app');
+    expect(intent?.fields, 'the evidence the scan fired on').toEqual([
+      { label: 'trigger', value: 'android_manifest' },
+    ]);
+  });
+
   it('draws a notification, warning only when its priority is immediate', () => {
     const units = fold([
       {
