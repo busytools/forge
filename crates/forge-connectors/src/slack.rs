@@ -496,12 +496,51 @@ fn participating(replies: &[SlackHistoryMessage], user_id: &str) -> bool {
         .any(|reply| reply.user.as_deref() == Some(user_id) || mentions(&reply.text, user_id))
 }
 
-/// The name to show for a message's author, asked once per user per sweep,
-/// or `None` when no name is known - the block drops the clause rather than
-/// printing a raw id.
+/// The workspace's own identity, read from `auth.test` at most once a sweep.
+struct OwnIdentity<'a> {
+    /// The token's own user id, the one `auth.test` reports.
+    id: &'a str,
+    /// The name that id goes by; `asked` separates "not asked" from
+    /// "asked, no name".
+    name: Option<String>,
+    asked: bool,
+}
+
+impl OwnIdentity<'_> {
+    /// The name the token's own user goes by, asked of `auth.test` once a
+    /// sweep. A failed call reads as no name; a throttle belongs to the
+    /// sweep.
+    async fn resolve_name(
+        &mut self,
+        api: &dyn SlackApi,
+        workspace: &str,
+    ) -> Result<Option<&str>, SlackError> {
+        if !self.asked {
+            match api.auth_test().await {
+                Ok(auth) => self.name = Some(auth.user).filter(|name| !name.is_empty()),
+                Err(error @ SlackError::RateLimited { .. }) => return Err(error),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "forge_connectors::slack",
+                        event_name = "slack_auth_test_failed",
+                        workspace,
+                        %error,
+                        "auth.test failed; the author falls back to the name on the message, the app's on an app-authored post",
+                    );
+                }
+            }
+            self.asked = true;
+        }
+        Ok(self.name.as_deref())
+    }
+}
+
+/// The name to show for a message's author, asked once per user per
+/// conversation, or `None` when no name is known - the block drops the
+/// clause rather than printing a raw id.
 ///
-/// The sweep owns the memo so the same author costs one lookup however many
-/// messages he sent; the host owns the longer memory, because a name is
+/// The conversation owns the memo so the same author costs one lookup however
+/// many messages he sent; the host owns the longer memory, because a name is
 /// worth keeping across sweeps. What the host keeps is only what Slack
 /// settled: that a user has no name, or none worth showing. A lookup that
 /// failed for any other reason - a dead socket, a 5xx, a throttled call -
@@ -512,26 +551,38 @@ async fn author_of(
     api: &dyn SlackApi,
     workspace: &str,
     message: &SlackHistoryMessage,
-    asked: &mut HashMap<String, Option<String>>,
+    names: &mut HashMap<String, Option<String>>,
+    own: &mut OwnIdentity<'_>,
 ) -> Result<Option<String>, SlackError> {
     let Some(user) = message.user.as_deref() else { return Ok(None) };
-    if let Some(known) = asked.get(user) {
+    if let Some(known) = names.get(user) {
         return Ok(known.clone());
     }
-    let name = resolve_author(host, api, workspace, message).await?;
-    asked.insert(user.to_owned(), name.clone());
+    let name = resolve_author(host, api, workspace, message, own).await?;
+    names.insert(user.to_owned(), name.clone());
     Ok(name)
 }
 
-/// As [`author_of`] without the per-sweep memo, which is what resolves one
-/// author outright.
+/// Resolves one author outright, without the per-conversation memo
+/// [`author_of`] keeps.
 async fn resolve_author(
     host: &dyn SlackHost,
     api: &dyn SlackApi,
     workspace: &str,
     message: &SlackHistoryMessage,
+    own: &mut OwnIdentity<'_>,
 ) -> Result<Option<String>, SlackError> {
     let Some(user) = message.user.as_deref() else { return Ok(None) };
+    // A message the user posts through the Slack app carries the app's
+    // `bot_profile`; his own id is recognised before that name is read.
+    if user == own.id
+        && let Some(name) = own.resolve_name(api, workspace).await?
+    {
+        // Kept for the sweeps whose `auth.test` fails: the fall-through
+        // below must not resurrect an app name the host remembered.
+        host.set_user_name(workspace, user, name);
+        return Ok(Some(name.to_owned()));
+    }
     if let Some(known) = host.user_name(workspace, user) {
         // An empty name is what a settled refusal leaves behind.
         return Ok((!known.is_empty()).then_some(known));
@@ -1078,6 +1129,7 @@ pub(crate) async fn sweep_scope(
 
     let mut delivered = 0;
     let mut conversation_gone = false;
+    let mut own = OwnIdentity { id: &user_id, name: None, asked: false };
     for conversation in &conversations {
         if !targets(&subscriptions, conversation) || !in_scope(&subscriptions, conversation, scope)
         {
@@ -1316,11 +1368,11 @@ pub(crate) async fn sweep_scope(
             }
         }
 
-        // What each author in this conversation is called this sweep, the
-        // walk's replies included.
-        let mut authors: HashMap<String, Option<String>> = HashMap::new();
+        // What each author in this conversation is called, the walk's
+        // replies included; the map is per conversation.
+        let mut names: HashMap<String, Option<String>> = HashMap::new();
         for message in &batch {
-            match author_of(host, api, workspace, message, &mut authors).await {
+            match author_of(host, api, workspace, message, &mut names, &mut own).await {
                 Ok(_) => {}
                 Err(SlackError::RateLimited { retry_after, .. }) => {
                     return Ok(SweepOutcome {
@@ -1378,7 +1430,7 @@ pub(crate) async fn sweep_scope(
                     author: message
                         .user
                         .as_deref()
-                        .and_then(|user| authors.get(user).cloned().flatten()),
+                        .and_then(|user| names.get(user).cloned().flatten()),
                     text: message.text.clone(),
                     parent_user_id: message.parent_user_id.clone(),
                     latest_reply: message.latest_reply.clone(),
@@ -1523,7 +1575,7 @@ pub(crate) async fn sweep_scope(
                 // Resolved the same way the conversation batch's are: a
                 // reply usually comes from someone who posted nothing in
                 // the channel this tick, so the map may not hold him yet.
-                match author_of(host, api, workspace, reply, &mut authors).await {
+                match author_of(host, api, workspace, reply, &mut names, &mut own).await {
                     Ok(author) => deliverable.push((reply, author)),
                     Err(SlackError::RateLimited { retry_after, .. }) => {
                         return Ok(SweepOutcome {
@@ -3160,6 +3212,14 @@ mod tests {
         /// times it was asked - a lookup is a call.
         user_names: std::sync::Mutex<HashMap<String, String>>,
         user_info_calls: std::sync::Mutex<usize>,
+        /// How many `auth.test` calls the sweep made, so a test can assert
+        /// the identity is asked once rather than once per message.
+        auth_test_calls: std::sync::Mutex<usize>,
+        /// Set to make `auth.test` fail with a transient error, the shape a
+        /// later sweep sees when the call blips.
+        auth_test_transient: std::sync::Mutex<bool>,
+        /// Set to make `auth.test` answer 429 instead.
+        auth_test_rate_limited: std::sync::Mutex<Option<Duration>>,
         /// Set to make `users.info` answer 429 instead.
         user_info_rate_limited: std::sync::Mutex<Option<Duration>>,
         /// Set to make `users.info` fail with a transient error instead of
@@ -3334,6 +3394,18 @@ mod tests {
 
         fn user_info_calls(&self) -> usize {
             *self.user_info_calls.lock().expect("lock")
+        }
+
+        fn auth_test_calls(&self) -> usize {
+            *self.auth_test_calls.lock().expect("lock")
+        }
+
+        fn fail_auth_test_transiently(&self) {
+            *self.auth_test_transient.lock().expect("lock") = true;
+        }
+
+        fn rate_limit_auth_test(&self, retry_after: Duration) {
+            *self.auth_test_rate_limited.lock().expect("lock") = Some(retry_after);
         }
 
         fn connected(&self) -> Option<bool> {
@@ -3619,6 +3691,19 @@ mod tests {
     #[async_trait::async_trait]
     impl SlackApi for FakeHost {
         async fn auth_test(&self) -> Result<AuthTest, SlackError> {
+            *self.auth_test_calls.lock().expect("lock") += 1;
+            if let Some(retry_after) = *self.auth_test_rate_limited.lock().expect("lock") {
+                return Err(SlackError::RateLimited {
+                    method: "auth.test".to_owned(),
+                    retry_after,
+                });
+            }
+            if *self.auth_test_transient.lock().expect("lock") {
+                return Err(SlackError::Transport {
+                    method: "auth.test".to_owned(),
+                    detail: "the socket is down".to_owned(),
+                });
+            }
             Ok(AuthTest {
                 team: "Test".to_owned(),
                 user: "tester".to_owned(),
@@ -5536,6 +5621,26 @@ mod tests {
         );
     }
 
+    /// The identity fetch is a call like any other, so its 429 arms the
+    /// pump's backoff too rather than being read as "no name".
+    #[tokio::test]
+    async fn a_rate_limited_auth_test_is_reported_to_the_pump() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        let mut message = history_message("200.0", "U1", "hello");
+        message.bot_name = Some("Forge".to_owned());
+        host.seed_history("C1", vec![message]);
+        host.rate_limit_auth_test(Duration::from_secs(7));
+
+        let outcome = sweep(&host, &host, "acme").await.expect("a 429 is not an error");
+        assert_eq!(
+            outcome.rate_limited,
+            Some(Duration::from_secs(7)),
+            "a throttled auth.test arms the pump's backoff instead of being swallowed",
+        );
+    }
+
     /// A thread the user is not in is read once when it moves and then left
     /// alone: the cursor advances over what was read even though nothing was
     /// delivered, which is what lets the window's `latest_reply` say the
@@ -5729,6 +5834,69 @@ mod tests {
             "a bot names itself, and the block shows that",
         );
         assert_eq!(host.user_info_calls(), 0, "a bot's name is free");
+    }
+
+    /// The user posts from the Slack app, so his message carries the app's
+    /// `bot_profile`. Believing it labels his words with the app's name, so
+    /// his own id is recognised first and the name comes from `auth.test`.
+    #[tokio::test]
+    async fn the_users_own_message_takes_his_name_over_the_apps() {
+        let host = FakeHost::with_subscriptions(vec![
+            sub_channel("acme", "C1", SlackWatchMode::All),
+            sub_channel("acme", "C2", SlackWatchMode::All),
+        ]);
+        host.set_watermark("acme", "C1", "050.0");
+        host.set_watermark("acme", "C2", "050.0");
+        let mut first = history_message("200.0", "U1", "once I do e2e testing, we should be good");
+        first.bot_name = Some("Forge".to_owned());
+        let mut second = history_message("300.0", "U1", "then production");
+        second.bot_name = Some("Forge".to_owned());
+        host.seed_history("C1", vec![first]);
+        host.seed_history("C2", vec![second]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let delivered = host.delivered();
+        assert_eq!(delivered.len(), 2, "both conversations are delivered");
+        assert!(
+            delivered.iter().all(|message| message.author.as_deref() == Some("tester")),
+            "his own messages carry his handle, not the app's name: {delivered:?}",
+        );
+        assert_eq!(
+            host.auth_test_calls(),
+            1,
+            "one identity for the sweep, not one per message or per conversation",
+        );
+        assert_eq!(host.user_info_calls(), 0, "his own handle costs no users.info call");
+    }
+
+    /// The name a good `auth.test` gave is kept on the host, so a later
+    /// sweep whose call blips still shows his handle rather than the app's.
+    #[tokio::test]
+    async fn a_later_failed_auth_test_keeps_the_name_already_learned() {
+        let host =
+            FakeHost::with_subscriptions(vec![sub_channel("acme", "C1", SlackWatchMode::All)]);
+        host.set_watermark("acme", "C1", "050.0");
+        let mut first = history_message("200.0", "U1", "first");
+        first.bot_name = Some("Forge".to_owned());
+        host.seed_history("C1", vec![first]);
+        sweep(&host, &host, "acme").await.expect("first sweep");
+        assert_eq!(
+            host.delivered().last().and_then(|message| message.author.as_deref()),
+            Some("tester"),
+            "the first sweep learns his handle",
+        );
+
+        host.fail_auth_test_transiently();
+        let mut second = history_message("300.0", "U1", "second");
+        second.bot_name = Some("Forge".to_owned());
+        host.seed_history("C1", vec![second]);
+        sweep(&host, &host, "acme").await.expect("second sweep");
+        assert_eq!(
+            host.delivered().last().and_then(|message| message.author.as_deref()),
+            Some("tester"),
+            "a failed auth.test does not bring the app's name back; the host remembers his",
+        );
     }
 
     /// An author the token cannot look up keeps no name, so the block falls
