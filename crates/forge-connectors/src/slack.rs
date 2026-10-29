@@ -522,9 +522,10 @@ impl OwnIdentity<'_> {
                 Err(error) => {
                     tracing::warn!(
                         target: "forge_connectors::slack",
+                        event_name = "slack_auth_test_failed",
                         workspace,
                         %error,
-                        "auth.test failed; the user's own messages keep the name Slack sent",
+                        "auth.test failed; the author falls back to the name on the message, the app's on an app-authored post",
                     );
                 }
             }
