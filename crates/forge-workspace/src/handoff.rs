@@ -31,9 +31,9 @@ const CONSTRAINT_LINE_CAP: usize = 300;
 const CONSTRAINT_BLOCK_CAP: usize = 6;
 const PROMPT_LINE_CAP: usize = 600;
 const MEASURED_LINE_CAP: usize = 200;
-/// The judgment half's ceiling: room for the 1,200-word note the prompt asks
-/// for (about 3k tokens), and no more.
-const JUDGMENT_CAP: usize = 12_000;
+/// The judgment half's ceiling: room for the 400-word note the prompt asks
+/// for, with its pointer lines, and no more.
+const JUDGMENT_CAP: usize = 5_000;
 
 /// The carried judgment turn's ceiling, in JSON bytes.
 ///
@@ -44,9 +44,11 @@ const JUDGMENT_CAP: usize = 12_000;
 /// (measured at ~42k in the scratch stack) fits whole.
 const JUDGMENT_TURN_CAP: usize = 256 * 1024;
 
-/// The parts of the judgment half forge asks for, in order.
+/// The parts of the judgment half forge asks for, in order. The note is the
+/// position and the index rather than a retelling: the successor opens what
+/// `Pointers` names instead of reading a summary of it.
 pub(crate) const JUDGMENT_HEADINGS: [&str; 5] =
-    ["Now", "Tried and failed", "Do not", "Next", "Done means"];
+    ["Now", "Where it stood", "Pointers", "Next", "Done means"];
 
 /// What the seat is, so the brief can say which charter it belongs to
 /// without repeating a charter the launch already carries.
@@ -108,9 +110,8 @@ pub(crate) async fn ground_truth(
         let config_dir = config_dir.to_path_buf();
         let session_id = seat.from.to_owned();
         let cwd = seat.cwd.to_path_buf();
-        // The read is the whole transcript; the brief needs its first ask,
-        // its newest asks and the calls between, which only a pass over the
-        // file can answer.
+        // The read is the whole transcript; the brief needs its newest asks
+        // and the calls between, which only a pass over the file can answer.
         tokio::task::spawn_blocking(move || {
             forge_agent::session_history(&config_dir, &session_id, &cwd.to_string_lossy())
         })
@@ -554,14 +555,6 @@ fn role_section(role: &Role) -> HandoffSection {
 fn ask_section(asks: &[(usize, String)]) -> HandoffSection {
     let mut lines = Vec::new();
     let recent = asks.len().saturating_sub(3);
-    // The first ask is the session's intent; when it is already inside the
-    // recent window it is not repeated.
-    if recent > 0
-        && let Some((ordinal, first)) = asks.first()
-    {
-        let (author, body) = prompt_author(first, *ordinal);
-        lines.push(format!("first ({author}): {}", clipped_verbatim(body, PROMPT_LINE_CAP)));
-    }
     for (ordinal, text) in &asks[recent..] {
         let (author, body) = prompt_author(text, *ordinal);
         lines.push(format!("#{ordinal} ({author}): {}", clipped_verbatim(body, PROMPT_LINE_CAP)));
@@ -1262,15 +1255,63 @@ pub(crate) fn missing_note() -> Vec<HandoffSection> {
     }]
 }
 
-/// The heading a line opens, and the rest of the line after its colon.
+/// The heading a line opens, and its body when the line carries one.
+///
+/// A model writes a heading as `Now: ...`, `## Now`, `**Now:** ...`,
+/// `## Now.` or `1. **Now**` - the shipped skill numbers its own parts, and a
+/// heading written to match it must still open. The label still has to open
+/// the line, so prose that happens to begin with the word stays body text.
 fn judgment_heading(line: &str) -> Option<(&'static str, &str)> {
-    let stripped = line.trim_start_matches(['#', '*', '-', ' ']);
+    let text = heading_text(line);
     for heading in JUDGMENT_HEADINGS {
-        let Some(rest) = stripped.strip_prefix(heading) else { continue };
-        let Some(rest) = rest.strip_prefix(':') else { continue };
-        return Some((heading, rest.trim()));
+        let Some(rest) = text.strip_prefix(heading) else { continue };
+        // `**Now:**` closes the emphasis around the label. Only that literal
+        // pair comes off, so a body's own `*emphasis*` survives.
+        let rest = strip_emphasis(rest);
+        if let Some(body) = rest.strip_prefix(':') {
+            return Some((heading, strip_emphasis(body).trim()));
+        }
+        if let Some(body) = rest.strip_prefix('.') {
+            // A full stop ends the heading only when nothing follows it:
+            // `Now. the work stands` is prose, not a heading with no body.
+            if strip_emphasis(body).trim().is_empty() {
+                return Some((heading, ""));
+            }
+            continue;
+        }
+        if rest.trim().is_empty() {
+            return Some((heading, ""));
+        }
     }
     None
+}
+
+/// The line with the markdown furniture a heading may wear taken off: the
+/// `#`/`*` markers, and an ordered-list number (`1.`, `1)`).
+fn heading_text(line: &str) -> &str {
+    let text = line.trim_start_matches(['#', '*', '-', ' ']);
+    match ordered_marker(text) {
+        Some(rest) => rest.trim_start_matches(['#', '*', '-', ' ']),
+        None => text,
+    }
+}
+
+/// The text after a leading `1.` / `1)` marker, or `None` when there is none.
+///
+/// A list marker is followed by a space, which is what keeps `2024 report`
+/// and `1.5 million` prose.
+fn ordered_marker(text: &str) -> Option<&str> {
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let rest = text[digits..].strip_prefix('.').or_else(|| text[digits..].strip_prefix(')'))?;
+    rest.starts_with(' ').then(|| rest.trim_start())
+}
+
+/// The label's own closing `**`, and only that literal pair.
+fn strip_emphasis(text: &str) -> &str {
+    text.strip_prefix("**").unwrap_or(text)
 }
 
 /// Keep the whole half under its ceiling. A cut is stated - the brief never
@@ -1373,19 +1414,24 @@ out what is running, then call `agents__handoff` with the note.";
 const JUDGMENT_CONTRACT: &str = "\
 Write the note under exactly these five headings and no others, each alone at \
 the start of its own line:\n\n\
-Now: what we are doing and why, in five sentences. Say what is done and \
+Now: where the work stands, in two or three sentences - what is done and \
 verified, what is in flight, and what is unchanged. Its last line names what you \
 recorded in memory and where it lives.\n\
-Tried and failed: the dead ends, with the error that stopped each.\n\
-Do not: the things that look right and are not.\n\
-Next: the next concrete action, with the file or command it starts at. Each open \
-thread names where its context lives instead of restating it.\n\
+Where it stood: the exact position - the branch and commit, the row or PR in \
+flight, the last command you ran and its verdict. A dead end is a fact here: \
+name what was tried and what stopped it.\n\
+Pointers: the index, one line each and no prose - the memory files by name, the \
+rolling handoff document, the board rows by id, the PR numbers and the \
+transcript path. The successor opens these instead of reading a summary of \
+them.\n\
+Next: the ordered next actions, each one bounded and starting at the file or \
+command it begins with.\n\
 Done means: the observable that ends this task.\n\n\
 Do not restate what is on disk: forge's own half of the brief already carries \
 the seat, the asks, the constraints, the files, the git state, the gate and the \
 board. Never write a key, token, password or personal data into the note. This \
 note is Step 2's handoff document, written under these five headings; pass the \
-same text to `agents__handoff` as `brief`. Keep it under 1,200 words.";
+same text to `agents__handoff` as `brief`. Keep it under 400 words.";
 
 /// The judgment prompt the turn runs: forge's own words, the skill it names,
 /// and the output contract for the note the exit call carries.
@@ -1543,6 +1589,28 @@ impl crate::Workspace {
     /// Whether a swap is in flight on this seat.
     pub(crate) fn swap_in_progress(&self, slot: &SessionSlot) -> bool {
         self.swapping.lock().contains_key(slot)
+    }
+
+    /// Whether a handoff owns this seat's composer right now: its judgment
+    /// turn is running, or the swap it opened is still building or spawning.
+    ///
+    /// **The domain's own flag is cleared at the swap**, before the successor
+    /// connects - so a page attaching in that window would otherwise read a
+    /// live composer over a seat that has no session at all.
+    pub fn handoff_in_flight(&self, slot: &SessionSlot) -> bool {
+        self.swap_in_progress(slot)
+            || self.domain_session_for(slot).is_some_and(|domain| domain.lock().handoff.awaiting)
+    }
+
+    /// End the machine turn a handoff raised, wherever its build stops.
+    ///
+    /// **Every path out of the build that leaves no successor needs this.**
+    /// The frame at the handoff's begin is the live page's only source, and a
+    /// successor's record read is what normally clears it - so a build that
+    /// stops without one would leave the seat's composer down for good.
+    fn end_machine_turn(&self, slot: &SessionSlot) {
+        let _ =
+            self.update_tx.send(SessionUpdate::MachineTurn { key: slot.clone(), machine: None });
     }
 
     /// Whether `token` still owns the seat's swap.
@@ -1737,6 +1805,7 @@ impl crate::Workspace {
                 slot = %request.slot.display(),
                 "a handoff build had no swap token; it is not run",
             );
+            self.end_machine_turn(&request.slot);
             return;
         };
         if !self.swap_is_current(&request.slot, token) {
@@ -1746,6 +1815,7 @@ impl crate::Workspace {
                 slot = %request.slot.display(),
                 "the swap gate closed before the build began; the handoff is not run",
             );
+            self.end_machine_turn(&request.slot);
             return;
         }
         let cwd = PathBuf::from(&request.cwd);
@@ -1808,6 +1878,7 @@ impl crate::Workspace {
                 slot = %request.slot.display(),
                 "the swap gate closed while the brief was built; the handoff is not run",
             );
+            self.end_machine_turn(&request.slot);
             return;
         }
         self.record_handoff(&record, &reads);
@@ -1859,6 +1930,7 @@ impl crate::Workspace {
                 severity: NoticeSeverity::Error,
                 text: format!("the handoff could not start a new session: {error}"),
             });
+            self.end_machine_turn(&request.slot);
         }
     }
 }
@@ -2319,11 +2391,11 @@ mod tests {
         );
     }
 
-    /// The brief opens on the session's intent and carries the last three
-    /// prompts, so a successor sees the ask that started it and the words
-    /// that moved it since.
+    /// The brief carries the last three prompts and nothing older. A long
+    /// session's opener is not the intent by the time prompts 93-95 arrive,
+    /// so quoting it beside them states a starting point the work left.
     #[test]
-    fn the_ask_names_the_first_prompt_and_the_newest_three() {
+    fn the_ask_names_the_newest_three() {
         let messages: Vec<Message> =
             ["one", "two", "three", "four", "five"].iter().map(|text| user(text)).collect();
         let asks = user_prompts(&messages);
@@ -2331,12 +2403,11 @@ mod tests {
         assert_eq!(
             section.lines,
             vec![
-                "first (user prompt 1): one".to_owned(),
                 "#3 (user prompt 3): three".to_owned(),
                 "#4 (user prompt 4): four".to_owned(),
                 "#5 (user prompt 5): five".to_owned(),
             ],
-            "the first ask plus the newest three, oldest first",
+            "the newest three, oldest first, with no first-prompt line",
         );
     }
 
@@ -2708,11 +2779,138 @@ mod tests {
     /// The five headings forge asks for parse into five sections, in order.
     #[test]
     fn the_five_headings_parse_in_order() {
-        let raw = "Now: the cut is half in.\nTried and failed: the first spawn.\nDo not: delete the row.\nNext: the client row.\nDone means: the gates are green.";
+        let raw = "Now: the cut is half in.\nWhere it stood: worktree at abc1234.\nPointers: memory/handoff.md\nNext: the client row.\nDone means: the gates are green.";
         let sections = parse_judgment(raw);
         let labels: Vec<&str> = sections.iter().map(|section| section.label.as_str()).collect();
         assert_eq!(labels, JUDGMENT_HEADINGS.to_vec(), "the five, in the order asked for");
-        assert_eq!(sections[1].lines, vec!["the first spawn.".to_owned()]);
+        assert_eq!(sections[1].lines, vec!["worktree at abc1234.".to_owned()]);
+    }
+
+    /// **Every spelling of a heading line the model might write parses.**
+    /// A note written under `## Now` used to arrive as the missing-note line,
+    /// so the bare, hashed and emphasised forms all have to land - alone on
+    /// the line, and with its colon and body.
+    #[test]
+    fn every_heading_spelling_parses() {
+        for (label, body) in [
+            ("Now", "the cut is half in."),
+            ("Where it stood", "worktree handoff-index-first at abc1234, no PR yet."),
+            ("Pointers", "- memory/handoff.md"),
+            ("Next", "the client row."),
+            ("Done means", "the gates are green."),
+        ] {
+            for line in [
+                format!("{label}: {body}"),
+                format!("## {label}: {body}"),
+                format!("**{label}:** {body}"),
+                format!("- **{label}:** {body}"),
+            ] {
+                let sections = parse_judgment(&line);
+                assert_eq!(sections.len(), 1, "one section for {line}");
+                assert_eq!(sections[0].label, label, "the heading for {line}");
+                assert_eq!(sections[0].lines, vec![body.to_owned()], "its body for {line}");
+            }
+            // A heading alone on its line takes the body from the lines
+            // below, including the numbered and punctuated spellings the
+            // shipped skill invites by numbering its own parts.
+            for line in [
+                format!("## {label}"),
+                format!("**{label}**"),
+                label.to_owned(),
+                format!("## {label}."),
+                format!("1. **{label}**"),
+                format!("## 1. {label}"),
+            ] {
+                let sections = parse_judgment(&format!("{line}\n{body}"));
+                assert_eq!(sections.len(), 1, "one section for {line}");
+                assert_eq!(sections[0].label, label, "the heading for {line}");
+                assert_eq!(
+                    sections[0].lines,
+                    vec![body.to_owned()],
+                    "the body from the line below for {line}",
+                );
+            }
+        }
+    }
+
+    /// **The label's own emphasis comes off; the body's stays.** Stripping a
+    /// leading asterisk run rather than the matched pair left a note reading
+    /// `nothing*` where its author wrote `*nothing*`.
+    #[test]
+    fn a_heading_strips_its_own_emphasis_and_leaves_the_body_s() {
+        let sections = parse_judgment("**Now:** *nothing* has changed.");
+        assert_eq!(sections.len(), 1, "one section");
+        assert_eq!(sections[0].label, "Now");
+        assert_eq!(sections[0].lines, vec!["*nothing* has changed.".to_owned()]);
+    }
+
+    /// **A note written in markdown is the judgment half.** The regression
+    /// this fixes: a correctly written `## Now` note read as no note at all,
+    /// and the successor was told the note had not arrived.
+    #[test]
+    fn a_markdown_note_arrives_as_the_judgment_half() {
+        let note = "\
+## Now
+The cut is half in and the parser is next.
+## Where it stood
+worktree handoff-index-first at abc1234, no PR yet.
+## Pointers
+- memory/handoff.md
+## Next
+fix the parser, then the client row.
+## Done means
+both gates green.";
+        assert!(parses_as_note(note), "the note is recognised");
+        let sections = parse_judgment(note);
+        assert_eq!(
+            sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+            JUDGMENT_HEADINGS.to_vec(),
+            "the five, in order",
+        );
+        assert_eq!(
+            sections[0].lines,
+            vec!["The cut is half in and the parser is next.".to_owned()],
+            "the body under the heading",
+        );
+    }
+
+    /// **A note with none of the five headings is not the brief.** The caller
+    /// answers exactly this with `missing_note()`, so a note under headings
+    /// that are no longer asked for must not read as one.
+    #[test]
+    fn a_note_without_a_recognised_heading_is_not_the_brief() {
+        assert!(
+            !parses_as_note("Tried and failed: the first spawn.\nDo not: delete the row."),
+            "the old headings are not the shape any more",
+        );
+        assert!(!parses_as_note("## Summary\nsome prose"), "nor is a markdown heading of its own");
+        assert!(
+            !parses_as_note("as I said, Now: the work stands and Next: nothing else."),
+            "a heading has to open its line, not appear inside one",
+        );
+        assert!(parses_as_note("**Next:** the client row."), "an emphasised heading still is");
+    }
+
+    /// **The cap states its cut.** A note past the ceiling loses its tail,
+    /// and the row says so rather than presenting what is left as the whole
+    /// of what the old session wrote.
+    #[test]
+    fn a_note_past_the_cap_states_the_cut() {
+        let note = format!("Now: {}\nNext: {}", "x".repeat(JUDGMENT_CAP - 200), "y".repeat(400));
+        let sections = parse_judgment(&note);
+        assert_eq!(sections.len(), 1, "one section survives the cut: {sections:?}");
+        assert_eq!(sections[0].label, "Now", "and it is the note's own front: {sections:?}");
+        assert!(
+            sections[0].lines.first().is_some_and(|line| line.starts_with("xxx")),
+            "the cap keeps the front of the note, not its tail: {sections:?}",
+        );
+        assert!(
+            sections[0]
+                .lines
+                .last()
+                .is_some_and(|line| line.contains("in the transcript named above")),
+            "the cut is stated as the kept section's last line: {sections:?}",
+        );
     }
 
     /// The successor reads the facts before the judgment, under the two
@@ -2768,6 +2966,28 @@ mod tests {
                 frame.update,
             );
         }
+    }
+
+    /// **A handoff owns the seat from its begin until its successor lands.**
+    /// The domain's own flag is cleared at the swap, so the gate is what
+    /// carries the build and spawn window - a page attaching there must not
+    /// read a live composer over a seat with no session.
+    #[test]
+    fn a_handoff_is_in_flight_from_its_begin_until_the_swap_closes() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        workspace.register_domain_session(slot.clone(), None);
+
+        assert!(!workspace.handoff_in_flight(&slot), "an idle seat takes input");
+
+        workspace.domain_session_for(&slot).expect("the domain").lock().handoff.awaiting = true;
+        assert!(workspace.handoff_in_flight(&slot), "the judgment turn owns it");
+        workspace.domain_session_for(&slot).expect("the domain").lock().handoff.awaiting = false;
+
+        workspace.begin_swap(&slot);
+        assert!(workspace.handoff_in_flight(&slot), "the swap's build and spawn own it");
+        workspace.end_swap(&slot);
+        assert!(!workspace.handoff_in_flight(&slot), "the successor hands the seat back");
     }
 
     /// Every machinery delivery goes through one gate, so a cron, a peer
@@ -2909,13 +3129,67 @@ mod tests {
                 .is_err(),
             "a lost seat's tabs are not replaced",
         );
+        let mut turns = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             assert!(
                 !matches!(frame.update, SessionUpdate::Handoff { .. }),
                 "no handoff row is drawn for it: {:?}",
                 frame.update,
             );
+            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+                turns.push(machine);
+            }
         }
+        // **The build's own clear.** The begin announced the machine turn and
+        // the lost seat spawns no successor whose record read would end it.
+        assert_eq!(turns, vec![None], "the lost build hands the machine turn back");
+    }
+
+    /// The machine-turn frames a run emitted, in order.
+    fn machine_turns(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::update_fanout::SeatUpdate>,
+    ) -> Vec<Option<forge_primitives::runtime::MachineTurn>> {
+        let mut out = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+                out.push(machine);
+            }
+        }
+        out
+    }
+
+    /// **Every build that stops without a successor hands the machine turn
+    /// back.** The begin announced it and no successor's record read follows,
+    /// so a seat left holding the blocker would be one nobody can type into.
+    #[tokio::test]
+    async fn a_build_that_never_starts_hands_the_machine_turn_back() {
+        let slot = SessionSlot::lead("TestOrg", "forge");
+
+        // No token: the gate was never this build's.
+        let (workspace, mut rx) = crate::Workspace::testing_stub();
+        Arc::clone(&workspace).run_handoff(swap_request(&slot, None)).await;
+        assert_eq!(machine_turns(&mut rx), vec![None], "no token, no machine turn");
+
+        // The seat taken again before the build looks at it.
+        let (workspace, mut rx) = crate::Workspace::testing_stub();
+        let token = workspace.begin_swap(&slot);
+        workspace.begin_swap(&slot);
+        Arc::clone(&workspace).run_handoff(swap_request(&slot, Some(token))).await;
+        assert_eq!(machine_turns(&mut rx), vec![None], "a seat lost before the build");
+    }
+
+    /// **A build whose successor cannot start hands the machine turn back.**
+    /// No dispatch intercept means no route for `NewSession`, which is the
+    /// failure the begin's own frame would otherwise outlive.
+    #[tokio::test]
+    async fn a_build_whose_successor_cannot_start_hands_the_machine_turn_back() {
+        let (workspace, mut rx) = crate::Workspace::testing_stub();
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let token = workspace.begin_swap(&slot);
+
+        Arc::clone(&workspace).run_handoff(swap_request(&slot, Some(token))).await;
+
+        assert_eq!(machine_turns(&mut rx), vec![None], "the successor never started");
     }
 
     /// The successor's own first user row is the brief forge gave it, not a
@@ -3039,13 +3313,13 @@ mod tests {
                 < prompt.find("Write the note").expect("the contract follows"),
             "the skill runs before the note's contract",
         );
-        let now = prompt.find("Now: what we are doing").expect("the Now heading");
+        let now = prompt.find("Now: where the work stands").expect("the Now heading");
         let pointer =
             prompt.find("Its last line names what you recorded in memory").expect("the pointer");
-        let tried = prompt.find("Tried and failed:").expect("the next heading");
+        let stood = prompt.find("Where it stood:").expect("the next heading");
         assert!(
-            now < pointer && pointer < tried,
-            "the pointer sits under Now, before Tried and failed",
+            now < pointer && pointer < stood,
+            "the pointer sits under Now, before Where it stood",
         );
         assert!(
             prompt.contains("This note is Step 2's handoff document")
@@ -3061,8 +3335,8 @@ mod tests {
     #[test]
     fn the_memory_pointer_lands_under_now() {
         let note = "Now: the cut is half in.\nRecorded in memory.md and its index.\n\
-                    Tried and failed: none.\nDo not: keep the row.\nNext: the client row.\n\
-                    Done means: the gates are green.";
+                    Where it stood: worktree at abc1234.\nPointers: memory/handoff.md\n\
+                    Next: the client row.\nDone means: the gates are green.";
         let sections = parse_judgment(note);
         assert_eq!(
             sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
@@ -3128,8 +3402,12 @@ mod tests {
             ("Leave nothing unfinished unrecorded", "unfinished work is named, not dropped"),
             ("pass the same text to `agents__handoff` as `brief`", "the exit call"),
             ("the state snapshot in Now", "part 1 maps onto Now"),
+            (
+                "the exact position and process facts in Where it stood",
+                "parts 1 and 3 map onto Where it stood",
+            ),
+            ("the paths they live at in Pointers", "the index maps onto Pointers"),
             ("the next steps and open threads in Next", "part 2 maps onto Next"),
-            ("the process facts in Do not or Next", "part 3 maps onto Do not or Next"),
             ("the suggested skills in Next", "part 4 maps onto Next"),
         ] {
             let clause = clause.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -3482,7 +3760,7 @@ mod tests {
     /// nothing under them are an empty shell, not the brief.
     #[test]
     fn a_headings_only_reply_is_not_a_note() {
-        assert!(!parses_as_note("Now:\nTried and failed:\nDo not:\nNext:\nDone means:"));
+        assert!(!parses_as_note("Now:\nWhere it stood:\nPointers:\nNext:\nDone means:"));
         assert!(!parses_as_note("Memory updated."));
         assert!(parses_as_note("Now: the cut is in."));
     }
@@ -3491,24 +3769,25 @@ mod tests {
     /// lowering of the cap would cut a note that followed the prompt.
     #[test]
     fn a_compliant_note_fits_under_the_cap() {
-        // Realistic word lengths: at 3-5 letters a 1,200-word note fits under
-        // the old 9,000 ceiling and the cap test proves nothing.
+        // Realistic word lengths: at 7-8 letters a 400-word note is roughly
+        // 3,200 characters, so a cap set at the note's own length proves
+        // nothing about the headroom a complying session has.
         let words = |n: usize, tag: &str| vec![tag; n].join(" ");
         let note = format!(
-            "Now: {}\nTried and failed: {}\nDo not: {}\nNext: {}\nDone means: {}",
-            words(200, "morning"),
-            words(250, "abandon"),
-            words(250, "careful"),
-            words(250, "pending"),
-            words(250, "observes"),
+            "Now: {}\nWhere it stood: {}\nPointers: {}\nNext: {}\nDone means: {}",
+            words(80, "morning"),
+            words(80, "abandon"),
+            words(80, "careful"),
+            words(80, "pending"),
+            words(80, "observes"),
         );
         assert!(
-            note.split_whitespace().count() >= 1_200,
+            note.split_whitespace().count() >= 400,
             "the fixture is at least the length the prompt asks for",
         );
         assert!(
-            note.chars().count() > 9_000,
-            "and long enough that the old ceiling would have cut it: {} chars",
+            note.chars().count() > 3_000,
+            "and long enough that a materially lower ceiling would cut it: {} chars",
             note.chars().count(),
         );
         let sections = parse_judgment(&note);
@@ -3521,7 +3800,7 @@ mod tests {
             sections
                 .iter()
                 .flat_map(|section| &section.lines)
-                .all(|line| !line.contains("the rest of this reply")),
+                .all(|line| !line.contains("in the transcript named above")),
             "and the cap does not cut it",
         );
     }

@@ -2992,9 +2992,6 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    drawing: its error state renders both lines at one margin, and a spinner
    leads the first rather than indenting anything. */
 .blocked .b2 { font-family: var(--mono); font-size: var(--fs-data); color: var(--dim); }
-.blocked .ring { width: 13px; height: 13px; flex: none; border-radius: 50%;
-  border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
-  animation: spin 900ms linear infinite; }
 
 /* ---------- the dictation panel ----------
    Everything under `.pop`, and deliberately so: bare `.chip`, `.note` and
@@ -3311,7 +3308,6 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .tc .dot,
   .tc .spin,
   .tc .bar.sweep > i,
-  .blocked .ring,
   .dock .blip .dot,
   .tc .wave,
   .tc .bars,

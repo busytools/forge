@@ -278,7 +278,7 @@ function withNotice(
   held: Record<string, unknown> | null = null,
   slot: SessionSlot = SLOT,
 ): ComposerRecord {
-  return record({ slot, composer: { take: held, notice, compacting: false, sign_in: null } });
+  return record({ slot, composer: { take: held, notice, machine: null, sign_in: null } });
 }
 
 /** A take that landed, as the core sends one: the words, and whether they were cut. */
@@ -523,7 +523,7 @@ function landBarTake(
     composer: {
       take: null,
       notice: { kind: 'landed', text: 'the words', truncated: false },
-      compacting: false,
+      machine: null,
       sign_in: null,
     },
   });
@@ -748,7 +748,7 @@ describe('the box', () => {
     harness.sent.length = 0;
     harness.page.record = record({
       header: { turn_in_flight: true },
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
     press('Escape');
@@ -835,7 +835,7 @@ describe('the box', () => {
     const harness = open();
 
     harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
 
@@ -914,7 +914,7 @@ describe('the box', () => {
         composer: {
           take: null,
           notice: { kind: 'landed', text: 'flaky retry test', truncated: false },
-          compacting: false,
+          machine: null,
           sign_in: null,
         },
       });
@@ -968,7 +968,7 @@ describe('the box', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -1105,7 +1105,7 @@ describe('the box', () => {
             text: 'But where are we on the rate limiting side on our end?',
             truncated: false,
           },
-          compacting: false,
+          machine: null,
           sign_in: null,
         },
       }),
@@ -1126,7 +1126,7 @@ describe('the box', () => {
         composer: {
           take: null,
           notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
-          compacting: false,
+          machine: null,
           sign_in: null,
         },
       }),
@@ -1144,7 +1144,7 @@ describe('the box', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -1165,7 +1165,7 @@ describe('the box', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -1194,7 +1194,7 @@ describe('the box', () => {
 
     const watching = record({
       pending_asks: [permissionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     harness.page.record = watching;
     flushSync();
@@ -1206,7 +1206,7 @@ describe('the box', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -1230,7 +1230,7 @@ describe('the box', () => {
           tone: 'q',
           text: 'nothing above -50 dBFS in 4s · loudest was -38.2 · try again',
         },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -1259,10 +1259,19 @@ describe('the box', () => {
       [
         {
           record: record({
-            composer: { take: null, notice: null, compacting: true, sign_in: null },
+            composer: { take: null, notice: null, machine: 'compacting', sign_in: null },
           }),
         },
-        'Compacting context...',
+        'compacting this session',
+        null,
+      ],
+      [
+        {
+          record: record({
+            composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+          }),
+        },
+        'handing this session over',
         null,
       ],
       [
@@ -1310,6 +1319,170 @@ describe('the box', () => {
       app = null;
       document.body.innerHTML = '';
     }
+  });
+
+  /**
+   * **Every narrative hold draws the same way: one band, the sweep, only the
+   * text changing.** The selector is the pin - a pin on the line alone would
+   * survive the animation being dropped, which is how it goes missing. The
+   * error state shares the band in its own tone, and the worker's stop draws
+   * no motion at all, because neither is progress.
+   */
+  it('draws every narrative hold with the one sweep, and no motion on a stop', () => {
+    const cases: [Partial<ComposerProps>, string][] = [
+      [{ seat: seatRead({ lifecycle: 'Spawning' }) }, 'Waking up agent...'],
+      [{ seat: seatRead({ waking: true, lifecycle: null, reason: null }) }, 'Waking up agent...'],
+      [{ reading: true }, 'Reading the conversation...'],
+      [
+        {
+          record: record({
+            composer: { take: null, notice: null, machine: 'compacting', sign_in: null },
+          }),
+        },
+        'compacting this session',
+      ],
+      [
+        {
+          record: record({
+            composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+          }),
+        },
+        'handing this session over',
+      ],
+    ];
+    for (const [props, line] of cases) {
+      open(props);
+      expect(drawn(), `the band says ${line}`).toContain(line);
+      expect(
+        document.querySelector('.blocked .b1 .shimmer')?.textContent,
+        `${line} lost the sweep`,
+      ).toBe(line);
+      void unmount(app as Record<string, unknown>);
+      app = null;
+      document.body.innerHTML = '';
+    }
+
+    // The error: the same band, its own tone, no motion.
+    open({ seat: seatRead({ lifecycle: 'Failed', reason: 'the CLI exited with status 1' }) });
+    expect(drawn(), 'the error line moved').toContain('Input disabled due to error');
+    expect(document.querySelector('.blocked.err'), 'the error lost its tone').not.toBeNull();
+    expect(document.querySelector('.blocked .shimmer'), 'the error is not progress').toBeNull();
+
+    // The worker's stop: a dead seat, said plainly.
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+    open({
+      slot: { org: 'Busytools', project: 'forge', label: 'w1' },
+      seat: seatRead({ waking: true, lifecycle: null, reason: null }),
+    });
+    expect(drawn(), 'the stop line moved').toContain('not running');
+    expect(document.querySelector('.blocked .shimmer'), 'a stop is not progress').toBeNull();
+  });
+
+  /**
+   * **A machine turn takes the box and hands it back with the draft.** The
+   * handoff and a compaction are turns the person cannot type into, so the
+   * box stands down while they run - and the words already typed are the
+   * reader's, so they come back with the box rather than going with the turn.
+   */
+  it('keeps a draft through a machine turn and hands it back after', () => {
+    const harness = open({ dictation: true });
+    type('the next thing I want to say');
+    expect(document.querySelector('.mic'), 'the control is there before the turn').not.toBeNull();
+
+    for (const [machine, line] of [
+      ['handoff', 'handing this session over'],
+      ['compacting', 'compacting this session'],
+    ] as const) {
+      harness.page.record = record({
+        composer: { take: null, notice: null, machine, sign_in: null },
+      });
+      flushSync();
+      expect(drawn(), 'the composer says what is running').toContain(line);
+      expect(document.querySelector('textarea'), 'a machine turn takes the box').toBeNull();
+      expect(document.querySelector('.send'), 'and the send').toBeNull();
+      expect(document.querySelector('.mic'), 'and the mic').toBeNull();
+      expect(document.querySelector('.b1 .shimmer'), 'and it draws the sweep').not.toBeNull();
+      expect(document.querySelector('.b1 .ring'), 'and no second animation beside it').toBeNull();
+    }
+
+    harness.page.record = record({
+      composer: { take: null, notice: null, machine: null, sign_in: null },
+    });
+    flushSync();
+    expect(field().value, "the reader's words come back with the box").toBe(
+      'the next thing I want to say',
+    );
+  });
+
+  /**
+   * **A parked ask outranks the machine blocker.** Both machine turns are
+   * ordinary tool-using turns - the judgment turn writes memory files and
+   * stops processes - so they raise permission asks, and this composer is the
+   * only surface that answers them. A machine line drawn over one would wedge
+   * the seat: the dock could not draw, and the CLI would wait for an answer
+   * nobody can give for ever.
+   */
+  /**
+   * **The bound key opens nothing under a machine turn.** The box draws no
+   * mic and no field there, so the absence of a control proves nothing: the
+   * key is a window listener, and without the gate it would open the capture
+   * and land the words in a draft nobody can see.
+   */
+  it('opens no capture from the bound key while a machine turn owns the box', async () => {
+    // **The control first.** An empty send below proves nothing unless the
+    // same press begins a take on a live box - the key is a window listener,
+    // and a misspelt code would read exactly like the gate working.
+    const live = open({ dictation: true });
+    key('ControlRight', 'keydown');
+    await opened();
+    expect(live.sent, 'the control: a live box begins the take').toHaveLength(1);
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+
+    const harness = open({
+      dictation: true,
+      record: record({
+        composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+      }),
+    });
+
+    key('ControlRight', 'keydown');
+    // The same turns the control gave the open, so an empty send means the
+    // gate refused rather than the promise not having settled.
+    await opened();
+
+    expect(harness.sent, 'the key begins nothing under a machine turn').toEqual([]);
+  });
+
+  it('draws and answers a parked ask through a machine turn', () => {
+    const harness = open({
+      record: record({
+        composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+        pending_asks: [permissionAsk()],
+      }),
+    });
+
+    expect(drawn(), 'the ask is what the slot draws').toContain('Allow once');
+    expect(drawn(), 'and the machine line stays out of its way').not.toContain(
+      'handing this session over',
+    );
+
+    const allow = [...document.querySelectorAll('.dock .acts .btn')].find((button) =>
+      button.textContent?.includes('Allow once'),
+    );
+    if (!(allow instanceof HTMLElement)) throw new Error('the dock drew no allow');
+    allow.click();
+    flushSync();
+
+    const [sent] = harness.sent;
+    expect(sent?.command['respond_permission'], 'the answer reaches the core').toMatchObject({
+      key: { org: 'Busytools', project: 'forge', label: 'lead' },
+      tool_id: 'tu-1',
+      outcome: { outcome: 'selected', option_id: 'opt-once' },
+    });
   });
 
   /**
@@ -1487,6 +1660,10 @@ describe('the box', () => {
     flushSync();
 
     expect(drawn(), 'the reader is told what they are waiting for').toContain('Running /compact');
+    expect(
+      document.querySelector('.blocked .b1 .shimmer')?.textContent,
+      'the command line lost the same sweep every hold draws',
+    ).toBe('Running /compact');
   });
 
   it('rests as one row when it has nothing to put in a footer', () => {
@@ -1519,7 +1696,7 @@ describe('the box', () => {
   it("gives a recording the draft's own line, with the controls on it", () => {
     const harness = open({ dictation: true });
     harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
 
@@ -1546,7 +1723,7 @@ describe('the box', () => {
     (resting as HTMLElement).focus();
     (resting as HTMLElement).click();
     harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
 
@@ -1740,7 +1917,7 @@ describe('the key', () => {
 
   const bound = (bind: string, mode: string, take: Record<string, unknown> | null = null) =>
     record({
-      composer: { take, notice: null, compacting: false, sign_in: null, bind, mode },
+      composer: { take, notice: null, machine: null, sign_in: null, bind, mode },
     });
 
   it('brings the keyboard to the box before the take starts', async () => {
@@ -2399,7 +2576,7 @@ describe('the key', () => {
             composer: {
               take: null,
               notice: null,
-              compacting: false,
+              machine: null,
               sign_in: null,
               bind: 'right_cmd',
               mode: 'auto',
@@ -2695,7 +2872,7 @@ describe('the key', () => {
       dictation: true,
       record: record({
         pending_asks: [permissionAsk()],
-        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+        composer: { take: take(), notice: null, machine: null, sign_in: null },
       }),
     });
     flushSync();
@@ -4709,7 +4886,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4742,7 +4919,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'custom words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4769,7 +4946,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'first words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4784,7 +4961,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'second words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4810,7 +4987,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'first words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4824,7 +5001,7 @@ describe('the dock', () => {
     // A question arrives mid-flight; this take's words are still the draft's.
     harness.page.record = record({
       pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
     harness.page.record = record({
@@ -4832,7 +5009,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'second words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4869,7 +5046,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'first words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4887,7 +5064,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'second words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4913,14 +5090,14 @@ describe('the dock', () => {
 
     await beginTake(harness);
     harness.page.record = record({
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
     harness.page.record = record({
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'orphan words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4948,7 +5125,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4965,7 +5142,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'this is what fitted', truncated: true },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -4993,7 +5170,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'draft words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -5016,7 +5193,7 @@ describe('the dock', () => {
 
     harness.page.record = record({
       pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
     expect(
@@ -5029,7 +5206,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'more', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -5065,7 +5242,7 @@ describe('the dock', () => {
     await beginTake(harness);
     harness.page.record = record({
       pending_asks: [questionAsk()],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
     harness.page.record = record({
@@ -5073,7 +5250,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -5325,7 +5502,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -5553,7 +5730,7 @@ describe('the dock', () => {
     const harness = open({
       record: record({
         pending_asks: [permissionAsk()],
-        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+        composer: { take: take(), notice: null, machine: null, sign_in: null },
       }),
     });
 
@@ -6169,7 +6346,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -6981,7 +7158,7 @@ describe('the dock', () => {
       // have watched it for the landing to be its own.
       harness.page.record = record({
         pending_asks: [held],
-        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+        composer: { take: take(), notice: null, machine: null, sign_in: null },
       });
       flushSync();
       harness.page.record = record({
@@ -6989,7 +7166,7 @@ describe('the dock', () => {
         composer: {
           take: null,
           notice: { kind: 'landed', text: 'the dictated answer', truncated: false },
-          compacting: false,
+          machine: null,
           sign_in: null,
         },
       });
@@ -7020,7 +7197,7 @@ describe('the dock', () => {
     await micPress();
     harness.page.record = record({
       pending_asks: [held],
-      composer: { take: take(), notice: null, compacting: false, sign_in: null },
+      composer: { take: take(), notice: null, machine: null, sign_in: null },
     });
     flushSync();
     harness.page.record = record({
@@ -7028,7 +7205,7 @@ describe('the dock', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'the dictated answer', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -7048,7 +7225,7 @@ describe('the dock', () => {
           truncated: false,
           carried: true,
         },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -7303,7 +7480,7 @@ describe('the dock', () => {
     open({
       record: record({
         pending_asks: [slackDraftAsk()],
-        composer: { take: take(), notice: null, compacting: false, sign_in: null },
+        composer: { take: take(), notice: null, machine: null, sign_in: null },
       }),
     });
 
@@ -7660,7 +7837,7 @@ describe('two clients on one seat', () => {
       composer: {
         take: null,
         notice: { kind: 'landed', text: 'push it once CI is green', truncated: false },
-        compacting: false,
+        machine: null,
         sign_in: null,
       },
     });
@@ -7979,7 +8156,7 @@ describe('the dictation panel', () => {
   it('states the mode rather than offering it, because nothing can set it', () => {
     opened({
       record: record({
-        composer: { take: null, notice: null, compacting: false, sign_in: null, mode: 'hold' },
+        composer: { take: null, notice: null, machine: null, sign_in: null, mode: 'hold' },
       }),
     });
 
@@ -8110,7 +8287,7 @@ describe('the dictation panel', () => {
   it('advertises the bound key, and nothing when the binding is off', () => {
     opened({
       record: record({
-        composer: { take: null, notice: null, compacting: false, sign_in: null, bind: 'left_cmd' },
+        composer: { take: null, notice: null, machine: null, sign_in: null, bind: 'left_cmd' },
       }),
     });
     expect(document.querySelector('.pop .hd')?.textContent).toContain('left to talk');
@@ -8120,7 +8297,7 @@ describe('the dictation panel', () => {
     document.body.innerHTML = '';
     opened({
       record: record({
-        composer: { take: null, notice: null, compacting: false, sign_in: null, bind: 'off' },
+        composer: { take: null, notice: null, machine: null, sign_in: null, bind: 'off' },
       }),
     });
     expect(

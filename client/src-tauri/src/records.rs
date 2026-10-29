@@ -223,6 +223,24 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
             set_queue(record, Vec::new());
             true
         }
+        // **The machine turn, as the core announces it.** A handoff displaces
+        // a compaction, exactly as `apply.ts` folds it; its end leaves none -
+        // and the page's own read, not this mirror, asks the record again for a
+        // compaction still running under it.
+        "machine_turn" => {
+            let Some(composer) = record.get_mut("composer").and_then(Value::as_object_mut) else {
+                return false;
+            };
+            let next = match payload.get("machine").and_then(Value::as_str) {
+                Some(turn @ ("handoff" | "compacting")) => Value::String(turn.to_owned()),
+                _ => Value::Null,
+            };
+            if composer.get("machine") == Some(&next) {
+                return false;
+            }
+            composer.insert("machine".to_owned(), next);
+            true
+        }
         "chat_appended" => {
             let Some(msg) = payload.get("msg") else { return false };
             let mut moved = false;
@@ -232,7 +250,7 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
                 moved |= append_frame(turns, msg);
             }
             if let Some(composer) = record.get_mut("composer") {
-                moved |= compacting_of(composer, msg);
+                moved |= machine_of(composer, msg);
             }
             if let Some(header) = record.get_mut("header") {
                 moved |= header_from(header, msg);
@@ -641,21 +659,30 @@ fn in_flight_of(held: bool, message: &Value) -> bool {
 }
 
 /// The compaction a status frame announces and the null that clears it.
-fn compacting_of(composer: &mut Value, message: &Value) -> bool {
+///
+/// **A handoff outranks a compaction**, the precedence `apply.ts` and the
+/// wire's own fold both keep: this may only raise `machine` from idle, so a
+/// status frame cannot hand the composer back under a handoff that owns the
+/// seat.
+///
+/// **The old `compacting` key is left where it is.** A page treats a record
+/// that carries `machine` as authoritative, so a v15 server's key beside a
+/// key this mirror wrote cannot disagree with it.
+fn machine_of(composer: &mut Value, message: &Value) -> bool {
     if message.get("type").and_then(Value::as_str) != Some("system")
         || message.get("subtype").and_then(Value::as_str) != Some("status")
     {
         return false;
     }
     let Some(composer) = composer.as_object_mut() else { return false };
-    let held = composer.get("compacting").and_then(Value::as_bool).unwrap_or(false);
+    let held = composer.get("machine").and_then(Value::as_str).map(str::to_owned);
     match message.get("status") {
-        Some(Value::String(status)) if status == "compacting" && !held => {
-            composer.insert("compacting".to_owned(), json!(true));
+        Some(Value::String(status)) if status == "compacting" && held.is_none() => {
+            composer.insert("machine".to_owned(), json!("compacting"));
             true
         }
-        Some(Value::Null) if held => {
-            composer.insert("compacting".to_owned(), json!(false));
+        Some(Value::Null) if held.as_deref() == Some("compacting") => {
+            composer.insert("machine".to_owned(), Value::Null);
             true
         }
         _ => false,
@@ -778,7 +805,7 @@ mod tests {
         json!({
             "header": { "turn_in_flight": false, "context": { "percent": 0.1, "max_tokens": 1000 } },
             "conversation": { "turns": [], "compaction_count": 0 },
-            "composer": { "compacting": false },
+            "composer": { "machine": null },
             "state": { "queue": [] },
             "pending_asks": [],
         })
@@ -823,6 +850,47 @@ mod tests {
             held(&records)["header"]["context"]["percent"],
             json!(0.42),
             "the update's name is read into the record's"
+        );
+    }
+
+    /// **The machine turn the core announces reaches the mirror.** A window
+    /// hidden through a handoff comes back with its composer already stood
+    /// down, which is the whole reason the mirror keeps the record.
+    #[test]
+    fn a_machine_turn_folds_into_the_mirror() {
+        let mut records = open();
+
+        records.apply(&seated("machine_turn", json!({ "machine": "handoff" })));
+        assert_eq!(
+            held(&records)["composer"]["machine"],
+            json!("handoff"),
+            "the handoff stands the box down"
+        );
+
+        records.apply(&seated("machine_turn", json!({ "machine": null })));
+        assert_eq!(
+            held(&records)["composer"]["machine"],
+            Value::Null,
+            "and its end hands the seat back"
+        );
+    }
+
+    /// **A status frame may raise the compaction from idle only.** A handoff
+    /// outranks it, as it does in `apply.ts` and in the record's own fold.
+    #[test]
+    fn a_status_frame_does_not_displace_a_handoff() {
+        let mut records = open();
+        records.apply(&seated("machine_turn", json!({ "machine": "handoff" })));
+
+        records.apply(&update(json!({
+            "msg": { "type": "system", "subtype": "status", "status": "compacting" },
+            "key": seat()["session"],
+        })));
+
+        assert_eq!(
+            held(&records)["composer"]["machine"],
+            json!("handoff"),
+            "the compaction is not the state under a handoff"
         );
     }
 

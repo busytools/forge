@@ -62,6 +62,15 @@ export interface PushToTalk {
   /** How a press of it maps onto a take, from the same section. */
   mode: () => Mode;
   /**
+   * Whether a machine turn owns this surface's box right now.
+   *
+   * **A box standing down for a machine turn takes no keys, and that includes
+   * this one.** Otherwise a press opens the microphone under the disabled box,
+   * the only cue is the surface's own ring, and the words land in a draft
+   * nobody can see.
+   */
+  machine: () => boolean;
+  /**
    * Where the keyboard goes when a press begins a take: the shortcut is how a
    * reader begins without the mouse, so the transcript lands where their keys
    * already are.
@@ -127,6 +136,13 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
       return;
     }
     const step = down(pressed, wiring.dictate().held, Date.now(), wiring.mode());
+    // **A machine turn refuses a BEGIN, not the key.** In toggle mode the
+    // press IS the stop and in auto mode a finish needs the press on record,
+    // so a take already in flight must still end here: the box draws no row
+    // to end it from, and the only other way out is Escape, which discards
+    // the words. A refused begin leaves `pressed` untouched, so its release
+    // finds nothing to finish.
+    if (step.action === 'begin' && wiring.machine()) return;
     pressed = step.held;
     if (step.action === 'begin') wiring.onBegin();
     if (step.action !== null) wiring.dictate().act(step.action);

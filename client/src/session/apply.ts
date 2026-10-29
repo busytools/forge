@@ -26,6 +26,7 @@ import {
   monitorFrom,
   prFrom,
   processesFrom,
+  machineTurn,
   subagentCardFrom,
   workFrom,
   type ComposerState,
@@ -90,7 +91,7 @@ export const HANDLERS: Record<string, Apply> = {
     const msg = payload['msg'];
     if (msg === undefined) return held;
     const conversation = appendFrame(held.conversation, msg);
-    const composer = compactingOf(held.composer, msg);
+    const composer = machineOf(held.composer, msg);
     const header = headerFrom(held.header, msg);
     if (
       conversation === held.conversation &&
@@ -100,6 +101,21 @@ export const HANDLERS: Record<string, Apply> = {
       return held;
     }
     return { ...held, conversation, composer, header };
+  },
+
+  /**
+   * **The machine turn, as the core announces it.** The record carries the
+   * same fact for a page that attaches mid-turn, but a read is not pushed -
+   * so a page already open learns the handoff begin and end here.
+   *
+   * **This source wins over the CLI's status frame**, which is the same
+   * precedence the record's own fold states: a handoff displaces a compaction,
+   * and a compaction never displaces a handoff.
+   */
+  machine_turn: (held, payload) => {
+    const machine = machineTurn(payload['machine']);
+    if (machine === held.composer.machine) return held;
+    return { ...held, composer: { ...held.composer, machine } };
   },
 
   hook_observation: (held, payload) => {
@@ -814,9 +830,14 @@ function knownEffort(held: Effort, value: unknown): Effort {
 /**
  * The compaction a status frame announces and the null that clears it, which
  * is the only place either is said. Mirrors `crates/forge-server/src/composer.rs`,
- * where the same frame is folded for the record's own `composer.compacting`.
+ * where the same frame is folded for the record's own flag.
+ *
+ * **The status frame owns `compacting`, not `machine`.** A handoff outranks a
+ * compaction on the wire, so folding this into `machine` would blank the
+ * handoff; kept apart, a handoff's own end leaves the box down over a
+ * compaction it was running on top of.
  */
-function compactingOf(held: ComposerState, message: unknown): ComposerState {
+function machineOf(held: ComposerState, message: unknown): ComposerState {
   const frame = record(message);
   if (frame['type'] !== 'system' || frame['subtype'] !== 'status') return held;
   const status = frame['status'];

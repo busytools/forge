@@ -109,9 +109,9 @@ describe('the router at a session address', () => {
    * loading, not empty, not refused.
    */
   it('mounts the conversation column', () => {
-    expect(draw(), 'the session page drew no conversation column').toContain(
-      'Reading the conversation',
-    );
+    // The column's own element, not a line it used to draw: the read wait is
+    // the composer band's, and the column is what the page still owes.
+    expect(draw(), 'the session page drew no conversation column').toContain('class="conv"');
   });
 
   /**

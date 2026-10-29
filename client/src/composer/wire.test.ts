@@ -142,7 +142,7 @@ describe('the composer record', () => {
         generation: 7,
         carried: true,
       },
-      compacting: false,
+      machine: null,
       sign_in: null,
     });
     expect(composer.notice).toEqual({
@@ -155,8 +155,46 @@ describe('the composer record', () => {
   });
 
   it('reads no notice as none', () => {
-    const composer = composerFrom({ take: null, notice: null, compacting: false, sign_in: null });
+    const composer = composerFrom({ take: null, notice: null, machine: null, sign_in: null });
     expect(composer.notice).toBeNull();
+  });
+
+  /**
+   * **The machine turn narrows to one of the two this build draws, and a
+   * state a newer server sends reads as none** - the least-alarming reading:
+   * the composer stays usable rather than freezing on a word it cannot
+   * explain.
+   */
+  it('narrows the machine turn and reads a state it does not know as none', () => {
+    const at = (machine: unknown): unknown =>
+      composerFrom({ take: null, notice: null, machine, sign_in: null }).machine;
+
+    expect(at('handoff')).toBe('handoff');
+    expect(at('compacting')).toBe('compacting');
+    expect(at(null)).toBeNull();
+    expect(at('summarising'), 'a state this build does not draw is not a freeze').toBeNull();
+
+    // **A v15 server names the compaction only.** No `machine` key at all, so
+    // the old boolean is the record's only word and a newer client beside an
+    // older server is not blind.
+    const old = composerFrom({ take: null, notice: null, compacting: true, sign_in: null });
+    expect(old.machine, 'the v15 key is read as a compaction').toBe('compacting');
+    expect(old.compacting, 'and it owns the box').toBe(true);
+    const settled = composerFrom({ take: null, notice: null, compacting: false, sign_in: null });
+    expect(settled.machine, 'and a v15 settle is no machine turn').toBeNull();
+
+    // **A record that carries `machine` is authoritative**, including when it
+    // says none: a v15 boolean left beside it must not resurrect a compaction
+    // the record has already ended.
+    const authoritative = composerFrom({
+      take: null,
+      notice: null,
+      machine: null,
+      compacting: true,
+      sign_in: null,
+    });
+    expect(authoritative.machine, 'the present key wins over the leftover').toBeNull();
+    expect(authoritative.compacting, 'and the leftover is not a compaction').toBe(false);
   });
 
   /**
@@ -177,7 +215,7 @@ describe('the composer record', () => {
           carried: true,
           surface,
         },
-        compacting: false,
+        machine: null,
         sign_in: null,
       }).notice;
 

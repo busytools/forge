@@ -162,7 +162,16 @@ pub mod wire;
 /// so its decoder fails and the surface draws nothing at all - a silent
 /// blank, which is exactly what the greeting's version is for.
 /// `baselines/socket/14/` is the record a v14 server emitted.
-pub const PROTOCOL_VERSION: u32 = 15;
+///
+/// **v16 is a bump for a renamed composer field.** The record's
+/// `composer.compacting` became `composer.machine`, which names a handoff
+/// beside a compaction. A v15 client reads no `compacting` and draws a live
+/// composer through a compaction it cannot see - the same silent wrong state
+/// a growing header caused at v15, reached by a rename instead. The new
+/// client reads the old name as a fallback, so a v15 server beside it still
+/// stands the box down; the bump is what tells an old client its server has
+/// moved. `baselines/socket/15/` is the record a v15 server emitted.
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

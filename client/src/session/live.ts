@@ -1001,6 +1001,17 @@ function createSeat(
       return;
     }
 
+    // **A machine turn ending is the record's to state**, and only when one
+    // was held. The core's abort says only "not a handoff": a CLI compaction
+    // running under the handoff is still running, and only the record folds
+    // both sources. **Gated on what the page holds**, because a session death
+    // sends the same `null` to every seat - and a record encode per death is
+    // the 6.5 MB read a page with nothing to correct would pay for nothing.
+    const held = seat.wire?.composer.machine ?? null;
+    if (name === 'machine_turn' && payload['machine'] === null && held !== null) {
+      reread();
+    }
+
     // A fired cron's schedule reaches no field of this record: the row's
     // prose carries the prompt, and the pairing lives on the frame alone.
     // Kept before the record's own early return, because this update is one

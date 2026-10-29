@@ -125,9 +125,11 @@ being refused as busy.
 | Running | the turn's figures leading the strip lane; `stop` beside the mic, and escape its key |
 | A question parked | the dock's lane in place of the field |
 | Sign-in needed | the box stays, with the sign-in line above it: the reader is told where, not blocked |
-| Compacting | `Compacting context...`, a ring, no field |
-| A command in flight | `Running <name>` for the slash command the turn is still working on |
-| Waking | `Waking up agent...` while the lead's seat comes up |
+| A handoff | `handing this session over`, the sweep, no field |
+| Compacting | `compacting this session`, the sweep, no field |
+| A command in flight | `Running <name>` for the slash command the turn is still working on, the sweep |
+| Waking | `Waking up agent...` while the lead's seat comes up, the sweep |
+| Reading | `Reading the conversation...` while the seat's first page is out, the sweep |
 | Not running | `not running` and the seat's own reason: a worker's seat has no spawn coming, and says so |
 | A take that does not come up | the box stays, with the line above it: the microphone did not come up |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
@@ -136,6 +138,28 @@ being refused as busy.
 order the states are read in is the one a reader has to be told: a failing
 seat first, then a seat nothing has started, then the more specific truth
 about a turn the reader caused.
+
+**Every narrative hold is one draw.** Waking, reading, a command in flight, a
+compaction and a handoff all replace the box with one line and the same sweep
+moving through its words - only the text changes - so a hold reads the same
+wherever it comes from. The two states that are not progress carry no motion:
+`not running` states a stop, and the error keeps its own tone and its sub.
+
+**A machine turn is one the reader cannot type into.** A handoff replaces the
+seat when its judgment turn ends, and a compaction is the CLI rewriting the
+context; both take the field, the send and the mic away and name themselves in
+the line. The push-to-talk key begins nothing there, but a take already running
+still ends on it: the box draws no row to end one from, and Escape would throw
+the words away. The draft is the reader's and stays on the seat, so the words
+come back with the field when the machine turn ends.
+
+**A parked prompt outranks the machine line.** Both machine turns are ordinary
+tool-using turns - the judgment turn writes memory files and stops processes -
+so they raise permission prompts, and this box is the only surface that answers
+them. The dock draws, the line stands down, and the turn carries on once the
+prompt is answered; the alternative is a seat waiting for an answer nobody can
+give. A compaction still running when a handoff ends is read back off the
+record, so the box does not come alive under it.
 
 ## The two widths
 

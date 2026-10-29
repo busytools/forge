@@ -2419,6 +2419,45 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **A machine turn ending is re-read, and one beginning is not.**
+   *
+   * The core's abort says only "not a handoff" - a CLI compaction that was
+   * running under the handoff is still running, and only the record folds
+   * both sources into the one `machine`. The begin needs no read: the frame
+   * carries all of it.
+   */
+  it('re-reads the seat when a machine turn ends, and not when one begins', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+
+    const began = page.reads();
+    page.land(updateOf({ machine_turn: { key: LEAD, machine: 'handoff' } }));
+    expect(page.reads(), 'a handoff beginning carries everything the page needs').toBe(began);
+
+    page.land(updateOf({ machine_turn: { key: LEAD, machine: null } }));
+    expect(page.reads(), 'the machine turn ending is the record to state').toBe(began + 1);
+    page.stop();
+  });
+
+  /**
+   * **An end frame asks for nothing when no machine turn was held.** A session
+   * death sends the same `null` to every seat it reaches, and a record encode
+   * is the heaviest read on the wire: a page with nothing to correct pays
+   * 6.5 MB for it.
+   */
+  it('does not re-read on a machine turn ending it never held', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+
+    const asked = page.reads();
+    page.land(updateOf({ machine_turn: { key: LEAD, machine: null } }));
+    expect(page.reads(), 'nothing was held to correct').toBe(asked);
+    page.stop();
+  });
+
+  /**
    * **A review touched on the seat re-reads it.** Reviews ride the record
    * rather than a frame - the notice carries no field the record has - so the
    * notice is the one cue to take the read again. The reviewer's own writes
@@ -3469,7 +3508,7 @@ describe('the read, and the answer a frame has outrun', () => {
         composer: {
           take: { phase: 'recording', floor_db: -50, levels: [], peak_db: -50 },
           notice: { kind: 'landed', text: 'the words', truncated: false },
-          compacting: false,
+          machine: null,
           sign_in: null,
         },
       }),

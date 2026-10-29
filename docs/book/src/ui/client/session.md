@@ -185,7 +185,9 @@ successor was given: the ground truth forge read off the transcript, git and
 the board - including what was still running when the seat changed: the live
 agents, background tasks, monitors and the session's process tree, so the
 successor knows what to resume - then the judgment the handing-over session
-wrote. **The brief is one
+wrote: where the work stood, the index of what it left - memory files, board
+rows, PRs and the transcript - and the next actions, so the successor opens what
+the note names rather than reading a retelling of it. **The brief is one
 table.** Each section takes its own labelled row, and the judgment's five
 headings sit on the same label column; the value takes the width the pane has
 and wraps inside its own row. Under the meta sit the record's own numbers:
@@ -349,6 +351,13 @@ where it has moved on) beside the whole thread, its turns in order.
   The reading lives in memory only, so a relaunch falls back to the last
   successful probe - or `-` where there is none - until the account answers
   again.
+
+**The column's hold lines are the band's.** A seat coming up and a
+conversation still being read say so in the composer's band under the column -
+one draw for every narrative hold, described on the composer's own page - so
+the column draws the conversation or nothing rather than a line of its own.
+The one line it keeps is `not running`: a worker's seat with no spawn coming
+is a stop, not a wait, and the band says the same thing.
 
 ## The two widths
 

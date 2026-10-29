@@ -162,8 +162,8 @@ impl Tool for Handoff {
          previous conversation on screen. The swap happens after the current turn ends, never \
          in the middle of it, on the same order `/new` uses. \
          \
-         Pass the note the skill has you write, under the five headings: Now, Tried and \
-         failed, Do not, Next, Done means."
+         Pass the note the skill has you write, under the five headings: Now, Where it \
+         stood, Pointers, Next, Done means."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -172,7 +172,7 @@ impl Tool for Handoff {
             "properties": {
                 "brief": {
                     "type": "string",
-                    "description": "The handoff note the skill has you write, under the headings Now, Tried and failed, Do not, Next and Done means.",
+                    "description": "The handoff note the skill has you write, under the headings Now, Where it stood, Pointers, Next and Done means.",
                 },
             },
             "additionalProperties": false,
@@ -1285,6 +1285,25 @@ mod tests {
                 &[(slot, "Now: the cut is half in.".to_owned())],
                 "the caller's own seat, with the note it wrote",
             );
+        }
+    }
+
+    /// **The tool's own words name the five headings the parser reads.** A
+    /// heading renamed in the prompt but not here tells the model to write a
+    /// note the parser rejects, and the successor reads that it never arrived.
+    #[test]
+    fn the_handoff_tool_names_the_headings_the_parser_reads() {
+        let host = host();
+        let tool = Handoff { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let field = tool.input_schema()["properties"]["brief"]["description"]
+            .as_str()
+            .map(str::to_owned)
+            .expect("the brief's own description");
+
+        for text in [tool.description().to_owned(), field] {
+            for heading in crate::handoff::JUDGMENT_HEADINGS {
+                assert!(text.contains(heading), "the tool's words drop '{heading}': {text}");
+            }
         }
     }
 

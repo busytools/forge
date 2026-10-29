@@ -270,7 +270,8 @@ census!(Subject,
 census!(SessionUpdate,
     [
         Spawning struct, Connected struct, HistoryReplayed struct, CallOutput struct,
-        SessionReplaced struct, Handoff struct, ConnectionFailed struct, Releasing struct,
+        SessionReplaced struct, Handoff struct, MachineTurn struct,
+        ConnectionFailed struct, Releasing struct,
         AuthRequired struct, Notice struct,
         SetModeFailed struct, SetModelFailed struct,
         PermissionRequest struct, QuestionRequest struct, PendingInteractionResolved struct,
@@ -932,6 +933,17 @@ fn frames_record() -> Value {
 
     let mut payload_sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     payload_sampled.insert("ChatAppended".to_owned(), shape_of(&an_update(update_sample)));
+    // **The machine turn's own field path.** A rename of `machine` makes the
+    // client's `machineTurn()` read null, the composer never stands down, and
+    // every other test stays green. The VALUE (`handoff`) is held by
+    // `wire.rs`'s mid-handoff record test, which is where a value is pinned.
+    payload_sampled.insert(
+        "MachineTurn".to_owned(),
+        shape_of(&an_update(SessionUpdate::MachineTurn {
+            key: seat.clone(),
+            machine: Some(forge_primitives::runtime::MachineTurn::Handoff),
+        })),
+    );
     payload_sampled.insert(
         "Page".to_owned(),
         shape_of(&ServerMessage::Page {

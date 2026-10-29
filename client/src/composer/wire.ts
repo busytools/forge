@@ -2,8 +2,8 @@
  * What the core sends the composer, narrowed once at the boundary.
  *
  * `crates/forge-server/src/transport/wire.rs` is the sender: `composer` carries
- * a compaction and a sign-in, and `pending_asks` carries the prompts the seat
- * is holding. The take and the notice are NOT on the record - a take belongs to
+ * the machine turn and a sign-in, and `pending_asks` carries the prompts the
+ * seat is holding. The take and the notice are NOT on the record - a take belongs to
  * the connection that started it - so this client builds them from its own
  * take's updates, which no other connection receives. Everything here is a
  * narrowing rather than a decision about how any of it looks - the gather into
@@ -12,6 +12,7 @@
 
 import { bindFrom, modeFrom, type Bind, type Mode } from './dictate-key';
 import { FALLBACK_FLOOR_DB } from './meter';
+import { machineFrom, type MachineTurn } from '../session/wire';
 
 /** What a take is doing, as `Phase` serialises. */
 export type TakePhase = 'recording' | 'transcribing';
@@ -87,6 +88,13 @@ export interface SignIn {
 export interface ComposerState {
   take: Take | null;
   notice: Notice | null;
+  /** The machine turn the wire names, or null when it names none. */
+  machine: MachineTurn | null;
+  /**
+   * The CLI's own compaction, kept beside `machine` because a handoff
+   * outranks it on the wire - and a handoff ending must not hand the box
+   * back under one. Read through {@link machineInForce}, never directly.
+   */
   compacting: boolean;
   signIn: SignIn | null;
   /** The push-to-talk key `forge.toml` configured, which is the one honoured. */
@@ -215,7 +223,10 @@ export function composerFrom(value: unknown): ComposerState {
   return {
     take: takeFrom(held['take']),
     notice: noticeFrom(held['notice']),
-    compacting: held['compacting'] === true,
+    machine: machineFrom(held),
+    // Derived from the same reading, so a stale old key cannot resurrect a
+    // compaction a v16 record has already ended.
+    compacting: machineFrom(held) === 'compacting',
     signIn: signInFrom(held['sign_in']),
     bind: bindFrom(held['bind']),
     mode: modeFrom(held['mode']),
@@ -499,10 +510,26 @@ function list(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+/**
+ * The machine turn in force, from the two facts the state keeps apart.
+ *
+ * **A handoff outranks a compaction**, which is the wire's own order - and a
+ * compaction the handoff ran over is still there when the handoff ends, so it
+ * takes the box back rather than leaving it live for one round trip.
+ */
+export function machineInForce(composer: {
+  machine: MachineTurn | null;
+  compacting: boolean;
+}): MachineTurn | null {
+  if (composer.machine === 'handoff') return 'handoff';
+  return composer.compacting ? 'compacting' : composer.machine;
+}
+
 /** Nothing a composer draws, for a seat whose page is still reading. */
 export const NO_COMPOSER: ComposerState = {
   take: null,
   notice: null,
+  machine: null,
   compacting: false,
   signIn: null,
   bind: 'right_cmd',

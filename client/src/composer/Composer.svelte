@@ -20,6 +20,7 @@
   import DictationPanel from './DictationPanel.svelte';
   import Dock from './Dock.svelte';
   import Field from './Field.svelte';
+  import Hold from './Hold.svelte';
   import TakeoverBar from './TakeoverBar.svelte';
   import { LIST_ID, offer, rowId, type Sources } from './autocomplete';
   import { axesFor, deviceFor, rememberAxes, rememberDevice } from './dictation';
@@ -45,13 +46,19 @@
     signInLine,
     type ComposerProps,
   } from './view';
-  import { advisoriesFrom, agentTypesFrom, filesFrom, resumeSessionsFrom } from './wire';
+  import {
+    advisoriesFrom,
+    agentTypesFrom,
+    filesFrom,
+    machineInForce,
+    resumeSessionsFrom,
+  } from './wire';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
 
-  let { record, slot, connection, seat, dictation }: ComposerProps = $props();
+  let { record, slot, connection, seat, dictation, reading }: ComposerProps = $props();
 
   /**
    * Every box this composer has opened, held for as long as it lives: leaving a
@@ -336,7 +343,9 @@
     dockPresent: dockOpen,
   } satisfies Where);
 
-  const blocker = $derived(blocked(seat, composer, box.sent, slot.label === 'lead'));
+  const blocker = $derived(
+    blocked(seat, composer, box.sent, slot.label === 'lead', dockAsk !== null, reading),
+  );
   const filled = $derived(box.draft.trim() !== '');
 
   /**
@@ -994,6 +1003,7 @@
     offered: () => dictation,
     bind: () => composer.bind,
     mode: () => composer.mode,
+    machine: () => machineInForce(composer) !== null,
     onBegin: () => {
       // Never scrolls: the box is already on screen, and a key press that
       // scrolled the page would move the chat under the reader.
@@ -1374,15 +1384,7 @@
     {/if}
     <Pinned info={pinnedRow.of(seatKey)} {slot} />
     {#if blocker !== null}
-      <div class="box">
-        <div class="blocked">
-          <span class="b1">
-            {#if blocker.waiting}<span class="ring"></span>{/if}
-            <span class:shimmer={blocker.shimmer}>{blocker.line}</span>
-          </span>
-          {#if blocker.sub !== null}<span class="b2">{blocker.sub}</span>{/if}
-        </div>
-      </div>
+      <Hold line={blocker.line} sub={blocker.sub} bad={blocker.bad} shimmer={blocker.shimmer} />
     {:else if dockAsk !== null}
       <!-- Keyed on the prompt, so a batch's next question is a fresh dock: the
          wire's option ids are positional, so a mark or a toggle left over from

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { machineInForce } from '../composer/wire';
 import { applyUpdate, HANDLERS, IGNORED, REPLACES } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
@@ -1025,12 +1026,65 @@ describe('applyUpdate', () => {
           msg: { type: 'system', subtype: 'status', status: 'compacting' },
         },
       });
-      expect(compacting.composer.compacting).toBe(true);
+      expect(compacting.composer.compacting, 'the flag is what the frame sets').toBe(true);
+      expect(machineInForce(compacting.composer), 'and it owns the box').toBe('compacting');
 
       const settled = applyUpdate(compacting, {
         chat_appended: { key: SLOT, msg: { type: 'system', subtype: 'status', status: null } },
       });
       expect(settled.composer.compacting).toBe(false);
+      expect(machineInForce(settled.composer)).toBeNull();
+    });
+
+    it('leaves a handoff standing when a compaction settles beside it', () => {
+      // The handoff comes off the record read, which no frame carries - so a
+      // status null is news about the compaction and must not hand the
+      // composer back while the seat is still being replaced.
+      const held = empty();
+      const replacing = { ...held, composer: { ...held.composer, machine: 'handoff' as const } };
+
+      const settled = applyUpdate(replacing, {
+        chat_appended: { key: SLOT, msg: { type: 'system', subtype: 'status', status: null } },
+      });
+      expect(settled.composer.machine, 'the handoff is not a compaction').toBe('handoff');
+      expect(machineInForce(settled.composer), 'and it still owns the box').toBe('handoff');
+    });
+
+    it('keeps a handoff over a compaction whose status frame arrives beside it', () => {
+      // A handoff outranks a compaction: the flag is kept apart from the
+      // machine turn, so a compaction cannot displace the handoff - and it is
+      // still there when the handoff ends.
+      const held = empty();
+      const replacing = { ...held, composer: { ...held.composer, machine: 'handoff' as const } };
+
+      const live = applyUpdate(replacing, {
+        chat_appended: {
+          key: SLOT,
+          msg: { type: 'system', subtype: 'status', status: 'compacting' },
+        },
+      });
+      expect(live.composer.machine, 'a compaction does not displace the handoff').toBe('handoff');
+      expect(machineInForce(live.composer), 'the handoff is in force').toBe('handoff');
+
+      const ended = applyUpdate(live, { machine_turn: { key: SLOT, machine: null } });
+      expect(ended.composer.machine, 'the handoff is over').toBeNull();
+      expect(
+        machineInForce(ended.composer),
+        'and the compaction it ran over takes the box rather than leaving it live for a round trip',
+      ).toBe('compacting');
+    });
+
+    it('takes the machine turn the core announces, both ways', () => {
+      // A page already open never re-reads the record for a handoff, so these
+      // two frames are the whole of what stands the composer down and hands
+      // it back.
+      const began = applyUpdate(empty(), {
+        machine_turn: { key: SLOT, machine: 'handoff' },
+      });
+      expect(began.composer.machine).toBe('handoff');
+
+      const ended = applyUpdate(began, { machine_turn: { key: SLOT, machine: null } });
+      expect(ended.composer.machine).toBeNull();
     });
   });
 
@@ -1196,7 +1250,7 @@ describe('applyUpdate', () => {
 });
 
 /**
- * Every variant `SessionUpdate` carries - 71 of them - read off the enum in
+ * Every variant `SessionUpdate` carries - 72 of them - read off the enum in
  * `crates/forge-workspace/src/protocol.rs` and held here as a set rather than
  * in any order: the assertions below filter over it, and the test beside the
  * enum reads it back to check the two carry the same names.
@@ -1216,6 +1270,7 @@ const EVERY_VARIANT = [
   'call_output',
   'session_replaced',
   'handoff',
+  'machine_turn',
   'connection_failed',
   'releasing',
   'auth_required',
@@ -1341,9 +1396,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (71 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (72 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(71);
+    ).toBe(72);
   });
 
   it('classifies every variant the core can send', () => {

@@ -18,6 +18,7 @@
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
+  import { conversationsFor } from '../chat/conversations';
   import { emptyComposer } from '../composer/view';
   import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
@@ -116,6 +117,19 @@
   });
 
   const record: SessionRecord | null = $derived(read.wire);
+
+  /**
+   * Whether the seat's conversation is still on its way.
+   *
+   * Read off the conversation the column keeps for this seat, so the line the
+   * composer's band draws and the column's own state are one fact. Before the
+   * column has opened a conversation there is nothing to wait on, and the
+   * seat's own lifecycle carries the state.
+   */
+  const reading = $derived.by(() => {
+    const held = conversationsFor(connection).kept.get(subjectKey({ session: slot }));
+    return held !== undefined && !held.loaded;
+  });
 
   /**
    * The dispatch join follows the record: the chat's rows read their cards
@@ -786,14 +800,11 @@
       {#if conversation !== null}
         {@render conversation(conversationProps)}
       {:else if seat.waking || seat.lifecycle === 'Spawning'}
-        <!-- The seat's own state, which this column owns: a seat coming up -
-             a spawn the core is running, or the lead's own this page
-             dispatched - draws the waking line, while a worker's seat the
-             roster does not name has no spawn coming and says so. -->
+        <!-- The seat's own state. **The waking line is the band's**, so this
+             column draws nothing for a seat coming up; the one line it keeps
+             is the worker's, whose seat has no spawn coming and says so. -->
         <div class="conv">
-          {#if seat.lifecycle === 'Spawning' || slot.label === 'lead'}
-            <div class="hold"><span class="shimmer">Waking up agent...</span></div>
-          {:else}
+          {#if !(seat.lifecycle === 'Spawning' || slot.label === 'lead')}
             <div class="hold off">
               not running
               <span class="sub">{seat.reason ?? 'this seat has no session behind it'}</span>
@@ -818,6 +829,7 @@
         slot,
         seat,
         connection,
+        reading,
       })}
     </div>
   {/if}

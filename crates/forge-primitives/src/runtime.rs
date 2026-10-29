@@ -319,6 +319,18 @@ pub enum RuntimeSessionState {
     RequiresAction,
 }
 
+/// The machine turn running on a seat, which takes its composer away.
+///
+/// Both are turns the person did not start and cannot type into: forge's own
+/// judgment prompt, and the CLI's compaction. A handoff outranks a compaction,
+/// because it is the one that replaces the seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineTurn {
+    Handoff,
+    Compacting,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsParseErrorUpdate {
     pub file: Option<String>,

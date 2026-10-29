@@ -52,7 +52,7 @@
   function blank(): ComposerRecord {
     return {
       slot: { org: 'Busytools', project: 'forge', label: 'lead' },
-      composer: { take: null, notice: null, compacting: false, sign_in: null },
+      composer: { take: null, notice: null, machine: null, sign_in: null },
       pending_asks: [],
       header: { turn_in_flight: false },
       slash_commands: [
@@ -80,6 +80,7 @@
       seat: over.seat ?? seat(),
       connection: idle,
       dictation: over.dictation ?? false,
+      reading: over.reading ?? false,
     };
   }
 
@@ -280,7 +281,7 @@
           composer: {
             take: null,
             notice: null,
-            compacting: false,
+            machine: null,
             sign_in: {
               method_name: 'claude.ai · Anthropic OAuth (Pro)',
               method_description: '',
@@ -295,7 +296,7 @@
         dictation: true,
         record: {
           ...blank(),
-          composer: { take: take(), notice: null, compacting: false, sign_in: null },
+          composer: { take: take(), notice: null, machine: null, sign_in: null },
         },
       },
     },
@@ -308,7 +309,7 @@
           composer: {
             take: take({ phase: 'transcribing', progress: [2, 6], peak_db: -22 }),
             notice: null,
-            compacting: false,
+            machine: null,
             sign_in: null,
           },
         },
@@ -327,7 +328,7 @@
               tone: 'q',
               text: 'nothing above -50 dBFS in 4s · loudest was -38.2 · try again',
             },
-            compacting: false,
+            machine: null,
             sign_in: null,
           },
         },
@@ -346,7 +347,7 @@
               tone: 'bad',
               text: 'microphone is held by another application',
             },
-            compacting: false,
+            machine: null,
             sign_in: null,
           },
         },
@@ -360,7 +361,7 @@
           composer: {
             take: null,
             notice: { kind: 'landed', text: 'fix the flaky retry test and', truncated: false },
-            compacting: false,
+            machine: null,
             sign_in: null,
           },
         },
@@ -371,16 +372,29 @@
       props: { seat: seat({ lifecycle: 'Spawning' }) },
     },
     {
+      label: 'blocking · reading the conversation',
+      props: { reading: true },
+    },
+    {
       label: 'blocking · a slash command in flight (typed, then sent)',
       props: { record: { ...blank(), header: { turn_in_flight: true } } },
       driven: '/compact',
+    },
+    {
+      label: 'blocking · handing the session over',
+      props: {
+        record: {
+          ...blank(),
+          composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+        },
+      },
     },
     {
       label: 'blocking · compacting',
       props: {
         record: {
           ...blank(),
-          composer: { take: null, notice: null, compacting: true, sign_in: null },
+          composer: { take: null, notice: null, machine: 'compacting', sign_in: null },
         },
       },
     },
@@ -403,7 +417,7 @@
         record: {
           ...blank(),
           pending_asks: [permission],
-          composer: { take: take(), notice: null, compacting: false, sign_in: null },
+          composer: { take: take(), notice: null, machine: null, sign_in: null },
         },
       },
     },

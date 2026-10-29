@@ -208,7 +208,7 @@ describe('the files page take', () => {
     const base = record('/Users/me/proj') as Record<string, unknown>;
     const at = (composer: unknown): unknown => ({ ...base, composer });
     push({
-      wire: at({ take: null, notice: null, compacting: false, sign_in: null }),
+      wire: at({ take: null, notice: null, machine: null, sign_in: null }),
       refused: null,
     });
     flushSync();
@@ -238,7 +238,7 @@ describe('the files page take', () => {
           floor_db: -50,
         },
         notice: null,
-        compacting: false,
+        machine: null,
         sign_in: null,
       }),
       refused: null,
@@ -248,7 +248,7 @@ describe('the files page take', () => {
       wire: at({
         take: null,
         notice: { kind: 'landed', text: 'the words', truncated: false, generation: 1 },
-        compacting: false,
+        machine: null,
         sign_in: null,
       }),
       refused: null,
@@ -278,7 +278,7 @@ describe('the files page take', () => {
           carried: true,
           generation: 4,
         },
-        compacting: false,
+        machine: null,
         sign_in: null,
       }),
       refused: null,
