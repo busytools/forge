@@ -338,7 +338,7 @@ mod tests {
         let (events, mut watcher) = mpsc::unbounded_channel();
         let events = EventSink::Unbounded(events);
 
-        for n in 0..(EVENT_BACKLOG + 1) {
+        for n in 0..=EVENT_BACKLOG {
             assert_eq!(forward_event(&events, json!({ "n": n })), Forwarded::Sent);
         }
         let mut kept = 0;
