@@ -284,20 +284,15 @@ every `platforms` entry must carry both a `url` and a `signature` or the
 whole file fails to parse. `just publish <version>` creates the release for a
 tag already on origin, and `just release` runs it itself as its last step.
 
-The phone updates from the same manifest. Its top-level `version` is what the
-app compares against its own, and the `android` block beside `platforms`
-carries the APK's `url` (the desktop parser ignores that key). The download
-is checked before it can reach the installer - its signer against this
-install's own signer, which is the release keystore's on a release build and
-is exactly the identity the system installer checks anyway, and its
-`versionName` against the manifest's version. A file that fails is deleted
-rather than reused; a file that passes is kept in the cache, so handing it to
-the installer again is a tap with no second download. `REQUEST_INSTALL_PACKAGES`
-is what the handoff needs, the installer prompt is the confirmation, and no
-silent path exists for a sideloaded app. The Android side is
-`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt` plus the manifest
-permission, both project source that `tauri android init` would regenerate
-away - re-apply them the way the section below describes.
+The phone reads the same manifest. Its top-level `version` is what the app
+compares against its own, and the `android` block beside `platforms` carries
+the APK's `url` and the release page's `release` (the desktop parser ignores
+those keys). The phone installs nothing itself: the header's line opens the
+release page in the browser, and the APK is installed by hand from there,
+which is why the app declares no install-packages permission. The Android
+side is `app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`, project
+source that `tauri android init` would regenerate away - re-apply it the way
+the section below describes.
 
 ## The web image
 
@@ -357,8 +352,9 @@ genuinely cannot.
 `src-tauri/gen/android/` is the Gradle project `tauri android init`
 generates, and it is committed: the manifest, the Kotlin activity and the
 Gradle files are project source rather than build output, so its local
-edits - the manifest's mic permissions and its `REQUEST_INSTALL_PACKAGES`,
-the activity's back handling and the window insets it hands the page, the
+edits - the manifest's mic and notification permissions and its removal of
+the notification plugin's reboot receivers, the
+activity's back handling and the window insets it hands the page, the
 update plugin (`app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`) and
 the release signing block in `app/build.gradle.kts` - survive a clean clone.
 **The phone carries no browser**: it is a viewer of the server's, and its
