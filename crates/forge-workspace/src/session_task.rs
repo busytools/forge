@@ -2224,18 +2224,13 @@ impl SessionTask {
         judgment: Vec<forge_primitives::HandoffSection>,
     ) {
         let Some(workspace) = self.workspace.upgrade() else { return };
-        let (from, model, permission_mode, fill, token) = {
+        let (from, fill, token) = {
             let mut domain = self.domain.lock();
             let from = domain.session_id.as_ref().map(std::string::ToString::to_string);
-            let model = domain.current_model.as_ref().map(|model| model.display_name_short.clone());
-            let mode = domain
-                .observed_permission_mode
-                .or(domain.configured_permission_mode)
-                .map(|mode| mode.as_wire().to_owned());
             let fill = domain.handoff.fill;
             let token = domain.handoff.swap_token;
             domain.handoff = crate::domain_session::HandoffState::default();
-            (from, model, mode, fill, token)
+            (from, fill, token)
         };
         let Some(from) = from else {
             // Nothing to hand over: close the gate this beginning opened and
@@ -2306,9 +2301,6 @@ impl SessionTask {
             fill,
             at_percent: policy.at_percent,
             role,
-            account: self.handle.display_name(),
-            model,
-            permission_mode,
             judgment,
             cwd,
             launch_settings,
