@@ -78,12 +78,6 @@ export type Notice =
     }
   | { kind: 'line'; tone: string; text: string; generation?: number };
 
-/** The sign-in a seat is waiting on, which makes the hint say which account. */
-export interface SignIn {
-  methodName: string;
-  methodDescription: string;
-}
-
 /** What the seat's composer is doing, which a client cannot reconstruct. */
 export interface ComposerState {
   take: Take | null;
@@ -96,7 +90,6 @@ export interface ComposerState {
    * back under one. Read through {@link machineInForce}, never directly.
    */
   compacting: boolean;
-  signIn: SignIn | null;
   /** The push-to-talk key `forge.toml` configured, which is the one honoured. */
   bind: Bind;
   /** How a press of that key maps onto a take, from the same section. */
@@ -227,7 +220,6 @@ export function composerFrom(value: unknown): ComposerState {
     // Derived from the same reading, so a stale old key cannot resurrect a
     // compaction a v16 record has already ended.
     compacting: machineFrom(held) === 'compacting',
-    signIn: signInFrom(held['sign_in']),
     bind: bindFrom(held['bind']),
     mode: modeFrom(held['mode']),
   };
@@ -271,15 +263,6 @@ function noticeFrom(value: unknown): Notice | null {
     };
   }
   return { kind: 'line', tone: text(held['tone']) ?? 'q', text: text_, ...kept };
-}
-
-function signInFrom(value: unknown): SignIn | null {
-  if (value === null || value === undefined) return null;
-  const held = record(value);
-  return {
-    methodName: text(held['method_name']) ?? '',
-    methodDescription: text(held['method_description']) ?? '',
-  };
 }
 
 /** The prompt the seat is parked on, or `null` when nothing waits. */
@@ -531,7 +514,6 @@ export const NO_COMPOSER: ComposerState = {
   notice: null,
   machine: null,
   compacting: false,
-  signIn: null,
   bind: 'right_cmd',
   mode: 'auto',
 };

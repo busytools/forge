@@ -237,7 +237,7 @@ interface Blocker {
 }
 
 /** The line the box's own key hints draw, where the mockup draws them. */
-const SIGN_IN_FALLBACK = 'Run `claude auth login` in another terminal to authenticate';
+export const SIGN_IN_FALLBACK = 'Run `claude auth login` in another terminal to authenticate';
 
 /** A stated stop carries no motion and no error tone. */
 const STOPPED: Pick<Blocker, 'bad' | 'shimmer'> = { bad: false, shimmer: false };
@@ -319,12 +319,6 @@ export function blocked(
     return { line: `Running ${command}`, sub: null, bad: false, shimmer: true };
   }
   return null;
-}
-
-/** The sign-in method's own words for how to authenticate, when the core sent them. */
-export function signInLine(composer: ComposerState): string {
-  const described = composer.signIn?.methodDescription ?? '';
-  return described.trim() === '' ? SIGN_IN_FALLBACK : described;
 }
 
 /** What a take says when it hit its cap and landed only part of what was said. */

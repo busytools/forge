@@ -434,24 +434,6 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
         }
         "slack_draft_resolved" => clear_ask(record, payload.get("id"), "slack"),
         "browser_hand_off_resolved" => clear_ask(record, payload.get("id"), "handoff"),
-        "auth_required" => {
-            let method = payload.get("method_name").and_then(Value::as_str);
-            let description = payload.get("method_description").and_then(Value::as_str);
-            if method.is_none() && description.is_none() {
-                return false;
-            }
-            let Some(composer) = record.get_mut("composer").and_then(Value::as_object_mut) else {
-                return false;
-            };
-            composer.insert(
-                "sign_in".to_owned(),
-                json!({
-                    "method_name": method.unwrap_or(""),
-                    "method_description": description.unwrap_or(""),
-                }),
-            );
-            true
-        }
         // **A take is never folded here.** It belongs to the connection that
         // started it - the wire's own composer says so ("no take and no
         // notice") - so a record has no place for one and the page's own

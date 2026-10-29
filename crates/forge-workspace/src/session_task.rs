@@ -718,13 +718,6 @@ impl SessionTask {
                     );
                 }
             }
-            AgentEvent::AuthRequired { method_name, method_description } => {
-                self.emit(SessionUpdate::AuthRequired {
-                    key: self.key.clone(),
-                    method_name,
-                    method_description,
-                });
-            }
             AgentEvent::ConnectionFailed { message, kind } => {
                 let key = self.key.clone();
                 // Before the release below takes the session with it: a
@@ -3181,9 +3174,7 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
     // The login wait, from the two signals the CLI actually sends: it
     // attributes the failure to the assistant message, or names it on the
     // retry frame. `AssistantMessageError` is typed, so nothing here keys
-    // on prose. `AgentEvent::AuthRequired` is constructed nowhere in the
-    // tree, and its arm stays for the state's own name rather than for a
-    // producer that exists.
+    // on prose.
     if let AgentEvent::SdkMessage { msg, .. } = event {
         match msg {
             forge_primitives::Message::Assistant {
@@ -3203,9 +3194,6 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
             }
             _ => {}
         }
-    }
-    if let AgentEvent::AuthRequired { .. } = event {
-        domain.awaiting_login = true;
     }
     // A `TurnError` the classifier reads as auth-required holds the session
     // on `/login`. The class is derived where the event is built, so it is
@@ -3405,11 +3393,10 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
             drain_settled_monitors(domain);
         }
     }
-    // The two events that end a run leave the session with no runtime
-    // identity: a login wait, and a connection that died. The core blanks
-    // what a view reads through it - a mode or a model left standing
-    // describes a run that is gone.
-    if matches!(event, AgentEvent::ConnectionFailed { .. } | AgentEvent::AuthRequired { .. }) {
+    // A connection that died leaves the session with no runtime identity.
+    // The core blanks what a view reads through it - a mode or a model left
+    // standing describes a run that is gone.
+    if matches!(event, AgentEvent::ConnectionFailed { .. }) {
         clear_runtime_identity(domain);
     }
     if let AgentEvent::HookObservation { permission_mode, effort, .. } = event {
@@ -10671,26 +10658,10 @@ provider = "anthropic"
         assert_eq!(domain.context_usage, None, "nor the context it had filled");
     }
 
-    /// A login wait and a dead connection both blank the session's
-    /// runtime identity, and a view renders that: what the core holds has
-    /// to go with the run it described, or the read answers with a mode
-    /// and a model the session no longer has.
-    #[test]
-    fn a_login_wait_clears_the_held_view_facts() {
-        let mut domain = seeded_view_facts();
-
-        apply_event_to_domain(
-            &mut domain,
-            &AgentEvent::AuthRequired {
-                method_name: "oauth".to_owned(),
-                method_description: "sign in".to_owned(),
-            },
-        );
-
-        assert_view_facts_cleared(&domain, "no credential");
-    }
-
-    /// The same, for the other event that ends a run.
+    /// A dead connection blanks the session's runtime identity, and a view
+    /// renders that: what the core holds has to go with the run it
+    /// described, or the read answers with a mode and a model the session no
+    /// longer has.
     #[test]
     fn a_dead_connection_clears_the_held_view_facts() {
         let mut domain = seeded_view_facts();

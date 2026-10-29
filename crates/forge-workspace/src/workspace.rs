@@ -15816,9 +15816,8 @@ mod worker_activity_tests {
         );
 
         // The signal that actually arrives: a turn that died on a missing
-        // credential. `AgentEvent::AuthRequired` is constructed nowhere in
-        // the tree, so without this the state is unreachable and the row
-        // draws a calm idle for a session held on `/login`.
+        // credential. Without it the state is unreachable and the row draws
+        // a calm idle for a session held on `/login`.
         let by_error = SessionSlot::from_str_for_test("s-login-error");
         let domain = ws.register_domain_session(by_error.clone(), None);
         let auth_message = "authentication failed: please log in";

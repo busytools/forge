@@ -1453,11 +1453,6 @@ pub enum SessionUpdate {
     Releasing {
         key: SessionSlot,
     },
-    AuthRequired {
-        key: SessionSlot,
-        method_name: String,
-        method_description: String,
-    },
     /// One line the core has for a view about `key`, which nothing else
     /// carries.
     ///
@@ -2130,7 +2125,6 @@ impl SessionUpdate {
             | Self::MachineTurn { key, .. }
             | Self::ConnectionFailed { key, .. }
             | Self::Releasing { key }
-            | Self::AuthRequired { key, .. }
             | Self::Notice { key, .. }
             | Self::SetModeFailed { key, .. }
             | Self::SetModelFailed { key, .. }
@@ -2238,9 +2232,6 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::Releasing { key } => {
                 f.debug_struct("Releasing").field("key", key).finish_non_exhaustive()
-            }
-            Self::AuthRequired { key, .. } => {
-                f.debug_struct("AuthRequired").field("key", key).finish_non_exhaustive()
             }
             Self::Notice { key, .. } => {
                 f.debug_struct("Notice").field("key", key).finish_non_exhaustive()

@@ -278,15 +278,7 @@
         seat: seat({ lifecycle: 'AuthRequired' }),
         record: {
           ...blank(),
-          composer: {
-            take: null,
-            notice: null,
-            machine: null,
-            sign_in: {
-              method_name: 'claude.ai · Anthropic OAuth (Pro)',
-              method_description: '',
-            },
-          },
+          composer: { take: null, notice: null, machine: null },
         },
       },
     },

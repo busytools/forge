@@ -19,7 +19,6 @@
   },
   "session_update": {
     "AccountsChanged": "accounts_changed",
-    "AuthRequired": "auth_required",
     "BackgroundTasksChanged": "background_tasks_changed",
     "BrowserHandOffPending": "browser_hand_off_pending",
     "BrowserHandOffResolved": "browser_hand_off_resolved",

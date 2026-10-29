@@ -1,5 +1,5 @@
-//! The composer's live state: whether a seat is compacting, the sign-in it
-//! is waiting on, and the landed dictation nobody has sent yet.
+//! The composer's live state: whether a seat is compacting and the landed
+//! dictation nobody has sent yet.
 //!
 //! The wire announces each of these once and retains nothing, so what a
 //! composer draws is folded here from the stream. A view that attaches to an
@@ -16,24 +16,14 @@ use forge_primitives::SessionSlot;
 use crate::SessionUpdate;
 
 /// What the core's own reads cannot answer: the compaction the CLI announced
-/// on the status frame, the sign-in a seat is waiting on, and the landed take
-/// nobody sent.
+/// on the status frame and the landed take nobody sent.
 #[derive(Default, Clone)]
 pub struct Composer {
     compacting: HashSet<SessionSlot>,
-    sign_ins: HashMap<SessionSlot, SignIn>,
     /// The last landed take's words per seat, kept until a prompt carries
     /// them away: the wire lands them once, to the connection that dictated,
     /// and a page that reloads before the send reads them back from here.
     landed: HashMap<SessionSlot, Landed>,
-}
-
-/// The sign-in a seat is waiting on, as the wire names it. The method is what
-/// makes the hint say which account rather than only that one is needed.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct SignIn {
-    pub method_name: String,
-    pub method_description: String,
 }
 
 /// A landed take's words, as the record re-hands them: what would have gone
@@ -53,19 +43,10 @@ pub struct Landed {
 }
 
 impl Composer {
-    /// Fold one update in: the compaction the CLI announced, the sign-in a
-    /// seat is waiting on, and the landed take's words.
+    /// Fold one update in: the compaction the CLI announced and the landed
+    /// take's words.
     pub fn apply(&mut self, update: &SessionUpdate) {
         match update {
-            SessionUpdate::AuthRequired { key, method_name, method_description } => {
-                self.sign_ins.insert(
-                    key.clone(),
-                    SignIn {
-                        method_name: method_name.clone(),
-                        method_description: method_description.clone(),
-                    },
-                );
-            }
             // **A landing is the seat's until it is sent** (#1360). The wire
             // hands one to its own dictating connection and retains nothing,
             // so a reload in between used to lose the words. A later failure
@@ -141,10 +122,6 @@ impl Composer {
 
     pub fn compacting(&self, slot: &SessionSlot) -> bool {
         self.compacting.contains(slot)
-    }
-
-    pub fn sign_in(&self, slot: &SessionSlot) -> Option<&SignIn> {
-        self.sign_ins.get(slot)
     }
 
     /// The words a landed take left that nobody has sent yet, if there are any.

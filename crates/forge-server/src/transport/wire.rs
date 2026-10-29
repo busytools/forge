@@ -32,7 +32,6 @@ use forge_workspace::{Command, McpServers, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::composer::SignIn;
 use crate::file_index::FileIndex;
 use crate::surface::{AgentRow, PendingAsk, ViewSurface};
 use crate::transcript::{Rendered, TaskEnding, TurnSpan};
@@ -513,7 +512,6 @@ pub struct ComposerWire {
     /// The machine turn running on the seat, which takes the composer away:
     /// absent for a seat taking input.
     pub machine: Option<forge_primitives::runtime::MachineTurn>,
-    pub sign_in: Option<SignIn>,
     /// The push-to-talk key and how a press maps onto a take, in the
     /// vocabulary `forge.toml` accepts.
     ///
@@ -2556,7 +2554,6 @@ async fn session(
                     surface.handoff_in_flight(slot),
                     composer.compacting(slot),
                 ),
-                sign_in: composer.sign_in(slot).cloned(),
                 bind: surface.dictate_bind().label().to_owned(),
                 mode: surface.dictate_mode().label().to_owned(),
                 notice: composer.landed(slot).map(|landed| {

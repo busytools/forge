@@ -990,35 +990,6 @@ describe('applyUpdate', () => {
       expect(next, 'a report with nothing in it narrowed the take').toBe(held);
     });
 
-    it('raises the sign-in hint an auth_required carries', () => {
-      const next = applyUpdate(empty(), {
-        auth_required: {
-          key: SLOT,
-          method_name: 'claude.ai',
-          method_description: 'Run `claude auth login`',
-        },
-      });
-
-      expect(next.composer.sign_in).toEqual({
-        method_name: 'claude.ai',
-        method_description: 'Run `claude auth login`',
-      });
-    });
-
-    it('leaves a held sign-in alone for an auth_required that names no method', () => {
-      const held = applyUpdate(empty(), {
-        auth_required: {
-          key: SLOT,
-          method_name: 'claude.ai',
-          method_description: 'run `claude auth login`',
-        },
-      });
-
-      const next = applyUpdate(held, { auth_required: { key: SLOT } });
-
-      expect(next, 'a payload with nothing in it overwrote the sign-in').toBe(held);
-    });
-
     it('compacts on the status frame and stops on the null that clears it', () => {
       const compacting = applyUpdate(empty(), {
         chat_appended: {
@@ -1273,7 +1244,6 @@ const EVERY_VARIANT = [
   'machine_turn',
   'connection_failed',
   'releasing',
-  'auth_required',
   'notice',
   'set_mode_failed',
   'set_model_failed',
@@ -1396,9 +1366,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (72 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (71 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(72);
+    ).toBe(71);
   });
 
   it('classifies every variant the core can send', () => {
