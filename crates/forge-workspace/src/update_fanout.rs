@@ -1117,8 +1117,8 @@ mod tests {
         );
     }
 
-    /// The boot backlog keeps the numbers its frames were minted with, so a
-    /// client joining at the first subscribe has no hole at the join.
+    /// A frame that reached nobody still takes its seat's number, so a client
+    /// joining at the first subscribe has no hole at the join.
     #[test]
     fn a_frame_that_reached_nobody_still_advances_its_seats_number() {
         let fanout = UpdateFanout::default();

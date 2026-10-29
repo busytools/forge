@@ -484,9 +484,10 @@ where
 ///
 /// Every client message that carries a question is answered: a client is
 /// never left waiting on a message this server chose to drop, which is the
-/// failure that reads as a hang rather than as an error. Three carry none and
-/// are deliberately answered with nothing - `Showing`, `ClientPerf` and
-/// `Unsubscribe` are statements the server books, not requests.
+/// failure that reads as a hang rather than as an error. Five carry none and
+/// are deliberately answered with nothing - `Showing`, `ClientPerf`,
+/// `Unsubscribe`, `BrowserDetach` and `BrowserResize` are statements the
+/// server books, not requests.
 async fn drive<S>(
     socket: &mut S,
     state: &Arc<TransportState>,
@@ -1517,10 +1518,10 @@ where
                 // **A question that cannot be answered is REFUSED rather than
                 // answered with a value that looks like one.** An empty page
                 // carries `cursor: null`, and a client reads that as "nothing
-                // above" and stops asking - so a replay that did not arrive
-                // would make the seat's history unreachable rather than
-                // merely late, and a plausible `compaction_count: 0` would
-                // ride along with it.
+                // above" and stops asking - so a copy that did not become
+                // current would make the seat's history unreachable rather
+                // than merely late, and a plausible `compaction_count: 0`
+                // would ride along with it.
                 return send(
                     socket,
                     ServerMessage::Error {

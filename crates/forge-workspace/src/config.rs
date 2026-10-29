@@ -925,8 +925,6 @@ fn same_models(
 }
 
 fn same_client(previous: &ClientConfig, next: &ClientConfig) -> bool {
-    // The two browser_idle ghosts are not read by anything: comparing them
-    // would report a change the config does not carry.
     previous.mark == next.mark && previous.theme == next.theme && previous.font == next.font
 }
 

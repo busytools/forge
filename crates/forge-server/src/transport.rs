@@ -333,8 +333,8 @@ pub async fn serve(
     // to win, and a dropped `Connected` is a seat whose conversation the
     // transport never holds.
     //
-    // Observing, and without the backlog: the fold renders no prompt, and the
-    // boot notice belongs to the view that does.
+    // Observing: the fold renders no prompt, and the boot notice belongs to
+    // the view that does.
     tokio::spawn(fold_the_stream(Arc::clone(&state), updates));
 
     let router = Router::new().route("/socket", get(connection::upgrade)).with_state(state);

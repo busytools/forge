@@ -195,11 +195,9 @@ impl ViewSurface {
     /// The core's stream for a connecting client, registered with the
     /// role that client declared.
     ///
-    /// **Neither role takes the pre-attach backlog.** It goes to the first
-    /// subscriber - the view that renders the boot notice - so a client
-    /// attaching later must not take that notice away, whether or not the
-    /// client can answer. A client reads what it missed from the subject's
-    /// snapshot instead.
+    /// **A stream carries what follows its own subscribe and nothing
+    /// before it**, whatever the role: a client that attaches late reads what
+    /// it missed from the subject's snapshot.
     ///
     /// The role decides one thing: whether the core may park a prompt on this
     /// connection's reply. `answering` is the client's own statement that it
