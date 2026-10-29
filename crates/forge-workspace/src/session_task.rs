@@ -1938,10 +1938,9 @@ impl SessionTask {
             }
             let judgment = {
                 let mut domain = self.domain.lock();
-                // **A note is only a note if it parses.** The exit call's
-                // note wins when it is one; a malformed exit must not discard
-                // a valid captured note, and prose with no headings - from
-                // either source - is not the brief at all.
+                // **A note is whatever the turn ended on.** forge prescribes
+                // no shape for it, so any non-empty note is the brief; the
+                // exit call's note wins when both sources have one.
                 let supplied = domain.handoff.supplied.take();
                 let captured = domain.handoff.judgment.take();
                 let from_tool_call = supplied.is_some();
@@ -5126,9 +5125,9 @@ mod tests {
         );
     }
 
-    /// **No note means no note.** A turn that ends with prose and no exit
-    /// call hands the successor an explicit "the note did not arrive" section,
-    /// never the prose dressed as the brief.
+    /// **No note means no note.** A turn that ends on nothing hands the
+    /// successor an explicit "the note did not arrive" section, never filler
+    /// dressed as the brief.
     #[tokio::test]
     async fn a_handoff_without_a_note_states_it() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -5143,7 +5142,7 @@ mod tests {
             let mut domain = task.domain.lock();
             domain.handoff.awaiting = true;
             domain.handoff.swap_token = Some(token);
-            domain.handoff.judgment = Some("Memory updated.".to_owned());
+            domain.handoff.judgment = Some("   \n".to_owned());
         }
 
         task.after_turn_ended();
@@ -5166,8 +5165,8 @@ mod tests {
             section.lines,
         );
         assert!(
-            !section.lines.iter().any(|line| line.contains("Memory updated.")),
-            "the turn's prose is not dressed as the note: {:?}",
+            !section.lines.iter().any(|line| line.contains("Now: x")),
+            "an empty turn is not dressed as the note: {:?}",
             section.lines,
         );
     }
@@ -5199,8 +5198,8 @@ mod tests {
         assert!(stated, "the seat is told where a handoff starts");
     }
 
-    /// **A malformed exit does not discard a valid captured note.** The exit
-    /// call's note is tried first; when it is not a note, the capture is.
+    /// **An empty exit does not discard a valid captured note.** The exit
+    /// call's note is tried first; when it carries nothing, the capture is.
     #[tokio::test]
     async fn a_malformed_exit_falls_back_to_the_captured_note() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -5218,10 +5217,7 @@ mod tests {
             domain.handoff.judgment = Some("Now: the captured note.".to_owned());
         }
 
-        task.execute_command(Command::Handoff {
-            key: slot.clone(),
-            brief: Some("half a sentence, no headings".to_owned()),
-        });
+        task.execute_command(Command::Handoff { key: slot.clone(), brief: Some("   ".to_owned()) });
         task.after_turn_ended();
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
