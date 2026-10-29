@@ -2075,6 +2075,35 @@ describe('the record a page holds over an update stream', () => {
     page.stop();
   });
 
+  it('puts a published action with no chat row on the strip', () => {
+    const connection = drivable();
+    git.show(LEAD);
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.land(
+      updateOf({
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'system',
+            subtype: 'code_change_published',
+            provider: 'github',
+            url: 'https://github.com/example/example/pull/123',
+            repo: 'example/example',
+            identifier: '123',
+            action: 'edited',
+            uuid: 'c1',
+          },
+        },
+      }),
+    );
+
+    expect(git.noteNow()?.line, 'the edit is not silent').toBe(
+      'PR #123 edited in example/example',
+    );
+    page.stop();
+  });
+
   /**
    * **A visited seat keeps folding.** The store runs every subscribed seat's
    * frames, and the strip is one singleton, so a worker's commit would

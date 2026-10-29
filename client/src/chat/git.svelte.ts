@@ -46,6 +46,29 @@ export function vcsLine(kind: string | null, branch: string | null): string {
   return kind === 'push' ? `${said} ${branch}` : `${said} on ${branch}`;
 }
 
+/**
+ * The strip's line for a published change: the action the CLI announced, on
+ * the change it names. Every action gets one - the four that keep a chat row
+ * and the ones that do not alike - so a comment, an edit or a checkout is not
+ * silent (rule 25).
+ */
+export function changeLine(
+  provider: string | null,
+  identifier: string | null,
+  action: string | null,
+  repo: string | null,
+): string {
+  const noun =
+    provider === 'gitlab'
+      ? 'MR'
+      : provider?.startsWith('github') === true || provider === 'bitbucket'
+        ? 'PR'
+        : 'change';
+  const named = identifier === null ? noun : `${noun} #${identifier}`;
+  const did = action === null ? 'changed' : action;
+  return repo === null ? `${named} ${did}` : `${named} ${did} in ${repo}`;
+}
+
 class Git {
   #strip = $state<GitStrip | null>(null);
   #note = $state<StripNote | null>(null);

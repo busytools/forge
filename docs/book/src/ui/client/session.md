@@ -187,12 +187,13 @@ read as one system.
   `code_change_published` frame keeps a chat row only for the four
   transitions a reader would otherwise miss - `created`, `merged`, `closed`
   and `reopened` - naming the action, the repository and the change number,
-  with the URL a reader opens as the quiet tail; every other action is the
-  change's own state, and the strip's PR row carries it after the core's own
-  lookup. A chat row's open lists the frame's own fields, so a fact the line
-  does not spell is still reachable. **Both are events from the live
-  window**: the CLI writes neither to the transcript, so a conversation
-  reopened from it shows the tree and the PR row, but not the transient line.
+  with the URL a reader opens as the quiet tail; every other action rides the
+  strip's transient line, and the PR row carries its state after the core's
+  own lookup, so an edit, a comment or a checkout is not silent. A chat row's
+  open lists the frame's own fields, so a fact the line does not spell is
+  still reachable. **Both are events from the live window**: the CLI writes
+  neither to the transcript, so a conversation reopened from it shows the
+  tree and the PR row, but not the transient line.
 
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it

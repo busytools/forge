@@ -28,7 +28,7 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { releaseConversation } from '../chat/conversations';
 import { cronNames } from '../chat/cron-names.svelte';
-import { git, vcsLine } from '../chat/git.svelte';
+import { changeLine, git, vcsLine } from '../chat/git.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
@@ -308,15 +308,38 @@ function noteRepositoryEvent(update: SessionUpdate, slot: SessionSlot): void {
   if (name !== 'chat_appended') return;
   const msg = payload['msg'];
   if (msg === null || typeof msg !== 'object') return;
-  const held = msg as { type?: unknown; subtype?: unknown; kind?: unknown; branch?: unknown };
-  if (held.type !== 'system' || held.subtype !== 'vcs_state_changed') return;
-  git.note(
-    slot,
-    vcsLine(
-      typeof held.kind === 'string' ? held.kind : null,
-      typeof held.branch === 'string' ? held.branch : null,
-    ),
-  );
+  const held = msg as {
+    type?: unknown;
+    subtype?: unknown;
+    kind?: unknown;
+    branch?: unknown;
+    provider?: unknown;
+    identifier?: unknown;
+    action?: unknown;
+    repo?: unknown;
+  };
+  if (held.type !== 'system') return;
+  if (held.subtype === 'vcs_state_changed') {
+    git.note(
+      slot,
+      vcsLine(
+        typeof held.kind === 'string' ? held.kind : null,
+        typeof held.branch === 'string' ? held.branch : null,
+      ),
+    );
+    return;
+  }
+  if (held.subtype === 'code_change_published') {
+    git.note(
+      slot,
+      changeLine(
+        typeof held.provider === 'string' ? held.provider : null,
+        typeof held.identifier === 'string' ? held.identifier : null,
+        typeof held.action === 'string' ? held.action : null,
+        typeof held.repo === 'string' ? held.repo : null,
+      ),
+    );
+  }
 }
 
 export function watchSession(

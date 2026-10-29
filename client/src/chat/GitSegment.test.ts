@@ -2,7 +2,7 @@ import { render } from 'svelte/server';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import GitSegment from './GitSegment.svelte';
-import { git, vcsLine } from './git.svelte';
+import { changeLine, git, vcsLine } from './git.svelte';
 
 afterEach(() => {
   git.clear();
@@ -55,5 +55,18 @@ describe('the tree segment', () => {
     expect(vcsLine('checkout', 'topic')).toBe('repository changed (checkout) on topic');
     expect(vcsLine('merge', null)).toBe('merged');
     expect(vcsLine('push', 'main')).toBe('pushed main');
+  });
+
+  it('names a published action, including the ones with no chat row', () => {
+    expect(changeLine('github', '123', 'created', 'example/example')).toBe(
+      'PR #123 created in example/example',
+    );
+    expect(changeLine('gitlab', '45', 'merged', 'group/proj')).toBe(
+      'MR #45 merged in group/proj',
+    );
+    expect(changeLine('github', '123', 'edited', 'example/example')).toBe(
+      'PR #123 edited in example/example',
+    );
+    expect(changeLine(null, null, null, null)).toBe('change changed');
   });
 });
