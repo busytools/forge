@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- wry's WebChromeClient requests both together for RESOURCE_AUDIO_CAPTURE,
          so a missing one denies the getUserMedia prompt outright. -->
@@ -8,6 +10,15 @@
     <!-- An ask raised on a seat the person is not looking at is a notification;
          API 33+ needs this declared as well as granted at runtime. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The notification plugin brings the machinery for scheduled local
+         notifications, and forge uses none of it: an ask is posted the moment
+         it arrives and nothing survives a reboot to be restored. Starting at
+         boot and holding a wake lock is what Play Protect reads as harmful
+         beside a microphone. -->
+    <uses-permission
+        android:name="android.permission.RECEIVE_BOOT_COMPLETED"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" tools:node="remove" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -30,5 +41,18 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The plugin's own receivers, for the same reason: the scheduled
+             post's alarm publisher, its dismiss bookkeeping, and the reboot
+             restore. An ask notification needs none of the three. -->
+        <receiver
+            android:name="app.tauri.notification.TimedNotificationPublisher"
+            tools:node="remove" />
+        <receiver
+            android:name="app.tauri.notification.NotificationDismissReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="app.tauri.notification.LocalNotificationRestoreReceiver"
+            tools:node="remove" />
     </application>
 </manifest>
