@@ -700,6 +700,19 @@ interface Frame {
   /** `system/informational`'s body and level. */
   level?: unknown;
   content?: unknown;
+  /** `system/vcs_state_changed`: what moved. */
+  kind?: unknown;
+  /**
+   * The branch on both repository frames: the one a mutation landed on, or
+   * the one a published change went up from.
+   */
+  branch?: unknown;
+  /** `system/code_change_published`: the change that went up for review. */
+  provider?: unknown;
+  action?: unknown;
+  repo?: unknown;
+  identifier?: unknown;
+  url?: unknown;
   /** `system/notification`'s body, kind and delivery priority. */
   text?: unknown;
   priority?: unknown;
@@ -2514,6 +2527,81 @@ export function fold(
               fact('key', str(frame, 'key')),
             ),
           ),
+        });
+        continue;
+      }
+      // **The CLI's own report that a command moved the repository.** The
+      // line names the kind and at most the branch, and the open body lists
+      // those same fields; the tree it changed is what the tree row above the
+      // composer draws, and this row is the event that made that row re-read.
+      if (frame.subtype === 'vcs_state_changed') {
+        const kind = str(frame, 'kind');
+        const branch = str(frame, 'branch');
+        const said =
+          kind === 'commit'
+            ? 'committed'
+            : kind === 'push'
+              ? 'pushed'
+              : kind === 'merge'
+                ? 'merged'
+                : kind === 'rebase'
+                  ? 'rebased'
+                  : // The CLI calls `kind` an open set and asks a reader to
+                    // treat an unrecognized one as "something changed", so the
+                    // value itself is what the row shows.
+                    `repository changed${kind === null ? '' : ` (${kind})`}`;
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'repository'),
+          notice: provisional(
+            'vcs_state_changed',
+            'info',
+            branch === null ? said : kind === 'push' ? `${said} ${branch}` : `${said} on ${branch}`,
+            frame,
+            facts(fact('kind', kind), fact('branch', branch)),
+          ),
+        });
+        continue;
+      }
+      // **A change from this session went out for review, or linked the
+      // session to one.** The row names what the session did, with the URL a
+      // reader opens as its quiet tail, and the open body lists the rest of
+      // the frame.
+      if (frame.subtype === 'code_change_published') {
+        const provider = str(frame, 'provider');
+        const action = str(frame, 'action');
+        const repo = str(frame, 'repo');
+        const identifier = str(frame, 'identifier');
+        const branch = str(frame, 'branch');
+        const url = str(frame, 'url');
+        const noun =
+          provider === 'gitlab'
+            ? 'MR'
+            : provider?.startsWith('github') === true || provider === 'bitbucket'
+              ? 'PR'
+              : 'change';
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'published'),
+          notice: {
+            ...provisional(
+              'code_change_published',
+              'info',
+              `${noun}${identifier === null ? '' : ` #${identifier}`}${
+                action === null ? '' : ` ${action}`
+              }${repo === null ? '' : ` in ${repo}`}`,
+              frame,
+              facts(
+                fact('action', action),
+                fact('provider', provider),
+                fact('repository', repo),
+                fact('change', identifier),
+                fact('branch', branch),
+                fact('url', url),
+              ),
+            ),
+            ...(url === null ? {} : { sub: url }),
+          },
         });
         continue;
       }

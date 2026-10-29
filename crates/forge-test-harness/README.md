@@ -215,6 +215,8 @@ multi-turn sessions (media block, tool round, stop-hook summary).
 | `system/hook_started` + `hook_response`     | all (SessionStart fires from user profile)  |
 | `system:status`                             | compact, stream_event                       |
 | `system:compact_boundary`                   | compact                                     |
+| `system/vcs_state_changed`                  | vcs_state_changed                           |
+| `system/code_change_published`              | code_change_published                       |
 | `system:task_started` / `task_progress` / `task_notification` / `task_updated` | subagent, stop_task, subagent_stop_hook |
 | `assistant` (text)                          | all                                         |
 | `assistant` (`tool_use`)                    | bash_tool, pretooluse_hook, post_tool_use_hook, post_tool_use_failure_hook, in_process_mcp, subagent, stop_task |

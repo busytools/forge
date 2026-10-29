@@ -4020,6 +4020,10 @@ describe('a page seam that re-serves a result', () => {
   });
 });
 
+/** The notice a unit draws, when it draws one. */
+const noticeOf = (unit: Unit | undefined): Notice | null =>
+  unit?.kind === 'notice' ? unit.notice : null;
+
 /**
  * Frames the CLI sends that the fold had no row for.
  *
@@ -4030,9 +4034,6 @@ describe('a page seam that re-serves a result', () => {
  * facts its body lists, and that the raw payload stays reachable.
  */
 describe('the frames the fold had no row for', () => {
-  const noticeOf = (unit: Unit | undefined): Notice | null =>
-    unit?.kind === 'notice' ? unit.notice : null;
-
   it('draws an unknown top-level frame as a marked notice with its payload', () => {
     const units = fold([
       { type: 'widget_state', uuid: 'w1', widget: { name: 'counter', value: 7 } },
@@ -4282,5 +4283,133 @@ describe('the frames the fold had no row for', () => {
       callsOf(waiting[0])[0]?.leaf.unanswered,
       'a question still waiting in the dock is not marked unanswered',
     ).toBe(false);
+  });
+});
+
+/**
+ * The CLI's own repository events, which the fold draws as one-line rows.
+ *
+ * Both are events rather than state: the row names what happened, and the
+ * frame's own fields sit behind it. The tree they changed is the strip's row,
+ * and a published change is what makes the strip look its PR up.
+ */
+describe("the CLI's repository events", () => {
+  it('draws a mutation on one line, and never drops an unknown kind', () => {
+    const units = fold([
+      { type: 'system', subtype: 'vcs_state_changed', kind: 'commit', branch: 'main', uuid: 'v1' },
+      { type: 'system', subtype: 'vcs_state_changed', kind: 'push', branch: 'main', uuid: 'v2' },
+      { type: 'system', subtype: 'vcs_state_changed', kind: 'merge', uuid: 'v3' },
+      {
+        type: 'system',
+        subtype: 'vcs_state_changed',
+        kind: 'checkout',
+        branch: 'topic',
+        uuid: 'v4',
+      },
+    ]);
+
+    expect(kinds(units), 'every frame draws').toEqual(['notice', 'notice', 'notice', 'notice']);
+    expect(units.map((unit) => noticeOf(unit)?.text)).toEqual([
+      'committed on main',
+      'pushed main',
+      'merged',
+      // The CLI calls `kind` an open set, so a value this build has no verb
+      // for is named rather than swallowed.
+      'repository changed (checkout) on topic',
+    ]);
+    expect(noticeOf(units[0])?.severity).toBe('info');
+    expect(noticeOf(units[0])?.mark, 'the row names the frame it came from').toBe(
+      'vcs_state_changed',
+    );
+    expect(noticeOf(units[0])?.fields, "the frame's own fields stay reachable").toEqual([
+      { label: 'kind', value: 'commit' },
+      { label: 'branch', value: 'main' },
+    ]);
+    expect(noticeOf(units[2])?.fields, 'a branchless mutation draws no empty fact').toEqual([
+      { label: 'kind', value: 'merge' },
+    ]);
+    expect(
+      noticeOf(units[0])?.raw,
+      'the frame itself stays reachable, which is rule 25 for these rows',
+    ).toContain('"kind":"commit"');
+  });
+
+  it('draws a published change with its action, repo and identifier, and the URL on its line', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'github',
+        url: 'https://github.com/example/example/pull/123',
+        repo: 'example/example',
+        identifier: '123',
+        action: 'created',
+        branch: 'main',
+        uuid: 'c1',
+      },
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'gitlab',
+        url: 'https://gitlab.com/group/proj/-/merge_requests/45',
+        repo: 'group/proj',
+        identifier: '45',
+        action: 'merged',
+        uuid: 'c2',
+      },
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'github-enterprise',
+        url: 'https://github.example.test/octo/repo/pull/7',
+        repo: 'octo/repo',
+        identifier: '7',
+        uuid: 'c3',
+      },
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'bitbucket',
+        url: 'https://bitbucket.org/team/app/pull-requests/11',
+        repo: 'team/app',
+        identifier: '11',
+        action: 'closed',
+        uuid: 'c4',
+      },
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'gerrit',
+        repo: 'p/q',
+        identifier: '9',
+        uuid: 'c5',
+      },
+    ]);
+
+    expect(units.map((unit) => noticeOf(unit)?.text)).toEqual([
+      'PR #123 created in example/example',
+      'MR #45 merged in group/proj',
+      'PR #7 in octo/repo',
+      'PR #11 closed in team/app',
+      // An unrecognized provider still draws its change, named plainly.
+      'change #9 in p/q',
+    ]);
+    expect(noticeOf(units[0])?.sub, 'the URL is what a reader opens').toBe(
+      'https://github.com/example/example/pull/123',
+    );
+    expect(noticeOf(units[4])?.sub, 'a frame with no URL carries no empty tail').toBeUndefined();
+    expect(noticeOf(units[0])?.mark).toBe('code_change_published');
+    expect(noticeOf(units[0])?.fields, "the frame's own fields stay reachable").toEqual([
+      { label: 'action', value: 'created' },
+      { label: 'provider', value: 'github' },
+      { label: 'repository', value: 'example/example' },
+      { label: 'change', value: '123' },
+      { label: 'branch', value: 'main' },
+      { label: 'url', value: 'https://github.com/example/example/pull/123' },
+    ]);
+    expect(
+      noticeOf(units[0])?.raw,
+      'the frame itself stays reachable, which is rule 25 for these rows',
+    ).toContain('"identifier":"123"');
   });
 });
