@@ -46,50 +46,6 @@ export function vcsLine(kind: string | null, branch: string | null): string {
   return kind === 'push' ? `${said} ${branch}` : `${said} on ${branch}`;
 }
 
-/**
- * The strip's line for a published change: the action the CLI announced, on
- * the change it names. Every action gets one - the four that keep a chat row
- * and the ones that do not alike - so a comment, an edit or a checkout is not
- * silent (rule 25).
- */
-export function changeLine(
-  provider: string | null,
-  identifier: string | null,
-  action: string | null,
-  repo: string | null,
-): string {
-  const noun =
-    provider === 'gitlab'
-      ? 'MR'
-      : provider?.startsWith('github') === true || provider === 'bitbucket'
-        ? 'PR'
-        : 'change';
-  const named = identifier === null || identifier === '' ? noun : `${noun} #${identifier}`;
-  const did = changeVerb(action);
-  return repo === null || repo === '' ? `${named} ${did}` : `${named} ${did} in ${repo}`;
-}
-
-/** The CLI's action in the strip's own words; an unknown one as the wire's. */
-function changeVerb(action: string | null): string {
-  switch (action) {
-    case null:
-    case '':
-      return 'changed';
-    case 'checked-out':
-      return 'checked out';
-    case 'auto-merge-enabled':
-      return 'auto-merge on';
-    case 'auto-merge-disabled':
-      return 'auto-merge off';
-    case 'ready':
-      return 'marked ready';
-    case 'draft':
-      return 'marked draft';
-    default:
-      return action;
-  }
-}
-
 class Git {
   #strip = $state<GitStrip | null>(null);
   #note = $state<StripNote | null>(null);
@@ -107,7 +63,8 @@ class Git {
   /** Take the record's read whole: what the wire says is what the row shows. */
   sync(strip: GitStrip | null): void {
     if (strip === null) {
-      this.clearNote();
+      // **No tree row does not mean no seat.** A clean default branch states
+      // nothing, and the event that moved it must still reach the strip.
       this.#strip = null;
       return;
     }
@@ -129,9 +86,9 @@ class Git {
     };
   }
 
-  /** Whether there is a tree read to draw at all. */
+  /** Whether there is a tree read or an event to draw at all. */
   anything(): boolean {
-    return this.#strip !== null;
+    return this.#strip !== null || this.#note !== null;
   }
 
   strip(): GitStrip | null {

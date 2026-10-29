@@ -4344,7 +4344,7 @@ describe('the frames the fold had no row for', () => {
       { label: 'content', value: 'A distilled paragraph from the memory store.' },
     ]);
 
-    expect(
+    const empty = noticeOf(
       fold([
         {
           type: 'system',
@@ -4353,9 +4353,10 @@ describe('the frames the fold had no row for', () => {
           memories: [],
           uuid: 'mr4',
         },
-      ]),
-      'an empty recall is not a line',
-    ).toEqual([]);
+      ])[0],
+    );
+    expect(empty?.text, 'an empty recall still draws a line').toBe('Recalled 0 memories');
+    expect(empty?.fields, 'and carries no facts').toBeUndefined();
   });
 
   /**
@@ -4400,6 +4401,29 @@ describe('the frames the fold had no row for', () => {
     ]);
     expect(row?.raw, 'the name frame is reachable').toContain('command-name');
     expect(row?.raw, "and the print's own frame rides beside it").toContain('--verbose');
+  });
+
+  it('draws the modern single-frame command, name and print together, as one row', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content:
+          '<command-name>/usage</command-name>' +
+          '<local-command-stdout>Session cost: $1.23</local-command-stdout>',
+        level: 'info',
+        commandRun: { command: 'usage' },
+        uuid: 'lc12',
+      },
+    ]);
+
+    expect(kinds(units)).toEqual(['notice']);
+    const row = noticeOf(units[0]);
+    expect(row?.text, 'the single frame names its command').toBe('Ran /usage');
+    expect(row?.fields, 'and keeps its print').toContainEqual({
+      label: 'output',
+      value: 'Session cost: $1.23',
+    });
   });
 
   it('draws the classic pair, a print with no commandRun, as one row', () => {
@@ -4576,13 +4600,14 @@ describe('the frames the fold had no row for', () => {
     );
   });
 
-  it('gives a model swap with no words a sentence of its own', () => {
+  it('gives a refusal fallback with no words a sentence of its own', () => {
     const row = noticeOf(
       fold([
         {
           type: 'system',
-          subtype: 'model_fallback',
-          trigger: 'overloaded',
+          subtype: 'model_refusal_fallback',
+          trigger: 'refusal',
+          direction: 'retry',
           original_model: 'claude-fable-5-1',
           fallback_model: 'claude-opus-5-5',
           uuid: 'milent',

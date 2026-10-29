@@ -92,8 +92,8 @@ describe('the provisional notice, mounted', () => {
    * **A row whose facts share a label is the ordinary case, not an edge.**
    * The memory-recall row lists one `path` fact per memory, and the original
    * keyed-each used `field.label` alone - two paths gave Svelte two equal
-   * keys, and the row threw as it drew (C1, #2672). The fold and the server
-   * render both pass; only a mount sees it.
+   * keys, and the row threw as it drew. The fold and the server render both
+   * pass; only a mount sees it.
    */
   it('draws two memories with the same fact label, one line each', () => {
     const app = mount(Notice, {

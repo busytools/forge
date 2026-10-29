@@ -40,6 +40,7 @@
  */
 
 import { handoffOf, type HandoffRecord } from '../wire/handoff';
+import { changeNoun } from './change';
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
 import { addJoinFrame, isDispatched, seedJoin, settleStops } from './join';
@@ -2584,9 +2585,6 @@ export function fold(
       // the line, so a recall of twenty files is still one readable row.
       if (frame.subtype === 'memory_recall') {
         const memories = Array.isArray(frame['memories']) ? frame['memories'] : [];
-        // A recall with nothing in it is not a line; the emitter sends none,
-        // and a frame whose list is empty has nothing to report.
-        if (memories.length === 0) continue;
         const fields: NoticeField[] = [];
         for (const memory of memories) {
           const held = obj(memory);
@@ -2613,27 +2611,13 @@ export function fold(
         });
         continue;
       }
-      // **A local slash command's output is the assistant twin's content;
-      // this frame is the command itself.** The CLI sends both, so drawing
-      // the raw frame beside the twin shows the same output twice - the row
-      // names the command, and the twin carries what it printed. The wire's
-      // own name is `local_command`; the schema's `local_command_output` is
-      // stale and no producer emits it.
-      // **A local slash command arrives as two frames, and no twin.** The CLI
-      // names the command in one - its own `<command-name>` tag, or the modern
-      // `commandRun: {command, args}` - and prints in a second
-      // (`<local-command-stdout>` or stderr). The print fills the row the name
-      // opened rather than drawing a second, vague command. **Forge receives
-      // the raw system frames, not the assistant message the CLI's SDK adapter
-      // synthesises for other hosts**, so there is no twin carrying the output.
-      // **A local slash command is two frames, and no twin.** The CLI's name
-      // frame carries `<command-name>` (or, headless, a bare `/name args`);
-      // its print frame carries `<local-command-stdout>`/stderr and - in
-      // 2.1.280 - the `commandRun: {command, args}` that labels it. The print
-      // fills the row the name opened; `named` OPENS a row only, so a print
-      // naming itself cannot open a second. Forge receives the raw system
-      // frames, not the assistant message the CLI's SDK adapter synthesises
-      // for other hosts.
+      // **A local slash command names itself and prints, in one frame or
+      // two.** 2.1.280 sends one frame with the `<command-name>` tag (or a
+      // headless bare `/name args`), the stdout and `commandRun`; older CLIs
+      // send name and print apart. The print fills the row the name opened,
+      // and `named` opens a row only. The wire's name is `local_command`; the
+      // schema's `local_command_output` is stale. There is no twin: forge
+      // reads the raw system frames.
       if (frame.subtype === 'local_command') {
         const content = str(frame, 'content') ?? '';
         const run = obj(frame['commandRun']);
@@ -2725,9 +2709,9 @@ export function fold(
       }
       // **A sticky fact about the project, not a turn event.** The CLI names
       // a platform it saw - from the conversation or its project scan - and
-      // the row is quiet because the fact is background. At most one of these
-      // per kind per conversation from each source, so the row never becomes
-      // a column; the trigger says which evidence fired.
+      // the row is quiet because the fact is background. The bundle claims at
+      // most one per kind per conversation from each source, unconfirmed by a
+      // capture; the trigger says which evidence fired.
       if (frame.subtype === 'dev_intent') {
         const kind = str(frame, 'kind');
         push({
@@ -2789,12 +2773,7 @@ export function fold(
         const identifier = str(frame, 'identifier');
         const branch = str(frame, 'branch');
         const url = str(frame, 'url');
-        const noun =
-          provider === 'gitlab'
-            ? 'MR'
-            : provider?.startsWith('github') === true || provider === 'bitbucket'
-              ? 'PR'
-              : 'change';
+        const noun = changeNoun(provider);
         push({
           kind: 'notice',
           key: keyOf(at, frame, 'published'),

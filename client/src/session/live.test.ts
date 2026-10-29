@@ -2135,6 +2135,41 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **The mounted page names the shown seat for the strip.** The store-only
+   * harness calls `git.show` itself; if the page does not, no live note ever
+   * reaches the strip - and if it does not drop the name on unmount, an away
+   * seat keeps arming notes nobody draws.
+   */
+  it('the mounted page names the shown seat, and drops it on unmount', async () => {
+    await open(sessionFixture);
+    if (server === null) throw new Error('the page opened with no stub server');
+    server.push(
+      updateOf({
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'system',
+            subtype: 'vcs_state_changed',
+            kind: 'commit',
+            branch: 'main',
+            uuid: 'v-mounted',
+          },
+        },
+      }),
+    );
+    await settle();
+
+    expect(git.noteNow()?.line, 'the page named the seat, so the note reached the strip').toBe(
+      'committed on main',
+    );
+
+    if (app !== null) await unmount(app);
+    app = null;
+    git.note(LEAD, 'after the page');
+    expect(git.noteNow(), 'an unmounted page names no seat').toBeNull();
+  });
+
+  /**
    * A paint that never comes must not stop the record either.
    *
    * Same flag, same callback-only clear as the chat's `soon()` - this is its

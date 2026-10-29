@@ -151,133 +151,177 @@
   }
 </script>
 
-{#if strip !== null}
+{#if strip !== null || note !== null}
   <span class="sg-seg" class:open bind:this={segEl}>
-    <button
-      type="button"
-      class="sg-tog"
-      aria-expanded={open}
-      aria-label="the working tree this seat is on"
-      onclick={() => {
-        if (open) open = false;
-        else hold();
-      }}
-      onpointerenter={(event) => {
-        if (hovering(event)) hold();
-      }}
-      onpointerleave={(event) => {
-        if (hovering(event)) release();
-      }}
-      onfocusin={focusIn}
-      onfocusout={release}
-      onkeydown={(event) => {
-        if (event.key !== 'Escape') return;
-        toToggle();
-        open = false;
-      }}
-    >
-      <Icon name="git" />
-      <span class="lab">{strip.label}</span>
-      {#if note !== null}<span class="note" title={note.line}>{note.line}</span>{/if}
-    </button>
-
-    {#if open}
-      <div
-        class="sg-list"
-        bind:this={listEl}
-        style={limits}
-        use:portal
-        role="presentation"
+    {#if strip !== null}
+      <button
+        type="button"
+        class="sg-tog"
+        aria-expanded={open}
+        aria-label="the working tree this seat is on"
+        onclick={() => {
+          if (open) open = false;
+          else hold();
+        }}
         onpointerenter={(event) => {
           if (hovering(event)) hold();
         }}
         onpointerleave={(event) => {
           if (hovering(event)) release();
         }}
+        onfocusin={focusIn}
+        onfocusout={release}
+        onkeydown={(event) => {
+          if (event.key !== 'Escape') return;
+          toToggle();
+          open = false;
+        }}
       >
-        <!-- What the tree IS leads: a fleet's reader needs to know whose
-             worktree this is before reading what is in it. -->
-        <div class="sg-head">{strip.head}</div>
+        <Icon name="git" />
+        <span class="lab">{strip.label}</span>
+        {#if note !== null}<span class="note" role="status" title={note.line}>{note.line}</span
+          >{/if}
+      </button>
 
-        {#if strip.pr !== null}
-          <!-- A real link, because the PR is a place: the row is the one
+      {#if open}
+        <div
+          class="sg-list"
+          bind:this={listEl}
+          style={limits}
+          use:portal
+          role="presentation"
+          onpointerenter={(event) => {
+            if (hovering(event)) hold();
+          }}
+          onpointerleave={(event) => {
+            if (hovering(event)) release();
+          }}
+        >
+          <!-- What the tree IS leads: a fleet's reader needs to know whose
+             worktree this is before reading what is in it. -->
+          <div class="sg-head">{strip.head}</div>
+
+          {#if strip.pr !== null}
+            <!-- A real link, because the PR is a place: the row is the one
                thing in this panel with somewhere to go - and it sits at the
                TOP, where a long chain cannot bury it below the scroll. -->
-          <a
-            class="sg-it"
-            href={strip.pr.url}
-            target="_blank"
-            rel="noreferrer"
-            onfocusout={release}
-            onkeydown={(event) => {
-              if (event.key !== 'Escape') return;
-              toToggle();
-              open = false;
-            }}
-          >
-            <span class="nm">{`PR #${strip.pr.number}`}</span>
-            <span class="n">{strip.pr.draft ? 'draft' : 'open'}</span>
-          </a>
-          {#if strip.pr.closes !== ''}
-            <div class="sg-sub">{`closes ${strip.pr.closes}`}</div>
+            <a
+              class="sg-it"
+              href={strip.pr.url}
+              target="_blank"
+              rel="noreferrer"
+              onfocusout={release}
+              onkeydown={(event) => {
+                if (event.key !== 'Escape') return;
+                toToggle();
+                open = false;
+              }}
+            >
+              <span class="nm">{`PR #${strip.pr.number}`}</span>
+              <span class="n">{strip.pr.draft ? 'draft' : 'open'}</span>
+            </a>
+            {#if strip.pr.closes !== ''}
+              <div class="sg-sub">{`closes ${strip.pr.closes}`}</div>
+            {/if}
           {/if}
-        {/if}
 
-        {#if strip.ahead !== null}
-          {@const said = `${strip.ahead.count} commit${strip.ahead.count === 1 ? '' : 's'}`}
-          <div class="sg-head">
-            {strip.ahead.base === null ? `${said} ahead` : `${said} ahead of ${strip.ahead.base}`}
-          </div>
-          {#if strip.ahead.stats !== null && strip.ahead.stats.totalFiles > 0}
+          {#if strip.ahead !== null}
+            {@const said = `${strip.ahead.count} commit${strip.ahead.count === 1 ? '' : 's'}`}
             <div class="sg-head">
-              {`${filesWord(strip.ahead.stats)} \u{b7} `}{@render figures(strip.ahead.stats)}
+              {strip.ahead.base === null ? `${said} ahead` : `${said} ahead of ${strip.ahead.base}`}
             </div>
+            {#if strip.ahead.stats !== null && strip.ahead.stats.totalFiles > 0}
+              <div class="sg-head">
+                {`${filesWord(strip.ahead.stats)} \u{b7} `}{@render figures(strip.ahead.stats)}
+              </div>
+            {/if}
           {/if}
-        {/if}
 
-        {#if strip.uncommitted !== null}
-          <div class="sg-head">
-            {`uncommitted \u{b7} ${filesWord(strip.uncommitted)} \u{b7} `}{@render figures(
-              strip.uncommitted,
-            )}
-          </div>
-          {#each strip.uncommitted.files as file (file.path)}
-            {@render fileRow(file)}
-          {/each}
-        {:else if strip.gate === null}
-          <div class="sg-head">{`uncommitted \u{b7} clean`}</div>
-        {/if}
+          {#if strip.uncommitted !== null}
+            <div class="sg-head">
+              {`uncommitted \u{b7} ${filesWord(strip.uncommitted)} \u{b7} `}{@render figures(
+                strip.uncommitted,
+              )}
+            </div>
+            {#each strip.uncommitted.files as file (file.path)}
+              {@render fileRow(file)}
+            {/each}
+          {:else if strip.gate === null}
+            <div class="sg-head">{`uncommitted \u{b7} clean`}</div>
+          {/if}
 
-        <!-- The chain below the uncommitted rows: what is happening NOW
+          <!-- The chain below the uncommitted rows: what is happening NOW
              leads and the history follows - the panel opens at its top, so a
              reader reads down from the present, newest commit first. Each
              row carries when it landed, and hover, focus or a tap reveals
              the files it changed. -->
-        {#if strip.ahead !== null}
-          {#each strip.ahead.commits as commit (commit.sha)}
-            {@const age =
-              commit.time > 0
-                ? elapsedLabel({ secs_since_epoch: commit.time, nanos_since_epoch: 0 }, now)
-                : null}
+          {#if strip.ahead !== null}
+            {#each strip.ahead.commits as commit (commit.sha)}
+              {@const age =
+                commit.time > 0
+                  ? elapsedLabel({ secs_since_epoch: commit.time, nanos_since_epoch: 0 }, now)
+                  : null}
+              <button
+                type="button"
+                class="sg-it"
+                title={`${commit.sha} \u{b7} ${commit.subject}`}
+                onclick={() => {
+                  // The door a finger has: a tap reveals the commit's own
+                  // files, which is what a hover shows on a pointer.
+                  watching = commit.sha;
+                }}
+                onpointerenter={(event) => {
+                  if (!hovering(event)) return;
+                  hold();
+                  watching = commit.sha;
+                }}
+                onpointerleave={(event) => {
+                  if (hovering(event)) release();
+                }}
+                onfocusin={() => {
+                  watching = commit.sha;
+                }}
+                onfocusout={release}
+                onkeydown={(event) => {
+                  if (event.key !== 'Escape') return;
+                  toToggle();
+                  open = false;
+                }}
+              >
+                <span class="sha">{commit.sha}</span>
+                <span class="nm lead">{commit.subject}</span>
+                {#if age !== null}<span class="n">{age}</span>{/if}
+              </button>
+              {#if watching === commit.sha && commit.stats !== null}
+                <div class="sg-cm">
+                  {#if commit.stats.files.length > 0}
+                    <div class="sg-head">
+                      {`${filesWord(commit.stats)} \u{b7} `}{@render figures(commit.stats)}
+                    </div>
+                    {#each commit.stats.files as file (file.path)}
+                      {@render fileRow(file)}
+                    {/each}
+                  {:else}
+                    <div class="sg-sub">no files of its own</div>
+                  {/if}
+                </div>
+              {/if}
+            {/each}
+          {/if}
+
+          {#if strip.gate !== null}
             <button
               type="button"
               class="sg-it"
-              title={`${commit.sha} \u{b7} ${commit.subject}`}
+              title={strip.gate}
               onclick={() => {
-                // The door a finger has: a tap reveals the commit's own
-                // files, which is what a hover shows on a pointer.
-                watching = commit.sha;
+                open = false;
               }}
               onpointerenter={(event) => {
-                if (!hovering(event)) return;
-                hold();
-                watching = commit.sha;
+                if (hovering(event)) hold();
               }}
               onpointerleave={(event) => {
                 if (hovering(event)) release();
-              }}
-              onfocusin={() => {
-                watching = commit.sha;
               }}
               onfocusout={release}
               onkeydown={(event) => {
@@ -286,52 +330,16 @@
                 open = false;
               }}
             >
-              <span class="sha">{commit.sha}</span>
-              <span class="nm lead">{commit.subject}</span>
-              {#if age !== null}<span class="n">{age}</span>{/if}
+              <span class="nm lead">{strip.gate}</span>
             </button>
-            {#if watching === commit.sha && commit.stats !== null}
-              <div class="sg-cm">
-                {#if commit.stats.files.length > 0}
-                  <div class="sg-head">
-                    {`${filesWord(commit.stats)} \u{b7} `}{@render figures(commit.stats)}
-                  </div>
-                  {#each commit.stats.files as file (file.path)}
-                    {@render fileRow(file)}
-                  {/each}
-                {:else}
-                  <div class="sg-sub">no files of its own</div>
-                {/if}
-              </div>
-            {/if}
-          {/each}
-        {/if}
-
-        {#if strip.gate !== null}
-          <button
-            type="button"
-            class="sg-it"
-            title={strip.gate}
-            onclick={() => {
-              open = false;
-            }}
-            onpointerenter={(event) => {
-              if (hovering(event)) hold();
-            }}
-            onpointerleave={(event) => {
-              if (hovering(event)) release();
-            }}
-            onfocusout={release}
-            onkeydown={(event) => {
-              if (event.key !== 'Escape') return;
-              toToggle();
-              open = false;
-            }}
-          >
-            <span class="nm lead">{strip.gate}</span>
-          </button>
-        {/if}
-      </div>
+          {/if}
+        </div>
+      {/if}
+    {:else}
+      <span class="sg-tog" role="status" aria-label="the working tree this seat is on">
+        <Icon name="git" />
+        <span class="note">{note?.line}</span>
+      </span>
     {/if}
   </span>
 {/if}

@@ -28,7 +28,8 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { releaseConversation } from '../chat/conversations';
 import { cronNames } from '../chat/cron-names.svelte';
-import { changeLine, git, vcsLine } from '../chat/git.svelte';
+import { changeLine } from '../chat/change';
+import { git, vcsLine } from '../chat/git.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
