@@ -181,7 +181,8 @@ read as one system.
   row - so a command is one row and not two, and there is no assistant message
   carrying the output, because forge reads the raw system frames. A project
   development-intent frame draws one quiet line naming the platform the CLI
-  saw, with the evidence in its open body.
+  saw, with the evidence in its open body; a conversation reset may send it
+  again, so the line is a fact about the project, not a count of turns.
 - **The CLI's own repository events belong to the working-tree strip, not
   the conversation.** A `vcs_state_changed` frame is the tree's own news: the
   strip above the composer says what moved for a moment - the kind and, where
