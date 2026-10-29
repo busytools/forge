@@ -4413,7 +4413,7 @@ impl Workspace {
             .map(|project| SessionSlot::lead(project.org, project.name))
     }
 
-    /// Internal accessor for the SessionUpdate fan-in sender. Used
+    /// Internal accessor for the SessionUpdate fan-out sender. Used
     /// by `spawn.rs` to emit `Spawning` / `ConnectionFailed` /
     /// `FatalError` from the App-level handlers.
     pub(crate) fn update_tx(&self) -> &UpdateFanout {

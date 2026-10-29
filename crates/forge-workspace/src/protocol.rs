@@ -1,6 +1,6 @@
 //! Command + SessionUpdate channel envelopes between a view and
 //! forge-workspace. A view dispatches Commands; workspace per-session
-//! tasks emit SessionUpdates back via a fan-in channel.
+//! tasks emit SessionUpdates back through the workspace's fan-out.
 //!
 //! ## Dual Command shape (deliberate)
 //!

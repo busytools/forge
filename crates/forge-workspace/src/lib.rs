@@ -29,7 +29,8 @@
 //!   `ViewSurface::subscribe_client`. The role decides one thing: whether
 //!   the core may park a prompt on that subscriber's reply.
 //!
-//! No callback hooks. No shared mutable state. A view does not hold an
+//! No callback hooks, and no state shared between a view and the core. A view
+//! does not hold an
 //! `Arc<AgentHandle>`: every outbound call goes through
 //! `Workspace::dispatch(Command)`; query-style refreshes
 //! (`refresh_context_usage`, `refresh_mcp_snapshot`)

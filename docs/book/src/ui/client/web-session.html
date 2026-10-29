@@ -1358,8 +1358,8 @@
   .pfoot .key { color: var(--accent); }
   .pfoot .sep { padding: 0 8px; opacity: .5; }
 
-  /* Narrow: the same one column, with the summoned rail unchanged - it was
-     never a column, so the width decides nothing about it. */
+  /* Narrow: the same one column, with the rail folded to the chip's summon -
+     below this width the column becomes the sheet's peek. */
   @media (max-width: 980px) {
     /* The diff page folds: one column, its file rail away. */
     .pbody { grid-template-columns: minmax(0,1fr); }

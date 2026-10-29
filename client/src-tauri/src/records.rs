@@ -64,13 +64,13 @@ pub enum Held {
 /// Every subject the shell READS: a seat's record, and the home roster the
 /// ask rule folds. Nothing else is copied here.
 ///
-/// **The fold is for the reconcile, and nothing else rides on it.** The page
-/// is told about every frame as it arrives (the bridge forwards the stream),
-/// so a record here is not a notice - it is what a parked page is handed
-/// when it comes back. The fold re-reads nothing and replays no pile: the
-/// page's stores and folds do that off the frames, the one re-read this side
-/// asks for is a parked page's roster (`ask_arrived`), and the one caller of
-/// this fold is the catch-up.
+/// **The fold runs on every update; the catch-up is its only reader.** The
+/// page is told about every frame as it arrives (the bridge forwards the
+/// stream), so a record here is not a notice - `apply` keeps the copy current
+/// for the moment a parked page comes back. The fold re-reads nothing and
+/// replays no pile: the page's stores and folds do that off the frames, and
+/// the one re-read this side asks for is a parked page's roster
+/// (`ask_arrived`).
 ///
 /// **Every other subject is asked for again instead.** The reconcile
 /// subscribes the board, models or extensions afresh and never reads a copy,

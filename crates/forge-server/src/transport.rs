@@ -2,7 +2,10 @@
 //!
 //! One route, `/socket`, at the address the caller bound. Every connection
 //! gets its own subscription, so a second client changes nothing about the
-//! first and the server sends only what a client asked for.
+//! first. **Every subscriber is delivered every update; the connection then
+//! filters to the subjects it asked for**, which is what makes subject
+//! delivery correct and why the fan-out shares one update rather than copying
+//! it per reader.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

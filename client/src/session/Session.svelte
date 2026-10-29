@@ -315,11 +315,11 @@
   /**
    * Whether the projects rail is over the session, and how it got there.
    *
-   * **The rail is summoned now, at every width**: it is never a column, so
-   * nothing of the conversation is spent on it while it is away. The chip's
-   * hover summons the peek (`summoned`, no scrim, no history - a mouse that
-   * only crossed the chip dims nothing); Cmd+Left and the palette open it to
-   * stay (`leftChosen`, scrim, history entry, Esc).
+   * **The rail is a column by default**, remembered per device; below the
+   * width a column stops making sense at, the sheet folds it to the chip. The
+   * chip's hover then summons the peek (`summoned`, no scrim, no history - a
+   * mouse that only crossed the chip dims nothing); Cmd+Left and the palette
+   * open it to stay (`leftChosen`, scrim, history entry, Esc).
    */
   // jsdom carries no `matchMedia`, so the capability is part of having a DOM
   // at all here - without the check every mount under vitest throws.

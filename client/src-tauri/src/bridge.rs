@@ -28,8 +28,9 @@
 //! is what a record is, and that seat's newest page, which is the answer
 //! its `more` with no `before` would have carried. Only `chat_appended`
 //! updates are left out of the ring, because the record's conversation
-//! rebuilds those. A subject that is not a seat is re-read instead of
-//! handed a copy: nothing here folds a home record.
+//! rebuilds those. A subject that is not a seat is re-read on the reconcile
+//! rather than handed back: the home roster is copied here for the ask
+//! rule's own fold, not as a record to restore.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -2666,8 +2667,9 @@ mod tests {
     }
 
     /// A subject that is not a seat is re-read on the reconcile rather than
-    /// handed a copy: nothing on this side folds a home record, so a copy
-    /// would be stale while a re-subscribe answers with the truth.
+    /// handed back: the home roster's copy here serves the ask rule's own
+    /// fold, and the page reads the roster itself, so a re-subscribe is what
+    /// answers it with the truth.
     #[tokio::test]
     async fn a_reconcile_re_asks_a_subject_that_is_not_a_seat() {
         let mut server = stub().await;

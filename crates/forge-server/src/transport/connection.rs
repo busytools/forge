@@ -469,9 +469,11 @@ where
 
 /// Read what a client sends, and hear what its subscriptions asked for.
 ///
-/// Every client message is answered: a client is never left waiting on a
-/// message this server chose to drop, which is the failure that reads as a
-/// hang rather than as an error.
+/// Every client message that carries a question is answered: a client is
+/// never left waiting on a message this server chose to drop, which is the
+/// failure that reads as a hang rather than as an error. Three carry none and
+/// are deliberately answered with nothing - `Showing`, `ClientPerf` and
+/// `Unsubscribe` are statements the server books, not requests.
 async fn drive<S>(
     socket: &mut S,
     state: &Arc<TransportState>,

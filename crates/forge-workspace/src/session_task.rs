@@ -2,7 +2,8 @@
 //! (`AgentHandle::take_events`) plus a per-session `Command`
 //! receiver. Translates each [`AgentEvent`] into the matching
 //! [`SessionUpdate`] envelope and emits onto the workspace-wide
-//! fan-in channel. Mutates [`DomainSession`] inline before each
+//! fan-out, which hands one update to every subscriber. Mutates
+//! [`DomainSession`] inline before each
 //! emit so workspace-side projections stay current.
 //!
 //! `SessionTask::run` is the sole consumer of the AgentHandle event
@@ -1425,7 +1426,7 @@ impl SessionTask {
         self.domain.lock().session_id.as_ref().map(std::string::ToString::to_string)
     }
 
-    /// Send `update` to the workspace fan-in; log when no subscriber
+    /// Send `update` to the workspace fan-out; log when no subscriber
     /// took it, so a regression there leaves a trail.
     // TODO(ved): gate emits on a per-task session epoch so a superseded
     // task (its slot re-spawned by a resume or an account switch) can't

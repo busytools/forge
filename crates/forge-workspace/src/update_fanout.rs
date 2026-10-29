@@ -378,10 +378,11 @@ impl UpdateFanout {
     /// it. `false` is the "no receiver" signal the single-take channel
     /// gave, which `spawn::try_emit` and `SessionTask::emit` log on.
     ///
-    /// The last subscriber is taken out of the registry to receive
-    /// `update` itself while the rest are sent a copy, so the common
-    /// one-subscriber case clones nothing. It goes back only if it took
-    /// the update, which is also where a dead one leaves.
+    /// **One update, one pointer.** The frame is wrapped once and each
+    /// subscriber is handed an `Arc` clone, so the fan-out never pays a
+    /// payload copy however many subscribers there are. The last subscriber
+    /// is taken out of the registry to receive it directly and goes back only
+    /// if it took it, which is also where a dead one leaves.
     pub(crate) fn send(&self, update: SessionUpdate) -> bool {
         self.deliver(update, None)
     }

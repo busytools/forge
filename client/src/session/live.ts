@@ -481,8 +481,10 @@ function createSeat(
    * Release the seat because its session has ended: no subscription outlives
    * it.
    *
-   * **This is one of only two doors that give a visited seat back**, the
-   * other being the connection closing. A page leaving does not. `release`
+   * **A visited seat is given back by three doors**: its session ending
+   * (here), the connection closing, and the server refusing the seat - which
+   * releases this connection's hold while the seat itself stays. A page
+   * leaving does not. `release`
    * gives back what the CONNECTION holds for the seat, not what `opened`
    * remembers: after a resume the server holds one where the page may hold
    * two readers, and a release that walked the readers would leave one
