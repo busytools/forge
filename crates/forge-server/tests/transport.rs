@@ -5209,6 +5209,95 @@ async fn a_seal_over_a_transcripts_copy_is_not_answered_with_the_previous_runs_r
     );
 }
 
+/// **The socket answers a call's output read from the transport's own copy.**
+///
+/// The client asks by the call's id alone; the frame that named the file is a
+/// `ChatAppended` row the fold has applied, so the held conversation is where
+/// the read resolves it. A call the copy never named and a file that has gone
+/// since are each answered with their own reason rather than an empty tail.
+#[tokio::test]
+async fn a_call_output_read_is_answered_from_the_transports_held_copy() {
+    let (url, fleet, state) = a_server_with_state().await;
+    wait_for_the_fold(&fleet).await;
+    let seat = lead_seat();
+    // The copy a live seat holds: the fold's own, which `ChatAppended` appends
+    // to only where one exists.
+    state
+        .conversations
+        .insert(&seat, forge_server::transport::conversation::Conversation::new(Vec::new(), 0, 0));
+    let path =
+        std::env::temp_dir().join(format!("forge-call-output-socket-{}.log", std::process::id()));
+    std::fs::write(&path, "alpha\nbeta\n").expect("write the output file");
+    let msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
+        "type": "system",
+        "subtype": "task_notification",
+        "task_id": "t-1",
+        "tool_use_id": "tu-1",
+        "status": "completed",
+        "output_file": path.display().to_string(),
+        "summary": "done",
+        "session_id": "sess-1",
+        "uuid": "u-1",
+    }))
+    .expect("a task notification frame");
+    state.conversations.apply(
+        &SessionUpdate::ChatAppended { key: seat.clone(), msg, origin: None, source: None },
+        Some(1),
+    );
+
+    let mut socket = connect(&url).await;
+    let ask = |call_id: &str| ClientMessage::Command {
+        command: Box::new(Command::ReadCallOutput {
+            key: lead_seat(),
+            call_id: call_id.to_owned(),
+        }),
+        reply_to: None,
+    };
+
+    send(&mut socket, ask("tu-1")).await;
+    let read = update_until(&mut socket, "the call's output", |update| {
+        matches!(update, SessionUpdate::CallOutput { .. })
+    })
+    .await;
+    let SessionUpdate::CallOutput { key, call_id, output } = read else {
+        unreachable!("the update was matched on calling it")
+    };
+    assert_eq!(key, seat, "the answer names the seat that was asked about");
+    assert_eq!(call_id, "tu-1", "and the call");
+    assert_eq!(
+        output,
+        forge_primitives::CallOutput::Lines(vec!["alpha".to_owned(), "beta".to_owned()]),
+        "the file the copy's own frame named is the one read",
+    );
+
+    send(&mut socket, ask("tu-unknown")).await;
+    let read = update_until(&mut socket, "the nameless call", |update| {
+        matches!(update, SessionUpdate::CallOutput { .. })
+    })
+    .await;
+    assert!(
+        matches!(
+            read,
+            SessionUpdate::CallOutput { output: forge_primitives::CallOutput::NoPath, .. }
+        ),
+        "a call the copy does not name is the no-path reason: {read:?}",
+    );
+
+    std::fs::remove_file(&path).expect("remove the output file");
+    send(&mut socket, ask("tu-1")).await;
+    let read = update_until(&mut socket, "the gone file", |update| {
+        matches!(update, SessionUpdate::CallOutput { .. })
+    })
+    .await;
+    assert!(
+        matches!(
+            read,
+            SessionUpdate::CallOutput { output: forge_primitives::CallOutput::FileGone, .. }
+        ),
+        "a named file that has gone is its own reason: {read:?}",
+    );
+}
+
 /// **A read inside the seal's window answers the new epoch's own conversation,
 /// and never the rows the previous run left.**
 ///

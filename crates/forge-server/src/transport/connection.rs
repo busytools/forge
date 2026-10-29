@@ -1418,13 +1418,14 @@ where
                     // conversation, which is the copy a read needs; the
                     // session task keeps none of its own.
                     if let Command::ReadCallOutput { key, call_id } = &command {
+                        let output = call_output(state, key, call_id).await;
                         return send(
                             socket,
                             ServerMessage::Update {
                                 update: Box::new(SessionUpdate::CallOutput {
                                     key: key.clone(),
                                     call_id: call_id.clone(),
-                                    output: call_output(state, key, call_id),
+                                    output,
                                 }),
                                 seq: None,
                                 span: 1,
@@ -3190,45 +3191,12 @@ fn dispatched(me: u64, command: &Command) {
     );
 }
 
-/// Dispatch a reply-carrying command, and answer the client that asked.
-///
-/// A client that asked for an answer always hears one - INCLUDING a refusal,
-/// so it is never left watching a channel that stays empty.
 /// Whether a command reports its outcome through the reply rather than
 /// through an update on the subscription.
 ///
 /// These five are the ones with nothing behind them on the wire: a client
 /// that omits `reply_to` for one of them has no second way to learn what
 /// happened.
-/// A call's own output, read from the transport's held copy of its seat.
-///
-/// The frame that names the file is a `ChatAppended` row the fold has already
-/// applied, so the held conversation is where the read resolves it; a seat
-/// this transport holds nothing for has no conversation to name one.
-fn call_output(
-    state: &TransportState,
-    key: &SessionSlot,
-    call_id: &str,
-) -> forge_primitives::CallOutput {
-    use forge_primitives::CallOutput;
-    let Some(held) = state.conversations.get(key) else {
-        return CallOutput::NoPath;
-    };
-    let conversation = held.lock();
-    let Some(path) =
-        forge_workspace::output_tail::resolve_call_output_path(conversation.messages(), call_id)
-    else {
-        return CallOutput::NoPath;
-    };
-    match forge_workspace::output_tail::read_output_file_tail(
-        &path,
-        forge_workspace::output_tail::CALL_OUTPUT_MAX_LINES,
-    ) {
-        None => CallOutput::FileGone,
-        Some(lines) => CallOutput::Lines(lines),
-    }
-}
-
 fn answers_through_a_reply(command: &Command) -> bool {
     matches!(
         command,
@@ -3238,6 +3206,46 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
     )
+}
+
+/// A call's own output, read from the transport's held copy of its seat.
+///
+/// The frame that names the file is a `ChatAppended` row the fold has already
+/// applied, so the held conversation is where the read resolves it; a seat
+/// this transport holds nothing for has no conversation to name one.
+///
+/// Both the copy's lock and the file read block, so they run off the
+/// connection's loop the way every other conversation read here does.
+async fn call_output(
+    state: &TransportState,
+    key: &SessionSlot,
+    call_id: &str,
+) -> forge_primitives::CallOutput {
+    use forge_primitives::CallOutput;
+    let conversations = Arc::clone(&state.conversations);
+    let key = key.clone();
+    let call_id = call_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let Some(held) = conversations.get(&key) else {
+            return CallOutput::NoPath;
+        };
+        let conversation = held.lock();
+        let Some(path) = forge_workspace::output_tail::resolve_call_output_path(
+            conversation.messages(),
+            &call_id,
+        ) else {
+            return CallOutput::NoPath;
+        };
+        match forge_workspace::output_tail::read_output_file_tail(
+            &path,
+            forge_workspace::output_tail::CALL_OUTPUT_MAX_LINES,
+        ) {
+            None => CallOutput::FileGone,
+            Some(lines) => CallOutput::Lines(lines),
+        }
+    })
+    .await
+    .unwrap_or(CallOutput::NoPath)
 }
 
 /// Dispatch one of those five, and answer the client that asked.
@@ -3320,16 +3328,21 @@ mod tests {
         );
 
         assert_eq!(
-            call_output(&state, &seat, "tu-1"),
+            call_output(&state, &seat, "tu-1").await,
             forge_primitives::CallOutput::Lines(vec!["one".to_owned(), "two".to_owned()]),
             "the copy's own frame names the file the read returns",
         );
         assert_eq!(
-            call_output(&state, &seat, "tu-unknown"),
+            call_output(&state, &seat, "tu-unknown").await,
             forge_primitives::CallOutput::NoPath,
             "a call the copy does not name is the no-path reason",
         );
-        let _ = std::fs::remove_file(&path);
+        std::fs::remove_file(&path).expect("remove the output file");
+        assert_eq!(
+            call_output(&state, &seat, "tu-1").await,
+            forge_primitives::CallOutput::FileGone,
+            "a named file that has gone is its own reason, not an empty tail",
+        );
     }
 
     /// **Only a ping that went out can go unanswered.** The state holds no

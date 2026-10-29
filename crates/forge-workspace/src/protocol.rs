@@ -1350,9 +1350,8 @@ pub enum SessionUpdate {
     /// of the file the CLI streamed the call's output to, or a named reason
     /// there is none.
     ///
-    /// Emitted by the task that carries the conversation, because the frame
-    /// naming the call's `output_file` lives there and nowhere else a read
-    /// could reach without walking the transcript.
+    /// Emitted by the transport from its held copy of the seat's
+    /// conversation, which carries the frame naming the call's `output_file`.
     CallOutput {
         key: SessionSlot,
         call_id: String,

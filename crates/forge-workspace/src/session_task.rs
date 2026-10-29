@@ -2536,12 +2536,8 @@ pub(crate) fn execute_command_via_handle(
     cmd: Command,
 ) -> Result<(), forge_agent::AgentError> {
     match cmd {
-        // Answered by the task before it reaches here: a handoff runs the
-        // task's own state machine, and `ReadCallOutput` is answered by the
-        // transport from its own conversation copy. A caller reading this as
-        // dead code should note the arms in `SessionTask::execute_command`
-        // are what handle them - the match here is exhaustive, not a route.
-        Command::ReadCallOutput { .. } | Command::Handoff { .. } => Ok(()),
+        // A handoff runs the task's own state machine, before it reaches here.
+        Command::Handoff { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
@@ -2598,10 +2594,12 @@ pub(crate) fn execute_command_via_handle(
             );
             Ok(())
         }
-        // App-level commands are caught in Workspace::dispatch's
-        // app-level branch; they never reach this helper.
-        // Handled inline in `Workspace::dispatch`; never agent traffic.
-        misrouted @ (Command::SetDictateOverride { .. }
+        // No per-session route: app-level commands are caught in
+        // `Workspace::dispatch`'s own branches, and `ReadCallOutput` is
+        // answered by the transport from its held conversation before any
+        // dispatch. A command of either kind arriving here is a wiring bug.
+        misrouted @ (Command::ReadCallOutput { .. }
+        | Command::SetDictateOverride { .. }
         | Command::ResetDictateOverrides { .. }
         | Command::DictateStream { .. }
         | Command::DictateStop { .. }
@@ -2650,7 +2648,7 @@ pub(crate) fn execute_command_via_handle(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),
                 command = ?misrouted,
-                "App-level command unexpectedly routed via per-session path"
+                "command has no per-session route"
             );
             Ok(())
         }
