@@ -19,18 +19,10 @@ use forge_primitives::{
 use crate::SessionSlot;
 use crate::protocol::{Command, NoticeSeverity, SessionUpdate};
 
-/// How many files, commands and prompt lines the brief names. Past this it
-/// starts re-summarising the session, which is the failure it exists to
-/// avoid.
+/// How many files and dirty paths the brief names. Past this it starts
+/// re-summarising the session, which is the failure it exists to avoid.
 const FILE_CAP: usize = 10;
-const COMMAND_CAP: usize = 10;
-const ACTION_CAP: usize = 10;
 const DIRTY_CAP: usize = 20;
-const CONSTRAINT_CAP: usize = 10;
-const CONSTRAINT_LINE_CAP: usize = 300;
-const CONSTRAINT_BLOCK_CAP: usize = 6;
-const PROMPT_LINE_CAP: usize = 600;
-const MEASURED_LINE_CAP: usize = 200;
 /// The judgment half's ceiling: room for the 400-word note the prompt asks
 /// for, with its pointer lines, and no more.
 const JUDGMENT_CAP: usize = 5_000;
@@ -43,12 +35,6 @@ const JUDGMENT_CAP: usize = 5_000;
 /// become a megabyte on a page read; generous enough that an ordinary turn
 /// (measured at ~42k in the scratch stack) fits whole.
 const JUDGMENT_TURN_CAP: usize = 256 * 1024;
-
-/// The parts of the judgment half forge asks for, in order. The note is the
-/// position and the index rather than a retelling: the successor opens what
-/// `Pointers` names instead of reading a summary of it.
-pub(crate) const JUDGMENT_HEADINGS: [&str; 5] =
-    ["Now", "Where it stood", "Pointers", "Next", "Done means"];
 
 /// What the seat is, so the brief can say which charter it belongs to
 /// without repeating a charter the launch already carries.
@@ -64,9 +50,6 @@ pub(crate) struct HandoffSeat<'a> {
     pub from: &'a str,
     pub cwd: &'a Path,
     pub transcript_path: &'a Path,
-    pub account: Option<String>,
-    pub model: Option<String>,
-    pub permission_mode: Option<String>,
     pub role: Role,
 }
 
@@ -103,15 +86,14 @@ pub(crate) async fn ground_truth(
     config_dir: &Path,
     seat: &HandoffSeat<'_>,
     board: &[Task],
-    prior: Option<&HandoffRecord>,
     live: Vec<HandoffSection>,
 ) -> GroundTruth {
     let read = {
         let config_dir = config_dir.to_path_buf();
         let session_id = seat.from.to_owned();
         let cwd = seat.cwd.to_path_buf();
-        // The read is the whole transcript; the brief needs its newest asks
-        // and the calls between, which only a pass over the file can answer.
+        // The read is the whole transcript; the brief needs the files and calls
+        // in it, which only a pass over the file can answer.
         tokio::task::spawn_blocking(move || {
             forge_agent::session_history(&config_dir, &session_id, &cwd.to_string_lossy())
         })
@@ -128,7 +110,7 @@ pub(crate) async fn ground_truth(
     // project files the successor needs, and counting its reads would make
     // the successor's re-read measurement measure the handoff's own cost.
     let memory_roots = memory_roots(config_dir, seat.cwd);
-    let mut truth = assemble(seat, &messages, &git, board, prior, &memory_roots, live);
+    let mut truth = assemble(seat, &messages, &git, board, &memory_roots, live);
     if read_failed {
         // **An empty PART 1 is not a session with nothing in it.** Without
         // this line the successor reads a blank ground truth as a blank
@@ -139,8 +121,8 @@ pub(crate) async fn ground_truth(
             HandoffSection {
                 label: "note".to_owned(),
                 lines: vec![
-                    "the previous session's transcript could not be read; the asks, files, \
-                     verification and record below are empty for that reason"
+                    "the previous session's transcript could not be read; the files this brief \
+                     would list cannot be read for that reason"
                         .to_owned(),
                 ],
             },
@@ -155,59 +137,19 @@ pub(crate) fn assemble(
     messages: &[Message],
     git: &HandoffGitState,
     board: &[Task],
-    prior: Option<&HandoffRecord>,
     memory_roots: &[PathBuf],
     live: Vec<HandoffSection>,
 ) -> GroundTruth {
-    let asks = user_prompts(messages);
-    let mut ask = ask_section(&asks);
-    let mut constraints = constraint_section(&asks);
-    if let Some(prior) = prior {
-        // **A successor's own transcript begins with the brief, which the
-        // machine filter removes.** Without carrying those lines forward, a
-        // second handoff would have no first ask and no constraints - the
-        // original intent is in the record the session arrived by, not in
-        // the transcript above it.
-        let carried_asks = section_lines(&prior.brief.ground_truth, "ask");
-        if !carried_asks.is_empty() {
-            let mut lines = vec!["carried by the brief this session arrived by".to_owned()];
-            lines.extend(carried_asks);
-            if !ask.lines.is_empty() {
-                lines.push("since then".to_owned());
-                lines.extend(std::mem::take(&mut ask.lines));
-            }
-            ask.lines = lines;
-        }
-        let carried_rules = section_lines(&prior.brief.ground_truth, "constraints");
-        if !carried_rules.is_empty() {
-            for rule in &carried_rules {
-                if !constraints.lines.contains(rule) {
-                    constraints.lines.insert(0, rule.clone());
-                }
-            }
-            if constraints.lines.len() > CONSTRAINT_CAP {
-                let cut = constraints.lines.len() - CONSTRAINT_CAP;
-                constraints.lines.truncate(CONSTRAINT_CAP);
-                constraints.lines.push(format!("[cut; {cut} more lines]"));
-            }
-        }
-    }
+    let turns = user_prompt_count(messages);
     let mut sections = seat_sections(seat, git);
     sections.push(role_section(&seat.role));
-    sections.push(ask);
-    sections.push(constraints);
     sections.push(files_section(messages, git, memory_roots));
-    // **No action, no heading.** A brief with a blank "actions" label reads as
-    // a section the reader should have filled in rather than one that does not
-    // apply to this session.
-    sections.extend(actions_section(messages));
-    sections.push(verify_section(messages));
     sections.push(board_section(seat.slot, board));
     sections.extend(live);
     sections.push(record_section(seat));
     GroundTruth {
         sections,
-        cycle: cycle(messages, asks.len()),
+        cycle: cycle(messages, turns),
         reads: read_set(messages, memory_roots),
         judgment_turn: judgment_turn(messages),
     }
@@ -319,16 +261,6 @@ fn is_procedure_prompt(message: &Message) -> bool {
         }
         _ => false,
     })
-}
-
-/// A section's lines from a brief, by label. An older record's brief is the
-/// only place its asks survive: the transcript above the successor is gone.
-fn section_lines(sections: &[HandoffSection], label: &str) -> Vec<String> {
-    sections
-        .iter()
-        .find(|section| section.label == label)
-        .map(|section| section.lines.clone())
-        .unwrap_or_default()
 }
 
 /// The directories the handoff's own memory writes land in: the project's
@@ -525,15 +457,6 @@ fn seat_sections(seat: &HandoffSeat<'_>, git: &HandoffGitState) -> Vec<HandoffSe
         (Some(branch), None) => fact("branch", branch.to_owned()),
         (None, _) => fact("branch", "not a git repository".to_owned()),
     });
-    if let Some(account) = &seat.account {
-        sections.push(fact("account", account.clone()));
-    }
-    if let Some(model) = &seat.model {
-        sections.push(fact("model", model.clone()));
-    }
-    if let Some(mode) = &seat.permission_mode {
-        sections.push(fact("mode", mode.clone()));
-    }
     sections
 }
 
@@ -550,106 +473,6 @@ fn role_section(role: &Role) -> HandoffSection {
         },
     };
     HandoffSection { label: "role".to_owned(), lines }
-}
-
-fn ask_section(asks: &[(usize, String)]) -> HandoffSection {
-    let mut lines = Vec::new();
-    let recent = asks.len().saturating_sub(3);
-    for (ordinal, text) in &asks[recent..] {
-        let (author, body) = prompt_author(text, *ordinal);
-        lines.push(format!("#{ordinal} ({author}): {}", clipped_verbatim(body, PROMPT_LINE_CAP)));
-    }
-    HandoffSection { label: "ask".to_owned(), lines }
-}
-
-/// Who a user row came from, and the words without a peer envelope's own
-/// header.
-///
-/// A peer message is an ordinary user row whose text opens with
-/// `[Message id=... from agent 'X' (org 'Y')]`. Quoting it as "user prompt
-/// N" would attribute another agent's words to the person.
-fn prompt_author(text: &str, ordinal: usize) -> (String, &str) {
-    if let Some(rest) = text.strip_prefix("[Message id=")
-        && let Some((_id, rest)) = rest.split_once(" from agent '")
-        && let Some((agent, rest)) = rest.split_once("' (org '")
-        && let Some((org, body)) = rest.split_once("')]")
-    {
-        let author = format!("peer message from {agent} (org {org})");
-        return (author, body.trim_start());
-    }
-    (format!("user prompt {ordinal}"), text)
-}
-
-/// The rules still binding, quoted. A cue word is the pattern and a heading
-/// the user wrote is the other, so a constraint is picked out of the prompt
-/// that stated it rather than paraphrased from it.
-///
-/// **A heading takes its block with it.** `Hard rule:` alone is the label of
-/// a rule and none of it; the bullets under it are the rule, so a cue line
-/// ending in `:` carries the contiguous indented or bulleted lines below it.
-fn constraint_section(asks: &[(usize, String)]) -> HandoffSection {
-    let mut found: Vec<String> = Vec::new();
-    for (ordinal, text) in asks.iter().rev() {
-        let (author, body) = prompt_author(text, *ordinal);
-        let raw: Vec<&str> = body.lines().collect();
-        for (at, raw_line) in raw.iter().enumerate().rev() {
-            let line = raw_line.trim();
-            if line.is_empty() || !states_a_rule(line) {
-                continue;
-            }
-            let mut block = vec![line.to_owned()];
-            if line.ends_with(':') {
-                let mut cut = 0;
-                for next in raw.iter().skip(at + 1) {
-                    let trimmed = next.trim();
-                    if trimmed.is_empty() {
-                        break;
-                    }
-                    // Raw indentation is what tells a continuation from the
-                    // next paragraph; the trimmed line cannot.
-                    let continues = trimmed.starts_with("- ")
-                        || trimmed.starts_with("* ")
-                        || next.starts_with("  ")
-                        || next.starts_with('\t');
-                    if !continues {
-                        break;
-                    }
-                    if block.len() >= CONSTRAINT_BLOCK_CAP {
-                        cut += 1;
-                        continue;
-                    }
-                    block.push(trimmed.to_owned());
-                }
-                if cut > 0 {
-                    block.push(format!("[cut; {cut} more lines]"));
-                }
-            }
-            let quoted = format!(
-                "\"{}\" ({author})",
-                clipped_verbatim(&block.join("\n"), CONSTRAINT_LINE_CAP)
-            );
-            if !found.contains(&quoted) {
-                found.push(quoted);
-            }
-            if found.len() >= CONSTRAINT_CAP {
-                found.reverse();
-                return HandoffSection { label: "constraints".to_owned(), lines: found };
-            }
-        }
-    }
-    found.reverse();
-    HandoffSection { label: "constraints".to_owned(), lines: found }
-}
-
-/// Whether a line states a rule rather than a task. Deliberately narrow:
-/// missing a line leaves the successor the transcript, while a broad match
-/// fills the brief with prose.
-fn states_a_rule(line: &str) -> bool {
-    let lower = line.to_lowercase();
-    ["must", "never", "do not", "don't", "no exceptions", "hard rule", "forbidden", "required"]
-        .iter()
-        .any(|cue| lower.contains(cue))
-        || lower.starts_with("always ")
 }
 
 fn files_section(
@@ -711,110 +534,6 @@ fn files_section(
         lines.extend(git.diff.iter().cloned());
     }
     HandoffSection { label: "files".to_owned(), lines }
-}
-
-/// What the session DID through forge's own tools, one line each.
-///
-/// **A successor cannot infer these from the transcript above it**, because a
-/// successor has none: an agent messaged, a row filed, a schedule set and a
-/// page driven are all work that would otherwise vanish with the handover.
-/// File and command families stay in their own sections above; the action's
-/// own most telling argument rides the line so the verb alone is not a riddle.
-fn actions_section(messages: &[Message]) -> Option<HandoffSection> {
-    let mut lines: Vec<String> = Vec::new();
-    for (_, name, input) in tool_uses(messages) {
-        let Some(action) = forge_action(name) else { continue };
-        let line = match action_detail(input) {
-            Some(detail) => format!("{action}: {}", clipped(detail, MEASURED_LINE_CAP)),
-            None => action.to_owned(),
-        };
-        if !lines.contains(&line) {
-            lines.push(line);
-        }
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    let (shown, omitted) = first_and_newest(&lines, ACTION_CAP);
-    let mut out: Vec<String> = shown.into_iter().cloned().collect();
-    if omitted > 0 {
-        out.push(format!("... {omitted} more actions omitted"));
-    }
-    Some(HandoffSection { label: "actions".to_owned(), lines: out })
-}
-
-/// The forge tool families the brief carries as actions.
-fn forge_action(name: &str) -> Option<&str> {
-    let action = name.strip_prefix("mcp__forge__")?;
-    let family = action.split("__").next().unwrap_or(action);
-    let named = matches!(
-        family,
-        "agents" | "tasks" | "cron" | "slack" | "gotify" | "documents" | "review" | "systemone"
-    );
-    (named || family.starts_with("browser")).then_some(action)
-}
-
-/// The one argument of an action that says what it acted on.
-fn action_detail(input: &serde_json::Value) -> Option<&str> {
-    const KEYS: [&str; 8] =
-        ["subject", "message", "prompt", "question", "text", "content", "description", "url"];
-    KEYS.iter()
-        .find_map(|key| input.get(*key).and_then(serde_json::Value::as_str))
-        .filter(|value| !value.trim().is_empty())
-}
-
-fn verify_section(messages: &[Message]) -> HandoffSection {
-    let mut lines = Vec::new();
-    let results = tool_results(messages);
-    let calls = bash_calls(messages);
-    // The commands the session ran, oldest first, deduped: a command run
-    // three times is one line, and the order says what was tried before what.
-    let mut recent: Vec<&str> = Vec::new();
-    for (_, command) in &calls {
-        if !recent.contains(command) {
-            recent.push(command);
-        }
-    }
-    // The commands the session ran: the first plus the newest nine when the
-    // list is long, with the omission stated rather than read as the whole.
-    let (shown, omitted) = first_and_newest(&recent, COMMAND_CAP);
-    for command in &shown {
-        lines.push(format!("ran: {}", clipped(command, MEASURED_LINE_CAP)));
-    }
-    if omitted > 0 {
-        lines.push(format!("ran: ... {omitted} more commands omitted"));
-    }
-    let gate = calls
-        .into_iter()
-        .rev()
-        .find(|(_, command)| is_a_gate(command))
-        .map(|(id, command)| (id, command.to_owned()));
-    if let Some((id, command)) = gate {
-        // **No recorded result is not a pass.** A gate whose output is not in
-        // the transcript (a call still running, a result the window dropped)
-        // is unknown, and a brief that called it ok would be the exact lie
-        // this section exists to prevent.
-        match results.get(&id) {
-            Some((true, text)) => {
-                lines.push(format!("gate: {} -> failed", clipped(&command, MEASURED_LINE_CAP)));
-                let failing = failing_line(text).unwrap_or_else(|| "see the transcript".to_owned());
-                lines.push(format!("failing: {failing}"));
-            }
-            Some((false, _)) => {
-                lines.push(format!("gate: {} -> ok", clipped(&command, MEASURED_LINE_CAP)));
-            }
-            None => {
-                lines.push(format!(
-                    "gate: {} -> no result recorded",
-                    clipped(&command, MEASURED_LINE_CAP)
-                ));
-            }
-        }
-    }
-    if let Some(measured) = measured_line(messages) {
-        lines.push(format!("measured: {}", clipped(&measured, MEASURED_LINE_CAP)));
-    }
-    HandoffSection { label: "verify".to_owned(), lines }
 }
 
 fn board_section(slot: &SessionSlot, board: &[Task]) -> HandoffSection {
@@ -952,20 +671,19 @@ fn cycle(messages: &[Message], turns: usize) -> HandoffCycle {
     HandoffCycle { requests, turns: u32::try_from(turns).unwrap_or(u32::MAX), prompt_tokens }
 }
 
-/// Every real user prompt, ordinal and text, in transcript order. A
-/// synthetic row is the harness speaking, a row with no text is a tool
-/// result, and a machine prompt is forge's own words.
-fn user_prompts(messages: &[Message]) -> Vec<(usize, String)> {
-    let mut prompts = Vec::new();
-    for message in messages {
-        let Message::User { message: envelope, synthetic, .. } = message else { continue };
-        if *synthetic || is_machine_prompt(message) {
-            continue;
-        }
-        let Some(text) = text_of(&envelope.content) else { continue };
-        prompts.push((prompts.len() + 1, text));
-    }
-    prompts
+/// How many real user prompts the transcript holds. A synthetic row is the
+/// harness speaking, a row with no text is a tool result, and a machine
+/// prompt is forge's own words.
+fn user_prompt_count(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .filter(|message| {
+            let Message::User { message: envelope, synthetic, .. } = message else {
+                return false;
+            };
+            !*synthetic && !is_machine_prompt(message) && text_of(&envelope.content).is_some()
+        })
+        .count()
 }
 
 /// Whether a user row is forge's own prompt rather than a person's or a
@@ -973,9 +691,7 @@ fn user_prompts(messages: &[Message]) -> Vec<(usize, String)> {
 ///
 /// **A forged prompt is an ordinary user row in the transcript**, and the
 /// forged id is the only mark the CLI keeps. Without this the judgment
-/// prompt reads back as the newest ask (its own "Do not restate what is on
-/// disk" line as a user constraint), and the previous brief becomes the next
-/// handoff's first ask.
+/// prompt and the brief a session arrived by would count as its own turns.
 fn is_machine_prompt(message: &Message) -> bool {
     let Message::User { uuid, message: envelope, .. } = message else { return false };
     if uuid.as_deref().is_some_and(|id| id.starts_with("forge_nudge_")) {
@@ -1012,34 +728,6 @@ fn tool_uses(messages: &[Message]) -> impl Iterator<Item = (&str, &str, &serde_j
     })
 }
 
-/// Bash calls with their tool-use id and command, in order.
-fn bash_calls(messages: &[Message]) -> Vec<(String, &str)> {
-    tool_uses(messages)
-        .filter(|(_, name, input)| {
-            *name == "Bash" && input.get("command").and_then(serde_json::Value::as_str).is_some()
-        })
-        .filter_map(|(id, _, input)| {
-            let command = input.get("command")?.as_str()?;
-            Some((id.to_owned(), command))
-        })
-        .collect()
-}
-
-/// Tool results by the call they answer: whether it failed, and its text.
-fn tool_results(messages: &[Message]) -> std::collections::HashMap<String, (bool, String)> {
-    let mut results = std::collections::HashMap::new();
-    for message in messages {
-        let Message::User { message: envelope, .. } = message else { continue };
-        for block in &envelope.content {
-            let ContentBlock::ToolResult { tool_use_id, content, is_error, .. } = block else {
-                continue;
-            };
-            results.insert(tool_use_id.clone(), (*is_error, result_text(content)));
-        }
-    }
-    results
-}
-
 fn result_text(content: &serde_json::Value) -> String {
     if let Some(text) = content.as_str() {
         return text.to_owned();
@@ -1054,80 +742,6 @@ fn result_text(content: &serde_json::Value) -> String {
         }
     }
     content.to_string()
-}
-
-/// Whether a command is a gate: the checks this project treats as the bar.
-fn is_a_gate(command: &str) -> bool {
-    [
-        "just check",
-        "just check-feature-configs",
-        "just check-delta",
-        "cargo nextest",
-        "cargo test",
-        "cargo clippy",
-        "npm test",
-        "npm run test",
-        "pnpm test",
-        "bun test",
-        "pytest",
-        "make test",
-    ]
-    .iter()
-    .any(|gate| command.contains(gate))
-}
-
-/// The first line of a failed run's output that names the failure.
-fn failing_line(output: &str) -> Option<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .find(|line| {
-            line.contains("FAILED")
-                || line.contains("FAIL [")
-                || line.starts_with("error:")
-                || line.contains(" test result: failed")
-        })
-        .map(|line| clipped(line, MEASURED_LINE_CAP))
-}
-
-/// The last line the session stated a number in, which is the shape
-/// "measured" takes. Narrow on purpose: a unit, not a bare digit.
-fn measured_line(messages: &[Message]) -> Option<String> {
-    for message in messages.iter().rev() {
-        let Message::Assistant { message: envelope, .. } = message else { continue };
-        for block in envelope.content.iter().rev() {
-            let ContentBlock::Text { text, .. } = block else { continue };
-            for line in text.lines().rev() {
-                let line = line.trim();
-                if states_a_number(line) {
-                    return Some(line.to_owned());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Whether a line states a number in a unit: "1.2 s", "512 MB", "85%".
-/// A bare digit is not enough - a line of prose is not a measurement.
-fn states_a_number(line: &str) -> bool {
-    const UNITS: [&str; 11] =
-        ["ms", "mb", "mib", "gb", "gib", "kb", "s", "%", "tokens", "tok", "req/s"];
-    let lower = line.to_lowercase();
-    UNITS.iter().any(|unit| {
-        let mut from = 0;
-        while let Some(at) = lower[from..].find(unit) {
-            let at = from + at;
-            let before = lower[..at].trim_end().chars().next_back();
-            let after = lower[at + unit.len()..].chars().next();
-            let ends_here = after.is_none_or(|next| !next.is_alphanumeric());
-            if ends_here && before.is_some_and(|before| before.is_ascii_digit()) {
-                return true;
-            }
-            from = at + unit.len();
-        }
-        false
-    })
 }
 
 /// The plain text of an assistant turn's blocks, when it holds any.
@@ -1185,43 +799,25 @@ fn tail<T: Clone>(items: &[T], cap: usize) -> Vec<T> {
     items[items.len().saturating_sub(cap)..].to_vec()
 }
 
-fn clipped(text: &str, cap: usize) -> String {
-    if text.chars().count() <= cap {
-        return text.to_owned();
-    }
-    let cut: String = text.chars().take(cap).collect();
-    format!("{cut}...")
-}
-
-/// A quote clipped at `cap`, with the cut stated in words: the brief calls
-/// these verbatim, so a shortened one must not read as the whole.
-fn clipped_verbatim(text: &str, cap: usize) -> String {
-    if text.chars().count() <= cap {
-        return text.to_owned();
-    }
-    let cut: String = text.chars().take(cap).collect();
-    format!("{cut}... [cut; the full text is in the transcript]")
-}
-
 /// Parse the handing-over session's reply into the judgment half.
 ///
-/// A heading the model wrote differently is not dropped: its lines join the
-/// section before it, and a reply with no heading at all is one section. The
-/// row draws what the successor was given, not an idealised version of it.
+/// **The note's shape is the model's, so the parser follows it.** A heading
+/// line opens a section and every other line is body; a reply with no heading
+/// at all is one section. The row draws what the successor was given, not an
+/// idealised version of it.
 pub(crate) fn parse_judgment(raw: &str) -> Vec<HandoffSection> {
     let mut sections: Vec<HandoffSection> = Vec::new();
     for line in raw.lines() {
         let trimmed = line.trim();
         if let Some((heading, rest)) = judgment_heading(trimmed) {
-            sections
-                .push(HandoffSection { label: heading.to_owned(), lines: vec![rest.to_owned()] });
+            sections.push(HandoffSection { label: heading, lines: vec![rest] });
             continue;
         }
         match sections.last_mut() {
             Some(section) => section.lines.push(trimmed.to_owned()),
             None if !trimmed.is_empty() => {
                 sections.push(HandoffSection {
-                    label: "judgment".to_owned(),
+                    label: "note".to_owned(),
                     lines: vec![trimmed.to_owned()],
                 });
             }
@@ -1234,11 +830,11 @@ pub(crate) fn parse_judgment(raw: &str) -> Vec<HandoffSection> {
     cap_judgment(sections)
 }
 
-/// Whether a reply is a note: it parses into at least one heading section.
-/// Anything else, including headings with no content under them, is prose or
-/// an empty shell, and neither is the brief.
+/// Whether a reply is a note. **Nothing is prescribed about its shape, so any
+/// reply with content is one**; an empty reply or a headings-only shell is
+/// not, and the caller answers that with [`missing_note`].
 pub(crate) fn parses_as_note(raw: &str) -> bool {
-    parse_judgment(raw).iter().any(|section| JUDGMENT_HEADINGS.contains(&section.label.as_str()))
+    !parse_judgment(raw).is_empty()
 }
 
 /// The judgment half when no exit note arrived. **Never the turn's prose
@@ -1257,43 +853,79 @@ pub(crate) fn missing_note() -> Vec<HandoffSection> {
 
 /// The heading a line opens, and its body when the line carries one.
 ///
-/// A model writes a heading as `Now: ...`, `## Now`, `**Now:** ...`,
-/// `## Now.` or `1. **Now**` - the shipped skill numbers its own parts, and a
-/// heading written to match it must still open. The label still has to open
-/// the line, so prose that happens to begin with the word stays body text.
-fn judgment_heading(line: &str) -> Option<(&'static str, &str)> {
-    let text = heading_text(line);
-    for heading in JUDGMENT_HEADINGS {
-        let Some(rest) = text.strip_prefix(heading) else { continue };
-        // `**Now:**` closes the emphasis around the label. Only that literal
-        // pair comes off, so a body's own `*emphasis*` survives.
-        let rest = strip_emphasis(rest);
-        if let Some(body) = rest.strip_prefix(':') {
-            return Some((heading, strip_emphasis(body).trim()));
-        }
-        if let Some(body) = rest.strip_prefix('.') {
-            // A full stop ends the heading only when nothing follows it:
-            // `Now. the work stands` is prose, not a heading with no body.
-            if strip_emphasis(body).trim().is_empty() {
-                return Some((heading, ""));
-            }
-            continue;
-        }
-        if rest.trim().is_empty() {
-            return Some((heading, ""));
-        }
+/// A model writes a heading as `Where things stand: ...`, `## Next`,
+/// `**Next:** ...`, `**Next** run the gate.`, `## Next.` or `1. **Next**`. The
+/// label still has to open the line: a marked line, or a short title-shaped
+/// label before a colon, is a heading. A sentence that carries a colon in the
+/// middle stays body text, and a marked label still has to read as one -
+/// `**I fixed it. The gate:** is green` stays body.
+fn judgment_heading(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    let unbulleted = trimmed.trim_start_matches(['#', '*', '-', ' ']);
+    // The furniture comes off before the ordered marker is looked for, so
+    // `## 1. Next` opens one heading.
+    let ordered = ordered_marker(unbulleted);
+    let marked = trimmed.starts_with('#')
+        || trimmed.starts_with("**")
+        || trimmed.trim_start_matches(['-', ' ']).starts_with("**")
+        || ordered.is_some_and(|rest| rest.starts_with("**"));
+    let text = match ordered {
+        Some(rest) => rest.trim_start_matches(['#', '*', '-', ' ']),
+        None => unbulleted,
+    };
+    if text.is_empty() {
+        return None;
     }
-    None
+    let emphasis = text.split_once("**").filter(|(_, rest)| !rest.trim().is_empty());
+    let colon = text.split_once(':');
+    let (label, rest) = match (marked, emphasis) {
+        // **Whichever delimiter opens first ends the label.** A colon before
+        // the closing emphasis wins, so `Where things stand: the **cut** is
+        // in` keeps its whole label.
+        (true, Some((label, rest))) => match colon {
+            Some((colon_label, colon_rest)) if colon_label.len() < label.len() => {
+                (colon_label, Some(colon_rest))
+            }
+            _ => (label, Some(rest)),
+        },
+        _ => match colon {
+            Some((label, rest)) => (label, Some(rest)),
+            None if marked => (text, None),
+            None => return None,
+        },
+    };
+    // `**Now:**` closes the emphasis around the label. Only that literal pair
+    // comes off, so a body's own `*emphasis*` survives.
+    let label =
+        label.trim_end_matches("**").trim().trim_end_matches(':').trim_end_matches('.').trim();
+    if !heading_label(label, marked) {
+        return None;
+    }
+    let body = rest.map_or_else(String::new, |rest| {
+        // The label's closing emphasis comes off only when the body begins
+        // with it, then the delimiter's own colon (`**Next**: run`). A body
+        // that opens with its own bold or colon keeps it (`Next: **run**`,
+        // `Next: ::1`).
+        let rest = strip_emphasis(rest);
+        rest.strip_prefix(':').unwrap_or(rest).trim().to_owned()
+    });
+    Some((label.to_owned(), body))
 }
 
-/// The line with the markdown furniture a heading may wear taken off: the
-/// `#`/`*` markers, and an ordered-list number (`1.`, `1)`).
-fn heading_text(line: &str) -> &str {
-    let text = line.trim_start_matches(['#', '*', '-', ' ']);
-    match ordered_marker(text) {
-        Some(rest) => rest.trim_start_matches(['#', '*', '-', ' ']),
-        None => text,
+/// Whether `label` reads as a heading rather than the front of a sentence.
+/// A marked line may be a longer title; a bare one has to be short and
+/// title-shaped.
+fn heading_label(label: &str, marked: bool) -> bool {
+    let chars = label.chars().count();
+    if chars == 0 || chars > if marked { 60 } else { 40 } {
+        return false;
     }
+    if label.contains(['.', '!', '?', ',']) {
+        return false;
+    }
+    marked
+        || label.chars().next().is_some_and(char::is_uppercase)
+            && label.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '\'' || c == '-')
 }
 
 /// The text after a leading `1.` / `1)` marker, or `None` when there is none.
@@ -1346,7 +978,7 @@ fn cap_judgment(mut sections: Vec<HandoffSection>) -> Vec<HandoffSection> {
                 .lines
                 .push("[the rest of this reply is in the transcript named above]".to_owned()),
             None => kept.push(HandoffSection {
-                label: "judgment".to_owned(),
+                label: "note".to_owned(),
                 lines: vec![
                     "[the reply was longer than the brief allows; it is in the transcript \
                      named above]"
@@ -1359,11 +991,34 @@ fn cap_judgment(mut sections: Vec<HandoffSection>) -> Vec<HandoffSection> {
 }
 
 /// The brief as the successor receives it.
+///
+/// **Which half is authoritative is stated first.** PART 1 is read off the
+/// transcript, git and the board, so it is the half the successor trusts for
+/// facts; PART 2 is its predecessor's own account, written in whatever shape
+/// that session chose.
 pub(crate) fn brief_text(pair: &str, brief: &forge_primitives::HandoffBrief) -> String {
     let mut out = format!("HANDOFF - {pair}\n");
+    // **A source row is forge's sentence inside the session's half**, so both
+    // the precedence line and the part header name the exception rather than
+    // letting it read as the predecessor's words.
+    let sourced = brief.judgment.iter().any(|section| section.label == "source");
+    out.push_str(if sourced {
+        "\nPART 1 is forge's own ground truth and is authoritative for facts; PART 2 is the \
+         handing-over session's own words, apart from the source row forge added.\n"
+    } else {
+        "\nPART 1 is forge's own ground truth and is authoritative for facts; PART 2 is the \
+         handing-over session's own words.\n"
+    });
     out.push_str("\nPART 1: GROUND TRUTH (written by forge, not by a model)\n");
     render_sections(&mut out, &brief.ground_truth);
-    out.push_str("\nPART 2: JUDGMENT (written by the session that is handing over)\n");
+    if sourced {
+        out.push_str(
+            "\nPART 2: JUDGMENT (the source row is forge's; the rest is the session's own \
+             words)\n",
+        );
+    } else {
+        out.push_str("\nPART 2: JUDGMENT (written by the session that is handing over)\n");
+    }
     render_sections(&mut out, &brief.judgment);
     out
 }
@@ -1411,27 +1066,21 @@ no such skill, do those three steps from this prompt: memory first, then close \
 out what is running, then call `agents__handoff` with the note.";
 
 /// Forge's output contract for the note the exit call carries.
+///
+/// **The minimum, not a template.** Forge asks for the continuation the next
+/// session needs and no shape to write it in, so the note can read however its
+/// author finds clearest.
 const JUDGMENT_CONTRACT: &str = "\
-Write the note under exactly these five headings and no others, each alone at \
-the start of its own line:\n\n\
-Now: where the work stands, in two or three sentences - what is done and \
-verified, what is in flight, and what is unchanged. Its last line names what you \
-recorded in memory and where it lives.\n\
-Where it stood: the exact position - the branch and commit, the row or PR in \
-flight, the last command you ran and its verdict. A dead end is a fact here: \
-name what was tried and what stopped it.\n\
-Pointers: the index, one line each and no prose - the memory files by name, the \
-rolling handoff document, the board rows by id, the PR numbers and the \
-transcript path. The successor opens these instead of reading a summary of \
-them.\n\
-Next: the ordered next actions, each one bounded and starting at the file or \
-command it begins with.\n\
-Done means: the observable that ends this task.\n\n\
-Do not restate what is on disk: forge's own half of the brief already carries \
-the seat, the asks, the constraints, the files, the git state, the gate and the \
-board. Never write a key, token, password or personal data into the note. This \
-note is Step 2's handoff document, written under these five headings; pass the \
-same text to `agents__handoff` as `brief`. Keep it under 400 words.";
+Write the continuation the next session needs, in whatever shape reads best - \
+there is no set of headings to fill in. It must carry: where things stand, and \
+what is done and verified; what is in flight, with the row, PR, branch or \
+session id that names it; what you tried that failed, and what stopped it; and \
+the exact next action, with the file, command or row it starts at. Point at \
+what you recorded instead of retelling it: the memory files by name, the rolling \
+handoff document, the board rows by id, the PR numbers, the transcript. Never \
+write a key, token, password or personal data into the note. This note is Step \
+2's handoff document; pass the same text to `agents__handoff` as `brief`. Keep \
+it under 400 words.";
 
 /// The judgment prompt the turn runs: forge's own words, the skill it names,
 /// and the output contract for the note the exit call carries.
@@ -1550,9 +1199,6 @@ pub(crate) struct SwapRequest {
     pub fill: Option<FillReading>,
     pub at_percent: u8,
     pub role: Role,
-    pub account: Option<String>,
-    pub model: Option<String>,
-    pub permission_mode: Option<String>,
     pub judgment: Vec<HandoffSection>,
     pub cwd: String,
     pub launch_settings: SessionLaunchSettings,
@@ -1830,17 +1476,8 @@ impl crate::Workspace {
             from: &request.from,
             cwd: &cwd,
             transcript_path: &transcript_path,
-            account: request.account.clone(),
-            model: request.model.clone(),
-            permission_mode: request.permission_mode.clone(),
             role: request.role.clone(),
         };
-        // **The predecessor's own brief is where its original ask survives.**
-        // A session that itself arrived by a handoff has the prior brief as
-        // its first transcript row, not the words a person typed; the record
-        // it arrived by still holds them.
-        let prior =
-            self.handoff_for_successor(&request.slot, &request.from).map(|(record, _)| record);
         let live = {
             let domain = self.domain_session_for(&request.slot);
             match domain {
@@ -1848,7 +1485,7 @@ impl crate::Workspace {
                 None => live_work_sections(None),
             }
         };
-        let truth = ground_truth(self.config_dir(), &seat, &board, prior.as_ref(), live).await;
+        let truth = ground_truth(self.config_dir(), &seat, &board, live).await;
         let GroundTruth { sections, cycle, reads, judgment_turn } = truth;
         let record = HandoffRecord {
             slot: request.slot.clone(),
@@ -2086,9 +1723,6 @@ mod tests {
             from: "9cfe315c-aaaa-bbbb-cccc-dddddddddddd",
             cwd: Path::new("/tmp/forge"),
             transcript_path: Path::new("/tmp/projects/forge/9cfe315c.jsonl"),
-            account: Some("Personal".to_owned()),
-            model: Some("claude-opus-5-5".to_owned()),
-            permission_mode: Some("auto".to_owned()),
             role: Role::Worker { charter_opening: Some("You build the cut.".to_owned()) },
         }
     }
@@ -2101,15 +1735,14 @@ mod tests {
     /// its own and reads as part of the label above it.
     #[test]
     fn the_seat_and_the_record_name_the_identity_and_the_transcript() {
-        let ground =
-            assemble(&seat(), &[], &HandoffGitState::default(), &[], None, &[], Vec::new());
+        let ground = assemble(&seat(), &[], &HandoffGitState::default(), &[], &[], Vec::new());
         let labels: Vec<&str> = ground.sections.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(
-            &labels[..6],
-            ["seat", "cwd", "branch", "account", "model", "mode"],
+            &labels[..3],
+            ["seat", "cwd", "branch"],
             "the seat block is one fact per row: {labels:?}",
         );
-        let values: Vec<Vec<&str>> = ground.sections[..6]
+        let values: Vec<Vec<&str>> = ground.sections[..3]
             .iter()
             .map(|section| section.lines.iter().map(String::as_str).collect())
             .collect();
@@ -2119,9 +1752,6 @@ mod tests {
                 vec!["Busytools/forge/handoff-cut"],
                 vec!["/tmp/forge"],
                 vec!["not a git repository"],
-                vec!["Personal"],
-                vec!["claude-opus-5-5"],
-                vec!["auto"],
             ],
             "each row carries its own value",
         );
@@ -2130,7 +1760,7 @@ mod tests {
             head: Some("94cab2f20".to_owned()),
             ..HandoffGitState::default()
         };
-        let on_a_branch = assemble(&seat(), &[], &git, &[], None, &[], Vec::new());
+        let on_a_branch = assemble(&seat(), &[], &git, &[], &[], Vec::new());
         assert_eq!(
             on_a_branch.sections[2].label, "branch",
             "the branch keeps its own row: {:?}",
@@ -2162,10 +1792,10 @@ mod tests {
     }
 
     /// **Forge's own prompts are not the person's.** A forged row reads back
-    /// as a user turn, so without the filter the judgment prompt becomes the
-    /// newest ask and the previous brief becomes the first one.
+    /// as a user turn, so without the filter the judgment prompt and the brief
+    /// this session arrived by would count as its own turns.
     #[test]
-    fn forge_prompts_and_prior_briefs_are_not_the_asks() {
+    fn forge_prompts_and_prior_briefs_are_not_turns() {
         let forged = |text: &str| {
             let mut frame = user(text);
             if let Message::User { uuid, .. } = &mut frame {
@@ -2179,161 +1809,34 @@ mod tests {
             user("and open the PR"),
             user("HANDOFF - old -> new\n\nPART 1: GROUND TRUTH"),
         ];
-        let asks = user_prompts(&messages);
-        assert_eq!(
-            asks.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>(),
-            vec!["ship the handoff", "and open the PR"],
-            "only the two real prompts are asks",
-        );
-        let constraints = constraint_section(&asks);
-        assert!(
-            !constraints.lines.iter().any(|line| line.contains("restate what is on disk")),
-            "the judgment prompt's own instruction is not a user constraint: {:?}",
-            constraints.lines,
-        );
+        assert_eq!(user_prompt_count(&messages), 2, "only the two real prompts are turns");
     }
 
-    /// The CLI's own user rows are not asks, and they are not turns a
+    /// The CLI's own user rows are not prompts, and they are not turns a
     /// successor is measured by either.
     #[test]
-    fn machine_rows_are_neither_asks_nor_successor_turns() {
+    fn machine_rows_are_neither_prompts_nor_successor_turns() {
         let messages = vec![
             user("ship the handoff"),
             user("<task-notification>\n<task-id>b1</task-id>\n</task-notification>"),
             user("[Request interrupted by user for tool use]"),
             user("[Your previous response had no visible output. Please continue.]"),
         ];
-        let asks = user_prompts(&messages);
-        assert_eq!(
-            asks.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>(),
-            vec!["ship the handoff"],
-            "only the person's own row is an ask",
-        );
+        assert_eq!(user_prompt_count(&messages), 1, "only the person's own row is a turn");
         let counts = successor_counts(&messages, &[]);
         assert_eq!(counts.turns, 1, "and only that row is a successor turn: {counts:?}");
     }
 
-    /// A successor that hands over again still has its predecessor's ask and
-    /// rules: they live in the record it arrived by, not in the transcript
-    /// above it (whose first row is the brief).
+    /// A peer message runs a turn of its own, so the cycle counts it.
     #[test]
-    fn a_second_handoff_carries_the_original_ask_and_rules() {
-        let prior = HandoffRecord {
-            slot: SessionSlot::worker("Busytools", "forge", "handoff-cut"),
-            from: "older-session".to_owned(),
-            to: "mid-session".to_owned(),
-            reason: HandoffReason::Fill,
-            fill_percent: Some(85),
-            total_tokens: Some(850_000),
-            max_tokens: Some(1_000_000),
-            at_percent: 85,
-            brief: HandoffBrief {
-                ground_truth: vec![
-                    HandoffSection {
-                        label: "ask".to_owned(),
-                        lines: vec!["first (user prompt 1): build the handoff row".to_owned()],
-                    },
-                    HandoffSection {
-                        label: "constraints".to_owned(),
-                        lines: vec!["\"Never drop a row\" (user prompt 1)".to_owned()],
-                    },
-                ],
-                judgment: Vec::new(),
-            },
-            judgment_turn: Vec::new(),
-            transcript_path: "/tmp/older.jsonl".to_owned(),
-            at: "2026-10-24T08:00:00Z".to_owned(),
-            cycle: HandoffCycle::default(),
-            successor: None,
-        };
+    fn a_peer_message_is_a_turn() {
         let messages = vec![
-            user("HANDOFF - older-session -> mid-session\n\nPART 1: GROUND TRUTH"),
-            user("now finish the client row"),
+            user(
+                "[Message id=m-1 from agent 'forge/steward' (org 'Busytools')]\n\nis the cron filed?",
+            ),
+            user("ship the handoff"),
         ];
-
-        let ground = assemble(
-            &seat(),
-            &messages,
-            &HandoffGitState::default(),
-            &[],
-            Some(&prior),
-            &[],
-            Vec::new(),
-        );
-        let ask = ground.sections.iter().find(|section| section.label == "ask").expect("ask");
-        assert!(
-            ask.lines.iter().any(|line| line.contains("build the handoff row")),
-            "the original ask is carried: {:?}",
-            ask.lines,
-        );
-        assert!(
-            ask.lines.iter().any(|line| line.contains("now finish the client row")),
-            "and the current one is added below it: {:?}",
-            ask.lines,
-        );
-        let constraints = ground
-            .sections
-            .iter()
-            .find(|section| section.label == "constraints")
-            .expect("constraints");
-        assert!(
-            constraints.lines.iter().any(|line| line.contains("Never drop a row")),
-            "the rule outlives the session that stated it: {:?}",
-            constraints.lines,
-        );
-    }
-
-    /// A peer's words are labelled as the peer's, and the envelope header is
-    /// not quoted back as its body.
-    #[test]
-    fn a_peer_message_is_not_quoted_as_the_users_prompt() {
-        let asks = user_prompts(&[user(
-            "[Message id=m-1 from agent 'forge/steward' (org 'Busytools')]\n\nis the cron filed?",
-        )]);
-        let section = ask_section(&asks);
-        let line = section.lines.first().expect("the ask");
-        assert!(
-            line.contains("peer message from forge/steward (org Busytools)"),
-            "the author is named: {line}",
-        );
-        assert!(!line.contains("[Message id="), "and the envelope is not the body: {line}");
-    }
-
-    /// A heading block past the cap says how much it left: a rule read as
-    /// five bullets when ten were written is a shortened rule presented as
-    /// the whole.
-    #[test]
-    fn a_heading_block_states_what_it_cut() {
-        let bullets = (1..=8).map(|n| format!("- rule {n}")).collect::<Vec<_>>().join("\n");
-        // The indented line sits directly under the heading: raw indentation,
-        // not the trimmed text, is what makes it part of the rule.
-        let prompts = user_prompts(&[user(&format!(
-            "Do the thing.\nHard rule:\n  the wrapped tail\n{bullets}"
-        ))]);
-        let section = constraint_section(&prompts);
-        let quoted = section.lines.first().expect("the rule");
-        assert!(quoted.contains("rule 1"), "the block is quoted: {quoted}");
-        assert!(
-            quoted.contains("the wrapped tail"),
-            "an indented line under the heading is part of it: {quoted}",
-        );
-        assert!(quoted.contains("[cut; 4 more lines]"), "the omitted rules are counted: {quoted}");
-    }
-
-    /// A gate with no result in the transcript is unknown, never a pass.
-    #[test]
-    fn a_gate_with_no_recorded_result_is_not_a_pass() {
-        let messages = vec![call("g1", "Bash", serde_json::json!({ "command": "just check" }))];
-        let section = verify_section(&messages);
-        assert!(
-            section.lines.contains(&"gate: just check -> no result recorded".to_owned()),
-            "an unanswered gate is stated as unknown: {:?}",
-            section.lines,
-        );
-        assert!(
-            !section.lines.iter().any(|line| line.ends_with("-> ok")),
-            "and it is never read as a pass",
-        );
+        assert_eq!(user_prompt_count(&messages), 2, "the peer's row and the person's");
     }
 
     /// The uncommitted count is the tree's, not the capped list's.
@@ -2357,79 +1860,8 @@ mod tests {
         );
     }
 
-    /// A heading constraint takes the block under it: `Hard rule:` alone is
-    /// a label, and the bullets are the rule.
-    #[test]
-    fn a_heading_constraint_takes_its_block() {
-        let prompts = user_prompts(&[user(
-            "Please do the thing.\nHard rule:\n- Edit/Write only, never sed -i.\n- Never touch main.",
-        )]);
-        let section = constraint_section(&prompts);
-        let quoted = section.lines.first().expect("the rule");
-        assert!(
-            quoted.contains("Hard rule:")
-                && quoted.contains("Edit/Write only")
-                && quoted.contains("Never touch main"),
-            "the heading and both bullets are quoted: {quoted}",
-        );
-    }
-
-    /// A clipped verbatim quote says it was cut: a brief calling a quote
-    /// verbatim must not present a shortened one as the whole.
-    #[test]
-    fn a_clipped_quote_states_the_cut() {
-        let long = format!("Hard rule: {}", "x".repeat(CONSTRAINT_LINE_CAP));
-        let prompts = user_prompts(&[user(&long)]);
-        let section = constraint_section(&prompts);
-        assert!(
-            section
-                .lines
-                .first()
-                .is_some_and(|line| line.contains("[cut; the full text is in the transcript]")),
-            "the cut is named: {:?}",
-            section.lines,
-        );
-    }
-
-    /// The brief carries the last three prompts and nothing older. A long
-    /// session's opener is not the intent by the time prompts 93-95 arrive,
-    /// so quoting it beside them states a starting point the work left.
-    #[test]
-    fn the_ask_names_the_newest_three() {
-        let messages: Vec<Message> =
-            ["one", "two", "three", "four", "five"].iter().map(|text| user(text)).collect();
-        let asks = user_prompts(&messages);
-        let section = ask_section(&asks);
-        assert_eq!(
-            section.lines,
-            vec![
-                "#3 (user prompt 3): three".to_owned(),
-                "#4 (user prompt 4): four".to_owned(),
-                "#5 (user prompt 5): five".to_owned(),
-            ],
-            "the newest three, oldest first, with no first-prompt line",
-        );
-    }
-
-    /// A constraint is quoted exactly as it was written, with the prompt it
-    /// came from: paraphrase is where "Edit/Write only" becomes "prefer the
-    /// edit tools".
-    #[test]
-    fn a_constraint_is_quoted_verbatim_with_the_prompt_it_came_from() {
-        let prompts = user_prompts(&[
-            user("Please fix the login bug.\nHard rule: Edit/Write only, never sed -i."),
-            user("and open a PR"),
-        ]);
-        let section = constraint_section(&prompts);
-        assert_eq!(
-            section.lines,
-            vec!["\"Hard rule: Edit/Write only, never sed -i.\" (user prompt 1)".to_owned(),],
-            "the rule verbatim, with its source",
-        );
-    }
-
     /// The brief names what changed, what was read and what is still
-    /// uncommitted: the successor cannot infer any of it from the ask.
+    /// uncommitted: the successor cannot infer any of it from the note.
     #[test]
     fn the_files_section_names_edits_reads_and_the_uncommitted_paths() {
         let messages = vec![
@@ -2465,70 +1897,53 @@ mod tests {
             "and the count is stated: {:?}",
             section.lines,
         );
+        assert!(
+            section.lines.contains(&"diff:".to_owned()),
+            "the probe's diff keeps its own block: {:?}",
+            section.lines,
+        );
+        assert!(
+            section.lines.iter().any(|line| line.contains("src/handoff.rs | 10")),
+            "and carries the hunks under it: {:?}",
+            section.lines,
+        );
     }
 
-    /// **The session's own actions were invisible to the brief.** A successor
-    /// inheriting an MCP call it cannot see repeats it or undoes it, so the
-    /// ground truth names every forge action the session took, one line each -
-    /// and leaves the file and command families to the sections above them.
+    /// **PART 1 is exactly the mechanical sections, in order.** A section
+    /// added back (an account, a model, an ask) or dropped (the board) changes
+    /// this list.
     #[test]
-    fn the_brief_lists_the_sessions_forge_actions() {
+    fn the_ground_truth_is_exactly_the_mechanical_sections() {
         let messages = vec![
-            call(
-                "a1",
-                "mcp__forge__agents__send_message",
-                serde_json::json!({
-                    "org": "Busytools", "project": "forge", "label": "lead",
-                    "message": "the handoff is ready"
-                }),
-            ),
-            call(
-                "a2",
-                "mcp__forge__tasks__create",
-                serde_json::json!({ "subject": "draw the provisional row" }),
-            ),
-            call("a3", "mcp__forge__gotify__apps", serde_json::json!({})),
-            call("f1", "Read", serde_json::json!({ "file_path": "src/lib.rs" })),
-            call("f2", "Bash", serde_json::json!({ "command": "just check" })),
+            user("go"),
+            call("t1", "Edit", serde_json::json!({ "file_path": "src/a.rs" })),
+            call("t2", "Read", serde_json::json!({ "file_path": "src/b.rs" })),
         ];
-        let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], None, &[], Vec::new());
-        let actions = ground
-            .sections
-            .iter()
-            .find(|section| section.label == "actions")
-            .expect("the brief carries the session's actions");
-        assert!(
-            actions.lines.iter().any(|line| line.contains("agents__send_message")
-                && line.contains("the handoff is ready")),
-            "the message it sent is named: {:?}",
-            actions.lines,
-        );
-        assert!(
-            actions
-                .lines
-                .iter()
-                .any(|line| line.contains("tasks__create")
-                    && line.contains("draw the provisional row")),
-            "and the row it filed: {:?}",
-            actions.lines,
-        );
-        assert!(
-            actions.lines.iter().any(|line| line == "gotify__apps"),
-            "every forge family is named, the connector's included: {:?}",
-            actions.lines,
-        );
-        assert!(
-            !actions.lines.iter().any(|line| line.starts_with("Read") || line.starts_with("Bash")),
-            "the file and command families stay in their own sections: {:?}",
-            actions.lines,
-        );
-
-        let quiet = assemble(&seat(), &[], &HandoffGitState::default(), &[], None, &[], Vec::new());
-        assert!(
-            quiet.sections.iter().all(|section| section.label != "actions"),
-            "a session with no forge-tool calls gets no blank heading: {:?}",
-            quiet.sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
+        let git = HandoffGitState {
+            branch: Some("main".to_owned()),
+            head: Some("abc".to_owned()),
+            dirty: Vec::new(),
+            dirty_total: 0,
+            diff: vec![" src/a.rs | 2 ++".to_owned()],
+        };
+        let ground = assemble(&seat(), &messages, &git, &[], &[], live_work_sections(None));
+        let labels: Vec<&str> = ground.sections.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "seat",
+                "cwd",
+                "branch",
+                "role",
+                "files",
+                "board",
+                "agents",
+                "background",
+                "monitors",
+                "processes",
+                "record",
+            ],
+            "the brief is exactly the mechanical facts",
         );
     }
 
@@ -2552,38 +1967,6 @@ mod tests {
         assert!(line.contains("src/f0.rs"), "the first is kept: {line}");
         assert!(line.contains("src/f11.rs"), "and the newest: {line}");
         assert!(!line.contains("src/f1.rs"), "the second-oldest is what the cap takes: {line}");
-    }
-
-    /// A failed gate is reported as failed, with the line that names the
-    /// failure: a brief that says the gate is green when it is not is worse
-    /// than no brief.
-    #[test]
-    fn the_verify_section_carries_the_gate_verdict_and_the_failing_test() {
-        let messages = vec![
-            call("g1", "Bash", serde_json::json!({ "command": "just check" })),
-            result(
-                "g1",
-                "   FAIL [   0.020s] forge-workspace config::tests::a_handoff_percent",
-                true,
-            ),
-            assistant(vec![text("the gate read 3 failures across 1,900 tests, 41 s wall")], None),
-        ];
-        let section = verify_section(&messages);
-        assert!(
-            section.lines.contains(&"gate: just check -> failed".to_owned()),
-            "the gate and its verdict: {:?}",
-            section.lines,
-        );
-        assert!(
-            section.lines.iter().any(|line| line.contains("FAIL [   0.020s]")),
-            "the failing test is named: {:?}",
-            section.lines,
-        );
-        assert!(
-            section.lines.iter().any(|line| line.starts_with("measured: the gate read 3 failures")),
-            "and the last measured line is carried: {:?}",
-            section.lines,
-        );
     }
 
     /// Only the slot's own rows are its work, and their links are what say
@@ -2760,44 +2143,55 @@ mod tests {
             user("and now this"),
             assistant(vec![text("done")], Some(usage(200, 2_000))),
         ];
-        let cycle = cycle(&messages, user_prompts(&messages).len());
+        let cycle = cycle(&messages, user_prompt_count(&messages));
         assert_eq!(cycle.requests, 2, "one request per usage-bearing assistant row");
         assert_eq!(cycle.turns, 2, "one turn per real user prompt");
         assert_eq!(cycle.prompt_tokens, 3_300, "input and cache reads both count");
     }
 
-    /// A reply whose headings differ is still the successor's brief: the
-    /// row draws what the old session wrote, not nothing.
+    /// A reply with no heading at all is still the successor's brief: the
+    /// note's shape is its author's, and the row draws it as one `note` row.
     #[test]
-    fn a_heading_less_judgment_is_one_section_rather_than_nothing() {
-        let sections = parse_judgment("the work is half done.\nthe next step is the client row.");
+    fn a_note_with_no_headings_is_one_note_section() {
+        let raw = "the work is half done.\nthe next step is the client row.";
+        assert!(parses_as_note(raw), "prose with no heading is the note");
+        let sections = parse_judgment(raw);
         assert_eq!(sections.len(), 1, "one section, not zero");
-        assert_eq!(sections[0].label, "judgment");
+        assert_eq!(sections[0].label, "note");
         assert_eq!(sections[0].lines.len(), 2, "and its lines survive");
     }
 
-    /// The five headings forge asks for parse into five sections, in order.
+    /// **The model's own headings split the note.** Nothing is prescribed
+    /// about its shape, so whatever headings its author chose open sections,
+    /// in the order written.
     #[test]
-    fn the_five_headings_parse_in_order() {
-        let raw = "Now: the cut is half in.\nWhere it stood: worktree at abc1234.\nPointers: memory/handoff.md\nNext: the client row.\nDone means: the gates are green.";
+    fn the_models_own_headings_split_the_note() {
+        let raw = "## Where things stand\nthe cut is half in.\n\
+                   ## What failed\nthe first spawn.\n## Next\nfix the parser.";
         let sections = parse_judgment(raw);
         let labels: Vec<&str> = sections.iter().map(|section| section.label.as_str()).collect();
-        assert_eq!(labels, JUDGMENT_HEADINGS.to_vec(), "the five, in the order asked for");
-        assert_eq!(sections[1].lines, vec!["worktree at abc1234.".to_owned()]);
+        assert_eq!(
+            labels,
+            ["Where things stand", "What failed", "Next"],
+            "the note's own headings, in order",
+        );
+        assert_eq!(
+            sections[1].lines,
+            vec!["the first spawn.".to_owned()],
+            "and each heading keeps the body under it",
+        );
     }
 
     /// **Every spelling of a heading line the model might write parses.**
-    /// A note written under `## Now` used to arrive as the missing-note line,
+    /// A note written under `## Next` used to arrive as the missing-note line,
     /// so the bare, hashed and emphasised forms all have to land - alone on
     /// the line, and with its colon and body.
     #[test]
     fn every_heading_spelling_parses() {
         for (label, body) in [
-            ("Now", "the cut is half in."),
-            ("Where it stood", "worktree handoff-index-first at abc1234, no PR yet."),
-            ("Pointers", "- memory/handoff.md"),
-            ("Next", "the client row."),
-            ("Done means", "the gates are green."),
+            ("Where things stand", "the cut is half in."),
+            ("What failed", "the first spawn, on a cold cache."),
+            ("Next", "fix the parser."),
         ] {
             for line in [
                 format!("{label}: {body}"),
@@ -2810,13 +2204,23 @@ mod tests {
                 assert_eq!(sections[0].label, label, "the heading for {line}");
                 assert_eq!(sections[0].lines, vec![body.to_owned()], "its body for {line}");
             }
+            // A marked label closing on its emphasis takes the rest of the
+            // same line as its body, colon or not.
+            for line in [
+                format!("**{label}** {body}"),
+                format!("- **{label}** {body}"),
+                format!("1. **{label}** {body}"),
+            ] {
+                let sections = parse_judgment(&line);
+                assert_eq!(sections.len(), 1, "one section for {line}");
+                assert_eq!(sections[0].label, label, "the heading for {line}");
+                assert_eq!(sections[0].lines, vec![body.to_owned()], "its body for {line}");
+            }
             // A heading alone on its line takes the body from the lines
-            // below, including the numbered and punctuated spellings the
-            // shipped skill invites by numbering its own parts.
+            // below.
             for line in [
                 format!("## {label}"),
                 format!("**{label}**"),
-                label.to_owned(),
                 format!("## {label}."),
                 format!("1. **{label}**"),
                 format!("## 1. {label}"),
@@ -2833,6 +2237,36 @@ mod tests {
         }
     }
 
+    /// **Whichever delimiter opens first ends the label.** A colon before the
+    /// closing emphasis keeps the label whole, and a colon that follows the
+    /// emphasis is the body's, not the label's.
+    #[test]
+    fn the_first_delimiter_ends_the_label() {
+        let sections = parse_judgment("## Where things stand: the **cut** is in");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "Where things stand");
+        assert_eq!(sections[0].lines, vec!["the **cut** is in".to_owned()]);
+
+        let sections = parse_judgment("**Next**: run the gate");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "Next");
+        assert_eq!(sections[0].lines, vec!["run the gate".to_owned()]);
+
+        // A body that opens with its own bold keeps it: only the label's
+        // closing pair comes off, and only when the body begins with it.
+        let sections = parse_judgment("Next: **run** the gate.");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "Next");
+        assert_eq!(sections[0].lines, vec!["**run** the gate.".to_owned()]);
+
+        // Only the delimiter's own colon comes off, so a body that opens
+        // with one (`::1`) is not trimmed into a number.
+        let sections = parse_judgment("Next: ::1 is the address");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "Next");
+        assert_eq!(sections[0].lines, vec!["::1 is the address".to_owned()]);
+    }
+
     /// **The label's own emphasis comes off; the body's stays.** Stripping a
     /// leading asterisk run rather than the matched pair left a note reading
     /// `nothing*` where its author wrote `*nothing*`.
@@ -2845,27 +2279,23 @@ mod tests {
     }
 
     /// **A note written in markdown is the judgment half.** The regression
-    /// this fixes: a correctly written `## Now` note read as no note at all,
+    /// this fixes: a correctly written markdown note read as no note at all,
     /// and the successor was told the note had not arrived.
     #[test]
     fn a_markdown_note_arrives_as_the_judgment_half() {
         let note = "\
-## Now
+## Where things stand
 The cut is half in and the parser is next.
-## Where it stood
+## What failed
 worktree handoff-index-first at abc1234, no PR yet.
-## Pointers
-- memory/handoff.md
 ## Next
-fix the parser, then the client row.
-## Done means
-both gates green.";
+fix the parser, then the client row.";
         assert!(parses_as_note(note), "the note is recognised");
         let sections = parse_judgment(note);
         assert_eq!(
             sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
-            JUDGMENT_HEADINGS.to_vec(),
-            "the five, in order",
+            ["Where things stand", "What failed", "Next"],
+            "the model's headings, in order",
         );
         assert_eq!(
             sections[0].lines,
@@ -2874,21 +2304,34 @@ both gates green.";
         );
     }
 
-    /// **A note with none of the five headings is not the brief.** The caller
-    /// answers exactly this with `missing_note()`, so a note under headings
-    /// that are no longer asked for must not read as one.
+    /// **Any reply with content is a note.** forge asks for no particular
+    /// shape, so a heading-less paragraph is the brief as much as a headed
+    /// one; only an empty reply is missing.
     #[test]
-    fn a_note_without_a_recognised_heading_is_not_the_brief() {
-        assert!(
-            !parses_as_note("Tried and failed: the first spawn.\nDo not: delete the row."),
-            "the old headings are not the shape any more",
-        );
-        assert!(!parses_as_note("## Summary\nsome prose"), "nor is a markdown heading of its own");
-        assert!(
-            !parses_as_note("as I said, Now: the work stands and Next: nothing else."),
-            "a heading has to open its line, not appear inside one",
-        );
-        assert!(parses_as_note("**Next:** the client row."), "an emphasised heading still is");
+    fn any_reply_with_content_is_a_note() {
+        let prose = "I tried the first spawn and it failed. The row is still there.";
+        assert!(parses_as_note(prose), "prose with no heading is the note");
+        let sections = parse_judgment(prose);
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "note");
+        assert_eq!(sections[0].lines, vec![prose.to_owned()], "the whole paragraph survives");
+        assert!(!parses_as_note("   \n  "), "an empty reply is not the note");
+    }
+
+    /// **A short title-shaped label before a colon opens a section; a
+    /// sentence carrying a colon mid-line stays body.** The parser follows the
+    /// line's shape, not a list of known labels.
+    #[test]
+    fn a_title_shaped_label_opens_a_section_and_a_sentence_does_not() {
+        let sections = parse_judgment("The export format is still open: row 1d14d131");
+        assert_eq!(sections.len(), 1, "one section: {sections:?}");
+        assert_eq!(sections[0].label, "The export format is still open");
+        assert_eq!(sections[0].lines, vec!["row 1d14d131".to_owned()]);
+
+        let prose = parse_judgment("the parser fails: it drops the body.");
+        assert_eq!(prose.len(), 1, "one section: {prose:?}");
+        assert_eq!(prose[0].label, "note", "a lower-case sentence stays prose");
+        assert_eq!(prose[0].lines, vec!["the parser fails: it drops the body.".to_owned()]);
     }
 
     /// **The cap states its cut.** A note past the ceiling loses its tail,
@@ -2911,6 +2354,16 @@ both gates green.";
                 .is_some_and(|line| line.contains("in the transcript named above")),
             "the cut is stated as the kept section's last line: {sections:?}",
         );
+
+        // A note with nothing that fits states the cut under the same `note`
+        // label every heading-less reply takes.
+        let huge = parse_judgment(&"x".repeat(JUDGMENT_CAP + 10));
+        assert_eq!(huge.len(), 1, "the cut is stated: {huge:?}");
+        assert_eq!(huge[0].label, "note", "the fallback is the note's own label");
+        assert!(
+            huge[0].lines[0].contains("longer than the brief allows"),
+            "and says what happened: {huge:?}",
+        );
     }
 
     /// The successor reads the facts before the judgment, under the two
@@ -2928,11 +2381,52 @@ both gates green.";
             }],
         };
         let text = brief_text("9cfe315c -> 4b21e0a7", &brief);
+        let authority = text
+            .find("PART 1 is forge's own ground truth and is authoritative for facts")
+            .expect("the precedence is stated");
         let ground = text.find("PART 1: GROUND TRUTH").expect("part 1");
         let judgment = text.find("PART 2: JUDGMENT").expect("part 2");
+        assert!(
+            authority < ground,
+            "the successor is told which half to trust before it reads either: {text}",
+        );
         assert!(ground < judgment, "ground truth first: {text}");
         assert!(text.contains("seat: Busytools/forge/lead"), "the facts are rendered");
         assert!(text.contains("Next: the client row"), "and so is the judgment");
+        assert!(
+            text.contains("PART 2: JUDGMENT (written by the session that is handing over)"),
+            "a note the session wrote names it as the author: {text}",
+        );
+
+        // **A source row is forge's sentence in the session's half**, so the
+        // header names the exception rather than letting it read as the
+        // predecessor's words.
+        let sourced = HandoffBrief {
+            ground_truth: Vec::new(),
+            judgment: vec![
+                HandoffSection {
+                    label: "source".to_owned(),
+                    lines: vec![
+                        "the exit call carried no note; this is the session's closing \
+                                 text"
+                            .to_owned(),
+                    ],
+                },
+                HandoffSection {
+                    label: "note".to_owned(),
+                    lines: vec!["the cut is half in".to_owned()],
+                },
+            ],
+        };
+        let text = brief_text("9cfe315c -> 4b21e0a7", &sourced);
+        assert!(
+            text.contains("the source row is forge's; the rest is the session's own words"),
+            "the header names the exception: {text}",
+        );
+        assert!(
+            text.contains("apart from the source row forge added"),
+            "and so does the precedence line: {text}",
+        );
     }
 
     /// The brief reaches the successor as a prompt and nowhere else: its
@@ -3027,9 +2521,6 @@ both gates green.";
             fill: None,
             at_percent: 85,
             role: Role::Lead,
-            account: None,
-            model: None,
-            permission_mode: None,
             judgment: Vec::new(),
             cwd: "/tmp/handoff-build".to_owned(),
             launch_settings: crate::SessionLaunchSettings::default(),
@@ -3247,12 +2738,9 @@ both gates green.";
             from: "missing-session",
             cwd: dir.path(),
             transcript_path: &transcript_path,
-            account: None,
-            model: None,
-            permission_mode: None,
             role: Role::Worker { charter_opening: None },
         };
-        let ground = ground_truth(dir.path(), &seat, &[], None, Vec::new()).await;
+        let ground = ground_truth(dir.path(), &seat, &[], Vec::new()).await;
         assert_eq!(ground.sections[0].label, "note", "the failure leads the brief");
         assert!(
             ground.sections[0].lines[0].contains("could not be read"),
@@ -3302,7 +2790,7 @@ both gates green.";
     }
 
     /// **The turn runs memory first and ends on the exit call.** The prompt
-    /// states the order, and the note's pointer has a home under Now.
+    /// states the order and names the skill before the note's contract.
     #[test]
     fn the_judgment_prompt_runs_memory_then_the_exit() {
         let prompt = judgment_prompt();
@@ -3314,16 +2802,8 @@ both gates green.";
         );
         assert!(
             prompt.find("Invoke the handoff skill").expect("the skill is named")
-                < prompt.find("Write the note").expect("the contract follows"),
+                < prompt.find("Write the continuation").expect("the contract follows"),
             "the skill runs before the note's contract",
-        );
-        let now = prompt.find("Now: where the work stands").expect("the Now heading");
-        let pointer =
-            prompt.find("Its last line names what you recorded in memory").expect("the pointer");
-        let stood = prompt.find("Where it stood:").expect("the next heading");
-        assert!(
-            now < pointer && pointer < stood,
-            "the pointer sits under Now, before Where it stood",
         );
         assert!(
             prompt.contains("This note is Step 2's handoff document")
@@ -3332,55 +2812,36 @@ both gates green.";
         );
     }
 
-    /// **The memory pointer lands under Now, not in a section of its own.**
-    /// Text before the first heading becomes a `judgment` section and text
-    /// after `Done means` joins that section, so the prompt has to place the
-    /// pointer inside a heading for the row to draw it where it belongs.
+    /// **The contract asks for the continuation, not a template.** It has to
+    /// name every fact the next session needs and leave the shape to its
+    /// author; a heading list here would put forge's five back by the door
+    /// the cut closed.
     #[test]
-    fn the_memory_pointer_lands_under_now() {
-        let note = "Now: the cut is half in.\nRecorded in memory.md and its index.\n\
-                    Where it stood: worktree at abc1234.\nPointers: memory/handoff.md\n\
-                    Next: the client row.\nDone means: the gates are green.";
-        let sections = parse_judgment(note);
-        assert_eq!(
-            sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
-            JUDGMENT_HEADINGS.to_vec(),
-            "the note is exactly the five, with no section before or after them",
-        );
-        assert!(
-            sections[0].lines.contains(&"Recorded in memory.md and its index.".to_owned()),
-            "the pointer rides under Now: {:?}",
-            sections[0].lines,
-        );
-    }
-
-    /// **The five headings are the note's LINES, exactly and in order.** A
-    /// presence check passes for an inline mention or a sixth heading; the
-    /// row's label column and the parser both read line starts.
-    #[test]
-    fn the_judgment_prompt_asks_for_exactly_the_five_headings() {
+    fn the_contract_asks_for_the_continuation_in_the_models_own_shape() {
         let prompt = judgment_prompt();
-        let labels: Vec<&str> = prompt
-            .lines()
-            .filter_map(|line| {
-                let (label, _) = line.split_once(": ")?;
-                let shaped = label.len() <= 21
-                    && label.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                    && label.chars().all(|c| c.is_ascii_alphabetic() || c == ' ');
-                shaped.then_some(label)
-            })
-            .collect();
-        assert_eq!(
-            labels,
-            JUDGMENT_HEADINGS.to_vec(),
-            "the prompt's heading lines are exactly the five, in the order the row draws",
-        );
+        for clause in [
+            "in whatever shape reads best",
+            "there is no set of headings to fill in",
+            "where things stand",
+            "what is done and verified",
+            "what is in flight",
+            "the row, PR, branch or session",
+            "what you tried that failed",
+            "the exact next action",
+            "Point at what you recorded instead of retelling it",
+            "the memory files by name",
+            "Never write a key, token, password or personal data",
+        ] {
+            assert!(prompt.contains(clause), "the contract drops '{clause}'");
+        }
+        for heading in ["Now", "Where it stood", "Pointers", "Next", "Done means"] {
+            assert!(!prompt.contains(heading), "the contract prescribes '{heading}' again");
+        }
     }
 
     /// **The shipped skill is Ved's handoff skill, verbatim, plus the forge
     /// additions.** Nothing above the appended section is rewritten: the
-    /// memory step, the handoff document, its four parts and the index line
-    /// are his text.
+    /// memory step, the handoff document and the index line are his text.
     #[test]
     fn the_shipped_skill_keeps_the_whole_handoff_procedure() {
         // Pinned on the words, not the wrap: the file is prose.
@@ -3395,31 +2856,33 @@ both gates green.";
             ("Update the memory index (`MEMORY.md`) in the SAME edit", "index in the same edit"),
             ("A learning that exists only in the handoff is not recorded", "memory over handoff"),
             ("The file is `handoff.md` in that directory", "the document he writes"),
-            ("1. **State snapshot**", "part 1"),
-            ("2. **Next steps / open threads**", "part 2"),
-            ("3. **Process facts**", "part 3"),
-            ("4. **Suggested skills**", "part 4"),
+            (
+                "Write the continuation the next session needs, in your own shape",
+                "the shape is its author's",
+            ),
+            ("There is no set of parts or headings to fill in", "no prescribed parts"),
+            ("what is done and verified", "the verification clause"),
+            ("the board row, PR, branch or session", "in-flight names its id"),
+            ("what you tried that failed, and what stopped it", "dead ends are named"),
+            (
+                "the exact next action, and the file, command or row it starts at",
+                "the next action starts somewhere",
+            ),
             ("Redact sensitive information (API keys, passwords, PII).", "redaction"),
             ("SHIPPED / IN FLIGHT / BLOCKED", "the index token"),
             ("## Forge: close out and exit", "the forge addition"),
             ("record in memory what it is and how to resume it", "the close-out step"),
             ("Leave nothing unfinished unrecorded", "unfinished work is named, not dropped"),
             ("pass the same text to `agents__handoff` as `brief`", "the exit call"),
-            ("the state snapshot in Now", "part 1 maps onto Now"),
-            (
-                "the exact position and process facts in Where it stood",
-                "parts 1 and 3 map onto Where it stood",
-            ),
-            ("the paths they live at in Pointers", "the index maps onto Pointers"),
-            ("the next steps and open threads in Next", "part 2 maps onto Next"),
-            ("the suggested skills in Next", "part 4 maps onto Next"),
+            ("there are no headings to fill in", "forge prescribes no headings"),
+            ("Memory first, then close out what is running, then the note.", "the order"),
         ] {
             let clause = clause.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(flat.contains(&clause), "the shipped skill drops '{clause}' ({why})");
         }
-        let names = JUDGMENT_HEADINGS.join(", ");
-        let message = format!("the skill names forge's headings, in order: {names}");
-        assert!(flat.contains(&names), "{message}");
+        for heading in ["Where it stood", "Pointers", "Done means"] {
+            assert!(!flat.contains(heading), "the shipped skill prescribes '{heading}' again");
+        }
     }
 
     /// The judgment turn is what a view draws when it attaches after the
@@ -3454,7 +2917,7 @@ both gates green.";
             result("t2", "{\"status\":\"handoff note accepted\"}", false),
         ];
         let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], None, &[], Vec::new());
+            assemble(&seat(), &messages, &HandoffGitState::default(), &[], &[], Vec::new());
         assert_eq!(
             ground.judgment_turn.len(),
             4,
@@ -3513,7 +2976,7 @@ both gates green.";
             result("t2", "ok", false),
         ];
         let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], None, &[], Vec::new());
+            assemble(&seat(), &messages, &HandoffGitState::default(), &[], &[], Vec::new());
         assert_eq!(
             ground.judgment_turn.len(),
             3,
@@ -3553,7 +3016,7 @@ both gates green.";
             assistant(vec![text("Now: the last thing")], None),
         ];
         let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], None, &[], Vec::new());
+            assemble(&seat(), &messages, &HandoffGitState::default(), &[], &[], Vec::new());
         let turn = &ground.judgment_turn;
         assert!(turn.len() >= 2, "the prompt, the omission and what fitted: {}", turn.len());
         assert_eq!(turn.first(), Some(&prompt), "the prompt is kept whole");
@@ -3583,7 +3046,7 @@ both gates green.";
     fn a_handoff_with_no_procedure_prompt_carries_no_turn() {
         let messages = vec![user("ship it"), assistant(vec![text("done")], None)];
         let ground =
-            assemble(&seat(), &messages, &HandoffGitState::default(), &[], None, &[], Vec::new());
+            assemble(&seat(), &messages, &HandoffGitState::default(), &[], &[], Vec::new());
         assert!(ground.judgment_turn.is_empty(), "no prompt, no turn: {:?}", ground.judgment_turn);
     }
 
@@ -3747,12 +3210,9 @@ both gates green.";
             from: session,
             cwd: &cwd,
             transcript_path: &transcript,
-            account: None,
-            model: None,
-            permission_mode: None,
             role: Role::Worker { charter_opening: None },
         };
-        let ground = ground_truth(config, &seat, &[], None, Vec::new()).await;
+        let ground = ground_truth(config, &seat, &[], Vec::new()).await;
         let files = ground.sections.iter().find(|section| section.label == "files").expect("files");
         let changed =
             files.lines.iter().find(|line| line.starts_with("changed:")).expect("changed");
@@ -3760,13 +3220,13 @@ both gates green.";
         assert!(!changed.contains("memory"), "and the memory edit is not: {changed}");
     }
 
-    /// **A note is only a note if it parses into sections.** Headings with
-    /// nothing under them are an empty shell, not the brief.
+    /// **A headings-only shell is not the note.** A reply carrying nothing but
+    /// its own labels is an empty shell; one with any body under them is the
+    /// brief.
     #[test]
     fn a_headings_only_reply_is_not_a_note() {
-        assert!(!parses_as_note("Now:\nWhere it stood:\nPointers:\nNext:\nDone means:"));
-        assert!(!parses_as_note("Memory updated."));
-        assert!(parses_as_note("Now: the cut is in."));
+        assert!(!parses_as_note("## Where things stand\n## Next"));
+        assert!(parses_as_note("## Next\nfix the parser."));
     }
 
     /// **A note at the length the prompt asks for is not truncated.** A later
@@ -3777,14 +3237,7 @@ both gates green.";
         // 3,200 characters, so a cap set at the note's own length proves
         // nothing about the headroom a complying session has.
         let words = |n: usize, tag: &str| vec![tag; n].join(" ");
-        let note = format!(
-            "Now: {}\nWhere it stood: {}\nPointers: {}\nNext: {}\nDone means: {}",
-            words(80, "morning"),
-            words(80, "abandon"),
-            words(80, "careful"),
-            words(80, "pending"),
-            words(80, "observes"),
-        );
+        let note = format!("{}\n{}", words(200, "morning"), words(200, "abandon"));
         assert!(
             note.split_whitespace().count() >= 400,
             "the fixture is at least the length the prompt asks for",
@@ -3795,11 +3248,8 @@ both gates green.";
             note.chars().count(),
         );
         let sections = parse_judgment(&note);
-        assert_eq!(
-            sections.iter().map(|section| section.label.as_str()).collect::<Vec<_>>(),
-            JUDGMENT_HEADINGS.to_vec(),
-            "a compliant note parses whole",
-        );
+        assert_eq!(sections.len(), 1, "a heading-less note parses whole");
+        assert_eq!(sections[0].label, "note", "as its one note section");
         assert!(
             sections
                 .iter()
@@ -3912,20 +3362,5 @@ both gates green.";
             ),
         ];
         assert_eq!(read_set(&messages, &roots), vec!["src/lib.rs".to_owned()]);
-    }
-
-    /// A line is "measured" only when it states a number in a unit: prose
-    /// with a digit in it is not a measurement.
-    #[test]
-    fn a_measured_line_needs_a_number_in_a_unit() {
-        let messages = vec![
-            assistant(vec![text("we are on step 3 of 5")], None),
-            assistant(vec![text("the gate finished in 1.2 s")], None),
-        ];
-        assert_eq!(
-            measured_line(&messages).as_deref(),
-            Some("the gate finished in 1.2 s"),
-            "the number with its unit, not the bare digit",
-        );
     }
 }

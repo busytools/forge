@@ -40,6 +40,7 @@
  */
 
 import { handoffOf, type HandoffRecord } from '../wire/handoff';
+import { changeNoun } from './change';
 import { cronNames } from './cron-names.svelte';
 import { taskStatus, type CallStatus } from './families';
 import { addJoinFrame, isDispatched, seedJoin, settleStops } from './join';
@@ -526,6 +527,18 @@ function str(value: unknown, key: string): string | null {
   return typeof held === 'string' ? held : null;
 }
 
+/** The CLI's development kind as a reader says it; an unknown kind as itself. */
+function devIntentLabel(kind: string): string {
+  switch (kind) {
+    case 'ios_app':
+      return 'iOS app';
+    case 'android_app':
+      return 'Android app';
+    default:
+      return kind;
+  }
+}
+
 /** One block's own JSON, when it is an object. */
 function obj(value: unknown): Record<string, unknown> {
   return (value ?? {}) as Record<string, unknown>;
@@ -700,6 +713,14 @@ interface Frame {
   /** `system/informational`'s body and level. */
   level?: unknown;
   content?: unknown;
+  /** `system/memory_recall`'s memories, and `system/local_command`'s usage. */
+  memories?: unknown;
+  contextUsage?: unknown;
+  usageReport?: unknown;
+  /** `system/local_command`'s modern name carrier: `{command, args}`. */
+  commandRun?: unknown;
+  /** `system/model_consent_fallback`'s evidence that the decline rewrote the default. */
+  persisted_as_default?: unknown;
   /** `system/vcs_state_changed`: what moved. */
   kind?: unknown;
   /**
@@ -2090,6 +2111,16 @@ export function fold(
    * that follows it lands on that row rather than drawing as the reader's.
    */
   let lastCompaction: number | null = null;
+  /**
+   * The row the last local command opened, by index.
+   *
+   * **The CLI sends a command as two frames**: one names it, a second carries
+   * what it printed (and often names it again in `commandRun`). The second
+   * fills the first's row, so a command is one row - and the handle is spent
+   * after the attach and dropped by any other unit, so a print cannot reach
+   * back to an older command.
+   */
+  let localCommandAt: number | null = null;
   /** The stage each notice key sits at, so a walk-back cannot soften a line. */
   const noticeStages = new Map<string, number>();
   /**
@@ -2297,6 +2328,9 @@ export function fold(
   const push = (unit: Unit): void => {
     flushWork();
     units.push(unit);
+    // Any unit between a command's name and its print closes the handle: the
+    // print belongs to the command it follows, not to an older row.
+    localCommandAt = null;
   };
 
   for (const [at, frame] of frames.entries()) {
@@ -2512,6 +2546,187 @@ export function fold(
         });
         continue;
       }
+      // **The turn ran on a different model than the seat's own.** The CLI's
+      // fallback chain, a refusal retry and the Fable consent gate all end in
+      // one of these; the row is the only place a reader learns that the
+      // words above came from a model the header does not name. One shape for
+      // the family, the subtype as the mark so the wire's own kind stays
+      // visible, and the frame itself behind the open.
+      if (
+        frame.subtype === 'model_fallback' ||
+        frame.subtype === 'model_refusal_fallback' ||
+        frame.subtype === 'model_refusal_no_fallback' ||
+        frame.subtype === 'model_consent_fallback'
+      ) {
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'model_fallback'),
+          notice: provisional(
+            frame.subtype,
+            'warning',
+            str(frame, 'content') ?? 'The session changed model.',
+            frame,
+            facts(
+              fact('trigger', str(frame, 'trigger')),
+              fact('original model', str(frame, 'original_model')),
+              fact('fallback model', str(frame, 'fallback_model')),
+              fact('scope', str(frame, 'scope')),
+              fact('refusal category', str(frame, 'api_refusal_category')),
+              fact('persisted as default', frame['persisted_as_default'] === true ? 'true' : null),
+            ),
+          ),
+        });
+        continue;
+      }
+      // **The memory subsystem surfaced files into this turn.** One line per
+      // recall frame, never one per memory: the frame already carries the
+      // list, and a reader wants to know that the turn was given context and
+      // where it came from. The paths stay in the open body rather than in
+      // the line, so a recall of twenty files is still one readable row.
+      if (frame.subtype === 'memory_recall') {
+        const memories = Array.isArray(frame['memories']) ? frame['memories'] : [];
+        const fields: NoticeField[] = [];
+        for (const memory of memories) {
+          const held = obj(memory);
+          const path = str(held, 'path');
+          const content = str(held, 'content');
+          // A `<synthesis:DIR>` path is a sentinel, not a file; the body is
+          // the memory a reader can use.
+          if (path !== null && !path.startsWith('<synthesis:')) {
+            fields.push({ label: 'path', value: path });
+          }
+          if (content !== null && content !== '') fields.push({ label: 'content', value: content });
+        }
+        const count = memories.length;
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'memory_recall'),
+          notice: provisional(
+            'memory_recall',
+            'info',
+            `Recalled ${count} ${count === 1 ? 'memory' : 'memories'}`,
+            frame,
+            fields,
+          ),
+        });
+        continue;
+      }
+      // **A local slash command names itself and prints, in one frame or
+      // two.** 2.1.280 sends one frame with the `<command-name>` tag (or a
+      // headless bare `/name args`), the stdout and `commandRun`; older CLIs
+      // send name and print apart. The print fills the row the name opened,
+      // and `named` opens a row only. The wire's name is `local_command`; the
+      // schema's `local_command_output` is stale. There is no twin: forge
+      // reads the raw system frames.
+      if (frame.subtype === 'local_command') {
+        const content = str(frame, 'content') ?? '';
+        const run = obj(frame['commandRun']);
+        const runCommand = str(run, 'command');
+        const tag = /<command-name>([\s\S]*?)<\/command-name>/.exec(content)?.[1]?.trim();
+        const bare = /^\s*(\/[^\n]*)/.exec(content)?.[1]?.trim() ?? null;
+        const rawName =
+          runCommand !== null && runCommand !== ''
+            ? runCommand
+            : tag !== undefined && tag !== ''
+              ? tag
+              : bare !== null && bare !== ''
+                ? bare
+                : null;
+        // `commandRun.command` drops the leading slash; one command reads one
+        // way whichever carrier named it.
+        const named = rawName === null || rawName.startsWith('/') ? rawName : `/${rawName}`;
+        const printed = [
+          ...content.matchAll(/<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/g),
+        ]
+          .map((match) => match[2]?.trim() ?? '')
+          .filter((line) => line !== '');
+        const output = printed.length === 0 ? null : printed.join('\n');
+        const open = localCommandAt === null ? null : (units[localCommandAt] ?? null);
+        const last = units[units.length - 1] ?? null;
+        if (
+          output !== null &&
+          localCommandAt !== null &&
+          open !== null &&
+          open === last &&
+          open.kind === 'notice' &&
+          open.notice.mark === 'local_command' &&
+          !(open.notice.fields ?? []).some((field) => field.label === 'output')
+        ) {
+          // The print's own facts and frame ride with the output; the row
+          // keeps the name frame's raw and gains the print's beside it.
+          const held = new Set(
+            (open.notice.fields ?? []).map((field) => `${field.label}\u0000${field.value}`),
+          );
+          const extra = facts(
+            fact('args', run['args'] === undefined ? null : brief(run['args'])),
+            fact('level', str(frame, 'level')),
+            fact(
+              'context usage',
+              frame['contextUsage'] === undefined ? null : brief(frame['contextUsage']),
+            ),
+            fact(
+              'usage report',
+              frame['usageReport'] === undefined ? null : brief(frame['usageReport']),
+            ),
+          ).filter((field) => !held.has(`${field.label}\u0000${field.value}`));
+          units[localCommandAt] = {
+            kind: 'notice',
+            key: open.key,
+            notice: {
+              ...open.notice,
+              fields: [...facts(fact('output', output)), ...(open.notice.fields ?? []), ...extra],
+              raw: `${open.notice.raw ?? ''}\n${JSON.stringify(frame)}`,
+            },
+          };
+          localCommandAt = null;
+          continue;
+        }
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'local_command'),
+          notice: provisional(
+            'local_command',
+            noticeSeverity(str(frame, 'level')),
+            `Ran ${named ?? 'a local command'}`,
+            frame,
+            facts(
+              fact('args', run['args'] === undefined ? null : brief(run['args'])),
+              fact('output', output),
+              fact('level', str(frame, 'level')),
+              fact(
+                'context usage',
+                frame['contextUsage'] === undefined ? null : brief(frame['contextUsage']),
+              ),
+              fact(
+                'usage report',
+                frame['usageReport'] === undefined ? null : brief(frame['usageReport']),
+              ),
+            ),
+          ),
+        });
+        localCommandAt = units.length - 1;
+        continue;
+      }
+      // **A sticky fact about the project, not a turn event.** The CLI names
+      // a platform it saw - from the conversation or its project scan - and
+      // the row is quiet because the fact is background. The bundle claims at
+      // most one per kind per conversation from each source, unconfirmed by a
+      // capture; the trigger says which evidence fired.
+      if (frame.subtype === 'dev_intent') {
+        const kind = str(frame, 'kind');
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'dev_intent'),
+          notice: provisional(
+            'dev_intent',
+            'info',
+            kind === null ? 'Project development intent' : `Project: ${devIntentLabel(kind)}`,
+            frame,
+            facts(fact('trigger', str(frame, 'trigger'))),
+          ),
+        });
+        continue;
+      }
       if (frame.subtype === 'notification') {
         push({
           kind: 'notice',
@@ -2530,56 +2745,35 @@ export function fold(
         });
         continue;
       }
-      // **The CLI's own report that a command moved the repository.** The
-      // line names the kind and at most the branch, and the open body lists
-      // those same fields; the tree it changed is what the tree row above the
-      // composer draws, and this row is the event that made that row re-read.
-      if (frame.subtype === 'vcs_state_changed') {
-        const kind = str(frame, 'kind');
-        const branch = str(frame, 'branch');
-        const said =
-          kind === 'commit'
-            ? 'committed'
-            : kind === 'push'
-              ? 'pushed'
-              : kind === 'merge'
-                ? 'merged'
-                : kind === 'rebase'
-                  ? 'rebased'
-                  : // The CLI calls `kind` an open set and asks a reader to
-                    // treat an unrecognized one as "something changed", so the
-                    // value itself is what the row shows.
-                    `repository changed${kind === null ? '' : ` (${kind})`}`;
-        push({
-          kind: 'notice',
-          key: keyOf(at, frame, 'repository'),
-          notice: provisional(
-            'vcs_state_changed',
-            'info',
-            branch === null ? said : kind === 'push' ? `${said} ${branch}` : `${said} on ${branch}`,
-            frame,
-            facts(fact('kind', kind), fact('branch', branch)),
-          ),
-        });
-        continue;
-      }
+      // **The CLI's own report that a command moved the repository belongs to
+      // the tree, not the conversation.** The strip above the composer states
+      // it for a moment and the tree row re-reads on the frame; a chat row
+      // would be a second place for the same fact. The frame keeps its role
+      // as the re-read trigger (the server's `repo_nudge`), and the strip is
+      // where a reader meets it.
+      if (frame.subtype === 'vcs_state_changed') continue;
       // **A change from this session went out for review, or linked the
-      // session to one.** The row names what the session did, with the URL a
-      // reader opens as its quiet tail, and the open body lists the rest of
-      // the frame.
+      // session to one.** The four transitions a reader would otherwise miss
+      // - the change appearing, landing, closing and reopening - keep a row;
+      // every other action is state of the change itself, and the strip's PR
+      // row carries it after the core's own lookup. The row names what the
+      // session did, with the URL a reader opens as its quiet tail.
       if (frame.subtype === 'code_change_published') {
-        const provider = str(frame, 'provider');
         const action = str(frame, 'action');
+        if (
+          action !== 'created' &&
+          action !== 'merged' &&
+          action !== 'closed' &&
+          action !== 'reopened'
+        ) {
+          continue;
+        }
+        const provider = str(frame, 'provider');
         const repo = str(frame, 'repo');
         const identifier = str(frame, 'identifier');
         const branch = str(frame, 'branch');
         const url = str(frame, 'url');
-        const noun =
-          provider === 'gitlab'
-            ? 'MR'
-            : provider?.startsWith('github') === true || provider === 'bitbucket'
-              ? 'PR'
-              : 'change';
+        const noun = changeNoun(provider);
         push({
           kind: 'notice',
           key: keyOf(at, frame, 'published'),
@@ -2587,9 +2781,9 @@ export function fold(
             ...provisional(
               'code_change_published',
               'info',
-              `${noun}${identifier === null ? '' : ` #${identifier}`}${
-                action === null ? '' : ` ${action}`
-              }${repo === null ? '' : ` in ${repo}`}`,
+              `${noun}${identifier === null ? '' : ` #${identifier}`} ${action}${
+                repo === null ? '' : ` in ${repo}`
+              }`,
               frame,
               facts(
                 fact('action', action),

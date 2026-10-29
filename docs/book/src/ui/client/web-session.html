@@ -1117,6 +1117,13 @@
     border: 1px solid transparent; border-radius: 8px; padding: 1px 8px; cursor: pointer;
     font: inherit; color: var(--muted); }
   .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
+  .sg-seg .sg-tog .note { color: var(--dim); font-size: 11px; }
+  /* An event with no tree row to ride, on a clean default branch: a line,
+     not a control, so it takes no pointer and no hover ground. */
+  .sg-seg .sg-note { display: flex; align-items: center; gap: 8px; padding: 1px 8px;
+    color: var(--muted); }
+  .sg-seg .sg-note .note { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: var(--dim); font-size: 11px; }
   /* The status depth under a server row: the tools it offers and what backs
      it, wrapping rather than eliding - the strip is nowrap, so the wrap has
      to be asked for here. */
@@ -2425,7 +2432,7 @@ docs: The sprite a row draws, by the class it belongs to.</div>
             <summary><svg class="ic gl ok"><use href="#i-handoff"/></svg><span class="tn">handed the seat over</span><span class="fam-chip info">handoff note accepted</span><span class="fam-chip dim">after this turn ends</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="fam-tag">note</div>
-              <div class="fam-quote"><div class="prose"><p>Now: the cut is in and memory records it. Where it stood: worktree server-browser at 84369aae, gate green. Pointers: memory/handoff.md, row 1d14d131, PR #2502. Next: the export format, which stays open. Done means: the successor finds it still open and picks it up.</p></div></div>
+              <div class="fam-quote"><div class="prose"><p>The cut is in and memory records it. Worktree server-browser at 84369aae, both gates green. The export format is still open: row 1d14d131, PR #2502, and memory/handoff.md holds where it stands. Next: pick the export format up from the writer in forge-server, then run just check.</p></div></div>
             </div>
           </details>
           <details class="leaf" open>
@@ -2625,26 +2632,14 @@ docs: The sprite a row draws, by the class it belongs to.</div>
             <span class="typed">"and keep the multiSelect case too"</span></div>
         </div>
 
-        <!-- The CLI's own report that a foreground command moved the
-             repository: one line naming the kind and branch, opening onto
-             the frame's own fields. The tree it changed is the tree row
-             above the composer, and this row is what made that row re-read
-             on the frame. -->
-        <details class="notice info">
-          <summary><span class="mark">vcs_state_changed</span><span class="sev">Info</span>committed on e2e<svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">kind</span><span class="v">commit</span></div>
-            <div class="nfact"><span class="k">branch</span><span class="v">e2e</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
-          </div>
-        </details>
-        <!-- The other repository event: this session published a change for
-             review, or linked itself to one. The action, repository and
-             change number are the line, the URL a reader opens rides that
-             line as its quiet tail, and the open body carries the rest of
-             the frame. Drawn open, which is the face this row exists for. -->
+        <!-- A published change's four transitions - created, merged, closed,
+             reopened - keep a chat row. The action, repository and change
+             number are the line, the URL a reader opens rides that line as
+             its quiet tail, and the open body carries the rest of the frame.
+             Every other action is the strip's transient line, not a
+             conversation row; a tree mutation is the same line and draws
+             nothing here. Drawn open, which is the face this row exists
+             for. -->
         <details class="notice info" open>
           <summary><span class="mark">code_change_published</span><span class="sev">Info</span>PR #2688 created in busytools/forge<span class="sub2">https://github.com/busytools/forge/pull/2688</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
           <div class="nbody">
@@ -2654,6 +2649,66 @@ docs: The sprite a row draws, by the class it belongs to.</div>
             <div class="nfact"><span class="k">change</span><span class="v">2688</span></div>
             <div class="nfact"><span class="k">branch</span><span class="v">vcs-frames</span></div>
             <div class="nfact"><span class="k">url</span><span class="v">https://github.com/busytools/forge/pull/2688</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
+        </details>
+
+        <!-- A model swap: the CLI's own fallback line, a warning, opening
+             onto the trigger and the two model names. The header keeps the
+             seat's preferred model; this row is how a reader learns the words
+             above came from a different one. -->
+        <details class="notice warn">
+          <summary><span class="mark">model_fallback</span><span class="sev">Warning</span>Fable 5 is unavailable; continuing on Opus 5.<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">trigger</span><span class="v">overloaded</span></div>
+            <div class="nfact"><span class="k">original model</span><span class="v">claude-fable-5-1</span></div>
+            <div class="nfact"><span class="k">fallback model</span><span class="v">claude-opus-5-5</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
+        </details>
+
+        <!-- A memory recall: one line for the turn, the files in the open
+             body rather than one row per memory. -->
+        <details class="notice info">
+          <summary><span class="mark">memory_recall</span><span class="sev">Info</span>Recalled 2 memories<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-base-fetch-budget.md</span></div>
+            <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-switch-watch.md</span></div>
+            <div class="nfact"><span class="k">content</span><span class="v">A distilled paragraph from the memory store.</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
+        </details>
+
+        <!-- A local command: the row names the command, and the print fills
+             its open body with what it printed. The CLI may send name and
+             print as one frame (2.1.280) or two (older); a print fills the
+             row the name opened, so a command is one row - and there is no
+             assistant twin on forge's stream. -->
+        <details class="notice info">
+          <summary><span class="mark">local_command</span><span class="sev">Info</span>Ran /usage<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">output</span><span class="v">Session cost: $1.23</span></div>
+            <div class="nfact"><span class="k">level</span><span class="v">info</span></div>
+            <div class="nfact"><span class="k">context usage</span><span class="v">{"percent":12}</span></div>
+            <div class="nfact"><span class="k">usage report</span><span class="v">{"total_cost_usd":1.23}</span></div>
+            <details class="raw">
+              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+            </details>
+          </div>
+        </details>
+
+        <!-- A project's development intent: a quiet fact the CLI's scan
+             found, with the evidence in its open body. -->
+        <details class="notice info">
+          <summary><span class="mark">dev_intent</span><span class="sev">Info</span>Project: Android app<svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="nbody">
+            <div class="nfact"><span class="k">trigger</span><span class="v">android_manifest</span></div>
             <details class="raw">
               <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
             </details>
@@ -2786,20 +2841,10 @@ docs: The sprite a row draws, by the class it belongs to.</div>
           <div class="fact"><span class="k">seat</span><span class="v">Busytools/forge/server-browser</span></div>
           <div class="fact"><span class="k">cwd</span><span class="v">/Users/vedhavyas/Projects/forge</span></div>
           <div class="fact"><span class="k">branch</span><span class="v">worktree-server-browser @ 84369aae</span></div>
-          <div class="fact"><span class="k">account</span><span class="v">Personal</span></div>
-          <div class="fact"><span class="k">model</span><span class="v">claude-opus-5-5</span></div>
-          <div class="fact"><span class="k">mode</span><span class="v">auto</span></div>
           <div class="fact"><span class="k">role</span><span class="v">worker, charter opens: You build the cut.</span></div>
-          <div class="fact"><span class="k">ask</span><span class="v">first: continue the migration
-#2: and open the PR</span></div>
           <div class="fact"><span class="k">files</span><span class="v">changed: crates/forge-browser/src/service.rs
 uncommitted: 1 paths
  M crates/forge-browser/src/service.rs</span></div>
-          <div class="fact"><span class="k">actions</span><span class="v">agents__send_message: the handoff is ready
-tasks__create: draw the provisional row
-browser_navigate: http://localhost:1420/?server=127.0.0.1:8790</span></div>
-          <div class="fact"><span class="k">verify</span><span class="v">gate: just check -&gt; failed
-failing: FAIL [ 0.021s] client-tauri-test</span></div>
           <div class="fact"><span class="k">board</span><span class="v">the server browser (in progress)</span></div>
           <div class="fact"><span class="k">agents</span><span class="v">Explore: scan the pile (3 calls)</span></div>
           <div class="fact"><span class="k">background</span><span class="v">local_bash: cargo watch [b1]</span></div>
@@ -2807,14 +2852,7 @@ failing: FAIL [ 0.021s] client-tauri-test</span></div>
           <div class="fact"><span class="k">processes</span><span class="v">42 cargo: cargo nextest run</span></div>
           <div class="fact"><span class="k">record</span><span class="v">~/.claude/projects/&#8230;/9cfe315c.jsonl</span></div>
           <div class="lbl">PART 2 &#183; JUDGMENT</div>
-          <div class="fact"><span class="k">Now</span><span class="v">round-1 item 7; configure_encoding missing, spawn args wired</span></div>
-          <div class="fact"><span class="k">Where it stood</span><span class="v">worktree server-browser at 84369aae, PR #2502 in flight; just check failed on client-tauri-test</span></div>
-          <div class="fact"><span class="k">Pointers</span><span class="v">memory/handoff.md
-board row 2c3c5b24
-PR #2502
-record 9cfe315c.jsonl</span></div>
-          <div class="fact"><span class="k">Next</span><span class="v">add configure_encoding, then just check</span></div>
-          <div class="fact"><span class="k">Done means</span><span class="v">gates green, PR #2502 head pushed</span></div>
+          <div class="fact"><span class="k">note</span><span class="v">round-1 item 7; configure_encoding missing, spawn args wired. Worktree server-browser at 84369aae, PR #2502 in flight; just check failed on client-tauri-test. Next: add configure_encoding, then just check.</span></div>
         </div>
       </details>
 
@@ -3371,13 +3409,18 @@ branch main, nothing to commit</div>
                chain below them, newest first, each with when it landed and
                its own files on hover, focus or a tap. On the default branch
                with nothing on it the row does not draw at all: that is where
-               work lands, not work. The toggle reads branch, commits, PR and
-               `dirty` - figures live in the open list. Drawn CLOSED here,
-               like its siblings. -->
+               work lands, not work. The segment does not go with it - a
+               repository event with no tree row to ride draws a note-only
+               line for the event's window, and nothing when no event is
+               live. The toggle reads branch, commits, PR and
+               `dirty`, and for a moment the CLI's last repository event -
+               figures live in the open list. Drawn CLOSED here, like its
+               siblings. -->
           <span class="sg-seg">
             <button type="button" class="sg-tog">
               <svg class="ic"><use href="#i-git"/></svg>
-              web-home-layout &#183; 3 commits &#183; PR #1203 &#183; dirty</button>
+              web-home-layout &#183; 3 commits &#183; PR #1203 &#183; dirty
+              <span class="note">committed on main</span></button>
           </span>
           <!-- The review row, eighth: this seat's branch under review - the
                answers waiting to be read on the toggle, the thread count
@@ -3417,6 +3460,24 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-monitors"/></svg>
               1 running</button>
           </span>
+          </span>
+        </div>
+      </div>
+      <!-- The tree segment's other state, named beside the specimen rather
+           than only in the comment: a repository event on a clean default
+           branch has no tree row to ride, so the segment draws a note-only
+           line for the event's window and no toggle at all. It is a
+           status, not a control - no pointer ground, no hover. -->
+      <div class="annot">
+        <span class="dim">an event on a clean default branch &#183; a note-only line, no tree row</span>
+      </div>
+      <div class="strip">
+        <div class="ti">
+          <span class="sg-seg">
+            <span class="sg-note" role="status">
+              <svg class="ic"><use href="#i-git"/></svg>
+              <span class="note">committed on main</span>
+            </span>
           </span>
         </div>
       </div>

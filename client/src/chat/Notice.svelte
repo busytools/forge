@@ -61,7 +61,7 @@
       <Chevron />
     </summary>
     <div class="nbody">
-      {#each notice.fields ?? [] as field (field.label)}
+      {#each notice.fields ?? [] as field, index (`${index}:${field.label}`)}
         <div class="nfact">
           <span class="k">{field.label}</span><span class="v">{field.value}</span>
         </div>

@@ -4173,6 +4173,453 @@ describe('the frames the fold had no row for', () => {
     );
   });
 
+  it('draws a model swap as a warning and names the model it left and the one it fell to', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'model_fallback',
+        content: 'Fable 5 is unavailable; continuing on Opus 5.',
+        trigger: 'overloaded',
+        original_model: 'claude-fable-5-1',
+        fallback_model: 'claude-opus-5-5',
+        uuid: 'mf1',
+      },
+      {
+        type: 'system',
+        subtype: 'model_refusal_fallback',
+        content: 'The model refused; the response was retried on Opus 5.',
+        trigger: 'refusal',
+        scope: 'local',
+        original_model: 'claude-fable-5-1',
+        fallback_model: 'claude-opus-5-5',
+        uuid: 'mrf1',
+      },
+      {
+        type: 'system',
+        subtype: 'model_refusal_no_fallback',
+        content: 'The model refused and no fallback is configured.',
+        original_model: 'claude-opus-5-5',
+        api_refusal_category: 'cyber',
+        uuid: 'mrn1',
+      },
+      {
+        type: 'system',
+        subtype: 'model_consent_fallback',
+        content: 'The session continues on the standard model.',
+        choice: 'consent',
+        original_model: 'claude-fable-5-1',
+        fallback_model: 'claude-opus-5-5',
+        persisted_as_default: true,
+        uuid: 'mcf1',
+      },
+      {
+        type: 'system',
+        subtype: 'model_consent_fallback',
+        content: 'The session continues on the standard model.',
+        choice: 'cancelled',
+        original_model: 'claude-fable-5-1',
+        fallback_model: 'claude-opus-5-5',
+        persisted_as_default: false,
+        uuid: 'mcf2',
+      },
+    ]);
+
+    expect(kinds(units), 'five swaps, five lines').toEqual([
+      'notice',
+      'notice',
+      'notice',
+      'notice',
+      'notice',
+    ]);
+
+    const fallback = noticeOf(units[0]);
+    expect(fallback?.severity, 'a swap is a warning').toBe('warning');
+    expect(fallback?.mark).toBe('model_fallback');
+    expect(fallback?.text, "the CLI's own line is the row's words").toBe(
+      'Fable 5 is unavailable; continuing on Opus 5.',
+    );
+    expect(fallback?.fields, 'the open body names the swap').toEqual([
+      { label: 'trigger', value: 'overloaded' },
+      { label: 'original model', value: 'claude-fable-5-1' },
+      { label: 'fallback model', value: 'claude-opus-5-5' },
+    ]);
+    expect(fallback?.raw, 'and the frame stays reachable').toContain('claude-fable-5-1');
+
+    const refused = noticeOf(units[1]);
+    expect(refused?.severity).toBe('warning');
+    expect(refused?.mark).toBe('model_refusal_fallback');
+    expect(refused?.fields, 'the refusal keeps its scope').toEqual([
+      { label: 'trigger', value: 'refusal' },
+      { label: 'original model', value: 'claude-fable-5-1' },
+      { label: 'fallback model', value: 'claude-opus-5-5' },
+      { label: 'scope', value: 'local' },
+    ]);
+
+    const bare = noticeOf(units[2]);
+    expect(bare?.severity).toBe('warning');
+    expect(bare?.mark).toBe('model_refusal_no_fallback');
+    expect(bare?.fields, 'a refusal with no fallback still names why').toEqual([
+      { label: 'original model', value: 'claude-opus-5-5' },
+      { label: 'refusal category', value: 'cyber' },
+    ]);
+
+    const consent = noticeOf(units[3]);
+    expect(consent?.severity).toBe('warning');
+    expect(consent?.mark).toBe('model_consent_fallback');
+    expect(consent?.fields, 'a default rewritten by the decline is named').toEqual([
+      { label: 'original model', value: 'claude-fable-5-1' },
+      { label: 'fallback model', value: 'claude-opus-5-5' },
+      { label: 'persisted as default', value: 'true' },
+    ]);
+
+    const plain = noticeOf(units[4]);
+    expect(plain?.mark).toBe('model_consent_fallback');
+    expect(plain?.fields, 'an ordinary decline does not claim a default rewrite').toEqual([
+      { label: 'original model', value: 'claude-fable-5-1' },
+      { label: 'fallback model', value: 'claude-opus-5-5' },
+    ]);
+  });
+
+  it('draws a memory recall as one line naming how many and which', () => {
+    const paths = [
+      '/home/ved/.claude/projects/forge/memory/the-base-fetch-budget.md',
+      '/home/ved/.claude/projects/forge/memory/the-switch-watch.md',
+    ];
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'memory_recall',
+        mode: 'select',
+        memories: paths.map((path) => ({ path, scope: 'personal' })),
+        uuid: 'mr1',
+      },
+    ]);
+
+    expect(kinds(units), 'one frame, one line').toEqual(['notice']);
+    const recall = noticeOf(units[0]);
+    expect(recall?.severity, 'a recall is information, not a warning').toBe('info');
+    expect(recall?.mark).toBe('memory_recall');
+    expect(recall?.text, 'the row counts the memories, not the paths twice').toBe(
+      'Recalled 2 memories',
+    );
+    expect(recall?.fields, 'the open body names every path').toEqual([
+      { label: 'path', value: paths[0] },
+      { label: 'path', value: paths[1] },
+    ]);
+
+    const single = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'memory_recall',
+          mode: 'select',
+          memories: [{ path: paths[0], scope: 'personal' }],
+          uuid: 'mr2',
+        },
+      ])[0],
+    );
+    expect(single?.text, 'one memory is singular').toBe('Recalled 1 memory');
+
+    // A synthesized memory has a sentinel path and a body; the body is the
+    // memory a reader can use, and it must not be hidden behind the count.
+    const synth = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'memory_recall',
+          mode: 'synthesize',
+          memories: [
+            {
+              path: '<synthesis:DIR>',
+              scope: 'organization',
+              content: 'A distilled paragraph from the memory store.',
+            },
+          ],
+          uuid: 'mr3',
+        },
+      ])[0],
+    );
+    expect(synth?.text).toBe('Recalled 1 memory');
+    expect(synth?.fields, 'the body is drawn, and the sentinel is not a path').toEqual([
+      { label: 'content', value: 'A distilled paragraph from the memory store.' },
+    ]);
+
+    const empty = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'memory_recall',
+          mode: 'select',
+          memories: [],
+          uuid: 'mr4',
+        },
+      ])[0],
+    );
+    expect(empty?.text, 'an empty recall still draws a line').toBe('Recalled 0 memories');
+    expect(empty?.fields, 'and carries no facts').toBeUndefined();
+  });
+
+  /**
+   * **The real 2.1.280 shape**: a `<command-name>` frame, then a
+   * `<local-command-stdout>` frame that carries `commandRun` itself. The print
+   * names the command it belongs to, so a rule that opened a row on `named`
+   * would draw two - the duplication this rework exists to end.
+   */
+  it('draws the real two-frame command as one row, even when the print names itself', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<command-name>/usage</command-name>',
+        level: 'info',
+        contextUsage: { percent: 12 },
+        usageReport: { total_cost_usd: 1.23 },
+        uuid: 'lc1',
+      },
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>Session cost: $1.23</local-command-stdout>',
+        level: 'info',
+        commandRun: { command: 'usage', args: '--verbose' },
+        contextUsage: { percent: 12 },
+        uuid: 'lc2',
+      },
+    ]);
+
+    expect(kinds(units), 'two frames, one command row').toEqual(['notice']);
+    const row = noticeOf(units[0]);
+    expect(row?.severity, 'a local command is information').toBe('info');
+    expect(row?.mark).toBe('local_command');
+    expect(row?.text, 'the row names the command once, with the slash').toBe('Ran /usage');
+    expect(row?.fields, 'the print and the name frame together').toEqual([
+      { label: 'output', value: 'Session cost: $1.23' },
+      { label: 'level', value: 'info' },
+      { label: 'context usage', value: '{"percent":12}' },
+      { label: 'usage report', value: '{"total_cost_usd":1.23}' },
+      { label: 'args', value: '--verbose' },
+    ]);
+    expect(row?.raw, 'the name frame is reachable').toContain('command-name');
+    expect(row?.raw, "and the print's own frame rides beside it").toContain('--verbose');
+  });
+
+  it('draws the modern single-frame command, name and print together, as one row', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content:
+          '<command-name>/usage</command-name>' +
+          '<local-command-stdout>Session cost: $1.23</local-command-stdout>',
+        level: 'info',
+        commandRun: { command: 'usage' },
+        uuid: 'lc12',
+      },
+    ]);
+
+    expect(kinds(units)).toEqual(['notice']);
+    const row = noticeOf(units[0]);
+    expect(row?.text, 'the single frame names its command').toBe('Ran /usage');
+    expect(row?.fields, 'and keeps its print').toContainEqual({
+      label: 'output',
+      value: 'Session cost: $1.23',
+    });
+  });
+
+  it('draws the classic pair, a print with no commandRun, as one row', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<command-name>/compact</command-name>',
+        level: 'info',
+        uuid: 'lc3',
+      },
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>Compacted.</local-command-stdout>',
+        level: 'info',
+        uuid: 'lc4',
+      },
+    ]);
+
+    expect(kinds(units)).toEqual(['notice']);
+    const row = noticeOf(units[0]);
+    expect(row?.text).toBe('Ran /compact');
+    expect(row?.fields).toContainEqual({ label: 'output', value: 'Compacted.' });
+  });
+
+  it('names a lone print from its commandRun, without the slash', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>no name frame</local-command-stdout>',
+        level: 'info',
+        commandRun: { command: 'usage', args: '--fast' },
+        uuid: 'lc5',
+      },
+    ]);
+
+    expect(kinds(units)).toEqual(['notice']);
+    const row = noticeOf(units[0]);
+    expect(row?.text, 'the print names its own command, normalised').toBe('Ran /usage');
+    expect(row?.fields).toContainEqual({ label: 'output', value: 'no name frame' });
+  });
+
+  it('reads the headless bare name and its args', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '/usage --fast',
+        level: 'info',
+        uuid: 'lc6',
+      },
+    ]);
+
+    const row = noticeOf(units[0]);
+    expect(row?.text, 'a bare command line names the command and keeps its args').toBe(
+      'Ran /usage --fast',
+    );
+  });
+
+  it('does not attach a print to an older command across another unit', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<command-name>/usage</command-name>',
+        level: 'info',
+        uuid: 'lc7',
+      },
+      said([text('working')]),
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>late print</local-command-stdout>',
+        level: 'info',
+        commandRun: { command: 'usage' },
+        uuid: 'lc8',
+      },
+    ]);
+
+    expect(kinds(units), 'the name row, the text, and the print as its own row').toEqual([
+      'notice',
+      'text',
+      'notice',
+    ]);
+    expect(
+      noticeOf(units[0])?.fields?.some((field) => field.label === 'output'),
+      'the older command does not gain a late output',
+    ).toBe(false);
+    expect(noticeOf(units[2])?.fields).toContainEqual({ label: 'output', value: 'late print' });
+  });
+
+  it('spends the handle: a second print opens its own row', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<command-name>/usage</command-name>',
+        level: 'info',
+        uuid: 'lc9',
+      },
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>first</local-command-stdout>',
+        level: 'info',
+        uuid: 'lc10',
+      },
+      {
+        type: 'system',
+        subtype: 'local_command',
+        content: '<local-command-stdout>second</local-command-stdout>',
+        level: 'info',
+        commandRun: { command: 'usage' },
+        uuid: 'lc11',
+      },
+    ]);
+
+    expect(kinds(units), 'the first command and the second print').toEqual(['notice', 'notice']);
+    expect(
+      noticeOf(units[0])?.fields?.filter((field) => field.label === 'output'),
+      'the first row keeps one output',
+    ).toEqual([{ label: 'output', value: 'first' }]);
+    expect(noticeOf(units[1])?.fields).toContainEqual({ label: 'output', value: 'second' });
+  });
+
+  it('draws a development-intent fact as one low-key line', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'dev_intent',
+        kind: 'android_app',
+        trigger: 'android_manifest',
+        uuid: 'di1',
+      },
+    ]);
+
+    expect(kinds(units), 'one frame, one line').toEqual(['notice']);
+    const intent = noticeOf(units[0]);
+    expect(intent?.severity, 'a project fact is quiet').toBe('info');
+    expect(intent?.mark).toBe('dev_intent');
+    expect(intent?.text, 'the kind in words').toBe('Project: Android app');
+    expect(intent?.fields, 'the evidence the scan fired on').toEqual([
+      { label: 'trigger', value: 'android_manifest' },
+    ]);
+
+    const ios = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'dev_intent',
+          kind: 'ios_app',
+          trigger: 'xcode_project',
+          uuid: 'di2',
+        },
+      ])[0],
+    );
+    expect(ios?.text, 'the other known kind reads in words too').toBe('Project: iOS app');
+
+    const other = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'dev_intent',
+          kind: 'vision_os',
+          trigger: 'project_scan',
+          uuid: 'di3',
+        },
+      ])[0],
+    );
+    expect(other?.text, 'a kind this build has no word for is named as itself').toBe(
+      'Project: vision_os',
+    );
+  });
+
+  it('gives a refusal fallback with no words a sentence of its own', () => {
+    const row = noticeOf(
+      fold([
+        {
+          type: 'system',
+          subtype: 'model_refusal_fallback',
+          trigger: 'refusal',
+          direction: 'retry',
+          original_model: 'claude-fable-5-1',
+          fallback_model: 'claude-opus-5-5',
+          uuid: 'milent',
+        },
+      ])[0],
+    );
+
+    expect(row?.text, 'the row never draws blank when the frame carries no content').toBe(
+      'The session changed model.',
+    );
+  });
+
   it('draws a notification, warning only when its priority is immediate', () => {
     const units = fold([
       {
@@ -4287,14 +4734,13 @@ describe('the frames the fold had no row for', () => {
 });
 
 /**
- * The CLI's own repository events, which the fold draws as one-line rows.
- *
- * Both are events rather than state: the row names what happened, and the
- * frame's own fields sit behind it. The tree they changed is the strip's row,
- * and a published change is what makes the strip look its PR up.
+ * The CLI's own repository events, which now belong to the working-tree strip:
+ * a mutation is the tree's own news, and a published change's state is its PR
+ * row. The conversation keeps only the four transitions a reader would
+ * otherwise miss.
  */
 describe("the CLI's repository events", () => {
-  it('draws a mutation on one line, and never drops an unknown kind', () => {
+  it('keeps a tree mutation off the conversation, where the strip carries it', () => {
     const units = fold([
       { type: 'system', subtype: 'vcs_state_changed', kind: 'commit', branch: 'main', uuid: 'v1' },
       { type: 'system', subtype: 'vcs_state_changed', kind: 'push', branch: 'main', uuid: 'v2' },
@@ -4308,33 +4754,10 @@ describe("the CLI's repository events", () => {
       },
     ]);
 
-    expect(kinds(units), 'every frame draws').toEqual(['notice', 'notice', 'notice', 'notice']);
-    expect(units.map((unit) => noticeOf(unit)?.text)).toEqual([
-      'committed on main',
-      'pushed main',
-      'merged',
-      // The CLI calls `kind` an open set, so a value this build has no verb
-      // for is named rather than swallowed.
-      'repository changed (checkout) on topic',
-    ]);
-    expect(noticeOf(units[0])?.severity).toBe('info');
-    expect(noticeOf(units[0])?.mark, 'the row names the frame it came from').toBe(
-      'vcs_state_changed',
-    );
-    expect(noticeOf(units[0])?.fields, "the frame's own fields stay reachable").toEqual([
-      { label: 'kind', value: 'commit' },
-      { label: 'branch', value: 'main' },
-    ]);
-    expect(noticeOf(units[2])?.fields, 'a branchless mutation draws no empty fact').toEqual([
-      { label: 'kind', value: 'merge' },
-    ]);
-    expect(
-      noticeOf(units[0])?.raw,
-      'the frame itself stays reachable, which is rule 25 for these rows',
-    ).toContain('"kind":"commit"');
+    expect(units, "the tree event is the strip's line, not a conversation row").toEqual([]);
   });
 
-  it('draws a published change with its action, repo and identifier, and the URL on its line', () => {
+  it('draws the four transitions a reader would miss, and leaves the rest to the PR row', () => {
     const units = fold([
       {
         type: 'system',
@@ -4360,44 +4783,62 @@ describe("the CLI's repository events", () => {
       {
         type: 'system',
         subtype: 'code_change_published',
-        provider: 'github-enterprise',
-        url: 'https://github.example.test/octo/repo/pull/7',
-        repo: 'octo/repo',
-        identifier: '7',
+        provider: 'github',
+        url: 'https://github.com/team/app/pull/11',
+        repo: 'team/app',
+        identifier: '11',
+        action: 'closed',
         uuid: 'c3',
       },
       {
         type: 'system',
         subtype: 'code_change_published',
-        provider: 'bitbucket',
-        url: 'https://bitbucket.org/team/app/pull-requests/11',
-        repo: 'team/app',
-        identifier: '11',
-        action: 'closed',
+        provider: 'github',
+        url: 'https://github.com/example/example/pull/12',
+        repo: 'example/example',
+        identifier: '12',
+        action: 'reopened',
         uuid: 'c4',
       },
       {
         type: 'system',
         subtype: 'code_change_published',
-        provider: 'gerrit',
-        repo: 'p/q',
-        identifier: '9',
+        provider: 'github',
+        url: 'https://github.com/example/example/pull/123',
+        repo: 'example/example',
+        identifier: '123',
+        action: 'edited',
         uuid: 'c5',
+      },
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'github',
+        repo: 'example/example',
+        identifier: '123',
+        uuid: 'c6',
+      },
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'github',
+        url: 'https://github.com/example/example/pull/123',
+        repo: 'example/example',
+        identifier: '123',
+        action: 'pushed',
+        uuid: 'c7',
       },
     ]);
 
     expect(units.map((unit) => noticeOf(unit)?.text)).toEqual([
       'PR #123 created in example/example',
       'MR #45 merged in group/proj',
-      'PR #7 in octo/repo',
       'PR #11 closed in team/app',
-      // An unrecognized provider still draws its change, named plainly.
-      'change #9 in p/q',
+      'PR #12 reopened in example/example',
     ]);
     expect(noticeOf(units[0])?.sub, 'the URL is what a reader opens').toBe(
       'https://github.com/example/example/pull/123',
     );
-    expect(noticeOf(units[4])?.sub, 'a frame with no URL carries no empty tail').toBeUndefined();
     expect(noticeOf(units[0])?.mark).toBe('code_change_published');
     expect(noticeOf(units[0])?.fields, "the frame's own fields stay reachable").toEqual([
       { label: 'action', value: 'created' },
