@@ -680,6 +680,17 @@ describe('one turn folded into the units a view draws', () => {
       ),
     ]);
     expect(kinds(orphan), 'a note nothing holds draws a notice').toEqual(['notice']);
+
+    // **A boundary between the result and the note settles the call first.**
+    // The result is what flushes the call out of `pending`, so when anything
+    // draws between the two the note arrives after the row already exists;
+    // the picture still owes the caption, and a note drawn on its own would
+    // put the harness's spelling in the reader's voice.
+    const settled = fold([read, picture, said([text('reading the shot now')]), note]);
+    const drawn = settled.find((unit) => unit.kind === 'leaves');
+    const caption = drawn?.kind === 'leaves' ? callsOf(drawn)[0]?.leaf.imageNote : null;
+    expect(caption, 'a settled call still takes its caption').toContain('original 2782x1034');
+    expect(kinds(settled), 'and the note draws no line of its own').not.toContain('notice');
   });
 
   it("hangs a tool-invoked skill's titled body on its call as well", () => {
@@ -4158,8 +4169,44 @@ describe('the frames the fold had no row for', () => {
     const elsewhere = fold([
       { type: 'system', subtype: 'background_tasks_changed', tasks: [], uuid: 'b1' },
       { type: 'system', subtype: 'init', uuid: 'i1' },
+      // **A dispatch's progress is its card's**, so the chat draws nothing
+      // for its ticks; one row per tool use would bury the turn.
+      {
+        type: 'system',
+        subtype: 'task_progress',
+        task_id: 't-1',
+        description: 'Running Echo a test string',
+        usage: { total_tokens: 10340, tool_uses: 1, duration_ms: 1848 },
+        last_tool_name: 'Bash',
+        uuid: 'p1',
+      },
     ]);
     expect(kinds(elsewhere), 'a list another surface draws, and the handshake').toEqual([]);
+
+    // **A Workflow call builds no card**, so its progress has no other surface
+    // and keeps drawing here rather than vanishing.
+    const workflow = fold([
+      {
+        type: 'system',
+        subtype: 'task_progress',
+        task_id: 'w-1',
+        description: 'Fanout: ping',
+        summary: 'Fan out two trivial agents',
+        workflow_progress: [
+          { type: 'workflow_phase', index: 1, title: 'Fanout' },
+          {
+            type: 'workflow_agent',
+            index: 1,
+            label: 'ping',
+            state: 'done',
+            tokens: 9072,
+          },
+        ],
+        uuid: 'w1',
+      },
+    ]);
+    expect(kinds(workflow), 'no card exists to carry it').toEqual(['notice']);
+    expect(noticeOf(workflow[0])?.text).toBe('unhandled frame: system/task_progress');
   });
 
   it('marks a question unanswered only once its turn has closed', () => {

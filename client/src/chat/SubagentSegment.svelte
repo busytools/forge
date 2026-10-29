@@ -287,6 +287,12 @@
             <span class="nm">{card.agent_type ?? 'agent'}</span>
             <span class="tx">{card.running ? doing(card) : card.name}</span>
             {#if card.usage !== null}
+              {#if card.usage.tool_uses > 0}
+                <span class="n">
+                  {card.usage.tool_uses}
+                  {card.usage.tool_uses === 1 ? 'tool' : 'tools'}
+                </span>
+              {/if}
               <span class="n">{duration(card.usage.duration_ms)}</span>
             {/if}
           </button>

@@ -53,6 +53,8 @@ function draw(cards: SubagentCard[] = [card()]) {
 
 const toggle = () => document.querySelector<HTMLButtonElement>('.sg-tog');
 const list = () => document.querySelector('.sg-list');
+/** The list's text with the template's own layout whitespace collapsed. */
+const said = () => (list()?.textContent ?? '').replace(/\s+/g, ' ').trim();
 
 /** A pointer event of the kind the browser synthesises, with its device said. */
 function pointer(type: string, pointerType: string): PointerEvent {
@@ -60,6 +62,22 @@ function pointer(type: string, pointerType: string): PointerEvent {
 }
 
 describe("the segment's interaction state machine", () => {
+  // **The progress a tick carried is drawn where the card is**, which is what
+  // lets the chat stop rowing that tick.
+  it('draws the tool count the frame reported on the card', () => {
+    draw([card({ usage: { total_tokens: 10340, tool_uses: 2, duration_ms: 1848 } })]);
+    toggle()?.click();
+    flushSync();
+    expect(said(), 'two tools, as the frame said').toContain('2 tools');
+  });
+
+  it('says one tool, not "1 tools"', () => {
+    draw([card({ usage: { total_tokens: 10, tool_uses: 1, duration_ms: 900 } })]);
+    toggle()?.click();
+    flushSync();
+    expect(said(), 'the first tick carries one').toContain('1 tool');
+  });
+
   it('reads a tap as open: the synthesised enter must not eat the click', () => {
     draw();
     // A finger: pointerenter arrives with pointerType touch, then the click.
