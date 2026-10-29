@@ -1150,6 +1150,9 @@ export interface DiffRecord {
   worktree: DiffLayerRecord;
   branchAhead: DiffLayerRecord;
   base: BaseStateRecord | null;
+  /** Why the base fetch did not run, in git's own words, beside `base`.
+   *  `null` when it ran or no branch layer is drawn. */
+  baseError: string | null;
   truncated: boolean;
 }
 
@@ -1249,6 +1252,7 @@ function baseStateFrom(value: unknown): BaseStateRecord | null {
 export function diffFrom(value: unknown): DiffRecord {
   const held = record(value);
   const branchAhead = diffLayerFrom(held['branch_ahead']);
+  const drawn = branchAhead.state === 'populated';
   return {
     worktree: diffLayerFrom(held['worktree']),
     branchAhead,
@@ -1256,7 +1260,10 @@ export function diffFrom(value: unknown): DiffRecord {
     // over one is an unread base, not a fresh one: a server older than the
     // field answers no `base` at all, and reading that as nothing drew the
     // same silence as "the base is fine" - the one claim nobody checked.
-    base: branchAhead.state === 'populated' ? baseStateFrom(held['base']) : null,
+    base: drawn ? baseStateFrom(held['base']) : null,
+    // The failure rides beside the state it left, under the same rule: a
+    // layer with nothing to describe has no base to have failed.
+    baseError: drawn ? text(held['base_error']) : null,
     truncated: held['truncated'] === true,
   };
 }

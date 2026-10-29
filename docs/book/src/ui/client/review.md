@@ -26,7 +26,7 @@ file tree, and the diff with the threads on their lines.
 | Header        | the back link to the seat, `Review`, the branch, the round count, and the loop's state - `N replies to read`, in the warn tone while any thread waits on the reader, and `N open`                                                                                               | the record's `work.branch`, and the two review halves              |
 | Tabs          | `Conversation` and `Files changed`, with the commit count                                                                                                                                                                                                                       | the record's git chain                                             |
 | Scope         | the scope on screen and its place (`scope 3 of 9`), a stepper whose ends stop, the keys, the unified/split picker, and the comments' stepper with its `N/M` count                                                                                                                | the record's git chain (the commit list), and the scope's own threads |
-| Base          | the ref the All changes diff is measured against: the page asks for its own read on open, which refreshes the base under a short budget, and a line above the canvas says how far behind upstream it is, or that it could not be checked, when that refresh could not land | the record's `diff.base`, and the ref's name from `record.git.defaultBranch`; the page's own re-asks watch `record.git.base` |
+| Base          | the ref the All changes diff is measured against: the page asks for its own read on open, which fetches the base before it answers and waits for it with no cap, and a line above the canvas says how far behind upstream it is, or that it could not be checked together with git's own words for why, when that fetch could not land | the record's `diff.base` and `diff.baseError`, and the ref's name from `record.git.defaultBranch`; the page's own re-asks watch `record.git.base` |
 | Tree          | the scope's files as their own hierarchy - a row per directory and per file, folders before files, indented by depth, each row carrying the files view's own glyph for its kind; a directory carries the files beneath it, and the file whose region the reader is inside is marked as the current one                                    | the scope's diff, the threads in that scope, and the canvas's own scroll |
 | Canvas        | the scope's files as diffs, with each thread inserted under its own line, the composer under the line a comment is being written on, and GitHub's own gap strips between two hunks (above the first, below the last) that draw the lines the diff left out, a press at a time      | the scope's diff, the threads, the server's landing per thread, and the file's whole content read |
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
@@ -63,17 +63,21 @@ carries its line:
 first.** Opening the review page asks the server for a review-scoped read: it
 fetches the remote-tracking default (`origin/main`) before it reads the branch
 layer, because a base the remote has moved past moves the merge-base back and
-folds main's own commits into the branch's diff. Every other read of a seat
-with a session serves what the stores hold and never waits on the base (a seat
-with none still looks its PR up on the read - see the socket page - which is
-that read's own network call), so a record this page did not read itself is
-drawn with no base line at all: it has not checked, and the page says nothing
-it cannot back. That fetch is bounded by the
-read's own short budget, so it can fail to land: the page then says so above
-the canvas instead of drawing the files as the branch's change, naming how many
-commits upstream is ahead when that can be measured and plainly that it could
-not be checked when it could not. A commit's own view reads that commit's
-immutable tree, so it carries no such line.
+folds main's own commits into the branch's diff. **That fetch has no cap**: the
+read waits for it and ends on the refreshed diff, or on a failure it can name.
+While it waits the page says `Fetching the base for the diff...` with the work
+spinner; leaving the page is the escape. A fetch already running for that
+repository is joined rather than repeated. Every other read of a seat with a
+session serves what the stores hold and never waits on the base (a seat with
+none still looks its PR up on the read - see the socket page - which is that
+read's own network call), so a record this page did not read itself is drawn
+with no base line at all: it has not checked, and the page says nothing it
+cannot back. When the fetch cannot run, the page says so above the canvas
+instead of drawing the files as the branch's change: how many commits upstream
+is ahead when that can be measured, plainly that it could not be checked when
+it could not, and git's own words for the failure beside either one. A
+commit's own view reads that commit's immutable tree, so it carries no such
+line.
 
 The keys, as the keycap row under the tabs states them: `←` and `→` step one
 scope and `shift`+`←`/`→` step one comment. **The scopes are a line, not a
@@ -365,7 +369,10 @@ carries.
 ## The states the page can be in
 
 - **A seat's reviews**, the ordinary case.
-- **Nothing yet**: `Reading the seat...` before the first record arrives.
+- **Nothing yet**: `Fetching the base for the diff...` with the work spinner
+  before the first record arrives. The page's own read fetches the base
+  before it answers and that fetch has no cap, so the wait is named for what
+  it is rather than drawn as a generic load.
 - **A refused seat**: the server's own sentence, drawn the way the sibling
   routes draw a refused subscription.
 - **A half that failed**: the two reads fail apart on the server, so each is

@@ -216,17 +216,21 @@
     const base = record?.diff.base ?? null;
     // The wire names the remote-tracking ref; the reader knows it as `main`.
     const name = (record?.git.defaultBranch ?? 'the base').replace(/^origin\//, '');
+    // **Why the fetch did not run, in git's own words.** The state says the
+    // check did not happen; this says what got in its way, which is the part
+    // a reader can act on.
+    const why = record?.diff.baseError ? ` (${record.diff.baseError})` : '';
     if (base?.state === 'behind') {
       const n = base.behind;
-      return `${name} is ${n} commit${n === 1 ? '' : 's'} behind upstream, so this diff may include work already on ${name}.`;
+      return `${name} is ${n} commit${n === 1 ? '' : 's'} behind upstream, so this diff may include work already on ${name}.${why}`;
     }
     if (base?.state === 'unverified') {
-      return `${name} could not be refreshed, so this diff may include work already on ${name}.`;
+      return `${name} could not be refreshed, so this diff may include work already on ${name}.${why}`;
     }
     if (base?.state === 'unknown') {
       // The server answered a state this build cannot name. Drawing nothing
       // would read as "the base is fine", which is the one claim it cannot make.
-      return `the base ${name} could not be read, so this diff may include work already on ${name}.`;
+      return `the base ${name} could not be read, so this diff may include work already on ${name}.${why}`;
     }
     return null;
   });
@@ -1175,7 +1179,10 @@
   {#if read.refused !== null}
     <p class="pending">This forge would not answer for the seat: {read.refused}</p>
   {:else if reviews === null}
-    <p class="pending">Reading the seat...</p>
+    <p class="pending">
+      <span class="ring" aria-hidden="true"></span>
+      Fetching the base for the diff...
+    </p>
   {:else}
     {#if reviews.threads.outcome === 'failed'}
       <p class="half bad">The threads could not be read: {reviews.threads.value}</p>
@@ -1557,6 +1564,13 @@
     font-size: var(--fs-data);
     color: var(--bad);
     padding: 2px 2px 8px;
+  }
+  /* The one wait this page explains: its own read fetches the base before it
+     answers, with no cap, and the work spinner is the mark every surface uses
+     for work in flight. */
+  .pending .ring {
+    margin-right: 7px;
+    vertical-align: -1px;
   }
   /* The stale-base line: the diff is drawn, and this says the base behind it
      may be old. Its own line rather than a hover, because a caveat nobody

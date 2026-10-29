@@ -43,7 +43,7 @@ import {
 } from '../protocol';
 import { playPacket } from '../browser/audio';
 import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
-import { READ_BOUND_MS, REVIEW_READ_BOUND_MS, ReadBounds } from '../read-bound';
+import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
 import { StreamGate } from '../session/stream';
 import { report, type BrowserFrame, type Connection, type ConnectionStatus } from '../socket';
@@ -240,8 +240,9 @@ class RustConnection implements Connection {
    * The scope each subject was last asked with, for the read bound's retry.
    *
    * **The retry says nothing on the invoke** - the shell keeps the held scope
-   * - but its deadline has to match the read it is retrying, and a review
-   * read's server-side bounds are longer than an ordinary one's.
+   * - but its deadline has to match the read it is retrying: an ordinary read
+   * is bounded, and a review read waits for its base fetch with no cap at all,
+   * so it carries no deadline.
    */
   private readonly scopes = new Map<string, boolean>();
 
@@ -255,8 +256,8 @@ class RustConnection implements Connection {
   }
 
   /** The pass a subject's read gets, from the scope it was last asked with. */
-  private passFor(what: Subject): number {
-    return this.scopes.get(subjectKey(what)) === true ? REVIEW_READ_BOUND_MS : this.boundMs;
+  private passFor(what: Subject): number | null {
+    return this.scopes.get(subjectKey(what)) === true ? null : this.boundMs;
   }
 
   /** One bound retry: no scope on the invoke, the held one's deadline. */
@@ -504,8 +505,8 @@ class RustConnection implements Connection {
       report('a subscribe could not reach the shell', why);
     });
     // The read this ask owes is bounded from here: nothing else would ask
-    // again for a snapshot that simply never came. A review read gets the
-    // longer pass, because the server's own bounds for it are longer.
+    // again for a snapshot that simply never came. A review read is left
+    // unbounded, because the server waits for its base fetch with no cap.
     this.bounds.arm(what, this.passFor(what));
     return store;
   }

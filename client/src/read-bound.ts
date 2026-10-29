@@ -29,6 +29,14 @@
  * owed, and an answer or a refusal is what ends the retries. A subject with
  * no store is asked for by nobody and is left alone - a visited seat keeps
  * its store, so a seat's read is bounded for the connection's life.
+ *
+ * **A review-scoped read is asked with no bound at all.** The server gives
+ * that read no cap: it waits for the base fetch to finish, which is the
+ * network's time rather than a number this side can name. Any client deadline
+ * would land inside a wait that is still legitimately running and ask a
+ * second whole review read under the first. The page draws the wait and
+ * leaving it is the escape; a dropped connection re-asks on open like any
+ * other held subject.
  */
 
 import type { Subject } from './protocol';
@@ -67,19 +75,6 @@ export const READ_BOUND_MS = 5_000;
  */
 export const SLOW_RETRY_MS = 60_000;
 
-/**
- * The pass a review-scoped read gets before it is presumed lost.
- *
- * **The server bounds that read itself, and its bounds are longer than a
- * healthy one**: up to three seconds refreshing the base, then up to three
- * more waiting for a scan already in flight (and, when that wait runs out, a
- * local re-read of the tree against the refreshed base), then the record's
- * own encode. The ordinary pass would land inside that window and ask for a
- * second whole review read - another fetch and another scan - under the first
- * one still on its way.
- */
-export const REVIEW_READ_BOUND_MS = READ_BOUND_MS + 7_000;
-
 export class ReadBounds {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -97,13 +92,22 @@ export class ReadBounds {
   ) {}
 
   /**
-   * A read just went out for `what`: bound it.
+   * A read just went out for `what`: bound it, or leave it unbounded.
    *
    * **This arms the read's one pass at [`READ_BOUND_MS`].** Every check after
    * it waits [`SLOW_RETRY_MS`], which is the whole policy: an answer ends the
    * bound, and a read still unanswered after its pass is presumed slow.
+   *
+   * `null` arms nothing: a read the server gives no cap has no deadline this
+   * side can name, and a timer would ask a second whole read under one still
+   * legitimately in flight. Any timer a previous read of the subject left is
+   * dropped, because it is not this read's to keep.
    */
-  arm(what: Subject, afterMs: number = this.boundMs): void {
+  arm(what: Subject, afterMs: number | null = this.boundMs): void {
+    if (afterMs === null) {
+      this.clearKey(subjectKey(what));
+      return;
+    }
     this.schedule(what, afterMs);
   }
 
@@ -139,12 +143,14 @@ export class ReadBounds {
    * longer bounds and buy the second whole review read that deadline exists
    * to prevent.
    */
-  rearmLoading(passFor: (what: Subject) => number = () => this.boundMs): void {
+  rearmLoading(passFor: (what: Subject) => number | null = () => this.boundMs): void {
     for (const subject of this.stores.subjects()) {
       const key = subjectKey(subject);
       if (this.timers.has(key)) continue;
       if (this.stores.get(subject)?.state().kind === 'loading') {
-        this.arm(subject, passFor(subject));
+        const pass = passFor(subject);
+        if (pass === null) continue;
+        this.arm(subject, pass);
       }
     }
   }

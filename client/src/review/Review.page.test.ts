@@ -306,6 +306,8 @@ function record(
   defaultBranch = 'main',
   /** What the seat's watch last measured for the base (the row's `base`). */
   watchBase: unknown = null,
+  /** Why the base fetch did not run, in git's own words. */
+  baseError: unknown = null,
 ): SessionRecord {
   return {
     slot: SLOT,
@@ -319,7 +321,7 @@ function record(
           ? null
           : { commit_count: total, count: total, commits, stats: null },
     },
-    diff: { branchAhead: diff, base },
+    diff: { branchAhead: diff, base, baseError },
     reviews: {
       threads: { outcome: 'read', value: threads },
       reviews: { outcome: 'read', value: reviews },
@@ -451,6 +453,8 @@ async function draw(
   review = true,
   /** What the seat's watch last measured for the base (the row's `base`). */
   watchBase: unknown = null,
+  /** Why the base fetch did not run, in git's own words. */
+  baseError: unknown = null,
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -467,7 +471,18 @@ async function draw(
   });
   flushSync();
   push({
-    wire: record(IDLE, threads, reviews, diff, commits, total, base, defaultBranch, watchBase),
+    wire: record(
+      IDLE,
+      threads,
+      reviews,
+      diff,
+      commits,
+      total,
+      base,
+      defaultBranch,
+      watchBase,
+      baseError,
+    ),
     refused: null,
     review,
   });
@@ -1478,6 +1493,57 @@ describe('the steppers', () => {
       'could not be refreshed',
     );
     expect(text, 'and claims no count it does not have').not.toMatch(/\d+ commits? behind/);
+  });
+
+  /**
+   * **A failed fetch says what git said.** "Could not be refreshed" alone
+   * tells a reader the check did not happen; git's own line names the cause
+   * they can act on - a dead remote, a refused credential.
+   */
+  it("names git's own words for a base fetch that failed", async () => {
+    await draw(
+      [],
+      [],
+      true,
+      DIFF,
+      [FIRST_COMMIT],
+      1,
+      { state: 'unverified' },
+      'origin/main',
+      true,
+      null,
+      'fatal: could not resolve host: github.com',
+    );
+
+    const text = document.querySelector('.rv-base')?.textContent ?? '';
+    expect(text, 'the state is said first').toContain('could not be refreshed');
+    expect(text, "and git's own words follow it").toContain(
+      'fatal: could not resolve host: github.com',
+    );
+  });
+
+  /**
+   * **The open says what it is waiting for.** The review read fetches the
+   * base before it answers and that wait has no cap, so the longest wait the
+   * page has is the one it must explain; the work spinner is the mark every
+   * other surface uses for work in flight.
+   */
+  it('says it is fetching the base while its own read is in flight', () => {
+    app = mount(Review, {
+      target: document.body,
+      props: { connection: connection(), slot: SLOT, dictation: true },
+    });
+    flushSync();
+
+    const pending = document.querySelector('.pending');
+    expect(pending?.textContent, 'the open names the wait').toContain(
+      'Fetching the base for the diff',
+    );
+    expect(pending?.querySelector('.ring'), 'with the work spinner beside it').not.toBeNull();
+
+    push({ wire: record(IDLE), refused: null, review: true });
+    flushSync();
+    expect(document.querySelector('.pending'), 'and lands on the diff').toBeNull();
   });
 
   /** A base the scan refreshed is not a caveat. */
