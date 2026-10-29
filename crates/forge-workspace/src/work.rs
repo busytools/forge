@@ -1109,7 +1109,7 @@ provider = "anthropic"
         .expect("write forge.toml");
         let workspace =
             Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
-        let updates = workspace.subscribe();
+        let updates = workspace.subscribe_answerer();
         (workspace, updates, dir)
     }
 

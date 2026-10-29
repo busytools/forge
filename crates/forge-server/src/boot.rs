@@ -714,7 +714,7 @@ port = {port}
     #[tokio::test]
     async fn a_config_edit_reaches_the_running_workspace() {
         let (workspace, _dir) = boot_fixture();
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         start_config_watch(&workspace, |_workspace| {});
 
         let path = workspace.config_path();

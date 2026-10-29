@@ -141,45 +141,15 @@ impl ViewSurface {
         self.workspace.pending_asks(slot)
     }
 
-    /// The core's own update stream. Every caller gets a receiver of its
-    /// own, so a second view attaches beside the first rather than stealing
-    /// its events.
-    ///
-    /// **A caller on this verb is a frontend that renders AND answers
-    /// prompts.** A permission, question or Slack-draft request is parked on
-    /// a reply, and the paths that raise one resolve it `Cancelled` when no
-    /// subscriber can answer - so a view that draws a dock while declaring
-    /// itself an observer draws prompts that are already dead, and a turn
-    /// fails rather than waiting for the person looking at it. Whoever
-    /// subscribes here answers through `dispatch`, which is the same path
-    /// a view uses.
-    ///
-    /// This was the mirror's role while one view was the only frontend and
-    /// the only thing that answered. A second view that renders makes that
-    /// reason stop holding.
-    ///
-    /// The first caller to attach is handed what was emitted before it as
-    /// well, so a notice raised during boot is not lost; a caller attaching
-    /// after one already has inherits no backlog.
-    ///
-    /// A consumer that reads the stream and renders no prompt takes
-    /// [`Self::subscribe_mirror`] instead.
-    pub fn subscribe(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
-        self.workspace.subscribe()
-    }
-
     /// The core's own update stream for a consumer that reads it WITHOUT
-    /// answering, and keeps no backlog.
+    /// answering.
     ///
     /// **The caller this exists for is a process-wide fold.** It folds into
     /// state of its own and never replies, so the answering role would park
     /// a permission, question or Slack draft waiting on an answer nobody
-    /// sends. And it attaches at boot, before any client does, so taking
-    /// the backlog would take the boot notice from the view that renders
-    /// prompts - the notice belongs to whichever subscription attaches
-    /// first, and a fold is not the view that draws it.
+    /// sends.
     ///
-    /// A view with a dock to answer from takes [`Self::subscribe`].
+    /// A view with a dock to answer from takes [`Self::subscribe_client`].
     pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
         self.workspace.subscribe_mirror()
     }
@@ -510,7 +480,7 @@ mod tests {
     use forge_primitives::SessionSlot;
     use forge_workspace::Workspace;
 
-    use super::{SeatUpdate, SessionUpdate, ViewSurface};
+    use super::ViewSurface;
     use crate::test_support::logged;
 
     /// The claude versions are facts about the world rather than about a
@@ -538,62 +508,27 @@ mod tests {
     /// `UpdateFanout`, whose own test pins its two halves; what this pins
     /// is which half each one calls.
     ///
-    /// **A view attaching through this verb renders AND answers prompts, and
-    /// it takes the stream whole.** The two travel together on purpose: the
-    /// verb that hands over the backlog is the verb that answers, because
-    /// both belong to the frontend that draws a dock. A view pointed at the
-    /// mirror instead draws prompts that are already dead - the workspace
-    /// resolves a permission, question or Slack draft `Cancelled` when no
-    /// subscriber can answer - and nothing in a build or a test would say so.
-    ///
-    /// This is the one place in the tree that tells the two apart: every
-    /// other test answers an update that was emitted after it attached, and
-    /// green either way.
+    /// **The role decides whether the core may park a prompt on a reply.**
+    /// A view that draws a dock while declaring itself an observer draws
+    /// prompts that are already dead - the workspace resolves a permission,
+    /// question or Slack draft `Cancelled` when no subscriber can answer -
+    /// and nothing in a build or a test would say so. This is the one place
+    /// in the tree that tells the two apart.
     #[tokio::test]
-    async fn a_surface_subscriber_answers_and_takes_the_stream_whole() {
+    async fn a_surface_client_subscribes_with_the_role_it_declared() {
         let (workspace, _dir) = crate::surface::testing::workspace();
         let surface = ViewSurface::new(Arc::clone(&workspace));
 
-        // Emitted with nothing attached, so the fanout holds it for
-        // whichever caller attaches first.
-        workspace.emit_for_test(SessionUpdate::CatalogLoaded);
+        let _answering = surface.subscribe_client(true);
+        let _mirror = surface.subscribe_client(false);
+        let _fold = surface.subscribe_mirror();
 
-        let mut subscribed = surface.subscribe();
-        assert!(
-            matches!(
-                subscribed.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
-            ),
-            "a view attaching through this verb takes the stream whole, held notice included",
+        assert_eq!(
+            workspace.test_answering_count(),
+            1,
+            "only the client that declared it answers counts as an answerer",
         );
-    }
-
-    /// The other half of the pair, and the reason both verbs exist: a fold
-    /// attaching through the mirror takes no backlog, so the notice held
-    /// before anyone attached reaches the view that renders prompts instead
-    /// of being swallowed by whichever subscription happened to attach
-    /// first - which at boot is the fold, not a view.
-    ///
-    /// The fold also does not answer, so putting it on the answering verb
-    /// would park every prompt it draws waiting on a reply nobody sends.
-    #[tokio::test]
-    async fn a_surface_mirror_leaves_the_backlog_for_the_view_that_renders_prompts() {
-        let (workspace, _dir) = crate::surface::testing::workspace();
-        let surface = ViewSurface::new(Arc::clone(&workspace));
-
-        workspace.emit_for_test(SessionUpdate::CatalogLoaded);
-
-        let mut mirror = surface.subscribe_mirror();
-        assert!(mirror.try_recv().is_err(), "a fold attaching through the mirror takes no backlog");
-
-        let mut answering = workspace.subscribe();
-        assert!(
-            matches!(
-                answering.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
-            ),
-            "the held notice is still there for the subscriber that renders prompts",
-        );
+        assert_eq!(workspace.test_subscriber_count(), 3, "each verb registers a stream of its own");
     }
 
     const SESSION_A: &str = "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45";

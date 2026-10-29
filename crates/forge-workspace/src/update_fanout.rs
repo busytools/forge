@@ -138,13 +138,6 @@ struct Registration {
 
 struct Shared {
     subscribers: Vec<Registration>,
-    /// Updates emitted before the first subscriber attached, held for
-    /// whoever attaches first so a notice raised during boot is not lost.
-    pending: Vec<SeatUpdate>,
-    /// Set by the first [`UpdateFanout::subscribe`]. After that a send
-    /// that reaches nobody is dropped rather than held, so a subscriber
-    /// attaching later inherits no backlog.
-    attached: bool,
     /// Where each seat's stream has got to: the number its newest frame was
     /// minted under. Absent for a seat that has not emitted yet, and for one
     /// whose last frame opened a new epoch.
@@ -203,8 +196,6 @@ impl Default for Shared {
     fn default() -> Self {
         Self {
             subscribers: Vec::new(),
-            pending: Vec::new(),
-            attached: false,
             sequences: HashMap::new(),
             rings: HashMap::new(),
             ring_bytes: HashMap::new(),
@@ -392,33 +383,10 @@ pub(crate) struct UpdateFanout {
 
 impl UpdateFanout {
     /// Mint a subscriber stream, declaring what the caller can do with
-    /// it. The first caller also takes whatever was emitted before it
-    /// attached, whichever role it declares; every later one carries
-    /// what is emitted after its own call and nothing before it.
+    /// it. A stream carries what is emitted after this call and nothing
+    /// before it; a subscriber reads what it missed from the subject's
+    /// snapshot instead.
     pub(crate) fn subscribe(&self, role: SubscriberRole) -> mpsc::UnboundedReceiver<SeatUpdate> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let mut shared = self.shared.lock();
-        for held in std::mem::take(&mut shared.pending) {
-            let _ = tx.send(held);
-        }
-        shared.attached = true;
-        shared.subscribers.push(Registration { tx, role });
-        rx
-    }
-
-    /// Mint a subscriber that carries only what is emitted from here on,
-    /// and leaves the pre-attach backlog for whoever attaches next.
-    ///
-    /// A mirror - something that folds the stream into state of its own
-    /// and reads the rest from a snapshot when it is asked - has no use
-    /// for the backlog. Taking it would be worse than useless: the
-    /// backlog goes to the first caller, so a mirror attaching at boot
-    /// would silently take the boot notice out of the view that renders
-    /// prompts.
-    pub(crate) fn subscribe_without_backlog(
-        &self,
-        role: SubscriberRole,
-    ) -> mpsc::UnboundedReceiver<SeatUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.shared.lock().subscribers.push(Registration { tx, role });
         rx
@@ -426,9 +394,7 @@ impl UpdateFanout {
 
     /// Deliver `update` to every subscriber, and report whether one took
     /// it. `false` is the "no receiver" signal the single-take channel
-    /// gave, which `spawn::try_emit` and `SessionTask::emit` log on; an
-    /// update emitted before anything attached is held for the first
-    /// subscriber and reports `false` too, since no subscriber has it.
+    /// gave, which `spawn::try_emit` and `SessionTask::emit` log on.
     ///
     /// The last subscriber is taken out of the registry to receive
     /// `update` itself while the rest are sent a copy, so the common
@@ -542,14 +508,6 @@ impl UpdateFanout {
         let mut shared = self.shared.lock();
         let update = shared.numbered(update, charge);
         let Some(tail) = shared.subscribers.pop() else {
-            // Hold what was emitted before anything attached, so a boot
-            // notice is not lost. A role-gated update is not held,
-            // because a caller of `send_answering` must fail its turn
-            // closed on a false return: replaying it would offer the
-            // first subscriber a reply that reaches nothing.
-            if !shared.attached && required.is_none() {
-                shared.pending.push(update);
-            }
             return false;
         };
         let counts = |role: SubscriberRole| required.is_none_or(|want| want == role);
@@ -711,81 +669,8 @@ mod tests {
             "after",
             "the first subscriber also sees the later one"
         );
-        assert_eq!(next(&mut late, "late"), "after", "the late subscriber misses the backlog");
-        assert!(
-            late.try_recv().is_err(),
-            "the late subscriber is handed the backlog and nothing more",
-        );
-    }
-
-    /// Catches dropping the hold for what was emitted before anything
-    /// attached, which loses a notice the workspace raises during boot
-    /// and leaves the first subscriber starting empty.
-    #[test]
-    fn the_first_subscriber_takes_what_was_emitted_before_it() {
-        let fanout = UpdateFanout::default();
-        assert!(!fanout.send(status("boot")), "nothing has attached to take it");
-
-        let mut first = fanout.subscribe(SubscriberRole::Answering);
-        let mut second = fanout.subscribe(SubscriberRole::Answering);
-
-        assert_eq!(
-            next(&mut first, "first"),
-            "boot",
-            "the first subscriber is handed the boot notice"
-        );
-        assert!(second.try_recv().is_err(), "the second subscriber is handed no boot backlog");
-    }
-
-    /// A mirror takes no backlog and leaves it for whoever attaches next.
-    ///
-    /// Both halves are the point. A view that folds the stream into state
-    /// of its own reads the rest from a snapshot, so replaying to it is
-    /// waste; and because the backlog goes to the FIRST caller, a mirror
-    /// attaching at boot would otherwise take the boot notice out of the
-    /// view that renders prompts. Catches either direction being changed:
-    /// a mirror pointed at the backlog-taking form, or a prompt-rendering
-    /// view pointed at the mirror's.
-    #[test]
-    fn a_mirror_takes_no_backlog_and_leaves_it_for_the_next_subscriber() {
-        let fanout = UpdateFanout::default();
-        assert!(!fanout.send(status("boot")), "nothing has attached to take it");
-
-        let mut mirror = fanout.subscribe_without_backlog(SubscriberRole::Observing);
-        assert!(
-            mirror.try_recv().is_err(),
-            "a mirror is handed nothing that was emitted before it attached",
-        );
-
-        let mut answering = fanout.subscribe(SubscriberRole::Answering);
-        assert_eq!(
-            next(&mut answering, "answering"),
-            "boot",
-            "the boot notice is still there for the view that renders prompts",
-        );
-
-        assert!(fanout.send(status("later")), "an update after both attached reaches one of them");
-        assert_eq!(next(&mut mirror, "mirror"), "later", "and the mirror carries it too");
-    }
-
-    /// Catches holding a role-gated update for the first subscriber. The
-    /// guard that raised it has already failed it closed, so replaying
-    /// it would hand the first view a prompt whose slot is gone and
-    /// offer a reply that reaches nothing.
-    #[test]
-    fn a_role_gated_update_is_not_held_for_the_first_subscriber() {
-        let fanout = UpdateFanout::default();
-        assert!(!fanout.send(status("notice")), "a plain update is held");
-        assert!(!fanout.send_answering(status("prompt")), "nothing can answer it yet");
-
-        let mut first = fanout.subscribe(SubscriberRole::Answering);
-
-        assert_eq!(
-            next(&mut first, "first"),
-            "notice",
-            "the first subscriber is handed the plain update",
-        );
-        assert!(first.try_recv().is_err(), "the failed-closed prompt is not replayed to it");
+        assert_eq!(next(&mut late, "late"), "after", "the late subscriber sees only the later one");
+        assert!(late.try_recv().is_err(), "the late subscriber carries nothing from before it");
     }
 
     /// Catches pointing a guard at `send`, which counts an observer as an
@@ -1249,7 +1134,7 @@ mod tests {
     /// The boot backlog keeps the numbers its frames were minted with, so a
     /// client joining at the first subscribe has no hole at the join.
     #[test]
-    fn the_backlog_keeps_the_numbers_its_frames_were_minted_with() {
+    fn a_frame_that_reached_nobody_still_advances_its_seats_number() {
         let fanout = UpdateFanout::default();
         let seat = seat("lead");
         assert!(!fanout.send(a_turn_ends(&seat)), "nothing has attached to take it");
@@ -1258,12 +1143,10 @@ mod tests {
         let mut first = fanout.subscribe(SubscriberRole::Answering);
         assert!(fanout.send(a_turn_ends(&seat)), "the subscriber is attached");
 
-        assert_eq!(next_seq(&mut first, "first"), Some(1), "the held frame keeps its number");
-        assert_eq!(next_seq(&mut first, "first"), Some(2), "and so does the one after it");
         assert_eq!(
             next_seq(&mut first, "first"),
             Some(3),
-            "with the live frame continuing from the backlog rather than restarting",
+            "the delivered frame continues the count rather than reusing a number",
         );
     }
 }

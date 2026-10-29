@@ -4491,37 +4491,22 @@ impl Workspace {
         entries.insert(0, entry);
     }
 
-    /// Subscribe to this workspace's [`SessionUpdate`] stream. Every
-    /// caller gets its own stream, so a second view attaches beside the
-    /// first rather than being refused, and the workspace drops the
-    /// matching subscription once its receiver goes.
-    ///
-    /// A stream carries what is emitted after this call. The first
-    /// caller to attach is handed whatever the workspace emitted before
-    /// it as well, which is how a notice raised during boot reaches a
-    /// view; a caller attaching after one already has inherits no
-    /// backlog.
-    ///
-    /// The stream answers the workspace's prompts, so a permission or
-    /// question request delivered here keeps its turn alive waiting for
-    /// the reply. A consumer that only reads the stream takes
-    /// [`Self::subscribe_observer`] instead.
-    ///
-    /// Every frame arrives as a [`SeatUpdate`], carrying the number its
-    /// seat minted for it.
-    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
-        self.update_tx.subscribe(SubscriberRole::Answering)
-    }
-
     /// Subscribe without answering the workspace's prompts: a logger, a
     /// mirror, anything that reads the stream but renders no prompt.
     ///
-    /// The distinction is load-bearing rather than descriptive. A
-    /// permission, question or Slack-draft request is parked on a reply,
-    /// and the paths that raise one resolve it `Cancelled` instead when
-    /// no subscriber can answer, so that a request nobody will reply to
-    /// fails the turn rather than hanging it. A subscriber that declares
-    /// itself an observer is not counted as an answer.
+    /// Every caller gets its own stream, so a second view attaches beside
+    /// the first rather than being refused, and the workspace drops the
+    /// matching subscription once its receiver goes. A stream carries what
+    /// is emitted after this call; a subscriber reads what it missed from
+    /// the subject's snapshot instead.
+    ///
+    /// The distinction from [`Self::subscribe_answerer`] is load-bearing
+    /// rather than descriptive. A permission, question or Slack-draft
+    /// request is parked on a reply, and the paths that raise one resolve it
+    /// `Cancelled` instead when no subscriber can answer, so that a request
+    /// nobody will reply to fails the turn rather than hanging it. A
+    /// subscriber that declares itself an observer is not counted as an
+    /// answer.
     ///
     /// **A browser hand-off fails closed differently**: nothing parks a
     /// decision for it to cancel, so its registration hands the blocked call
@@ -4529,45 +4514,25 @@ impl Workspace {
     /// client can show the hand-off - rather than holding a session on a
     /// prompt no view can draw.
     ///
-    /// Who takes the pre-attach backlog is positional, not role-aware:
-    /// an observer subscribing before any view is the first caller and
-    /// takes whatever the workspace emitted beforehand, the boot notice
-    /// included. The binary's `start_*` calls all run before any view
-    /// attaches, so this belongs after them rather than among them.
-    ///
-    /// Nothing calls this yet; the only observer in the tree is a test.
-    /// This exists so a consumer that reads without rendering a prompt
-    /// can say so instead of parking a turn by claiming a capability it
-    /// lacks.
-    pub fn subscribe_observer(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
+    /// Every frame arrives as a [`SeatUpdate`], carrying the number its
+    /// seat minted for it.
+    pub fn subscribe_mirror(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
         self.update_tx.subscribe(SubscriberRole::Observing)
     }
 
-    /// Subscribe as an observer, carrying only what is emitted from here
-    /// on: a mirror of the stream, not a renderer of its prompts.
+    /// Subscribe as an answerer: the same stream, for a client that renders
+    /// prompts and can answer them.
     ///
-    /// The backlog goes to the first subscriber, so a mirror attaching at
-    /// boot must not take it - the view that renders prompts would lose
-    /// the boot notice. A mirror reads the rest of what it needs from the
-    /// read surface when it is asked, so it has nothing to replay.
-    pub fn subscribe_mirror(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
-        self.update_tx.subscribe_without_backlog(SubscriberRole::Observing)
-    }
-
-    /// Subscribe as an answerer, carrying only what is emitted from here on.
-    ///
-    /// The answering half of [`Self::subscribe_mirror`], for a client that
-    /// renders prompts and attaches beside another view: it can answer, and
-    /// the backlog still belongs to whoever was there first, because that is
-    /// the view drawing the boot notice.
+    /// The answering half of [`Self::subscribe_mirror`]. The role decides one
+    /// thing: whether the core may park a prompt on this subscriber's reply.
     pub fn subscribe_answerer(&self) -> mpsc::UnboundedReceiver<SeatUpdate> {
-        self.update_tx.subscribe_without_backlog(SubscriberRole::Answering)
+        self.update_tx.subscribe(SubscriberRole::Answering)
     }
 
     /// Clone the workspace's [`SessionUpdate`] sender. Internal to this
     /// crate: a view's own async work belongs on a channel of its own,
-    /// so that [`Self::subscribe`] is the whole of what the core owes a
-    /// frontend.
+    /// so that the subscription methods above are the whole of what the core
+    /// owes a frontend.
     pub(crate) fn update_sender(&self) -> UpdateFanout {
         self.update_tx.clone()
     }
@@ -10152,7 +10117,7 @@ mod tests {
             scripted_prober(&calls, probed.clone()),
         )
         .expect("new");
-        let mut woken = workspace.subscribe();
+        let mut woken = workspace.subscribe_answerer();
 
         let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
 
@@ -10185,7 +10150,7 @@ mod tests {
 
         workspace.start_cli_version_probe(scripted_prober(&calls, first.clone()));
         workspace.start_cli_version_probe(scripted_prober(&calls, second));
-        let mut woken = workspace.subscribe();
+        let mut woken = workspace.subscribe_answerer();
         let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
         assert!(
             matches!(event, Ok(Some(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. }))),
@@ -11746,7 +11711,7 @@ provider = "anthropic"
         let project = tempdir().expect("project");
         let workspace = resume_workspace(dir.path(), project.path());
         forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
-        let mut updates = workspace.subscribe_observer();
+        let mut updates = workspace.subscribe_mirror();
         let key = SessionSlot::lead("Default", "forge");
         let known = "11111111-2222-3333-4444-555555555555";
 
@@ -11925,7 +11890,7 @@ provider = "anthropic"
         );
         assert_eq!(workspace.count_live_workers(&project_key), 0, "the tombstone is not live");
         forge_agent::set_test_sdk_binary(Some(id_preserving_mock(dir.path())));
-        let mut updates = workspace.subscribe_observer();
+        let mut updates = workspace.subscribe_mirror();
 
         let sent = workspace.dispatch_from_view(Command::Prompt {
             key: slot.clone(),
@@ -12011,7 +11976,7 @@ provider = "anthropic"
                 kick: None,
             },
         );
-        let mut updates = workspace.subscribe_observer();
+        let mut updates = workspace.subscribe_mirror();
 
         let sent = workspace.dispatch_from_view(Command::Prompt {
             key: slot.clone(),
@@ -12425,8 +12390,8 @@ provider = "anthropic"
     async fn subscribe_hands_every_caller_its_own_stream() {
         let dir = make_workspace_dir();
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("new");
-        let mut first = workspace.subscribe();
-        let mut second = workspace.subscribe();
+        let mut first = workspace.subscribe_answerer();
+        let mut second = workspace.subscribe_answerer();
 
         assert!(
             workspace.update_tx().send(SessionUpdate::CatalogLoaded),
@@ -16607,7 +16572,7 @@ provider = "anthropic"
     async fn release_session_on_lead_cascades_workers() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
         let (calls, mut heard) = tokio::sync::mpsc::unbounded_channel();
         workspace
             .install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
@@ -16698,7 +16663,7 @@ provider = "anthropic"
     async fn a_release_is_announced_before_the_cascade_runs() {
         let dir = make_workspace_dir();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let project = workspace.list_projects().into_iter().next().expect("forge project");
         let project_key = project.key.clone();
@@ -22160,7 +22125,7 @@ provider = "anthropic"
     async fn a_probe_that_writes_the_pool_announces_it() {
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         // The boot backlog, so what the assertion reads is this call's news
         // rather than something emitted before it.
         while updates.try_recv().is_ok() {}
@@ -22266,7 +22231,7 @@ provider = "anthropic"
 
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         while updates.try_recv().is_ok() {}
 
         let key = AccountKey("Stargate".to_owned());
@@ -22297,7 +22262,7 @@ provider = "anthropic"
 
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         while updates.try_recv().is_ok() {}
         let key = AccountKey("Stargate".to_owned());
 
@@ -22329,7 +22294,7 @@ provider = "anthropic"
 
         let dir = make_workspace_dir_246();
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         while updates.try_recv().is_ok() {}
         let key = AccountKey("Stargate".to_owned());
 
@@ -23146,7 +23111,7 @@ provider = "anthropic"
             Some("forge:worker:implementer"),
         );
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut update_rx = workspace.subscribe();
+        let mut update_rx = workspace.subscribe_answerer();
         assert!(workspace.list_projects()[0].sessions.is_empty(), "catalog starts empty");
 
         workspace.start_catalog_scan();
@@ -23459,7 +23424,7 @@ provider = "anthropic"
     /// Run the boot catalog scan and wait for it, so the seat's read takes the
     /// catalog branch rather than the directory's own.
     async fn ready_catalog(workspace: &Arc<Workspace>) {
-        let mut updates = workspace.subscribe();
+        let mut updates = workspace.subscribe_answerer();
         workspace.start_catalog_scan();
         loop {
             let update = tokio::time::timeout(std::time::Duration::from_secs(5), updates.recv())

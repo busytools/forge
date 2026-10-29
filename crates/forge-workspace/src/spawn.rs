@@ -3218,7 +3218,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
 
@@ -3243,7 +3243,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
@@ -3275,7 +3275,7 @@ provider = "anthropic"
         // builds a task: the slot resolves and is announced, then the
         // handle construction refuses.
         workspace.seed_test_gateway_ready(false);
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
@@ -3317,7 +3317,7 @@ provider = "anthropic"
         let dir = tempdir().expect("tempdir");
         write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let caller = SessionSlot::from_str_for_test("caller-1");
         handle_deliver_peer_prompt(
@@ -4197,7 +4197,7 @@ provider = "anthropic"
             concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh")
                 .to_owned(),
         ));
-        let mut updates = ws.subscribe_observer();
+        let mut updates = ws.subscribe_mirror();
         let reply = spawn_reply(&ws, &key, "labourer", false)
             .await
             .expect("reply channel")
@@ -4722,7 +4722,7 @@ provider = "anthropic"
         let throes = std::time::Duration::from_secs(2);
         forge_agent::set_test_sdk_binary(Some(death_throes_mock(dir.path(), &wt, throes)));
 
-        let mut updates = ws.subscribe_observer();
+        let mut updates = ws.subscribe_mirror();
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_spawn_worker(
             &ws,
@@ -7337,7 +7337,7 @@ provider = "anthropic"
             "fixture precondition: git refuses this worktree unforced"
         );
         assert!(wt.exists(), "and the refusal leaves it on disk");
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -7403,7 +7403,7 @@ provider = "anthropic"
             "fixture precondition: git refuses the deregistered leftover outright"
         );
         assert!(wt.exists(), "and the refusal leaves it on disk");
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "leftover", true, tx);
@@ -7957,7 +7957,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn close_worker_reports_the_worktree_intact() {
         let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         handle_close_worker(&workspace, &project_key, "reviewer");
 
@@ -7970,7 +7970,7 @@ provider = "anthropic"
     #[tokio::test]
     async fn despawn_reports_the_worktree_removed() {
         let (workspace, project_key, wt, _repo, _config) = git_despawn_fixture("reviewer");
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", false, tx);
@@ -8000,7 +8000,7 @@ provider = "anthropic"
             .expect("deregister the worktree");
         std::fs::remove_dir_all(&wt).expect("clear the worktree dir");
         std::os::unix::fs::symlink(&elsewhere, &wt).expect("symlink at the worktree path");
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
@@ -8027,7 +8027,7 @@ provider = "anthropic"
         let (workspace, project_key, wt, repo, _config) = git_despawn_fixture("reviewer");
         run_git(repo.path(), &["worktree", "remove", wt.to_str().expect("utf8 path")]);
         assert!(!wt.exists(), "nothing on disk before the despawn");
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_despawn_worker(&workspace, &project_key, "reviewer", true, tx);
@@ -8065,7 +8065,7 @@ provider = "anthropic"
             .find(|v| v.name == "ghost")
             .expect("seeded project present")
             .key;
-        let mut rx = workspace.subscribe();
+        let mut rx = workspace.subscribe_answerer();
 
         let (tx, resp_rx) = tokio::sync::oneshot::channel();
         handle_spawn_worker(

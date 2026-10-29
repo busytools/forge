@@ -20,15 +20,14 @@
 //!
 //! - **view → workspace:** [`Workspace::dispatch`] takes a
 //!   [`protocol::Command`]. One enum, one entry point.
-//! - **workspace → view:** [`Workspace::subscribe`] returns a receiver
-//!   for [`protocol::SessionUpdate`]. Every caller gets a stream of its
-//!   own, so a second view attaches beside the first. A stream carries
-//!   what is emitted after it subscribes, and the first caller to
-//!   attach is handed what was emitted before it as well, so a notice
-//!   raised during boot is not lost. [`Workspace::subscribe_observer`]
-//!   is the same stream for a consumer that reads but answers no
-//!   prompt, and [`Workspace::subscribe_mirror`] is that stream without
-//!   the pre-attach backlog, which is what a view takes.
+//! - **workspace → view:** [`Workspace::subscribe_mirror`] and
+//!   [`Workspace::subscribe_answerer`] return receivers for
+//!   [`protocol::SessionUpdate`]. Every caller gets a stream of its own, so
+//!   a second view attaches beside the first, and a stream carries what is
+//!   emitted after it subscribes. The socket's own fold takes the mirror;
+//!   each client takes the answering or mirror role it declared, through
+//!   `ViewSurface::subscribe_client`. The role decides one thing: whether
+//!   the core may park a prompt on that subscriber's reply.
 //!
 //! No callback hooks. No shared mutable state. A view does not hold an
 //! `Arc<AgentHandle>`: every outbound call goes through

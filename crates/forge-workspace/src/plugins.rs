@@ -761,7 +761,7 @@ provider = \"anthropic\"
             fake_cli(&PluginsInventorySnapshot::default(), &PluginsInventorySnapshot::default());
         ws.set_plugin_cli(cli);
         let declared = ws.list_projects()[0].path.to_string_lossy().into_owned();
-        let mut rx = ws.subscribe();
+        let mut rx = ws.subscribe_answerer();
 
         ws.dispatch(Command::PluginInstall {
             plugin_id: "demo@probe".to_owned(),

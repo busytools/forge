@@ -1594,7 +1594,7 @@ mod tests {
     async fn a_draft_with_only_an_observer_fails_closed() {
         let (ws, _dir, rx) = workspace_with_one_slack_workspace("acme");
         drop(rx);
-        let mut observer = ws.subscribe_observer();
+        let mut observer = ws.subscribe_mirror();
         let caller = SessionSlot::from_str_for_test("caller-uuid");
 
         let (_id, decision) = ws.register_slack_draft(&caller, draft("acme", "C1"));
