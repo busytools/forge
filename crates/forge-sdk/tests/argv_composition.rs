@@ -12,7 +12,6 @@
 use forge_sdk::argv::build_args;
 use forge_sdk::subagents::{EffortPreset, SubagentEffort};
 use forge_sdk::{OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind};
-use serde_json::json;
 
 fn argv_of(builder: OptionsBuilder) -> Vec<String> {
     build_args(&builder.build()).expect("build_args")
@@ -128,80 +127,6 @@ fn effort_numeric_serialises_as_integer() {
 fn permission_mode_default_is_suppressed() {
     let argv = argv_of(OptionsBuilder::new());
     assert!(find_flag(&argv, "--permission-mode").is_none());
-}
-
-#[test]
-fn settings_path_passes_through_when_no_sandbox() {
-    let argv = argv_of(OptionsBuilder::new().settings("/tmp/settings.json"));
-    assert_eq!(find_flag(&argv, "--settings"), Some(Some("/tmp/settings.json")));
-}
-
-#[test]
-fn settings_inline_json_passes_through_when_no_sandbox() {
-    let argv = argv_of(OptionsBuilder::new().settings(r#"{"theme":"dark"}"#));
-    assert_eq!(find_flag(&argv, "--settings"), Some(Some(r#"{"theme":"dark"}"#)));
-}
-
-#[test]
-fn sandbox_all_fields_wire_as_camel_case() {
-    // Verifies the field names land on the wire exactly as the CLI
-    // accepts them. Regression guard against fabricated field names.
-    let sandbox = forge_primitives::SandboxSettings {
-        enabled: Some(true),
-        auto_allow_bash_if_sandboxed: Some(true),
-        excluded_commands: Some(vec!["git".into(), "docker".into()]),
-        allow_unsandboxed_commands: Some(false),
-        network: Some(forge_primitives::SandboxNetworkConfig {
-            allow_unix_sockets: Some(vec!["/var/run/docker.sock".into()]),
-            allow_all_unix_sockets: Some(false),
-            allow_local_binding: Some(true),
-            http_proxy_port: Some(3128),
-            socks_proxy_port: Some(1080),
-        }),
-        ignore_violations: Some(forge_primitives::SandboxIgnoreViolations {
-            file: Some(vec!["/tmp".into()]),
-            network: Some(vec!["metrics.example".into()]),
-        }),
-        enable_weaker_nested_sandbox: Some(false),
-    };
-    let wire = serde_json::to_value(&sandbox).expect("serialize");
-    assert_eq!(wire["enabled"], true);
-    assert_eq!(wire["autoAllowBashIfSandboxed"], true);
-    assert_eq!(wire["excludedCommands"], json!(["git", "docker"]));
-    assert_eq!(wire["allowUnsandboxedCommands"], false);
-    assert_eq!(wire["network"]["allowUnixSockets"], json!(["/var/run/docker.sock"]));
-    assert_eq!(wire["network"]["allowAllUnixSockets"], false);
-    assert_eq!(wire["network"]["allowLocalBinding"], true);
-    assert_eq!(wire["network"]["httpProxyPort"], 3128);
-    assert_eq!(wire["network"]["socksProxyPort"], 1080);
-    assert_eq!(wire["ignoreViolations"]["file"], json!(["/tmp"]));
-    assert_eq!(wire["ignoreViolations"]["network"], json!(["metrics.example"]));
-    assert_eq!(wire["enableWeakerNestedSandbox"], false);
-}
-
-#[test]
-fn sandbox_alone_merges_into_settings_json() {
-    let sandbox = forge_primitives::SandboxSettings {
-        enabled: Some(true),
-        ..forge_primitives::SandboxSettings::default()
-    };
-    let argv = argv_of(OptionsBuilder::new().sandbox(sandbox));
-    let value = find_flag(&argv, "--settings").expect("flag present").expect("value present");
-    let parsed: serde_json::Value = serde_json::from_str(value).expect("json");
-    assert_eq!(parsed["sandbox"]["enabled"], true);
-}
-
-#[test]
-fn settings_inline_json_merges_with_sandbox() {
-    let sandbox = forge_primitives::SandboxSettings {
-        enabled: Some(true),
-        ..forge_primitives::SandboxSettings::default()
-    };
-    let argv = argv_of(OptionsBuilder::new().settings(r#"{"theme":"dark"}"#).sandbox(sandbox));
-    let value = find_flag(&argv, "--settings").expect("flag present").expect("value present");
-    let parsed: serde_json::Value = serde_json::from_str(value).expect("json");
-    assert_eq!(parsed["theme"], "dark");
-    assert_eq!(parsed["sandbox"]["enabled"], true);
 }
 
 #[test]

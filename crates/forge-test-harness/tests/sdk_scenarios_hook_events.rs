@@ -265,7 +265,7 @@ async fn wire_capture_stop_hook_error_notification() {
     let opts = OptionsBuilder::new()
         .max_turns(1)
         .permission_mode(PermissionMode::AcceptEdits)
-        .settings(settings.to_string())
+        .extra_arg("settings", Some(settings.to_string()))
         .build();
 
     run_live_scenario("stop_hook_error", opts, |client, events| async move {
