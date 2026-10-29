@@ -718,6 +718,10 @@ interface Frame {
   /** `system/informational`'s body and level. */
   level?: unknown;
   content?: unknown;
+  /** `system/memory_recall`'s memories, and `system/local_command`'s usage. */
+  memories?: unknown;
+  contextUsage?: unknown;
+  usageReport?: unknown;
   /** `system/vcs_state_changed`: what moved. */
   kind?: unknown;
   /**
