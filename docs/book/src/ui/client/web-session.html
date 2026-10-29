@@ -928,6 +928,8 @@
   .card .a { display: flex; align-items: baseline; gap: 8px; padding-left: 27px;
     font-family: var(--mono); font-size: var(--fs-data); color: var(--muted); }
   .card .a .am { color: var(--dim); }
+  /* The typed row's empty slot, holding the column a picked row's mark takes. */
+  .card .a .gap { width: 15px; flex: 0 0 15px; }
   .card .a .picked { color: var(--ok); }
   .card .a .typed { color: var(--text); font-weight: 700; }
 
@@ -2631,9 +2633,9 @@ docs: The sprite a row draws, by the class it belongs to.</div>
 
         <div class="card">
           <div class="q"><svg class="ic qm"><use href="#i-question"/></svg>How should an answered question survive the dock clearing?</div>
-          <div class="a"><span class="am">&#8594;</span><span class="picked">Clean answered-card</span></div>
-          <div class="a"><span class="am">&#8594;</span><span class="am">you typed:</span>
-            <span class="typed">"and keep the multiSelect case too"</span></div>
+          <div class="a"><svg class="ic am"><use href="#i-check"/></svg><span class="picked">Clean answered-card</span></div>
+          <div class="a"><span class="gap"></span><span class="am">you typed:</span>
+            <span class="typed">and keep the multiSelect case too</span></div>
         </div>
 
         <!-- A published change's four transitions - created, merged, closed,

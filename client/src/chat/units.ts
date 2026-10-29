@@ -1624,10 +1624,11 @@ function address(fields: Record<string, unknown>): string | null {
 /**
  * The card a question call draws, with whatever the person answered.
  *
- * `closed` says the turn ended before any answer could land, where the card is
- * the question's last trace rather than a record of the answer.
+ * `settled` says the question came back with no answer on record - the turn
+ * closed on it, or its own result landed without one - where the card is the
+ * question's last trace rather than a record of the answer.
  */
-function questionCard(input: unknown, answer: unknown, key: string, closed: boolean): Unit | null {
+function questionCard(input: unknown, answer: unknown, key: string, settled: boolean): Unit | null {
   const questions = obj(input)['questions'];
   const answers = obj(obj(answer)['answers']);
   const annotations = obj(obj(answer)['annotations']);
@@ -1680,9 +1681,10 @@ function questionCard(input: unknown, answer: unknown, key: string, closed: bool
   if (asked.some((entry) => entry.picked_labels.length > 0 || entry.typed_note !== null)) {
     return { kind: 'question', key, asked };
   }
-  // **A closed turn's question was never answered**, and the dock that held it
-  // has cleared: the card is its only trace, so every question wears the mark.
-  if (closed) {
+  // **A settled question with nothing recorded was never answered**, and the
+  // dock that held it has cleared: the card is its only trace, so every
+  // question wears the mark. A call that asked nothing has no card to build.
+  if (settled && asked.length > 0) {
     return {
       kind: 'question',
       key,
@@ -3281,21 +3283,26 @@ export function fold(
         }
         if (isQuestion(name)) {
           const record = records.get(id);
-          // A record the page capped has no answers to read (#2374), and a
-          // call the CLI refused never ran: each keeps its own leaf rather
-          // than becoming a card.
-          const ownLeaf = omittedRecord(record) !== null || denied.has(id);
+          const result = results.get(id);
+          // The leaf is this call's own row wherever the card cannot carry it:
+          // a record the page capped has no answers to read (#2374), a refusal
+          // never ran, and a failure's words are the result's own.
+          const ownLeaf =
+            omittedRecord(record) !== null || denied.has(id) || result?.is_error === true;
+          // A question is settled once its own result lands or the turn
+          // closes; until then the dock holds it.
+          const settled = abandoned || result !== undefined;
           const card = questionCard(
             block.input,
             record,
             id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
-            abandoned && !ownLeaf,
+            settled && !ownLeaf,
           );
           if (card !== null) {
             push(card);
             continue;
           }
-          if (!ownLeaf) {
+          if (!settled && !ownLeaf) {
             // The question is still waiting and the dock is its row: drawing
             // a call here repeats the prompt the dock already holds.
             continue;

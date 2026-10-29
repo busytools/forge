@@ -3,7 +3,8 @@
   import type { AnsweredQuestion } from './units';
 
   /**
-   * The question the assistant asked, with whatever the reader answered.
+   * The question the assistant asked, with whatever the reader answered - or
+   * the mark that nobody did.
    *
    * **The marks are the sprite's, not a character cell's.** The card led its
    * answers with a right arrow because the view this client replaced had
