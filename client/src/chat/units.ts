@@ -2517,6 +2517,65 @@ export function fold(
         });
         continue;
       }
+      // **The CLI's own report that a command moved the repository.** One
+      // line, because the frame names the kind and at most the branch; the
+      // tree it changed is what the working-tree row above the composer
+      // draws, and this row is the event that made that row re-read.
+      if (frame.subtype === 'vcs_state_changed') {
+        const kind = str(frame, 'kind');
+        const branch = str(frame, 'branch');
+        const said =
+          kind === 'commit'
+            ? 'committed'
+            : kind === 'push'
+              ? 'pushed'
+              : kind === 'merge'
+                ? 'merged'
+                : kind === 'rebase'
+                  ? 'rebased'
+                  : // The CLI calls `kind` an open set and asks a reader to
+                    // treat an unrecognized one as "something changed", so the
+                    // value itself is what the row shows.
+                    `repository changed${kind === null ? '' : ` (${kind})`}`;
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'repository'),
+          notice: {
+            severity: 'info',
+            text:
+              branch === null
+                ? said
+                : kind === 'push'
+                  ? `${said} ${branch}`
+                  : `${said} on ${branch}`,
+          },
+        });
+        continue;
+      }
+      // **A change from this session went out for review, or linked the
+      // session to one.** The row names what the session did; the URL rides
+      // under it because it is what a reader opens, and the rest of the frame
+      // is plumbing.
+      if (frame.subtype === 'code_change_published') {
+        const provider = str(frame, 'provider');
+        const action = str(frame, 'action');
+        const repo = str(frame, 'repo');
+        const identifier = str(frame, 'identifier');
+        const url = str(frame, 'url');
+        const noun = provider === 'gitlab' ? 'MR' : provider === 'github' ? 'PR' : 'change';
+        push({
+          kind: 'notice',
+          key: keyOf(at, frame, 'published'),
+          notice: {
+            severity: 'info',
+            text: `${noun}${identifier === null ? '' : ` #${identifier}`}${
+              action === null ? '' : ` ${action}`
+            }${repo === null ? '' : ` in ${repo}`}`,
+            ...(url === null ? {} : { sub: url }),
+          },
+        });
+        continue;
+      }
       // **A system subtype this build has no arm for draws as itself**, the
       // same default the top-level catch-all keeps, so one the CLI adds is
       // seen on the day it arrives rather than waiting for an arm. Only the

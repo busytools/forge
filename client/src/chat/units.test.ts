@@ -4261,6 +4261,84 @@ describe('the frames the fold had no row for', () => {
     expect(noticeOf(workflow[0])?.text).toBe('unhandled frame: system/task_progress');
   });
 
+  it('draws a repository mutation on one line, and never drops an unknown kind', () => {
+    const units = fold([
+      { type: 'system', subtype: 'vcs_state_changed', kind: 'commit', branch: 'main', uuid: 'v1' },
+      { type: 'system', subtype: 'vcs_state_changed', kind: 'push', branch: 'main', uuid: 'v2' },
+      { type: 'system', subtype: 'vcs_state_changed', kind: 'merge', uuid: 'v3' },
+      {
+        type: 'system',
+        subtype: 'vcs_state_changed',
+        kind: 'checkout',
+        branch: 'topic',
+        uuid: 'v4',
+      },
+    ]);
+
+    expect(kinds(units), 'every frame draws').toEqual(['notice', 'notice', 'notice', 'notice']);
+    expect(units.map((unit) => noticeOf(unit)?.text)).toEqual([
+      'committed on main',
+      'pushed main',
+      'merged',
+      // The CLI calls `kind` an open set, so a value this build has no verb
+      // for is named rather than swallowed.
+      'repository changed (checkout) on topic',
+    ]);
+    expect(noticeOf(units[0])?.severity).toBe('info');
+    expect(
+      noticeOf(units[0])?.raw,
+      'the row shows everything the frame carries, so it has no open body',
+    ).toBeUndefined();
+  });
+
+  it('draws a published change with its action, repo and identifier, and the URL under it', () => {
+    const units = fold([
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'github',
+        url: 'https://github.com/example/example/pull/123',
+        repo: 'example/example',
+        identifier: '123',
+        action: 'created',
+        branch: 'main',
+        uuid: 'c1',
+      },
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'gitlab',
+        url: 'https://gitlab.com/group/proj/-/merge_requests/45',
+        repo: 'group/proj',
+        identifier: '45',
+        action: 'merged',
+        uuid: 'c2',
+      },
+      {
+        type: 'system',
+        subtype: 'code_change_published',
+        provider: 'github',
+        url: 'https://github.com/example/example/pull/7',
+        repo: 'example/example',
+        identifier: '7',
+        uuid: 'c3',
+      },
+    ]);
+
+    expect(units.map((unit) => noticeOf(unit)?.text)).toEqual([
+      'PR #123 created in example/example',
+      'MR #45 merged in group/proj',
+      'PR #7 in example/example',
+    ]);
+    expect(noticeOf(units[0])?.sub, 'the URL is what a reader opens').toBe(
+      'https://github.com/example/example/pull/123',
+    );
+    expect(
+      noticeOf(units[0])?.raw,
+      'the row shows everything the frame carries, so it has no open body',
+    ).toBeUndefined();
+  });
+
   it('marks a question unanswered only once its turn has closed', () => {
     const asked = said([
       use('toolu_q', 'AskUserQuestion', {
