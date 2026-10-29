@@ -675,10 +675,22 @@ mod tests {
     /// then handed on - a busy box can take it in between, and the listener's
     /// failed bind is logged rather than read here.
     fn boot_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        fixture(false)
+    }
+
+    /// The same boot, with the socket serving on a port the OS hands out.
+    fn socket_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        fixture(true)
+    }
+
+    fn fixture(serve: bool) -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let port = listener.local_addr().expect("the port the OS handed out").port();
         drop(listener);
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let socket_port = socket.local_addr().expect("the port the OS handed out").port();
+        drop(socket);
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/");
         std::fs::write(
@@ -701,7 +713,8 @@ base_url = \"http://127.0.0.1:9/api\"
 models = [\"claude-sonnet-5\"]
 
 [server]
-enabled = false
+enabled = {serve}
+port = {socket_port}
 
 [gateway]
 port = {port}
@@ -711,6 +724,30 @@ port = {port}
         .expect("write forge.toml");
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
         (Arc::new(workspace), dir)
+    }
+
+    /// **`serve_socket` returns with the fold already subscribed.** The boot
+    /// wave runs after this returns, so a session spawned there emits its
+    /// first `Connected` into a fan-out nobody is holding yet unless the
+    /// subscription was taken before the serve task was spawned - and a
+    /// dropped `Connected` is a seat whose conversation the transport never
+    /// holds. Nothing has connected here: the subscriber is the fold's own.
+    #[tokio::test]
+    async fn the_socket_returns_with_the_fold_subscribed() {
+        let (workspace, _dir) = socket_fixture();
+        assert_eq!(workspace.test_subscriber_count(), 0, "nothing is attached before the socket");
+
+        let serving = super::serve_socket(&workspace).await.expect("the socket serves");
+        let super::SocketServing::Bound(handle) = serving else {
+            panic!("the socket binds on a port the OS handed out");
+        };
+        // Read before anything awaits: the claim is the order the call returns in.
+        assert_eq!(
+            workspace.test_subscriber_count(),
+            1,
+            "the fold's subscription is held when serve_socket returns",
+        );
+        handle.abort();
     }
 
     /// A write to the watched file applies to the running workspace, with no
