@@ -89,6 +89,52 @@ describe('the provisional notice, mounted', () => {
   });
 
   /**
+   * **A row whose facts share a label is the ordinary case, not an edge.**
+   * The memory-recall row lists one `path` fact per memory, and the original
+   * keyed-each used `field.label` alone - two paths gave Svelte two equal
+   * keys, and the row threw as it drew (C1, #2672). The fold and the server
+   * render both pass; only a mount sees it.
+   */
+  it('draws two memories with the same fact label, one line each', () => {
+    const app = mount(Notice, {
+      target: document.body,
+      props: {
+        notice: a_row({
+          severity: 'info',
+          mark: 'memory_recall',
+          text: 'Recalled 2 memories',
+          fields: [
+            { label: 'path', value: '/home/ved/.claude/memory/one.md' },
+            { label: 'path', value: '/home/ved/.claude/memory/two.md' },
+          ],
+        }),
+      },
+    });
+    try {
+      flushSync();
+      const row = document.querySelector('details.notice');
+      if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
+      row.open = true;
+      row.dispatchEvent(new Event('toggle'));
+      flushSync();
+
+      expect(
+        row.querySelectorAll('.nfact').length,
+        'each memory draws its own fact line',
+      ).toBe(2);
+      expect(row.textContent, 'the first path is drawn').toContain(
+        '/home/ved/.claude/memory/one.md',
+      );
+      expect(row.textContent, 'and the second beside it').toContain(
+        '/home/ved/.claude/memory/two.md',
+      );
+    } finally {
+      void unmount(app);
+      document.body.innerHTML = '';
+    }
+  });
+
+  /**
    * The layout assertion the DOM cannot make: `summary` laid out as a row is
    * what puts the expander on the header line. A change that drops it brings
    * the empty extra row back under every notice.
