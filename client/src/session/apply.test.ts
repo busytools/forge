@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { machineInForce } from '../composer/wire';
 import { applyUpdate, HANDLERS, IGNORED, REPLACES } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
@@ -1025,12 +1026,14 @@ describe('applyUpdate', () => {
           msg: { type: 'system', subtype: 'status', status: 'compacting' },
         },
       });
-      expect(compacting.composer.machine).toBe('compacting');
+      expect(compacting.composer.compacting, 'the flag is what the frame sets').toBe(true);
+      expect(machineInForce(compacting.composer), 'and it owns the box').toBe('compacting');
 
       const settled = applyUpdate(compacting, {
         chat_appended: { key: SLOT, msg: { type: 'system', subtype: 'status', status: null } },
       });
-      expect(settled.composer.machine).toBeNull();
+      expect(settled.composer.compacting).toBe(false);
+      expect(machineInForce(settled.composer)).toBeNull();
     });
 
     it('leaves a handoff standing when a compaction settles beside it', () => {
@@ -1044,12 +1047,13 @@ describe('applyUpdate', () => {
         chat_appended: { key: SLOT, msg: { type: 'system', subtype: 'status', status: null } },
       });
       expect(settled.composer.machine, 'the handoff is not a compaction').toBe('handoff');
+      expect(machineInForce(settled.composer), 'and it still owns the box').toBe('handoff');
     });
 
     it('keeps a handoff over a compaction whose status frame arrives beside it', () => {
-      // A handoff outranks a compaction: the CLI's status frame may only raise
-      // the machine state from idle, so a compaction cannot hand the composer
-      // back under a handoff that owns the seat.
+      // A handoff outranks a compaction: the flag is kept apart from the
+      // machine turn, so a compaction cannot displace the handoff - and it is
+      // still there when the handoff ends.
       const held = empty();
       const replacing = { ...held, composer: { ...held.composer, machine: 'handoff' as const } };
 
@@ -1060,6 +1064,14 @@ describe('applyUpdate', () => {
         },
       });
       expect(live.composer.machine, 'a compaction does not displace the handoff').toBe('handoff');
+      expect(machineInForce(live.composer), 'the handoff is in force').toBe('handoff');
+
+      const ended = applyUpdate(live, { machine_turn: { key: SLOT, machine: null } });
+      expect(ended.composer.machine, 'the handoff is over').toBeNull();
+      expect(
+        machineInForce(ended.composer),
+        'and the compaction it ran over takes the box rather than leaving it live for a round trip',
+      ).toBe('compacting');
     });
 
     it('takes the machine turn the core announces, both ways', () => {

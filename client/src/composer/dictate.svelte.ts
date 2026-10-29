@@ -125,9 +125,6 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
     // under the bar, so a press of the binding must not start a take behind
     // it - on the web that is a microphone opened under a page being driven.
     if (surface.phase !== 'closed') return;
-    // A box standing down for a machine turn takes no keys, and the binding
-    // is a key: a take opened there would capture words nobody can see.
-    if (wiring.machine()) return;
     // A held key repeats, and a repeat carries no instruction - without
     // this a toggle take stops once per repeat.
     if (event.repeat) return;
@@ -139,6 +136,13 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
       return;
     }
     const step = down(pressed, wiring.dictate().held, Date.now(), wiring.mode());
+    // **A machine turn refuses a BEGIN, not the key.** In toggle mode the
+    // press IS the stop and in auto mode a finish needs the press on record,
+    // so a take already in flight must still end here: the box draws no row
+    // to end it from, and the only other way out is Escape, which discards
+    // the words. A refused begin leaves `pressed` untouched, so its release
+    // finds nothing to finish.
+    if (step.action === 'begin' && wiring.machine()) return;
     pressed = step.held;
     if (step.action === 'begin') wiring.onBegin();
     if (step.action !== null) wiring.dictate().act(step.action);

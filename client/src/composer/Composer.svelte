@@ -45,7 +45,13 @@
     signInLine,
     type ComposerProps,
   } from './view';
-  import { advisoriesFrom, agentTypesFrom, filesFrom, resumeSessionsFrom } from './wire';
+  import {
+    advisoriesFrom,
+    agentTypesFrom,
+    filesFrom,
+    machineInForce,
+    resumeSessionsFrom,
+  } from './wire';
   import { DEFAULT_AXES, type DictateAxes } from '../session/wire';
 
   /** How long a landed take's border holds its green beat, which the book states. */
@@ -996,7 +1002,7 @@
     offered: () => dictation,
     bind: () => composer.bind,
     mode: () => composer.mode,
-    machine: () => composer.machine !== null,
+    machine: () => machineInForce(composer) !== null,
     onBegin: () => {
       // Never scrolls: the box is already on screen, and a key press that
       // scrolled the page would move the chat under the reader.

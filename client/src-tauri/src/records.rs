@@ -664,6 +664,10 @@ fn in_flight_of(held: bool, message: &Value) -> bool {
 /// wire's own fold both keep: this may only raise `machine` from idle, so a
 /// status frame cannot hand the composer back under a handoff that owns the
 /// seat.
+///
+/// **The old `compacting` key is left where it is.** A page treats a record
+/// that carries `machine` as authoritative, so a v15 server's key beside a
+/// key this mirror wrote cannot disagree with it.
 fn machine_of(composer: &mut Value, message: &Value) -> bool {
     if message.get("type").and_then(Value::as_str) != Some("system")
         || message.get("subtype").and_then(Value::as_str) != Some("status")

@@ -16,6 +16,7 @@ import {
   NO_COMPOSER,
   askFrom,
   composerFrom,
+  machineInForce,
   type Ask,
   type ComposerState,
   type Notice,
@@ -292,12 +293,13 @@ export function blocked(
   // only surface that answers them. A machine line drawn over one would wedge
   // the seat: the dock could not draw, the CLI would wait for an answer nobody
   // can give, and the handoff would never end.
-  if (composer.machine !== null && askPending) return null;
+  const machine = machineInForce(composer);
+  if (machine !== null && askPending) return null;
   // **A machine turn takes the box and says which one it is.** Both are turns
   // the reader cannot type into: forge's own judgment prompt, which replaces
   // the seat when it ends, and the CLI's compaction. The draft survives on the
   // box's own state and comes back with the field.
-  if (composer.machine === 'handoff') {
+  if (machine === 'handoff') {
     return {
       line: 'handing this session over',
       sub: null,
@@ -306,7 +308,7 @@ export function blocked(
       shimmer: false,
     };
   }
-  if (composer.machine === 'compacting') {
+  if (machine === 'compacting') {
     return {
       line: 'compacting this session',
       sub: null,

@@ -213,11 +213,18 @@ export interface Conversation {
  * that reloaded reads it back (#1360) - and is carried through as it came,
  * like `sign_in`, for the component that owns it. `machine` is narrowed
  * because the composer draws a line for it.
+ *
+ * **`compacting` is kept beside `machine`, not folded into it.** The wire
+ * gives a handoff precedence over a compaction, so a handoff ending would
+ * otherwise read as "nothing is running" while the CLI is still compacting.
+ * The status frame sets this flag and a record that names a compaction sets
+ * it; a handoff never clears it.
  */
 export interface ComposerState {
   take: unknown;
   notice: unknown;
   machine: MachineTurn | null;
+  compacting: boolean;
   sign_in: unknown;
 }
 
@@ -230,6 +237,19 @@ export type MachineTurn = 'handoff' | 'compacting';
 /** One of the machine turns this build draws, or `null` for a seat taking input. */
 export function machineTurn(value: unknown): MachineTurn | null {
   return value === 'handoff' || value === 'compacting' ? value : null;
+}
+
+/**
+ * The machine turn a record's `composer` names.
+ *
+ * **A record that carries `machine` is authoritative**, including when it says
+ * `null`: a stale `compacting` key beside it is a v16 mirror's leftover and
+ * must not stand the box down on its own. A v15 record - no `machine` key at
+ * all - names the compaction with the old boolean.
+ */
+export function machineFrom(held: Record<string, unknown>): MachineTurn | null {
+  if ('machine' in held) return machineTurn(held['machine']);
+  return held['compacting'] === true ? 'compacting' : null;
 }
 
 /**
@@ -853,11 +873,10 @@ function composerFrom(value: unknown): ComposerState {
     // them back to a page that reloaded in between.
     take: null,
     notice: held['notice'] ?? null,
-    machine:
-      machineTurn(held['machine']) ??
-      // **A v15 server names the compaction only.** The old key is read as a
-      // fallback, so a mixed install still stands the box down through one.
-      (held['compacting'] === true ? 'compacting' : null),
+    machine: machineFrom(held),
+    // Derived from the same reading, so a stale old key cannot resurrect a
+    // compaction a v16 record has already ended.
+    compacting: machineFrom(held) === 'compacting',
     sign_in: held['sign_in'] ?? null,
   };
 }

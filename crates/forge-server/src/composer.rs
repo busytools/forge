@@ -113,6 +113,13 @@ impl Composer {
             } => {
                 self.landed.remove(key);
             }
+            // **A compaction dies with the session running it.** A seat that
+            // died mid-compaction and one replaced under it would otherwise
+            // read "compacting this session" until forge restarts.
+            SessionUpdate::ConnectionFailed { key, .. }
+            | SessionUpdate::SessionReplaced { key, .. } => {
+                self.compacting.remove(key);
+            }
             // The CLI announces a compaction on the status frame and
             // clears it with a null, which is the only place either is
             // said. Everything else on the conversation is the chat's.
@@ -291,6 +298,47 @@ mod tests {
             Some("mine"),
             "the reader never sent the older words, so a later failure leaves them",
         );
+    }
+
+    /// **A compaction dies with the session that was running it.** A seat
+    /// that died mid-compaction, or one replaced under it, would otherwise
+    /// read "compacting this session" until forge restarts.
+    #[test]
+    fn a_death_or_a_replacement_ends_the_compaction() {
+        fn status() -> SessionUpdate {
+            let msg: Message = serde_json::from_value(serde_json::json!({
+                "type": "system", "session_id": "s1", "subtype": "status", "status": "compacting",
+            }))
+            .expect("a status frame");
+            SessionUpdate::ChatAppended { key: seat(), msg, origin: None, source: None }
+        }
+        let replacement = SessionUpdate::SessionReplaced {
+            key: seat(),
+            session_id: forge_primitives::SessionId::new("new"),
+            cwd: "/tmp".to_owned(),
+            current_model: forge_primitives::runtime::CurrentModel::new("m", "m", "m"),
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+            dropped: 0,
+            compaction_count: 0,
+        };
+        for end in [
+            SessionUpdate::ConnectionFailed {
+                key: seat(),
+                message: "the CLI exited".to_owned(),
+                fatal: false,
+            },
+            replacement,
+        ] {
+            let mut composer = Composer::default();
+            composer.apply(&status());
+            assert!(composer.compacting(&seat()), "precondition: the frame set it");
+
+            composer.apply(&end);
+
+            assert!(!composer.compacting(&seat()), "the seat is not compacting any more: {end:?}");
+        }
     }
 
     #[test]

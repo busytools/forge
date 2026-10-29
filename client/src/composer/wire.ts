@@ -12,7 +12,7 @@
 
 import { bindFrom, modeFrom, type Bind, type Mode } from './dictate-key';
 import { FALLBACK_FLOOR_DB } from './meter';
-import { machineTurn, type MachineTurn } from '../session/wire';
+import { machineFrom, type MachineTurn } from '../session/wire';
 
 /** What a take is doing, as `Phase` serialises. */
 export type TakePhase = 'recording' | 'transcribing';
@@ -88,8 +88,14 @@ export interface SignIn {
 export interface ComposerState {
   take: Take | null;
   notice: Notice | null;
-  /** The machine turn running on the seat, or null when it takes input. */
+  /** The machine turn the wire names, or null when it names none. */
   machine: MachineTurn | null;
+  /**
+   * The CLI's own compaction, kept beside `machine` because a handoff
+   * outranks it on the wire - and a handoff ending must not hand the box
+   * back under one. Read through {@link machineInForce}, never directly.
+   */
+  compacting: boolean;
   signIn: SignIn | null;
   /** The push-to-talk key `forge.toml` configured, which is the one honoured. */
   bind: Bind;
@@ -217,11 +223,10 @@ export function composerFrom(value: unknown): ComposerState {
   return {
     take: takeFrom(held['take']),
     notice: noticeFrom(held['notice']),
-    machine:
-      machineTurn(held['machine']) ??
-      // **A v15 server names the compaction only.** The old key is read as a
-      // fallback, so a mixed install still stands the box down through one.
-      (held['compacting'] === true ? 'compacting' : null),
+    machine: machineFrom(held),
+    // Derived from the same reading, so a stale old key cannot resurrect a
+    // compaction a v16 record has already ended.
+    compacting: machineFrom(held) === 'compacting',
     signIn: signInFrom(held['sign_in']),
     bind: bindFrom(held['bind']),
     mode: modeFrom(held['mode']),
@@ -505,11 +510,27 @@ function list(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+/**
+ * The machine turn in force, from the two facts the state keeps apart.
+ *
+ * **A handoff outranks a compaction**, which is the wire's own order - and a
+ * compaction the handoff ran over is still there when the handoff ends, so it
+ * takes the box back rather than leaving it live for one round trip.
+ */
+export function machineInForce(composer: {
+  machine: MachineTurn | null;
+  compacting: boolean;
+}): MachineTurn | null {
+  if (composer.machine === 'handoff') return 'handoff';
+  return composer.compacting ? 'compacting' : composer.machine;
+}
+
 /** Nothing a composer draws, for a seat whose page is still reading. */
 export const NO_COMPOSER: ComposerState = {
   take: null,
   notice: null,
   machine: null,
+  compacting: false,
   signIn: null,
   bind: 'right_cmd',
   mode: 'auto',

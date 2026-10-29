@@ -2884,6 +2884,10 @@ both gates green.";
             "the old headings are not the shape any more",
         );
         assert!(!parses_as_note("## Summary\nsome prose"), "nor is a markdown heading of its own");
+        assert!(
+            !parses_as_note("as I said, Now: the work stands and Next: nothing else."),
+            "a heading has to open its line, not appear inside one",
+        );
         assert!(parses_as_note("**Next:** the client row."), "an emphasised heading still is");
     }
 
@@ -3125,13 +3129,67 @@ both gates green.";
                 .is_err(),
             "a lost seat's tabs are not replaced",
         );
+        let mut turns = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             assert!(
                 !matches!(frame.update, SessionUpdate::Handoff { .. }),
                 "no handoff row is drawn for it: {:?}",
                 frame.update,
             );
+            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+                turns.push(machine);
+            }
         }
+        // **The build's own clear.** The begin announced the machine turn and
+        // the lost seat spawns no successor whose record read would end it.
+        assert_eq!(turns, vec![None], "the lost build hands the machine turn back");
+    }
+
+    /// The machine-turn frames a run emitted, in order.
+    fn machine_turns(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::update_fanout::SeatUpdate>,
+    ) -> Vec<Option<forge_primitives::runtime::MachineTurn>> {
+        let mut out = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+                out.push(machine);
+            }
+        }
+        out
+    }
+
+    /// **Every build that stops without a successor hands the machine turn
+    /// back.** The begin announced it and no successor's record read follows,
+    /// so a seat left holding the blocker would be one nobody can type into.
+    #[tokio::test]
+    async fn a_build_that_never_starts_hands_the_machine_turn_back() {
+        let slot = SessionSlot::lead("TestOrg", "forge");
+
+        // No token: the gate was never this build's.
+        let (workspace, mut rx) = crate::Workspace::testing_stub();
+        Arc::clone(&workspace).run_handoff(swap_request(&slot, None)).await;
+        assert_eq!(machine_turns(&mut rx), vec![None], "no token, no machine turn");
+
+        // The seat taken again before the build looks at it.
+        let (workspace, mut rx) = crate::Workspace::testing_stub();
+        let token = workspace.begin_swap(&slot);
+        workspace.begin_swap(&slot);
+        Arc::clone(&workspace).run_handoff(swap_request(&slot, Some(token))).await;
+        assert_eq!(machine_turns(&mut rx), vec![None], "a seat lost before the build");
+    }
+
+    /// **A build whose successor cannot start hands the machine turn back.**
+    /// No dispatch intercept means no route for `NewSession`, which is the
+    /// failure the begin's own frame would otherwise outlive.
+    #[tokio::test]
+    async fn a_build_whose_successor_cannot_start_hands_the_machine_turn_back() {
+        let (workspace, mut rx) = crate::Workspace::testing_stub();
+        let slot = SessionSlot::lead("TestOrg", "forge");
+        let token = workspace.begin_swap(&slot);
+
+        Arc::clone(&workspace).run_handoff(swap_request(&slot, Some(token))).await;
+
+        assert_eq!(machine_turns(&mut rx), vec![None], "the successor never started");
     }
 
     /// The successor's own first user row is the brief forge gave it, not a

@@ -830,23 +830,19 @@ function knownEffort(held: Effort, value: unknown): Effort {
 /**
  * The compaction a status frame announces and the null that clears it, which
  * is the only place either is said. Mirrors `crates/forge-server/src/composer.rs`,
- * where the same frame is folded for the record's own `composer.machine`.
+ * where the same frame is folded for the record's own flag.
  *
- * **A handoff outranks a compaction.** The status frame may only raise this
- * state from idle, and a settle clears only what the status frame set - so
- * neither arm can displace a handoff that owns the seat, which arrives on
- * `machine_turn` instead. In practice the two do not overlap; where they do,
- * the handoff wins until it ends, and if the compaction is still running then
- * the next record read folds the CLI's status back in.
+ * **The status frame owns `compacting`, not `machine`.** A handoff outranks a
+ * compaction on the wire, so folding this into `machine` would blank the
+ * handoff; kept apart, a handoff's own end leaves the box down over a
+ * compaction it was running on top of.
  */
 function machineOf(held: ComposerState, message: unknown): ComposerState {
   const frame = record(message);
   if (frame['type'] !== 'system' || frame['subtype'] !== 'status') return held;
   const status = frame['status'];
-  if (status === 'compacting') {
-    return held.machine === null ? { ...held, machine: 'compacting' } : held;
-  }
-  if (status === null) return held.machine === 'compacting' ? { ...held, machine: null } : held;
+  if (status === 'compacting') return held.compacting ? held : { ...held, compacting: true };
+  if (status === null) return held.compacting ? { ...held, compacting: false } : held;
   return held;
 }
 

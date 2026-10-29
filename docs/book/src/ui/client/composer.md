@@ -140,9 +140,11 @@ about a turn the reader caused.
 
 **A machine turn is one the reader cannot type into.** A handoff replaces the
 seat when its judgment turn ends, and a compaction is the CLI rewriting the
-context; both take the field, the send, the mic and the push-to-talk key away
-and name themselves in the line. The draft is the reader's and stays on the
-seat, so the words come back with the field when the machine turn ends.
+context; both take the field, the send and the mic away and name themselves in
+the line. The push-to-talk key begins nothing there, but a take already running
+still ends on it: the box draws no row to end one from, and Escape would throw
+the words away. The draft is the reader's and stays on the seat, so the words
+come back with the field when the machine turn ends.
 
 **A parked prompt outranks the machine line.** Both machine turns are ordinary
 tool-using turns - the judgment turn writes memory files and stops processes -

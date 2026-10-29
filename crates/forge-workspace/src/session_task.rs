@@ -1931,6 +1931,8 @@ impl SessionTask {
                 // either source - is not the brief at all.
                 let supplied = domain.handoff.supplied.take();
                 let captured = domain.handoff.judgment.take();
+                let from_tool_call = supplied.is_some();
+                let from_turn_text = captured.is_some();
                 domain.handoff.judgment_started = false;
                 let note = supplied
                     .filter(|text| handoff::parses_as_note(text))
@@ -1941,13 +1943,18 @@ impl SessionTask {
                     // **The successor is told the note is missing; this is the
                     // trail that says so.** A note whose headings this build
                     // cannot read reads exactly like one that never arrived,
-                    // and only a line here tells the two apart.
+                    // and only a line here tells the two apart. The two fields
+                    // name what forge had in hand: no tool call at all is a
+                    // different failure from a call whose note it could not
+                    // read.
                     tracing::warn!(
                         target: "forge_workspace::session_task",
                         event_name = "handoff_note_rejected",
                         slot = %self.key.display(),
-                        "the handoff note carries none of the five headings; the successor is \
-                         told the note did not arrive",
+                        from_tool_call,
+                        from_turn_text,
+                        "forge could not read a handoff note; the successor is told the note did \
+                         not arrive",
                     );
                     handoff::missing_note()
                 }

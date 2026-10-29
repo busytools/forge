@@ -11,14 +11,17 @@ import { type Dictation, pushToTalkHandlers, type PushToTalk } from './dictate.s
 /** The bound key on this platform: jsdom reports no mac. */
 const BOUND = { code: 'ControlRight', key: 'Control' };
 
-function wiring(over: Partial<PushToTalk> = {}): {
+function wiring(
+  over: Partial<PushToTalk> = {},
+  recording = false,
+): {
   wiring: PushToTalk;
   act: ReturnType<typeof vi.fn>;
   began: ReturnType<typeof vi.fn>;
 } {
   const act = vi.fn();
   const began = vi.fn();
-  const dictate = { held: false, act } as unknown as Dictation;
+  const dictate = { held: recording, act } as unknown as Dictation;
   return {
     act,
     began,
@@ -70,6 +73,33 @@ describe('the push-to-talk key', () => {
       began,
       'and it does not move the keyboard into a box that is not drawn',
     ).not.toHaveBeenCalled();
+  });
+
+  /// **A machine turn refuses the begin, not the key.** A take can be in
+  /// flight when the box stands down - the judgment turn's idle gate does not
+  /// consider dictation, and a compaction starts whenever - so the press must
+  /// still finish it: the box draws no row to end it from, and Escape
+  /// discards the words.
+  it('still ends a take in flight under a machine turn, in toggle mode', () => {
+    const { wiring: w, act, began } = wiring({ machine: () => true, mode: () => 'toggle' }, true);
+    const handlers = pushToTalkHandlers(w);
+
+    press(handlers);
+
+    expect(act, 'the press ends the take').toHaveBeenCalledWith('finish');
+    expect(began, 'and it begins nothing').not.toHaveBeenCalled();
+  });
+
+  it('still ends a take in flight under a machine turn, in auto mode', () => {
+    const { wiring: w, act, began } = wiring({ machine: () => true, mode: () => 'auto' }, true);
+    const handlers = pushToTalkHandlers(w);
+
+    press(handlers);
+    expect(act, 'the press begins nothing').not.toHaveBeenCalled();
+
+    release(handlers);
+    expect(act, 'and the release ends the take').toHaveBeenCalledWith('finish');
+    expect(began, 'nothing was begun at any point').not.toHaveBeenCalled();
   });
 
   /// **The stand-down is the takeover's, not the key's**: with no surface up

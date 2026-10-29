@@ -174,12 +174,27 @@ describe('the composer record', () => {
     expect(at(null)).toBeNull();
     expect(at('summarising'), 'a state this build does not draw is not a freeze').toBeNull();
 
-    // **A v15 server names the compaction only.** The old key still stands
-    // the box down, so a newer client beside an older server is not blind.
+    // **A v15 server names the compaction only.** No `machine` key at all, so
+    // the old boolean is the record's only word and a newer client beside an
+    // older server is not blind.
     const old = composerFrom({ take: null, notice: null, compacting: true, sign_in: null });
     expect(old.machine, 'the v15 key is read as a compaction').toBe('compacting');
+    expect(old.compacting, 'and it owns the box').toBe(true);
     const settled = composerFrom({ take: null, notice: null, compacting: false, sign_in: null });
     expect(settled.machine, 'and a v15 settle is no machine turn').toBeNull();
+
+    // **A record that carries `machine` is authoritative**, including when it
+    // says none: a v15 boolean left beside it must not resurrect a compaction
+    // the record has already ended.
+    const authoritative = composerFrom({
+      take: null,
+      notice: null,
+      machine: null,
+      compacting: true,
+      sign_in: null,
+    });
+    expect(authoritative.machine, 'the present key wins over the leftover').toBeNull();
+    expect(authoritative.compacting, 'and the leftover is not a compaction').toBe(false);
   });
 
   /**

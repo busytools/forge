@@ -1001,12 +1001,14 @@ function createSeat(
       return;
     }
 
-    // **A machine turn ending is the record's to state.** The core's abort
-    // frame says only "not a handoff": a CLI compaction that was running
-    // under the handoff is still running, and only the record folds both
-    // sources - so it is asked rather than guessed. The frame is applied as
-    // usual; the answer that follows carries the whole truth.
-    if (name === 'machine_turn' && payload['machine'] === null) {
+    // **A machine turn ending is the record's to state**, and only when one
+    // was held. The core's abort says only "not a handoff": a CLI compaction
+    // running under the handoff is still running, and only the record folds
+    // both sources. **Gated on what the page holds**, because a session death
+    // sends the same `null` to every seat - and a record encode per death is
+    // the 6.5 MB read a page with nothing to correct would pay for nothing.
+    const held = seat.wire?.composer.machine ?? null;
+    if (name === 'machine_turn' && payload['machine'] === null && held !== null) {
       reread();
     }
 

@@ -2441,6 +2441,23 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **An end frame asks for nothing when no machine turn was held.** A session
+   * death sends the same `null` to every seat it reaches, and a record encode
+   * is the heaviest read on the wire: a page with nothing to correct pays
+   * 6.5 MB for it.
+   */
+  it('does not re-read on a machine turn ending it never held', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+
+    const asked = page.reads();
+    page.land(updateOf({ machine_turn: { key: LEAD, machine: null } }));
+    expect(page.reads(), 'nothing was held to correct').toBe(asked);
+    page.stop();
+  });
+
+  /**
    * **A review touched on the seat re-reads it.** Reviews ride the record
    * rather than a frame - the notice carries no field the record has - so the
    * notice is the one cue to take the read again. The reviewer's own writes
