@@ -83,6 +83,9 @@ describe('the tree segment', () => {
     );
     expect(git.anything(), 'the strip row is present for it').toBe(true);
     expect(body, 'the note is a live region for assistive tech').toContain('role="status"');
+    expect(body, 'the status is the note text, not a label that would replace it').not.toContain(
+      'aria-label',
+    );
   });
 
   it('drops a live note when the strip moves to another seat', () => {
