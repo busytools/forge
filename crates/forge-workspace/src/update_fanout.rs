@@ -47,6 +47,20 @@ const SEAT_RING: usize = crate::conversation_window::CONVERSATION_CAP;
 /// files that is 15 MB per retained frame.
 const SEAT_RING_BYTES: usize = crate::conversation_window::CONVERSATION_CAP_BYTES;
 
+/// Whether the frame is kept in its seat's ring for repair.
+///
+/// **The frames that open or close an epoch stay out.** They carry the count
+/// of the run they end - and the history the epoch hands over - so a ring that
+/// kept one would report a front number the new run cannot answer for.
+fn ringed(update: &SessionUpdate) -> bool {
+    !matches!(
+        update,
+        SessionUpdate::Connected { .. }
+            | SessionUpdate::SessionReplaced { .. }
+            | SessionUpdate::Releasing { .. }
+    )
+}
+
 /// What a frame costs against [`SEAT_RING_BYTES`]: the bytes its own JSON
 /// would write, plus the envelope around it.
 ///
@@ -211,17 +225,7 @@ impl Shared {
             return SeatUpdate { seq: None, update: Arc::new(update) };
         };
         let seq = self.next_seq(&slot);
-        // **The frames that open or close an epoch stay out of the ring.**
-        // They carry the count of the run they end - and the history the
-        // epoch hands over - so a ring that kept one would report a front
-        // number the new run cannot answer for, and let that old number
-        // collide with a new one as the count climbs back to it.
-        let epoch_frame = matches!(
-            &update,
-            SessionUpdate::Connected { .. }
-                | SessionUpdate::SessionReplaced { .. }
-                | SessionUpdate::Releasing { .. }
-        );
+        let epoch_frame = !ringed(&update);
         if matches!(
             &update,
             SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. }
@@ -447,9 +451,8 @@ impl UpdateFanout {
     /// never replies, so counting it would leave the turn waiting on a
     /// response nobody will send.
     ///
-    /// Unlike [`Self::send`], an update emitted before anything attached
-    /// is not held for the first subscriber: replaying it would offer
-    /// the first view a reply that reaches nothing. So a caller must
+    /// An update emitted before anything attached reaches nobody: a
+    /// subscriber takes what follows its own subscribe. So a caller must
     /// fail its turn closed on a `false` return; one that parked the
     /// turn anyway belongs on [`Self::send`].
     pub(crate) fn send_answering(&self, update: SessionUpdate) -> bool {
@@ -457,10 +460,12 @@ impl UpdateFanout {
     }
 
     fn deliver(&self, update: SessionUpdate, required: Option<SubscriberRole>) -> bool {
-        // **Weighed before the lock.** A chat frame's charge is its JSON, and
-        // paying that inside the fan-out's guard would serialize every seat's
-        // stream behind it.
-        let charge = frame_bytes(&update);
+        // **Weighed before the lock, and only when it is kept.** A chat
+        // frame's charge is its JSON, and paying that inside the fan-out's
+        // guard would serialize every seat's stream behind it; an epoch frame
+        // is never ringed, and its history makes that the one serialisation
+        // worth skipping.
+        let charge = if ringed(&update) { frame_bytes(&update) } else { 0 };
         let mut shared = self.shared.lock();
         let update = shared.numbered(update, charge);
         let Some(tail) = shared.subscribers.pop() else {
