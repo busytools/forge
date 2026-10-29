@@ -283,12 +283,25 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
             changed = viewing.files.changed() => changed.map(|()| 4_u8).map_err(|_| 14_u8),
             download = viewing.downloads.recv() => match download {
                 Ok(download) => return ViewEvent::Download(download),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(lost)) => {
                     tracing::warn!(
-                        "a viewer fell behind a download and lost it (event_name \
-                         browser_download_lagged)"
+                        event_name = "browser_download_lagged",
+                        lost,
+                        "a viewer fell behind a finished download and lost it"
                     );
-                    continue;
+                    // **A loss the person can see.** The offer is gone, so the
+                    // save door is told rather than left to a log line nobody
+                    // reads; the tab is the viewer's own, and the words do not
+                    // claim whose download was dropped.
+                    return ViewEvent::Download(forge_primitives::browser::BrowserDownload {
+                        tab: viewing.tab,
+                        name: "download".to_owned(),
+                        bytes: Vec::new(),
+                        error: Some(format!(
+                            "{lost} finished download(s) were dropped before this viewer read \
+                             them: the browser held at most the profile's backlog"
+                        )),
+                    });
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     std::future::pending().await

@@ -5799,15 +5799,16 @@ fn device_pixels(css: u32, scale: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DeadDriverOutcome,
-        DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, State, UploadRequest,
-        agent_upload_paths, agent_upload_refused, begin_upload, captured_generation, clear_if_dead,
-        dead_driver_answer, dead_host_answer, dead_page_answer, death_cause, device_pixels,
-        file_name, installed_generation, note_agent_answered, note_surfaced_opened,
+        BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DOWNLOAD_BACKLOG,
+        DeadDriverOutcome, DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, State,
+        UploadRequest, agent_upload_paths, agent_upload_refused, begin_upload, captured_generation,
+        clear_if_dead, dead_driver_answer, dead_host_answer, dead_page_answer, death_cause,
+        device_pixels, file_name, installed_generation, note_agent_answered, note_surfaced_opened,
         note_upload_finished, owner_size, pair_tab_events, stage_agent_uploads, upload_request,
         window_dimension, write_uploads,
     };
     use forge_primitives::SessionSlot;
+    use forge_primitives::browser::BrowserDownload;
     use forge_primitives::browser::ProfileKey;
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -10223,6 +10224,36 @@ mod tests {
 
         let rows = service.tabs(&worker).await.expect("rows").rows;
         assert!(rows.is_empty(), "the dead host's rows are gone");
+    }
+
+    /// **The download backlog is memory, and a download is bytes.** A viewer
+    /// that reads none must fall behind the fifth offer, so one profile holds
+    /// at most four 32 MiB payloads for a reader that is not looking.
+    ///
+    /// **Four is written out rather than read off [`DOWNLOAD_BACKLOG`]**: the
+    /// pin is that the backlog stays this small, and a test that resized
+    /// itself with the constant would pass at sixteen again.
+    #[tokio::test]
+    async fn a_lagging_viewer_falls_behind_after_the_download_backlog() {
+        let (offers, mut viewer) =
+            tokio::sync::broadcast::channel::<BrowserDownload>(DOWNLOAD_BACKLOG);
+        for n in 0..5 {
+            let offer = BrowserDownload {
+                tab: 0,
+                name: format!("file-{n}"),
+                bytes: Vec::new(),
+                error: None,
+            };
+            offers.send(offer).expect("the viewer is attached");
+        }
+
+        assert!(
+            matches!(
+                viewer.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+            ),
+            "an offer past the backlog is dropped rather than held for the viewer",
+        );
     }
 }
 
