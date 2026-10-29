@@ -1365,7 +1365,11 @@ pub(crate) mod tests_catalogue_view {
 
         let landed = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
-                match updates.recv().await.map(|frame| frame.update) {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
                     Some(SessionUpdate::DictateModelsChanged { models }) => break models,
                     Some(_) => {}
                     None => panic!("the subscription must stay attached"),

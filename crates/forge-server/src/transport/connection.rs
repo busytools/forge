@@ -752,7 +752,7 @@ where
                     generation,
                     initiator: Some(id),
                     ..
-                } = &update
+                } = &*update
                     && *id == me
                 {
                     dictate.stamp(key, *generation);
@@ -763,7 +763,7 @@ where
                     outcome,
                     generation,
                     ..
-                } = &update
+                } = &*update
                     && *id == me
                 {
                     dictate.retire(key, outcome, *generation);
@@ -776,10 +776,13 @@ where
                     // shutdown` follows the run loop's return - and a frame
                     // still waiting out its window when the process drops dies
                     // with it. Everything else can wait the interval.
-                    let fatal = matches!(update, SessionUpdate::FatalError { .. });
+                    let fatal = matches!(&*update, SessionUpdate::FatalError { .. });
                     held.push(
                         Instant::now(),
-                        SeatUpdate { seq: frame.seq, update: for_a_client(update, cap) },
+                        SeatUpdate {
+                            seq: frame.seq,
+                            update: Arc::new(for_a_client(Arc::unwrap_or_clone(update), cap)),
+                        },
                     );
                     if fatal {
                         batch::flush(socket, held.take()).await?;
@@ -1702,7 +1705,7 @@ where
                         // that can hold one.
                         Some(SeatFrameWire {
                             seq: frame.seq?,
-                            update: for_a_client(frame.update, cap),
+                            update: for_a_client(Arc::unwrap_or_clone(frame.update), cap),
                         })
                     })
                     .collect(),
@@ -2497,7 +2500,10 @@ fn forward_queued(
     frames
         .into_iter()
         .filter(|frame| forwards(&frame.update, watched, me))
-        .map(|frame| SeatUpdate { seq: frame.seq, update: for_a_client(frame.update, cap) })
+        .map(|frame| SeatUpdate {
+            seq: frame.seq,
+            update: Arc::new(for_a_client(Arc::unwrap_or_clone(frame.update), cap)),
+        })
         .collect()
 }
 
@@ -3891,7 +3897,11 @@ mod tests {
         };
         let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await.map(|frame| frame.update) {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
                     Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
                     Some(_) => {}
                     None => panic!("the stream ended before the ask"),
@@ -3985,12 +3995,12 @@ mod tests {
         .expect("a user frame");
         let frame = SeatUpdate {
             seq: Some(9),
-            update: SessionUpdate::ChatAppended {
+            update: Arc::new(SessionUpdate::ChatAppended {
                 key: seat.clone(),
                 origin: None,
                 source: None,
                 msg,
-            },
+            }),
         };
 
         let queued = forward_queued(&state, vec![frame], &[Subject::Session(seat)], 1);
@@ -3999,7 +4009,7 @@ mod tests {
         let SessionUpdate::ChatAppended {
             msg: forge_primitives::Message::User { tool_use_result, .. },
             ..
-        } = &queued[0].update
+        } = &*queued[0].update
         else {
             panic!("the queued frame is the chat frame it was queued as")
         };

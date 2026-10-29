@@ -728,7 +728,8 @@ port = {port}
         let applied = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let frame = updates.recv().await.expect("the update stream stays open");
-                if matches!(frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. }) {
+                if matches!(&*frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. })
+                {
                     break;
                 }
             }

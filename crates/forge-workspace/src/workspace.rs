@@ -10115,7 +10115,10 @@ mod tests {
         let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
 
         assert!(
-            matches!(event, Ok(Some(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. }))),
+            matches!(
+                event,
+                Ok(Some(frame)) if matches!(&*frame.update, SessionUpdate::CliVersionChanged)
+            ),
             "the constructor's launch probed and woke the views; without that launch the core reads no version for the life of the process",
         );
         assert_eq!(
@@ -10146,7 +10149,10 @@ mod tests {
         let mut woken = workspace.subscribe_answerer();
         let event = tokio::time::timeout(Duration::from_secs(5), woken.recv()).await;
         assert!(
-            matches!(event, Ok(Some(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. }))),
+            matches!(
+                event,
+                Ok(Some(frame)) if matches!(&*frame.update, SessionUpdate::CliVersionChanged)
+            ),
             "the first start probed and woke the views",
         );
 
@@ -10235,7 +10241,7 @@ mod tests {
         assert!(
             matches!(
                 woken.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. })
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::CliVersionChanged)
             ),
             "the first probe is a change from none",
         );
@@ -10254,7 +10260,7 @@ mod tests {
         assert!(
             matches!(
                 woken.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CliVersionChanged, .. })
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::CliVersionChanged)
             ),
             "a latest that appears where there was none is news",
         );
@@ -10555,7 +10561,8 @@ mod tests {
         .expect("accepted");
         let mut refused = false;
         while let Ok(frame) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = frame.update
+            if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && message.contains("refused a verdict")
             {
                 refused = true;
@@ -10616,7 +10623,8 @@ mod tests {
             ws.dispatch(command).expect("app-level commands are accepted");
             let mut said = false;
             while let Ok(frame) = rx.try_recv() {
-                if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } = frame.update
+                if let crate::protocol::SessionUpdate::ServiceStatus { message, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && message.contains(named)
                 {
                     said = true;
@@ -11717,12 +11725,12 @@ provider = "anthropic"
 
         let connected = tokio::time::timeout(Duration::from_secs(30), async {
             while let Some(seat) = updates.recv().await {
-                if let SessionUpdate::Connected { key: seen, session_id, .. } = &seat.update
+                if let SessionUpdate::Connected { key: seen, session_id, .. } = &*seat.update
                     && *seen == key
                 {
                     return session_id.to_string();
                 }
-                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &seat.update
+                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &*seat.update
                     && *seen == key
                 {
                     panic!("the resume's start failed: {message}");
@@ -11894,12 +11902,12 @@ provider = "anthropic"
 
         let connected = tokio::time::timeout(Duration::from_secs(30), async {
             while let Some(seat) = updates.recv().await {
-                if let SessionUpdate::Connected { key: seen, session_id, .. } = &seat.update
+                if let SessionUpdate::Connected { key: seen, session_id, .. } = &*seat.update
                     && *seen == slot
                 {
                     return session_id.to_string();
                 }
-                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &seat.update
+                if let SessionUpdate::ConnectionFailed { key: seen, message, .. } = &*seat.update
                     && *seen == slot
                 {
                     panic!("the restore's start failed: {message}");
@@ -11980,7 +11988,7 @@ provider = "anthropic"
 
         let said = tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(seat) = updates.recv().await {
-                if let SessionUpdate::Notice { key: seen, severity, text } = &seat.update
+                if let SessionUpdate::Notice { key: seen, severity, text } = &*seat.update
                     && *seen == slot
                 {
                     return (*severity, text.clone());
@@ -12370,7 +12378,7 @@ provider = "anthropic"
     ) -> Vec<crate::protocol::SessionUpdate> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            out.push(frame.update);
+            out.push(std::sync::Arc::unwrap_or_clone(frame.update));
         }
         out
     }
@@ -12392,13 +12400,16 @@ provider = "anthropic"
         );
 
         assert!(
-            matches!(first.try_recv(), Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })),
+            matches!(
+                first.try_recv(),
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::CatalogLoaded)
+            ),
             "the first subscriber receives the update",
         );
         assert!(
             matches!(
                 second.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::CatalogLoaded, .. })
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::CatalogLoaded)
             ),
             "the second subscriber receives the same update",
         );
@@ -15230,7 +15241,9 @@ provider = "anthropic"
     fn spawning_keys(update_rx: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<SessionSlot> {
         let mut keys: Vec<SessionSlot> = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::Spawning { key, .. } = frame.update {
+            if let SessionUpdate::Spawning { key, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 keys.push(key);
             }
         }
@@ -15450,7 +15463,9 @@ provider = "anthropic"
 
         let mut echo = None;
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 echo = Some((key, wrapped));
             }
         }
@@ -16087,7 +16102,7 @@ mod worker_activity_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::ServiceStatus { .. }, .. })
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::ServiceStatus { .. })
             ),
             "and the one update that carried it still goes out",
         );
@@ -16637,7 +16652,8 @@ provider = "anthropic"
         // WorkerStatusChanged for each worker.
         let mut removed_count = 0;
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+            if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 removed_count += 1;
@@ -16664,8 +16680,9 @@ provider = "anthropic"
 
         workspace.release_session_with_cascade(&lead_key);
 
-        let announced: Vec<SessionUpdate> =
-            std::iter::from_fn(|| rx.try_recv().ok()).map(|frame| frame.update).collect();
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
         let first = announced.first().expect("the release announces something");
         assert!(
             matches!(first, SessionUpdate::Releasing { key } if key == &lead_key),
@@ -16983,7 +17000,8 @@ mod tag_retry_tests {
         let status_changed =
             tokio::time::timeout(task_budget * 10 + Duration::from_secs(5), async {
                 loop {
-                    match rx.recv().await.map(|frame| frame.update) {
+                    match rx.recv().await.map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                    {
                         Some(SessionUpdate::WorkerStatusChanged { action, status, .. }) => {
                             if matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                             {
@@ -17071,7 +17089,8 @@ mod tag_retry_tests {
 
         loop {
             let frame = rx.recv().await.expect("the rollback emits an update");
-            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = frame.update
+            if let SessionUpdate::WorkerStatusChanged { action, status, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 assert_eq!(status.label, "crashed", "the rolled-back worker is the one removed");
@@ -17162,7 +17181,8 @@ mod tag_retry_tests {
         // Wait for the StatusChanged emit.
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17216,7 +17236,8 @@ mod tag_retry_tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17282,7 +17303,8 @@ mod tag_retry_tests {
         );
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17329,7 +17351,8 @@ mod tag_retry_tests {
         );
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17413,7 +17436,8 @@ mod tag_retry_tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -17476,7 +17500,8 @@ mod tag_retry_tests {
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(frame) = rx.recv().await {
-                if let SessionUpdate::WorkerStatusChanged { action, .. } = frame.update
+                if let SessionUpdate::WorkerStatusChanged { action, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && matches!(action, crate::protocol::WorkerStatusAction::StatusChanged)
                 {
                     break;
@@ -20591,7 +20616,7 @@ mod async_worker_spawn_failure_tests {
         // handed on stdin, so without this the page shows nothing at all.
         let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|frame| {
             matches!(
-                frame.update,
+                std::sync::Arc::unwrap_or_clone(frame.update),
                 SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. }
                     if key == lead_key
                         && matches!(wrapped.kind, WrappedKind::WorkerSpawnFailedNotice)
@@ -20851,7 +20876,8 @@ mod async_worker_spawn_failure_tests {
 
         let mut dispositions = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = frame.update
+            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && action == crate::protocol::WorkerStatusAction::Removed
             {
                 dispositions.push(worktree);
@@ -20998,7 +21024,9 @@ mod async_worker_spawn_failure_tests {
 
         let mut echo = None;
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update {
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 echo = Some((key, wrapped));
             }
         }
@@ -21439,7 +21467,11 @@ mod git_scan_cwd_tests {
         // The ask crosses, carrying the id the answer will name.
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await.map(|frame| frame.update) {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
                     Some(SessionUpdate::DocumentHandOffPending {
                         id, path, reviewable, ..
                     }) => {
@@ -21466,8 +21498,8 @@ mod git_scan_cwd_tests {
         assert_eq!(ending, DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) });
         assert!(
             std::iter::from_fn(|| updates.try_recv().ok()).any(|frame| matches!(
-                frame.update,
-                SessionUpdate::DocumentHandOffResolved { id, .. } if id == ask.0
+                &*frame.update,
+                SessionUpdate::DocumentHandOffResolved { id, .. } if *id == ask.0
             )),
             "and the resolution crosses, so a view that did not answer closes its ask",
         );
@@ -21498,8 +21530,10 @@ mod git_scan_cwd_tests {
 
         assert!(refused.contains("no document at"), "{refused}");
         assert!(
-            std::iter::from_fn(|| updates.try_recv().ok())
-                .all(|frame| !matches!(frame.update, SessionUpdate::DocumentHandOffPending { .. })),
+            std::iter::from_fn(|| updates.try_recv().ok()).all(|frame| !matches!(
+                &*frame.update,
+                SessionUpdate::DocumentHandOffPending { .. }
+            )),
             "a refusal is not a hand-off",
         );
     }
@@ -21533,8 +21567,10 @@ mod git_scan_cwd_tests {
             .expect_err("no client, so nothing to open on");
         assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT, "the refusal is the named one");
         assert!(
-            std::iter::from_fn(|| updates.try_recv().ok())
-                .all(|frame| !matches!(frame.update, SessionUpdate::DocumentHandOffPending { .. })),
+            std::iter::from_fn(|| updates.try_recv().ok()).all(|frame| !matches!(
+                &*frame.update,
+                SessionUpdate::DocumentHandOffPending { .. }
+            )),
             "and nothing was asked of the terminal",
         );
 
@@ -21546,7 +21582,11 @@ mod git_scan_cwd_tests {
         };
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates.recv().await.map(|frame| frame.update) {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
                     Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
                     Some(_) => {}
                     None => panic!("the stream ended before the ask"),
@@ -22125,9 +22165,11 @@ provider = "anthropic"
         workspace.record_usage_success(&AccountKey("Stargate".to_owned()), usage_at(10.0));
 
         let frame = std::iter::from_fn(|| updates.try_recv().ok())
-            .find(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .find(|frame| matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }))
             .expect("a probe that wrote the pool announced nothing");
-        let SessionUpdate::AccountsChanged { accounts } = frame.update else {
+        let SessionUpdate::AccountsChanged { accounts } =
+            std::sync::Arc::unwrap_or_clone(frame.update)
+        else {
             unreachable!("the predicate above selected this variant")
         };
         // The frame and the snapshot's field are one builder, so a client that
@@ -22217,7 +22259,7 @@ provider = "anthropic"
     async fn a_probe_announces_only_a_pool_that_moved() {
         fn announced(updates: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>) -> usize {
             std::iter::from_fn(|| updates.try_recv().ok())
-                .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+                .filter(|frame| matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }))
                 .count()
         }
 
@@ -22267,7 +22309,7 @@ provider = "anthropic"
         workspace.record_usage_success(&key, same);
 
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .filter(|frame| matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }))
             .count();
         assert_eq!(announced, 1, "the Loading -> Ready move was not announced");
     }
@@ -22303,7 +22345,7 @@ provider = "anthropic"
         workspace.record_usage_success(&key, same);
 
         let announced = std::iter::from_fn(|| updates.try_recv().ok())
-            .filter(|frame| matches!(frame.update, SessionUpdate::AccountsChanged { .. }))
+            .filter(|frame| matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }))
             .count();
         assert_eq!(announced, 1, "the cleared probe failure was not announced");
     }
@@ -22839,7 +22881,7 @@ mod kick_dispatcher_tests {
         let mut echoed = None;
         while let Ok(frame) = update_rx.try_recv() {
             if let crate::protocol::SessionUpdate::ChatAppended { key: addressed, msg, .. } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && addressed == key
             {
                 echoed = Some(msg);
@@ -23113,7 +23155,7 @@ provider = "anthropic"
             .expect("scan finishes")
             .expect("channel open");
         assert!(
-            matches!(update, SeatUpdate { update: SessionUpdate::CatalogLoaded, .. }),
+            matches!(&*update.update, SessionUpdate::CatalogLoaded),
             "expected CatalogLoaded, got {update:?}"
         );
         assert!(workspace.catalog_ready());
@@ -23423,7 +23465,7 @@ provider = "anthropic"
                 .await
                 .expect("the scan finishes")
                 .expect("the stream is open");
-            if matches!(update.update, SessionUpdate::CatalogLoaded) {
+            if matches!(&*update.update, SessionUpdate::CatalogLoaded) {
                 break;
             }
         }
@@ -23638,15 +23680,13 @@ mod prompt_frame_origin_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SeatUpdate {
-                    update: SessionUpdate::ChatAppended {
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::ChatAppended {
                         origin: Some(PromptOrigin::Ui),
                         source: Some(PromptSource::You),
                         key,
                         ..
-                    },
-                    ..
-                }) if key == seat
+                    } if key == &seat)
             ),
             "the words the terminal drew at submit are marked as its own, or it draws them \
              twice - and as a person's send, which is the only thing a reader's follow arms \
@@ -23681,7 +23721,7 @@ mod prompt_frame_origin_tests {
             if let SessionUpdate::ChatAppended {
                 msg: forge_primitives::Message::User { uuid, .. },
                 ..
-            } = frame.update
+            } = std::sync::Arc::unwrap_or_clone(frame.update)
             {
                 frame_id = uuid;
             }
@@ -23808,7 +23848,7 @@ mod prompt_frame_origin_tests {
         // what this case is about (its ORDER is the case above, which does not
         // need the words' text).
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -23847,7 +23887,7 @@ mod prompt_frame_origin_tests {
         .expect("the core takes it");
 
         let first = rx.try_recv().expect("the echo is the first update on the stream");
-        let SessionUpdate::ChatAppended { key, msg, .. } = &first.update else {
+        let SessionUpdate::ChatAppended { key, msg, .. } = &*first.update else {
             panic!("the reader's own words are echoed before the answer: {first:?}")
         };
         assert_eq!(key, &seat, "the echo is for the seat that asked");
@@ -23865,7 +23905,7 @@ mod prompt_frame_origin_tests {
         let second = rx.try_recv().expect("the answer follows the echo");
         assert!(
             matches!(
-                &second.update,
+                &*second.update,
                 SessionUpdate::Notice { severity: NoticeSeverity::Error, text, .. }
                     if text == "Unknown mode: sideways"
             ),
@@ -23898,7 +23938,7 @@ mod prompt_frame_origin_tests {
         .expect("the document parses");
         assert_eq!(written["effortLevel"], serde_json::json!("high"));
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -23942,7 +23982,7 @@ mod prompt_frame_origin_tests {
 
         assert!(dispatched.is_ok(), "the core takes it: {dispatched:?}");
         let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        let echoed = updates.iter().find_map(|frame| match &frame.update {
+        let echoed = updates.iter().find_map(|frame| match &*frame.update {
             SessionUpdate::ChatAppended { msg, .. } => Some(msg),
             _ => None,
         });
@@ -23959,7 +23999,7 @@ mod prompt_frame_origin_tests {
         );
         let notices: Vec<(SessionSlot, NoticeSeverity, String)> = updates
             .into_iter()
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
                 _ => None,
             })
@@ -24004,7 +24044,7 @@ mod prompt_frame_origin_tests {
         // The refusal is answered after the echo of the words, so the two are
         // read off the stream together (the order is the case above).
         let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        let echoed = updates.iter().find_map(|frame| match &frame.update {
+        let echoed = updates.iter().find_map(|frame| match &*frame.update {
             SessionUpdate::ChatAppended { msg, .. } => Some(msg),
             _ => None,
         });
@@ -24021,7 +24061,7 @@ mod prompt_frame_origin_tests {
         );
         let notices: Vec<(NoticeSeverity, String)> = updates
             .into_iter()
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -24077,7 +24117,7 @@ mod prompt_frame_origin_tests {
                 // is about.
                 let notices: Vec<(NoticeSeverity, String)> =
                     std::iter::from_fn(|| rx.try_recv().ok())
-                        .filter_map(|frame| match frame.update {
+                        .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                             SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                             _ => None,
                         })
@@ -24125,7 +24165,7 @@ mod prompt_frame_origin_tests {
         let document: serde_json::Value = serde_json::from_str(&written).expect("it parses");
         assert_eq!(document["effortLevel"], serde_json::json!("low"));
         let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
                 _ => None,
             })
@@ -24278,15 +24318,13 @@ mod prompt_frame_origin_tests {
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SeatUpdate {
-                    update: SessionUpdate::ChatAppended {
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::ChatAppended {
                         origin: Some(PromptOrigin::View),
                         source: Some(PromptSource::You),
                         key,
                         ..
-                    },
-                    ..
-                }) if key == seat
+                    } if key == &seat)
             ),
             "no view has drawn a send made over the socket, so every view has to - and the \
              frame says it is a person's send, the one source a reader's follow arms on \

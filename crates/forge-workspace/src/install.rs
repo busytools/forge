@@ -1044,7 +1044,9 @@ mod tests_install {
         let last = {
             let mut last = None;
             while let Ok(frame) = updates.try_recv() {
-                if let SessionUpdate::DictateModelsChanged { models } = frame.update {
+                if let SessionUpdate::DictateModelsChanged { models } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     last = Some(models);
                 }
             }
@@ -1340,11 +1342,12 @@ mod tests_install {
     ) -> DictateModelsSnapshot {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
-                match updates.recv().await {
-                    Some(crate::SeatUpdate {
-                        update: SessionUpdate::DictateModelsChanged { models },
-                        ..
-                    }) => {
+                match updates
+                    .recv()
+                    .await
+                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                {
+                    Some(SessionUpdate::DictateModelsChanged { models }) => {
                         let running = matches!(models.install, InstallState::Downloading { .. })
                             || matches!(models.activate, ActivateState::Activating { .. });
                         if !running {
@@ -1719,7 +1722,11 @@ mod tests_install {
         let mut finished = false;
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             while let Some(frame) = fixture.updates.recv().await {
-                let SessionUpdate::DictateModelsChanged { models } = frame.update else { continue };
+                let SessionUpdate::DictateModelsChanged { models } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                else {
+                    continue;
+                };
                 match &models.install {
                     InstallState::Downloading { file: seen, got, .. } => {
                         downloading = true;

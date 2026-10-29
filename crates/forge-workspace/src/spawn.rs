@@ -3226,8 +3226,8 @@ provider = "anthropic"
         assert!(
             matches!(
                 rx.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::ServiceStatus { message, .. }, .. })
-                    if message.contains("no-such-project")
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::ServiceStatus { message, .. } if message.contains("no-such-project"))
             ),
             "unknown project surfaces a ServiceStatus notice"
         );
@@ -3248,7 +3248,7 @@ provider = "anthropic"
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         let update = rx.try_recv().expect("Spawning emit");
-        match update.update {
+        match std::sync::Arc::unwrap_or_clone(update.update) {
             SessionUpdate::Spawning { key, project_name, .. } => {
                 assert_eq!(
                     key,
@@ -3280,10 +3280,15 @@ provider = "anthropic"
         handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         assert!(
-            matches!(rx.try_recv(), Ok(SeatUpdate { update: SessionUpdate::Spawning { .. }, .. })),
+            matches!(
+                rx.try_recv(),
+                Ok(frame) if matches!(&*frame.update, SessionUpdate::Spawning { .. })
+            ),
             "the spawn is announced before the handle is built",
         );
-        let key = match rx.try_recv().expect("ConnectionFailed emit").update {
+        let key = match std::sync::Arc::unwrap_or_clone(
+            rx.try_recv().expect("ConnectionFailed emit").update,
+        ) {
             SessionUpdate::ConnectionFailed { key, .. } => key,
             other => panic!("expected ConnectionFailed; got {other:?}"),
         };
@@ -3329,7 +3334,7 @@ provider = "anthropic"
 
         while let Ok(frame) = rx.try_recv() {
             assert!(
-                !matches!(frame.update, SessionUpdate::FatalError { .. }),
+                !matches!(&*frame.update, SessionUpdate::FatalError { .. }),
                 "unknown target must not emit FatalError"
             );
         }
@@ -3559,9 +3564,9 @@ provider = "anthropic"
         let mut echoed = false;
         while let Ok(frame) = update_rx.try_recv() {
             if matches!(
-                frame.update,
+                &*frame.update,
                 crate::protocol::SessionUpdate::SlackMessageAppended { key, prose, .. }
-                    if key == worker_key
+                    if key == &worker_key
                         && prose.starts_with("[Slack")
                         && prose.contains("hello")
             ) {
@@ -3624,7 +3629,7 @@ provider = "anthropic"
         let mut echoes = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
             if let crate::protocol::SessionUpdate::SlackMessageAppended { key, prose, .. } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && key == worker_key
             {
                 echoes.push(prose);
@@ -4234,7 +4239,7 @@ provider = "anthropic"
         // has to be up before it is asked.
         tokio::time::timeout(spawn_wait(), async {
             while let Some(seat) = updates.recv().await {
-                if matches!(&seat.update, SessionUpdate::Connected { key, .. } if *key == slot) {
+                if matches!(&*seat.update, SessionUpdate::Connected { key, .. } if *key == slot) {
                     return;
                 }
             }
@@ -4749,7 +4754,7 @@ provider = "anthropic"
         let slot = SessionSlot::worker("Default", "forge", "dying");
         tokio::time::timeout(spawn_wait(), async {
             while let Some(seat) = updates.recv().await {
-                if matches!(&seat.update, SessionUpdate::Connected { key, .. } if *key == slot) {
+                if matches!(&*seat.update, SessionUpdate::Connected { key, .. } if *key == slot) {
                     return;
                 }
             }
@@ -5499,7 +5504,7 @@ provider = "anthropic"
 
         assert!(!delivered, "a failed dispatch tells the sweep to re-run the message");
         let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|frame| {
-            matches!(frame.update, crate::protocol::SessionUpdate::SlackMessageAppended { .. })
+            matches!(&*frame.update, crate::protocol::SessionUpdate::SlackMessageAppended { .. })
         });
         assert!(!echoed, "a failed worker dispatch must not echo a SlackMessageAppended");
     }
@@ -6599,7 +6604,7 @@ provider = "anthropic"
         assert!(workspace.list_live_workers(&project).is_empty());
         let mut frames: Vec<(&str, SessionSlot)> = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Releasing { key } => frames.push(("releasing", key)),
                 SessionUpdate::WorkerStatusChanged {
                     action: WorkerStatusAction::Removed,
@@ -6637,7 +6642,7 @@ provider = "anthropic"
 
         let mut frames: Vec<(&str, SessionSlot)> = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Releasing { key } => frames.push(("releasing", key)),
                 SessionUpdate::WorkerStatusChanged {
                     action: WorkerStatusAction::Removed,
@@ -6792,7 +6797,8 @@ provider = "anthropic"
         // Exactly one Removed event for worker-b.
         let mut removed_labels: Vec<String> = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, status, .. } = frame.update
+            if let SessionUpdate::WorkerStatusChanged { action, status, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && action == WorkerStatusAction::Removed
             {
                 removed_labels.push(status.label);
@@ -7943,7 +7949,8 @@ provider = "anthropic"
     ) -> Vec<WorktreeDisposition> {
         let mut seen = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } = frame.update
+            if let SessionUpdate::WorkerStatusChanged { action, worktree, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && action == WorkerStatusAction::Removed
             {
                 seen.push(worktree);

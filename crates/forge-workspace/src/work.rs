@@ -1402,7 +1402,9 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the watch did not push the correction its lookup made within a poke");
             };
-            let SessionUpdate::WorkChanged { key, pr, .. } = moved.update else {
+            let SessionUpdate::WorkChanged { key, pr, .. } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            else {
                 continue;
             };
             assert_eq!(key, seat, "and the row is addressed to the seat that was held");
@@ -1719,7 +1721,7 @@ provider = "anthropic"
                     "the first pass's answers never all arrived: tree {work}, processes {processes}, files {files}"
                 );
             };
-            match moved.update {
+            match std::sync::Arc::unwrap_or_clone(moved.update) {
                 SessionUpdate::WorkChanged { key, .. } => {
                     assert_eq!(key, seat, "the tree's row is addressed to the held seat");
                     work = true;
@@ -1778,7 +1780,9 @@ provider = "anthropic"
             else {
                 continue;
             };
-            let SessionUpdate::WorkChanged { key, work, .. } = moved.update else {
+            let SessionUpdate::WorkChanged { key, work, .. } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            else {
                 continue;
             };
             assert_eq!(key, seat, "and it is addressed to the seat that was held");
@@ -1820,7 +1824,9 @@ provider = "anthropic"
             };
             // Other variants ride the same stream - the file index announces
             // too - and the row under test is the work one.
-            let SessionUpdate::WorkChanged { key, work, .. } = moved.update else {
+            let SessionUpdate::WorkChanged { key, work, .. } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            else {
                 continue;
             };
             assert_eq!(key, seat, "and it is addressed to the seat that was held");
@@ -2042,7 +2048,10 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the first pass's own walk was never announced");
             };
-            if matches!(moved.update, SessionUpdate::ProcessesChanged { .. }) {
+            if matches!(
+                std::sync::Arc::unwrap_or_clone(moved.update),
+                SessionUpdate::ProcessesChanged { .. }
+            ) {
                 break;
             }
         }
@@ -2058,7 +2067,9 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("a walk the terminal moved never reached the seat's viewers");
             };
-            let SessionUpdate::ProcessesChanged { key, snapshot } = moved.update else {
+            let SessionUpdate::ProcessesChanged { key, snapshot } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            else {
                 continue;
             };
             assert_eq!(key, seat, "and it is addressed to the seat that was held");
@@ -2099,7 +2110,9 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("a process arriving under the seat was never announced");
             };
-            let SessionUpdate::ProcessesChanged { key, snapshot } = moved.update else {
+            let SessionUpdate::ProcessesChanged { key, snapshot } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            else {
                 continue;
             };
             assert_eq!(key, seat);
@@ -2120,7 +2133,9 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the watch's first walk was never announced");
             };
-            if let SessionUpdate::FileIndexChanged { index, .. } = moved.update {
+            if let SessionUpdate::FileIndexChanged { index, .. } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            {
                 return index;
             }
         }
@@ -2136,7 +2151,9 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the watch's first scan was never announced");
             };
-            if let SessionUpdate::WorkChanged { work, .. } = moved.update {
+            if let SessionUpdate::WorkChanged { work, .. } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            {
                 return work;
             }
         }
@@ -2186,7 +2203,9 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("a file written into the seat's tree was never announced");
             };
-            let SessionUpdate::FileIndexChanged { key, index } = moved.update else {
+            let SessionUpdate::FileIndexChanged { key, index } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            else {
                 continue;
             };
             assert_eq!(key, seat);
@@ -2222,7 +2241,9 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the writes were never announced");
             };
-            if let SessionUpdate::FileIndexChanged { index, .. } = moved.update {
+            if let SessionUpdate::FileIndexChanged { index, .. } =
+                std::sync::Arc::unwrap_or_clone(moved.update)
+            {
                 break index;
             }
         };
@@ -2237,7 +2258,10 @@ provider = "anthropic"
         // And nothing follows: one mark, one walk, one frame.
         let quiet = tokio::time::Instant::now() + Duration::from_secs(2);
         while let Ok(Some(moved)) = tokio::time::timeout_at(quiet, updates.recv()).await {
-            if matches!(moved.update, SessionUpdate::FileIndexChanged { .. }) {
+            if matches!(
+                std::sync::Arc::unwrap_or_clone(moved.update),
+                SessionUpdate::FileIndexChanged { .. }
+            ) {
                 panic!("a second frame followed one poke's writes");
             }
         }
@@ -2502,7 +2526,7 @@ provider = "anthropic"
             .expect("the release announces itself")
             .expect("a live channel");
         assert!(
-            matches!(released.update, SessionUpdate::Releasing { .. }),
+            matches!(&*released.update, SessionUpdate::Releasing { .. }),
             "the release's own frame is what opens this window: {released:?}",
         );
 

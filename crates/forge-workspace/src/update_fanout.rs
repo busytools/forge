@@ -20,7 +20,11 @@ use crate::protocol::SessionUpdate;
 #[derive(Clone, Debug)]
 pub struct SeatUpdate {
     pub seq: Option<u64>,
-    pub update: SessionUpdate,
+    /// **Shared rather than owned, so one delivery is one pointer.** A frame
+    /// goes to every subscriber of the fleet, and each of them filters it
+    /// afterwards - so a deep clone per subscriber paid for a payload most of
+    /// them drop. The ring holds the same pointer.
+    pub update: Arc<SessionUpdate>,
 }
 
 /// How many frames one seat's stream keeps for repair.
@@ -130,6 +134,16 @@ pub(crate) enum SubscriberRole {
 }
 
 /// One subscriber's end of the fan-out.
+///
+/// **The channel is unbounded, and what bounds it instead is the connection.**
+/// A bounded channel forces the sender to choose between blocking - which
+/// would hold every seat's stream behind one slow reader, under this fan-out's
+/// own lock - and dropping a frame, which rule 25 forbids. So the sender never
+/// waits, and the receiving connection drains continuously: a socket that
+/// stops accepting its frames is cut at `WRITE_BOUND` (60 s), so a subscriber
+/// that keeps up holds a batch's worth and one that does not is disconnected
+/// rather than queued against forever. The per-frame weight is a pointer now,
+/// shared with the ring below rather than copied per subscriber.
 struct Registration {
     tx: mpsc::UnboundedSender<SeatUpdate>,
     role: SubscriberRole,
@@ -215,7 +229,7 @@ impl Shared {
     /// against its own numbers.
     fn numbered(&mut self, update: SessionUpdate, charge: usize) -> SeatUpdate {
         let Some(slot) = update.slot().cloned() else {
-            return SeatUpdate { seq: None, update };
+            return SeatUpdate { seq: None, update: Arc::new(update) };
         };
         let seq = self.next_seq(&slot);
         // **The frames that open or close an epoch stay out of the ring.**
@@ -224,13 +238,15 @@ impl Shared {
         // number the new run cannot answer for, and let that old number
         // collide with a new one as the count climbs back to it.
         let epoch_frame = matches!(
-            update,
+            &update,
             SessionUpdate::Connected { .. }
                 | SessionUpdate::SessionReplaced { .. }
                 | SessionUpdate::Releasing { .. }
         );
-        if matches!(update, SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. })
-        {
+        if matches!(
+            &update,
+            SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. }
+        ) {
             self.sequences.remove(&slot);
             // **A new occupant starts counting again**, so the frames before
             // it belong to a stream no client holds any more - and a repair
@@ -272,7 +288,7 @@ impl Shared {
         } else {
             self.sequences.insert(slot.clone(), seq);
         }
-        let frame = SeatUpdate { seq: Some(seq), update };
+        let frame = SeatUpdate { seq: Some(seq), update: Arc::new(update) };
         if !epoch_frame {
             let ring = self.rings.entry(slot.clone()).or_default();
             ring.push_back(Kept { frame: frame.clone(), bytes: charge });
@@ -473,7 +489,10 @@ impl UpdateFanout {
         let counts = |role: SubscriberRole| required.is_none_or(|want| want == role);
         let mut took_it = false;
         shared.subscribers.retain(|subscriber| {
-            let live = subscriber.tx.send(update.clone()).is_ok();
+            let live = subscriber
+                .tx
+                .send(SeatUpdate { seq: update.seq, update: Arc::clone(&update.update) })
+                .is_ok();
             took_it |= live && counts(subscriber.role);
             live
         });
@@ -558,7 +577,7 @@ mod tests {
     }
 
     fn said(frame: SeatUpdate) -> String {
-        match frame.update {
+        match std::sync::Arc::unwrap_or_clone(frame.update) {
             SessionUpdate::ServiceStatus { message, .. } => message,
             other => panic!("expected the ServiceStatus envelope this test sends, got {other:?}"),
         }
@@ -631,6 +650,32 @@ mod tests {
         );
         assert_eq!(next(&mut late, "late"), "after", "the late subscriber sees only the later one");
         assert!(late.try_recv().is_err(), "the late subscriber carries nothing from before it");
+    }
+
+    /// **A delivery hands out the same update, not a copy of it.** The ring
+    /// and every subscriber hold one `Arc`: a payload nobody mutates is
+    /// shared, and a frame a subscriber filters out costs it a pointer rather
+    /// than a clone of a window.
+    #[test]
+    fn a_delivery_shares_one_update_with_the_ring_and_every_subscriber() {
+        let fanout = UpdateFanout::default();
+        let mut first = fanout.subscribe(SubscriberRole::Answering);
+        let mut second = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(fanout.send(a_turn_ends(&seat)), "both subscribers receive it");
+        let one = first.try_recv().expect("the first subscriber's frame");
+        let two = second.try_recv().expect("the second subscriber's frame");
+        assert!(
+            Arc::ptr_eq(&one.update, &two.update),
+            "the two subscribers were handed one payload, not two",
+        );
+        let ringed = fanout.frames_between(&seat, 1, 1);
+        assert_eq!(ringed.len(), 1, "the ring kept the frame");
+        assert!(
+            Arc::ptr_eq(&one.update, &ringed[0].update),
+            "and the ring holds the same payload rather than a second copy",
+        );
     }
 
     /// Catches pointing a guard at `send`, which counts an observer as an

@@ -2961,7 +2961,7 @@ both gates green.";
         );
         while let Ok(frame) = rx.try_recv() {
             assert!(
-                !matches!(frame.update, SessionUpdate::ChatAppended { .. }),
+                !matches!(&*frame.update, SessionUpdate::ChatAppended { .. }),
                 "no conversation row is forged for it: {:?}",
                 frame.update,
             );
@@ -3132,11 +3132,13 @@ both gates green.";
         let mut turns = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             assert!(
-                !matches!(frame.update, SessionUpdate::Handoff { .. }),
+                !matches!(&*frame.update, SessionUpdate::Handoff { .. }),
                 "no handoff row is drawn for it: {:?}",
                 frame.update,
             );
-            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+            if let SessionUpdate::MachineTurn { machine, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 turns.push(machine);
             }
         }
@@ -3151,7 +3153,9 @@ both gates green.";
     ) -> Vec<Option<forge_primitives::runtime::MachineTurn>> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+            if let SessionUpdate::MachineTurn { machine, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 out.push(machine);
             }
         }

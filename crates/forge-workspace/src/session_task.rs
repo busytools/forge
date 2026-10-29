@@ -3715,7 +3715,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while let Some(frame) = update_rx.recv().await {
                 if let crate::protocol::SessionUpdate::WorkerStatusChanged { action, .. } =
-                    frame.update
+                    std::sync::Arc::unwrap_or_clone(frame.update)
                     && action == crate::protocol::WorkerStatusAction::Removed
                 {
                     return;
@@ -3909,7 +3909,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -4071,7 +4073,9 @@ mod tests {
         task.after_turn_ended();
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -4126,7 +4130,7 @@ mod tests {
         let mut said = Vec::new();
         let mut turns = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Notice { text, .. } => said.push(text),
                 SessionUpdate::MachineTurn { machine, .. } => turns.push(machine),
                 _ => {}
@@ -4193,7 +4197,8 @@ mod tests {
 
         let mut told = None;
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } = frame.update
+            if let SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && wrapped.kind == crate::mcp::peers::types::WrappedKind::DeliveryFailureNotice
             {
                 told = Some((key, wrapped));
@@ -4261,7 +4266,9 @@ mod tests {
     ) -> Vec<Option<forge_primitives::runtime::MachineTurn>> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            if let SessionUpdate::MachineTurn { machine, .. } = frame.update {
+            if let SessionUpdate::MachineTurn { machine, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 out.push(machine);
             }
         }
@@ -4788,7 +4795,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -4908,7 +4917,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -4968,7 +4979,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -5007,7 +5020,8 @@ mod tests {
         assert!(task.domain.lock().handoff.supplied.is_none(), "no note is stored");
         let mut stated = false;
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::Notice { text, .. } = frame.update
+            if let SessionUpdate::Notice { text, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && text.contains("/handoff")
                 && text.contains("automatic trigger")
             {
@@ -5044,7 +5058,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -5397,7 +5413,9 @@ mod tests {
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while let Some(frame) = update_rx.recv().await {
-                if let SessionUpdate::Handoff { handoff, .. } = frame.update {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
                     return handoff;
                 }
             }
@@ -6047,7 +6065,8 @@ mod tests {
 
         let mut echoed = None;
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::SlackMessageAppended { key, prose, .. } = frame.update
+            if let SessionUpdate::SlackMessageAppended { key, prose, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && key == session_key
                 && prose.contains("the buffered text")
             {
@@ -6113,7 +6132,7 @@ mod tests {
         let mut connected = false;
         let mut echo_after_connected = false;
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::Connected { .. } => connected = true,
                 SessionUpdate::SlackMessageAppended { key, .. } if key == slot => {
                     assert!(
@@ -6135,7 +6154,7 @@ mod tests {
         let mut notice = None;
         while let Ok(frame) = update_rx.try_recv() {
             if let SessionUpdate::ReviewActivityNotice { key, branch, waiting, message } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
             {
                 notice = Some((key, branch, waiting, message));
             }
@@ -6259,7 +6278,7 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::TurnComplete { key, terminal_reason } => {
                     said.push(("complete", key, terminal_reason));
                 }
@@ -6294,7 +6313,9 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::TurnComplete { terminal_reason, .. } = frame.update {
+            if let SessionUpdate::TurnComplete { terminal_reason, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 said.push(terminal_reason);
             }
         }
@@ -6324,7 +6345,7 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::TurnComplete { .. } => said.push("complete"),
                 SessionUpdate::TurnCancelled { .. } => said.push("cancelled"),
                 _ => {}
@@ -6350,7 +6371,7 @@ mod tests {
 
         let mut said = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::TurnComplete { .. } => said.push("complete"),
                 SessionUpdate::TurnCancelled { .. } => said.push("cancelled"),
                 _ => {}
@@ -6679,7 +6700,7 @@ mod tests {
     fn drain_updates(rx: &mut mpsc::UnboundedReceiver<SeatUpdate>) -> Vec<SessionUpdate> {
         let mut seen = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            seen.push(frame.update);
+            seen.push(std::sync::Arc::unwrap_or_clone(frame.update));
         }
         seen
     }
@@ -7037,8 +7058,8 @@ mod tests {
         let update = update_rx.try_recv().expect("an update emits");
         assert!(
             matches!(
-                update.update,
-                SessionUpdate::ConnectionFailed { key: ref emitted, .. } if *emitted == key
+                &*update.update,
+                SessionUpdate::ConnectionFailed { key: emitted, .. } if *emitted == key
             ),
             "the ConnectionFailed envelope still goes out"
         );
@@ -7047,7 +7068,7 @@ mod tests {
         // stand-down follows the death so a client reads it second.
         assert!(
             matches!(
-                update_rx.try_recv().map(|frame| frame.update),
+                update_rx.try_recv().map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)),
                 Ok(SessionUpdate::MachineTurn { machine: None, .. })
             ),
             "the machine turn ends with the session",
@@ -7482,8 +7503,8 @@ mod tests {
         assert!(
             matches!(
                 observer.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::PermissionRequest { tool_id, .. }, .. })
-                    if tool_id == "tu-obs"
+                Ok(SeatUpdate { update, .. })
+                    if matches!(&*update, SessionUpdate::PermissionRequest { tool_id, .. } if tool_id == "tu-obs")
             ),
             "the observer is still delivered the request it cannot answer",
         );
@@ -7552,8 +7573,8 @@ mod tests {
         assert!(
             matches!(
                 observer.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::QuestionRequest { tool_id, .. }, .. })
-                    if tool_id == "tu-q-obs"
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::QuestionRequest { tool_id, .. } if tool_id == "tu-q-obs")
             ),
             "the observer is still delivered the question it cannot answer",
         );
@@ -7677,7 +7698,9 @@ mod tests {
 
         let mut resolved = None;
         while let Ok(frame) = observer.try_recv() {
-            if let SessionUpdate::PendingInteractionResolved { question_index, .. } = frame.update {
+            if let SessionUpdate::PendingInteractionResolved { question_index, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 resolved = Some(question_index);
             }
         }
@@ -7747,10 +7770,8 @@ mod tests {
         assert!(
             matches!(
                 update_rx.try_recv(),
-                Ok(SeatUpdate {
-                    update: SessionUpdate::SetModelFailed { model, message, .. },
-                    ..
-                }) if model == "claude-attempted" && message == "not available"
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::SetModelFailed { model, message, .. } if model == "claude-attempted" && message == "not available")
             ),
             "SetModelFailed keeps model + message for the rollback reducer"
         );
@@ -7763,8 +7784,8 @@ mod tests {
         assert!(
             matches!(
                 update_rx.try_recv(),
-                Ok(SeatUpdate { update: SessionUpdate::TurnError { message, .. }, .. })
-                    if message == "stdin write failed"
+                Ok(frame)
+                    if matches!(&*frame.update, SessionUpdate::TurnError { message, .. } if message == "stdin write failed")
             ),
             "TurnError carries the failure text so the spinner unwinds"
         );
@@ -7791,10 +7812,8 @@ mod tests {
             assert!(
                 matches!(
                     update_rx.try_recv(),
-                    Ok(SeatUpdate {
-                        update: SessionUpdate::TurnError { class: Some(on_wire), .. },
-                        ..
-                    }) if on_wire == class
+                    Ok(frame)
+                        if matches!(&*frame.update, SessionUpdate::TurnError { class: Some(on_wire), .. } if *on_wire == class)
                 ),
                 "the class has to reach the stream as {class:?}, not as None a reader must guess past",
             );
@@ -8002,7 +8021,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_primitives::MonitorRecord>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::MonitorsChanged { monitors, .. } = frame.update {
+            if let SessionUpdate::MonitorsChanged { monitors, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(monitors);
             }
         }
@@ -8015,7 +8036,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_workspace::BackgroundTask>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::BackgroundTasksChanged { tasks, .. } = frame.update {
+            if let SessionUpdate::BackgroundTasksChanged { tasks, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(tasks);
             }
         }
@@ -8057,7 +8080,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_primitives::runtime::SubagentCard>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::SubagentCardsChanged { cards, .. } = frame.update {
+            if let SessionUpdate::SubagentCardsChanged { cards, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(cards);
             }
         }
@@ -8171,7 +8196,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_primitives::runtime::AvailableCommand>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::SlashCommandsChanged { commands, .. } = frame.update {
+            if let SessionUpdate::SlashCommandsChanged { commands, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(commands);
             }
         }
@@ -8184,7 +8211,9 @@ provider = "anthropic"
     ) -> Vec<Vec<forge_primitives::runtime::AvailableAgent>> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::SubagentsChanged { subagents, .. } = frame.update {
+            if let SessionUpdate::SubagentsChanged { subagents, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(subagents);
             }
         }
@@ -8379,7 +8408,9 @@ provider = "anthropic"
     ) -> Vec<forge_agent::env::processes::ProcessSnapshot> {
         let mut announced = Vec::new();
         while let Ok(frame) = updates.try_recv() {
-            if let SessionUpdate::ProcessesChanged { snapshot, .. } = frame.update {
+            if let SessionUpdate::ProcessesChanged { snapshot, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 announced.push(snapshot);
             }
         }
@@ -8591,7 +8622,7 @@ provider = "anthropic"
         // it folded keeps offering a prompt the core has let go, and every
         // click on it reaches nothing.
         let announced: Vec<String> = std::iter::from_fn(|| update_rx.try_recv().ok())
-            .filter_map(|frame| match frame.update {
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::PendingInteractionResolved { key, tool_id, .. } => {
                     assert_eq!(key, SessionSlot::from_str_for_test("old-uuid"));
                     Some(tool_id)
@@ -8843,7 +8874,7 @@ provider = "anthropic"
         let mut echoed = None;
         while let Ok(frame) = update_rx.try_recv() {
             if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && key == session_key
                 && text == "morning reminder"
             {
@@ -8962,7 +8993,7 @@ provider = "anthropic"
         let mut heard: Vec<(String, String, Option<String>)> = Vec::new();
         while let Ok(frame) = update_rx.try_recv() {
             if let SessionUpdate::CronPromptAppended { key, text, cron_id, description, .. } =
-                frame.update
+                std::sync::Arc::unwrap_or_clone(frame.update)
                 && key == session_key
             {
                 heard.push((text, cron_id, description));
@@ -9037,7 +9068,7 @@ provider = "anthropic"
 
             let mut handed = None;
             while let Ok(frame) = update_rx.try_recv() {
-                match frame.update {
+                match std::sync::Arc::unwrap_or_clone(frame.update) {
                     SessionUpdate::Connected { history, dropped, .. }
                     | SessionUpdate::SessionReplaced { history, dropped, .. } => {
                         handed = Some((history, dropped));
@@ -9107,7 +9138,7 @@ provider = "anthropic"
 
             let mut seen = None;
             while let Ok(frame) = update_rx.try_recv() {
-                match frame.update {
+                match std::sync::Arc::unwrap_or_clone(frame.update) {
                     SessionUpdate::Connected { compaction_count, .. }
                     | SessionUpdate::SessionReplaced { compaction_count, .. } => {
                         seen = Some(compaction_count);
@@ -9234,7 +9265,7 @@ provider = "anthropic"
         let mut replaced_history_len = None;
         let mut saw_plain_connected = false;
         while let Ok(frame) = update_rx.try_recv() {
-            match frame.update {
+            match std::sync::Arc::unwrap_or_clone(frame.update) {
                 SessionUpdate::SessionReplaced { key, history, .. } => {
                     assert_eq!(key, session_key, "SessionReplaced targets the re-spawned session");
                     replaced_history_len = Some(history.len());
@@ -9306,7 +9337,7 @@ provider = "anthropic"
 
         let mut replaced_seen = false;
         while let Ok(frame) = update_rx.try_recv() {
-            replaced_seen |= matches!(frame.update, SessionUpdate::SessionReplaced { .. });
+            replaced_seen |= matches!(&*frame.update, SessionUpdate::SessionReplaced { .. });
         }
         assert!(
             replaced_seen,
@@ -10252,7 +10283,9 @@ provider = "anthropic"
 
         let mut saw_nonfatal = false;
         while let Ok(frame) = update_rx.try_recv() {
-            if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } = frame.update {
+            if let SessionUpdate::ConnectionFailed { key: failed_key, fatal, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
                 assert!(!fatal, "a failed re-spawn is recoverable, not fatal");
                 assert_eq!(failed_key, key);
                 saw_nonfatal = true;
@@ -10435,7 +10468,9 @@ provider = "anthropic"
         );
 
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
         assert!(
             announced.iter().any(|update| matches!(
                 update,
@@ -10624,7 +10659,9 @@ provider = "anthropic"
             "the prompt itself still reaches the agent: the pile is a view, not the send",
         );
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
         assert!(
             !announced.iter().any(|update| matches!(
                 update,
@@ -10710,7 +10747,9 @@ provider = "anthropic"
             "and a row is kept for a CLI that can settle it",
         );
         let announced: Vec<crate::protocol::SessionUpdate> =
-            std::iter::from_fn(|| updates.try_recv().ok()).map(|frame| frame.update).collect();
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
         assert!(
             announced.iter().any(|update| matches!(
                 update,

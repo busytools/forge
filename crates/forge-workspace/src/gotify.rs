@@ -428,7 +428,7 @@ mod tests {
     ) -> Vec<crate::protocol::SessionUpdate> {
         let mut out = Vec::new();
         while let Ok(frame) = rx.try_recv() {
-            out.push(frame.update);
+            out.push(std::sync::Arc::unwrap_or_clone(frame.update));
         }
         out
     }
@@ -960,11 +960,11 @@ mod tests {
         Vec<forge_primitives::GotifySubscription>,
         Vec<forge_primitives::slack::SlackSubscription>,
     ) {
-        match rx.try_recv() {
-            Ok(crate::SeatUpdate {
-                update:
-                    crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged { key, gotify, slack },
-                ..
+        match rx.try_recv().map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)) {
+            Ok(crate::protocol::SessionUpdate::ConnectorSubscriptionsChanged {
+                key,
+                gotify,
+                slack,
             }) => (key, gotify, slack),
             other => {
                 panic!("expected a ConnectorSubscriptionsChanged on the stream, got {other:?}")

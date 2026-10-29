@@ -378,7 +378,7 @@ async fn fold_the_stream(
         // frame must not take the seal's history away with it: the reseed it
         // carries is the only path the new epoch's rows have into the copy.
         let epoch_frame = matches!(
-            update,
+            &*update,
             crate::SessionUpdate::Connected { .. } | crate::SessionUpdate::SessionReplaced { .. }
         );
         if !epoch_frame
