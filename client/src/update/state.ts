@@ -64,8 +64,8 @@ export async function watchUpdate(): Promise<void> {
 /**
  * Act on the found update, landing on the stage the shell says finishes it.
  * The phone's stage is the release page opening, which leaves the offer
- * itself unmoved: the line goes back to where it was and a second tap
- * reopens the page.
+ * itself unmoved: the line returns to the offer, from a failure too, and a
+ * second tap reopens the page.
  */
 export async function install(): Promise<void> {
   const held = get(updateState);
