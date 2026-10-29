@@ -29,9 +29,9 @@ it, the branch on the segment for a moment - "committed on main", "pushed
 main", "rebased on topic" - and the tree row re-reads on the same frame; the
 conversation keeps no row for it. The segment's PR row is the same surface's
 state: a published change's number, draft flag and closes list move there
-after the core's own lookup, and an action the chat does not draw - an edit,
-a comment, a checkout - rides the segment's transient line instead, so it is
-not silent.
+after the core's own lookup, and every published action rides the segment's
+transient line - the four the chat also draws (`created`, `merged`, `closed`,
+`reopened`) on both surfaces, the rest on the strip alone.
 
 **The field's row is the whole composer when there is nothing else to
 say.** Idle, it is the placeholder and the mic; typing grows the draft and
