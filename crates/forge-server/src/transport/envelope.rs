@@ -416,7 +416,12 @@ pub enum ServerMessage {
         /// frame that is one update, and n for a run the batch folded into
         /// one - a run of token appends crosses as the single frame they
         /// draw as, and its span is what keeps the client from reading the
-        /// numbers it already drew as a gap. 0 on a frame that has no number.
+        /// numbers it already drew as a gap.
+        ///
+        /// **0 only on the turn the batch forges from a delivery**, which
+        /// has no number; every other frame stands for at least one, the
+        /// out-of-band `read_call_output` answer (`seq: null`, `span: 1`)
+        /// included.
         span: u64,
     },
     /// A page of one conversation, in answer to `more`: whole turns, each with

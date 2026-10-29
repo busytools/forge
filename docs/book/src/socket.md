@@ -607,12 +607,13 @@ of prose on either side.
   under and `span` how many of the seat's numbers it stands for - 1 for a
   frame that is one update, and n for a run of token appends the batch folded
   into the one frame they draw as. `seq` is absent from a frame belonging to
-  no seat, and `span` is always present, 0 on a frame with no number. Both
-  are absent from a server older than the fields, which leaves a client with
-  the frames alone. `seq` alone is absent from a seat's frame the server
-  answers out of band rather than emitting into the stream: the
-  `read_call_output` answer carries its seat, `seq: null` and `span: 1`,
-  because it stands nowhere in the sequence.
+  no seat, and `span` is 0 only on the turn the batch forges from a delivery
+  - a frame with no number - and 1 everywhere else. Both are absent from a
+  server older than the fields, which leaves a client with the frames alone.
+  `seq` alone is absent from a seat's frame the server answers out of band
+  rather than emitting into the stream: the `read_call_output` answer carries
+  its seat, `seq: null` and `span: 1`, because it stands nowhere in the
+  sequence.
 - **`page {conversation, turns, cursor}`** - in answer to `more`.
 - **`seat_frames {slot, epoch, frames}`** - in answer to `seat_range`: the
   frames numbered in `from..=to`, oldest first, each `{seq, update}` with the
