@@ -4323,10 +4323,16 @@ describe('the frames the fold had no row for', () => {
       }),
     ]);
 
+    expect(kinds(units), 'the command row and the assistant twin').toEqual(['notice', 'text']);
     const row = noticeOf(units[0]);
     expect(row?.severity, 'a local command is information').toBe('info');
     expect(row?.mark).toBe('local_command');
     expect(row?.text, 'the row names the command, not its whole output').toBe('Ran /usage');
+    const twin = units[1];
+    expect(
+      twin?.kind === 'text' ? twin.text : null,
+      'the twin still carries what the command printed',
+    ).toBe('Session cost: $1.23');
     expect(row?.fields, 'the open body carries the flags the frame sent').toEqual([
       { label: 'level', value: 'info' },
       { label: 'context usage', value: '{"percent":12}' },
