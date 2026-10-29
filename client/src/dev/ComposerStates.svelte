@@ -80,6 +80,7 @@
       seat: over.seat ?? seat(),
       connection: idle,
       dictation: over.dictation ?? false,
+      reading: over.reading ?? false,
     };
   }
 
