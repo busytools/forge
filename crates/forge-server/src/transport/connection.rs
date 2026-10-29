@@ -5822,9 +5822,7 @@ mod tests {
     /// rather than left to the constants' own tests.
     #[tokio::test]
     async fn a_viewer_that_fell_behind_the_downloads_is_told() {
-        use forge_primitives::browser::{
-            BrowserDownload, BrowserTabList, BrowserViewState,
-        };
+        use forge_primitives::browser::{BrowserDownload, BrowserTabList, BrowserViewState};
 
         let (downloads, downloads_rx) = tokio::sync::broadcast::channel(1);
         let (_frames, frames_rx) = tokio::sync::watch::channel(None);

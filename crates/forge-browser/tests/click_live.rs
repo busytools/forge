@@ -154,8 +154,8 @@ async fn fixture(name: &str) -> Fixture {
         &format!("/devtools/page/{id}"),
         Backlog::DropNewest(forge_browser::window::EVENT_BACKLOG),
     )
-        .await
-        .expect("the page's devtools endpoint accepts");
+    .await
+    .expect("the page's devtools endpoint accepts");
     let mut fixture = Fixture {
         _scratch: scratch,
         host,

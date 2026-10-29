@@ -151,9 +151,8 @@ async fn a_page_in_the_host_offers_no_webauthn() {
     let path = websocket
         .strip_prefix(&forge_browser::spawn::ws_prefix(port))
         .expect("the endpoint is on the host's port");
-    let (mut cdp, _events) = Cdp::connect_watch(port, path, Backlog::EveryEvent)
-        .await
-        .expect("a page connection");
+    let (mut cdp, _events) =
+        Cdp::connect_watch(port, path, Backlog::EveryEvent).await.expect("a page connection");
     open_page(&mut cdp, &carried).await;
 
     // The control: this is the served secure document, with the credentials

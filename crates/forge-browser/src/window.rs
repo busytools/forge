@@ -244,7 +244,12 @@ impl Cdp {
                 let (tx, rx) = mpsc::unbounded_channel();
                 let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 (
-                    EventSink::Keeping { events: tx, methods, ceiling, queued: Arc::clone(&queued) },
+                    EventSink::Keeping {
+                        events: tx,
+                        methods,
+                        ceiling,
+                        queued: Arc::clone(&queued),
+                    },
                     Events::Keeping { events: rx, queued },
                 )
             }
