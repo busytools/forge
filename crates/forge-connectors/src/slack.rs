@@ -563,8 +563,8 @@ async fn author_of(
     Ok(name)
 }
 
-/// As [`author_of`] without the per-sweep memo, which is what resolves one
-/// author outright.
+/// Resolves one author outright, without the per-conversation memo
+/// [`author_of`] keeps.
 async fn resolve_author(
     host: &dyn SlackHost,
     api: &dyn SlackApi,
