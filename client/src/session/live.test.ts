@@ -358,6 +358,8 @@ afterEach(async () => {
   await server?.close();
   server = null;
   document.body.innerHTML = '';
+  git.show(null);
+  git.sync(null);
   // And a case that hid the page must not leave it hidden for the next one.
   delete (document as { hidden?: boolean }).hidden;
 });
@@ -2047,6 +2049,124 @@ describe('the record a page holds over an update stream', () => {
     expect(page.read().wire?.conversation.turns, 'the frame is not in the record').toHaveLength(1);
     expect(page.reads(), 'the page asked for a read on an update').toBe(asked);
     page.stop();
+  });
+
+  it("puts a repository mutation on the shown seat's strip, not in the conversation", () => {
+    const connection = drivable();
+    // The page's own effect calls this; the store-only harness names the seat.
+    git.show(LEAD);
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.land(
+      updateOf({
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'system',
+            subtype: 'vcs_state_changed',
+            kind: 'commit',
+            branch: 'main',
+            uuid: 'v1',
+          },
+        },
+      }),
+    );
+
+    expect(git.noteNow()?.line, 'the strip carries the event').toBe('committed on main');
+    page.stop();
+  });
+
+  it('puts a published action with no chat row on the strip', () => {
+    const connection = drivable();
+    git.show(LEAD);
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    page.land(
+      updateOf({
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'system',
+            subtype: 'code_change_published',
+            provider: 'github',
+            url: 'https://github.com/example/example/pull/123',
+            repo: 'example/example',
+            identifier: '123',
+            action: 'edited',
+            uuid: 'c1',
+          },
+        },
+      }),
+    );
+
+    expect(git.noteNow()?.line, 'the edit is not silent').toBe('PR #123 edited in example/example');
+    page.stop();
+  });
+
+  /**
+   * **A visited seat keeps folding.** The store runs every subscribed seat's
+   * frames, and the strip is one singleton, so a worker's commit would
+   * otherwise land beside the lead's branch. The note belongs to the shown
+   * seat only.
+   */
+  it("does not put an away seat's mutation on the shown seat's strip", () => {
+    const W1: SessionSlot = { ...LEAD, label: 'w1' };
+    const connection = drivable();
+    git.show(LEAD);
+    const away = watch(connection, W1);
+    away.land(snapshotOf(W1));
+    away.land(
+      updateOf({
+        chat_appended: {
+          key: W1,
+          msg: {
+            type: 'system',
+            subtype: 'vcs_state_changed',
+            kind: 'push',
+            branch: 'main',
+            uuid: 'v2',
+          },
+        },
+      }),
+    );
+
+    expect(git.noteNow(), "the away seat's commit is not the lead's news").toBeNull();
+    away.stop();
+  });
+
+  /**
+   * **The mounted page names the shown seat for the strip.** The store-only
+   * harness calls `git.show` itself; if the page does not, no live note ever
+   * reaches the strip - and if it does not drop the name on unmount, an away
+   * seat keeps arming notes nobody draws.
+   */
+  it('the mounted page names the shown seat, and drops it on unmount', async () => {
+    await open(sessionFixture);
+    if (server === null) throw new Error('the page opened with no stub server');
+    server.push(
+      updateOf({
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'system',
+            subtype: 'vcs_state_changed',
+            kind: 'commit',
+            branch: 'main',
+            uuid: 'v-mounted',
+          },
+        },
+      }),
+    );
+    await settle();
+
+    expect(git.noteNow()?.line, 'the page named the seat, so the note reached the strip').toBe(
+      'committed on main',
+    );
+
+    if (app !== null) await unmount(app);
+    app = null;
+    git.note(LEAD, 'after the page');
+    expect(git.noteNow(), 'an unmounted page names no seat').toBeNull();
   });
 
   /**

@@ -28,6 +28,8 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { releaseConversation } from '../chat/conversations';
 import { cronNames } from '../chat/cron-names.svelte';
+import { changeLine } from '../chat/change';
+import { git, vcsLine } from '../chat/git.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
@@ -271,6 +273,53 @@ const REPAIR_HELD_CAP = 256;
  * will be outrun too (#1472, measured live 2026-10-15).
  */
 const OUTRUN_CAP = 3;
+
+/**
+ * Put a repository mutation on the strip as it arrives.
+ *
+ * **The frame is the tree's event, not the conversation's** - the chat fold
+ * draws no row for it, so this is where a reader still meets it. The record's
+ * own re-read (the core's `repo_nudge`) moves the tree; the line says what
+ * moved while the re-read lands, and clears itself.
+ */
+function noteRepositoryEvent(update: SessionUpdate, slot: SessionSlot): void {
+  const [name, payload] = variantOf(update);
+  if (name !== 'chat_appended') return;
+  const msg = payload['msg'];
+  if (msg === null || typeof msg !== 'object') return;
+  const held = msg as {
+    type?: unknown;
+    subtype?: unknown;
+    kind?: unknown;
+    branch?: unknown;
+    provider?: unknown;
+    identifier?: unknown;
+    action?: unknown;
+    repo?: unknown;
+  };
+  if (held.type !== 'system') return;
+  if (held.subtype === 'vcs_state_changed') {
+    git.note(
+      slot,
+      vcsLine(
+        typeof held.kind === 'string' ? held.kind : null,
+        typeof held.branch === 'string' ? held.branch : null,
+      ),
+    );
+    return;
+  }
+  if (held.subtype === 'code_change_published') {
+    git.note(
+      slot,
+      changeLine(
+        typeof held.provider === 'string' ? held.provider : null,
+        typeof held.identifier === 'string' ? held.identifier : null,
+        typeof held.action === 'string' ? held.action : null,
+        typeof held.repo === 'string' ? held.repo : null,
+      ),
+    );
+  }
+}
 
 /**
  * Watch one seat.
@@ -936,6 +985,7 @@ function createSeat(
    */
   function draw(update: SessionUpdate): void {
     if (seat.wire === null) return;
+    if (held !== null) noteRepositoryEvent(update, held);
     const next = applyUpdate(seat.wire, update);
     // An update this record has nothing to do with: publishing it would
     // redraw every reader of the page for no change at all.

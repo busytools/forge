@@ -23,6 +23,7 @@ afterEach(async () => {
   if (app !== null) await unmount(app);
   app = null;
   document.body.innerHTML = '';
+  git.show(null);
   git.sync(null);
   vi.useRealTimers();
 });

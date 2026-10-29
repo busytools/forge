@@ -175,7 +175,12 @@
    * age re-derives on the page's clock rather than going stale between reads.
    */
   $effect(() => {
+    git.show(slot);
     git.sync(record === null ? null : gitStrip(record, slot, seatTree(wire, slot)));
+  });
+  /** Leaving the page names no seat, so an away seat's frames stop arming notes. */
+  $effect(() => {
+    return () => git.show(null);
   });
   /** The files slip is mandatory: it draws for every seat with a record,
    *  naming the tree it opens - a worker's worktree by its own name, the

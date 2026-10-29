@@ -156,8 +156,8 @@ read as one system.
 - **A frame the page has no face for yet draws as itself, marked
   provisional.** An unknown top-level frame and an unknown content block, and
   the CLI's own system lines for a permission refusal, an API error, an
-  informational line, a notification, a repository mutation and a published
-  change, each draw as a notice whose mark is the wire's own type. The open body lists what the frame carried as one-line
+  informational line and a notification, each draw as a notice whose mark is
+  the wire's own type. The open body lists what the frame carried as one-line
   labelled values - the tool and call a refusal names, an error's message,
   status and retry, an unknown frame's fields - and the frame itself sits
   behind a second control under them, so the payload stays reachable while
@@ -168,22 +168,41 @@ read as one system.
   once the turn has closed. Until then the dock is the question's row, so the
   mark waits for the close; after it, the answer card never drew and the dock
   has cleared, and the call row is the only trace left.
-- **The CLI's own repository events draw one line each, and open onto their
-  own fields.** A `vcs_state_changed` frame says a foreground command
-  committed, pushed, merged or rebased: the row names the kind and, where
-  the CLI attributed it, the branch, and it is the event that makes the tree
-  row re-read on the frame rather than at its next staleness window. A
-  `code_change_published` frame says this session put a change up for review
-  or linked itself to one: the row names the action, the repository and the
-  change number, with the URL a reader opens as the quiet tail of the header,
-  and it is what makes the tree row look the PR up again. Opened, each
-  lists the fields the frame carried -
-  the kind and branch, the action, provider, repository, change and URL - so
-  a fact the line does not spell is still reachable, and a kind or action
-  this build has no word for is shown as the wire's own value rather than
-  dropped. **Both are events from the live window**: the CLI writes neither
-  to the transcript, so a conversation reopened from it shows the command
-  and its output under the call, and the tree row, but not the event line.
+- **A model swap, a memory recall, a local command and a project's
+  development intent each draw a row of their own.** A model fallback (and a
+  refusal retry, a refusal with no fallback, and the Fable consent gate) draws
+  a warning whose words are the CLI's own `content` - or, for the refusal
+  retry, which carries none, a line saying the session changed model - and
+  whose open body names the trigger, the model it left and the model it fell
+  to. A memory recall draws one line saying how many memories the turn was
+  given, with the paths and, where the CLI supplies it, the recalled body in
+  the open body rather than one row per memory. A local command draws one
+  row: the command it ran, with the command's output in its open body. The CLI
+  sends the name and the print as one frame (2.1.280) or two (older), and a
+  print fills the row the name opened - so a command is one row and not two,
+  and there is no assistant message carrying the output, because forge reads
+  the raw system frames. A project development-intent frame draws one quiet
+  line naming the platform the CLI saw, with the evidence in its open body;
+  the CLI's emit cadence is not captured, so the line is a fact about the
+  project, not a count of turns.
+- **The CLI's own repository events belong to the working-tree strip, not
+  the conversation.** A `vcs_state_changed` frame is the tree's own news: the
+  strip above the composer says what moved for a moment - the kind and, where
+  the CLI attributed it, the branch - and the tree row re-reads on the frame
+  rather than at its next staleness window, so no chat row is drawn. A
+  `code_change_published` frame keeps a chat row only for the four
+  transitions a reader would otherwise miss - `created`, `merged`, `closed`
+  and `reopened` - naming the action, the repository and the change number,
+  with the URL a reader opens as the quiet tail; every action rides the
+  strip's transient line, and the PR row carries its state after the core's
+  own lookup, so an edit, a comment or a checkout is not silent - and the four
+  that keep a chat row ride both. **The strip is the shown seat's**: a
+  mutation on a seat you are not looking at is not drawn, its frame belonging
+  to the seat but the line to the one on screen. A chat row's open lists the
+  frame's own fields, so a fact the line does not spell is still reachable.
+  **Both are events from the live window**: the CLI writes neither to the
+  transcript, so a conversation reopened from it shows the tree and the PR
+  row, but not the transient line.
 
 The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it
@@ -285,8 +304,12 @@ tab**, so a page that has never used the browser carries no browser row.
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every
 seat has a tree - a worker's own worktree, the lead's checkout - so it
 draws for every seat with a record, where the tree row beside it keeps its
-rule of staying away when nothing has moved. **The slip IS the door, with
-no panel**: a press opens the page that reads the whole tree
+rule of staying away when nothing has moved. **That rule does not silence
+the segment**: a repository event with no tree row to ride - a commit on a
+clean default branch - draws a note-only line for the event's eight-second
+window, a status rather than a control, and the segment is gone once it
+clears. **The slip IS the door, with no panel**: a press opens the page
+that reads the whole tree
 (`/session/<org>/<project>/<label>/files`), reading `walk · files` for a
 seat in a worktree of its own (the worktree's name, so the destination is
 never a guess) and plain `files` for the project's checkout, with the
