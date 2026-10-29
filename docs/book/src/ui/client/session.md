@@ -304,8 +304,12 @@ tab**, so a page that has never used the browser carries no browser row.
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every
 seat has a tree - a worker's own worktree, the lead's checkout - so it
 draws for every seat with a record, where the tree row beside it keeps its
-rule of staying away when nothing has moved. **The slip IS the door, with
-no panel**: a press opens the page that reads the whole tree
+rule of staying away when nothing has moved. **That rule does not silence
+the segment**: a repository event with no tree row to ride - a commit on a
+clean default branch - draws a note-only line for the event's eight-second
+window, a status rather than a control, and the segment is gone once it
+clears. **The slip IS the door, with no panel**: a press opens the page
+that reads the whole tree
 (`/session/<org>/<project>/<label>/files`), reading `walk · files` for a
 seat in a worktree of its own (the worktree's name, so the destination is
 never a guess) and plain `files` for the project's checkout, with the

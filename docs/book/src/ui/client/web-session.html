@@ -1118,6 +1118,12 @@
     font: inherit; color: var(--muted); }
   .sg-seg .sg-tog .ring { width: 9px; height: 9px; flex: none; }
   .sg-seg .sg-tog .note { color: var(--dim); font-size: 11px; }
+  /* An event with no tree row to ride, on a clean default branch: a line,
+     not a control, so it takes no pointer and no hover ground. */
+  .sg-seg .sg-note { display: flex; align-items: center; gap: 8px; padding: 1px 8px;
+    color: var(--muted); }
+  .sg-seg .sg-note .note { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: var(--dim); font-size: 11px; }
   /* The status depth under a server row: the tools it offers and what backs
      it, wrapping rather than eliding - the strip is nowrap, so the wrap has
      to be asked for here. */
@@ -3420,7 +3426,10 @@ branch main, nothing to commit</div>
                chain below them, newest first, each with when it landed and
                its own files on hover, focus or a tap. On the default branch
                with nothing on it the row does not draw at all: that is where
-               work lands, not work. The toggle reads branch, commits, PR and
+               work lands, not work. The segment does not go with it - a
+               repository event with no tree row to ride draws a note-only
+               line for the event's window, and nothing when no event is
+               live. The toggle reads branch, commits, PR and
                `dirty`, and for a moment the CLI's last repository event -
                figures live in the open list. Drawn CLOSED here, like its
                siblings. -->
@@ -3468,6 +3477,24 @@ branch main, nothing to commit</div>
               <svg class="ic"><use href="#i-monitors"/></svg>
               1 running</button>
           </span>
+          </span>
+        </div>
+      </div>
+      <!-- The tree segment's other state, named beside the specimen rather
+           than only in the comment: a repository event on a clean default
+           branch has no tree row to ride, so the segment draws a note-only
+           line for the event's window and no toggle at all. It is a
+           status, not a control - no pointer ground, no hover. -->
+      <div class="annot">
+        <span class="dim">an event on a clean default branch &#183; a note-only line, no tree row</span>
+      </div>
+      <div class="strip">
+        <div class="ti">
+          <span class="sg-seg">
+            <span class="sg-note" role="status">
+              <svg class="ic"><use href="#i-git"/></svg>
+              <span class="note">committed on main</span>
+            </span>
           </span>
         </div>
       </div>
