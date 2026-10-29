@@ -6446,7 +6446,9 @@ async fn a_read_off_the_loop_holds_its_own_seats_frames_only() {
 }
 
 /// **An ask queued behind a read is withdrawn when its subject is released**,
-/// and answered so the client owes nothing for it; it never starts a read of
+/// answered so the client owes nothing for it, and answered in its turn: the
+/// client pairs a refusal with the oldest ask it holds, so an answer sent out
+/// of band would land on the read still ahead of it. It never starts a read of
 /// its own.
 #[tokio::test]
 async fn a_queued_ask_is_withdrawn_and_answered_when_its_subject_is_released() {
@@ -6500,13 +6502,33 @@ async fn a_queued_ask_is_withdrawn_and_answered_when_its_subject_is_released() {
     .await;
     send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Home }).await;
 
-    match next_server_within(&mut conn, 5_000).await {
-        Some(ServerMessage::Error { what, seat, .. }) => {
-            assert_eq!(what, "subscribe", "the withdrawn ask is answered as a subscribe");
-            assert_eq!(seat, None, "and the home is no seat");
-        }
-        other => panic!("no answer arrived for the withdrawn ask: {other:?}"),
+    // **The withdrawn ask keeps its place.** Its answer would carry a refusal,
+    // and the client pairs a refusal with the oldest ask it still holds - the
+    // seat's read, still in flight - so nothing may arrive for it yet.
+    while let Some(message) = next_server_within(&mut conn, 700).await {
+        assert!(
+            !matches!(&message, ServerMessage::Error { .. }),
+            "the withdrawn ask answered before the read ahead of it: {message:?}",
+        );
     }
+
+    // Ending the read answers both, in the order they were asked: the seat's
+    // own read, then the withdrawn home ask that queued behind it.
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    let mut refusals = Vec::new();
+    while refusals.len() < 2 {
+        match next_server_within(&mut conn, 5_000).await {
+            Some(ServerMessage::Error { what, seat, .. }) => refusals.push((what, seat)),
+            Some(_) => {}
+            None => panic!("only {} of the two answers arrived", refusals.len()),
+        }
+    }
+    assert_eq!(
+        refusals[0],
+        ("subscribe".to_owned(), Some(lead_seat())),
+        "the seat's abandoned read is answered first",
+    );
+    assert_eq!(refusals[1], ("subscribe".to_owned(), None), "and the withdrawn home ask second");
     while let Some(message) = next_server_within(&mut conn, 700).await {
         assert!(
             !matches!(&message, ServerMessage::Snapshot { subject, .. } if subject == &Subject::Home),

@@ -694,8 +694,19 @@ struct Reads {
     one: Option<Reading>,
     /// The arrival instant rides with each queued ask, so the open it reports
     /// includes the wait it spent here.
-    waiting: std::collections::VecDeque<(Instant, ClientMessage)>,
+    waiting: std::collections::VecDeque<Queued>,
     reply: mpsc::UnboundedSender<Answer>,
+}
+
+/// An ask waiting behind the connection's read.
+///
+/// **A withdrawn ask keeps its place in the queue.** The client pairs a
+/// refusal with the oldest ask it still holds, so answering a withdrawn ask
+/// the moment its subject is released would land that refusal on an older ask
+/// that is still waiting - the seat the client is drawing.
+enum Queued {
+    Ask(Instant, ClientMessage),
+    Withdrawn(Subject),
 }
 
 /// Frames held for a seat whose record is being read. The record is encoded
@@ -790,6 +801,22 @@ impl Drop for AbortOnDrop {
     }
 }
 
+/// Spawn a subscribe read off the connection's loop, with its answer guard armed
+/// INSIDE the task: an encode that panics must still answer the loop, or its
+/// read stays in flight for the connection's life and every later subscribe
+/// queues behind it in silence.
+fn spawn_read(
+    mut answer: ReadAnswerGuard,
+    encode: impl std::future::Future<Output = anyhow::Result<(serde_json::Value, OpenTimings)>>
+    + Send
+    + 'static,
+) -> AbortOnDrop {
+    AbortOnDrop(tokio::spawn(async move {
+        let outcome = encode.await;
+        answer.answer(outcome);
+    }))
+}
+
 /// The connection's own loop, so that every way out of it runs the detach
 /// above rather than only the clean one.
 async fn run_connection<S>(
@@ -852,13 +879,22 @@ where
                 // without this drain the asks behind it would wait for a
                 // record nobody owes.
                 while reads.one.is_none() {
-                    let Some((at, next)) = reads.waiting.pop_front() else { break };
-                    handle_message(
-                        socket, state, watching, holds, updates, dictate, browser, reads,
-                        Arrival { caller, at },
-                        next,
-                    )
-                    .await?;
+                    let Some(next) = reads.waiting.pop_front() else { break };
+                    match next {
+                        Queued::Ask(at, message) => {
+                            handle_message(
+                                socket, state, watching, holds, updates, dictate, browser, reads,
+                                Arrival { caller, at },
+                                message,
+                            )
+                            .await?;
+                        }
+                        // Its turn at last: every ask ahead of it is answered,
+                        // so this refusal lands on the ask it was made for.
+                        Queued::Withdrawn(what) => {
+                            send(socket, released_subscribe(&what)).await?;
+                        }
+                    }
                 }
             }
             // **An answer sent by a task this loop did not wait for.** A
@@ -876,13 +912,19 @@ where
                         // **And the asks that queued behind it**, in the order
                         // they were asked: one may start the next read.
                         while reads.one.is_none() {
-                            let Some((at, msg)) = reads.waiting.pop_front() else { break };
-                            handle_message(
-                                socket, state, watching, holds, updates, dictate, browser, reads,
-                                Arrival { caller, at },
-                                msg,
-                            )
-                            .await?;
+                            let Some(next) = reads.waiting.pop_front() else { break };
+                            match next {
+                                Queued::Ask(at, message) => {
+                                    handle_message(
+                                        socket, state, watching, holds, updates, dictate, browser,
+                                        reads, Arrival { caller, at }, message,
+                                    )
+                                    .await?;
+                                }
+                                Queued::Withdrawn(what) => {
+                                    send(socket, released_subscribe(&what)).await?;
+                                }
+                            }
                         }
                     }
                 }
@@ -1374,8 +1416,8 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
         encode_ms = timings.encode_ms,
         pr_age_s = timings.pr_age_s,
         "the subscribe's own work, in DISJOINT slices: queue is the wait it \
-         spent behind an earlier read on this connection, prelude is the \
-         client line and the browser role, queued the frames already \
+         spent behind an earlier read on this connection, prelude is what the \
+         subscribe's own handling cost after it, queued the frames already \
          waiting for this subject, hold the seat's watch, prologue the \
          roster and its asks, header the seat's header, catch_up the \
          copy's wait, seed the transcript read a cold seat pays, \
@@ -1583,9 +1625,10 @@ where
             // holds, and the loop above answers these in that order; every
             // other message on this connection keeps moving.
             if reads.one.is_some() {
-                reads
-                    .waiting
-                    .push_back((arrived_at, ClientMessage::Subscribe { what, answering, review }));
+                reads.waiting.push_back(Queued::Ask(
+                    arrived_at,
+                    ClientMessage::Subscribe { what, answering, review },
+                ));
                 return Ok(());
             }
             // Forwarded before the snapshot: they were emitted before it was
@@ -1621,9 +1664,11 @@ where
             // written before the snapshot is built: a seat that kept
             // streaming while nothing watched pays them on the next open.
             let queued_ms = queued_at.elapsed().as_secs_f64() * 1000.0 - hold_ms;
-            // The subscribe's own opening: the client line, the browser
-            // role's answer and the seat set a first declaration carries.
-            let prelude_ms = queued_at.saturating_duration_since(open_at).as_secs_f64() * 1000.0;
+            // The subscribe's own opening, counted from after the queue wait:
+            // `queue_ms` is that wait's own slice, and prelude starting at the
+            // arrival would count it twice.
+            let prelude_ms =
+                queued_at.saturating_duration_since(open_at).as_secs_f64() * 1000.0 - wait_ms;
             // **The review read runs off this loop.** It waits for a base
             // fetch with no cap, and awaiting that here would stop this
             // connection reading updates, commands, or even the client going
@@ -1635,32 +1680,24 @@ where
                     Subject::Session(slot) => Some(slot.clone()),
                     _ => None,
                 };
-                let reply = reads.reply.clone();
                 let state = Arc::clone(state);
-                let subject = what.clone();
-                let peer = caller.peer;
-                let task = tokio::spawn(async move {
-                    // **An answer is owed even if the encode panics.** The loop
-                    // is waiting on this task: no answer leaves its read in
-                    // flight for the connection's life, and every later
-                    // subscribe queued behind it.
-                    let mut answer = ReadAnswerGuard {
-                        reply,
-                        subject,
+                let encode_subject = what.clone();
+                let task = spawn_read(
+                    ReadAnswerGuard {
+                        reply: reads.reply.clone(),
+                        subject: what.clone(),
                         seat,
-                        peer,
+                        peer: caller.peer,
                         open_at,
                         queue_ms: wait_ms,
                         prelude_ms,
                         queued_ms,
                         hold_ms,
                         answered: false,
-                    };
-                    let outcome = encode_subject_timed(&state, &answer.subject, true).await;
-                    answer.answer(outcome);
-                });
-                reads.one =
-                    Some(Reading { subject: what, frames: Vec::new(), _task: AbortOnDrop(task) });
+                    },
+                    async move { encode_subject_timed(&state, &encode_subject, true).await },
+                );
+                reads.one = Some(Reading { subject: what, frames: Vec::new(), _task: task });
                 return Ok(());
             }
             match encode_subject_timed(state, &what, review).await {
@@ -2588,23 +2625,24 @@ where
                 send(socket, released_subscribe(&what)).await?;
             }
             // **An ask queued for this subject is withdrawn with it**, and
-            // answered the same way: the page that wanted it has let the
-            // subject go, and an ask left answering nothing would strand the
-            // client's oldest-first bookkeeping - or take a hold nobody wants.
+            // answered in its turn by the drain: the page that wanted it has
+            // let the subject go, and an ask left answering nothing would
+            // strand the client's oldest-first bookkeeping - or take a hold
+            // nobody wants. It keeps its place rather than answering here: the
+            // asks ahead of it are still waiting, and the client would take
+            // this refusal as theirs.
             let mut kept = std::collections::VecDeque::with_capacity(reads.waiting.len());
-            let mut withdrawn = 0;
-            while let Some((at, queued)) = reads.waiting.pop_front() {
-                match &queued {
-                    ClientMessage::Subscribe { what: queued, .. } if queued == &what => {
-                        withdrawn += 1;
+            while let Some(entry) = reads.waiting.pop_front() {
+                match entry {
+                    Queued::Ask(_, ClientMessage::Subscribe { what: queued, .. })
+                        if queued == what =>
+                    {
+                        kept.push_back(Queued::Withdrawn(what.clone()));
                     }
-                    _ => kept.push_back((at, queued)),
+                    other => kept.push_back(other),
                 }
             }
             reads.waiting = kept;
-            for _ in 0..withdrawn {
-                send(socket, released_subscribe(&what)).await?;
-            }
             Ok(())
         }
         ClientMessage::Showing { seat } => set_showing(socket, state, watching, seat).await,
@@ -3650,29 +3688,31 @@ mod tests {
 
     /// **A panic in the encode answers the loop; a cancellation does not.** The
     /// release and the end of the connection cancel the read and send their own
-    /// answer, so a guard that fired on both would answer one ask twice.
-    #[test]
-    fn a_panicking_read_answers_the_loop_and_a_cancelled_one_does_not() {
+    /// answer, so a guard that fired on both would answer one ask twice. The
+    /// panic half drives the spawn the connection itself uses, so a spawn that
+    /// stops arming the guard fails here.
+    #[tokio::test]
+    async fn a_panicking_read_answers_the_loop_and_a_cancelled_one_does_not() {
         let (reply, mut answers) = mpsc::unbounded_channel();
-        // A panic through the guard's own scope, the guard dropped by the
-        // unwind as the task's future is.
-        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _armed = ReadAnswerGuard {
-                reply,
-                subject: Subject::Home,
-                seat: None,
-                peer: "127.0.0.1:1".parse().expect("a peer"),
-                open_at: Instant::now(),
-                queue_ms: 0.0,
-                prelude_ms: 0.0,
-                queued_ms: 0.0,
-                hold_ms: 0.0,
-                answered: false,
-            };
-            panic!("the encode broke");
-        }));
-        assert!(panicked.is_err(), "control: the scope really panicked");
-        let answer = answers.try_recv().expect("the panic answered the loop");
+        // A panic inside the read's task, the guard dropped by the unwind as
+        // the task's own future is.
+        let guard = ReadAnswerGuard {
+            reply,
+            subject: Subject::Home,
+            seat: None,
+            peer: "127.0.0.1:1".parse().expect("a peer"),
+            open_at: Instant::now(),
+            queue_ms: 0.0,
+            prelude_ms: 0.0,
+            queued_ms: 0.0,
+            hold_ms: 0.0,
+            answered: false,
+        };
+        let _task = spawn_read(guard, async { panic!("the encode broke") });
+        let answer = tokio::time::timeout(Duration::from_secs(5), answers.recv())
+            .await
+            .expect("the panic answered the loop")
+            .expect("the channel is open");
         let Answer::Read(read) = answer else { panic!("a read's answer, not a reply") };
         assert!(
             read.outcome

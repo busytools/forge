@@ -194,8 +194,15 @@ pub(super) fn noop_fetch_at(dir: &std::path::Path, bin: &std::path::Path) {
     write_wrapper(dir, bin, "noop-git", &[], "exit 0");
 }
 
+/// The environment a test's `git` wrapper gives its child, so a case about a
+/// checkout that names no ssh command is not answered by the developer's own
+/// global config.
+#[cfg(test)]
+const ISOLATED_GIT_CONFIG: &str = "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null";
+
 /// Write a `git` wrapper with one refusal on `fetch` and an optional stall on
-/// another subcommand, delegating everything else to the machine's own git.
+/// another subcommand, delegating everything else to the machine's own git,
+/// with the machine's own config kept out of reach.
 #[cfg(test)]
 fn write_wrapper(
     dir: &std::path::Path,
@@ -212,8 +219,23 @@ fn write_wrapper(
     for (subcommand, body) in stalls {
         writeln!(script, "  *\" {subcommand} \"*) {body} ;;").expect("the wrapper's stall arm");
     }
-    script.push_str("esac\nexec git \"$@\"\n");
+    writeln!(script, "esac\n{ISOLATED_GIT_CONFIG} exec git \"$@\"")
+        .expect("the wrapper's fallback");
     let wrapper = bin.join(name);
+    std::fs::write(&wrapper, script).expect("the wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+    crate::env::git_command::point_git_at(dir, &wrapper);
+}
+
+/// Point `dir`'s `git` at a wrapper that cannot see the machine's own config:
+/// the ssh classifier reads `core.sshCommand` from it, and a developer's global
+/// value would answer for the checkout under test.
+#[cfg(test)]
+fn without_machine_config_at(dir: &std::path::Path, bin: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let script = format!("#!/bin/sh\n{ISOLATED_GIT_CONFIG} exec git \"$@\"\n");
+    let wrapper = bin.join("isolated-git");
     std::fs::write(&wrapper, script).expect("the wrapper");
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
     crate::env::git_command::point_git_at(dir, &wrapper);
@@ -4883,9 +4905,12 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
+        let bin = tempfile::tempdir().expect("wrapper dir");
         init_repo(&dir, "main");
+        without_machine_config_at(dir.path(), bin.path());
 
         assert!(ssh_is_forges(dir.path()).await, "an ordinary checkout is forge's to bound");
+        crate::env::git_command::clear_git_point(dir.path());
     }
 
     /// **And one that names its own is kept**, whichever spelling: forge sets
@@ -4896,10 +4921,13 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
+        let bin = tempfile::tempdir().expect("wrapper dir");
         init_repo(&dir, "main");
         git_at(dir.path(), &["config", "core.sshCommand", "/bin/true"]);
+        without_machine_config_at(dir.path(), bin.path());
 
         assert!(!ssh_is_forges(dir.path()).await, "the checkout's command governs");
+        crate::env::git_command::clear_git_point(dir.path());
     }
 
     /// **The classifier's answer reaches the child**: the fetch itself carries
@@ -4915,8 +4943,10 @@ mod tests {
         let bin = tempfile::tempdir().expect("wrapper dir");
         let marker = bin.path().join("ssh-env");
         let at = marker.display();
-        let capturing =
-            format!("echo \"ssh=${{GIT_SSH_COMMAND:-none}}\" >> '{at}'; exec git \"$@\"");
+        let capturing = format!(
+            "echo \"ssh=${{GIT_SSH_COMMAND:-none}}\" >> '{at}'; \
+             {ISOLATED_GIT_CONFIG} exec git \"$@\""
+        );
         write_wrapper(dir.path(), bin.path(), "env-git", &[], &capturing);
 
         let first = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
@@ -4960,6 +4990,36 @@ mod tests {
             redact("fatal: 'https://host.example:8443/x' refused"),
             "fatal: 'https://host.example:8443/x' refused",
             "a port is not a credential",
+        );
+    }
+
+    /// **The credential goes before the cap does.** Applied first, the cap
+    /// lands inside the userinfo and takes the `@` the redactor needs with it,
+    /// so the head of the password reaches the record - and every page that
+    /// draws it. A redaction case under 200 characters cannot tell the two
+    /// orders apart; this one puts the cap inside the password.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_fetchs_credential_goes_before_the_words_are_capped() {
+        let (_upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let refused = format!(
+            "printf '%s\\n' \"fatal: {}https://user:SECRETSECRET@host.example/x: {}\" >&2; exit 1",
+            "x".repeat(170),
+            "y".repeat(300),
+        );
+        write_wrapper(dir.path(), bin.path(), "credential-git", &[], &refused);
+
+        let refresh = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        let words = refresh.error.expect("the fetch failed");
+        assert!(
+            !words.contains("SECRET"),
+            "the credential reached the words a page draws: {words:?}",
+        );
+        assert!(
+            words.contains("<redacted>"),
+            "and the words still say the URL carried one: {words:?}",
         );
     }
 
