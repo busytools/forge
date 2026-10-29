@@ -456,6 +456,16 @@ impl Workspace {
     /// up before the PR existed and its cache window would serve that answer,
     /// so the next pass looks again.
     pub(crate) fn note_code_change_published(&self, slot: &SessionSlot) {
+        // **The stamp is dropped here, not in the scan.** The stored snapshot
+        // outlives a `release_seat`, so a change published while nobody holds
+        // the seat would otherwise leave its attempt time in place and the
+        // seat's next open would serve the cache this event exists to
+        // invalidate. Clearing it is cheap and owes no scan.
+        if let Some(domain) = self.domain_session_for(slot)
+            && let Some(held) = domain.lock().work_snapshot.as_mut()
+        {
+            held.diff.pr_fetched_at = None;
+        }
         self.held_work_seats.nudge(slot, true);
     }
 
@@ -717,13 +727,6 @@ impl Workspace {
             Some(gate) => Some(gate.lock().await),
             None => None,
         };
-        // The held block's attempt time is what makes the next scan reuse it,
-        // and a published change is precisely the case that attempt predates,
-        // so the stamp is dropped before the scan reads it as `previous`.
-        if pr_force && let Some(mut held) = self.work_snapshot(slot) {
-            held.diff.pr_fetched_at = None;
-            self.store_work_snapshot(slot, held);
-        }
         self.scan_work_locked(slot, true, PrRefresh::Fetch, pr_force).await
     }
 
@@ -1522,33 +1525,45 @@ provider = "anthropic"
     }
 
     /// **The CLI's repository-mutation report is the one signal the file watch
-    /// cannot produce.** A commit, a stage or a branch switch touches only
-    /// `.git`, which the watch filters out, so without the nudge the row keeps
-    /// drawing the tree it read before until `SNAPSHOT_STALENESS` expires.
+    /// cannot produce.** A commit touches only `.git`, which the watch filters
+    /// out, so without the nudge the row keeps drawing the tree it read before
+    /// until `SNAPSHOT_STALENESS` expires. The window below is past a poke and
+    /// inside that staleness bound, so a watch that fired would announce in it.
     #[tokio::test]
     async fn a_reported_mutation_re_reads_a_git_only_change_on_the_frame() {
-        let dir = a_repo();
-        let (workspace, mut updates, _config) = a_workspace(dir.path());
+        let (branch, _shim) = PushedBranch::new();
+        let (workspace, mut updates, _config) =
+            a_workspace_with_env(branch.repo.path(), &branch.env());
         let seat = seat();
 
         hold_for_a_page(&workspace, &seat);
-        let first = announced_work(&mut updates).await;
-        assert_eq!(first.branch.as_deref(), Some("main"), "the held tree is read first");
+        announced_work(&mut updates).await;
 
-        // Only `.git/HEAD` moves, so the watch fires nothing and the scan rule
-        // has no reason to read again.
-        git(dir.path(), &["checkout", "-q", "-b", "feature"]);
-        let quiet = tokio::time::Instant::now() + Duration::from_millis(700);
-        while let Ok(Some(moved)) = tokio::time::timeout_at(quiet, updates.recv()).await {
+        let window = || tokio::time::Instant::now() + POKE_INTERVAL * 5 / 2;
+        let until = window();
+        while let Ok(Some(moved)) = tokio::time::timeout_at(until, updates.recv()).await {
+            assert!(
+                !matches!(moved.update, SessionUpdate::WorkChanged { .. }),
+                "a still tree announces nothing",
+            );
+        }
+
+        // A commit on the branch the row measures: only `.git` moves, and the
+        // ahead count is what the re-read is for.
+        git(branch.repo.path(), &["commit", "--allow-empty", "-qm", "second"]);
+        let until = window();
+        while let Ok(Some(moved)) = tokio::time::timeout_at(until, updates.recv()).await {
             assert!(
                 !matches!(moved.update, SessionUpdate::WorkChanged { .. }),
                 "a `.git`-only change is invisible to the watch, so nothing is announced",
             );
         }
-        assert_eq!(
-            workspace.work_snapshot(&seat).map(|held| held.diff.branch),
-            Some(GitBranch::Named("main".to_owned())),
-            "and the store still holds the tree read before the switch",
+        assert!(
+            !matches!(
+                workspace.work_snapshot(&seat).map(|held| held.diff.branch_ahead),
+                Some(LayerState::Populated(_))
+            ),
+            "and the store still holds the row read before the commit",
         );
 
         workspace.note_repository_activity(&seat);
@@ -1558,13 +1573,13 @@ provider = "anthropic"
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the reported mutation did not re-read the tree");
             };
-            let SessionUpdate::WorkChanged { key, work, .. } = moved.update else {
+            let SessionUpdate::WorkChanged { key, git, .. } = moved.update else {
                 continue;
             };
             assert_eq!(key, seat, "the row is addressed to the seat that was held");
             assert_eq!(
-                work.branch.as_deref(),
-                Some("feature"),
+                git.ahead.map(|ahead| ahead.commit_count),
+                Some(1),
                 "the tree is read on the frame, inside the staleness window",
             );
             return;
@@ -1586,7 +1601,7 @@ provider = "anthropic"
             .store_work_snapshot(&seat, branch.stored_scan(None, std::time::SystemTime::now()));
 
         hold_for_a_page(&workspace, &seat);
-        let quiet = tokio::time::Instant::now() + Duration::from_millis(700);
+        let quiet = tokio::time::Instant::now() + POKE_INTERVAL * 5 / 2;
         while let Ok(Some(moved)) = tokio::time::timeout_at(quiet, updates.recv()).await {
             assert!(
                 !matches!(moved.update, SessionUpdate::WorkChanged { .. }),
@@ -1597,7 +1612,10 @@ provider = "anthropic"
 
         workspace.note_code_change_published(&seat);
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        // **A bound under the poke interval pins the wake itself.** A scan the
+        // poke would have taken cannot land inside it, so a nudge whose
+        // `notify_one` went missing fails here rather than at the next tick.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
         loop {
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the published change did not re-run the PR lookup");
@@ -1609,6 +1627,66 @@ provider = "anthropic"
                 pr.map(|found| found.number),
                 Some(108),
                 "the row carries the PR that exists now, not the cached absence",
+            );
+            return;
+        }
+    }
+
+    /// **The stamp is dropped when the change is noted, not when a scan runs.**
+    /// The stored snapshot outlives the hold, so a change published while
+    /// nobody is showing the seat would otherwise leave `pr_fetched_at` in
+    /// place and the next open would serve the cache this event exists to
+    /// invalidate.
+    #[tokio::test]
+    async fn an_unheld_published_change_clears_the_attempt_stamp() {
+        let (branch, _shim) = PushedBranch::new();
+        let (workspace, _updates, _config) =
+            a_workspace_with_env(branch.repo.path(), &branch.env());
+        let seat = seat();
+
+        workspace
+            .store_work_snapshot(&seat, branch.stored_scan(None, std::time::SystemTime::now()));
+        assert!(
+            workspace.work_snapshot(&seat).is_some_and(|held| held.diff.pr_fetched_at.is_some()),
+            "the store holds a fresh attempt to invalidate",
+        );
+
+        workspace.note_code_change_published(&seat);
+
+        assert!(
+            workspace.work_snapshot(&seat).is_some_and(|held| held.diff.pr_fetched_at.is_none()),
+            "a published change clears the attempt even with no seat held",
+        );
+    }
+
+    /// …and the next open then looks the PR up rather than reusing the absence
+    /// the cleared stamp belonged to.
+    #[tokio::test]
+    async fn the_next_open_after_an_unheld_published_change_looks_the_pr_up() {
+        let (branch, _shim) = PushedBranch::new();
+        let (workspace, mut updates, _config) =
+            a_workspace_with_env(branch.repo.path(), &branch.env());
+        let seat = seat();
+
+        workspace
+            .store_work_snapshot(&seat, branch.stored_scan(None, std::time::SystemTime::now()));
+        workspace.note_code_change_published(&seat);
+        assert!(!branch.marker.exists(), "noting the change runs no lookup by itself");
+
+        hold_for_a_page(&workspace, &seat);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("the next open served the cache the published change invalidated");
+            };
+            let SessionUpdate::WorkChanged { pr, .. } = moved.update else {
+                continue;
+            };
+            assert_eq!(
+                pr.map(|found| found.number),
+                Some(108),
+                "the open's scan looked the PR up again",
             );
             return;
         }
