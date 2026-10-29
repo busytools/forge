@@ -2338,8 +2338,9 @@ async fn session(
     timings.work_ms = slice_ms(at);
     // **Only the review page's own read refreshes the base.** An ordinary
     // record read serves the stores as they stand - a seat page never waits on
-    // the network - and the review read is the one that may, under
-    // `DISPLAY_REFRESH_BUDGET`, because it is the read that draws the diff.
+    // the network - and the review read is the one that may, for as long as
+    // the fetch takes, because it is the read that draws the diff. A refresh
+    // already in flight for this repository is joined, not fetched again.
     let at = std::time::Instant::now();
     let refresh = if review { surface.refresh_diff_base(&held).await } else { None };
     timings.base_ms = slice_ms(at);
