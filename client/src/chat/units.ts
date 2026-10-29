@@ -2623,11 +2623,11 @@ export function fold(
         });
         continue;
       }
-      // **A sticky fact about the project, not a turn event.** The CLI scans
-      // the project once in print mode and names the platform it looks like;
-      // the row is quiet because the fact is background, and the trigger
-      // says what the scan saw. At most two of these arrive per conversation
-      // (one per kind), so the row never becomes a column.
+      // **A sticky fact about the project, not a turn event.** The CLI names
+      // a platform it saw - from the conversation or its project scan - and
+      // the row is quiet because the fact is background. At most one of these
+      // per kind per conversation from each source, so the row never becomes
+      // a column; the trigger says which evidence fired.
       if (frame.subtype === 'dev_intent') {
         const kind = str(frame, 'kind');
         push({

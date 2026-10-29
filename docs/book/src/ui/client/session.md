@@ -177,8 +177,8 @@ read as one system.
   in the open body rather than one row per memory. A local command draws the
   command it ran, beside the assistant twin that carries its output - the raw
   frame no longer draws a second copy of the same words. A project
-  development-intent frame draws one quiet line naming the platform the
-  CLI's scan found, with the evidence in its open body.
+  development-intent frame draws one quiet line naming the platform the CLI
+  saw, with the evidence in its open body.
 - **The CLI's own repository events belong to the working-tree strip, not
   the conversation.** A `vcs_state_changed` frame is the tree's own news: the
   strip above the composer says what moved for a moment - the kind and, where
