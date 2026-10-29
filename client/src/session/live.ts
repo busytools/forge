@@ -274,28 +274,6 @@ const REPAIR_HELD_CAP = 256;
 const OUTRUN_CAP = 3;
 
 /**
- * Watch one seat.
- *
- * **The seat's record is the client's, and so is its subscription.** The first
- * page to show a seat opens its subscription - that answer is what fills its
- * history - and no visit gives it back: every later visit is handed what the
- * seat holds, and the frames never stopped. Only a session ending
- * ([`releaseSeat`]) and the connection closing release it.
- *
- * **The subscribe happens with the first reader**, not at this call: a caller
- * that takes the store and never subscribes opens nothing of its own, and a
- * seat whose page is the only reader is subscribed by that page's own first
- * read. The second opener is the role: a page that can answer raises a seat
- * held as an observer, and that raise is a subscribe whether or not any page
- * has subscribed the store yet.
- *
- * **A seat the server refused gives its subscription back, and stays.** A
- * refusal is an answer rather than a subscription ("a refused subscribe
- * leaves nothing to hear"), so the record is cleared and the next visit opens
- * the seat afresh - while the seat itself is kept, because a conversation
- * holding it must go on holding whatever the next visit finds.
- */
-/**
  * Put a repository mutation on the strip as it arrives.
  *
  * **The frame is the tree's event, not the conversation's** - the chat fold
@@ -342,6 +320,28 @@ function noteRepositoryEvent(update: SessionUpdate, slot: SessionSlot): void {
   }
 }
 
+/**
+ * Watch one seat.
+ *
+ * **The seat's record is the client's, and so is its subscription.** The first
+ * page to show a seat opens its subscription - that answer is what fills its
+ * history - and no visit gives it back: every later visit is handed what the
+ * seat holds, and the frames never stopped. Only a session ending
+ * ([`releaseSeat`]) and the connection closing release it.
+ *
+ * **The subscribe happens with the first reader**, not at this call: a caller
+ * that takes the store and never subscribes opens nothing of its own, and a
+ * seat whose page is the only reader is subscribed by that page's own first
+ * read. The second opener is the role: a page that can answer raises a seat
+ * held as an observer, and that raise is a subscribe whether or not any page
+ * has subscribed the store yet.
+ *
+ * **A seat the server refused gives its subscription back, and stays.** A
+ * refusal is an answer rather than a subscription ("a refused subscribe
+ * leaves nothing to hear"), so the record is cleared and the next visit opens
+ * the seat afresh - while the seat itself is kept, because a conversation
+ * holding it must go on holding whatever the next visit finds.
+ */
 export function watchSession(
   connection: Connection,
   slot: SessionSlot,
