@@ -1790,7 +1790,7 @@ pub struct OpenTimings {
     pub cards_ms: f64,
     pub work_ms: f64,
     /// The review read's base refresh: the fetch and the tip it is checked
-    /// against, bounded by the display budget.
+    /// against, waited on with no cap and served off the connection's loop.
     pub base_ms: f64,
     /// The scan pinned to the sha that refresh resolved.
     pub rescan_ms: f64,
@@ -2338,8 +2338,10 @@ async fn session(
     timings.work_ms = slice_ms(at);
     // **Only the review page's own read refreshes the base.** An ordinary
     // record read serves the stores as they stand - a seat page never waits on
-    // the network - and the review read is the one that may, under
-    // `DISPLAY_REFRESH_BUDGET`, because it is the read that draws the diff.
+    // the network - and the review read is the one that may, for as long as
+    // the fetch takes, because it is the read that draws the diff. A refresh
+    // already in flight for this repository and base branch is joined, not
+    // fetched again.
     let at = std::time::Instant::now();
     let refresh = if review { surface.refresh_diff_base(&held).await } else { None };
     timings.base_ms = slice_ms(at);
@@ -2394,8 +2396,12 @@ async fn session(
         }
         None => None,
     };
+    // Why the refresh could not run, in git's own words: the page draws it
+    // beside the base line rather than only saying the base could not be
+    // checked. An ordinary read has no refresh and names no failure.
+    let base_error = refresh.as_ref().and_then(|refresh| refresh.error.as_deref());
     let at = std::time::Instant::now();
-    let diff = scan_content(&held.cwd, &held.diff, base, base_ref).await;
+    let diff = scan_content(&held.cwd, &held.diff, base, base_ref, base_error).await;
     timings.content_ms = slice_ms(at);
     timings.pr_age_s = held
         .diff
@@ -4797,7 +4803,8 @@ mod tests {
         )
         .await;
         let content =
-            forge_workspace::env::git_diff::content::scan(repo.path(), &snapshot, None, None).await;
+            forge_workspace::env::git_diff::content::scan(repo.path(), &snapshot, None, None, None)
+                .await;
         let threads = vec![wide_thread(
             "revealed-old",
             ReviewSide::Old,
@@ -4971,6 +4978,7 @@ mod tests {
             worktree: LayerState::Clean,
             branch_ahead: LayerState::Populated(files),
             base: Some(forge_primitives::git_diff::BaseState::Current),
+            base_error: None,
             truncated: false,
         };
         let whole = whole_files_for(

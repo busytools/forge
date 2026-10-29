@@ -296,6 +296,27 @@ describe('the diff parse', () => {
   });
 
   /**
+   * **A base the read could not refresh carries why**, so the page names the
+   * cause rather than only that the check did not happen. It rides beside the
+   * state it left and is never invented for a layer with nothing to describe.
+   */
+  it("reads the base fetch's failure words, absent as none", () => {
+    const drawn = (record: unknown): unknown => diffFrom(record).baseError;
+    expect(
+      drawn({ branch_ahead: { populated: [] }, base: 'unverified', base_error: 'fatal: nope' }),
+      "git's words cross as they were",
+    ).toBe('fatal: nope');
+    expect(
+      drawn({ branch_ahead: { populated: [] }, base: 'unverified' }),
+      'an absent failure is none, not an empty string',
+    ).toBeNull();
+    expect(
+      drawn({ branch_ahead: 'clean', base_error: 'fatal: nope' }),
+      'a layer with nothing to describe carries no failure',
+    ).toBeNull();
+  });
+
+  /**
    * **The seat row's own base measurement** is what a page compares against
    * its read's: absent means an older server that never measured one, which
    * is not a state a page may read as `unknown`.

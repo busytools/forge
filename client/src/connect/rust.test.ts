@@ -48,7 +48,6 @@ import { subjectKey, type ServerMessage } from '../protocol';
 import { onRefusal, type Refusal } from '../refusals';
 import type { BrowserFrame, Connection } from '../socket';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
-import { READ_BOUND_MS, REVIEW_READ_BOUND_MS } from '../read-bound';
 import { connectRust } from './rust';
 
 const slot: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -462,13 +461,14 @@ describe('frames from the bridge', () => {
   });
 
   /**
-   * **A review read's deadline comes from the caller.** The server bounds that
-   * read itself for longer than an ordinary one, so the ordinary pass would
-   * presume it lost inside the window and ask a second whole review read under
-   * the first. This drives the caller rather than arming the bound by hand, so
-   * a call site reverted to the short pass reds here.
+   * **A review read is never asked again, however long it waits.** Its base
+   * fetch has no server-side cap, so the client holds no deadline for it: any
+   * pass would presume a read lost while it is still legitimately running and
+   * ask a second whole review read under the first. The page draws the wait.
+   * This drives the caller rather than arming the bound by hand, so a call
+   * site that reintroduced a pass reds here.
    */
-  it('gives a review read the longer pass before asking again', async () => {
+  it('never asks a review read again, however long it waits', async () => {
     vi.useFakeTimers();
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') return Promise.resolve(OPEN);
@@ -479,15 +479,12 @@ describe('frames from the bridge', () => {
     connection.subscribe(subject, { review: true });
     invoke.mockClear();
 
-    vi.advanceTimersByTime(5_000);
-    expect(invoke, 'the ordinary pass does not end a review read').not.toHaveBeenCalledWith(
-      'client_refresh',
-      { what: subject },
-    );
-
-    vi.advanceTimersByTime(7_000);
+    vi.advanceTimersByTime(600_000);
     await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+      expect(invoke, 'a review read is never presumed lost').not.toHaveBeenCalledWith(
+        'client_refresh',
+        { what: subject },
+      ),
     );
   });
 
@@ -533,24 +530,18 @@ describe('frames from the bridge', () => {
   });
 
   /**
-   * **A review read re-armed on open keeps its own pass.** The desktop drops
-   * every timer on `closed` and re-arms what is still loading on `open`; armed
-   * with the plain pass, a review read's retry lands inside the server's own
-   * bounds and buys the second whole review read that deadline exists to
-   * prevent. The scope is the connection's to remember.
+   * **A review read is never re-armed on open, because it is never armed.**
+   * The server waits for its base fetch with no cap, so the client holds no
+   * deadline for it: a re-arm on `open` would land inside a wait still
+   * legitimately running and ask a second whole review read under the first.
+   * The page draws the wait, and the transport's own reconnect recovers a
+   * lost answer.
    */
-  it('re-arms a review read with its own pass when the connection opens', async () => {
+  it('never arms a review read, before or after the connection opens', async () => {
     vi.useFakeTimers();
     const connection = await opened({ status: 'connecting', greeting: null });
     connection.subscribe(subject, { review: true });
     invoke.mockClear();
-
-    // The review pass fires while connecting: the refresh cannot go, so the
-    // timer dies with the ask still unanswered.
-    vi.advanceTimersByTime(REVIEW_READ_BOUND_MS);
-    await vi.waitFor(() =>
-      expect(invoke).not.toHaveBeenCalledWith('client_refresh', { what: subject }),
-    );
 
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') {
@@ -561,15 +552,33 @@ describe('frames from the bridge', () => {
     fire('client://connection', undefined);
     await vi.waitFor(() => expect(connection.status()).toBe('open'));
 
-    vi.advanceTimersByTime(READ_BOUND_MS);
-    expect(invoke, 'the ordinary pass ended a review read').not.toHaveBeenCalledWith(
-      'client_refresh',
-      { what: subject },
-    );
-    vi.advanceTimersByTime(REVIEW_READ_BOUND_MS - READ_BOUND_MS);
+    // Ten minutes is far past any pass a bounded read would have taken.
+    vi.advanceTimersByTime(600_000);
     await vi.waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+      expect(invoke, 'a review read is never presumed lost').not.toHaveBeenCalledWith(
+        'client_refresh',
+        { what: subject },
+      ),
     );
+  });
+
+  /**
+   * **A review-scoped re-ask arms nothing either**, not only a subscribe: the
+   * refresh keeps the shell's held scope, and a review read has no deadline
+   * at all, so a timer here would ask a second whole review read mid-wait.
+   */
+  it('never arms a review read on a refresh that states no scope', async () => {
+    vi.useFakeTimers();
+    const connection = await opened();
+    connection.subscribe(subject, { review: true });
+    invoke.mockClear();
+    connection.refresh(subject);
+    const refreshes = () => invoke.mock.calls.filter(([command]) => command === 'client_refresh');
+    await vi.waitFor(() => expect(refreshes()).toHaveLength(1));
+    const sent = refreshes().length;
+
+    vi.advanceTimersByTime(600_000);
+    expect(refreshes(), 'the review refresh armed a timer that asks again').toHaveLength(sent);
   });
 
   /**

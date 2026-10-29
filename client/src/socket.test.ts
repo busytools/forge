@@ -1256,6 +1256,50 @@ describe('the connection', () => {
     ).toBe(3);
   });
 
+  /**
+   * **A review ask clears the timer an ordinary read of the subject left.**
+   * Skipping the arm instead of arming none would let the ordinary read's
+   * timer fire mid-review, and its refresh re-asks with the review scope - the
+   * second whole review read that the review read's wait exists to prevent.
+   */
+  it('clears a standing read timer when a review ask supersedes it', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url, SHORT_READ_BOUND_MS);
+    opened.push(conn);
+    const seat: Subject = { session: LEAD };
+    conn.subscribe(seat);
+    await until(() => server.received.length === 1, 'the ordinary subscribe');
+    conn.subscribe(seat, { review: true });
+    await until(() => server.received.length === 2, 'the review subscribe');
+
+    await quiet(SHORT_READ_BOUND_MS * 6);
+    expect(server.received.length, 'the cleared timer never asks again').toBe(2);
+  });
+
+  /**
+   * **A re-ask that states no scope keeps the review read's.** The refresh
+   * falls back to the scope the seat was last asked with, and a review read
+   * has no deadline - so a fallback that dropped it would arm an ordinary
+   * five-second pass and ask a second whole review read mid-wait.
+   */
+  it('keeps the held review scope on a re-ask that states none', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url, SHORT_READ_BOUND_MS);
+    opened.push(conn);
+    const seat: Subject = { session: LEAD };
+    conn.subscribe(seat, { review: true });
+    await until(() => server.received.length === 1, 'the review subscribe');
+
+    expect(conn.refresh(seat), 'the re-ask went').toBe(true);
+    await until(() => server.received.length >= 3, 'the refresh pair');
+    const sent = server.received.length;
+
+    await quiet(SHORT_READ_BOUND_MS * 6);
+    expect(server.received.length, 'a review re-ask armed an ordinary bound').toBe(sent);
+  });
+
   it('asks nothing again for a read that was answered', async () => {
     const server = await stubServer();
     servers.push(server);

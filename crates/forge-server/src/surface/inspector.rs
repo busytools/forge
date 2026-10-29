@@ -161,7 +161,7 @@ impl ViewSurface {
     }
 
     /// Refresh the base the seat's drawn branch diff is measured against,
-    /// under the display read's own budget.
+    /// waiting for the fetch with no cap.
     ///
     /// `None` when no branch layer is drawn: the default branch, a detached
     /// HEAD, or no resolved default. Only the read that draws the diff calls

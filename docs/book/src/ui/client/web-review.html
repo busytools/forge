@@ -122,6 +122,12 @@
      hovers is not a label. */
   .rv-base { font-family: var(--mono); font-size: var(--fs-data); color: var(--warn);
     padding: 2px 2px 6px; }
+  /* The wait before the page has a record: the work spinner, the same ring
+     every surface draws for work in flight, beside the wait's own words. */
+  .pending .ring { width: 10px; height: 10px; display: inline-block; border-radius: 50%;
+    border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
+    margin-right: 7px; vertical-align: -1px; animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .rv-body { display: grid; grid-template-columns: 296px minmax(0, 1fr); gap: 18px; }
   .rv-files h2 { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px;
     font-size: var(--fs-label); font-weight: 700; letter-spacing: .12em;
@@ -433,7 +439,7 @@
     </div>
   </div>
 
-  <p class="rv-base">main is 3 commits behind upstream, so this diff may include work already on main.</p>
+  <p class="rv-base">main is 3 commits behind upstream, so this diff may include work already on main. (fatal: could not resolve host: github.com)</p>
 
   <div class="rv-body">
     <nav class="rv-files" aria-label="files in this scope">
@@ -769,6 +775,18 @@
         <span class="rv-finish">finish review (1)</span>
       </div>
     </div>
+  </section>
+
+  <section class="group">
+    <h2>Before the diff</h2>
+    <p class="pending" style="margin-top:0">
+      <span class="ring" aria-hidden="true"></span> Reading the base for the diff...
+    </p>
+    <p class="rv-quiet">
+      The page's own read resolves the base before it draws the diff, and waits
+      for it with no cap. While it waits this line is the whole page; a refusal
+      takes its place in the server's own words.
+    </p>
   </section>
 </main>
 </body>

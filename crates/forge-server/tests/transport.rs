@@ -6307,6 +6307,487 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
     assert_eq!(paths, vec!["feat.txt"], "only the branch's own file crosses: {fresh}");
 }
 
+/// **A fetch that cannot run says what git said.** The page draws the reason
+/// beside the base line, so a reader learns the remote is gone rather than
+/// only that the base could not be checked.
+#[tokio::test]
+async fn a_review_read_names_why_the_base_fetch_failed() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+    // A remote that is not there any more: git's own words are the failure.
+    let gone = root.path().join("gone");
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["remote", "set-url", "origin", &gone.to_string_lossy()])
+        .output()
+        .expect("run git");
+    assert!(out.status.success(), "git set-url: {}", String::from_utf8_lossy(&out.stderr));
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    let mut review = connect(&url).await;
+    send(
+        &mut review,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    let (_, record, _) = snapshot_answering(&mut review).await;
+
+    assert_eq!(
+        record["diff"]["base"], "unverified",
+        "a fetch that cannot run leaves the base unverified: {record}",
+    );
+    let said = record["diff"]["base_error"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("does not appear to be a git repository"),
+        "and the record carries git's own words for it: {said:?}",
+    );
+
+    // An ordinary read has not checked the base, so it names no failure.
+    let mut plain = connect(&url).await;
+    send(
+        &mut plain,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (_, cached, _) = snapshot_answering(&mut plain).await;
+    assert!(
+        cached["diff"]["base_error"].is_null(),
+        "an ordinary read claims no failure it never saw: {cached}",
+    );
+}
+
+/// **A review read never holds its connection.** That read waits for a base
+/// fetch with no cap, and it is served off the loop: a second ask on the same
+/// socket is answered while the read is still in flight, and a client going
+/// away is visible rather than queued behind it.
+#[tokio::test]
+async fn a_subscribe_behind_a_review_read_is_answered_while_it_waits() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    // The seat is held by a plain open first, which is what the gate below
+    // needs; the review read's own wait is then held open by that gate.
+    let mut conn = connect(&url).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut conn).await;
+    forge_workspace::work::set_pinned_gate_wait(10_000);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    // While that read waits on the seat's gate, the loop keeps answering: a
+    // reply-carrying command is dispatched and its refusal answered. The bound
+    // is the discriminator beside the ten-second gate: a loop that waited on
+    // the read would answer only after the gate is released, far past this.
+    send(
+        &mut conn,
+        ClientMessage::Command {
+            command: Box::new(Command::DeleteReviewThread {
+                project: "no-such-project".to_owned(),
+                branch: "no-such-branch".to_owned(),
+                thread_id: "t1".to_owned(),
+                respond: None,
+            }),
+            reply_to: Some(7),
+        },
+    )
+    .await;
+    match next_server_within(&mut conn, 5_000).await {
+        Some(ServerMessage::Reply { reply_to, .. }) => {
+            assert_eq!(reply_to, 7, "the command was answered while the read waited");
+        }
+        other => panic!("no reply arrived while the review read waited: {other:?}"),
+    }
+
+    drop(in_flight);
+    // And the review read's own record follows once its wait ends; the seat's
+    // watch may push a row first, which is news rather than the record.
+    loop {
+        match next_server_within(&mut conn, 5_000).await {
+            Some(ServerMessage::Snapshot { subject, .. }) => {
+                assert_eq!(subject, Subject::Session(lead_seat()), "the read itself answered");
+                break;
+            }
+            Some(ServerMessage::Update { .. }) => {}
+            other => panic!("the review read's snapshot did not arrive: {other:?}"),
+        }
+    }
+    forge_workspace::work::set_pinned_gate_wait(0);
+}
+
+/// **A release during an off-loop read ends the read, answers its ask and
+/// leaves nothing behind.** The seat's hold goes back, the asks queued behind
+/// the read are served, and the client's oldest-first bookkeeping is answered
+/// rather than stranded - the three ways a merely-marked abandoned read leaks.
+#[tokio::test]
+async fn a_release_during_a_review_read_ends_it_and_answers_the_ask() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    let mut conn = connect(&url).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut conn).await;
+    forge_workspace::work::set_pinned_gate_wait(10_000);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    // An ask that arrives during the read waits its turn behind it.
+    send(
+        &mut conn,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, review: false },
+    )
+    .await;
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+
+    // The abandoned subscribe is answered, so the client owes nothing for it.
+    // The bound sits well under the gate below: an answer only after the gate
+    // would mean the loop waited on the read.
+    match next_server_within(&mut conn, 5_000).await {
+        Some(ServerMessage::Error { what, seat, .. }) => {
+            assert_eq!(what, "subscribe", "the abandoned ask is answered as a subscribe");
+            assert_eq!(seat, Some(lead_seat()), "and names the seat it was for");
+        }
+        other => panic!("no answer arrived for the abandoned subscribe: {other:?}"),
+    }
+    // And the ask queued behind it is served, though the fetch is still held.
+    match next_server_within(&mut conn, 5_000).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => {
+            assert_eq!(subject, Subject::Home, "the queued ask is served");
+        }
+        other => panic!("the queued ask was not served: {other:?}"),
+    }
+
+    // The read itself is gone: releasing its wait answers nothing.
+    drop(in_flight);
+    while let Some(message) = next_server_within(&mut conn, 500).await {
+        assert!(
+            !matches!(&message, ServerMessage::Snapshot { subject, .. }
+                if subject == &Subject::Session(lead_seat())),
+            "an abandoned read still answered its ask",
+        );
+    }
+
+    // Both holds are back once the plain subscription is released too. This
+    // test's own `gate` clone goes first: the seat is released when nothing
+    // else holds its gate.
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    drop(gate);
+    assert!(
+        fleet.workspace().hold_work_gate(&lead_seat()).is_none(),
+        "the abandoned read's hold was given back",
+    );
+    forge_workspace::work::set_pinned_gate_wait(0);
+}
+
+/// **A read off the loop holds its own seat's frames, and nothing else's.**
+/// The seat's rows wait for its record; a fleet frame still reaches the home
+/// this connection watches, a fatal still goes out at once, and the held row
+/// lands behind the snapshot.
+#[tokio::test]
+async fn a_read_off_the_loop_holds_its_own_seats_frames_only() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    // A plain open holds the seat so its gate can be held; it is released
+    // before the review read, so the seat is NOT watched while that read runs.
+    let mut conn = connect(&url).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut conn).await;
+    forge_workspace::work::set_pinned_gate_wait(10_000);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    // The home is watched while the read runs, and the seat is not.
+    send(
+        &mut conn,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, review: false },
+    )
+    .await;
+    let _ = snapshot_answering(&mut conn).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+
+    // The subscribe has to have reached the loop before these land, or the row
+    // is emitted with no read in flight and no watcher. The gate below holds
+    // the read until this test releases it, so this settle cannot race a fast
+    // answer.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    // A name no earlier frame carries: the start's own spawning row can still
+    // be replayed to the home this connection opened, and its presence would
+    // otherwise read as this frame's.
+    fleet.emit(SessionUpdate::Spawning {
+        key: lead_seat(),
+        project_name: "proj".to_owned(),
+        cwd: repo.to_string_lossy().into_owned(),
+        display_name: "held-read-probe".to_owned(),
+    });
+    fleet.emit(SessionUpdate::FatalError {
+        error: forge_primitives::error::AppError::ConnectionFailed,
+        message: "the bridge broke".to_owned(),
+    });
+    // A mid-turn chunk: the home does not cover it, so the only copy this
+    // connection could hear is the held one.
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        msg: an_assistant_chunk(),
+        origin: None,
+        source: None,
+    });
+
+    let mut saw_spawning = false;
+    let mut saw_fatal = false;
+    while let Some(message) = next_server_within(&mut conn, 1_500).await {
+        match message {
+            ServerMessage::Update { update, .. } => match *update {
+                SessionUpdate::Spawning { display_name, .. } => {
+                    saw_spawning = saw_spawning || display_name == "held-read-probe";
+                }
+                SessionUpdate::FatalError { .. } => saw_fatal = true,
+                SessionUpdate::ChatAppended { .. } => {
+                    panic!("the seat's held row overtook the record that has not arrived")
+                }
+                _ => {}
+            },
+            ServerMessage::Snapshot { subject, .. } => {
+                panic!("a record arrived while its read was still held: {subject:?}")
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_spawning, "the fleet frame reached the home while the seat's read waited");
+    assert!(saw_fatal, "the fatal went out at once, not on the batch's clock");
+
+    // And the held row lands behind the record once the read answers.
+    drop(in_flight);
+    match next_server_within(&mut conn, 5_000).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => {
+            assert_eq!(subject, Subject::Session(lead_seat()), "the read answered its own ask");
+        }
+        other => panic!("the read's record did not arrive: {other:?}"),
+    }
+    let mut saw_row = false;
+    while let Some(message) = next_server_within(&mut conn, 3_000).await {
+        if matches!(&message, ServerMessage::Update { update, .. }
+            if matches!(**update, SessionUpdate::ChatAppended { .. }))
+        {
+            saw_row = true;
+            break;
+        }
+    }
+    assert!(saw_row, "the held row landed behind the record");
+    forge_workspace::work::set_pinned_gate_wait(0);
+}
+
+/// **An ask queued behind a read is withdrawn when its subject is released**,
+/// answered so the client owes nothing for it, and answered in its turn: the
+/// client pairs a refusal with the oldest ask it holds, so an answer sent out
+/// of band would land on the read still ahead of it. It never starts a read of
+/// its own.
+#[tokio::test]
+async fn a_queued_ask_is_withdrawn_and_answered_when_its_subject_is_released() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    let mut conn = connect(&url).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut conn).await;
+    forge_workspace::work::set_pinned_gate_wait(10_000);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    // This one queues behind the read, and the client lets it go before it is
+    // its turn.
+    send(
+        &mut conn,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, review: false },
+    )
+    .await;
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Home }).await;
+
+    // **The withdrawn ask keeps its place.** Its answer would carry a refusal,
+    // and the client pairs a refusal with the oldest ask it still holds - the
+    // seat's read, still in flight - so nothing may arrive for it yet.
+    while let Some(message) = next_server_within(&mut conn, 700).await {
+        assert!(
+            !matches!(&message, ServerMessage::Error { .. }),
+            "the withdrawn ask answered before the read ahead of it: {message:?}",
+        );
+    }
+
+    // Ending the read answers both, in the order they were asked: the seat's
+    // own read, then the withdrawn home ask that queued behind it.
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    let mut refusals = Vec::new();
+    while refusals.len() < 2 {
+        match next_server_within(&mut conn, 5_000).await {
+            Some(ServerMessage::Error { what, seat, .. }) => refusals.push((what, seat)),
+            Some(_) => {}
+            None => panic!("only {} of the two answers arrived", refusals.len()),
+        }
+    }
+    assert_eq!(
+        refusals[0],
+        ("subscribe".to_owned(), Some(lead_seat())),
+        "the seat's abandoned read is answered first",
+    );
+    assert_eq!(refusals[1], ("subscribe".to_owned(), None), "and the withdrawn home ask second");
+    while let Some(message) = next_server_within(&mut conn, 700).await {
+        assert!(
+            !matches!(&message, ServerMessage::Snapshot { subject, .. } if subject == &Subject::Home),
+            "a withdrawn ask was served anyway",
+        );
+    }
+    drop(in_flight);
+    drop(gate);
+    forge_workspace::work::set_pinned_gate_wait(0);
+}
+
 /// **A refused pin is re-read locally, so the count and the files still share
 /// the base the refresh left.** The store's count predates the fetch; serving
 /// it beside content read at the post-fetch ref is the Granite symptom in the
