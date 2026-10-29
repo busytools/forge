@@ -712,15 +712,13 @@ struct ReadAnswer {
 struct Reading {
     subject: Subject,
     frames: Vec<SeatUpdate>,
-    /// The client let the seat go while its read was in flight. The answer is
-    /// dropped rather than written for a view that has left.
-    abandoned: bool,
-    /// Held for its drop: the task is aborted when the connection ends.
+    /// Held for its drop: dropping the reading aborts the task, which is what
+    /// a release and the end of the connection both do.
     _task: AbortOnDrop,
 }
 
-/// A task that is aborted when the connection ends, so an abandoned read does
-/// not outlive the socket that asked for it.
+/// A task that is aborted when its handle drops, so a read nobody will answer
+/// does not outlive the subscription or the socket that asked for it.
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
@@ -785,6 +783,18 @@ where
                     socket, state, watching, holds, updates, dictate, browser, reads, caller, msg,
                 )
                 .await?;
+                // **An ask that queued behind a read is served as soon as no
+                // read holds the way.** A release ends its read here, and
+                // without this drain the asks behind it would wait for a
+                // record nobody owes.
+                while reads.one.is_none() {
+                    let Some(next) = reads.waiting.pop_front() else { break };
+                    handle_message(
+                        socket, state, watching, holds, updates, dictate, browser, reads, caller,
+                        next,
+                    )
+                    .await?;
+                }
             }
             // **An answer sent by a task this loop did not wait for.** A
             // reply-carrying command's, or a subscribe's record when that read
@@ -1316,9 +1326,6 @@ where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
     let Some(read) = reads.take() else { return Ok(()) };
-    if read.abandoned {
-        return Ok(());
-    }
     match done.outcome {
         Ok((data, timings)) => {
             write_snapshot(
@@ -1547,12 +1554,8 @@ where
                         outcome,
                     })));
                 });
-                reads.one = Some(Reading {
-                    subject: what,
-                    frames: Vec::new(),
-                    abandoned: false,
-                    _task: AbortOnDrop(task),
-                });
+                reads.one =
+                    Some(Reading { subject: what, frames: Vec::new(), _task: AbortOnDrop(task) });
                 return Ok(());
             }
             match encode_subject_timed(state, &what, review).await {
@@ -2463,14 +2466,32 @@ where
                     holds.give_back(slot);
                 }
             }
-            // **A read still running for the subject is abandoned, not
-            // answered.** Its view has left; writing its record would arrive
-            // for a page nobody is drawing, and its hold was given back just
-            // above.
-            if let Some(read) = reads.one.as_mut()
-                && read.subject == what
-            {
-                read.abandoned = true;
+            // **A read off the loop for this subject ends with the release.**
+            // Three things go wrong if it is merely marked: the task runs an
+            // unbounded fetch for a page that has left, every later subscribe
+            // queues behind it, and the subscribe it owed is never answered,
+            // which strands the client's oldest-first refusal bookkeeping.
+            // Dropping the reading aborts the task, its held frames go with
+            // it, the hold it took goes back here, and the ask it owed is
+            // answered so the client is not left waiting on it.
+            if reads.one.as_ref().is_some_and(|read| read.subject == what) {
+                let _ = reads.one.take();
+                if let Subject::Session(slot) = &what {
+                    holds.give_back(slot);
+                }
+                send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "subscribe".to_owned(),
+                        why: "the seat was released while its read was in flight".to_owned(),
+                        seat: match &what {
+                            Subject::Session(slot) => Some(slot.clone()),
+                            _ => None,
+                        },
+                        dispatch_id: None,
+                    },
+                )
+                .await?;
             }
             Ok(())
         }

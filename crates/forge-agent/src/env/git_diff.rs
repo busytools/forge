@@ -827,10 +827,21 @@ async fn ssh_is_forges(cwd: &Path) -> bool {
     if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
         return false;
     }
-    matches!(
-        run_git_within(cwd, &["config", "--get", "core.sshCommand"], COMMAND_TIMEOUT).await,
-        GitOutput::Empty
-    )
+    // **`git config --get` on a missing key EXITS 1**, which the classified
+    // reader reports as a failure, not as an empty answer: the exit code is
+    // what tells "this checkout names no command" from "git could not
+    // answer", and only the first may install forge's.
+    let mut command = git_command::tokio_git_command(cwd);
+    command.arg("-C").arg(cwd).args(["config", "--get", "core.sshCommand"]).kill_on_drop(true);
+    match child_output(command.output(), COMMAND_TIMEOUT).await {
+        // The key is set. An empty value is git's own "unset", so it is not.
+        Some(Ok(out)) if out.status.success() => out.stdout.iter().all(u8::is_ascii_whitespace),
+        // Exit 1 with nothing on stdout: no such key.
+        Some(Ok(out)) if out.status.code() == Some(1) && out.stdout.is_empty() => true,
+        // A probe that did not answer leaves the question open, and forge does
+        // not overwrite a command it could not read.
+        _ => false,
+    }
 }
 
 /// Fetch one remote-tracking branch without touching the rest of the user's
@@ -4746,6 +4757,71 @@ mod tests {
         crate::env::git_command::clear_git_point(dir.path());
 
         assert_eq!(fetches(), 1, "the second scan's kick is throttled by the first");
+    }
+
+    /// **A checkout that names no ssh command is forge's to bound.** The
+    /// missing key exits 1, and the classifier reads that as "unset" rather
+    /// than as a probe that failed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_checkout_that_names_no_ssh_command_gets_forges() {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+
+        assert!(ssh_is_forges(dir.path()).await, "an ordinary checkout is forge's to bound");
+    }
+
+    /// **And one that names its own is kept**, whichever spelling: forge sets
+    /// `GIT_SSH_COMMAND` only when nothing else names one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_checkouts_own_ssh_command_is_kept() {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        git_at(dir.path(), &["config", "core.sshCommand", "/bin/true"]);
+
+        assert!(!ssh_is_forges(dir.path()).await, "the checkout's command governs");
+    }
+
+    /// **The classifier's answer reaches the child**: the fetch itself carries
+    /// forge's bounded command on a checkout that names none, and nothing at
+    /// all over one that names its own. The wrapper records the environment it
+    /// was given, so this is the wiring and not the constructor alone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_fetch_carries_forges_ssh_command_only_when_the_checkout_names_none() {
+        if std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some() {
+            return;
+        }
+        let (_upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let marker = bin.path().join("ssh-env");
+        let at = marker.display();
+        let capturing =
+            format!("echo \"ssh=${{GIT_SSH_COMMAND:-none}}\" >> '{at}'; exec git \"$@\"");
+        write_wrapper(dir.path(), bin.path(), "env-git", &[], &capturing);
+
+        let first = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        git_at(dir.path(), &["config", "core.sshCommand", "/bin/true"]);
+        let second = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(first.state, BaseState::Current);
+        assert_eq!(second.state, BaseState::Current);
+        let seen = std::fs::read_to_string(&marker).expect("the wrapper's record");
+        let lines: Vec<&str> = seen.lines().collect();
+        assert!(
+            lines.first().is_some_and(|line| line.contains("ConnectTimeout=15")),
+            "forge's bound is on the fetch of a checkout that names none: {seen:?}",
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("ssh=none"),
+            "and nothing is installed over the checkout's own command: {seen:?}",
+        );
     }
 
     /// **Git's words lose any credential a remote URL carries**: the record is

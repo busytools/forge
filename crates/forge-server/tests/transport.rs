@@ -6216,6 +6216,100 @@ async fn a_subscribe_behind_a_review_read_is_answered_while_it_waits() {
     forge_workspace::work::set_pinned_gate_wait(0);
 }
 
+/// **A release during an off-loop read ends the read, answers its ask and
+/// leaves nothing behind.** The seat's hold goes back, the asks queued behind
+/// the read are served, and the client's oldest-first bookkeeping is answered
+/// rather than stranded - the three ways a merely-marked abandoned read leaks.
+#[tokio::test]
+async fn a_release_during_a_review_read_ends_it_and_answers_the_ask() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    let mut conn = connect(&url).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut conn).await;
+    forge_workspace::work::set_pinned_gate_wait(3_000);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+    // An ask that arrives during the read waits its turn behind it.
+    send(
+        &mut conn,
+        ClientMessage::Subscribe { what: Subject::Home, answering: true, review: false },
+    )
+    .await;
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+
+    // The abandoned subscribe is answered, so the client owes nothing for it.
+    match next_server_within(&mut conn, 1_500).await {
+        Some(ServerMessage::Error { what, seat, .. }) => {
+            assert_eq!(what, "subscribe", "the abandoned ask is answered as a subscribe");
+            assert_eq!(seat, Some(lead_seat()), "and names the seat it was for");
+        }
+        other => panic!("no answer arrived for the abandoned subscribe: {other:?}"),
+    }
+    // And the ask queued behind it is served, though the fetch is still held.
+    match next_server_within(&mut conn, 1_500).await {
+        Some(ServerMessage::Snapshot { subject, .. }) => {
+            assert_eq!(subject, Subject::Home, "the queued ask is served");
+        }
+        other => panic!("the queued ask was not served: {other:?}"),
+    }
+
+    // The read itself is gone: releasing its wait answers nothing.
+    drop(in_flight);
+    while let Some(message) = next_server_within(&mut conn, 500).await {
+        assert!(
+            !matches!(&message, ServerMessage::Snapshot { subject, .. }
+                if subject == &Subject::Session(lead_seat())),
+            "an abandoned read still answered its ask",
+        );
+    }
+
+    // Both holds are back once the plain subscription is released too. This
+    // test's own `gate` clone goes first: the seat is released when nothing
+    // else holds its gate.
+    send(&mut conn, ClientMessage::Unsubscribe { what: Subject::Session(lead_seat()) }).await;
+    drop(gate);
+    assert!(
+        fleet.workspace().hold_work_gate(&lead_seat()).is_none(),
+        "the abandoned read's hold was given back",
+    );
+    forge_workspace::work::set_pinned_gate_wait(0);
+}
+
 /// it beside content read at the post-fetch ref is the Granite symptom in the
 /// path meant to be the safe degradation.
 #[tokio::test]
