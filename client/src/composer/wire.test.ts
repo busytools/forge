@@ -173,6 +173,13 @@ describe('the composer record', () => {
     expect(at('compacting')).toBe('compacting');
     expect(at(null)).toBeNull();
     expect(at('summarising'), 'a state this build does not draw is not a freeze').toBeNull();
+
+    // **A v15 server names the compaction only.** The old key still stands
+    // the box down, so a newer client beside an older server is not blind.
+    const old = composerFrom({ take: null, notice: null, compacting: true, sign_in: null });
+    expect(old.machine, 'the v15 key is read as a compaction').toBe('compacting');
+    const settled = composerFrom({ take: null, notice: null, compacting: false, sign_in: null });
+    expect(settled.machine, 'and a v15 settle is no machine turn').toBeNull();
   });
 
   /**

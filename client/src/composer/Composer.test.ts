@@ -1364,6 +1364,39 @@ describe('the box', () => {
    * the seat: the dock could not draw, and the CLI would wait for an answer
    * nobody can give for ever.
    */
+  /**
+   * **The bound key opens nothing under a machine turn.** The box draws no
+   * mic and no field there, so the absence of a control proves nothing: the
+   * key is a window listener, and without the gate it would open the capture
+   * and land the words in a draft nobody can see.
+   */
+  it('opens no capture from the bound key while a machine turn owns the box', async () => {
+    // **The control first.** An empty send below proves nothing unless the
+    // same press begins a take on a live box - the key is a window listener,
+    // and a misspelt code would read exactly like the gate working.
+    const live = open({ dictation: true });
+    key('ControlRight', 'keydown');
+    await opened();
+    expect(live.sent, 'the control: a live box begins the take').toHaveLength(1);
+    void unmount(app as Record<string, unknown>);
+    app = null;
+    document.body.innerHTML = '';
+
+    const harness = open({
+      dictation: true,
+      record: record({
+        composer: { take: null, notice: null, machine: 'handoff', sign_in: null },
+      }),
+    });
+
+    key('ControlRight', 'keydown');
+    // The same turns the control gave the open, so an empty send means the
+    // gate refused rather than the promise not having settled.
+    await opened();
+
+    expect(harness.sent, 'the key begins nothing under a machine turn').toEqual([]);
+  });
+
   it('draws and answers a parked ask through a machine turn', () => {
     const harness = open({
       record: record({

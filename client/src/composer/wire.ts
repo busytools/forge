@@ -217,7 +217,11 @@ export function composerFrom(value: unknown): ComposerState {
   return {
     take: takeFrom(held['take']),
     notice: noticeFrom(held['notice']),
-    machine: machineTurn(held['machine']),
+    machine:
+      machineTurn(held['machine']) ??
+      // **A v15 server names the compaction only.** The old key is read as a
+      // fallback, so a mixed install still stands the box down through one.
+      (held['compacting'] === true ? 'compacting' : null),
     signIn: signInFrom(held['sign_in']),
     bind: bindFrom(held['bind']),
     mode: modeFrom(held['mode']),

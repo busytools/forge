@@ -50,7 +50,6 @@
     "Handoff": "handoff",
     "HistoryReplayed": "history_replayed",
     "HookObservation": "hook_observation",
-    "MachineTurn": "machine_turn",
     "McpOperationError": "mcp_operation_error",
     "McpSnapshot": "mcp_snapshot",
     "MonitorsChanged": "monitors_changed",
@@ -687,26 +686,6 @@
         "context",
         "structure",
         "styling"
-      ]
-    },
-    "MachineTurn": {
-      "": [
-        "kind",
-        "seq",
-        "span",
-        "update"
-      ],
-      "/update": [
-        "machine_turn"
-      ],
-      "/update/machine_turn": [
-        "key",
-        "machine"
-      ],
-      "/update/machine_turn/key": [
-        "label",
-        "org",
-        "project"
       ]
     },
     "Page": {

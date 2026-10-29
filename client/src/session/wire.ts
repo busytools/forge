@@ -853,7 +853,11 @@ function composerFrom(value: unknown): ComposerState {
     // them back to a page that reloaded in between.
     take: null,
     notice: held['notice'] ?? null,
-    machine: machineTurn(held['machine']),
+    machine:
+      machineTurn(held['machine']) ??
+      // **A v15 server names the compaction only.** The old key is read as a
+      // fallback, so a mixed install still stands the box down through one.
+      (held['compacting'] === true ? 'compacting' : null),
     sign_in: held['sign_in'] ?? null,
   };
 }
