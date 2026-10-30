@@ -1065,7 +1065,6 @@ const ENV_KEYS: &[ConfigKey] = &[ConfigKey {
     },
 }];
 
-/// The whole document for one load, every catalogued key resolved.
 /// The instance names and the key's own name for one row.
 ///
 /// A name can contain dots - an account display name, an org, a project, a
@@ -1098,6 +1097,14 @@ fn split_row(area: &str, path: &str, config: &LoadedConfig) -> (Vec<String>, Str
                     vec![project.org.clone(), project.name.clone()],
                     key_leaf(tail, &["env", "handoff", "slack"]),
                 );
+            }
+            // The org's own rows (`orgs[].name`, `accounts`, `fallback_accounts`,
+            // `browser_profile`, `slack.workspace`) carry no project segment;
+            // they group by the org so two orgs do not interleave.
+            if let Some((org, tail)) =
+                instance(path, "orgs.", config.projects.iter().map(|p| p.org.as_str()))
+            {
+                return (vec![org.to_owned()], key_leaf(tail, &["slack"]));
             }
         }
         "connectors" => {
@@ -1134,6 +1141,13 @@ fn split_row(area: &str, path: &str, config: &LoadedConfig) -> (Vec<String>, Str
 
 /// The longest of `names` the path names after `prefix`, and the key tail
 /// that follows it.
+///
+/// The longest match is what keeps a name that is a prefix of another
+/// (`Beta` beside `Beta.Two`) on its own rows. The corner it cannot
+/// resolve is a name that itself ends in a key-looking segment: with `a`
+/// beside `a.env`, the row `accounts.a.env.FLAG` matches the longer name
+/// and is grouped under `a.env`. Telling those apart needs the catalogue's
+/// key set, which a row path does not carry.
 fn instance<'a, 'b>(
     path: &'b str,
     prefix: &str,
@@ -1162,6 +1176,7 @@ fn last_segment(path: &str) -> String {
     path.rsplit('.').next().unwrap_or(path).to_owned()
 }
 
+/// The whole document for one load, every catalogued key resolved.
 pub(crate) fn document(config: &LoadedConfig, version: &str, source: &Path) -> SettingsDocument {
     let areas = AREAS
         .iter()
@@ -1365,6 +1380,46 @@ max_size_mib = 5
 
 [usage]
 poll_seconds = 5
+"#;
+
+    /// Two orgs, one with dotted names, for the org-level rows and the
+    /// dotted instances the split must keep whole.
+    const TWO_ORGS: &str = r#"
+[[accounts]]
+display_name = "Acme.Corp"
+provider = "anthropic"
+token = "t"
+models = ["claude-sonnet-5"]
+
+[[orgs]]
+name = "Acme.Corp"
+accounts = ["Acme.Corp"]
+
+[orgs.slack]
+workspace = "Acme Workspace"
+
+[[orgs.projects]]
+name = "api.v2"
+path = "/tmp/api"
+
+[orgs.projects.slack]
+workspace = "Acme Workspace"
+
+[[orgs]]
+name = "Beta"
+accounts = ["Acme.Corp"]
+
+[[orgs.projects]]
+name = "web"
+path = "/tmp/web"
+
+[[slack]]
+workspace = "Acme Workspace"
+token = "x"
+poll_seconds = 10
+dm_poll_seconds = 60
+thread_idle_days = 3
+stale_after_hours = 6
 "#;
 
     fn load(raw: &str) -> LoadedConfig {
@@ -1647,6 +1702,58 @@ models = ["m"]
         check("connectors", "slack.Test Slack.token", "token", &["slack", "Test Slack"]);
         check("server", "browser.fps", "fps", &["browser"]);
         check("usage", "usage.poll_seconds", "poll_seconds", &[]);
+    }
+
+    /// **Two orgs keep their own headers.** The org's own rows carry no
+    /// project segment, so without an org match they would fall into one
+    /// unlabelled group and interleave.
+    #[test]
+    fn an_org_level_row_keeps_its_org_group() {
+        let config = load(TWO_ORGS);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+        let projects = document
+            .areas
+            .iter()
+            .find(|area| area.id == "projects")
+            .expect("the projects area draws");
+        let row = |path: &str| {
+            projects
+                .keys
+                .iter()
+                .find(|key| key.path == path)
+                .unwrap_or_else(|| panic!("{path} draws"))
+        };
+        let acme = row("orgs.Acme.Corp.name");
+        assert_eq!(acme.group, vec!["Acme.Corp".to_owned()]);
+        assert_eq!(acme.leaf, "name");
+        let beta = row("orgs.Beta.name");
+        assert_eq!(beta.group, vec!["Beta".to_owned()]);
+        assert_ne!(acme.group, beta.group, "two orgs do not share a group");
+        let slack = row("orgs.Acme.Corp.slack.workspace");
+        assert_eq!(slack.group, vec!["Acme.Corp".to_owned()]);
+        assert_eq!(slack.leaf, "workspace");
+    }
+
+    /// A dotted display name, org and project each stay one name in the
+    /// split, which the round-2 test's fixture could not exercise.
+    #[test]
+    fn a_dotted_account_org_and_project_stay_whole() {
+        let config = load(TWO_ORGS);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+        let find = |area: &str, path: &str| {
+            document
+                .areas
+                .iter()
+                .find(|candidate| candidate.id == area)
+                .and_then(|area| area.keys.iter().find(|key| key.path == path))
+                .unwrap_or_else(|| panic!("{path} draws"))
+        };
+        let token = find("accounts", "accounts.Acme.Corp.token");
+        assert_eq!(token.group, vec!["Acme.Corp".to_owned()]);
+        assert_eq!(token.leaf, "token");
+        let model = find("projects", "orgs.Acme.Corp.projects.api.v2.model");
+        assert_eq!(model.group, vec!["Acme.Corp".to_owned(), "api.v2".to_owned()]);
+        assert_eq!(model.leaf, "model");
     }
 
     /// Each class the page can draw has at least one key, so a class cannot
