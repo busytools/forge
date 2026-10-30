@@ -102,6 +102,26 @@ describe('the push-to-talk key', () => {
     expect(began, 'nothing was begun at any point').not.toHaveBeenCalled();
   });
 
+  /// **A forge box still takes the key under a takeover.** The bar's feedback
+  /// line is drawn above the page rather than being part of it, so with the
+  /// caret in it the press belongs to a take exactly as the bar's mic does.
+  /// Anywhere else the page keeps the keyboard, which is the case above.
+  it("starts a take from the bar's line while a browser takeover is up", () => {
+    const line = document.createElement('textarea');
+    line.dataset['editor'] = 'bar';
+    document.body.append(line);
+    line.focus();
+    try {
+      const { wiring: w, act } = wiring();
+      const handlers = pushToTalkHandlers(w);
+      surface.phase = 'live';
+      press(handlers);
+      expect(act, "a press in the bar's line begins the take").toHaveBeenCalledWith('begin');
+    } finally {
+      line.remove();
+    }
+  });
+
   /// **The stand-down is the takeover's, not the key's**: with no surface up
   /// the same press begins the take.
   it('starts the take again once the takeover is down', () => {

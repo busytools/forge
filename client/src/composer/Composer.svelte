@@ -714,6 +714,9 @@
       );
       box.barLanded = null;
     }
+    // A new take's words land where the last line's went, so the line is a
+    // message again rather than one already sent.
+    box.barSent = false;
     box.beatAt = Date.now();
     // The words come with the keyboard, so an immediate Enter sends what just
     // landed. The guards above already make this the landing rather than every
@@ -731,6 +734,9 @@
    * the card until the ask is answered.
    */
   function carryBarWords(): void {
+    // **A line that was sent as feedback has already left**: carrying it would
+    // put the same words in the chat's draft after the agent read them.
+    if (box.barSent) return;
     if (box.barLanded === null) return;
     const held = untrack(() => box.dockDraft);
     // **A line the reader emptied has nothing to hand over**: carrying an
@@ -1256,6 +1262,13 @@
       report('the feedback was not sent', error);
       return;
     }
+    // **The words left, so the line owes the chat nothing.** A dictated line
+    // is a landed take, and the ask resolving runs the carry: left standing,
+    // it wrote the words the agent just read into the composer's draft.
+    box.barSent = true;
+    box.dockDraft = '';
+    box.barLanded = null;
+    box.carried = null;
     takeoverAnswer('feedback');
   }
 
@@ -1358,6 +1371,8 @@
         // line must not clear one the reader already typed away, or a
         // composer notice can come back when the takeover lowers.
         if (box.dictateLine !== null) box.dismissed = box.dictateLine.text;
+        // A line the reader is writing in is a message again.
+        box.barSent = false;
       }}
       ondone={answering ? () => takeoverAnswer('done') : null}
       onnotnow={answering ? () => takeoverAnswer('not_now') : null}
