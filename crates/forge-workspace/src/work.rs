@@ -241,6 +241,21 @@ fn reads_again(read_at: Option<Instant>, dirty: bool, now: Instant, window: Dura
     }
 }
 
+/// The base measurement a scan adopts: the one its caller passed, else the
+/// checkout's latest when that was established before the scan began.
+///
+/// **A measurement that lands while the tree is being read is not this scan's
+/// own**: it describes a ref the row's count and files may predate, so the
+/// next pass carries it, read against it. A caller's own answer is never
+/// filtered - a drawing read's refresh is the check that read exists to make.
+fn adopted_measurement(
+    passed: Option<forge_agent::env::git_diff::BaseMeasurement>,
+    latest: Option<forge_agent::env::git_diff::BaseMeasurement>,
+    scan_started: Instant,
+) -> Option<forge_agent::env::git_diff::BaseMeasurement> {
+    passed.or_else(|| latest.filter(|measured| measured.at <= scan_started))
+}
+
 /// The row a seat's viewers were last told, which is what keeps a still seat
 /// from announcing itself again every time it is read.
 #[derive(Clone, Debug, PartialEq)]
@@ -908,19 +923,12 @@ impl Workspace {
                 forge_agent::env::git_diff::scan_serving_cached_pr(cwd, &env, previous).await
             }
         };
-        // **The scan's own branch names the measurement it may adopt.** A
-        // caller holding one passes it; a caller without (the record's
-        // fallback, the seat's loop) takes the checkout's latest here, once
-        // the scan has resolved which base this row is about - and only one
-        // established before this scan began, because one that lands while
-        // the tree is being read describes a ref the row's count and files
-        // may predate. The next pass carries it, read against it.
-        let measured = measured.or_else(|| {
-            diff.default_branch.as_deref().and_then(|branch| {
-                forge_agent::env::git_diff::last_base_measurement(cwd, branch)
-                    .filter(|measured| measured.at <= scan_started)
-            })
-        });
+        // **The scan's own branch names the measurement it may adopt.**
+        let latest = diff
+            .default_branch
+            .as_deref()
+            .and_then(|branch| forge_agent::env::git_diff::last_base_measurement(cwd, branch));
+        let measured = adopted_measurement(measured, latest, scan_started);
         let previous_base = held.as_ref().and_then(|held| held.base);
         let previous_base_at = held.as_ref().and_then(|held| held.base_at);
         let previous_base_error = held.as_ref().and_then(|held| held.base_error.clone());
@@ -2271,6 +2279,41 @@ provider = "anthropic"
             next.base_at,
             Some(measured.at),
             "and the row carries the instant the measurement was taken, not when the row was stored",
+        );
+    }
+
+    /// **The scan's own measurement is one established before it began.** A
+    /// check that lands while the tree is being read describes a ref the row's
+    /// count and files may predate, so the next pass carries it; a caller's
+    /// own answer is never held back.
+    #[test]
+    fn a_scan_adopts_only_a_measurement_from_before_it_began() {
+        let started = Instant::now();
+        let measurement = |at: Instant| forge_agent::env::git_diff::BaseMeasurement {
+            at,
+            state: BaseState::Current,
+            error: None,
+        };
+
+        assert_eq!(
+            adopted_measurement(None, Some(measurement(started)), started),
+            Some(measurement(started)),
+            "a measurement from before the scan is the scan's own",
+        );
+        assert_eq!(
+            adopted_measurement(
+                None,
+                Some(measurement(started + Duration::from_millis(1))),
+                started,
+            ),
+            None,
+            "one that landed during the scan waits for the next pass",
+        );
+        let passed = measurement(started + Duration::from_secs(5));
+        assert_eq!(
+            adopted_measurement(Some(passed.clone()), None, started),
+            Some(passed),
+            "and a caller's own answer is never filtered",
         );
     }
 

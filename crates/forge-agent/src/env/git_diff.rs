@@ -473,6 +473,11 @@ fn join_base_run(key: RunKey, deadline: Option<Instant>) -> (std::sync::Arc<Base
 /// registry already holds a run some other caller led, that one is joined, so
 /// a burst of readers after one cut fetch costs one more fetch and not one
 /// each.
+///
+/// **A reading never joins a bounded run that is still working**, not even one
+/// that took the registry's place after the cut it looked at: that run's bound
+/// is not the reading's wait, and its cut answer is not a check. A run that
+/// has already answered is joined - its answer costs no wait.
 fn replace_cut_run(
     key: RunKey,
     cut: &std::sync::Arc<BaseRun>,
@@ -482,6 +487,7 @@ fn replace_cut_run(
     runs.retain(|_, weak| weak.strong_count() > 0);
     if let Some(registered) = runs.get(&key).and_then(std::sync::Weak::upgrade)
         && !std::sync::Arc::ptr_eq(&registered, cut)
+        && (registered.deadline.is_none() || registered.answer.borrow().is_some())
     {
         return (registered, false);
     }
@@ -576,10 +582,12 @@ static LAST_MEASURED: OnceLock<Mutex<HashMap<(PathBuf, String), BaseMeasurement>
     OnceLock::new();
 
 fn remember_measurement(cwd: &Path, default_branch: &str, refresh: &BaseRefresh) {
-    // **A run that ended without answering measured nothing.** Its state is a
-    // placeholder, and storing it would draw "could not be checked" on the next
-    // scan's row for a fetch that never reported.
-    if refresh.unanswered {
+    // **A run that ended without answering measured nothing**, and neither did
+    // one a bound cut: the first is a placeholder for a fetch that never
+    // reported, the second an unchecked marker for one that outlived its
+    // budget. Storing either would draw "could not be checked" on the next
+    // scan's row and hand a later reading a check it must lead itself.
+    if refresh.unanswered || refresh.cut {
         return;
     }
     let mut held = LAST_MEASURED.get_or_init(|| Mutex::new(HashMap::new())).lock();
@@ -867,7 +875,8 @@ async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration)
 /// **A cut run may not be a bound-less caller's answer.** A kick registering a
 /// run between the bypass's look and this call's join is the one way a
 /// bound-less caller can still end up on a bounded one; the replace below takes
-/// it back when that run's bound ended it or has already passed. A bounded run
+/// it back when that run's bound ended it or has already passed, and leads the
+/// read's own in place of any other bounded run still working. A bounded run
 /// that finished inside its bound answers the read like any completed refresh.
 async fn refresh_base(cwd: &Path, default_branch: &str, bound: Option<Duration>) -> BaseRefresh {
     let key = (repo_key(cwd, COMMAND_TIMEOUT).await, default_branch.to_owned());
@@ -4744,6 +4753,75 @@ mod tests {
         );
     }
 
+    /// **A reading that joined a run the kick's bound cut leads its own.**
+    /// The bound a background run was given is not the reading's wait, and
+    /// the cut answer is not a check: the reading leads an uncapped refresh in
+    /// its place and answers the base that one measured.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_bound_less_reader_leads_its_own_when_the_run_it_joined_was_cut() {
+        let (upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
+
+        // The registry holds a run whose bound is spent and which answered
+        // with a cut: the run a reading still joins when a kick registers
+        // between its bypass's look and its own join.
+        let key = (repo_key(dir.path(), COMMAND_TIMEOUT).await, "origin/main".to_owned());
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("the test clock is past boot");
+        let (cut_run, led) = join_base_run(key, Some(past));
+        assert!(led, "the fixture led a run of its own");
+        cut_run.publish(BaseRefresh {
+            state: BaseState::Unverified,
+            base_ref: None,
+            error: Some("the fetch did not finish inside the 1s it was given".to_owned()),
+            cut: true,
+            unanswered: false,
+            at: Instant::now(),
+        });
+
+        let reader = tokio::spawn({
+            let dir = dir.path().to_path_buf();
+            async move { refresh_base_for_display(&dir, "origin/main").await }
+        });
+        wait_for(|| held.starts() >= 1, "the reading leads a fetch of its own").await;
+        held.release();
+        let refresh = timeout(TEST_GIT_BUDGET, reader)
+            .await
+            .expect("the reading answered")
+            .expect("the read task finished");
+        let _ = settle_background_fetches().await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(held.starts(), 1, "the reading led a fetch of its own, not the cut run's");
+        assert_eq!(refresh.state, BaseState::Current, "the reading drew the refreshed base");
+        assert!(refresh.error.is_none(), "and no bound it never accepted: {refresh:?}");
+        assert!(!refresh.cut);
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            rev_parse(upstream.path(), "main"),
+            "with the base at the remote's tip",
+        );
+    }
+
+    /// **A reading never joins a bounded run that is still working**, even one
+    /// that took the registry's place after the cut it looked at: that run's
+    /// bound is not the reading's wait, and its cut answer is not a check.
+    #[test]
+    fn a_reading_leads_its_own_rather_than_join_a_bounded_run_still_working() {
+        let key = (PathBuf::from("/nonexistent/reading-join"), "origin/main".to_owned());
+        let (bounded, led) =
+            join_base_run(key.clone(), Some(Instant::now() + Duration::from_secs(60)));
+        assert!(led, "the fixture led the bounded run");
+
+        // The run the reading looked at is no longer the registry's entry.
+        let cut = BaseRun::new(None);
+        let (joined, leader) = replace_cut_run(key, &cut, None);
+        assert!(leader, "the reading leads its own rather than joining the bounded run");
+        assert!(!std::sync::Arc::ptr_eq(&joined, &bounded), "and not the bounded run either");
+    }
+
     /// **A reading does not wait on the fetch a scan's kick started.** The
     /// kick leads a run with the scan's own bound; a drawing read answers the
     /// base it has as unchecked, pinned to a local tip, and the kicked run's
@@ -4822,6 +4900,46 @@ mod tests {
         assert!(answer.base_ref.is_some(), "pinned to the tip the fetch left");
         assert!(answer.error.is_none() && !answer.cut && !answer.unanswered);
         crate::env::git_command::clear_git_point(dir.path());
+    }
+
+    /// **A fetch its budget cut is not a measurement.** The next reading leads
+    /// its own uncapped refresh rather than reusing the unchecked placeholder
+    /// the cut left: on a link slow enough to cut the kick, reusing it would
+    /// draw "could not be checked" for thirty seconds and never make the check
+    /// the page exists to make.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cut_run_is_not_a_measurement_a_later_reading_reuses() {
+        let (upstream, dir) = stale_base_fixture();
+        let bin = tempfile::tempdir().expect("wrapper dir");
+        let held = held_fetch_at(dir.path(), bin.path());
+
+        let cut = refresh_base_within(dir.path(), "origin/main", Duration::from_millis(300)).await;
+        assert!(cut.cut, "the held fetch outlived the bound");
+        assert!(
+            last_base_measurement(dir.path(), "origin/main").is_none(),
+            "a cut answer is not stored as the checkout's measurement",
+        );
+
+        let reader = tokio::spawn({
+            let dir = dir.path().to_path_buf();
+            async move { refresh_base_for_display(&dir, "origin/main").await }
+        });
+        wait_for(|| held.starts() >= 2, "the reading leads a fetch of its own").await;
+        held.release();
+        let answer = timeout(TEST_GIT_BUDGET, reader)
+            .await
+            .expect("the reading answered")
+            .expect("the read task finished");
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert_eq!(held.starts(), 2, "the cut run and the reading's own");
+        assert_eq!(answer.state, BaseState::Current, "the reading drew the refreshed base");
+        assert!(!answer.cut, "on a fetch it asked for and waited for");
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            rev_parse(upstream.path(), "main"),
+            "with the base at the remote's tip",
+        );
     }
 
     /// **The explicit refspec writes the base ref, not the repository's own.**

@@ -2208,6 +2208,21 @@ fn awaits_seal_history(state: &TransportState, slot: &SessionSlot) -> bool {
     !matching && state.surface.seat_epoch_opened_with_rows(slot)
 }
 
+/// The base a record's `git` row states. **When the read refreshed, the row
+/// states the check its `diff` was read against**, never the store's newer
+/// measurement (a bypass answered while a fetch landed); a read that did not
+/// refresh states what the store holds.
+fn stated_base<'a>(
+    refresh: Option<&'a forge_workspace::env::git_diff::BaseRefresh>,
+    stored: Option<forge_primitives::git_diff::BaseState>,
+    stored_error: Option<&'a str>,
+) -> (Option<forge_primitives::git_diff::BaseState>, Option<&'a str>) {
+    match refresh {
+        Some(refresh) => (Some(refresh.state), refresh.error.as_deref()),
+        None => (stored, stored_error),
+    }
+}
+
 /// One session's record, from the reads a session-scoped view makes.
 async fn session(
     state: &TransportState,
@@ -2407,7 +2422,9 @@ async fn session(
     // The tree behind the row's depth, from the same held scan and through
     // the same constructor the pushed frame goes through - one derivation,
     // so a client that applies the update lands on the record's own answer.
-    let git = git_work_view(&held.diff, held.base, held.base_error.as_deref());
+    let (row_base, row_base_error) =
+        stated_base(refresh.as_ref(), held.base, held.base_error.as_deref());
+    let git = git_work_view(&held.diff, row_base, row_base_error);
     let branch = work.branch.clone().unwrap_or_default();
     let at = std::time::Instant::now();
     let reviews = surface.reviews(slot.project(), &branch);
@@ -2616,6 +2633,35 @@ mod tests {
             cycle: forge_primitives::HandoffCycle::default(),
             successor: None,
         }
+    }
+
+    /// **The row states the check its diff was read against.** The store can
+    /// hold a newer measurement (a bypass answered while a fetch landed), and
+    /// taking the row from that side would leave the record disagreeing with
+    /// its own diff.
+    #[test]
+    fn a_record_states_one_base_across_its_diff_and_its_row() {
+        use forge_primitives::git_diff::BaseState;
+        use forge_workspace::env::git_diff::BaseRefresh;
+
+        let refresh = BaseRefresh {
+            state: BaseState::Unverified,
+            base_ref: None,
+            error: None,
+            cut: false,
+            unanswered: false,
+            at: std::time::Instant::now(),
+        };
+        assert_eq!(
+            super::stated_base(Some(&refresh), Some(BaseState::Current), Some("stale words")),
+            (Some(BaseState::Unverified), None),
+            "the read's own check is the frame's base, not the store's newer measurement",
+        );
+        assert_eq!(
+            super::stated_base(None, Some(BaseState::Current), Some("last check")),
+            (Some(BaseState::Current), Some("last check")),
+            "and a read that did not refresh states what the store holds",
+        );
     }
 
     /// **The defect the scratch stack found**: a forge restart seeds the
