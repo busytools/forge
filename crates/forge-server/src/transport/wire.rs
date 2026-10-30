@@ -3672,6 +3672,7 @@ mod tests {
                 cwd: repo,
                 read_at: std::time::Instant::now(),
                 base: None,
+                base_at: None,
             },
         );
 
@@ -4280,6 +4281,7 @@ mod tests {
                 cwd: repo.path().to_owned(),
                 read_at: std::time::Instant::now(),
                 base: None,
+                base_at: None,
             },
         );
         let state = TransportState {
@@ -4351,6 +4353,7 @@ mod tests {
                 cwd: repo.path().to_owned(),
                 read_at: std::time::Instant::now(),
                 base: None,
+                base_at: None,
             },
         );
         let thread = |id: &str,
@@ -4517,6 +4520,7 @@ mod tests {
                 cwd: repo.path().to_owned(),
                 read_at: std::time::Instant::now(),
                 base: None,
+                base_at: None,
             },
         );
         let thread = |id: &str, side, text: &str, context: &[&str], commit: Option<&str>| {
@@ -4643,6 +4647,7 @@ mod tests {
                 cwd: repo.to_owned(),
                 read_at: std::time::Instant::now(),
                 base: None,
+                base_at: None,
             },
         );
         let state = TransportState {
@@ -5075,6 +5080,7 @@ mod tests {
                 cwd: std::path::PathBuf::from(&cwd),
                 read_at: std::time::Instant::now(),
                 base: None,
+                base_at: None,
             },
         );
         let work = Arc::new(WorkCache::new());
@@ -5121,6 +5127,7 @@ mod tests {
                 cwd: std::path::PathBuf::from(&cwd),
                 read_at: std::time::Instant::now(),
                 base: None,
+                base_at: None,
             },
         );
         let state = TransportState {

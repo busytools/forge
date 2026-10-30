@@ -8712,6 +8712,7 @@ provider = "anthropic"
             cwd: std::path::PathBuf::from("/tmp/repo"),
             read_at: std::time::Instant::now(),
             base: None,
+            base_at: None,
         });
 
         let (_cmd_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
