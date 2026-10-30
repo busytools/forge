@@ -372,6 +372,26 @@ pub enum ClientMessage {
     ClientPerf {
         records: Vec<serde_json::Value>,
     },
+    /// A batched save of the effective config. The success answer is the
+    /// settings push the reload produces; a save that does not write is
+    /// answered with [`ServerMessage::SettingsRefused`].
+    SettingsEdit {
+        /// The fingerprint of the raw file text the page loaded.
+        fingerprint: String,
+        edits: Vec<forge_primitives::settings::SettingsEditRequest>,
+    },
+}
+
+/// Why a settings save was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsRefusal {
+    /// The file moved since the page loaded it.
+    Stale,
+    /// The candidate failed the boot loader.
+    Invalid,
+    /// A guard refused the save.
+    Refused,
 }
 
 /// One chosen file on the wire: its name and its bytes, base64.
@@ -392,6 +412,15 @@ pub enum ServerMessage {
     /// why no settings read verb exists.
     Settings {
         document: forge_primitives::SettingsDocument,
+    },
+    /// A settings save that wrote nothing. `message` is the loader's own
+    /// words for an invalid candidate or the guard's own for a refusal;
+    /// `key_path` anchors it at one of the save's keys where one is known.
+    SettingsRefused {
+        reason: SettingsRefusal,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key_path: Option<String>,
     },
     Greeting {
         version: u32,

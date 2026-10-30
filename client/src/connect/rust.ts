@@ -51,6 +51,7 @@ import { Stores, type Store } from '../stores';
 import { coversHome } from '../wire/fleet';
 import { settingsFrom } from '../wire/types';
 import { takeSettings } from '../settings/frame';
+import type { SettingsEditWire } from '../wire/settings';
 import type { ClientSettings, SessionSlot } from '../wire/types';
 
 /**
@@ -640,6 +641,14 @@ class RustConnection implements Connection {
       if (at !== undefined) refused(at);
     });
     return crossed;
+  }
+
+  settingsEdit(fingerprint: string, edits: SettingsEditWire[]): boolean {
+    if (this.state !== 'open') return false;
+    void invoke('client_settings_edit', { fingerprint, edits }).catch((why: unknown) => {
+      report('a settings save could not reach the shell', why);
+    });
+    return true;
   }
 
   more(

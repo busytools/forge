@@ -14,6 +14,18 @@ export type SettingsClass = 'live' | 'next_session' | 'restart' | 'not_read_yet'
 /** The shape of a key's value. */
 export type SettingsKind = 'string' | 'number' | 'bool' | 'list' | 'table' | 'set' | 'other';
 
+/** The control a key's value is edited with. */
+export type SettingsEditKind = 'string' | 'number' | 'bool' | 'enum' | 'list' | 'other';
+
+/** What the editor needs to draw one key's control. */
+export interface SettingsEditSpec {
+  kind: SettingsEditKind;
+  allowed: string[];
+  required: boolean;
+  /** `account`, `project`, `slack`, `model` or `org`, for a repeated entry. */
+  group: string | null;
+}
+
 export type SettingsValue =
   | { kind: 'string'; text: string }
   | { kind: 'number'; text: string }
@@ -31,10 +43,13 @@ export interface SettingsKey {
   leaf: string;
   /** The instance names the row belongs to; empty when ungrouped. */
   group: string[];
+  /** The catalogue pattern the path fills, which a save sends back. */
+  pattern: string;
   class: SettingsClass;
   /** The word the server sent, kept for a class this client does not know. */
   classLabel: string;
   value: SettingsValue;
+  edit: SettingsEditSpec;
 }
 
 export interface SettingsArea {
@@ -47,8 +62,28 @@ export interface SettingsArea {
 export interface SettingsDocument {
   version: string;
   source: string;
+  /** The fingerprint of the raw file text a save carries. */
+  fingerprint: string;
   totals: { keys: number; areas: number };
   areas: SettingsArea[];
+}
+
+/** One change in a batched save. */
+export interface SettingsEditRequest {
+  area: string;
+  keyPath: string;
+  pattern: string;
+  op: 'set' | 'add' | 'remove';
+  value?: unknown;
+}
+
+/** The wire's own shape for one edit. */
+export interface SettingsEditWire {
+  area: string;
+  key_path: string;
+  pattern: string;
+  op: 'set' | 'add' | 'remove';
+  value?: unknown;
 }
 
 const CLASSES: ReadonlySet<string> = new Set(['live', 'next_session', 'restart', 'not_read_yet']);
@@ -95,6 +130,7 @@ export function settingsDocumentFrom(value: unknown): SettingsDocument | null {
   return {
     version: str(root.version) ?? '',
     source: str(root.source) ?? '',
+    fingerprint: str(root.fingerprint) ?? '',
     totals: {
       keys: num(root.totals, 'keys') ?? keys,
       areas: num(root.totals, 'areas') ?? areas.length,
@@ -125,9 +161,24 @@ function keyFrom(value: unknown): SettingsKey {
     // guess cut at its last dot.
     leaf: str(key.leaf) ?? path,
     group: strings(key.group) ?? [],
+    pattern: str(key.pattern) ?? '',
     class: klass,
     classLabel: label,
     value: valueFrom(str(key.kind) ?? '', key.value),
+    edit: editFrom(key.edit),
+  };
+}
+
+const EDIT_KINDS: ReadonlySet<string> = new Set(['string', 'number', 'bool', 'enum', 'list']);
+
+function editFrom(value: unknown): SettingsEditSpec {
+  const edit = narrow(value) ?? {};
+  const rawKind = str(edit.kind) ?? '';
+  return {
+    kind: EDIT_KINDS.has(rawKind) ? (rawKind as SettingsEditKind) : 'other',
+    allowed: strings(edit.allowed) ?? [],
+    required: edit.required === true,
+    group: str(edit.group),
   };
 }
 

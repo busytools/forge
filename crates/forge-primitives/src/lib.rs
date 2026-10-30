@@ -159,7 +159,8 @@ pub use session_update::{
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, ToolOutputMetadata,
 };
 pub use settings::{
-    EffectClass, SettingKind, SettingsArea, SettingsDocument, SettingsKey, SettingsTotals,
+    EditKind, EffectClass, SettingKind, SettingsArea, SettingsDocument, SettingsEdit,
+    SettingsEditOp, SettingsEditRequest, SettingsKey, SettingsTotals,
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use tasks::{Task, TaskId, TaskStatus};

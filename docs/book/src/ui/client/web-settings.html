@@ -140,6 +140,56 @@
   .phone .settings-rows { table-layout: auto; }
   .phone .settings-rows col.k { width: 48%; }
   .phone .settings-rows col.e { width: 112px; }
+
+  /* ---------- the editor ---------- */
+  .editor-demo { margin-top: 44px; }
+  button.settings-mode { font-family: var(--mono); font-size: 11px; color: var(--hot);
+    border: 1px solid rgba(244,118,0,.45); border-radius: 99px; padding: 2px 9px;
+    white-space: nowrap; background: var(--sel); cursor: pointer; }
+  .settings-restart { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border: 1px solid rgba(201,161,59,.4); background: rgba(201,161,59,.07);
+    border-radius: var(--r); padding: 10px 14px; margin-bottom: 16px; }
+  .settings-restart .t { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
+  .settings-restart .keys { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
+  .settings-add, .settings-row-action { font-family: var(--mono); font-size: 11px;
+    color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 99px;
+    padding: 3px 10px; cursor: pointer; white-space: nowrap; }
+  .settings-row-action.danger { color: var(--bad); border-color: rgba(224,104,62,.4); }
+  .settings-required { font-family: var(--mono); font-size: 10px; color: var(--warn);
+    margin-left: 8px; white-space: nowrap; }
+  .settings-new { font-family: var(--mono); font-size: 10.5px; color: var(--blue);
+    border: 1px solid rgba(97,160,224,.35); border-radius: 99px; padding: 0 8px; }
+  .settings-removed { font-family: var(--mono); font-size: 11px; color: var(--bad); }
+  .settings-rows input, .settings-rows select { font-family: var(--mono); font-size: 13px;
+    color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 5px 8px; min-width: 0; width: 100%; }
+  .settings-rows input[type="number"] { max-width: 160px; }
+  .settings-rows select { max-width: 260px; }
+  .toggle { display: inline-flex; align-items: center; gap: 9px; background: none; border: 0;
+    padding: 0; cursor: pointer; font: inherit; color: var(--muted); }
+  .toggle .track { width: 30px; height: 17px; border-radius: 99px;
+    border: 1px solid var(--accent); background: var(--sel); position: relative; }
+  .toggle .thumb { position: absolute; top: 2px; left: 15px; width: 11px; height: 11px;
+    border-radius: 50%; background: var(--accent); }
+  .toggle .word { font-family: var(--mono); font-size: 11px; }
+  .settings-savebar { position: sticky; bottom: 0; display: flex; align-items: center;
+    gap: 12px; flex-wrap: wrap; margin-top: 20px; padding: 12px 16px;
+    border: 1px solid var(--line); border-radius: var(--r); background: var(--s1);
+    box-shadow: 0 -12px 32px -18px rgba(0,0,0,.9); }
+  .settings-savebar .count { font-family: var(--mono); font-size: 12.5px; color: var(--hot); }
+  .settings-savebar .said { font-family: var(--mono); font-size: 11.5px; color: var(--bad); }
+  .settings-savebar .spacer { flex: 1; }
+  .settings-btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
+    font-size: 12.5px; border-radius: 9px; padding: 7px 14px; }
+  .settings-btn.go { background: var(--accent); color: var(--bg); font-weight: 640; }
+  .settings-btn.ghost { background: transparent; color: var(--muted);
+    box-shadow: inset 0 0 0 1px var(--line); }
+  .settings-btn.bad { background: var(--bad); color: var(--bg); font-weight: 640; }
+  .settings-dialog { width: min(460px, 100%); background: var(--s1); border: 1px solid var(--line);
+    border-radius: 14px; padding: 20px 22px 18px; margin: 18px 0 0; }
+  .settings-dialog .t { font-size: 17px; font-weight: 620; color: var(--text); }
+  .settings-dialog .s { font-size: var(--fs-data); color: var(--muted); margin: 8px 0 16px; }
+  .settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
 </head>
 <body>
@@ -271,6 +321,93 @@
     </div>
   </div>
 
+  <div class="editor-demo">
+    <header class="top pagetop">
+      <span class="brand">
+        <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+        <span class="word">forge</span>
+      </span>
+      <span class="title"><span class="t">settings</span><span class="s">the effective config, as loaded</span></span>
+      <span class="settings-meta">
+        <span class="versions"><span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot; <span class="build"><span class="k">socket</span> <b>v19</b></span></span>
+      </span>
+      <button class="settings-mode">editing</button>
+      <a class="back" href="#">&larr; home</a>
+    </header>
+
+    <div class="settings-restart" role="status">
+      <span class="t">saved. these need a server restart:</span>
+      <span class="keys">server.port &middot; gateway.port</span>
+      <span class="settings-link">dismiss</span>
+    </div>
+
+    <div class="settings-split">
+      <div class="settings-rail">
+        <button class="settings-rail-item on" aria-pressed="true"><span class="settings-rail-name">accounts</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">31</span></button>
+        <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">162</span></button>
+        <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">9</span></button>
+      </div>
+      <div class="settings-pane">
+        <div class="settings-pane-head">
+          <h2 class="t">accounts</h2>
+          <span class="s">the provider endpoints and credentials a session can spawn under</span>
+          <span class="settings-keys">31 keys</span>
+          <button class="settings-add">+ account</button>
+        </div>
+
+        <div class="settings-group">
+          <span class="settings-group-name">Subspace</span>
+          <span class="settings-group-class"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span>
+          <button class="settings-row-action danger">remove</button>
+        </div>
+        <table class="settings-rows">
+          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
+          <tbody>
+            <tr><th scope="row"><code title="accounts.Subspace.display_name">display_name</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" value="Subspace" aria-label="display_name" /></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+            <tr><th scope="row"><code title="accounts.Subspace.provider">provider</code><span class="settings-required">required</span></th><td class="v"><select aria-label="provider"><option>anthropic</option><option>openrouter</option></select></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+            <tr><th scope="row"><code title="accounts.Subspace.token">token</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" value="sk-ant-oat01-example" aria-label="token" /></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+            <tr><th scope="row"><code title="accounts.Subspace.models">models</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" value="claude-opus-5-5[1m], claude-opus-5-5" aria-label="models" /></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          </tbody>
+        </table>
+
+        <div class="settings-group removing">
+          <span class="settings-group-name">OpenRouter</span>
+          <span class="settings-removed">removed on save</span>
+          <button class="settings-row-action">undo</button>
+        </div>
+
+        <div class="settings-group new">
+          <span class="settings-group-name">new-account</span>
+          <span class="settings-new">new account</span>
+          <button class="settings-row-action">discard</button>
+        </div>
+        <table class="settings-rows">
+          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
+          <tbody>
+            <tr><th scope="row"><code>display_name</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" placeholder="not set" aria-label="new account display_name" /></td><td class="e"><span class="settings-new">new</span></td></tr>
+            <tr><th scope="row"><code>token</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" placeholder="not set" aria-label="new account token" /></td><td class="e"><span class="settings-new">new</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="settings-savebar" role="region" aria-label="unsaved changes">
+      <span class="count">3 unsaved</span>
+      <span class="said">forge.toml at ... failed to parse at line 12, column 14 in `token`: ...</span>
+      <span class="spacer"></span>
+      <button class="settings-btn ghost">discard</button>
+      <button class="settings-btn go">save</button>
+    </div>
+
+    <div class="settings-dialog" role="dialog" aria-modal="true">
+      <h2 class="t">Remove Acme.Corp / api.v2?</h2>
+      <p class="s">1 live session (lead); the save will refuse until it closes</p>
+      <div class="acts">
+        <button class="settings-btn ghost">cancel</button>
+        <button class="settings-btn bad">remove</button>
+      </div>
+    </div>
+  </div>
 
 </div>
 </body>

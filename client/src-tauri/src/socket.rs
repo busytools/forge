@@ -243,6 +243,12 @@ enum Outbound {
         what: Value,
         review: bool,
     },
+    /// A batched settings save: the page's fingerprint and its edits, as the
+    /// wire's own JSON.
+    SettingsEdit {
+        fingerprint: String,
+        edits: Value,
+    },
     More {
         conversation: Value,
         before: Option<String>,
@@ -423,6 +429,11 @@ impl Socket {
     /// anything**: no frame, no boundary - only what a reconnect re-asks with.
     pub fn declare(&self, what: Value, review: bool) {
         let _ = self.tx.send(Outbound::Declare { what, review });
+    }
+
+    /// Send a batched settings save.
+    pub fn settings_edit(&self, fingerprint: String, edits: Value) {
+        let _ = self.tx.send(Outbound::SettingsEdit { fingerprint, edits });
     }
 
     /// Ask for more turns of a conversation.
@@ -683,7 +694,8 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             let _ = replied.send(Err("the socket is not open".to_owned()));
             false
         }
-        Outbound::More { .. }
+        Outbound::SettingsEdit { .. }
+        | Outbound::More { .. }
         | Outbound::CommitDiff { .. }
         | Outbound::FileContent { .. }
         | Outbound::SeatRange { .. }
@@ -964,6 +976,15 @@ async fn run(
                                     .send(Message::Text(json!({ "kind": "unsubscribe", "what": what.clone() }).to_string().into()))
                                     .await;
                             }
+                        }
+                        Outbound::SettingsEdit { fingerprint, edits } => {
+                            let _ = writer
+                                .send(Message::Text(
+                                    json!({ "kind": "settings_edit", "fingerprint": fingerprint, "edits": edits })
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await;
                         }
                         Outbound::More { conversation, before, turns } => {
                             let _ = writer

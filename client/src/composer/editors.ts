@@ -30,6 +30,7 @@ export const EDITORS = [
   'connect',
   'palette',
   'board',
+  'settings',
   'nowhere',
 ] as const;
 
@@ -75,6 +76,7 @@ export function focusOf(where: Where): Editor {
     case 'board':
     case 'palette':
     case 'bar':
+    case 'settings':
       // The composer is this table's one caller and never names these: they are
       // boxes that exist, not boxes this table routes to.
       return 'nowhere';

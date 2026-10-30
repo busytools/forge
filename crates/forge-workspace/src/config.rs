@@ -742,6 +742,9 @@ pub(crate) struct LoadedConfig {
     /// resolved, 60 seconds when the key is absent. Bounds how stale the
     /// account-usage cache is.
     pub usage_poll_interval: Duration,
+    /// The fingerprint of the raw file text this load read, which the
+    /// settings document carries and a save compares against.
+    pub raw_fingerprint: String,
 }
 
 /// Hand-written so a field added later cannot print through it until it
@@ -771,6 +774,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("browser", &self.browser)
             .field("document_max_bytes", &self.document_max_bytes)
             .field("usage_poll_interval", &self.usage_poll_interval)
+            .field("raw_fingerprint", &self.raw_fingerprint)
             .finish()
     }
 }
@@ -980,6 +984,7 @@ impl LoadedConfig {
             browser: BrowserSettings::default(),
             document_max_bytes: DEFAULT_DOCUMENT_MAX_MIB * 1024 * 1024,
             usage_poll_interval: Duration::from_secs(DEFAULT_USAGE_POLL_SECONDS),
+            raw_fingerprint: String::new(),
         }
     }
 }
@@ -1119,9 +1124,15 @@ fn scrub_quoted(message: &str) -> String {
 /// with `~` expanded.
 pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, WorkspaceError> {
     let (path, raw) = read_config(config_dir)?;
+    load_from_text(path, &raw)
+}
 
-    let parsed: ForgeToml = toml::from_str(&raw).map_err(|source| WorkspaceError::ConfigParse {
-        at: parse_position(&raw, source.span()),
+/// Load + validate raw `forge.toml` text, with the path its errors name. The
+/// settings save validates a candidate through here before it replaces the
+/// file, so the file a save writes is one a boot would accept.
+pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, WorkspaceError> {
+    let parsed: ForgeToml = toml::from_str(raw).map_err(|source| WorkspaceError::ConfigParse {
+        at: parse_position(raw, source.span()),
         message: scrub_quoted(source.message()),
         path: path.clone(),
     })?;
@@ -1601,7 +1612,20 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         browser,
         document_max_bytes,
         usage_poll_interval,
+        raw_fingerprint: fingerprint_of(raw),
     })
+}
+
+/// A stable 64-bit fingerprint of the file's raw text, in hex. The settings
+/// page carries the fingerprint it loaded and a save is refused when the file
+/// has moved since.
+pub(crate) fn fingerprint_of(raw: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in raw.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 /// A project's env: the `env_file` entries with the inline `env` table

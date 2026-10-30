@@ -10,7 +10,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use forge_primitives::settings::SettingsTotals;
-use forge_primitives::{EffectClass, SettingKind, SettingsArea, SettingsDocument, SettingsKey};
+use forge_primitives::{
+    EditKind, EffectClass, SettingKind, SettingsArea, SettingsDocument, SettingsEdit, SettingsKey,
+};
 use serde_json::json;
 
 use crate::config::{
@@ -116,6 +118,139 @@ fn list(path: impl Into<String>, values: Vec<String>) -> KeyRow {
     let value =
         serde_json::Value::Array(values.into_iter().map(serde_json::Value::String).collect());
     KeyRow { path: path.into(), kind: SettingKind::List, value }
+}
+
+/// One key's edit metadata, in the catalogue's own static form.
+#[derive(Clone, Copy)]
+struct EditSpec {
+    kind: EditKind,
+    allowed: &'static [&'static str],
+    required: bool,
+    group: &'static str,
+}
+
+const TEXT: EditSpec =
+    EditSpec { kind: EditKind::String, allowed: &[], required: false, group: "" };
+const NUMBER: EditSpec =
+    EditSpec { kind: EditKind::Number, allowed: &[], required: false, group: "" };
+const BOOLEAN: EditSpec =
+    EditSpec { kind: EditKind::Bool, allowed: &[], required: false, group: "" };
+const LIST: EditSpec = EditSpec { kind: EditKind::List, allowed: &[], required: false, group: "" };
+
+const PERMISSION_MODES: &[&str] =
+    &["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"];
+const DICTATE_BINDS: &[&str] = &["right_cmd", "left_cmd", "off"];
+const DICTATE_MODES: &[&str] = &["auto", "toggle", "hold"];
+const DICTATE_STYLINGS: &[&str] = &["casual", "semi_casual", "semi_formal", "formal"];
+const DICTATE_STRUCTURES: &[&str] = &["prose", "lists"];
+const DICTATE_CONTEXTS: &[&str] = &["general", "email"];
+const PROVIDERS: &[&str] = &["anthropic", "codex", "openrouter", "zai"];
+
+const fn named(spec: EditSpec, group: &'static str) -> EditSpec {
+    EditSpec { kind: spec.kind, allowed: spec.allowed, required: spec.required, group }
+}
+
+const fn choice(allowed: &'static [&'static str]) -> EditSpec {
+    EditSpec { kind: EditKind::Enum, allowed, required: false, group: "" }
+}
+
+const fn required(mut spec: EditSpec) -> EditSpec {
+    spec.required = true;
+    spec
+}
+
+/// The control and the entry a catalogued key belongs to. The default is a
+/// plain text field; a numeric, boolean, list or choice key is named here, and
+/// a test holds each edit kind to the value kind the resolver draws.
+fn edit_spec(path: &str) -> EditSpec {
+    match path {
+        // accounts
+        "accounts[].display_name" | "accounts[].token" => named(required(TEXT), "account"),
+        "accounts[].provider" => named(required(choice(PROVIDERS)), "account"),
+        "accounts[].base_url" | "accounts[].model_slugs.*" | "accounts[].env.*" => {
+            named(TEXT, "account")
+        }
+        "accounts[].models" => named(required(LIST), "account"),
+        "accounts[].model_aliases.*" => named(LIST, "account"),
+        // orgs
+        "orgs[].name" => named(required(TEXT), "org"),
+        "orgs[].accounts" => named(required(LIST), "org"),
+        "orgs[].fallback_accounts" => named(LIST, "org"),
+        "orgs[].browser_profile" | "orgs[].slack.workspace" => named(TEXT, "org"),
+        // projects
+        "orgs[].projects[].name" | "orgs[].projects[].path" | "orgs[].projects[].model" => {
+            named(required(TEXT), "project")
+        }
+        "orgs[].projects[].auto_start" | "orgs[].projects[].handoff.enabled" => {
+            named(BOOLEAN, "project")
+        }
+        "orgs[].projects[].permission_mode" => named(choice(PERMISSION_MODES), "project"),
+        "orgs[].projects[].max_workers"
+        | "orgs[].projects[].handoff.at_percent"
+        | "orgs[].projects[].handoff.after_compactions" => named(NUMBER, "project"),
+        "orgs[].projects[].env.*"
+        | "orgs[].projects[].env_file"
+        | "orgs[].projects[].browser_profile"
+        | "orgs[].projects[].slack.workspace" => named(TEXT, "project"),
+        "orgs[].projects[].vault_roots" => named(LIST, "project"),
+        // connectors
+        "gotify.url"
+        | "gotify.client_token"
+        | "systemone.base_url"
+        | "systemone.model"
+        | "server.bind" => required(TEXT),
+        "slack[].workspace" | "slack[].token" => named(required(TEXT), "slack"),
+        "slack[].poll_seconds"
+        | "slack[].dm_poll_seconds"
+        | "slack[].thread_idle_days"
+        | "slack[].stale_after_hours" => named(NUMBER, "slack"),
+        "systemone.enabled"
+        | "plugins.auto_update"
+        | "server.enabled"
+        | "dictate.enabled"
+        | "dictate.normalizer"
+        | "handoff.enabled" => BOOLEAN,
+        "systemone.timeout_ms"
+        | "server.first_frame_cap_kb"
+        | "server.tool_record_cap_kb"
+        | "browser.fps"
+        | "browser.quality"
+        | "browser.idle_minutes"
+        | "dictate.max_capture_minutes"
+        | "handoff.at_percent"
+        | "handoff.after_compactions" => NUMBER,
+        "server.allowed_origins" => LIST,
+        // client
+        "client.mark" => choice(forge_primitives::client::MARK_NAMES),
+        "client.theme" => choice(forge_primitives::client::THEME_NAMES),
+        "client.font" => choice(forge_primitives::client::FONT_NAMES),
+        // dictate
+        "dictate.bind" => choice(DICTATE_BINDS),
+        "dictate.mode" => choice(DICTATE_MODES),
+        "dictate.styling" => choice(DICTATE_STYLINGS),
+        "dictate.structure" => choice(DICTATE_STRUCTURES),
+        "dictate.context" => choice(DICTATE_CONTEXTS),
+        // models, handoff, documents, usage, gateway
+        "models.*.auto_compact_window" => named(NUMBER, "model"),
+        "documents.max_size_mib"
+        | "usage.poll_seconds"
+        | "server.port"
+        | "gateway.port"
+        | "gateway.streak_count"
+        | "gateway.streak_window_secs"
+        | "gateway.no_reset_cooldown_secs" => required(NUMBER),
+        // the text keys and anything a later catalogue line adds
+        _ => TEXT,
+    }
+}
+
+fn edit_wire(spec: EditSpec) -> SettingsEdit {
+    SettingsEdit {
+        kind: spec.kind,
+        allowed: spec.allowed.iter().map(|value| (*value).to_owned()).collect(),
+        required: spec.required,
+        group: (!spec.group.is_empty()).then(|| spec.group.to_owned()),
+    }
 }
 
 /// One accepted key: its pattern, the area it draws in, its class, and the
@@ -1193,9 +1328,11 @@ pub(crate) fn document(config: &LoadedConfig, version: &str, source: &Path) -> S
                             path: row.path,
                             leaf,
                             group,
+                            pattern: key.path.to_owned(),
                             kind: row.kind,
                             value: row.value,
                             class: key.class,
+                            edit: edit_wire(edit_spec(key.path)),
                         }
                     })
                 })
@@ -1205,6 +1342,7 @@ pub(crate) fn document(config: &LoadedConfig, version: &str, source: &Path) -> S
     SettingsDocument {
         version: version.to_owned(),
         source: source.display().to_string(),
+        fingerprint: config.raw_fingerprint.clone(),
         totals: SettingsTotals { keys: 0, areas: 0 },
         areas,
     }
@@ -1650,6 +1788,13 @@ models = ["m"]
 
     fn slack_names(slack: &BTreeSet<String>) -> Vec<String> {
         slack.iter().map(|field| format!("slack[].{field}")).collect()
+    }
+
+    /// **The socket's origin list edits as a list.** It is the one list key
+    /// whose control the default text fallback would draw wrong.
+    #[test]
+    fn the_allowed_origins_edit_is_a_list() {
+        assert_eq!(edit_spec("server.allowed_origins").kind, EditKind::List);
     }
 
     /// Every catalogued key names an area the sub-nav draws, so no key is

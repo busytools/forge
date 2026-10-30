@@ -251,7 +251,7 @@ macro_rules! assert_serde_names {
 
 census!(ServerMessage,
     [
-        Settings struct,
+        Settings struct, SettingsRefused struct,
         Greeting struct, Snapshot struct, Update struct, Page struct,
         SeatFrames struct,
         CommitDiff struct, FileContent struct, Reply struct,
@@ -353,6 +353,7 @@ census!(ClientMessage,
         DocumentRead struct,
         FileContent struct,
         ClientPerf struct,
+        SettingsEdit struct,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
@@ -759,6 +760,7 @@ fn frames_record() -> Value {
             document: forge_primitives::SettingsDocument {
                 version: "1.2.3".to_owned(),
                 source: "~/.claude/forge/forge.toml".to_owned(),
+                fingerprint: "0123456789abcdef".to_owned(),
                 totals: forge_primitives::SettingsTotals { keys: 1, areas: 1 },
                 areas: vec![forge_primitives::SettingsArea {
                     id: "server".to_owned(),
@@ -768,9 +770,16 @@ fn frames_record() -> Value {
                         path: "server.port".to_owned(),
                         leaf: "port".to_owned(),
                         group: vec!["server".to_owned()],
+                        pattern: "server.port".to_owned(),
                         kind: forge_primitives::SettingKind::Number,
                         value: serde_json::json!(8790),
                         class: forge_primitives::EffectClass::Restart,
+                        edit: forge_primitives::SettingsEdit {
+                            kind: forge_primitives::EditKind::Number,
+                            allowed: Vec::new(),
+                            required: true,
+                            group: None,
+                        },
                     }],
                 }],
             },
@@ -965,6 +974,7 @@ fn frames_record() -> Value {
             document: forge_primitives::SettingsDocument {
                 version: "1.2.3".to_owned(),
                 source: "~/.claude/forge/forge.toml".to_owned(),
+                fingerprint: "0123456789abcdef".to_owned(),
                 totals: forge_primitives::SettingsTotals { keys: 1, areas: 1 },
                 areas: vec![forge_primitives::SettingsArea {
                     id: "server".to_owned(),
@@ -974,9 +984,16 @@ fn frames_record() -> Value {
                         path: "server.port".to_owned(),
                         leaf: "port".to_owned(),
                         group: vec!["server".to_owned()],
+                        pattern: "server.port".to_owned(),
                         kind: forge_primitives::SettingKind::Number,
                         value: serde_json::json!(8790),
                         class: forge_primitives::EffectClass::Restart,
+                        edit: forge_primitives::SettingsEdit {
+                            kind: forge_primitives::EditKind::Number,
+                            allowed: Vec::new(),
+                            required: true,
+                            group: None,
+                        },
                     }],
                 }],
             },

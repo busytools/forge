@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import SettingsBody from './SettingsBody.svelte';
 import { settingsWire } from '../dev/settings.fixture';
+import { emptyDraft } from './editor';
 
 /**
  * The page's controls: the sub-nav switches the pane, and an area that is
@@ -21,7 +22,22 @@ afterEach(async () => {
 function draw(selected: string | null, onSelect: (id: string) => void = () => {}): void {
   app = mount(SettingsBody, {
     target: document.body,
-    props: { document: settingsWire, mark: null, cliVersion: '2.1.280', selected, onSelect },
+    props: {
+      document: settingsWire,
+      mark: null,
+      cliVersion: '2.1.280',
+      selected,
+      onSelect,
+      draft: emptyDraft(),
+      onToggleEditing: () => {},
+      onValue: () => {},
+      onEntryValue: () => {},
+      onAdd: () => {},
+      onRemoveRequest: () => {},
+      onCancelAdd: () => {},
+      onUndoRemove: () => {},
+      onDismissRestart: () => {},
+    },
   });
   flushSync();
 }
@@ -43,8 +59,8 @@ describe('the settings page', () => {
   it('draws the selected area rows with their class words', () => {
     draw('server');
     expect(document.querySelector('#settings-area-title')?.textContent).toBe('server');
-    const keys = [...document.querySelectorAll('.settings-rows th[scope="row"]')].map(
-      (cell) => cell.textContent,
+    const keys = [...document.querySelectorAll('.settings-rows th[scope="row"]')].map((cell) =>
+      cell.textContent?.trim(),
     );
     expect(keys, 'a row draws its leaf, not the path its group already names').toEqual([
       'idle_minutes',
@@ -73,8 +89,8 @@ describe('the settings page', () => {
       'Subspace',
     ]);
     expect(
-      [...document.querySelectorAll('.settings-rows th[scope="row"]')].map(
-        (cell) => cell.textContent,
+      [...document.querySelectorAll('.settings-rows th[scope="row"]')].map((cell) =>
+        cell.textContent?.trim(),
       ),
       'each account keeps its own rows',
     ).toContain('token');
@@ -166,9 +182,11 @@ describe('the settings page', () => {
   });
 
   it('draws the built-in a client axis falls back to', () => {
+    const spec = { kind: 'string' as const, allowed: [], required: false, group: null };
     const settingsDocument = {
       version: 'v',
       source: '~/.claude/forge/forge.toml',
+      fingerprint: '0123456789abcdef',
       totals: { keys: 2, areas: 1 },
       areas: [
         {
@@ -180,17 +198,21 @@ describe('the settings page', () => {
               path: 'client.mark',
               leaf: 'mark',
               group: [],
+              pattern: 'client.mark',
               class: 'live' as const,
               classLabel: 'live',
               value: { kind: 'string' as const, text: 'klin' },
+              edit: spec,
             },
             {
               path: 'client.font',
               leaf: 'font',
               group: [],
+              pattern: 'client.font',
               class: 'live' as const,
               classLabel: 'live',
               value: { kind: 'unset' as const },
+              edit: spec,
             },
           ],
         },
@@ -204,6 +226,15 @@ describe('the settings page', () => {
         cliVersion: null,
         selected: 'client',
         onSelect: () => {},
+        draft: emptyDraft(),
+        onToggleEditing: () => {},
+        onValue: () => {},
+        onEntryValue: () => {},
+        onAdd: () => {},
+        onRemoveRequest: () => {},
+        onCancelAdd: () => {},
+        onUndoRemove: () => {},
+        onDismissRestart: () => {},
       },
     });
     flushSync();

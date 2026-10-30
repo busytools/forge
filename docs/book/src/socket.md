@@ -58,7 +58,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 18,
+  "version": 19,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -166,6 +166,47 @@ shared by every connection.
 The frame is server-wide rather than seat-scoped. It carries no seat, it
 is delivered to a connection that has subscribed to nothing, and it
 arrives again on every reconnect.
+
+## Editing the config
+
+A client saves a batch of edits with `settings_edit`:
+
+```json
+{
+  "kind": "settings_edit",
+  "fingerprint": "0123456789abcdef",
+  "edits": [
+    { "area": "server", "key_path": "server.port", "pattern": "server.port",
+      "op": "set", "value": 8791 }
+  ]
+}
+```
+
+`fingerprint` is the one the page loaded from its settings document; a
+file whose raw text has moved since refuses the save. `op` is `set`,
+`add` or `remove`; an added entry carries its fields as `value`, and a
+removal of an entry carries an empty `pattern` with the entry's path.
+
+**Success has no answer of its own**: the save writes the file, the
+watcher reloads it, and the resulting `settings` push is the reply, so
+the editor and every other client learn the outcome from the same frame.
+A save that writes nothing is answered with `settings_refused`:
+
+```json
+{
+  "kind": "settings_refused",
+  "reason": "invalid",
+  "message": "forge.toml at ... failed to parse at line 12, column 14 in `port`: ...",
+  "key_path": "server.port"
+}
+```
+
+`reason` is `stale` (the file moved; the page offers a reload),
+`invalid` (the candidate failed the boot loader; the message is the
+loader's own, including its line and key where it has one), or `refused`
+(a guard declined it, naming what it found). The writer preserves the
+file's comments and order, replaces the file by rename, and the guards
+live on the server so a hand-rolled client cannot force them.
 
 ## Subjects
 

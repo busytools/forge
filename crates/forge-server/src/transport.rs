@@ -191,10 +191,16 @@ pub mod wire;
 /// version skew; the bump is what names the mismatch. `baselines/socket/17/`
 /// is the record a v17 server emitted.
 ///
+/// **v19 is a bump for the settings editor.** `settings_edit` is a batched
+/// save and `settings_refused` is the frame that answers one that wrote
+/// nothing; an 18 server reads the save as a message it does not know and
+/// answers an error no page can attribute, and an 18 client would not read
+/// the refusal. `baselines/socket/18/` is the record a v18 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

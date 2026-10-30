@@ -13,6 +13,13 @@ export interface SettingsGroup {
   label: string;
   class: SettingsClass | null;
   rows: SettingsKey[];
+  /** The entry's path for a removal or an add, `null` for a table's own keys. */
+  entryPath: string | null;
+  /** `account`, `project`, `slack`, `model` or `org`, for an addable/removable
+   * entry. */
+  entryGroup: string | null;
+  /** The org a project group sits under. */
+  parent: string | null;
 }
 
 /**
@@ -79,12 +86,47 @@ export function groupsOf(area: SettingsArea): SettingsGroup[] {
     else rows.push(key);
   }
   return [...groups.values()]
-    .map((rows) => ({
-      label: (rows[0]?.group ?? []).join(' / '),
-      rows,
-      class: strongest(rows),
-    }))
+    .map((rows) => {
+      const label = (rows[0]?.group ?? []).join(' / ');
+      const entry = entryOf(area.id, label);
+      return {
+        label,
+        rows,
+        class: strongest(rows),
+        entryPath: entry.path,
+        entryGroup: entry.group,
+        parent: entry.parent,
+      };
+    })
     .sort((one, two) => one.label.localeCompare(two.label));
+}
+
+/** The entry a group label names, by its area and the label's own shape. */
+export function entryOf(
+  areaId: string,
+  label: string,
+): { path: string | null; group: string | null; parent: string | null } {
+  switch (areaId) {
+    case 'accounts':
+      return { path: `accounts.${label}`, group: 'account', parent: null };
+    case 'projects': {
+      const slash = label.indexOf(' / ');
+      if (slash === -1) return { path: null, group: 'org', parent: null };
+      const org = label.slice(0, slash);
+      const project = label.slice(slash + 3);
+      return { path: `orgs.${org}.projects.${project}`, group: 'project', parent: org };
+    }
+    case 'connectors': {
+      const prefix = 'slack / ';
+      return label.startsWith(prefix)
+        ? { path: `slack.${label.slice(prefix.length)}`, group: 'slack', parent: null }
+        : { path: null, group: null, parent: null };
+    }
+    case 'models':
+      return { path: `models.${label}`, group: 'model', parent: null };
+    default:
+      return { path: null, group: null, parent: null };
+  }
 }
 
 /**

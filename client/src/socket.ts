@@ -32,6 +32,7 @@ import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
 import { settingsFrom } from './wire/types';
 import { takeSettings } from './settings/frame';
+import type { SettingsEditWire } from './wire/settings';
 import type { ClientSettings, SessionSlot } from './wire/types';
 
 /** Where a connection is in its life. */
@@ -250,6 +251,11 @@ export interface Connection {
    * and the pre-attach copy.
    */
   settings(): ClientSettings | null;
+  /**
+   * Send a batched settings save. False when nothing went. Absent on a
+   * double that never sends one; the page then reports that nothing went.
+   */
+  settingsEdit?(fingerprint: string, edits: SettingsEditWire[]): boolean;
   /**
    * This connection's identity for the settings frame. The shell takes it
    * when it takes the connection, so a launch a submit replaced cannot
@@ -700,6 +706,10 @@ export function connect(
       }
       case 'settings':
         takeSettings(message.document, settingsOwner);
+        return;
+      // The editor's refusal is its page's: the switch knows the frame so it
+      // is not reported as one the client cannot draw.
+      case 'settings_refused':
         return;
       case 'snapshot':
         answered(message.subject);
@@ -1262,6 +1272,9 @@ export function connect(
     },
     settings() {
       return settings;
+    },
+    settingsEdit(fingerprint, edits) {
+      return sendClient({ kind: 'settings_edit', fingerprint, edits });
     },
     settingsOwner,
     skew() {

@@ -10,13 +10,68 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_agent::env::cli_version::CliVersionInfo;
 use forge_primitives::cloud::service_status::ServiceIssue;
+use forge_primitives::settings::{SettingsEditOp, SettingsEditRequest};
 use forge_primitives::tasks::TaskId;
 use forge_primitives::{AvailableAgent, AvailableCommand, Message, SDKSessionInfo, SessionId};
+use std::io::Write as _;
 
 use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
+
+/// Why a settings save did not write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsSaveError {
+    /// The file's raw text moved since the page loaded it.
+    Stale,
+    /// An edit or the candidate failed validation. `key_path` anchors the
+    /// first edit that fails on its own, where one does.
+    Invalid { message: String, key_path: Option<String> },
+    /// A guard refused the save.
+    Refused { message: String },
+    /// The file could not be read or written.
+    Io(String),
+}
+
+impl std::fmt::Display for SettingsSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stale => f.write_str("forge.toml has changed since this page loaded it"),
+            Self::Invalid { message, .. } | Self::Refused { message } | Self::Io(message) => {
+                f.write_str(message)
+            }
+        }
+    }
+}
+
+impl From<crate::settings_write::WriteError> for SettingsSaveError {
+    fn from(error: crate::settings_write::WriteError) -> Self {
+        Self::Invalid { message: error.message, key_path: error.key_path }
+    }
+}
+
+/// Replace `path` with `contents` through a temp file in the same directory:
+/// a reader sees the old file or the new one, never a half-written one, and
+/// the config watcher's re-arm survives the rename.
+fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = directory.join(format!(".forge.toml.settings-{}", std::process::id()));
+    let outcome = (|| {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)?;
+        if let Ok(directory) = std::fs::File::open(directory) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    outcome
+}
 
 use forge_gateway::AccountKey;
 use forge_gateway::ProviderHost as _;
@@ -344,6 +399,9 @@ pub struct Workspace {
     /// The forge version the document carries, set once by the server at
     /// boot. A workspace with no server (tests) leaves it empty.
     settings_version: std::sync::OnceLock<String>,
+    /// One settings save at a time: the file is read, edited, validated and
+    /// replaced under this lock, so two saves cannot interleave.
+    settings_write: parking_lot::Mutex<()>,
     /// Odd while a reload is swapping state, even when settled. A spawn
     /// reads it before resolving and re-checks after, so a resolution that
     /// straddled the swap retries rather than pairing an old project pin
@@ -1959,6 +2017,7 @@ impl Workspace {
             config: parking_lot::RwLock::new(Arc::new(config)),
             settings,
             settings_version: std::sync::OnceLock::new(),
+            settings_write: parking_lot::Mutex::new(()),
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
@@ -2271,6 +2330,120 @@ impl Workspace {
         &self,
     ) -> tokio::sync::watch::Receiver<Option<Arc<forge_primitives::SettingsDocument>>> {
         self.settings.subscribe()
+    }
+
+    /// Apply a batched settings save to `forge.toml`.
+    ///
+    /// The file is read under the write lock, the page's fingerprint is
+    /// compared with it, the edits are applied to its text, and the candidate
+    /// is validated with the boot loader before an atomic replace. A save
+    /// that fails validation writes nothing; the reload and its push are the
+    /// watcher's, so every client learns the outcome from one frame.
+    ///
+    /// # Errors
+    ///
+    /// The file moved since the page loaded it, an edit or the candidate is
+    /// not valid, a guard refused it, or the write failed.
+    pub fn save_settings(
+        &self,
+        fingerprint: &str,
+        edits: &[SettingsEditRequest],
+    ) -> Result<(), SettingsSaveError> {
+        let _one_at_a_time = self.settings_write.lock();
+        let path = self.config_path();
+        let current = std::fs::read_to_string(&path).map_err(|error| {
+            SettingsSaveError::Io(format!("forge.toml could not be read: {error}"))
+        })?;
+        if crate::config::fingerprint_of(&current) != fingerprint {
+            return Err(SettingsSaveError::Stale);
+        }
+        let config = self.config_arc();
+        let version = self.settings_version.get().map(String::as_str).unwrap_or_default();
+        let document = crate::settings::document(&config, version, &path);
+
+        for edit in edits {
+            if edit.op != SettingsEditOp::Remove || !edit.pattern.is_empty() {
+                continue;
+            }
+            if edit.area == "projects"
+                && let Some((org, project)) = crate::settings_write::project_path(&edit.key_path)
+            {
+                let live = self.live_sessions_of(org, project);
+                if !live.is_empty() {
+                    return Err(SettingsSaveError::Refused {
+                        message: format!(
+                            "project `{project}` has live sessions: {}; close them before \
+                             removing it",
+                            live.join(", "),
+                        ),
+                    });
+                }
+            }
+            // #2681: a retired entry still in `Loading` keeps
+            // `all_accounts_loaded` false for the process lifetime, so the
+            // save waits for the account's probe to settle.
+            if edit.area == "accounts"
+                && let Some(name) = edit.key_path.strip_prefix("accounts.")
+            {
+                let key = AccountKey(name.to_owned());
+                if self.accounts.ordered_account_keys().contains(&key)
+                    && self.accounts.loading_state(&key) == forge_gateway::LoadingState::Loading
+                {
+                    return Err(SettingsSaveError::Refused {
+                        message: format!(
+                            "account `{name}` is still loading its usage; the save refuses \
+                             until its probe settles",
+                        ),
+                    });
+                }
+            }
+        }
+
+        let candidate = crate::settings_write::apply(&current, edits, &document)
+            .map_err(SettingsSaveError::from)?;
+
+        if let Err(error) = crate::config::load_from_text(path.clone(), &candidate) {
+            // Anchor the refusal at the first edit that fails on its own;
+            // the loader's own words carry the line and key it found.
+            for edit in edits {
+                let Ok(one) =
+                    crate::settings_write::apply(&current, std::slice::from_ref(edit), &document)
+                else {
+                    continue;
+                };
+                if let Err(one_error) = crate::config::load_from_text(path.clone(), &one) {
+                    return Err(SettingsSaveError::Invalid {
+                        message: one_error.to_string(),
+                        key_path: Some(edit.key_path.clone()),
+                    });
+                }
+            }
+            return Err(SettingsSaveError::Invalid { message: error.to_string(), key_path: None });
+        }
+
+        if candidate == current {
+            return Ok(());
+        }
+        write_atomically(&path, &candidate).map_err(|error| {
+            SettingsSaveError::Io(format!("forge.toml could not be written: {error}"))
+        })
+    }
+
+    /// The sessions a project currently has live, by their slots' display
+    /// names. A removal refuses while any exists: the reload leaves a live
+    /// session running but invisible.
+    fn live_sessions_of(&self, org: &str, project: &str) -> Vec<String> {
+        let mut live: Vec<String> = self
+            .pool
+            .lock()
+            .keys()
+            .chain(self.domain_handles.lock().keys())
+            .filter(|slot| slot.org() == org && slot.project() == project)
+            .map(SessionSlot::display)
+            .collect();
+        live.sort_unstable();
+        live.dedup();
+        live
     }
 
     /// Build the document from the live config and publish it when it
@@ -13323,6 +13496,163 @@ provider = "anthropic"
             "forge",
             "the previous config is still live after a rejected file",
         );
+    }
+
+    fn settings_key(workspace: &Workspace, path: &str) -> (String, String, String) {
+        let document =
+            crate::settings::document(&workspace.config_arc(), "", &workspace.config_path());
+        let key = document
+            .areas
+            .iter()
+            .flat_map(|area| &area.keys)
+            .find(|key| key.path == path)
+            .unwrap_or_else(|| panic!("{path} has no row"));
+        let area = document
+            .areas
+            .iter()
+            .find(|area| area.keys.iter().any(|key| key.path == path))
+            .map(|area| area.id.clone())
+            .expect("the key has an area");
+        (area, key.pattern.clone(), key.path.clone())
+    }
+
+    fn settings_fingerprint(workspace: &Workspace) -> String {
+        let raw = fs::read_to_string(workspace.config_path()).expect("read the config");
+        crate::config::fingerprint_of(&raw)
+    }
+
+    fn set_edit(
+        workspace: &Workspace,
+        path: &str,
+        value: serde_json::Value,
+    ) -> SettingsEditRequest {
+        let (area, pattern, key_path) = settings_key(workspace, path);
+        SettingsEditRequest { area, key_path, pattern, op: SettingsEditOp::Set, value: Some(value) }
+    }
+
+    /// A save writes the candidate, keeps the file's comments, and the next
+    /// load reads the new value.
+    #[tokio::test]
+    async fn a_settings_save_writes_the_file_and_keeps_its_comments() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let path = workspace.config_path();
+        let raw = fs::read_to_string(&path).expect("read");
+        fs::write(&path, format!("# hand-written note\n{raw}")).expect("write the comment");
+        workspace.reload_config().expect("the commented file loads");
+        let fingerprint = settings_fingerprint(&workspace);
+        let edit =
+            set_edit(&workspace, "orgs.Default.projects.forge.max_workers", serde_json::json!(4));
+
+        workspace.save_settings(&fingerprint, &[edit]).expect("the save lands");
+
+        let saved = fs::read_to_string(&path).expect("read the saved file");
+        assert!(saved.contains("# hand-written note"), "the comment stayed: {saved}");
+        assert!(saved.contains("max_workers = 4"), "the value landed: {saved}");
+        workspace.reload_config().expect("the saved file loads");
+        assert_eq!(workspace.config_arc().projects[0].max_workers, Some(4));
+    }
+
+    /// A fingerprint that is not the file's refuses the save and writes
+    /// nothing.
+    #[tokio::test]
+    async fn a_stale_settings_save_writes_nothing() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let path = workspace.config_path();
+        let before = fs::read_to_string(&path).expect("read");
+        let edit =
+            set_edit(&workspace, "orgs.Default.projects.forge.max_workers", serde_json::json!(4));
+        let error = workspace
+            .save_settings("0000000000000000", &[edit])
+            .expect_err("a stale save is refused");
+        assert_eq!(error, SettingsSaveError::Stale);
+        assert_eq!(fs::read_to_string(&path).expect("read"), before, "the file did not move");
+    }
+
+    /// A candidate the loader refuses writes nothing and carries the loader's
+    /// own words, anchored at the key the save named.
+    #[tokio::test]
+    async fn an_invalid_settings_save_writes_nothing_and_names_the_key() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let path = workspace.config_path();
+        let before = fs::read_to_string(&path).expect("read");
+        let fingerprint = settings_fingerprint(&workspace);
+        let edit = set_edit(
+            &workspace,
+            "orgs.Default.projects.forge.model",
+            serde_json::json!("no-such-model"),
+        );
+        let error = workspace
+            .save_settings(&fingerprint, &[edit])
+            .expect_err("an unserved model is refused");
+        match error {
+            SettingsSaveError::Invalid { message, key_path } => {
+                assert!(message.contains("no-such-model"), "the loader named the model: {message}");
+                assert_eq!(
+                    key_path.as_deref(),
+                    Some("orgs.Default.projects.forge.model"),
+                    "the refusal is anchored at the edit",
+                );
+            }
+            other => panic!("expected an invalid save, got {other:?}"),
+        }
+        assert_eq!(fs::read_to_string(&path).expect("read"), before, "the file did not move");
+    }
+
+    /// Removing a project that has a live session is refused, and the refusal
+    /// names the session.
+    #[tokio::test]
+    async fn a_project_removal_with_a_live_session_is_refused() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.register_domain_session(SessionSlot::lead("Default", "forge"), None);
+        let fingerprint = settings_fingerprint(&workspace);
+        let edit = SettingsEditRequest {
+            area: "projects".to_owned(),
+            key_path: "orgs.Default.projects.forge".to_owned(),
+            pattern: String::new(),
+            op: SettingsEditOp::Remove,
+            value: None,
+        };
+        let error =
+            workspace.save_settings(&fingerprint, &[edit]).expect_err("a live project is refused");
+        match error {
+            SettingsSaveError::Refused { message } => {
+                assert!(message.contains("Default/forge/lead"), "the refusal named it: {message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// Removing an account whose usage probe has not settled is refused
+    /// (#2681), and the refusal names the account.
+    #[tokio::test]
+    async fn an_account_removal_while_loading_is_refused() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let path = workspace.config_path();
+        let before = fs::read_to_string(&path).expect("read");
+        let fingerprint = settings_fingerprint(&workspace);
+        let edit = SettingsEditRequest {
+            area: "accounts".to_owned(),
+            key_path: "accounts.Stargate".to_owned(),
+            pattern: String::new(),
+            op: SettingsEditOp::Remove,
+            value: None,
+        };
+        let error = workspace
+            .save_settings(&fingerprint, &[edit])
+            .expect_err("a loading account is refused");
+        match error {
+            SettingsSaveError::Refused { message } => {
+                assert!(message.contains("Stargate"), "the refusal named it: {message}");
+                assert!(message.contains("loading"), "the refusal said why: {message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(fs::read_to_string(&path).expect("read"), before, "the file did not move");
     }
 
     /// A bound port is stored but named restart-only; the socket is never

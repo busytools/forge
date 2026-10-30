@@ -949,10 +949,46 @@ describe('axe over the rendered pages', () => {
         cliVersion: '2.1.280',
         selected: null,
         onSelect: () => {},
+        draft: { values: {}, adds: {}, removes: {} },
+        onToggleEditing: () => {},
+        onValue: () => {},
+        onEntryValue: () => {},
+        onAdd: () => {},
+        onRemoveRequest: () => {},
+        onCancelAdd: () => {},
+        onUndoRemove: () => {},
+        onDismissRestart: () => {},
       },
     }).body;
     expect(html, 'the sub-nav drew').toContain('accounts');
     expect(html, 'and the selected area rows').toContain('accounts.Subspace.token');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+  });
+
+  /** The editor's controls: a text box, a toggle, a select and a list, each
+   *  with its own label. */
+  it('draws the settings editor with no violations', async () => {
+    const html = render(SettingsBody, {
+      props: {
+        document: settingsWire,
+        mark: null,
+        cliVersion: 'v2.1.280',
+        selected: 'server',
+        onSelect: () => {},
+        editing: true,
+        draft: { values: { 'server.port': 8791 }, adds: {}, removes: {} },
+        onToggleEditing: () => {},
+        onValue: () => {},
+        onEntryValue: () => {},
+        onAdd: () => {},
+        onRemoveRequest: () => {},
+        onCancelAdd: () => {},
+        onUndoRemove: () => {},
+        onDismissRestart: () => {},
+      },
+    }).body;
+    expect(html, 'the number control drew').toContain('type="number"');
+    expect(html, 'and the value that was edited').toContain('8791');
     expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
   });
 
