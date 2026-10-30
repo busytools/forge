@@ -19,6 +19,7 @@ import { surface } from '../browser/surface.svelte';
 import type { DictateAxes } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
 import { boxKey } from './box.svelte';
+import { caretTakesDictation } from './editors';
 import {
   boundCode,
   down,
@@ -121,10 +122,13 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
   let pressed: Held | null = null;
 
   const onDown = (event: KeyboardEvent): void => {
-    // **A live takeover owns the keyboard**: its keys belong to the page
-    // under the bar, so a press of the binding must not start a take behind
-    // it - on the web that is a microphone opened under a page being driven.
-    if (surface.phase !== 'closed') return;
+    // **A live takeover owns the keyboard, except in this client's own
+    // dictation boxes**: its keys belong to the page under the bar, so a
+    // press must not start a take behind it - on the web that is a
+    // microphone opened under a page being driven. The bar's feedback line
+    // is a forge box drawn above that page, so a press with the caret in it
+    // belongs to the take exactly as the bar's mic does.
+    if (surface.phase !== 'closed' && !caretTakesDictation()) return;
     // A held key repeats, and a repeat carries no instruction - without
     // this a toggle take stops once per repeat.
     if (event.repeat) return;
