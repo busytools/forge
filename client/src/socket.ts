@@ -648,9 +648,28 @@ export function connect(
     dial = null;
   }
 
-  /** Whether the greeted server speaks the protocol that added `ping`. */
+  /**
+   * Whether the greeted server speaks the protocol that added `ping`.
+   *
+   * Optimistic before a greeting: the timed beat is 15 s out, and a server
+   * that has sent nothing by then is not one whose greeting will change the
+   * answer.
+   */
   function speaksLiveness(): boolean {
     return greetingProtocol === null || greetingProtocol >= LIVENESS_PROTOCOL;
+  }
+
+  /**
+   * The page's own probe, on a return.
+   *
+   * **Only a server KNOWN to answer it.** A return can land before the
+   * greeting has been read, and a pre-liveness server's answer to a probe is a
+   * `client_message` error the refusal arm books on the oldest waiting
+   * subscribe - so a store nobody touched would flip to refused.
+   */
+  function probeNow(): void {
+    if (greetingProtocol === null || greetingProtocol < LIVENESS_PROTOCOL) return;
+    probe();
   }
 
   /** Arm the probe for a link that has been quiet since now. */
@@ -669,6 +688,11 @@ export function connect(
    */
   function probe(): void {
     if (!isOpen()) return;
+    // **A probe already out is not pushed out.** A person who returns every
+    // few seconds would otherwise re-arm the deadline each time, and a dead
+    // link would stay `open` for as long as they keep coming back - the exact
+    // failure this cut exists to catch. The first ask stands.
+    if (dead !== null) return;
     // **A server older than the probe cannot answer it**, and its error would
     // be booked as a subscribe refusal; the greeting already said so.
     if (!speaksLiveness()) return;
@@ -1437,7 +1461,7 @@ export function connect(
     status() {
       return status;
     },
-    probe,
+    probe: probeNow,
     close() {
       move('closed');
       clearLiveness();

@@ -1002,6 +1002,9 @@ async fn run(
         // Until a greeting says otherwise, the server is assumed to speak the
         // probe (the greeting is the first frame, long before the first beat).
         let mut speaks_liveness = true;
+        // **The page's ask is stricter**: it can land before the greeting is
+        // read, so it waits for one.
+        let mut greeted = false;
         loop {
             // The next moment the link owes something: the probe's deadline
             // when one is out, else the quiet that earns a probe.
@@ -1022,11 +1025,13 @@ async fn run(
                                 // beat.** A pre-liveness server cannot answer
                                 // a probe, and its refusal would land on a
                                 // subscribe; the greeting is the answer.
-                                if value.get("kind").and_then(Value::as_str) == Some("greeting")
-                                    && let Some(version) =
+                                if value.get("kind").and_then(Value::as_str) == Some("greeting") {
+                                    greeted = true;
+                                    if let Some(version) =
                                         value.get("version").and_then(Value::as_u64)
-                                {
-                                    speaks_liveness = version >= LIVENESS_PROTOCOL;
+                                    {
+                                        speaks_liveness = version >= LIVENESS_PROTOCOL;
+                                    }
                                 }
                                 receive(
                                     &value,
@@ -1351,7 +1356,13 @@ async fn run(
                         // the background: the socket may have died while the
                         // page slept and its own timer with it.
                         Outbound::Ping => {
-                            if !speaks_liveness {
+                            // **The page's ask needs a greeting that says the
+                            // server speaks it.** The timed beat is safe
+                            // without one - it is 15 s out - but a return can
+                            // land before the greeting is read, and a
+                            // pre-liveness server's answer would be booked on
+                            // a subscribe.
+                            if !greeted || !speaks_liveness {
                                 continue;
                             }
                             if writer.send(ping_frame()).await.is_err() {
@@ -1361,6 +1372,12 @@ async fn run(
                             // The page's ask says "ask now"; it does not grant
                             // the probe already out another full bound.
                             probe.get_or_insert(tokio::time::Instant::now());
+                            // **Bytes already here are not the answer.** The
+                            // counter's reading is snapshotted with the ask,
+                            // so only progress AFTER it can clear the probe;
+                            // otherwise traffic that predates the question
+                            // would satisfy it at the next beat.
+                            bytes_at = seen.load(Ordering::Relaxed);
                         }
                     }
                 }
@@ -2841,6 +2858,11 @@ pub(crate) mod tests {
     async fn a_probe_the_page_asks_for_goes_out_at_once() {
         let mut stub = stub().await;
         let (socket, _rx) = connected_paused(&stub).await;
+        // The page asks only a server that has said it speaks the probe.
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 20, "settings": {} }))
+            .expect("the greeting lands");
+        settle(200).await;
         let asked = tokio::time::Instant::now();
         socket.ping();
         let probe = stub.heard_until_paused(|frame| frame["kind"] == "ping").await;
@@ -2886,6 +2908,78 @@ pub(crate) mod tests {
                 "an older server's silence reaped it",
             );
         }
+    }
+
+    /// **The page's ask waits for a greeting.** A return can land before the
+    /// greeting is read, and a pre-liveness server's refusal would be booked
+    /// on a subscribe.
+    #[tokio::test(start_paused = true)]
+    async fn a_page_probe_before_the_greeting_is_not_sent() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected_paused(&stub).await;
+        socket.ping();
+        settle(200).await;
+        if let Ok(frame) = stub.heard.try_recv() {
+            panic!("a probe went before the greeting was read: {frame}");
+        }
+    }
+
+    /// **Bytes that predate the page's ask are not its answer.** The counter
+    /// is snapshotted with the ask, so only progress after it clears the
+    /// probe - otherwise a frame that arrived earlier would satisfy the
+    /// question at the next beat.
+    #[tokio::test(start_paused = true)]
+    async fn pre_ask_bytes_do_not_answer_a_page_probe() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected_paused(&stub).await;
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 20, "settings": {} }))
+            .expect("the greeting lands");
+        stub.say.send(json!({ "kind": "probe", "pad": "x" })).expect("a frame lands");
+        settle(300).await;
+        // The frames' bytes are in, and the client has read them.
+        while rx.try_recv().is_ok() {}
+
+        socket.ping();
+        settle(200).await;
+        tokio::time::advance(LIVENESS_DEAD).await;
+        settle(200).await;
+
+        let mut dropped = false;
+        while let Ok(event) = rx.try_recv() {
+            dropped |= matches!(event, SocketEvent::Status(Status::Connecting));
+        }
+        assert!(
+            dropped,
+            "bytes that predate the probe answered it, so a dead link survived the deadline",
+        );
+    }
+
+    /// **A second page ask does not push the deadline out.** The ones already
+    /// out stands, as the page's own deadline does.
+    #[tokio::test(start_paused = true)]
+    async fn a_second_page_probe_does_not_push_the_deadline() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected_paused(&stub).await;
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 20, "settings": {} }))
+            .expect("the greeting lands");
+        settle(200).await;
+
+        socket.ping();
+        settle(100).await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        settle(100).await;
+        socket.ping();
+        settle(100).await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        settle(200).await;
+
+        let mut dropped = false;
+        while let Ok(event) = rx.try_recv() {
+            dropped |= matches!(event, SocketEvent::Status(Status::Connecting));
+        }
+        assert!(dropped, "the second ask pushed the first deadline out");
     }
 
     /// **The shipping liveness pair is the value the book states.** What the

@@ -1912,12 +1912,69 @@ describe('the liveness probe', () => {
     vi.useRealTimers();
   });
 
-  /** **The shipping pair is what the book states.** A drift here changes what
-   *  a page promises about a dead link, and the book is where a client author
-   *  reads it. */
-  it('ships the documented liveness pair', () => {
+  /** **The shipping numbers are what the book states.** A drift here changes
+   *  what a page promises about a dead link, and the book is where a client
+   *  author reads it. */
+  it('ships the documented liveness pair and dial bound', () => {
     expect(LIVENESS_EVERY_MS, 'a probe after 15 s of quiet').toBe(15_000);
     expect(LIVENESS_DEAD_MS, 'and the write bound plus a margin in a browser').toBe(65_000);
+    expect(DIAL_BOUND_MS, 'a dial abandoned at 10 s').toBe(10_000);
+  });
+
+  /**
+   * **A server that speaks the probe is asked on the timed beat.** The v20
+   * half of the gate: only the older branch had a test.
+   */
+  it('probes a server that speaks the protocol', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_EVERY_MS);
+
+    expect(pings(socket), 'the quiet earns a probe').toHaveLength(1);
+    connection.close();
+  });
+
+  /**
+   * **A probe already out is not pushed out.** A return every few seconds
+   * would otherwise re-arm the deadline each time, and a dead link would stay
+   * `open` for as long as the person keeps coming back.
+   */
+  it('does not push an outstanding deadline out on a second probe', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+
+    connection.probe();
+    expect(pings(socket)).toHaveLength(1);
+    // A return 60 s later, while the first probe is still unanswered.
+    await vi.advanceTimersByTimeAsync(60_000);
+    connection.probe();
+    expect(pings(socket), 'the outstanding probe stands').toHaveLength(1);
+
+    // The first deadline reaches at 65 s, five seconds after the second ask.
+    await vi.advanceTimersByTimeAsync(LIVENESS_DEAD_MS - 60_000);
+    expect(socket.closed, 'the original deadline still fires').toBe(true);
+    connection.close();
+  });
+
+  /**
+   * **The page's own probe waits for a greeting.** A return can land before
+   * the greeting is read; asking a server that never said it speaks the probe
+   * would book its error on a subscribe.
+   */
+  it('does not probe on a return before the greeting is read', () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+
+    connection.probe();
+    expect(pings(socket), 'nothing is asked before the greeting').toHaveLength(0);
+
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+    connection.probe();
+    expect(pings(socket), 'and a v20 greeting unlocks it').toHaveLength(1);
+    connection.close();
   });
 
   /**
@@ -2006,6 +2063,8 @@ describe('the liveness probe', () => {
   it('probes at once on a return, and closes when the probe goes unanswered', async () => {
     vi.useFakeTimers();
     const { connection, socket } = live();
+    // The page asks only a server that has said it speaks the probe.
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
 
     connection.probe();
     expect(pings(socket), 'the page asked for a probe').toHaveLength(1);
@@ -2020,6 +2079,7 @@ describe('the liveness probe', () => {
   it('clears the deadline of a probe the answer reached', async () => {
     vi.useFakeTimers();
     const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
 
     connection.probe();
     await vi.advanceTimersByTimeAsync(5_000);

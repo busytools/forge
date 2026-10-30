@@ -46,11 +46,15 @@ with the old connection and nothing else would spend the seat's marks.
 reading; it does not prove the peer will ever hear a close. A half-open
 socket - a locked phone, a network that went away - never delivers one, so a
 client that only answers would sit `open` for ever and draw pre-drop data as
-though it were live. Every client sends `ping` after 15 seconds with no
-inbound traffic, and the expiry closes the socket so the ordinary reconnect
-runs. **The answer is a byte, and the deadlines differ by what each side can
-see.** The shell's transport (desktop and phone) counts bytes under the
-socket and calls the link dead 10 seconds after a probe that drew none. A
+though it were live. Every client sends `ping` once a beat sees 15 seconds
+with no inbound traffic, and the expiry closes the socket so the ordinary
+reconnect runs. **The quiet is measured at beats, so the worst case from the
+last byte is about 40 seconds**: a beat that only just saw traffic restarts
+the quiet from itself, then a whole quiet spell passes before the probe and
+the deadline follows it. **The answer is a byte, and the deadlines differ by
+what each side can see.** The shell's transport (desktop and phone) counts
+bytes under the socket and calls the link dead 10 seconds after a probe that
+drew none. A
 browser is handed whole messages only, so its deadline is the write bound
 above plus a margin (65 seconds): while the server spends up to 60 seconds
 writing one frame it cannot answer a probe, and a tighter deadline would
@@ -229,12 +233,13 @@ as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 
 ## What a client sends
 
-**`ping`** - a liveness probe with no fields. A client sends it after 15
-seconds with no inbound traffic, and a page sends one on a return from the
-background so a dead socket is caught by the deadline rather than up to a
-quiet spell later. **Any inbound traffic answers it** - a byte to the shell's
-transport, a whole frame to a page - and the `pong` exists so a quiet peer is
-always asked something. The answer's value is the transport's: it closes the
+**`ping`** - a liveness probe with no fields. A client sends it once a beat
+sees 15 seconds with no inbound traffic (so the worst case from the last byte
+is about 40 seconds), and a page sends one on a return from the background so
+a dead socket is caught by the deadline rather than up to a quiet spell
+later. **Any inbound traffic answers it** - a byte to the shell's transport, a
+whole frame to a page - and the `pong` exists so a quiet peer is always asked
+something. The answer's value is the transport's: it closes the
 socket on its own deadline (10 seconds on the shell's transport, 65 in a
 browser) and lets the ordinary reconnect run. The server clears its own
 keepalive on it like any other frame and answers with `pong`.
