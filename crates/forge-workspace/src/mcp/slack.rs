@@ -543,11 +543,6 @@ impl Tool for Unsubscribe {
 fn format_post_error(err: &SlackPostError) -> String {
     match err {
         SlackPostError::Rejected => "the post was not approved, so nothing was sent".to_owned(),
-        SlackPostError::Expired => {
-            "the draft expired unanswered, so nothing was sent; call again when the user can \
-             decide"
-                .to_owned()
-        }
         SlackPostError::Workspace(err) => format_workspace_error(err),
         SlackPostError::Partial { posted, total, source } => {
             format!("posted part {posted} of {total}; the rest were NOT sent ({source})")
@@ -564,11 +559,6 @@ fn format_edit_error(err: &SlackEditError) -> String {
         SlackEditError::Rejected => {
             "the replacement was not approved, so the message is untouched".to_owned()
         }
-        SlackEditError::Expired => {
-            "the draft expired unanswered, so the message is untouched; call again when the user \
-             can decide"
-                .to_owned()
-        }
         SlackEditError::Workspace(err) => format_workspace_error(err),
         SlackEditError::Fetch(message) => format!("Slack request failed: {message}"),
     }
@@ -578,11 +568,6 @@ fn format_react_error(err: &SlackReactError) -> String {
     match err {
         SlackReactError::Rejected => {
             "the reaction was not approved, so nothing was added or removed".to_owned()
-        }
-        SlackReactError::Expired => {
-            "the draft expired unanswered, so nothing was added or removed; call again when the \
-             user can decide"
-                .to_owned()
         }
         SlackReactError::Workspace(err) => format_workspace_error(err),
         SlackReactError::Fetch(message) => format!("Slack request failed: {message}"),
@@ -611,8 +596,8 @@ impl Tool for Post {
     fn description(&self) -> &'static str {
         "Post a message to Slack as the user - a root message, or a reply into an existing \
          thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
-         until the user decides in the dock prompt, and a rejected or unanswered draft posts \
-         nothing. Text past 4000 characters is split into numbered parts automatically, each a \
+         until the user decides in the dock prompt, with no timeout of its own, and a rejected \
+         draft posts nothing. Text past 4000 characters is split into numbered parts automatically, each a \
          separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
          the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
          in the order they went out; slack__edit, slack__react and a reply each take one. Any \
@@ -692,8 +677,8 @@ impl Tool for Edit {
          `delete: true` to remove it. BOTH ARE HELD FOR APPROVAL like slack__post - a \
          replacement puts new words in front of people as you, and a deletion changes what they \
          see on a message attributed to you and cannot be undone by editing again. The call does \
-         not return until the user decides, and a rejected or unanswered draft leaves the \
-         message untouched. Slack refuses a message you did not post - including an edit of \
+         not return until the user decides, with no timeout of its own, and a rejected draft \
+         leaves the message untouched. Slack refuses a message you did not post - including an edit of \
          your own thread reply, which a channel-history lookup cannot see. Any session in \
          the project may call this."
     }
@@ -812,11 +797,6 @@ fn format_attachment_error(err: &SlackAttachmentError) -> String {
         SlackAttachmentError::Io(message) => format!("file error: {message}"),
         SlackAttachmentError::Rejected => {
             "the upload was not approved, so nothing was sent".to_owned()
-        }
-        SlackAttachmentError::Expired => {
-            "the draft expired unanswered, so nothing was sent; call again when the user can \
-             decide"
-                .to_owned()
         }
         SlackAttachmentError::Workspace(err) => format_workspace_error(err),
         SlackAttachmentError::Fetch(message) => format!("Slack request failed: {message}"),

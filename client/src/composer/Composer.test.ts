@@ -5889,7 +5889,7 @@ describe('the dock', () => {
     harness.say({
       kind: 'error',
       what: 'respond_slack_post',
-      why: 'that Slack draft is no longer waiting: it has been answered, or it expired',
+      why: 'that Slack draft is no longer waiting: it has been answered, or its asking session went away',
     });
     flushSync();
 
@@ -5963,19 +5963,21 @@ describe('the dock', () => {
         slack_draft_resolved: {
           key: SLOT,
           id: '0192e1c0-0000-7000-8000-000000000000',
-          ending: 'expired',
+          ending: 'abandoned',
         },
       },
     });
     flushSync();
-    expect(drawn(), 'nothing is drawn on the seat showing now').not.toContain('expired unanswered');
+    expect(drawn(), 'nothing is drawn on the seat showing now').not.toContain(
+      'asking session went away',
+    );
 
     harness.page.slot = SLOT;
     harness.page.record = record();
     flushSync();
 
     expect(drawn(), 'and the seat it happened to meets the line on return').toContain(
-      'expired unanswered',
+      'asking session went away',
     );
   });
 

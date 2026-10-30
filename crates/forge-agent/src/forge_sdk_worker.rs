@@ -286,7 +286,7 @@ anything is sent, and a direct call puts words in their name outside \
 that gate - holding the credential is not permission to use it. The \
 same holds for any other tool whose post is held for approval, Slack \
 attachments included. When a `slack__*` call fails, report its exact \
-error and stop. A refusal or an expired draft is the user's decision, \
+error and stop. A refusal is the user's decision, \
 not yours: offer the text to whoever owns it (the user in a lead \
 session, your lead in a worker session) and wait. A partial post \
 resumes where it stopped. A workspace or argument error is the call's \
@@ -3535,8 +3535,8 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("A refusal or an expired draft is the user's decision, not yours"),
-            "a refusal and an expiry are the user's decision, not the call's",
+                .contains("A refusal is the user's decision, not yours"),
+            "a refusal is the user's decision, not the call's",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(

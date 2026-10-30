@@ -345,9 +345,6 @@ export function noticeLine(
  * gone by its own doing.
  */
 export function draftEndingLine(ending: unknown): { tone: string; text: string } {
-  if (ending === 'expired') {
-    return { tone: 'q', text: 'The Slack draft expired unanswered.' };
-  }
   if (ending === 'abandoned') {
     return { tone: 'q', text: "The Slack draft's asking session went away." };
   }

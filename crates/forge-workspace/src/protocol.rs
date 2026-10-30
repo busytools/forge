@@ -1865,8 +1865,8 @@ pub enum SessionUpdate {
         draft: forge_primitives::slack::SlackDraft,
     },
     /// A held Slack draft left the core's registry: answered in some view,
-    /// expired, or its asking session gone. Each view keeps its own copy of
-    /// the parked draft, so this is the only update that clears it - and
+    /// or its asking session gone. Each view keeps its own copy of the
+    /// parked draft, so this is the only update that clears it - and
     /// `ending` is what a view that did not answer it says happened.
     SlackDraftResolved {
         key: SessionSlot,
@@ -2472,11 +2472,11 @@ pub enum DispatchError {
     /// A Slack answer named a draft the registry does not hold. Its own
     /// word rather than [`Self::NoPromptWaiting`]'s: a draft is answered by
     /// its own id and names no tool call, and this line is drawn where the
-    /// dock stood. The three endings are the whole set a draft can have -
-    /// answered, expired, or its asking session gone - so the line names
-    /// them rather than guessing which one.
+    /// dock stood. The two endings are the whole set a draft can have -
+    /// answered, or its asking session gone - so the line names them rather
+    /// than guessing which one.
     #[error(
-        "that Slack draft is no longer waiting: it has been answered, it expired, or its asking session went away"
+        "that Slack draft is no longer waiting: it has been answered, or its asking session went away"
     )]
     NoDraftWaiting { key: SessionSlot, id: Uuid },
     /// A browser hand-off answer named a hand-off the registry does not hold:
@@ -2663,7 +2663,6 @@ mod session_update_variants {
                 .clone()
         };
 
-        assert_eq!(ending(SlackDraftEnding::Expired), serde_json::json!("expired"));
         assert_eq!(ending(SlackDraftEnding::Abandoned), serde_json::json!("abandoned"));
         assert_eq!(
             ending(SlackDraftEnding::Answered { approved: true }),

@@ -319,9 +319,9 @@ export const HANDLERS: Record<string, Apply> = {
   slack_post_pending: (held, payload) => parked(held, 'slack_draft', payload['draft']),
 
   slack_draft_resolved: (held, payload) => {
-    // The draft left the core's registry - answered in another view, expired,
-    // or its session gone. A draft is answered by its own id, so this is the
-    // only thing on the stream that clears a parked one this view never sent.
+    // The draft left the core's registry - answered in another view, or its
+    // session gone. A draft is answered by its own id, so this is the only
+    // thing on the stream that clears a parked one this view never sent.
     const id = text(payload['id']);
     if (id === null) return held;
     const pending_asks = held.pending_asks.filter((ask) => askKey(ask) !== `slack:${id}`);
