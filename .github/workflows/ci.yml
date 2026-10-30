@@ -367,7 +367,7 @@ jobs:
     name: client shell and browser host (macOS)
     needs: changes
     if: needs.changes.outputs.client_tauri == 'true' || needs.changes.outputs.browser == 'true' || needs.changes.outputs.scripts == 'true' || needs.changes.outputs.gate == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       # cef-dll-sys unpacks the distribution under CEF_PATH/<version> and
       # downloads it only when that directory is missing.
