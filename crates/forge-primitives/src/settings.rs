@@ -85,6 +85,8 @@ impl std::fmt::Debug for SettingsKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SettingsKey")
             .field("path", &self.path)
+            .field("leaf", &self.leaf)
+            .field("group", &self.group)
             .field("kind", &self.kind)
             .field("value", &"[redacted]")
             .field("class", &self.class)
