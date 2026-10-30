@@ -8768,7 +8768,7 @@ fn a_current_model() -> forge_primitives::runtime::CurrentModel {
 /// in a single frame, refused at the client's 256MiB cap, which cost the
 /// connection and left the server having built and serialized all of it. The
 /// conversation is kept in a window and read in pages, so the bypass was
-/// this path: the update carried the raw read. A client answers these three
+/// this path: the update carried the raw read. A client answers these two
 /// variants with a READ (the subscribe snapshot's page and `more` above it),
 /// so what crosses is the seat's session facts - a frame with no transcript
 /// in it cannot grow with the transcript, whatever the seat weighs.
@@ -8781,12 +8781,21 @@ fn a_current_model() -> forge_primitives::runtime::CurrentModel {
 /// (`Window::tail_of`, the shipped wiring) and the window the transport seeds
 /// from it are both under test.
 ///
+/// **The giant window rides the `Connected`, and only it.** That is the path
+/// #2150 took, and the cost is real: the test profile is unoptimised, so the
+/// shipped path's weighing runs at tens of megabytes a second, and each
+/// 64 MiB window the fold reseeds is over a second of CPU. The
+/// `SessionReplaced` therefore carries a history past the frame's own 256 KiB
+/// bound rather than the window - an unemptied one still fails the same
+/// assertion - and the window is weighed once, on the copy the transport
+/// keeps.
+///
 /// **The runtime is production's rather than the default's.** The transport's
 /// fold is a task of its own, and the single-threaded default would run it
-/// beside the connection: weighing the window (~80 MiB of JSON, measured
-/// ~1.4 s a reseed) then sits in the frame's own path, so a per-frame wait
-/// would cover the fold's work rather than the frame's crossing (~30 ms
-/// measured).
+/// beside the connection: weighing the window (~64 MiB of JSON, measured
+/// ~1.3 s a reseed under the test profile) then sits in the frame's own path,
+/// so a per-frame wait would cover the fold's work rather than the frame's
+/// crossing (~30 ms measured).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     let (url, fleet, state) = a_server_with_state().await;
@@ -8812,18 +8821,16 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     // the window left behind.
     let read = a_giant_history(500, 180 * 1024);
     let (window, dropped) = forge_workspace::conversation_window::Window::tail_of(&read);
+    // **The count proves the byte ceiling did the cut.** `CONVERSATION_CAP`
+    // is 4,000 frames and this read is 500, so a window shorter than the read
+    // can only be the byte ceiling's - weighing the window here would repeat
+    // the same megabytes the held copy is weighed for below, and that weigh is
+    // where the ceiling is checked against frames rather than against itself.
     assert!(
         window.len() < read.len(),
         "precondition: the byte ceiling bound the window ({} of {} frames)",
         window.len(),
         read.len(),
-    );
-    let window_bytes = weigh(window.messages());
-    assert!(
-        window_bytes
-            <= forge_workspace::conversation_window::CONVERSATION_CAP_BYTES
-                + forge_workspace::conversation_window::CONVERSATION_SLACK_BYTES,
-        "precondition: and the window is inside the ceiling's slack: {window_bytes} bytes",
     );
     let window = window.messages().to_vec();
     let session_id = SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45");
@@ -8835,7 +8842,7 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
         current_model: a_current_model(),
         available_models: Vec::new(),
         mode: None,
-        history: window.clone(),
+        history: window,
         dropped,
         compaction_count: 0,
     });
@@ -8847,30 +8854,11 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
     .await;
     assert_transcript_free(&frame, "connect");
 
-    fleet.emit(SessionUpdate::SessionReplaced {
-        key: seat.clone(),
-        session_id: session_id.clone(),
-        cwd: "/tmp".to_owned(),
-        current_model: a_current_model(),
-        available_models: Vec::new(),
-        mode: None,
-        history: window.clone(),
-        dropped,
-        compaction_count: 0,
-    });
-    let frame = frame_until(
-        &mut socket,
-        "the seat's replacement",
-        |update| matches!(update, SessionUpdate::SessionReplaced { key, .. } if key == &seat),
-    )
-    .await;
-    assert_transcript_free(&frame, "replacement");
-
     // **One live frame after the handover, and it is the wait's mark.** An
     // epoch frame resets the fold's watermark rather than advancing it, and
-    // each seal re-mints from 1, so there is no number on the handover itself
+    // the seal re-mints from 1, so there is no number on the handover itself
     // to wake on. This row is the run's first counted frame, and reaching
-    // `1` proves both seals were applied.
+    // `1` proves the seal was applied.
     fleet.emit(SessionUpdate::ChatAppended {
         key: seat.clone(),
         origin: None,
@@ -8894,6 +8882,32 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
             seat_held.messages().len(),
         );
     }
+
+    // **The other history-carrying variant, at a size the frame bound can
+    // see.** `for_a_client` empties the history of `SessionReplaced` in the
+    // same arm as `Connected`, and the giant-scale proof rides the connect
+    // above; what this frame proves is that the replacement's history does
+    // not ride it either. A history over the frame's own 256 KiB bound makes
+    // an unemptied one fail the same assertion, at a fraction of the weigh
+    // the giant one costs.
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: seat.clone(),
+        session_id: session_id.clone(),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: a_giant_history(3, 180 * 1024),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    let frame = frame_until(
+        &mut socket,
+        "the seat's replacement",
+        |update| matches!(update, SessionUpdate::SessionReplaced { key, .. } if key == &seat),
+    )
+    .await;
+    assert_transcript_free(&frame, "replacement");
 
     // And the connection is still there: another read is answered on it,
     // which the client's own refusal of the frame took with it live.
