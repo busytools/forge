@@ -7676,13 +7676,16 @@ describe("the takeover bar's feedback line", () => {
     if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
     const before = commands(harness).length;
     send.click();
+    // The ending answers only once the connection says the prompt crossed.
+    await vi.waitFor(() =>
+      expect(
+        commands(harness)
+          .slice(before)
+          .map((command) => Object.keys(command)[0]),
+        'the words go to the session, and the hand-off ends as feedback',
+      ).toEqual(['prompt_under', 'respond_browser_hand_off']),
+    );
     flushSync();
-    expect(
-      commands(harness)
-        .slice(before)
-        .map((command) => Object.keys(command)[0]),
-      'the words go to the session, and the hand-off ends as feedback',
-    ).toEqual(['prompt_under', 'respond_browser_hand_off']);
     const [prompt] = commands(harness).slice(before);
     expect(
       (prompt?.['prompt_under'] as Record<string, unknown> | undefined)?.['text'],
