@@ -46,15 +46,18 @@ with the old connection and nothing else would spend the seat's marks.
 reading; it does not prove the peer will ever hear a close. A half-open
 socket - a locked phone, a network that went away - never delivers one, so a
 client that only answers would sit `open` for ever and draw pre-drop data as
-though it were live. Every client sends `ping` once a beat sees 15 seconds
-with no inbound traffic, and the expiry closes the socket so the ordinary
-reconnect runs. **The quiet is measured at beats, so the worst case from the
-last byte is about 40 seconds**: a beat that only just saw traffic restarts
-the quiet from itself, then a whole quiet spell passes before the probe and
-the deadline follows it. **The answer is a byte, and the deadlines differ by
-what each side can see.** The shell's transport (desktop and phone) counts
-bytes under the socket and calls the link dead 10 seconds after a probe that
-drew none. A
+though it were live. Every client sends `ping` after 15 seconds of quiet, and
+the expiry closes the socket so the ordinary reconnect runs. **The detection
+bound differs by transport, because what each can see differs.** The shell's
+transport (desktop and phone) counts bytes under the socket, so a slow frame
+is progress; it measures the quiet at beats, and a beat that only just saw
+traffic restarts it from itself - the worst case from the last byte is about
+40 seconds. A browser is handed whole messages only, so its quiet restarts on
+every frame and its worst case from the last one is 15 seconds plus its
+deadline: about 80 seconds.
+**The answer is a byte, and the deadlines differ by what each side can see.**
+The shell's transport counts bytes under the socket and calls the link dead 10
+seconds after a probe that drew none. A
 browser is handed whole messages only, so its deadline is the write bound
 above plus a margin (65 seconds): while the server spends up to 60 seconds
 writing one frame it cannot answer a probe, and a tighter deadline would
@@ -98,10 +101,13 @@ for anything:
 
 `version` is the protocol the server speaks. It is fixed rather than
 negotiated, because the server changes far more slowly than a client's
-visuals do. **Nothing is gated on it**: the client records the server's
+visuals do. **Nothing is refused over it**: the client records the server's
 number beside its own, and a difference is a fact the surface draws - the
 rail footer carries both halves' build and socket numbers, and a mismatch
 raises the notice beside them. Connection is never refused over a version.
+**One thing is gated on it**: a client sends no `ping` to a server older than
+the protocol that added the pair, because that server's answer would be taken
+for a subscribe refusal (see below).
 **Nothing is negotiated in either direction**: the server reads no version
 from a client, because nothing a client sends carries one.
 
@@ -233,16 +239,22 @@ as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 
 ## What a client sends
 
-**`ping`** - a liveness probe with no fields. A client sends it once a beat
-sees 15 seconds with no inbound traffic (so the worst case from the last byte
-is about 40 seconds), and a page sends one on a return from the background so
-a dead socket is caught by the deadline rather than up to a quiet spell
-later. **Any inbound traffic answers it** - a byte to the shell's transport, a
-whole frame to a page - and the `pong` exists so a quiet peer is always asked
-something. The answer's value is the transport's: it closes the
-socket on its own deadline (10 seconds on the shell's transport, 65 in a
-browser) and lets the ordinary reconnect run. The server clears its own
-keepalive on it like any other frame and answers with `pong`.
+**`ping`** - a liveness probe with no fields. A client sends it after 15
+seconds of quiet, and a page sends one on a return from the background so a
+dead socket is caught by the deadline rather than up to a quiet spell later.
+**A probe already out is neither asked again nor re-armed**: a return while
+one is unanswered leaves its deadline standing, or a person returning every
+few seconds would keep a dead link open for ever. **Any inbound traffic
+answers it** - a byte to the shell's transport, a whole frame to a page - and
+the `pong` exists so a quiet peer is always asked something. The answer's
+value is the transport's: it closes the socket on its own deadline (10
+seconds on the shell's transport, 65 in a browser; worst-case detection is
+about 40 seconds and about 80 respectively) and lets the ordinary reconnect
+run. The server clears its own keepalive on it like any other frame and
+answers with `pong`. **A server older than the protocol that added the pair
+is never asked**: its answer is a `client_message` error, which a client
+books as a subscribe refusal, and the greeting already said which server it
+is.
 
 **`subscribe {what, answering, review}`** - answered with a `snapshot` of the
 whole subject. The subscription this opens is the one updates arrive on. The
