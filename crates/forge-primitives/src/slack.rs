@@ -373,8 +373,6 @@ pub enum SlackDraftEnding {
     /// The reader answered it, in whichever view: `approved` says whether
     /// the message went out.
     Answered { approved: bool },
-    /// The approval window ran out with nothing answered.
-    Expired,
     /// The asking session went away before anyone answered.
     Abandoned,
 }

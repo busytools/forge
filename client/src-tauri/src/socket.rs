@@ -17,20 +17,58 @@
 //! this half.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 /// The first reconnect wait; it doubles up to the ceiling and resets on an
 /// open, exactly as `socket.ts`'s `retryDelay` does.
 const RETRY_MS: u64 = 50;
 const MAX_RETRY_MS: u64 = 2000;
+
+/// How long the link may carry no bytes before this half asks it a question.
+const LIVENESS_EVERY: Duration = Duration::from_secs(15);
+
+/// How long a probe may go unanswered by a BYTE before the link is called
+/// dead.
+///
+/// **A half-open socket gives no other evidence**: the peer's close never
+/// arrives, writes buffer, and the status stays `open` for ever while the
+/// page draws pre-drop records. Any inbound byte answers a probe, so this
+/// only expires on a link that carries nothing in either direction - and
+/// closing here runs the existing drop path, retry included.
+///
+/// **Bytes, not messages.** tungstenite hands a frame over only once it is
+/// complete, and the server may spend its whole write bound (60 s,
+/// `crates/forge-server/src/transport.rs`) on one; a message-level deadline
+/// would call a live peer dead mid-frame, redial, and re-ask the same record -
+/// a permanent reconnect loop on exactly the poor link this is for.
+const LIVENESS_DEAD: Duration = Duration::from_secs(10);
+
+/// The bound one dial is given. A peer that accepts TCP and never completes
+/// the handshake would otherwise strand the retry loop on a dial that never
+/// returns.
+const DIAL_BOUND: Duration = Duration::from_secs(10);
+
+/// The protocol that added `ping` and `pong`.
+///
+/// **An older server answers a probe with `client_message`**, and this half
+/// books a `client_message` refusal on the oldest subscribe still waiting - so
+/// a probe sent to a skewed server would mark a healthy subject refused. The
+/// greeting says which server this is, so a pre-liveness one is never asked.
+const LIVENESS_PROTOCOL: u64 = 20;
 
 /// The bound one reply-carrying dispatch is given. The socket is loopback and
 /// its server answers in milliseconds; a reply that outlives this is the
@@ -58,6 +96,114 @@ pub(crate) const NO_REPLY: &str = "the server did not answer the command";
 /// bound rather than none, ~1.8x the measured maximum; capping the window
 /// itself is #1637's work, not this half's.
 const MAX_FRAME_BYTES: usize = 256 << 20;
+
+/// The TCP stream under the socket, counting every byte the peer sends.
+///
+/// **The counter sits under TLS and the WebSocket both**, so a handshake
+/// record, a frame header and the middle of a 3.5 MB payload are all the same
+/// evidence: bytes are arriving. That is what liveness needs, because
+/// tungstenite hands a message over only once the whole frame has arrived.
+struct Counting {
+    inner: tokio::net::TcpStream,
+    seen: Arc<AtomicU64>,
+}
+
+impl AsyncRead for Counting {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &poll {
+            let got = buf.filled().len().saturating_sub(before);
+            if got > 0 {
+                self.seen.fetch_add(got as u64, Ordering::Relaxed);
+            }
+        }
+        poll
+    }
+}
+
+impl AsyncWrite for Counting {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+}
+
+/// Dial `url`, wrapping the transport in the byte counter before tungstenite
+/// sees it.
+///
+/// **This half dials rather than asking tungstenite to**, because the counter
+/// has to sit under the TLS layer: the public connect helpers own the stream,
+/// and the one thing liveness needs is a stream of its own.
+async fn dial(
+    url: &str,
+    config: WebSocketConfig,
+    seen: Arc<AtomicU64>,
+) -> Result<WebSocketStream<MaybeTlsStream<Counting>>, String> {
+    let uri: Uri = url.parse().map_err(|why| format!("{url} is not an address: {why}"))?;
+    let secure = uri.scheme_str() == Some("wss");
+    let host = uri.host().ok_or_else(|| format!("{url} names no host"))?;
+    // An IPv6 literal arrives bracketed, and `connect` wants it bare.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
+    let tcp = tokio::net::TcpStream::connect((host, port)).await.map_err(|why| why.to_string())?;
+    // **Nagle is left as the OS sets it, as the replaced dial did**: it passed
+    // `disable_nagle: false`, so nothing about this socket's latency may move
+    // with the dial's rewrite.
+    let stream = Counting { inner: tcp, seen };
+    let request = url.into_client_request().map_err(|why| why.to_string())?;
+    let connector = secure.then(|| Connector::Rustls(Arc::new(tls_config())));
+    let (ws, _) =
+        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), connector)
+            .await
+            .map_err(|why| why.to_string())?;
+    Ok(ws)
+}
+
+/// The trust a `wss` dial carries: the OS roots, as tungstenite's own
+/// `rustls-tls-native-roots` connect path uses.
+fn tls_config() -> rustls::ClientConfig {
+    let rustls_native_certs::CertificateResult { certs, errors, .. } =
+        rustls_native_certs::load_native_certs();
+    if !errors.is_empty() {
+        tauri_plugin_log::log::debug!("native root certificate load errors: {errors:?}");
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    let (added, ignored) = roots.add_parsable_certificates(certs);
+    if added == 0 {
+        tauri_plugin_log::log::debug!(
+            "no native root certificate parsed, so a wss dial has nothing to trust (ignored {ignored})"
+        );
+    }
+    rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth()
+}
 
 /// Where the connection is, as the page's status line reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,6 +489,11 @@ enum Outbound {
         replied: Option<oneshot::Sender<Result<Value, String>>>,
     },
     Binary(Vec<u8>),
+    /// Probe the link now, rather than waiting out the quiet: the page's
+    /// half of a return from the background, where the socket may have died
+    /// while the page slept. Queued with everything else, so it goes out in
+    /// order and its deadline is stamped only once the write answers.
+    Ping,
     Close,
 }
 
@@ -416,6 +567,12 @@ impl Socket {
     /// Say which seat the page has on screen; `None` for none.
     pub fn showing(&self, seat: Option<Value>) {
         let _ = self.tx.send(Outbound::Showing { seat });
+    }
+
+    /// Probe the link now: the page's half of a return from the background,
+    /// where the socket may have died while the page slept.
+    pub fn ping(&self) {
+        let _ = self.tx.send(Outbound::Ping);
     }
 
     /// Ask again for a subject this half already holds, without counting a
@@ -710,6 +867,9 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         | Outbound::BrowserFileAnswer { .. }
         | Outbound::BrowserResize { .. }
         | Outbound::StripAsk { replied: None, .. }
+        // Nothing to probe while there is no connection: the redial's own
+        // open is what the page is waiting for.
+        | Outbound::Ping
         | Outbound::Binary(_) => false,
     }
 }
@@ -771,10 +931,17 @@ async fn run(
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_FRAME_BYTES))
             .max_frame_size(Some(MAX_FRAME_BYTES));
-        let ws = match tokio_tungstenite::connect_async_with_config(&url, Some(config), false).await
-        {
-            Ok((ws, _)) => ws,
-            Err(why) => {
+        // **A dial the peer accepts and never finishes is abandoned at the
+        // bound**, exactly as a refused one is: the retry loop is the answer
+        // to both, and no status change is owed because the door already
+        // says "connecting".
+        // The bytes this connection has heard, counted under the socket by
+        // `Counting`: liveness reads this, never the message stream.
+        let seen = Arc::new(AtomicU64::new(0));
+        let dial = tokio::time::timeout(DIAL_BOUND, dial(&url, config, Arc::clone(&seen)));
+        let ws = match dial.await {
+            Ok(Ok(ws)) => ws,
+            Ok(Err(why)) => {
                 // A dial that did not land says so, at DEBUG: the shipping
                 // client's filter is Info, so this is read under a raised
                 // level - which is what an unreachable server deserves while
@@ -782,6 +949,10 @@ async fn run(
                 // that a failure the door cannot name (a scheme this half
                 // cannot speak, a TLS refusal) is at least in the log.
                 tauri_plugin_log::log::debug!("socket_dial_failed: {why}");
+                continue;
+            }
+            Err(why) => {
+                tauri_plugin_log::log::debug!("socket_dial_timed_out: {why}");
                 continue;
             }
         };
@@ -832,23 +1003,58 @@ async fn run(
         // their reply body is a verdict on the attach, not a command's value.
         let mut attaches: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
         let mut closing = false;
+        // **The link's own clock, counted in bytes.** `bytes_at` is the
+        // counter's reading at the last beat that saw progress, `heard_at`
+        // when that was, and `probe` the deadline of the question that is
+        // out. A slow frame keeps advancing the counter, so a live peer
+        // mid-frame is never called dead.
+        let mut bytes_at = seen.load(Ordering::Relaxed);
+        let mut heard_at = tokio::time::Instant::now();
+        let mut probe: Option<tokio::time::Instant> = None;
+        // Until a greeting says otherwise, the server is assumed to speak the
+        // probe (the greeting is the first frame, long before the first beat).
+        let mut speaks_liveness = true;
+        // **The page's ask is stricter**: it can land before the greeting is
+        // read, so it waits for one.
+        let mut greeted = false;
         loop {
+            // The next moment the link owes something: the probe's deadline
+            // when one is out, else the quiet that earns a probe.
+            let due = probe.map_or(heard_at + LIVENESS_EVERY, |sent| sent + LIVENESS_DEAD);
             tokio::select! {
+                // **Reads first, always.** A pong can sit unread while this
+                // half writes, and at the deadline the beat must not win that
+                // race and reap a peer that already answered.
+                biased;
                 frame = reader.next() => match frame {
                     Some(Ok(Message::Text(text))) => {
                         let at = tokio::time::Instant::now();
                         let parsed = serde_json::from_str::<Value>(&text);
                         let parse_ms = at.elapsed().as_secs_f64() * 1000.0;
                         match parsed {
-                            Ok(value) => receive(
-                                &value,
-                                text.len(),
-                                parse_ms,
-                                &mut pending,
-                                &mut attaches,
-                                &mut awaiting,
-                                &events,
-                            ),
+                            Ok(value) => {
+                                // **Which server this is, before the first
+                                // beat.** A pre-liveness server cannot answer
+                                // a probe, and its refusal would land on a
+                                // subscribe; the greeting is the answer.
+                                if value.get("kind").and_then(Value::as_str) == Some("greeting") {
+                                    greeted = true;
+                                    if let Some(version) =
+                                        value.get("version").and_then(Value::as_u64)
+                                    {
+                                        speaks_liveness = version >= LIVENESS_PROTOCOL;
+                                    }
+                                }
+                                receive(
+                                    &value,
+                                    text.len(),
+                                    parse_ms,
+                                    &mut pending,
+                                    &mut attaches,
+                                    &mut awaiting,
+                                    &events,
+                                );
+                            }
                             Err(why) => say(&events, SocketEvent::Malformed(why.to_string())),
                         }
                     }
@@ -856,14 +1062,17 @@ async fn run(
                     // by its kind tag.** Kind 1 is one relayed browser frame:
                     // the sink draws it, and anything else on this stream is
                     // not this half's to read.
-                    Some(Ok(Message::Binary(bytes))) => match bytes.first() {
-                        Some(&1) => frames(&bytes[1..]),
-                        Some(&2) => audio(&bytes[1..]),
-                        // **A binary frame of another kind is said**, not
-                        // dropped in silence: a short one has no kind at all,
-                        // and both leave a reader guessing what went missing.
-                        other => unreadable_binary(other.copied(), bytes.len()),
-                    },
+                    Some(Ok(Message::Binary(bytes))) => {
+                        match bytes.first() {
+                            Some(&1) => frames(&bytes[1..]),
+                            Some(&2) => audio(&bytes[1..]),
+                            // **A binary frame of another kind is said**, not
+                            // dropped in silence: a short one has no kind at
+                            // all, and both leave a reader guessing what went
+                            // missing.
+                            other => unreadable_binary(other.copied(), bytes.len()),
+                        }
+                    }
                     Some(Ok(_)) => {}
                     Some(Err(why)) => {
                         say(&events, SocketEvent::Malformed(why.to_string()));
@@ -1164,6 +1373,84 @@ async fn run(
                                 );
                             }
                         }
+                        // **A probe the page asked for**, on a return from
+                        // the background: the socket may have died while the
+                        // page slept and its own timer with it.
+                        Outbound::Ping => {
+                            // **The page's ask needs a greeting that says the
+                            // server speaks it.** The timed beat is safe
+                            // without one - it is 15 s out - but a return can
+                            // land before the greeting is read, and a
+                            // pre-liveness server's answer would be booked on
+                            // a subscribe.
+                            if !greeted || !speaks_liveness {
+                                continue;
+                            }
+                            // **A probe already out stands, exactly as the
+                            // page's own deadline does.** A second ask must
+                            // neither push the deadline out nor re-snapshot
+                            // the counter: bytes that answer the first probe
+                            // would stop counting as progress, and the beat
+                            // would reap a live link at the first deadline.
+                            if probe.is_some() {
+                                continue;
+                            }
+                            if writer.send(ping_frame()).await.is_err() {
+                                break;
+                            }
+                            probe = Some(tokio::time::Instant::now());
+                            // **Bytes already here are not the answer.** The
+                            // counter's reading is snapshotted with the ask,
+                            // so only progress AFTER it can clear the probe;
+                            // otherwise traffic that predates the question
+                            // would satisfy it at the next beat.
+                            bytes_at = seen.load(Ordering::Relaxed);
+                        }
+                    }
+                }
+                // **The liveness beat, judged in bytes.** A frame still
+                // arriving advances the counter; that is progress, not
+                // silence, whatever tungstenite has handed over yet.
+                () = tokio::time::sleep_until(due) => {
+                    let now_seen = seen.load(Ordering::Relaxed);
+                    if now_seen != bytes_at {
+                        bytes_at = now_seen;
+                        heard_at = tokio::time::Instant::now();
+                        probe = None;
+                        // Progress is the answer; the next moment owed is the
+                        // quiet's, not this deadline's.
+                        continue;
+                    }
+                    match probe {
+                        Some(sent) => {
+                            tauri_plugin_log::log::debug!(
+                                "socket_liveness_dead: no byte answered a probe in {}ms",
+                                sent.elapsed().as_millis(),
+                            );
+                            break;
+                        }
+                        None => {
+                            // **A pre-liveness server is not asked.** Its
+                            // refusal would be booked on a subscribe; the
+                            // quiet re-arms from now so the beat cannot spin.
+                            if !speaks_liveness {
+                                heard_at = tokio::time::Instant::now();
+                                continue;
+                            }
+                            // **The deadline is stamped only once the send
+                            // has answered**: a probe queued behind a busy
+                            // write owes nothing until it reaches the peer.
+                            //
+                            // **The send itself is unbounded**, like every
+                            // write on this half: a peer that stopped reading
+                            // can hold it open, and the beat is then as stuck
+                            // as the link. Binding it is the server's
+                            // `write_within` shape and its own change.
+                            if writer.send(ping_frame()).await.is_err() {
+                                break;
+                            }
+                            probe = Some(tokio::time::Instant::now());
+                        }
                     }
                 }
             }
@@ -1199,6 +1486,11 @@ async fn run(
         }
         say(&events, SocketEvent::Status(Status::Connecting));
     }
+}
+
+/// The wire's liveness probe, built in one place because two paths send it.
+fn ping_frame() -> Message {
+    Message::Text(json!({ "kind": "ping" }).to_string().into())
 }
 
 /// Say a binary frame this half cannot read.
@@ -1309,7 +1601,16 @@ fn receive(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt as _;
     use tokio::net::TcpListener;
+
+    /// How long a paused-clock test waits on real I/O before naming the
+    /// property that did not happen.
+    ///
+    /// **The clock is virtual but the socket is not.** A loaded gate was
+    /// measured holding the watcher family for 7-8 s, so this sits well
+    /// above that rather than near the value a quiet machine gives.
+    const PAUSED_WAIT: Duration = Duration::from_secs(15);
 
     /// **An unknown binary frame is said at a level the client keeps.** This
     /// module is not a target the default directives name, so the line at
@@ -1356,6 +1657,10 @@ pub(crate) mod tests {
         pub(crate) heard: mpsc::UnboundedReceiver<Value>,
         pub(crate) say: tokio::sync::broadcast::Sender<Value>,
         pub(crate) kill: tokio::sync::broadcast::Sender<()>,
+        /// Every text frame a connection sent, broadcast so a helper can
+        /// answer the client's probes while the test keeps its own `heard`
+        /// stream for what it is asserting.
+        pub(crate) spoken: tokio::sync::broadcast::Sender<Value>,
         /// Kept so the broadcast always has a receiver: `send` refuses when
         /// nobody is subscribed, and a test may push before the socket's own
         /// per-connection task has joined.
@@ -1363,6 +1668,8 @@ pub(crate) mod tests {
         /// The same, for the kill channel: a broadcast with no receiver
         /// refuses to send.
         _kill_keep: tokio::sync::broadcast::Receiver<()>,
+        /// And for the spoken channel, for the same reason.
+        _spoken_keep: tokio::sync::broadcast::Receiver<Value>,
     }
 
     pub(crate) async fn stub() -> Stub {
@@ -1382,8 +1689,10 @@ pub(crate) mod tests {
         let (heard_tx, heard) = mpsc::unbounded_channel();
         let (say, keep) = tokio::sync::broadcast::channel::<Value>(64);
         let (kill, kill_keep) = tokio::sync::broadcast::channel(8);
+        let (spoken, spoken_keep) = tokio::sync::broadcast::channel::<Value>(64);
         let say_for_task = say.clone();
         let kill_for_task = kill.clone();
+        let spoken_for_task = spoken.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else { return };
@@ -1394,6 +1703,7 @@ pub(crate) mod tests {
                     let _ = held.set_linger(Some(Duration::ZERO));
                 }
                 let heard_tx = heard_tx.clone();
+                let spoken = spoken_for_task.clone();
                 let mut said = say_for_task.subscribe();
                 let mut killed = kill_for_task.subscribe();
                 tokio::spawn(async move {
@@ -1404,7 +1714,8 @@ pub(crate) mod tests {
                             _ = killed.recv() => break,
                             frame = reader.next() => match frame {
                                 Some(Ok(Message::Text(text))) => {
-                                    if let Ok(value) = serde_json::from_str(&text) {
+                                    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                        let _ = spoken.send(value.clone());
                                         let _ = heard_tx.send(value);
                                     }
                                 }
@@ -1428,8 +1739,10 @@ pub(crate) mod tests {
             heard,
             say,
             kill,
+            spoken,
             _keep: keep,
             _kill_keep: kill_keep,
+            _spoken_keep: spoken_keep,
         }
     }
 
@@ -1449,6 +1762,27 @@ pub(crate) mod tests {
                 if ok(&value) {
                     return value;
                 }
+            }
+        }
+
+        /// [`Stub::heard_until`] for a paused clock.
+        ///
+        /// **A virtual timeout expires before real I/O gets a turn** when the
+        /// runtime has nothing else to run, so a paused test waits on a
+        /// real-time guard and lets the clock creep a millisecond per poll.
+        pub(crate) async fn heard_until_paused(
+            &mut self,
+            mut ok: impl FnMut(&Value) -> bool,
+        ) -> Value {
+            let real = std::time::Instant::now() + PAUSED_WAIT;
+            loop {
+                while let Ok(value) = self.heard.try_recv() {
+                    if ok(&value) {
+                        return value;
+                    }
+                }
+                assert!(std::time::Instant::now() < real, "a frame arrived");
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         }
     }
@@ -1476,6 +1810,51 @@ pub(crate) mod tests {
             .await
             .expect("an event within the bound")
             .expect("the socket still feeding")
+    }
+
+    /// [`next_event`] for a paused clock, for the reason
+    /// [`Stub::heard_until_paused`] states: a virtual timeout would expire
+    /// before the real socket had a turn.
+    ///
+    /// `what` is the property the wait is for, so a wait that never ends
+    /// names what did not happen rather than reporting a bare timeout.
+    async fn next_event_paused(
+        rx: &mut mpsc::UnboundedReceiver<SocketEvent>,
+        what: &str,
+    ) -> SocketEvent {
+        let real = std::time::Instant::now() + PAUSED_WAIT;
+        loop {
+            if let Ok(event) = rx.try_recv() {
+                return event;
+            }
+            assert!(std::time::Instant::now() < real, "{what}");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Let the runtime run real I/O for a moment under a paused clock.
+    ///
+    /// **A virtual `advance` wakes a task; it does not promise the task has
+    /// run before the call returns.** An assertion that must not outrun the
+    /// task waits on real time here, which the blocking pool spends while the
+    /// runtime keeps polling the task the advance woke.
+    async fn settle(millis: u64) {
+        tokio::task::spawn_blocking(move || std::thread::sleep(Duration::from_millis(millis)))
+            .await
+            .expect("the wait runs");
+    }
+
+    /// [`connected`] for a paused clock: see [`next_event_paused`].
+    async fn connected_paused(stub: &Stub) -> (Socket, mpsc::UnboundedReceiver<SocketEvent>) {
+        let (socket, mut rx) = opened(stub);
+        loop {
+            if let SocketEvent::Status(Status::Open) =
+                next_event_paused(&mut rx, "the socket opened").await
+            {
+                break;
+            }
+        }
+        (socket, rx)
     }
 
     /// The next event of one kind, skipping the others (statuses interleave
@@ -2327,5 +2706,449 @@ pub(crate) mod tests {
             .expect("the task joins")
             .expect("the dispatch resolves");
         assert_eq!(body, Some(json!("gone")));
+    }
+
+    /// Answer every probe the client sends, from a task of its own: a stub
+    /// that reads and replies is what a live link looks like from here.
+    fn answer_probes(stub: &Stub) -> tokio::task::JoinHandle<()> {
+        let mut spoken = stub.spoken.subscribe();
+        let say = stub.say.clone();
+        tokio::spawn(async move {
+            while let Ok(frame) = spoken.recv().await {
+                if frame.get("kind").and_then(Value::as_str) == Some("ping") {
+                    let _ = say.send(json!({ "kind": "pong" }));
+                }
+            }
+        })
+    }
+
+    /// **A probe nobody answers ends the connection, and the retry redials.**
+    /// A half-open socket gives no other evidence: the stub accepts and reads
+    /// but never answers, which is exactly what a peer behind a dead link
+    /// looks like from here.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_probe_drops_the_connection_and_redials() {
+        let mut stub = stub().await;
+        let (_socket, mut rx) = connected_paused(&stub).await;
+
+        // The quiet earns a probe, and the probe is watched going out before
+        // the link is called dead.
+        tokio::time::advance(LIVENESS_EVERY).await;
+        let probe = stub.heard_until_paused(|frame| frame["kind"] == "ping").await;
+        assert_eq!(probe["kind"], "ping", "the quiet is what earns the probe");
+
+        // Nobody answers it, so the deadline is the evidence.
+        tokio::time::advance(LIVENESS_DEAD).await;
+        loop {
+            match next_event_paused(&mut rx, "the unanswered probe reports the drop").await {
+                SocketEvent::Status(Status::Connecting) => break,
+                SocketEvent::Status(Status::Open) => panic!("a live link was called dead"),
+                _ => {}
+            }
+        }
+
+        // And the drop path's retry redials rather than sitting the link out.
+        tokio::time::advance(Duration::from_millis(RETRY_MS)).await;
+        loop {
+            if let SocketEvent::Status(Status::Open) =
+                next_event_paused(&mut rx, "the retry dials again").await
+            {
+                break;
+            }
+        }
+    }
+
+    /// **An answered probe keeps the link open across spell after spell.**
+    #[tokio::test(start_paused = true)]
+    async fn an_answered_probe_keeps_the_connection_open() {
+        let stub = stub().await;
+        answer_probes(&stub);
+        let (_socket, mut rx) = connected_paused(&stub).await;
+
+        for _ in 0..3 {
+            tokio::time::advance(LIVENESS_EVERY).await;
+            loop {
+                match next_event_paused(&mut rx, "the answered probe keeps the link open").await {
+                    SocketEvent::Message { value, .. } => {
+                        assert_eq!(value["kind"], "pong", "the probe is answered");
+                        break;
+                    }
+                    SocketEvent::Status(Status::Connecting) => {
+                        panic!("an answered probe was called dead");
+                    }
+                    _ => {}
+                }
+            }
+            // The deadline then passes with the answer already read.
+            tokio::time::advance(LIVENESS_DEAD).await;
+        }
+    }
+
+    /// **A dial that never completes is abandoned at its bound and retried.**
+    /// A peer that accepts TCP and never finishes the handshake would
+    /// otherwise strand the retry loop on one dial for ever, which is this
+    /// cut's failure wearing a second face.
+    #[tokio::test(start_paused = true)]
+    async fn a_dial_that_never_completes_is_abandoned_at_its_bound_and_retried() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let addr = listener.local_addr().expect("the bound address");
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&accepted);
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { return };
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // Held open, never answered: the handshake pends for ever.
+                tokio::spawn(async move {
+                    let _held = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let _socket = Socket::open(format!("ws://{addr}/socket"), tx);
+        let real = std::time::Instant::now() + PAUSED_WAIT;
+        while accepted.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            assert!(std::time::Instant::now() < real, "the dial reached the peer");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        // The bound passes with no handshake, and the retry dials again.
+        tokio::time::advance(DIAL_BOUND).await;
+        tokio::time::advance(Duration::from_millis(RETRY_MS)).await;
+        let real = std::time::Instant::now() + PAUSED_WAIT;
+        while accepted.load(std::sync::atomic::Ordering::Relaxed) < 2 {
+            assert!(std::time::Instant::now() < real, "the abandoned dial is retried");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// **An expired deadline dies with the socket that earned it.** Every
+    /// probe is answered, but a second later than the bound - so the first
+    /// connection is called dead, and the answer that lands afterwards
+    /// belongs to a socket nobody is reading. The redial's connection is a
+    /// fresh lifetime, and the stale deadline must not reap it at once.
+    #[tokio::test(start_paused = true)]
+    async fn an_expired_deadline_dies_with_the_socket_that_earned_it() {
+        let stub = stub().await;
+        let mut spoken = stub.spoken.subscribe();
+        let say = stub.say.clone();
+        tokio::spawn(async move {
+            while let Ok(frame) = spoken.recv().await {
+                if frame.get("kind").and_then(Value::as_str) == Some("ping") {
+                    let say = say.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(LIVENESS_DEAD + Duration::from_secs(1)).await;
+                        let _ = say.send(json!({ "kind": "pong" }));
+                    });
+                }
+            }
+        });
+
+        let (_socket, mut rx) = connected_paused(&stub).await;
+        tokio::time::advance(LIVENESS_EVERY).await;
+        tokio::time::advance(LIVENESS_DEAD).await;
+        loop {
+            if let SocketEvent::Status(Status::Connecting) =
+                next_event_paused(&mut rx, "the expired deadline ends its own socket").await
+            {
+                break;
+            }
+        }
+
+        tokio::time::advance(Duration::from_millis(RETRY_MS)).await;
+        loop {
+            if let SocketEvent::Status(Status::Open) =
+                next_event_paused(&mut rx, "the redial opens a fresh connection").await
+            {
+                break;
+            }
+        }
+        // The late answer lands now, and a carried-over deadline would have
+        // reaped the fresh connection the moment it opened.
+        for _ in 0..5 {
+            tokio::time::advance(Duration::from_millis(100)).await;
+            while let Ok(event) = rx.try_recv() {
+                assert!(
+                    !matches!(event, SocketEvent::Status(Status::Connecting)),
+                    "a replaced socket's deadline reaped the new connection",
+                );
+            }
+        }
+    }
+
+    /// **A probe the page asks for goes out at once**, rather than waiting
+    /// out the quiet: a page returning from the background asks because its
+    /// own timers slept through the spell.
+    #[tokio::test(start_paused = true)]
+    async fn a_probe_the_page_asks_for_goes_out_at_once() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected_paused(&stub).await;
+        // The page asks only a server that has said it speaks the probe.
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 20, "settings": {} }))
+            .expect("the greeting lands");
+        settle(200).await;
+        let asked = tokio::time::Instant::now();
+        socket.ping();
+        let probe = stub.heard_until_paused(|frame| frame["kind"] == "ping").await;
+        assert_eq!(probe["kind"], "ping", "the page's ask is the probe that went");
+        // **Out of the quiet's reach.** The wait creeps the paused clock, so
+        // a dropped ask would be answered by the 15 s beat instead; a probe
+        // inside the spell is the page's own.
+        assert!(
+            asked.elapsed() < LIVENESS_EVERY,
+            "the probe arrived only after the quiet earned one, so the page's ask was dropped",
+        );
+    }
+
+    /// **A pre-liveness server is never probed.** Its answer would be a
+    /// `client_message` refusal, and this half books one on the oldest
+    /// subscribe still waiting - a healthy subject marked refused every quiet
+    /// spell.
+    #[tokio::test(start_paused = true)]
+    async fn an_older_server_is_not_probed() {
+        let mut stub = stub().await;
+        let (socket, mut rx) = connected_paused(&stub).await;
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 19, "settings": {} }))
+            .expect("the greeting lands");
+        settle(200).await;
+
+        // **The page's ask is refused by the same greeting.** The timed beat
+        // is only half the rule; a return asks through this arm.
+        socket.ping();
+        settle(200).await;
+        if let Ok(frame) = stub.heard.try_recv() {
+            panic!("a page ask went to a pre-liveness server: {frame}");
+        }
+
+        // The first beat sees the greeting's own bytes as progress and
+        // resets; the SECOND is a whole quiet spell with nothing, which is
+        // where a probe would be earned - and refused.
+        tokio::time::advance(LIVENESS_EVERY).await;
+        settle(200).await;
+        tokio::time::advance(LIVENESS_EVERY).await;
+        settle(200).await;
+        tokio::time::advance(LIVENESS_DEAD).await;
+        settle(200).await;
+
+        if let Ok(frame) = stub.heard.try_recv() {
+            panic!("a pre-liveness server was probed: {frame}");
+        }
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, SocketEvent::Status(Status::Connecting)),
+                "an older server's silence reaped it",
+            );
+        }
+    }
+
+    /// **The page's ask waits for a greeting.** A return can land before the
+    /// greeting is read, and a pre-liveness server's refusal would be booked
+    /// on a subscribe.
+    #[tokio::test(start_paused = true)]
+    async fn a_page_probe_before_the_greeting_is_not_sent() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected_paused(&stub).await;
+        socket.ping();
+        settle(200).await;
+        if let Ok(frame) = stub.heard.try_recv() {
+            panic!("a probe went before the greeting was read: {frame}");
+        }
+    }
+
+    /// **Bytes that predate the page's ask are not its answer.** The counter
+    /// is snapshotted with the ask, so only progress after it clears the
+    /// probe - otherwise a frame that arrived earlier would satisfy the
+    /// question at the next beat.
+    #[tokio::test(start_paused = true)]
+    async fn pre_ask_bytes_do_not_answer_a_page_probe() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected_paused(&stub).await;
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 20, "settings": {} }))
+            .expect("the greeting lands");
+        stub.say.send(json!({ "kind": "probe", "pad": "x" })).expect("a frame lands");
+        settle(300).await;
+        // The frames' bytes are in, and the client has read them.
+        while rx.try_recv().is_ok() {}
+
+        socket.ping();
+        settle(200).await;
+        tokio::time::advance(LIVENESS_DEAD).await;
+        settle(200).await;
+
+        let mut dropped = false;
+        while let Ok(event) = rx.try_recv() {
+            dropped |= matches!(event, SocketEvent::Status(Status::Connecting));
+        }
+        assert!(
+            dropped,
+            "bytes that predate the probe answered it, so a dead link survived the deadline",
+        );
+    }
+
+    /// **A second page ask does not push the deadline out.** The ones already
+    /// out stands, as the page's own deadline does.
+    #[tokio::test(start_paused = true)]
+    async fn a_second_page_probe_does_not_push_the_deadline() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected_paused(&stub).await;
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 20, "settings": {} }))
+            .expect("the greeting lands");
+        settle(200).await;
+
+        socket.ping();
+        settle(100).await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        settle(100).await;
+        socket.ping();
+        settle(100).await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        settle(200).await;
+
+        let mut dropped = false;
+        while let Ok(event) = rx.try_recv() {
+            dropped |= matches!(event, SocketEvent::Status(Status::Connecting));
+        }
+        assert!(dropped, "the second ask pushed the first deadline out");
+    }
+
+    /// **A pong that answered the first ask keeps it answered after a second
+    /// ask.** The page's probe returns early while one is out; the shell must
+    /// not re-snapshot the counter, or the answer would stop counting as
+    /// progress and the first deadline would reap a live link.
+    #[tokio::test(start_paused = true)]
+    async fn a_pong_answering_the_first_ask_survives_a_second_ask() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected_paused(&stub).await;
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 20, "settings": {} }))
+            .expect("the greeting lands");
+        settle(200).await;
+
+        socket.ping();
+        settle(200).await;
+        stub.say.send(json!({ "kind": "pong" })).expect("the answer lands");
+        settle(300).await;
+
+        socket.ping();
+        settle(200).await;
+        tokio::time::advance(LIVENESS_DEAD).await;
+        settle(200).await;
+
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, SocketEvent::Status(Status::Connecting)),
+                "the second ask re-snapshotted the counter, so the first answer stopped counting",
+            );
+        }
+    }
+
+    /// **The shipping liveness pair is the value the book states.** What the
+    /// book tells a client author to expect, and the floor the server's own
+    /// write bound sets for the peer that is slow rather than dead.
+    #[test]
+    fn the_shipping_liveness_pair_is_the_documented_pair() {
+        assert_eq!(LIVENESS_EVERY, Duration::from_secs(15), "a probe after 15 s of quiet");
+        assert_eq!(LIVENESS_DEAD, Duration::from_secs(10), "and 10 s without a byte in answer");
+    }
+
+    /// A stub that speaks one text frame in two halves: the first written at
+    /// once, the rest only when the test says so. Nothing else is answered.
+    ///
+    /// **The bytes are a valid frame in progress**, which is the state a
+    /// message-level deadline mistakes for silence.
+    async fn partial_frame_stub(payload_len: usize, first: usize) -> (String, mpsc::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
+        let addr = listener.local_addr().expect("the bound address");
+        let (finish, mut finished) = mpsc::channel::<()>(1);
+        tokio::spawn(async move {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else { return };
+            let mut payload = String::with_capacity(payload_len + 40);
+            payload.push_str("{\"kind\":\"greeting\",\"pad\":\"");
+            payload.push_str(&"a".repeat(payload_len));
+            payload.push_str("\"}");
+            let bytes = payload.as_bytes();
+            let mut frame = Vec::with_capacity(bytes.len() + 10);
+            // FIN | text, and a 64-bit length: a server frame is unmasked.
+            frame.push(0x81);
+            frame.push(0x7f);
+            frame.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+            frame.extend_from_slice(bytes);
+            let socket = ws.get_mut();
+            if socket.write_all(&frame[..first]).await.is_err() {
+                return;
+            }
+            let _ = socket.flush().await;
+            if finished.recv().await.is_none() {
+                return;
+            }
+            if socket.write_all(&frame[first..]).await.is_err() {
+                return;
+            }
+            let _ = socket.flush().await;
+            std::future::pending::<()>().await;
+        });
+        (format!("ws://{addr}/socket"), finish)
+    }
+
+    /// **A frame still arriving is not silence.** tungstenite hands a message
+    /// over only once the frame is complete, and the server may spend its
+    /// whole write bound on one; a message-level deadline would reap a live
+    /// peer mid-frame, redial, and re-ask the same record for ever. The byte
+    /// counter is the evidence, so the partial frame keeps the link alive and
+    /// the message then completes on the same connection.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_frame_is_not_called_dead() {
+        let (url, finish) = partial_frame_stub(512 * 1024, 64 * 1024).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let _socket = Socket::open(url, tx);
+        loop {
+            if let SocketEvent::Status(Status::Open) =
+                next_event_paused(&mut rx, "the socket opened").await
+            {
+                break;
+            }
+        }
+        // The first half is on the wire; give the runtime real time to read
+        // it, which is what advances the counter. The wait is real rather
+        // than virtual because the socket is, and a loaded runner has held
+        // I/O-adjacent work for seconds.
+        settle(1_000).await;
+
+        // Past a quiet spell, then past the deadline that follows it. The
+        // settle between them is what makes the second advance reach a timer
+        // the first one armed: a deadline counting messages reaps on the
+        // second, while the byte counter made the first a no-op.
+        tokio::time::advance(LIVENESS_EVERY).await;
+        settle(200).await;
+        tokio::time::advance(LIVENESS_DEAD).await;
+        settle(200).await;
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, SocketEvent::Status(Status::Connecting)),
+                "a frame still arriving was called silence",
+            );
+        }
+
+        // The rest of the frame lands, and the message finishes on a live link.
+        let _ = finish.send(()).await;
+        loop {
+            match next_event_paused(&mut rx, "the slow frame completes").await {
+                SocketEvent::Message { value, .. } => {
+                    assert_eq!(value["kind"], "greeting", "the frame completed whole");
+                    break;
+                }
+                SocketEvent::Status(Status::Connecting) => {
+                    panic!("the slow frame's connection was reaped");
+                }
+                _ => {}
+            }
+        }
     }
 }

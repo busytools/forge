@@ -7,7 +7,7 @@ import { Stores } from '../stores';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { railFooter } from '../session/view';
-import { COALESCE_MS, watchHome, type HomeRead } from './live';
+import { COALESCE_MS, rereadHome, watchHome, type HomeRead } from './live';
 import { homeView } from './view';
 
 const HOME: Subject = 'home';
@@ -156,6 +156,7 @@ function fakeConnection() {
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
+    probe: () => {},
     close: () => {},
   };
 
@@ -199,6 +200,30 @@ afterEach(() => {
 });
 
 describe('the home over a connection', () => {
+  /**
+   * **A return asks through the page's guards.** One read at a time: an ask
+   * while one is in flight would queue a second whole encode behind it, and a
+   * subject nobody watches is not asked for at all.
+   */
+  it('a return reads through the page, one at a time', () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'the return asks for the home').toEqual([HOME]);
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'a read in flight is not asked again').toEqual([HOME]);
+
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'the answered read frees the next').toEqual([HOME, HOME]);
+
+    stop();
+    forge.refreshed.length = 0;
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'an unwatched home is not asked for').toEqual([]);
+  });
+
   /**
    * **The connection declares itself answerable, usually on its first
    * subscribe.** The role belongs to the connection and only ever rises, and
@@ -248,6 +273,23 @@ describe('the home over a connection', () => {
       'home',
       'home',
     ]);
+    stop();
+  });
+
+  /**
+   * **A return inside the coalesce beat is the read the update wanted.** The
+   * timer fires after a return has already asked; queueing a second whole
+   * encode behind it lets the first answer clear the flag mid-flight and a
+   * third read follow.
+   */
+  it('a return inside the coalesce beat does not add a read', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    rereadHome(forge.connection);
+    await settle();
+    expect(forge.refreshed, 'the return and the beat asked twice').toEqual(['home']);
     stop();
   });
 

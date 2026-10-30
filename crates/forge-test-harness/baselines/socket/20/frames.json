@@ -12,11 +12,10 @@
     "FileContent": "file_content",
     "Greeting": "greeting",
     "Page": "page",
+    "Pong": "pong",
     "Reply": "reply",
     "SeatFrames": "seat_frames",
     "Settings": "settings",
-    "SettingsRefused": "settings_refused",
-    "SettingsSaved": "settings_saved",
     "Snapshot": "snapshot",
     "Update": "update"
   },
@@ -174,8 +173,8 @@
     "DocumentRead": "document_read",
     "FileContent": "file_content",
     "More": "more",
+    "Ping": "ping",
     "SeatRange": "seat_range",
-    "SettingsEdit": "settings_edit",
     "Showing": "showing",
     "Subscribe": "subscribe",
     "Unsubscribe": "unsubscribe"
@@ -811,7 +810,6 @@
       ],
       "/document": [
         "areas",
-        "fingerprint",
         "source",
         "totals",
         "version"
@@ -824,19 +822,11 @@
       ],
       "/document/areas[]/keys[]": [
         "class",
-        "edit",
         "group",
         "kind",
         "leaf",
         "path",
-        "pattern",
         "value"
-      ],
-      "/document/areas[]/keys[]/edit": [
-        "allowed",
-        "group",
-        "kind",
-        "required"
       ],
       "/document/totals": [
         "areas",
@@ -1202,21 +1192,6 @@
         "label",
         "org",
         "project"
-      ]
-    },
-    "SettingsEdit": {
-      "": [
-        "edits",
-        "fingerprint",
-        "id",
-        "kind"
-      ],
-      "/edits[]": [
-        "area",
-        "key_path",
-        "op",
-        "pattern",
-        "value"
       ]
     },
     "Subscribe": {

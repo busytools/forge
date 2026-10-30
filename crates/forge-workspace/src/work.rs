@@ -315,6 +315,14 @@ struct Held {
     /// holds was looked up before the PR existed, so the next scan must look
     /// again rather than serve the cache inside its own window.
     pr_stale: Arc<std::sync::atomic::AtomicBool>,
+    /// A test's report that the tree moved, taken by the loop as the file
+    /// watch's own mark, whose channel belongs to a thread no test can reach.
+    #[cfg(any(test, feature = "testing"))]
+    test_tree_moved: Arc<std::sync::atomic::AtomicBool>,
+    /// Raised at the end of every pass, so a test can wait for the pass that
+    /// starts from a record's read rather than clock it.
+    #[cfg(any(test, feature = "testing"))]
+    pass_done: Arc<tokio::sync::Notify>,
 }
 
 /// A first hold's share of the seat: the mark the record's read fires, the
@@ -361,6 +369,10 @@ impl HeldSeats {
         let first_read = Arc::new(tokio::sync::Notify::new());
         let nudged = Arc::new(tokio::sync::Notify::new());
         let pr_stale = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(any(test, feature = "testing"))]
+        let test_tree_moved = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(any(test, feature = "testing"))]
+        let pass_done = Arc::new(tokio::sync::Notify::new());
         let (stop, stopped) = tokio::sync::oneshot::channel();
         held.insert(
             slot.clone(),
@@ -371,6 +383,10 @@ impl HeldSeats {
                 first_read: Arc::clone(&first_read),
                 nudged: Arc::clone(&nudged),
                 pr_stale,
+                #[cfg(any(test, feature = "testing"))]
+                test_tree_moved,
+                #[cfg(any(test, feature = "testing"))]
+                pass_done,
             },
         );
         Taken { first_read, nudged, stopped: Some(stopped) }
@@ -415,6 +431,29 @@ impl HeldSeats {
         self.lock()
             .get(slot)
             .is_some_and(|entry| entry.pr_stale.swap(false, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Report the tree moved, as the file watch does, for a test that drives
+    /// a pass rather than racing the OS daemon's delivery.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn mark_tree_moved(&self, slot: &SessionSlot) {
+        if let Some(entry) = self.lock().get(slot) {
+            entry.test_tree_moved.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Whether a test reported the tree moved, clearing the mark.
+    #[cfg(any(test, feature = "testing"))]
+    fn take_tree_moved(&self, slot: &SessionSlot) -> bool {
+        self.lock().get(slot).is_some_and(|entry| {
+            entry.test_tree_moved.swap(false, std::sync::atomic::Ordering::Relaxed)
+        })
+    }
+
+    /// The mark a held seat's loop raises at the end of every pass.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn pass_done(&self, slot: &SessionSlot) -> Option<Arc<tokio::sync::Notify>> {
+        self.lock().get(slot).map(|entry| Arc::clone(&entry.pass_done))
     }
 
     /// Give a hold back. The last hold stops the loop and drops the entry; a
@@ -1160,6 +1199,10 @@ fn spawn_work_watch(
             while changes.try_recv().is_ok() {
                 dirty = true;
             }
+            #[cfg(any(test, feature = "testing"))]
+            {
+                dirty |= workspace.held_work_seats.take_tree_moved(&slot);
+            }
             // A published change marks the held PR stale: its lookup ran
             // before the PR existed, and the cache would serve that answer
             // for the rest of its window.
@@ -1221,6 +1264,10 @@ fn spawn_work_watch(
                 workspace
                     .update_tx
                     .send(SessionUpdate::FileIndexChanged { key: slot.clone(), index: held.index });
+            }
+            #[cfg(any(test, feature = "testing"))]
+            if let Some(done) = workspace.held_work_seats.pass_done(&slot) {
+                done.notify_one();
             }
         }
     });

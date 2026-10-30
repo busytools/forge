@@ -538,6 +538,23 @@ impl Workspace {
         *self.test_scan_gate.lock() = Some(gate);
     }
 
+    /// Report the seat's tree moved, as the file watch's own mark does, so a
+    /// cross-crate test drives the watch's pass instead of waiting on the OS
+    /// daemon's delivery, which has no budget to derive a wait from.
+    /// Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn note_tree_moved_for_test(&self, key: &SessionSlot) {
+        self.held_work_seats.mark_tree_moved(key);
+    }
+
+    /// The mark a held seat's watch raises at the end of every pass, so a test
+    /// waits for a pass rather than for a clock. `None` for a seat held by
+    /// nobody. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn watch_pass_done_for_test(&self, key: &SessionSlot) -> Option<Arc<tokio::sync::Notify>> {
+        self.held_work_seats.pass_done(key)
+    }
+
     /// Hold the next [`Self::live_seats`] capture between its mint and its
     /// reads: the returned receiver fires once it is held, and a message on
     /// the returned sender releases it. Test-only.

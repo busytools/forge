@@ -316,8 +316,8 @@ impl Workspace {
     /// answered, and a caller that has gone away is not an error.
     ///
     /// The removal is the one point every removal a view could have parked
-    /// on funnels through - an answer, an expiry, a dead waiter - so the
-    /// stand-down is emitted here. The one other removal,
+    /// on funnels through - an answer, or a dead waiter - so the stand-down
+    /// is emitted here. The one other removal,
     /// `register_slack_draft`'s no-answerable-subscriber path, drops a draft
     /// the update may already have reached an observer with: a subscriber
     /// that could ANSWER is what makes a draft answerable at all, and an
@@ -1522,8 +1522,8 @@ mod tests {
     }
 
     /// An answer as the registry takes it. Every call site here is a view
-    /// answering; the expiry and the drop are reached through the paths
-    /// under test rather than through this.
+    /// answering; the drop is reached through the paths under test rather
+    /// than through this.
     fn answered(approved: bool) -> SlackDraftEnding {
         SlackDraftEnding::Answered { approved }
     }
@@ -1697,9 +1697,9 @@ mod tests {
     }
 
     /// A click on a dock the core has already resolved - answered in some
-    /// other view, expired - is refused with the reason, the same way the
-    /// permission and question answers are, rather than dropped: the
-    /// reader learns why the click did nothing.
+    /// other view - is refused with the reason, the same way the permission
+    /// and question answers are, rather than dropped: the reader learns why
+    /// the click did nothing.
     #[tokio::test]
     async fn a_stale_dock_answer_is_refused_with_the_reason() {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");

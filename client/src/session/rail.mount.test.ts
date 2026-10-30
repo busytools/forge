@@ -66,6 +66,7 @@ function recording(): Connection {
     skew: refuse,
     serverProtocol: () => 0,
     status: refuse,
+    probe: refuse,
     close: refuse,
   };
 }

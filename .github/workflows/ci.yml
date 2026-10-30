@@ -407,6 +407,16 @@ jobs:
       # The server's browser host and the server arm that installs it: a
       # compile error here passes every Ubuntu job.
       - run: cargo check -p forge-browser -p forge-server --all-targets
+      # **This is the only place the FSEvents watch runs.** The config watch
+      # tests are macOS-ignored because the maintainer's loaded machine stalls
+      # fsevents delivery; Ubuntu runs them on inotify, which is a different
+      # backend. This quiet runner covers single-file `NonRecursive` delivery,
+      # the debounce and `slow_rearm` on FSEvents, and the boot edit reaching
+      # a running workspace; the re-arm stays Linux-only, since macOS survives
+      # a rename-over without it. Scoped to the family so no other ignored or
+      # live test is swept in.
+      - run: cargo nextest run -p forge-agent --lib --run-ignored ignored-only -E 'test(config_watch)'
+      - run: cargo nextest run -p forge-server --lib --run-ignored ignored-only -E 'test(a_config_edit_reaches_the_running_workspace)'
       # The host's own tests are macOS-gated, so the Ubuntu workspace job
       # skips them by name; this is where they run. One of them identifies a
       # host by the INSTALLED bundle's path, so this job stages one where

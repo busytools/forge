@@ -6,7 +6,7 @@
 //! workspace.
 
 use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use forge_connectors::slack::{
     AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, read_thread,
@@ -97,9 +97,6 @@ pub(crate) struct SlackPostRequest {
 pub(crate) enum SlackPostError {
     /// The user rejected the draft. Nothing was posted.
     Rejected,
-    /// The draft waited out its approval window unanswered. Nothing was
-    /// posted.
-    Expired,
     /// Some parts of a split draft are live and the rest is not. Carries
     /// how many landed so a retry resumes instead of duplicating.
     Partial { posted: usize, total: usize, source: String },
@@ -140,9 +137,6 @@ pub(crate) enum SlackEditError {
     NotOwnMessage,
     /// The user rejected the replacement. The message is untouched.
     Rejected,
-    /// The draft waited out its approval window unanswered. The message
-    /// is untouched.
-    Expired,
     Workspace(SlackWorkspaceError),
     Fetch(String),
 }
@@ -161,9 +155,6 @@ pub(crate) struct SlackReactRequest {
 pub(crate) enum SlackReactError {
     /// The user rejected the reaction. Nothing was added or removed.
     Rejected,
-    /// The draft waited out its approval window unanswered. Nothing was
-    /// added or removed.
-    Expired,
     Workspace(SlackWorkspaceError),
     Fetch(String),
 }
@@ -203,9 +194,6 @@ pub(crate) enum SlackAttachmentError {
     Io(String),
     /// The user rejected the upload. Nothing was sent.
     Rejected,
-    /// The draft waited out its approval window unanswered. Nothing was
-    /// sent.
-    Expired,
     Workspace(SlackWorkspaceError),
     /// The Web API or the transfer failed.
     Fetch(String),
@@ -225,12 +213,6 @@ fn safe_file_name(name: &str, fallback: &str) -> String {
     }
     base.to_owned()
 }
-
-/// How long a held draft waits for the user before it expires. Long
-/// enough for a working session to reach the dock; short enough that a
-/// prompt nobody can answer does not hold a session forever. Expiry is
-/// its own outcome, distinct from a rejection.
-const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// How many search pages a conversation filter scans. A named conversation
 /// is narrowed server-side and usually answers on the first page; an unnamed
@@ -459,20 +441,17 @@ pub(crate) struct ProdSlackFacade {
     workspace: Weak<Workspace>,
 }
 
-/// How a held draft ended. `Expired` is its own outcome, not a flavour of
-/// rejection: the session is told the draft timed out, and a view
-/// retires the dock prompt it can no longer answer.
+/// How a held draft ended: the reader's answer, or nothing at all when the
+/// asking session went away mid-wait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GateDecision {
     Approved,
     Rejected,
-    Expired,
 }
 
-/// Resolves the draft if the awaiting future is dropped before the
-/// timeout answers - the calling session died mid-wait. Without this the
-/// registry entry and its oneshot sender outlive everyone who could
-/// answer them.
+/// Resolves the draft if the awaiting future is dropped before the reader
+/// answers - the calling session died mid-wait. Without this the registry
+/// entry and its oneshot sender outlive everyone who could answer them.
 struct ResolveOnDrop {
     workspace: Arc<Workspace>,
     id: Uuid,
@@ -548,13 +527,14 @@ impl ProdSlackFacade {
     /// path exists once rather than at each gated operation - posting,
     /// replacing a body and deleting one all come through here.
     ///
-    /// A generous timeout expires the draft rather than holding the
-    /// session forever on a prompt nobody can answer; rejection and
-    /// expiry are distinct outcomes the callers surface differently.
+    /// **No timeout rides the wait.** A held post is an ask like a question,
+    /// a permission or a hand-off: it parks until the reader answers or the
+    /// asking session goes away, and the dock's own "don't send" is the way
+    /// out. A clock here would refuse a draft the user was about to approve.
     ///
-    /// The views hear `SlackDraftResolved` from the resolve below, expiry
-    /// included: the draft leaving the registry is the whole of what a view
-    /// does with it, so there is one signal rather than one per ending.
+    /// The views hear `SlackDraftResolved` from the answering dispatch: the
+    /// draft leaving the registry is the whole of what a view does with it,
+    /// and every path that removes it emits that one signal.
     async fn await_approval(
         workspace: &Arc<Workspace>,
         caller: &SessionSlot,
@@ -562,19 +542,11 @@ impl ProdSlackFacade {
     ) -> GateDecision {
         let (id, decision) = workspace.register_slack_draft(caller, draft);
         let guard = ResolveOnDrop { workspace: Arc::clone(workspace), id, caller: caller.clone() };
-        let answer = tokio::time::timeout(APPROVAL_TIMEOUT, decision).await;
-        let resolved = match answer {
-            Ok(Ok(true)) => GateDecision::Approved,
-            Ok(Ok(false) | Err(_)) => GateDecision::Rejected,
-            Err(_elapsed) => GateDecision::Expired,
+        let resolved = if decision.await.unwrap_or(false) {
+            GateDecision::Approved
+        } else {
+            GateDecision::Rejected
         };
-        if resolved != GateDecision::Approved {
-            let ending = match resolved {
-                GateDecision::Expired => SlackDraftEnding::Expired,
-                _ => SlackDraftEnding::Answered { approved: false },
-            };
-            workspace.resolve_slack_draft(guard.id, caller, ending);
-        }
         drop(guard);
         resolved
     }
@@ -616,7 +588,6 @@ impl SlackFacade for ProdSlackFacade {
         match Self::await_approval(&ws, caller, draft.clone()).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackPostError::Rejected),
-            GateDecision::Expired => return Err(SlackPostError::Expired),
         }
         let conversation_name = draft.conversation_label.clone();
         let parts = forge_connectors::slack::split_for_post(&draft.text);
@@ -705,7 +676,6 @@ impl SlackFacade for ProdSlackFacade {
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackEditError::Rejected),
-            GateDecision::Expired => return Err(SlackEditError::Expired),
         }
 
         // Ownership is the wire's verdict, never a local lookup's:
@@ -761,7 +731,6 @@ impl SlackFacade for ProdSlackFacade {
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackReactError::Rejected),
-            GateDecision::Expired => return Err(SlackReactError::Expired),
         }
 
         api.set_reaction(&request.conversation, &request.ts, &request.name, request.add)
@@ -997,7 +966,6 @@ impl SlackFacade for ProdSlackFacade {
         match Self::await_approval(&ws, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackAttachmentError::Rejected),
-            GateDecision::Expired => return Err(SlackAttachmentError::Expired),
         }
 
         let (url, file_id) = api
@@ -2082,9 +2050,8 @@ token = "y"
     }
 
     /// An answer as the registry takes it. Every call site here is a view
-    /// answering; the expiry is the facade's own window and the drop is a
-    /// dead waiter, and both go through the paths under test rather than
-    /// through this.
+    /// answering; the drop is a dead waiter, and it goes through the paths
+    /// under test rather than through this.
     fn answered(approved: bool) -> SlackDraftEnding {
         SlackDraftEnding::Answered { approved }
     }
@@ -2859,41 +2826,25 @@ token = "y"
         assert!(api.posts().is_empty(), "an unanswered draft must not post");
     }
 
-    /// The approval window expiring is its own outcome, distinct from a
-    /// rejection, and leaves nothing behind: no post, no registry entry,
-    /// and exactly one stand-down for the views.
+    /// A held draft waits for the user, not a clock. Advancing a day leaves
+    /// the call parked, and the answer it later gets still posts - the
+    /// behaviour a question, a permission and a hand-off already have.
     #[tokio::test(start_paused = true)]
-    async fn a_draft_whose_window_expires_is_expired_not_rejected() {
-        let (facade, ws, api, mut rx) = facade_with_recording_slack();
+    async fn a_held_draft_waits_for_the_user_rather_than_a_clock() {
+        let (facade, ws, api, _rx) = facade_with_recording_slack();
         let task = tokio::spawn({
             let facade = facade.clone();
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
 
-        tokio::time::advance(APPROVAL_TIMEOUT + Duration::from_secs(1)).await;
-        let outcome = task.await.expect("no panic");
-        assert_eq!(
-            outcome,
-            Err(SlackPostError::Expired),
-            "a timed-out draft is an expiry, never a rejection and never an approval",
-        );
-        assert!(api.posts().is_empty(), "an expired draft must not post");
-        assert!(ws.slack_drafts.lock().is_empty(), "the expiry also clears the registry entry");
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
+        assert!(!task.is_finished(), "a held draft waits for the user, not a clock");
 
-        let mut resolved = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            if let crate::protocol::SessionUpdate::SlackDraftResolved { key, id, ending } =
-                std::sync::Arc::unwrap_or_clone(frame.update)
-            {
-                resolved.push((key, id, ending));
-            }
-        }
-        assert_eq!(
-            resolved,
-            vec![(caller(), id, SlackDraftEnding::Expired)],
-            "the expiry stands the views down once, and says which ending it was",
-        );
+        ws.resolve_slack_draft(id, &caller(), answered(true));
+        let outcome = task.await.expect("no panic");
+        assert!(outcome.is_ok(), "the answer still posts after a day of waiting: {outcome:?}");
+        assert_eq!(api.posts().len(), 1, "the held message goes out once");
     }
 
     /// The outcome carries what the caller cannot work out for itself: the

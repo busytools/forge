@@ -284,6 +284,18 @@ export interface Connection {
    */
   serverProtocol(): number | null;
   status(): ConnectionStatus;
+  /**
+   * Probe the link now rather than waiting out its quiet.
+   *
+   * A page returning from the background sends this first: the socket may
+   * have died while the page slept, and the deadline is what turns that into
+   * the reconnect the page needs.
+   *
+   * **Only a server that has greeted THIS connection and speaks the probe is
+   * asked**, and a probe already out is left standing rather than re-armed -
+   * a person returning every few seconds must not keep a dead link open.
+   */
+  probe(): void;
   close(): void;
 }
 
@@ -348,6 +360,54 @@ export const RETRY_MS = 50;
  * raising the ceiling must not silently shorten every wait in that file.
  */
 export const MAX_RETRY_MS = 2000;
+
+/**
+ * How long the link may be quiet before this side asks it a question.
+ *
+ * **A browser page cannot send a WebSocket Ping**, so liveness is an
+ * application frame the server answers. Any inbound frame answers it; this
+ * only goes out after a spell with nothing at all.
+ */
+export const LIVENESS_EVERY_MS = 15_000;
+
+/**
+ * How long a probe may go unanswered before the socket is called dead.
+ *
+ * **A page sees whole messages only, so this must tolerate the server's own
+ * single-write bound.** The server ends a connection whose write takes longer
+ * than 60 s (`crates/forge-server/src/transport.rs`), and while it writes a
+ * frame - a 3.5 MB seat, measured at 31.6 s to a slow client - it reads no
+ * ping and its pong queues behind that frame. A 10 s deadline here would close
+ * a live socket mid-frame, redial, and re-ask the same record for ever. The
+ * shell's transport counts bytes instead and keeps the tight bound; a browser
+ * has no byte-level event to count.
+ *
+ * The expiry closes the socket, which is the existing drop path: the status
+ * moves to `connecting` and the retry is scheduled. Worst-case detection is
+ * the two added together.
+ */
+export const LIVENESS_DEAD_MS = 65_000;
+
+/**
+ * The protocol that added `ping` and `pong`.
+ *
+ * **An older server answers a probe with `client_message`**, and that error is
+ * the one the refusal arm books on the oldest waiting subscribe - so a probe
+ * sent to a skewed server would mark a healthy subject refused. The client
+ * knows the server's number from the greeting, so it asks nothing of one that
+ * cannot answer.
+ */
+const LIVENESS_PROTOCOL = 20;
+
+/**
+ * How long a dial may hang before it is abandoned and retried.
+ *
+ * **The greeting bound is not this one**: `attempt.ts`'s `HANDSHAKE_MS` runs on
+ * the connect screen only, and a reconnect's `new WebSocket` had no timer at
+ * all - a peer that accepted TCP and stalled the handshake waited on the
+ * browser's own timeout. Mirrors the shell transport's dial bound.
+ */
+export const DIAL_BOUND_MS = 10_000;
 
 /**
  * A command's variant name.
@@ -551,6 +611,15 @@ export function connect(
   /** The greeting's own number, kept whether or not it skews. */
   let greetingProtocol: number | null = null;
   /**
+   * Whether THIS connection has greeted.
+   *
+   * **`greetingProtocol` outlives a drop**, because the footer draws the last
+   * server's number; a probe must not. A page on v20 whose server is rolled
+   * back to v19 while it sleeps would otherwise treat the stale 20 as the
+   * reconnected server's answer, and a return would probe a v19 socket.
+   */
+  let greeted = false;
+  /**
    * The seat this client has on screen, re-sent on every reconnect.
    *
    * The server's showing is per connection, and a drop ends it; `null` is
@@ -562,6 +631,24 @@ export function connect(
   let inputSeq = 0;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
+  /**
+   * The connection's own timers: the quiet before a probe, the deadline of
+   * the probe that is out, and the bound on the dial.
+   *
+   * **They belong to the socket they were armed for**, so the drop path
+   * clears them - a late deadline from a replaced socket must not close the
+   * live one that replaced it.
+   */
+  let quiet: ReturnType<typeof setTimeout> | null = null;
+  let dead: ReturnType<typeof setTimeout> | null = null;
+  let dial: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The open socket's own drop path, so a deadline can report the drop
+   * without waiting for an event that may never come: a half-open peer never
+   * answers the closing handshake, and the browser fires `onclose` only when
+   * the connection actually closes.
+   */
+  let currentDrop: (() => void) | null = null;
 
   /** The one place openness is decided, so no two callers can disagree. */
   function isOpen(): boolean {
@@ -572,6 +659,83 @@ export function connect(
     if (status === next) return;
     status = next;
     for (const fn of statuses) fn(next);
+  }
+
+  function clearLiveness(): void {
+    if (quiet !== null) clearTimeout(quiet);
+    if (dead !== null) clearTimeout(dead);
+    if (dial !== null) clearTimeout(dial);
+    quiet = null;
+    dead = null;
+    dial = null;
+  }
+
+  /**
+   * Whether the greeted server speaks the protocol that added `ping`.
+   *
+   * Optimistic before a greeting: the timed beat is 15 s out, and a server
+   * that has sent nothing by then is not one whose greeting will change the
+   * answer.
+   */
+  function speaksLiveness(): boolean {
+    return !greeted || greetingProtocol === null || greetingProtocol >= LIVENESS_PROTOCOL;
+  }
+
+  /**
+   * The page's own probe, on a return.
+   *
+   * **Only a server KNOWN to answer it.** A return can land before the
+   * greeting has been read, and a pre-liveness server's answer to a probe is a
+   * `client_message` error the refusal arm books on the oldest waiting
+   * subscribe - so a store nobody touched would flip to refused.
+   */
+  function probeNow(): void {
+    if (!greeted || greetingProtocol === null || greetingProtocol < LIVENESS_PROTOCOL) return;
+    probe();
+  }
+
+  /** Arm the probe for a link that has been quiet since now. */
+  function armQuiet(): void {
+    clearLiveness();
+    quiet = setTimeout(probe, LIVENESS_EVERY_MS);
+  }
+
+  /**
+   * Ask the server to prove the link is live now.
+   *
+   * The deadline is armed after the send, so a probe queued behind a busy
+   * socket owes the peer nothing until it is on the wire. Expiry closes the
+   * socket **and reports the drop itself**: a half-open peer never answers
+   * the closing handshake, so `onclose` may not come for minutes.
+   */
+  function probe(): void {
+    if (!isOpen()) return;
+    // **A probe already out is not pushed out.** A person who returns every
+    // few seconds would otherwise re-arm the deadline each time, and a dead
+    // link would stay `open` for as long as they keep coming back - the exact
+    // failure this cut exists to catch. The first ask stands.
+    if (dead !== null) return;
+    // **A server older than the probe cannot answer it**, and its error would
+    // be booked as a subscribe refusal; the greeting already said so.
+    if (!speaksLiveness()) return;
+    clearLiveness();
+    // **The socket this probe was asked on, never a replacement.** A late
+    // deadline that read the module's current socket would close the
+    // connection that replaced the one it belonged to.
+    const asked = socket;
+    sendNow({ kind: 'ping' });
+    dead = setTimeout(() => {
+      dead = null;
+      const gone = asked;
+      if (gone === null) return;
+      gone.close();
+      // **The drop is reported here, not by the socket's own event.** A
+      // half-open peer never answers the closing handshake, so its `onclose`
+      // may not fire for minutes - the page would spend them drawing a dead
+      // link as open. A late close event from `gone` finds `socket` no
+      // longer itself and is ignored.
+      if (gone === socket) currentDrop?.();
+    }, LIVENESS_DEAD_MS);
   }
 
   function sendNow(message: ClientMessage): void {
@@ -698,6 +862,10 @@ export function connect(
 
   function handle(message: ServerMessage): void {
     switch (message.kind) {
+      // **The liveness answer, drawn by nothing.** The transport cleared its
+      // deadline in `onmessage` before this ran; a page has no row for it.
+      case 'pong':
+        return;
       case 'greeting': {
         settings = settingsFrom(message.settings);
         // Recorded on every greeting rather than only the first: a page left
@@ -705,6 +873,7 @@ export function connect(
         // the surfaces draw the notice from here. Nothing refuses.
         protocolSkew = skewOf(message);
         greetingProtocol = typeof message.version === 'number' ? message.version : null;
+        greeted = true;
         return;
       }
       case 'settings':
@@ -743,6 +912,14 @@ export function connect(
           // **An unknown subject comes back as `client_message`**, because the
           // server could not read the frame that named it; the refused
           // subscription is the one this side is still waiting on.
+          //
+          // **A `ping` is another frame this arm can swallow by mistake.** An
+          // older server answers a probe with `client_message`, and with a
+          // subscribe still waiting that refusal would be booked on it - the
+          // page flips a healthy store to refused every quiet spell. Nothing
+          // here can tell the two apart from the frame alone, so the version
+          // skew is where it stops; a probe sent only to a server that can
+          // answer it is the fix, not this arm.
           const refused = refuse(message.why);
           if (refused !== null) message.subject = refused;
         } else {
@@ -782,6 +959,8 @@ export function connect(
   function open(): void {
     retry = null;
     if (status === 'closed') return;
+    // A new dial starts ungreeted, whatever the last connection said.
+    greeted = false;
 
     let next: WebSocket;
     try {
@@ -799,12 +978,25 @@ export function connect(
     // Frames arrive as their bytes, not as a Blob: a canvas draws the bytes.
     next.binaryType = 'arraybuffer';
     socket = next;
+    // **A dial that never completes is abandoned**, exactly as a refused one
+    // is: the retry loop is the answer to both. `onclose` may never fire for
+    // a handshake the peer accepted and stalled, so the drop runs here - the
+    // same reason the liveness deadline reports its own.
+    dial = setTimeout(() => {
+      dial = null;
+      if (next !== socket) return;
+      next.close();
+      currentDrop?.();
+    }, DIAL_BOUND_MS);
 
     next.onopen = () => {
       if (next !== socket) return;
       subscribed.clear();
       move('open');
       retryDelay = RETRY_MS;
+      // A fresh link starts its quiet here: no probe is out and nothing has
+      // been heard, so the first one is 15 s away.
+      armQuiet();
       for (const { subject, answering, review } of [...held.values()]) {
         // **A seat here was opened while the socket was DOWN.** `onclose`
         // takes the seats the old connection carried out of this list, so a
@@ -865,6 +1057,10 @@ export function connect(
 
     next.onmessage = (event) => {
       if (next !== socket) return;
+      // **Any inbound frame answers the probe**, whatever it carried: the
+      // pong exists to guarantee one arrives, and a frame already flowing
+      // proves the same.
+      armQuiet();
       // **A binary message is a relayed browser frame.** The phone's canvas
       // draws it; a page with no viewer ignores it, which is the desktop,
       // where the shell took the same bytes off its own socket.
@@ -915,9 +1111,18 @@ export function connect(
       }
     };
 
-    next.onclose = () => {
+    /**
+     * The connection this socket carried is gone, whether the browser said
+     * so or the liveness deadline did.
+     */
+    const dropped = (): void => {
       if (next !== socket) return;
+      clearLiveness();
       socket = null;
+      currentDrop = null;
+      // **The greeting died with the connection.** The footer keeps its
+      // number; a probe must wait for the next server to say what it speaks.
+      greeted = false;
       // A dropped socket's holds die with it: the reconnect's answer is the
       // whole record, and the numbers start wherever it says.
       opened.reset();
@@ -939,6 +1144,8 @@ export function connect(
       }
       scheduleRetry();
     };
+    next.onclose = dropped;
+    currentDrop = dropped;
 
     // An error is always followed by a close, which is where the retry is
     // scheduled - this reports it, because a socket that keeps failing is
@@ -1290,8 +1497,11 @@ export function connect(
     status() {
       return status;
     },
+    probe: probeNow,
     close() {
       move('closed');
+      clearLiveness();
+      currentDrop = null;
       // A closed connection has nothing to ask on.
       bounds.stop();
       if (retry !== null) clearTimeout(retry);

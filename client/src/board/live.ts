@@ -40,6 +40,20 @@ const NOTHING: BoardRead = { wire: null, refused: null };
 
 const STORES = new WeakMap<Connection, Readable<BoardRead>>();
 
+/**
+ * The board's own reread for a connection, where a page is watching it.
+ *
+ * **A reader's ask goes through the page's guards**, not around them: a
+ * return while a read is in flight would otherwise queue a second whole
+ * encode behind the first.
+ */
+const REREADS = new WeakMap<Connection, () => void>();
+
+/** Ask the board for one read through the page's own guards, if it is held. */
+export function rereadBoard(connection: Connection): void {
+  REREADS.get(connection)?.();
+}
+
 /** Watch the board, sharing one store with every other reader of it. */
 export function watchBoard(connection: Connection): Readable<BoardRead> {
   const held = STORES.get(connection);
@@ -91,9 +105,22 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     });
   }
 
+  /**
+   * One read through this page's guards: nothing while one is in flight, and
+   * nothing from a refused subject. The beat and a return both come here.
+   */
+  function reread(): void {
+    if (held === null || reading || held.state().kind === 'refused') return;
+    reading = true;
+    connection.refresh('board');
+  }
+
   function watch(): void {
     held = connection.subscribe('board');
     reading = false;
+    // **Registered with the watch, not the store**, so a re-watch after the
+    // last reader left registers it again.
+    REREADS.set(connection, reread);
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'snapshot' || message.kind === 'error') {
         // A refusal this side attributed to another subject says nothing about
@@ -141,11 +168,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     // marks move with the clock, and no frame announces that. **A refused
     // subject is not asked again** - the refusal is the answer, and a beat
     // that re-asked it would knock on a door already shut.
-    beat = setInterval(() => {
-      if (reading || held?.state().kind === 'refused') return;
-      reading = true;
-      connection.refresh('board');
-    }, BEAT_MS);
+    beat = setInterval(reread, BEAT_MS);
   }
 
   function unwatch(): void {

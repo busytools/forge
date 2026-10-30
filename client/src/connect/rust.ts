@@ -597,6 +597,19 @@ class RustConnection implements Connection {
     if (typeof what !== 'string') this.gate.releaseSeat(what.session);
   }
 
+  /**
+   * Probe the link now: a page returning from the background asks, because
+   * its own timers slept through the spell the shell's socket lived in.
+   *
+   * The shell owns the deadline; this only asks it to send the probe.
+   */
+  probe(): void {
+    if (this.state !== 'open') return;
+    void invoke('client_probe').catch((why: unknown) => {
+      report('a probe could not reach the shell', why);
+    });
+  }
+
   /** `true` when the ask went, which is what a bound re-arms on. */
   refresh(what: Subject, options?: { review?: boolean }): boolean {
     // Nothing to ask when the socket is down: the reconnect re-subscribes

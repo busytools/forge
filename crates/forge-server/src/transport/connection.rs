@@ -2805,6 +2805,11 @@ where
             Ok(())
         }
         ClientMessage::Showing { seat } => set_showing(socket, state, watching, seat).await,
+        // **The peer's own liveness probe, answered here rather than by the
+        // core.** Any inbound frame is proof the peer is reading, so this
+        // costs the workspace nothing; the reply is what lets a client with
+        // no other traffic tell a live link from a half-open one.
+        ClientMessage::Ping => send(socket, ServerMessage::Pong).await,
     }
 }
 

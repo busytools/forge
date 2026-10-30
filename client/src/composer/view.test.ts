@@ -74,7 +74,6 @@ describe('whether dictation is on offer', () => {
  */
 describe('the line a resolved draft leaves', () => {
   it('names the ending the update carried', () => {
-    expect(draftEndingLine('expired').text, 'the window').toContain('expired unanswered');
     expect(draftEndingLine('abandoned').text, 'the asker').toContain('session went away');
     expect(
       draftEndingLine({ answered: { approved: true } }).text,

@@ -216,12 +216,24 @@ async fn slow_rearm(
 
 #[cfg(test)]
 mod tests {
+    //! **The delivery tests are macOS-ignored.** fseventsd has stalled a report
+    //! for 407 s under a full local gate, which no bound absorbs; they run on
+    //! inotify in CI, and on a quiet Mac with `--run-ignored ignored-only`.
+    //! `a_rescan_matches_and_a_read_does_not` needs no delivery and runs
+    //! everywhere.
     use super::{ConfigWatch, watch};
     use std::time::Duration;
     use tokio::sync::mpsc::UnboundedReceiver;
 
-    const WAIT: Duration = Duration::from_secs(5);
-    const QUIET: Duration = Duration::from_millis(800);
+    /// Two of the watch's own debounce windows: the code closes a burst
+    /// [`super::DEBOUNCE`] after its first event, so this is that window with
+    /// the same again as margin.
+    const QUIET: Duration = super::DEBOUNCE.saturating_mul(2);
+    /// The wait ends when the watch reports, so this bound is reached when no
+    /// report arrives within it: a stuck watch, or a delivery slower still.
+    /// It sits under nextest's 120 s kill, where these run, so that failure
+    /// names the property instead of dying as a bare timeout.
+    const WEDGE: Duration = Duration::from_secs(100);
 
     async fn fixture() -> (tempfile::TempDir, std::path::PathBuf, UnboundedReceiver<()>, ConfigWatch)
     {
@@ -230,38 +242,56 @@ mod tests {
         std::fs::write(&path, "initial = true\n").expect("write config");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let watch = watch(path.clone(), tx).expect("watch starts");
-        // The write that created the file can mint its event just after the
-        // stream starts. Rewrite once and drain that burst, so each test
-        // begins from a quiet watch rather than racing the fixture's own
-        // write.
+        // The stream resolves its start after `watch()` returns, so the
+        // rewrite that proves it live can wait on the daemon for as long as
+        // the machine is loaded. Wait for that burst so each test begins
+        // from a quiet watch rather than racing the fixture's own write.
         std::fs::write(&path, "initial = true\n").expect("settle write");
-        let _ = tokio::time::timeout(WAIT, rx.recv()).await;
+        next(&mut rx, "the watch reports the fixture's own write").await;
         (dir, path, rx, watch)
     }
 
-    async fn next(rx: &mut UnboundedReceiver<()>) -> bool {
-        tokio::time::timeout(WAIT, rx.recv()).await.is_ok()
+    /// The wait is the stream, not a clock. fsevents holds a delivery for as
+    /// long as the machine is loaded, so the bound here is a wedge detector
+    /// rather than a delivery budget: the wait itself ends when the watch
+    /// reports, so only a stuck watch, or a delivery slower than the bound,
+    /// reaches [`WEDGE`].
+    async fn next(rx: &mut UnboundedReceiver<()>, why: &str) {
+        match tokio::time::timeout(WEDGE, rx.recv()).await {
+            Ok(Some(())) => {}
+            Ok(None) => panic!("{why}: the watch task ended without reporting"),
+            Err(elapsed) => {
+                panic!("{why}: the watch reported nothing within {WEDGE:?} ({elapsed})")
+            }
+        }
     }
 
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
     #[tokio::test]
     async fn a_plain_write_notifies_once() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "changed = 1\n").expect("write");
-        assert!(next(&mut rx).await, "a write to the watched file notifies");
+        next(&mut rx, "a write to the watched file notifies").await;
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "one write is one notification, not a second after the burst",
         );
+        // The quiet window is evidence only while the watch can still
+        // report; a dead watch would pass it too, so a write now must
+        // report.
+        std::fs::write(&path, "again = 1\n").expect("write");
+        next(&mut rx, "the watch still reports after a single write").await;
     }
 
     /// The reload's own read must not feed the watch. inotify reports a read
     /// of a single watched file as an access event; accepting it would make
     /// every reload trigger the next one.
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
     #[tokio::test]
     async fn a_read_does_not_notify() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "before the read = 1\n").expect("write");
-        assert!(next(&mut rx).await, "the watch is live before the read");
+        next(&mut rx, "the watch is live before the read").await;
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "one write is one notification",
@@ -271,6 +301,11 @@ mod tests {
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "reading the watched file is not a content change",
         );
+        // The quiet windows are evidence only while the watch can still
+        // report; a dead watch would pass them too, so a write now must
+        // report.
+        std::fs::write(&path, "after the read = 1\n").expect("write");
+        next(&mut rx, "the watch still reports after the read").await;
     }
 
     /// A rescan says events were dropped and names no path, so it must
@@ -293,41 +328,46 @@ mod tests {
     /// **The re-arm is what the Linux run proves.** macOS FSEvents survives a
     /// rename-over without it, so a green run there says nothing about the
     /// re-arm; the second write is the assertion that matters on Linux.
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
     #[tokio::test]
     async fn an_atomic_save_notifies_and_the_watch_survives_the_rename() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, "replaced = 1\n").expect("write temp");
         std::fs::rename(&tmp, &path).expect("rename over the config");
-        assert!(next(&mut rx).await, "a temp-file-plus-rename notifies");
+        next(&mut rx, "a temp-file-plus-rename notifies").await;
 
         std::fs::write(&path, "replaced = 2\n").expect("write after the rename");
-        assert!(
-            next(&mut rx).await,
-            "the watch was re-armed on the path, so the next save still notifies",
-        );
+        next(&mut rx, "the watch was re-armed on the path, so the next save still notifies").await;
     }
 
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
     #[tokio::test]
     async fn two_rapid_writes_coalesce_into_one() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "first = 1\n").expect("first write");
         std::fs::write(&path, "second = 1\n").expect("second write");
-        assert!(next(&mut rx).await, "the burst notifies");
+        next(&mut rx, "the burst notifies").await;
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "both writes land in one burst, so the caller reloads once",
         );
+        // The quiet window is evidence only while the watch can still
+        // report; a dead watch would pass it too, so a write now must
+        // report.
+        std::fs::write(&path, "third = 1\n").expect("third write");
+        next(&mut rx, "the watch still reports after the coalesced burst").await;
     }
 
     /// The negative control carries its own positive half: a watched write
     /// notifies exactly once before the sibling write proves silence, so a
     /// dead watcher cannot pass the test.
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
     #[tokio::test]
     async fn a_sibling_file_notifies_nothing() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "changed = 1\n").expect("write the watched file");
-        assert!(next(&mut rx).await, "the watched file still notifies");
+        next(&mut rx, "the watched file still notifies").await;
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "one watched write is one notification",
@@ -338,24 +378,28 @@ mod tests {
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "only the watched path produces an event",
         );
+        // The quiet windows are evidence only while the watch can still
+        // report; a dead watch would pass them too, so a write now must
+        // report.
+        std::fs::write(&path, "after the sibling = 1\n").expect("write");
+        next(&mut rx, "the watch still reports after the sibling").await;
     }
 
     /// A file that stays missing past the grace window is still reported, and
     /// the slow re-arm deliberately keeps trying so the file's return applies.
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
     #[tokio::test]
     async fn a_deleted_file_still_notifies_and_its_return_applies() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::remove_file(&path).expect("remove");
-        assert!(
-            next(&mut rx).await,
+        next(
+            &mut rx,
             "a file gone past the grace window still reaches the caller, so the missing \
              path is reported",
-        );
+        )
+        .await;
 
         std::fs::write(&path, "back = 1\n").expect("recreate");
-        assert!(
-            next(&mut rx).await,
-            "a config that comes back is seen again, so its contents apply",
-        );
+        next(&mut rx, "a config that comes back is seen again, so its contents apply").await;
     }
 }
