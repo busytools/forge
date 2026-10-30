@@ -27,12 +27,39 @@ interface Rule {
 }
 
 /**
+ * Split a selector list on its top-level commas.
+ *
+ * **A comma inside `:is()` or `:not()` is part of one member.** Splitting it
+ * there leaves two fragments that each name half a selector, so a check
+ * looking for one member naming both parts sees nothing: `:is(.tt, .tn)`
+ * produced neither a `.nrow .tn` member nor a clamp it could read.
+ */
+function selectorMembers(head: string): string[] {
+  const members: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let at = 0; at < head.length; at += 1) {
+    const char = head[at];
+    if (char === '(' || char === '[') depth += 1;
+    else if (char === ')' || char === ']') depth -= 1;
+    else if (char === ',' && depth === 0) {
+      members.push(head.slice(from, at));
+      from = at + 1;
+    }
+  }
+  members.push(head.slice(from));
+  return members.map((member) => member.trim().replace(/\s+/g, ' ')).filter((one) => one !== '');
+}
+
+/**
  * Every style rule in a sheet, at any nesting depth.
  *
  * **A walk, not a regex.** A rule smuggled into an at-rule is what a
  * wide-width read cannot see, and a line-wise scan misses it entirely; this
  * records the nesting instead. The body of a plain rule holds declarations
- * only, so the walk steps over it whole.
+ * only, so the walk steps over it whole. A statement at-rule - `@import ...;`
+ * - has no block, so the walk steps to its semicolon rather than reading the
+ * next rule's brace as its body.
  */
 function rulesIn(sheet: string): Rule[] {
   const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -42,6 +69,14 @@ function rulesIn(sheet: string): Rule[] {
     while (at < to) {
       const open = code.indexOf('{', at);
       if (open === -1 || open >= to) return;
+      const head = code.slice(at, open).trim();
+      if (head.startsWith('@')) {
+        const statement = code.indexOf(';', at);
+        if (statement !== -1 && statement < open) {
+          at = statement + 1;
+          continue;
+        }
+      }
       let depth = 1;
       let end = open + 1;
       while (end < to && depth > 0) {
@@ -50,12 +85,11 @@ function rulesIn(sheet: string): Rule[] {
         else if (char === '}') depth -= 1;
         end += 1;
       }
-      const head = code.slice(at, open).trim();
       if (head.startsWith('@')) {
         walk(open + 1, end - 1, true);
       } else {
         found.push({
-          selectors: head.split(',').map((member) => member.trim().replace(/\s+/g, ' ')),
+          selectors: selectorMembers(head),
           body: code.slice(open + 1, end - 1),
           nested,
         });
