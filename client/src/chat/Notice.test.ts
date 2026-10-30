@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 import Notice from './Notice.svelte';
 
 /**
- * The sheet, as text: what the chat's notice chrome is scoped to is a class
- * question, and jsdom does no layout, so a rendered assertion cannot see it.
+ * The sheet, as text: what chrome a row draws is a class question, and jsdom
+ * does no layout, so a rendered assertion cannot see it.
  */
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
 
@@ -19,45 +19,14 @@ function rulesFor(selector: string): string[] {
   );
 }
 
-/**
- * Every selector member the sheet writes whose FIRST compound names `.notice`
- * - the unscoped form, however it is dressed: the bare rule, a variant, a
- * type-dressed one like `div.notice`, a sibling. A member whose `.notice` sits
- * behind a scope (`.conv .notice`) carries it in a later compound and is fine.
- */
-function unscopedNotice(): string[] {
-  const found: string[] = [];
-  const code = SHEET.replace(/\/\*[\s\S]*?\*\//g, '');
-  for (const rule of code.matchAll(/([^{}]+)\{/g)) {
-    for (const member of (rule[1] ?? '').split(',')) {
-      const one = member.trim();
-      const first = one.split(/\s+|[>+~]/)[0] ?? '';
-      if (first.includes('.notice')) found.push(one);
-    }
-  }
-  return found;
-}
-
-describe('the chat notice chrome, as the sheet scopes it', () => {
-  it('scopes every notice rule to the conversation, so no other surface picks the name up', () => {
-    // The composer's notice row drew this chrome once, because the name was
-    // bare and the chat's rule reached it - 60px tall where the specimen draws
-    // 22. The composer's half was fixed by the row stating its own chrome;
-    // this is the other half, so a third surface cannot pick the name up the
-    // same way.
-    for (const selector of [
-      '.conv .notice',
-      '.conv .notice .sev',
-      '.conv .notice.info',
-      '.conv .notice.warn',
-      '.conv .notice.err',
-    ]) {
-      expect(rulesFor(selector).length, `${selector} is written`).toBeGreaterThan(0);
-    }
-    expect(unscopedNotice(), 'and no selector names .notice without a scope').toEqual([]);
-  });
-
-  it("draws the retry line's chip and delay beside its words", () => {
+describe('the chat notice row', () => {
+  /**
+   * **The level is the glyph.** A notice sits among the calls as a tool row,
+   * and a bold level word made a second system inside the group (Ved,
+   * 2026-10-30). The three shapes differ, so colour is not the only carrier on
+   * screen, and the glyph's own name says the level to a screen reader.
+   */
+  it('draws the level as a glyph on a tool row, not as a word', () => {
     const html = render(Notice, {
       props: {
         notice: {
@@ -69,10 +38,55 @@ describe('the chat notice chrome, as the sheet scopes it', () => {
       },
     }).body;
 
-    expect(html, 'the attempt tag').toContain('attempt 2 / 4');
-    expect(html, 'and the delay under the line').toContain('retrying in 1.5s');
-    expect(html, 'with the severity word an ordinary notice already leads with').toContain(
-      'Warning',
-    );
+    expect(html, 'the row is a tool row').toContain('class="leaf nrow"');
+    expect(html, 'the warning glyph leads it').toContain('#i-warning');
+    expect(html, 'the glyph says the level to a screen reader').toContain('aria-label="warning"');
+    expect(html, 'the warning tone colours it').toContain('gl warn');
+    expect(html, 'the text is the row title').toContain('class="tn"');
+    expect(html, 'the attempt rides the row as a chip').toContain('attempt 2 / 4');
+    expect(html, 'and the delay is its tail').toContain('retrying in 1.5s');
+    expect(html, 'the level word is gone').not.toContain('Warning');
+  });
+
+  it('draws a plain notice with nothing to open and no chevron', () => {
+    const html = render(Notice, {
+      props: { notice: { severity: 'info', text: 'Goal cleared' } },
+    }).body;
+
+    expect(html, 'the row still draws').toContain('Goal cleared');
+    expect(html, 'with the info glyph').toContain('#i-info');
+    expect(html, 'and nothing to open').not.toContain('arw');
+    expect(html, 'so no empty body under it').not.toContain('nbody');
+  });
+
+  it('draws a provisional notice onto its facts, marked with its own wire type', () => {
+    const html = render(Notice, {
+      props: {
+        notice: {
+          severity: 'error',
+          text: 'API request failed HTTP 529',
+          mark: 'api_error',
+          fields: [{ label: 'status', value: 'HTTP 529' }],
+          raw: '{"type":"system","subtype":"api_error"}',
+        },
+      },
+    }).body;
+
+    expect(html, 'the error glyph leads it').toContain('#i-error');
+    expect(html, 'the wire subtype rides the summary as a chip').toContain('api_error');
+    expect(html, 'the row carries a chevron because it opens').toContain('arw');
+    expect(html, 'and the frame facts sit behind it').toContain('HTTP 529');
+  });
+
+  /** The banner went with the markup that drew it; a rule left behind is a
+   * third surface picking the name up again. */
+  it('leaves the banner chrome out of the sheet', () => {
+    for (const selector of [
+      '.conv .notice',
+      '.conv .notice.info',
+      '.conv details.notice > summary',
+    ]) {
+      expect(rulesFor(selector).length, `${selector} is still written`).toBe(0);
+    }
   });
 });

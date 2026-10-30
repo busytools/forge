@@ -17,9 +17,9 @@ import { violationsOf } from '../testing/axe';
  * rather than the frame's facts. The facts then landed on a shared
  * label/value row that pushed each label and its value to opposite ends of
  * the box, which reads as two unrelated ends rather than one line (Ved,
- * 2026-10-28). So the summary keeps the expander inside it, the body draws
- * each fact as one `label: value` line, and the frame itself waits behind
- * its own control (rule 25 keeps it reachable).
+ * 2026-10-28). So the row is a tool row, the summary keeps the expander inside
+ * it, the body draws each fact as one `label: value` line, and the frame
+ * itself waits behind its own control (rule 25 keeps it reachable).
  */
 const a_row = (overrides: Partial<NoticeRow> = {}): NoticeRow => ({
   severity: 'error',
@@ -43,8 +43,9 @@ describe('the provisional notice, mounted', () => {
     const app = mount(Notice, { target: document.body, props: { notice: a_row() } });
     try {
       flushSync();
-      const row = document.querySelector('details.notice');
+      const row = document.querySelector('details.leaf');
       if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
+      expect(row.className, 'the notice draws as a tool row').toContain('nrow');
       expect(row.open, 'a provisional row starts closed').toBe(false);
       expect(
         row.querySelector('summary .arw'),
@@ -112,7 +113,7 @@ describe('the provisional notice, mounted', () => {
     });
     try {
       flushSync();
-      const row = document.querySelector('details.notice');
+      const row = document.querySelector('details.leaf');
       if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
       row.open = true;
       row.dispatchEvent(new Event('toggle'));
@@ -132,13 +133,14 @@ describe('the provisional notice, mounted', () => {
   });
 
   /**
-   * The layout assertion the DOM cannot make: `summary` laid out as a row is
-   * what puts the expander on the header line. A change that drops it brings
-   * the empty extra row back under every notice.
+   * The layout assertion the DOM cannot make: the row is the same `summary`
+   * every call row uses, laid out as a flex row - which is what puts the
+   * expander on the header line. A notice that grew its own summary rule would
+   * be a second row keeping the chrome in step by hand.
    */
-  it('lays the header out in one row, which is what keeps the expander there', () => {
-    const rule = /\.conv details\.notice > summary \{([^}]*)\}/.exec(SHEET)?.[1] ?? '';
-    expect(rule, 'the sheet has no rule for the provisional summary').not.toBe('');
+  it("lays the header out with the leaf row's own rule", () => {
+    const rule = /details\.leaf > summary \{([^}]*)\}/.exec(SHEET)?.[1] ?? '';
+    expect(rule, 'the sheet has no rule for a leaf row summary').not.toBe('');
     expect(rule, 'a block icon drops the chevron onto a line of its own').toMatch(
       /display:\s*flex/,
     );
@@ -150,8 +152,8 @@ describe('the provisional notice, mounted', () => {
    * unrelated sides of the box (Ved, 2026-10-28).
    */
   it('keeps each fact line together rather than pushing its two ends apart', () => {
-    const rule = /\.conv details\.notice \.nfact \{([^}]*)\}/.exec(SHEET)?.[1];
-    expect(rule, 'the sheet has no rule for the provisional fact line').toBeDefined();
+    const rule = /details\.leaf\.nrow \.nfact \{([^}]*)\}/.exec(SHEET)?.[1];
+    expect(rule, 'the sheet has no rule for the fact line').toBeDefined();
     expect(rule ?? '', 'a justified pair splits a fact into two ends').not.toMatch(/space-between/);
   });
 
