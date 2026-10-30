@@ -611,7 +611,7 @@ class RustConnection implements Connection {
     return true;
   }
 
-  dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {
+  dispatch(command: Command, at?: SessionSlot): Promise<unknown> {
     // Before anything is registered, so a command that never went leaves no
     // promise behind for a later failure to reject.
     if (this.state !== 'open') {
@@ -620,17 +620,21 @@ class RustConnection implements Connection {
     }
     const reply = ANSWERS_THROUGH_A_REPLY.has(variantOf(command));
     const answer = invoke<unknown>('client_dispatch', { command, reply });
-    if (!reply) {
-      // Fire and forget, as the web build's non-reply path is: the outcome
-      // arrives through the subscription. A refusal here - the socket went
-      // between the check and the call - is reported rather than left as an
-      // unhandled rejection.
-      void answer.catch((why: unknown) => {
-        report('a command could not cross to the shell', why);
-      });
-      return null;
-    }
-    return answer;
+    if (reply) return answer;
+    // **The shell answers once its writer has put the frame on the socket**,
+    // so this resolution is the crossing rather than the hand-off, and its
+    // rejection is the socket having gone between this page's status and the
+    // write. A caller that ignores it still gets that loss reported; one
+    // that awaits it keeps what it was about to clear.
+    const crossed = answer.then(() => null);
+    void crossed.catch((why: unknown) => {
+      report('a command could not cross to the shell', why);
+      // The same reader-facing line the synchronous refusal draws (#1638):
+      // a command that did not leave is the loss the person pressed into,
+      // whichever half of the connection found out.
+      if (at !== undefined) refused(at);
+    });
+    return crossed;
   }
 
   more(

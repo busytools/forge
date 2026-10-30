@@ -274,7 +274,7 @@ export function fakeConnection() {
     release() {},
     dispatch(command: Command) {
       dispatched.push(command);
-      return null;
+      return Promise.resolve(null);
     },
     onMessage(fn) {
       messages.add(fn);

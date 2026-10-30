@@ -331,8 +331,8 @@ export interface SendOutcome {
  *  nudge's is not. */
 export interface Sends {
   write: (command: unknown) => Promise<SendOutcome>;
-  /** The connection's own dispatch: `null` for a fire-and-forget command,
-   *  and a throw when the socket is not open. */
+  /** The connection's own dispatch: a promise that answers whether the
+   *  command crossed, and a throw when the socket is not open. */
   dispatch: (command: unknown) => unknown;
 }
 

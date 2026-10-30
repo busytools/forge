@@ -209,6 +209,12 @@ export interface Wire {
   takes: boolean;
   /** Whether the socket takes commands: `false` throws, as a closed socket does. */
   down: boolean;
+  /**
+   * Whether the socket died without this page hearing about it: `status()`
+   * still answers open, and the shell refuses the write instead of the call
+   * throwing here - the window a no-reply dispatch used to call success.
+   */
+  dead: boolean;
   connection: Pick<
     Connection,
     | 'dispatch'
@@ -250,13 +256,16 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
     frames,
     takes: true,
     down: false,
+    dead: false,
     connection: {
       dispatch(command: Record<string, Record<string, unknown>>) {
         // **A closed socket throws rather than answering**, which is what the
-        // composer's send paths guard against.
+        // composer's send paths guard against; one that died out of sight
+        // rejects instead, which is what a caller has to await.
         if (held.down) throw new Error('the socket is closed');
+        if (held.dead) return Promise.reject(new Error('the socket is closed'));
         sent.push({ command });
-        return null;
+        return Promise.resolve(null);
       },
       onMessage(fn: (message: ServerMessage) => void) {
         listeners.add(fn);

@@ -488,6 +488,10 @@ impl Socket {
                 None => answer.await.map(Some),
             };
         }
+        // **Unbounded on purpose.** A bound can say no answer came; it cannot
+        // say the frame did not cross, and the crossing is this path's whole
+        // answer - so a wedged writer parks the page's promise rather than
+        // reporting a failure it cannot name.
         self.tx
             .send(Outbound::Dispatch { command, reply: None, sent, replied: None })
             .map_err(|_| "the socket is closed".to_owned())?;
@@ -1341,6 +1345,17 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn stub() -> Stub {
+        stub_mode(false).await
+    }
+
+    /// A stub whose drop is a reset rather than a goodbye: the peer is gone,
+    /// so the client's next write fails instead of landing in a half-closed
+    /// socket's buffer.
+    pub(crate) async fn resetting_stub() -> Stub {
+        stub_mode(true).await
+    }
+
+    async fn stub_mode(reset: bool) -> Stub {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("the bound address");
         let (heard_tx, heard) = mpsc::unbounded_channel();
@@ -1351,6 +1366,12 @@ pub(crate) mod tests {
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else { return };
+                if reset {
+                    // A zero linger turns the drop into a reset, which is the
+                    // state a client's next write fails on.
+                    let held = socket2::SockRef::from(&stream);
+                    let _ = held.set_linger(Some(Duration::ZERO));
+                }
                 let heard_tx = heard_tx.clone();
                 let mut said = say_for_task.subscribe();
                 let mut killed = kill_for_task.subscribe();
@@ -1746,6 +1767,49 @@ pub(crate) mod tests {
             .expect("the call task")
             .expect_err("the drop fails the call");
         assert!(why.contains("dropped"), "{why}");
+    }
+
+    /// **A dispatch taken while the socket is away is refused, not held.**
+    /// The reconnect re-asks what was subscribed; a command is not something
+    /// to replay, so the page is told it did not go (#2688).
+    #[tokio::test]
+    async fn refuses_a_dispatch_taken_while_the_socket_is_away() {
+        let (sent, sent_rx) = oneshot::channel();
+        let mut held = Vec::new();
+        let mut awaiting = Vec::new();
+        assert!(
+            !apply_offline(
+                Outbound::Dispatch { command: json!({}), reply: None, sent, replied: None },
+                &mut held,
+                &mut awaiting,
+            ),
+            "an offline dispatch does not end the task",
+        );
+        let why = sent_rx.await.expect("the page's channel is answered").expect_err("refused");
+        assert_eq!(why, "the socket is not open", "the page is told why nothing went");
+    }
+
+    /// **A frame the writer could not put on the wire is not a success.**
+    ///
+    /// This is the shell's half of #2688: the page's no-reply dispatch
+    /// answers `Ok` only after the writer has the frame, so a write that
+    /// fails must answer `Err` rather than let a caller clear state for a
+    /// command nobody received. The peer resets here, and the dispatch is
+    /// taken after it has gone, which is the window the page cannot see.
+    #[tokio::test]
+    async fn refuses_a_frame_the_writer_could_not_put_on_the_wire() {
+        let stub = resetting_stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        stub.kill.send(()).expect("the peer resets");
+
+        let why = tokio::time::timeout(
+            Duration::from_secs(2),
+            socket.dispatch(json!({ "cancel": {} }), false),
+        )
+        .await
+        .expect("the refusal lands fast")
+        .expect_err("a command the writer could not send is refused");
+        assert!(why.contains("did not go"), "the write's own failure is the answer: {why}");
     }
 
     /// A reconnect re-asks every held subscription once, with the flags it

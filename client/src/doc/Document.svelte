@@ -526,10 +526,6 @@
    */
   async function put(command: unknown): Promise<boolean> {
     const answer = connection.dispatch(command as never, slot);
-    if (answer === null) {
-      said = 'the connection is down';
-      return false;
-    }
     try {
       const body = await answer;
       said = null;

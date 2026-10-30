@@ -55,7 +55,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     release: () => undefined,
     dispatch: (command) => {
       sent.push({ command });
-      return null;
+      return Promise.resolve(null);
     },
     more: () => false,
     commitDiff: () => false,
