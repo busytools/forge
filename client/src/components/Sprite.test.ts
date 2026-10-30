@@ -61,4 +61,23 @@ describe('the icon sprite', () => {
   it('carries what the disclosure arrow asks for', () => {
     expect(ICONS).toContain('chev');
   });
+
+  /**
+   * **The three notice levels are three shapes.** A notice carries its level
+   * on the glyph alone, so a sprite that copied info under `i-warning` would
+   * paint every level as the same circle - the id would exist and the row
+   * would read wrong.
+   */
+  it('draws a different shape for each notice level', () => {
+    const body = (id: string): string => {
+      const symbol = new RegExp(`<symbol id="i-${id}"[^>]*>([\\s\\S]*?)</symbol>`).exec(SPRITE);
+      return symbol?.[1] ?? '';
+    };
+    const shapes = ['info', 'warning', 'error'].map((id) => {
+      const shape = body(id);
+      expect(shape.length, `the sprite carries no i-${id}`).toBeGreaterThan(0);
+      return shape;
+    });
+    expect(new Set(shapes).size, 'two levels draw the same shape').toBe(3);
+  });
 });

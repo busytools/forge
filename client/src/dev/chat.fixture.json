@@ -578,6 +578,37 @@
           "description": "watch the pane",
           "subagent_type": "general-purpose",
           "is_backgrounded": true
+        },
+        {
+          "type": "system",
+          "uuid": "s-api-retry",
+          "subtype": "api_retry",
+          "attempt": 2,
+          "max_retries": 4,
+          "retry_delay_ms": 1500,
+          "error": "rate_limit",
+          "error_status": 429
+        },
+        {
+          "type": "system",
+          "uuid": "s-api-error",
+          "subtype": "api_error",
+          "level": "error",
+          "retryAttempt": 3,
+          "maxRetries": 4,
+          "retryInMs": 1500,
+          "error": {
+            "formatted": "the model is overloaded, retrying",
+            "message": "raw provider body",
+            "status": 529
+          }
+        },
+        {
+          "type": "system",
+          "uuid": "s-forge-notice",
+          "subtype": "forge_notice",
+          "severity": "info",
+          "text": "Goal cleared"
         }
       ]
     }
