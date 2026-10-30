@@ -681,9 +681,16 @@ fn validate_handoff_settings(
 
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
+    /// The top-level `[env]` layer, after the gateway keys were dropped at
+    /// load. Kept whole so the settings page can draw the layer itself
+    /// rather than re-reading one account's merged env.
+    pub global_env: HashMap<String, String>,
     /// Each org's resolved browser profile name, keyed by org name: what
     /// the boot's profile resolver reads to place an org's browsers.
     pub org_browser_profiles: HashMap<String, String>,
+    /// Each org's own `[orgs.slack]` binding, keyed by org name. A project
+    /// may override it; the resolved per-project binding is on the project.
+    pub org_slack: HashMap<String, String>,
     /// Index into `projects` for the default startup target -
     /// alphabetically-first project that carries `auto_start = true`,
     /// falling back to the alphabetically-first project overall
@@ -745,7 +752,9 @@ impl std::fmt::Debug for LoadedConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedConfig")
             .field("projects", &self.projects)
+            .field("global_env", &self.global_env.keys().map(String::as_str).collect::<Vec<_>>())
             .field("org_browser_profiles", &self.org_browser_profiles)
+            .field("org_slack", &self.org_slack)
             .field("default_index", &self.default_index)
             .field("accounts", &self.accounts)
             .field("models", &self.models)
@@ -771,120 +780,26 @@ impl std::fmt::Debug for LoadedConfig {
 /// keys whose values are stored but need a restart.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigReload {
-    pub changed: Vec<&'static str>,
-    pub restart_only: Vec<&'static str>,
+    /// The concrete key paths whose new value applies without a restart.
+    pub changed: Vec<String>,
+    /// The concrete key paths whose value is stored but needs one.
+    pub restart_only: Vec<String>,
 }
 
-impl LoadedConfig {
-    /// The reload summary between this load and `next`.
-    pub(crate) fn diff(&self, next: &Self) -> ConfigReload {
-        fn mark(list: &mut Vec<&'static str>, name: &'static str, differs: bool) {
-            if differs {
-                list.push(name);
-            }
-        }
-
-        let mut reload = ConfigReload::default();
-        mark(&mut reload.changed, "accounts", !same_accounts(&self.accounts, &next.accounts));
-        mark(
-            &mut reload.changed,
-            "orgs",
-            !same_projects(&self.projects, &next.projects)
-                || self.org_browser_profiles != next.org_browser_profiles
-                || self.default_index != next.default_index,
-        );
-        mark(&mut reload.changed, "models", !same_models(&self.models, &next.models));
-        mark(&mut reload.changed, "handoff", self.handoff != next.handoff);
-        mark(&mut reload.changed, "systemone", self.systemone != next.systemone);
-        // `[plugins] auto_update` has no reader yet, so a change applies
-        // nothing and is not reported as applied.
-        mark(
-            &mut reload.changed,
-            "server",
-            self.server.tool_record_cap_kb != next.server.tool_record_cap_kb
-                || self.server.first_frame_cap_kb != next.server.first_frame_cap_kb,
-        );
-        mark(&mut reload.changed, "client", !same_client(&self.client, &next.client));
-        mark(&mut reload.changed, "browser", self.browser != next.browser);
-        mark(&mut reload.changed, "slack", !same_slack_sweep(&self.slack, &next.slack));
-        mark(&mut reload.changed, "documents", self.document_max_bytes != next.document_max_bytes);
-        mark(&mut reload.changed, "usage", self.usage_poll_interval != next.usage_poll_interval);
-        mark(&mut reload.changed, "gateway", self.gateway_rotation != next.gateway_rotation);
-
-        mark(
-            &mut reload.restart_only,
-            "server.enabled",
-            self.server.enabled != next.server.enabled,
-        );
-        mark(&mut reload.restart_only, "server.bind", self.server.bind != next.server.bind);
-        mark(&mut reload.restart_only, "server.port", self.server.port != next.server.port);
-        mark(&mut reload.restart_only, "gateway.port", self.gateway_port != next.gateway_port);
-        // `[dictate]` splits three ways: the key handler reads bind and
-        // mode per event, a client takes its axes at connection open, and
-        // the preflight and the engine's own configuration are built once.
-        let dictate = &self.dictate;
-        let next_dictate = &next.dictate;
-        mark(
-            &mut reload.changed,
-            "dictate",
-            dictate.bind != next_dictate.bind
-                || dictate.mode != next_dictate.mode
-                || dictate.styling != next_dictate.styling
-                || dictate.structure != next_dictate.structure
-                || dictate.context != next_dictate.context,
-        );
-        mark(
-            &mut reload.restart_only,
-            "dictate",
-            dictate.enabled != next_dictate.enabled
-                || dictate.models_dir != next_dictate.models_dir
-                || dictate.language != next_dictate.language
-                || dictate.normalizer != next_dictate.normalizer
-                || dictate.max_capture_minutes != next_dictate.max_capture_minutes
-                || dictate.transcribe_model != next_dictate.transcribe_model
-                || dictate.cleanup_model != next_dictate.cleanup_model,
-        );
-        mark(&mut reload.restart_only, "gotify", self.gotify != next.gotify);
-        mark(&mut reload.restart_only, "slack", !same_slack_subsystem(&self.slack, &next.slack));
-        reload
+impl ConfigReload {
+    /// Whether any reported key sits under `prefix`, for the consumers that
+    /// act on a whole table (`accounts.`, `gateway.`).
+    pub fn moved(&self, prefix: &str) -> bool {
+        self.changed.iter().chain(&self.restart_only).any(|path| path.starts_with(prefix))
     }
 }
 
-/// Accounts in declaration order. The env map is compared whole because the
-/// token is folded into it at load, so a re-minted credential reads as a
-/// change here.
-fn same_accounts(previous: &[LoadedAccount], next: &[LoadedAccount]) -> bool {
-    previous.len() == next.len()
-        && previous.iter().zip(next).all(|(old, new)| {
-            old.display_name == new.display_name
-                && old.provider == new.provider
-                && old.base_url == new.base_url
-                && old.models == new.models
-                && old.model_slugs == new.model_slugs
-                && old.model_aliases == new.model_aliases
-                && old.env == new.env
-        })
-}
-
-fn same_projects(previous: &[LoadedProject], next: &[LoadedProject]) -> bool {
-    previous.len() == next.len()
-        && previous.iter().zip(next).all(|(old, new)| {
-            old.name == new.name
-                && old.path == new.path
-                && old.display_path == new.display_path
-                && old.org == new.org
-                && old.accounts == new.accounts
-                && old.fallback_accounts == new.fallback_accounts
-                && old.auto_start == new.auto_start
-                && old.model == new.model
-                && old.env == new.env
-                && old.max_workers == new.max_workers
-                && old.permission_mode == new.permission_mode
-                && old.vault_roots == new.vault_roots
-                && old.handoff == new.handoff
-                && old.browser_profile == new.browser_profile
-                && old.slack_workspace == new.slack_workspace
-        })
+impl LoadedConfig {
+    /// The reload summary between this load and `next`, read from the one
+    /// class catalogue the settings page draws its chips from.
+    pub(crate) fn diff(&self, next: &Self) -> ConfigReload {
+        crate::settings::diff(self, next)
+    }
 }
 
 /// The label a scope's `slack` binding resolves to, or a load error naming
@@ -911,43 +826,6 @@ fn slack_binding_label(
             "{scope} slack: no [[slack]] workspace named '{label}'; configured: {configured}"
         ),
     })
-}
-
-fn same_models(
-    previous: &HashMap<String, ModelSettings>,
-    next: &HashMap<String, ModelSettings>,
-) -> bool {
-    previous.len() == next.len()
-        && previous.iter().all(|(name, settings)| {
-            next.get(name)
-                .is_some_and(|other| other.auto_compact_window == settings.auto_compact_window)
-        })
-}
-
-fn same_client(previous: &ClientConfig, next: &ClientConfig) -> bool {
-    previous.mark == next.mark && previous.theme == next.theme && previous.font == next.font
-}
-
-/// The keys the Slack client and its pump capture when the subsystem
-/// starts: the client holds its token, and the pump holds its intervals.
-fn same_slack_subsystem(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
-    previous.len() == next.len()
-        && previous.iter().zip(next).all(|(old, new)| {
-            old.workspace == new.workspace
-                && old.token == new.token
-                && old.poll_seconds == new.poll_seconds
-                && old.dm_poll_seconds == new.dm_poll_seconds
-        })
-}
-
-/// The windows the sweep reads from the live config on every pass, so an
-/// edit applies without a restart.
-fn same_slack_sweep(previous: &[SlackConfig], next: &[SlackConfig]) -> bool {
-    previous.len() == next.len()
-        && previous.iter().zip(next).all(|(old, new)| {
-            old.thread_idle_days == new.thread_idle_days
-                && old.stale_after_hours == new.stale_after_hours
-        })
 }
 
 /// The port the gateway's listener binds when `[gateway] port` is
@@ -988,6 +866,9 @@ pub(crate) struct LoadedProject {
     /// the usage probe and the selection walk both read the ACCOUNT
     /// map, so they measure a different endpoint.
     pub env: HashMap<String, String>,
+    /// The `env_file` path the entry declared, kept for the settings page;
+    /// its entries are already folded into `env`.
+    pub env_file: Option<String>,
     /// Cap on this project's live dynamic workers; `None` keeps the
     /// default. See `ProjectEntry::max_workers`.
     pub max_workers: Option<usize>,
@@ -1027,6 +908,7 @@ impl std::fmt::Debug for LoadedProject {
             .field("auto_start", &self.auto_start)
             .field("model", &self.model)
             .field("env", &env)
+            .field("env_file", &self.env_file)
             .field("max_workers", &self.max_workers)
             .field("permission_mode", &self.permission_mode)
             .field("vault_roots", &self.vault_roots)
@@ -1079,7 +961,9 @@ impl LoadedConfig {
     pub(crate) fn empty_for_test() -> Self {
         Self {
             projects: Vec::new(),
+            global_env: HashMap::new(),
             org_browser_profiles: HashMap::new(),
+            org_slack: HashMap::new(),
             default_index: 0,
             accounts: Vec::new(),
             models: HashMap::new(),
@@ -1470,6 +1354,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         std::collections::HashSet::new();
     let mut projects: Vec<LoadedProject> = Vec::new();
     let mut org_browser_profiles: HashMap<String, String> = HashMap::new();
+    let mut org_slack_bindings: HashMap<String, String> = HashMap::new();
     for org_entry in parsed.orgs {
         if !seen_org_names.insert(org_entry.name.clone()) {
             return Err(WorkspaceError::DuplicateOrg { path, name: org_entry.name });
@@ -1512,6 +1397,9 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             .as_ref()
             .map(|binding| slack_binding_label(binding, "[[orgs]]", &slack_labels, &path))
             .transpose()?;
+        if let Some(workspace) = &org_slack {
+            org_slack_bindings.insert(org_entry.name.clone(), workspace.clone());
+        }
         for project_entry in org_entry.projects {
             if !seen_project_names.insert(project_entry.name.clone()) {
                 return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
@@ -1535,8 +1423,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let env =
-                resolve_project_env(&project_entry.name, project_entry.env, project_entry.env_file);
+            let env = resolve_project_env(
+                &project_entry.name,
+                project_entry.env,
+                project_entry.env_file.clone(),
+            );
             if let Some(settings) = &project_entry.handoff {
                 validate_handoff_settings(
                     settings,
@@ -1569,6 +1460,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 auto_start: project_entry.auto_start,
                 model: project_entry.model.clone(),
                 env,
+                env_file: project_entry.env_file.clone(),
                 max_workers: project_entry.max_workers,
                 permission_mode,
                 vault_roots,
@@ -1690,7 +1582,9 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
 
     Ok(LoadedConfig {
         projects,
+        global_env,
         org_browser_profiles,
+        org_slack: org_slack_bindings,
         default_index,
         accounts,
         models: parsed.models,

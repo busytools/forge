@@ -80,6 +80,7 @@ pub mod protocol;
 mod provider_probe;
 mod review;
 mod session_task;
+pub mod settings;
 mod single_instance;
 mod slack;
 mod spawn;

@@ -31,6 +31,7 @@ import { noteSnapshot, noteSubscribe, type PerfRecord } from './perf';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
 import { settingsFrom } from './wire/types';
+import { takeSettings } from './settings/frame';
 import type { ClientSettings, SessionSlot } from './wire/types';
 
 /** Where a connection is in its life. */
@@ -245,6 +246,13 @@ export interface Connection {
   store(what: Subject): Store | undefined;
   /** The client's mark, theme and font, from the greeting - the only place a client gets them. */
   settings(): ClientSettings | null;
+  /**
+   * This connection's identity for the settings frame. The shell takes it
+   * when it takes the connection, so a launch a submit replaced cannot
+   * re-theme the page with its own document. Absent on a double that never
+   * receives one; the shell falls back to the connection object.
+   */
+  readonly settingsOwner?: object;
   /**
    * What the last greeting said that this client's own protocol does not
    * agree with, or `null` when they agree.
@@ -479,6 +487,7 @@ export function connect(
   replyBoundMs: number = REPLY_BOUND_MS,
 ): Connection & BrowserWire {
   const stores = new Stores();
+  const settingsOwner: object = {};
   /**
    * The bound on a subscription's first read: a subject still loading when
    * it runs out is asked again, so a snapshot lost on a live socket is not
@@ -685,6 +694,9 @@ export function connect(
         greetingProtocol = typeof message.version === 'number' ? message.version : null;
         return;
       }
+      case 'settings':
+        takeSettings(message.document, settingsOwner);
+        return;
       case 'snapshot':
         answered(message.subject);
         stores.get(message.subject)?.set(message.data);
@@ -1242,6 +1254,7 @@ export function connect(
     settings() {
       return settings;
     },
+    settingsOwner,
     skew() {
       return protocolSkew;
     },

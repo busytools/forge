@@ -87,6 +87,16 @@ async fn connect(url: &str) -> Client {
         matches!(greeting, ServerMessage::Greeting { .. }),
         "the first thing the server says is its greeting, not {text}",
     );
+    // The settings document follows in the same open; every test below
+    // starts from a stream whose next message is the answer to what it
+    // sends.
+    let msg = socket.next().await.expect("a settings frame").expect("no error");
+    let text = msg.to_text().expect("text").to_owned();
+    let settings: ServerMessage = serde_json::from_str(&text).expect("the settings frame decodes");
+    assert!(
+        matches!(settings, ServerMessage::Settings { .. }),
+        "the second thing the server says is the effective config, not {text}",
+    );
     socket
 }
 
@@ -295,6 +305,9 @@ async fn snapshot_answering(
     loop {
         match next_server(socket).await {
             ServerMessage::Update { update, .. } => passed.push(*update),
+            // The effective config is server-wide and unprompted, so it can
+            // arrive before the answer like any queued update.
+            ServerMessage::Settings { .. } => {}
             ServerMessage::Snapshot { subject, data } => return (subject, data, passed),
             other => panic!("a subscribe is answered with a snapshot, not {other:?}"),
         }
@@ -1805,11 +1818,10 @@ async fn the_greeting_carries_the_dictate_axes_the_config_set() {
     );
 }
 
-/// A `[client]` edit reaches the NEXT connection, not one already open: the
-/// client snapshots its settings at the handshake, so this cut has no live
-/// redraw.
+/// A `[client]` edit reaches an open connection as a new settings frame, and
+/// the next connection's greeting carries the same values.
 #[tokio::test]
-async fn a_client_setting_reload_applies_to_the_next_connection() {
+async fn a_client_setting_reload_reaches_an_open_connection_and_the_next() {
     let (url, fleet) = a_server().await;
     let mut first = connect(&url).await;
 
@@ -1818,11 +1830,36 @@ async fn a_client_setting_reload_applies_to_the_next_connection() {
     raw.push_str("\n[client]\nmark = \"klin\"\n");
     std::fs::write(&path, raw).expect("write");
     let reload = fleet.workspace().reload_config().expect("the new file is valid");
-    assert!(reload.changed.contains(&"client"), "the client table moved: {reload:?}");
-
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(500), first.next()).await.is_err(),
-        "an open connection keeps the settings it greeted with",
+        reload.changed.iter().any(|key| key.starts_with("client.")),
+        "the client table moved: {reload:?}",
+    );
+
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), first.next())
+        .await
+        .expect("the open connection is pushed a settings frame")
+        .expect("a frame")
+        .expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::Settings { document } =
+        serde_json::from_str(text).expect("the settings frame decodes")
+    else {
+        panic!("an open connection hears the effective config, not {text}")
+    };
+    let client = document
+        .areas
+        .iter()
+        .find(|area| area.id == "client")
+        .expect("the document carries the client area");
+    let mark = client
+        .keys
+        .iter()
+        .find(|key| key.path == "client.mark")
+        .expect("the client area carries the mark");
+    assert_eq!(
+        mark.value,
+        serde_json::json!("klin"),
+        "the open connection was re-themed without a reconnect",
     );
 
     let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
@@ -1838,6 +1875,97 @@ async fn a_client_setting_reload_applies_to_the_next_connection() {
         Some("klin"),
         "a connection opened after the reload greets with its sets",
     );
+}
+
+/// The document a connection is handed after its greeting is the effective
+/// config: the same source path the workspace loaded, and every key with the
+/// class the page chips it with.
+#[tokio::test]
+async fn the_settings_frame_follows_the_greeting_and_carries_the_effective_config() {
+    let (url, fleet) = a_server().await;
+    let (mut socket, _) = tokio_tungstenite::connect_async(&url).await.expect("the socket opens");
+    let _greeting = socket.next().await.expect("a greeting").expect("no error");
+    let msg = socket.next().await.expect("a settings frame").expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::Settings { document } =
+        serde_json::from_str(text).expect("the settings frame decodes")
+    else {
+        panic!("the second thing the server says is the effective config, not {text}")
+    };
+
+    assert_eq!(
+        document.source,
+        fleet.workspace().config_path().display().to_string(),
+        "the document names the file the workspace loaded",
+    );
+    assert_eq!(document.version, "test-build", "and the build that sent it");
+    let server = document
+        .areas
+        .iter()
+        .find(|area| area.id == "server")
+        .expect("the document carries the server area");
+    let port = server.keys.iter().find(|key| key.path == "server.port").expect("and the port key");
+    assert_eq!(
+        port.class,
+        forge_primitives::EffectClass::Restart,
+        "the port is drawn as a restart, the class the reload reports it under",
+    );
+}
+
+/// An unchanged save publishes nothing: the workspace compares the document
+/// it would build with the one the socket holds.
+#[tokio::test]
+async fn an_unchanged_save_pushes_no_settings_frame() {
+    let (url, fleet) = a_server().await;
+    let mut first = connect(&url).await;
+
+    let path = fleet.workspace().config_path();
+    let raw = std::fs::read_to_string(&path).expect("read");
+    std::fs::write(&path, raw).expect("write the same contents");
+    let reload = fleet.workspace().reload_config().expect("the same file is valid");
+    assert!(
+        reload.changed.is_empty() && reload.restart_only.is_empty(),
+        "an unchanged save moves nothing: {reload:?}",
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(500), first.next()).await.is_err(),
+        "and no frame follows it",
+    );
+}
+
+/// **The settings frame carries the file's own values, and none of them reach
+/// the log.** The frame is the page's read, not a diagnostic: a token in it
+/// must never be written to the tracing log by the push that carries it.
+#[tokio::test]
+async fn the_settings_frame_never_writes_its_values_to_the_log() {
+    const SECRET: &str = "settings-secret-9f3a";
+    let capture = install_capture();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir_with_server_and_env(
+        dir.path(),
+        &[("TestOrg", &["proj"])],
+        "",
+        &[("SETTINGS_SECRET", SECRET)],
+    )
+    .expect("the fleet builds");
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    let path = fleet.workspace().config_path();
+    let mut raw = std::fs::read_to_string(&path).expect("read");
+    raw.push_str("\n[usage]\npoll_seconds = 120\n");
+    std::fs::write(&path, raw).expect("write");
+    fleet.workspace().reload_config().expect("the new file is valid");
+
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+        .await
+        .expect("the open connection is pushed the new document")
+        .expect("a frame")
+        .expect("no error");
+    let text = msg.to_text().expect("text");
+    assert!(text.contains(SECRET), "precondition: the frame carries the project's env value");
+    let _ = capture;
+    assert!(!captured().contains(SECRET), "the frame's values never reach the tracing log");
 }
 
 /// **A large text frame crosses whole.** The inbound cap is the socket's

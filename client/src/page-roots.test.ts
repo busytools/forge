@@ -94,6 +94,12 @@ const PAGES: PageRoot[] = [
     root: 'session-page',
     rootTag: 'first',
   },
+  {
+    page: 'settings',
+    components: ['src/settings/Settings.svelte'],
+    root: 'settings-page',
+    rootTag: 'main',
+  },
 ];
 
 /**

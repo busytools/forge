@@ -47,7 +47,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 17,
+  "version": 18,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -85,17 +85,69 @@ would name nothing a person can act on.
 
 `settings` carries `forge.toml`'s `[client]` keys: the three names
 `mark`, `theme` and `font`. They are a client's settings rather than this
-server's. They arrive on connect so a client is configured before it draws
-anything and never reads `forge.toml` itself, which keeps the file the one
-source of truth. A `null` is not a failure: it means the built-in. The
-browser's idle clocks are the server's and live under `[browser]`; they are
-not carried here.
+server's, and the greeting's copy is the pre-attach handshake. **The
+settings frame beside it is what the page and the client's axes read**, so
+a reload can re-theme an open page without a reconnect. A `null` is not a
+failure: it means the built-in. The browser's idle clocks are the server's
+and live under `[browser]`; they are not carried here.
 
 `settings.dictate` is `[dictate]`'s three prompt axes, and it is a
 DEFAULT rather than a state: a client that captures its own audio holds
 the values in force per seat, so this is what its panel draws as unset
 and what its reset row returns to. Each take carries the values it
 normalized by.
+
+## The effective config
+
+A `settings` frame follows the greeting in the same open, and is pushed
+again to every connection after each applied reload:
+
+```json
+{
+  "kind": "settings",
+  "document": {
+    "version": "1.1.34+abc1234",
+    "source": "/home/me/.claude/forge/forge.toml",
+    "totals": { "keys": 232, "areas": 11 },
+    "areas": [
+      {
+        "id": "server",
+        "name": "server",
+        "note": "the socket a client reads through, and the browser the server hosts",
+        "keys": [
+          {
+            "path": "server.port",
+            "kind": "number",
+            "value": 8790,
+            "class": "restart"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`path` is the concrete key, with the instance where the table repeats
+(`accounts.Subspace.token`). `kind` is the value's shape for drawing:
+`string`, `number`, `bool`, `list`, `table` or `set`. `class` is one of
+`live` (read on its next use), `next_session` (read when a session or a
+connection opens), `restart` (built once at boot) or `not_read_yet` (the
+loader accepts the key and nothing consumes it). The class catalogue in
+`crates/forge-workspace/src/settings.rs` is the one source for the frame
+and for the reload's own summary.
+
+**Values cross as the file loaded them, unredacted.** The socket is
+reached over loopback or the private network, and that boundary is the
+decision; the server never writes a settings frame to the tracing log.
+There is no settings read verb: a connection attaching while a reload is
+in flight reads the current load from the next push, and the attach frame
+always reflects the current one. The document is built once per load and
+shared by every connection.
+
+The frame is server-wide rather than seat-scoped. It carries no seat, it
+is delivered to a connection that has subscribed to nothing, and it
+arrives again on every reconnect.
 
 ## Subjects
 

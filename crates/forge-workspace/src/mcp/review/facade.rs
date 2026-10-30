@@ -549,6 +549,7 @@ mod resolve_scope_tests {
             auto_start: false,
             model: None,
             env: std::collections::HashMap::new(),
+            env_file: None,
             max_workers: None,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
             vault_roots: Vec::new(),

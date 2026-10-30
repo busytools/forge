@@ -129,6 +129,28 @@ function frameText(raw: RawData): string {
  * An acceptance that then says nothing is what the handshake deadline is for,
  * and this is that window with its end under the test's control.
  */
+/** The client area the server would push for the stub's settings. */
+function documentFor(settings: Partial<ClientSettings>): unknown {
+  const held = { ...DEFAULT_SETTINGS, ...settings };
+  return {
+    version: 'test',
+    source: '~/.claude/forge/forge.toml',
+    totals: { keys: 3, areas: 1 },
+    areas: [
+      {
+        id: 'client',
+        name: 'client',
+        note: 'the sets a client draws with',
+        keys: [
+          { path: 'client.mark', kind: 'string', value: held.mark ?? 'panes', class: 'live' },
+          { path: 'client.theme', kind: 'string', value: held.theme ?? 'dark', class: 'live' },
+          { path: 'client.font', kind: 'string', value: held.font ?? 'Fira Code', class: 'live' },
+        ],
+      },
+    ],
+  };
+}
+
 async function stubForge(
   settings: Partial<ClientSettings>,
   greeting: 'now' | 'held' = 'now',
@@ -150,14 +172,17 @@ async function stubForge(
   /** Every frame a client sent, which is what a release is read from. */
   const sent: { kind?: unknown; what?: unknown }[] = [];
 
-  const greet = (socket: WebSocket): void => {
+  const greet = (socket: WebSocket, at: number = version): void => {
     socket.send(
       JSON.stringify({
         kind: 'greeting',
-        version,
+        version: at,
         settings: { ...DEFAULT_SETTINGS, ...settings },
       }),
     );
+    // The document follows the greeting in the same open; the shell's axes
+    // are applied from this frame and not from the greeting.
+    socket.send(JSON.stringify({ kind: 'settings', document: documentFor(settings) }));
   };
   server.on('connection', (socket) => {
     // A home read is the fixture, so a page has a roster to reason over; a
@@ -192,15 +217,7 @@ async function stubForge(
     attached,
     /** Let the greeting go, which is what lands a held launch. */
     greet(again: number = version) {
-      for (const socket of server.clients) {
-        socket.send(
-          JSON.stringify({
-            kind: 'greeting',
-            version: again,
-            settings: { ...DEFAULT_SETTINGS, ...settings },
-          }),
-        );
-      }
+      for (const socket of server.clients) greet(socket, again);
     },
     /** The next home read, which the server pushes when the fleet moves. */
     home(wire: HomeWire) {

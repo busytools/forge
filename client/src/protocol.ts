@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 17;
+export const PROTOCOL_VERSION = 18;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -413,6 +413,12 @@ export type ServerMessage =
       forge_version_short?: string;
       settings: ClientSettings;
     }
+  /**
+   * The effective config, pushed once after the greeting and again on every
+   * applied reload. Server-wide rather than seat-scoped: every connection
+   * holds the same document, and it is narrowed in `wire/settings.ts`.
+   */
+  | { kind: 'settings'; document: unknown }
   | { kind: 'snapshot'; subject: Subject; data: unknown }
   /**
    * One frame of a seat's stream.

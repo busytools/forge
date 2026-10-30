@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge - the settings page (drawing)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke='%23f47600' stroke-width='2.4'%3E%3Crect x='3.2' y='3.2' width='17.6' height='17.6' rx='4'/%3E%3Cpath d='M13.6 3.2V20.8'/%3E%3C/g%3E%3Cpath fill='%23f47600' d='M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E">
+<style>
+  /* The same token set the client ships (`client/src/theme.ts`), and the
+     `.settings-page` block of `client/src/assets/web.css` written unscoped
+     because a drawing has no page root to scope it to. The classes are the
+     page's own, so the two can be read side by side. */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --sel:#20140a;
+    --line:#222a3c; --ctl:#516590;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --ok:#82c76b; --warn:#c9a13b; --bad:#e0683e;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0; --hot:#ffb058;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --fs-base: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --fs-title: 18px;
+  }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--text); font-family: var(--ui);
+    font-size: 15.5px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .wrap { padding: 30px 40px 64px; }
+
+  header.top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding-bottom: 18px; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand .mark { width: 30px; height: 30px; flex: 0 0 30px; color: var(--accent);
+    position: relative; top: -1px; }
+  .brand .mark svg { display: block; width: 100%; height: 100%; }
+  .brand .word { font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
+  header.top .title { display: flex; flex-direction: column; }
+  header.top .title .t { font-size: var(--fs-title); font-weight: 650;
+    letter-spacing: -.01em; color: var(--text); }
+  header.top .title .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .versions { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
+  .versions .build { white-space: nowrap; }
+  .versions .k { color: var(--dim); }
+  .versions b { color: var(--muted); font-weight: 600; }
+  .totals { font-family: var(--mono); font-size: 13.5px; color: var(--muted); }
+  .totals .n { color: var(--text); font-weight: 600; }
+  .totals code { font-family: var(--mono); color: var(--dim); }
+  .settings-meta { margin-left: auto; display: flex; flex-direction: column;
+    align-items: flex-end; gap: 3px; }
+  .settings-mode { font-family: var(--mono); font-size: 11px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 2px 9px; white-space: nowrap; }
+  .back { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    text-decoration: none; border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+
+  /* the effect classes: one shape per class, the word beside it */
+  .settings-class { display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .settings-class-mark { width: 7px; height: 7px; flex: 0 0 7px; display: inline-block; }
+  .settings-class[data-class="live"] .settings-class-mark { border-radius: 50%;
+    background: var(--accent); }
+  .settings-class[data-class="next_session"] .settings-class-mark { background: var(--teal);
+    clip-path: polygon(8% 0, 100% 50%, 8% 100%); }
+  .settings-class[data-class="restart"] { color: var(--warn); }
+  .settings-class[data-class="restart"] .settings-class-mark { border: 2px solid var(--warn); }
+  .settings-class[data-class="not_read_yet"] { color: var(--dim); }
+  .settings-class[data-class="not_read_yet"] .settings-class-mark { border: 1.5px dashed var(--dim);
+    border-radius: 50%; }
+  .settings-class.icon .settings-class-mark { width: 8px; height: 8px; flex-basis: 8px; }
+  .settings-legend { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 11px; color: var(--dim); margin: 0 0 6px; }
+  .settings-legend-item { display: inline-flex; align-items: center; gap: 7px; }
+  .settings-legend-note { font-family: var(--mono); font-size: 11px; color: var(--dim);
+    margin: 0 0 20px; }
+
+  .settings-split { display: flex; align-items: flex-start; }
+  .settings-rail { flex: 0 0 232px; padding: 2px 18px 2px 0; }
+  .settings-rail-item { display: flex; align-items: center; gap: 9px; width: 100%;
+    text-align: left; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+    background: none; border: 1px solid transparent; border-radius: 9px; padding: 9px 11px;
+    margin-bottom: 2px; cursor: pointer; }
+  .settings-rail-item.on { background: var(--sel); color: var(--hot);
+    border-color: rgba(244,118,0,.25); box-shadow: inset 2px 0 0 var(--accent); }
+  .settings-rail-name { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .settings-rail-class { margin-left: auto; display: inline-flex; }
+  .settings-rail-count { flex: none; font-size: var(--fs-label); color: var(--dim); }
+  .settings-rail-item.on .settings-rail-count { color: var(--hot); }
+
+  .settings-pane { flex: 1 1 auto; min-width: 0; padding-left: 22px;
+    border-left: 1px solid var(--line); }
+  .settings-pane-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    margin: 2px 0 4px; }
+  .settings-pane-head .t { font-size: 19px; font-weight: 620; letter-spacing: -.01em;
+    color: var(--text); }
+  .settings-pane-head .s { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+  .settings-keys { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+
+  .settings-group { display: flex; align-items: center; gap: 10px; padding: 18px 2px 7px; }
+  .settings-group-name { font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .settings-group-class { margin-left: auto; }
+  .settings-rows { width: 100%; border-collapse: collapse; table-layout: fixed;
+    border-top: 1px solid var(--line); }
+  .settings-rows col.k { width: 36%; }
+  .settings-rows col.e { width: 132px; }
+  .settings-rows th, .settings-rows td { padding: 9px 10px 9px 0; vertical-align: top;
+    border-bottom: 1px solid rgba(34,42,60,.55); text-align: left; font-weight: 400; }
+  .settings-rows th[scope="row"] code { font-family: var(--mono); font-size: 13.5px;
+    color: var(--text); overflow-wrap: anywhere; }
+  .settings-rows td.v { font-family: var(--mono); font-size: 13px; color: var(--muted);
+    overflow-wrap: anywhere; }
+  .settings-value { white-space: pre-wrap; }
+  .settings-chips { display: inline-flex; flex-wrap: wrap; gap: 5px; vertical-align: middle; }
+  .settings-chips code { font-family: var(--mono); font-size: 11.5px; color: var(--text);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 7px;
+    background: rgba(13,17,26,.5); }
+
+  /* the phone: the rail wraps above the pane and the row's value drops under
+     its key */
+  .phone { max-width: 392px; margin-top: 40px; border: 1px solid var(--line);
+    border-radius: 22px; padding: 16px 14px 18px;
+    background: linear-gradient(180deg, rgba(13,17,26,.5), rgba(4,5,10,.5)); }
+  .phone header.top { flex-wrap: wrap; }
+  .phone header.top .title { order: 3; flex-basis: 100%; }
+  .phone .settings-meta { margin-left: 0; align-items: flex-start; width: 100%; }
+  .phone .settings-split { flex-direction: column; }
+  .phone .settings-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
+    flex-wrap: wrap; gap: 6px; }
+  .phone .settings-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0;
+    border: 1px solid var(--line); padding: 6px 11px; }
+  .phone .settings-rail-count { margin-left: 2px; }
+  .phone .settings-pane { padding-left: 0; border-left: 0; width: 100%; }
+  .phone .settings-keys { margin-left: 0; }
+  .phone .settings-rows { table-layout: auto; }
+  .phone .settings-rows col.k { width: 48%; }
+  .phone .settings-rows col.e { width: 112px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="top pagetop">
+    <span class="brand">
+      <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+      <span class="word">forge</span>
+    </span>
+    <span class="title">
+      <span class="t">settings</span>
+      <span class="s">the effective config, as loaded</span>
+    </span>
+    <span class="settings-meta">
+      <span class="versions">
+        <span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot;
+        <span class="build"><span class="k">socket</span> <b>v18</b></span> &middot;
+        <span class="build"><span class="k">claude</span> <b>v2.1.280</b></span>
+      </span>
+      <span class="totals"><span class="n">232</span> keys &middot;
+        <span class="n">11</span> areas &middot;
+        <code>~/.claude/forge/forge.toml</code></span>
+    </span>
+    <span class="settings-mode">read-only</span>
+    <a class="back" href="#">&larr; home</a>
+  </header>
+
+  <div class="settings-legend" aria-label="what the effect classes mean">
+    <span class="settings-legend-item"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span> reads the change on its next use</span>
+    <span class="settings-legend-item"><span class="settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span> read when a session or connection opens</span>
+    <span class="settings-legend-item"><span class="settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span> built once at boot</span>
+    <span class="settings-legend-item"><span class="settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span> nothing reads this key</span>
+  </div>
+  <p class="settings-legend-note">an area shows the furthest its keys reach; a dashed ring means a key there is read by nothing.</p>
+
+  <div class="settings-split">
+    <nav class="settings-rail" aria-label="config areas">
+      <button class="settings-rail-item on" aria-current="page"><span class="settings-rail-name">accounts</span><span class="settings-rail-class"><span class="settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">30</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-class"><span class="settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">162</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">connectors</span><span class="settings-rail-class"><span class="settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span> <span class="settings-class icon" data-class="not_read_yet"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">5</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">client</span><span class="settings-rail-class"><span class="settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">models</span><span class="settings-rail-class"><span class="settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">handoff</span><span class="settings-rail-class"><span class="settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">documents</span><span class="settings-rail-class"><span class="settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">usage</span><span class="settings-rail-class"><span class="settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">gateway</span><span class="settings-rail-class"><span class="settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">4</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">env</span><span class="settings-rail-class"><span class="settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">6</span></button>
+    </nav>
+
+    <section class="settings-pane">
+      <div class="settings-pane-head">
+        <h2 class="t">accounts</h2>
+        <span class="s">the provider endpoints and credentials a session can spawn under</span>
+        <span class="settings-keys">30 keys</span>
+      </div>
+
+      <div class="settings-group"><span class="settings-group-name">Subspace</span><span class="settings-group-class"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span></div>
+      <table class="settings-rows">
+        <colgroup><col class="k" /><col /><col class="e" /></colgroup>
+        <tbody>
+          <tr><th scope="row"><code>accounts.Subspace.display_name</code></th><td class="v">Subspace</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code>accounts.Subspace.provider</code></th><td class="v">anthropic</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code>accounts.Subspace.base_url</code></th><td class="v">not set</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code>accounts.Subspace.token</code></th><td class="v">sk-ant-oat01-example</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code>accounts.Subspace.models</code></th><td class="v"><span class="settings-chips"><code>claude-opus-5-5[1m]</code><code>claude-opus-5-5</code></span></td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+        </tbody>
+      </table>
+
+      <div class="settings-group"><span class="settings-group-name">OpenRouter</span><span class="settings-group-class"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span></div>
+      <table class="settings-rows">
+        <colgroup><col class="k" /><col /><col class="e" /></colgroup>
+        <tbody>
+          <tr><th scope="row"><code>accounts.OpenRouter.provider</code></th><td class="v">openrouter</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code>accounts.OpenRouter.base_url</code></th><td class="v">https://openrouter.ai/api</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code>accounts.OpenRouter.model_slugs.glm-5.3-flash</code></th><td class="v">z-ai/glm-5.3-flash</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code>accounts.OpenRouter.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS</code></th><td class="v">1048576</td><td class="e"><span class="settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span></td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <div class="phone">
+    <header class="top pagetop">
+      <span class="brand">
+        <span class="mark"><svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.2" y="3.2" width="17.6" height="17.6" rx="4"/><path d="M13.6 3.2V20.8"/></g><path fill="currentColor" d="M4.4 6.4a2 2 0 0 1 2-2h4v15.2h-4a2 2 0 0 1-2-2Z"/></svg></span>
+        <span class="word">forge</span>
+      </span>
+      <a class="back" href="#">&larr; home</a>
+      <span class="title"><span class="t">settings</span><span class="s">the effective config, as loaded</span></span>
+      <span class="settings-meta">
+        <span class="versions"><span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot; <span class="build"><span class="k">socket</span> <b>v18</b></span></span>
+        <span class="totals"><span class="n">232</span> keys &middot; <span class="n">11</span> areas</span>
+      </span>
+    </header>
+
+    <div class="settings-split">
+      <div class="settings-rail">
+        <button class="settings-rail-item"><span class="settings-rail-name">accounts</span><span class="settings-rail-count">30</span></button>
+        <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-count">162</span></button>
+        <button class="settings-rail-item on" aria-current="page"><span class="settings-rail-name">connectors</span><span class="settings-rail-count">16</span></button>
+        <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-count">5</span></button>
+      </div>
+      <div class="settings-pane">
+        <div class="settings-pane-head">
+          <h2 class="t">connectors</h2>
+          <span class="settings-keys">16 keys</span>
+        </div>
+        <div class="settings-group"><span class="settings-group-name">slack / Trust Machines</span><span class="settings-group-class"><span class="settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span></div>
+        <table class="settings-rows">
+          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
+          <tbody>
+            <tr><th scope="row"><code>slack.Trust Machines.workspace</code></th><td class="v">Trust Machines</td><td class="e"><span class="settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></td></tr>
+            <tr><th scope="row"><code>slack.Trust Machines.token</code></th><td class="v">xoxp-example</td><td class="e"><span class="settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></td></tr>
+          </tbody>
+        </table>
+        <div class="settings-group"><span class="settings-group-name">plugins</span><span class="settings-group-class"><span class="settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></span></div>
+        <table class="settings-rows">
+          <colgroup><col class="k" /><col /><col class="e" /></colgroup>
+          <tbody>
+            <tr><th scope="row"><code>plugins.auto_update</code></th><td class="v">true</td><td class="e"><span class="settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+
+</div>
+</body>
+</html>

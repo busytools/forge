@@ -38,6 +38,8 @@ import Document from './doc/Document.svelte';
 import Files from './files/Files.svelte';
 import ExtensionsBody from './extensions/ExtensionsBody.svelte';
 import { extensionsWire, project, recorder } from './extensions/testing';
+import SettingsBody from './settings/SettingsBody.svelte';
+import { settingsWire } from './settings/testing';
 import Home from './home/Home.svelte';
 import Models from './models/Models.svelte';
 import Review from './review/Review.svelte';
@@ -931,6 +933,26 @@ describe('axe over the rendered pages', () => {
       },
     }).body;
     expect(html).toContain('could not read the plugin inventory');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+  });
+
+  /**
+   * The settings page: the sub-nav's buttons, the area's table with its row
+   * headers, and the class chips. Rendered inside a landmark, which is what
+   * the page's own `<main>` gives it in the app.
+   */
+  it('draws the settings page with no violations', async () => {
+    const html = render(SettingsBody, {
+      props: {
+        document: settingsWire,
+        mark: null,
+        cliVersion: 'v2.1.280',
+        selected: null,
+        onSelect: () => {},
+      },
+    }).body;
+    expect(html, 'the sub-nav drew').toContain('accounts');
+    expect(html, 'and the selected area rows').toContain('accounts.Subspace.token');
     expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
   });
 

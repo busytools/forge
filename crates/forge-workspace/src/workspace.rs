@@ -337,6 +337,13 @@ pub struct Workspace {
     /// `[gotify]` section. Swapped whole by [`Workspace::reload_config`],
     /// which is why readers take an owned snapshot rather than a reference.
     pub(crate) config: parking_lot::RwLock<Arc<LoadedConfig>>,
+    /// The effective-config document, rebuilt on every applied reload and
+    /// shared by every socket connection. `None` until the server names the
+    /// build that carries it.
+    settings: tokio::sync::watch::Sender<Option<Arc<forge_primitives::SettingsDocument>>>,
+    /// The forge version the document carries, set once by the server at
+    /// boot. A workspace with no server (tests) leaves it empty.
+    settings_version: std::sync::OnceLock<String>,
     /// Odd while a reload is swapping state, even when settled. A spawn
     /// reads it before resolving and re-checks after, so a resolution that
     /// straddled the swap retries rather than pairing an old project pin
@@ -1946,9 +1953,12 @@ impl Workspace {
         // The statuspage answer is the same for every viewer too, and it
         // has to outlive the view that used to fetch it.
         let service_status: Arc<Mutex<Option<ServiceIssue>>> = Arc::new(Mutex::new(None));
+        let (settings, _settings_rx) = tokio::sync::watch::channel(None);
         let workspace = Self {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
+            settings,
+            settings_version: std::sync::OnceLock::new(),
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
@@ -2146,13 +2156,17 @@ impl Workspace {
             // The setter rebuilds the rotation state, which would empty the
             // live cooldowns and streaks. Only a reload that moved the numbers
             // is allowed to do that.
-            if reload.changed.contains(&"gateway") {
+            if reload.moved("gateway.") {
                 self.gateway.set_rotation_numbers(next.gateway_rotation);
             }
             *self.systemone.write() = systemone;
             *self.config.write() = Arc::new(next);
             self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         }
+        // The page reads the same catalogue the reload summary does, so its
+        // frame follows every applied edit; a save that moved no drawn value
+        // publishes nothing.
+        self.publish_settings();
 
         // A new account starts `Loading`; kick the same probe a boot runs
         // so it does not wait for the poller's next tick.
@@ -2169,7 +2183,7 @@ impl Workspace {
         // A project-only edit moves the roster, not the pool: the server
         // roster reads it on the next home read, and an `AccountsChanged`
         // frame here would claim a pool move that did not happen.
-        if reload.changed.contains(&"accounts") {
+        if reload.moved("accounts.") {
             self.announce_accounts_changed();
         }
         // A project the edit added starts as it would at boot; one already
@@ -2238,6 +2252,35 @@ impl Workspace {
     /// `forge.toml` itself.
     pub fn client_config(&self) -> forge_primitives::ClientConfig {
         self.config_arc().client.clone()
+    }
+
+    /// Name the build the settings frame carries, and publish the first
+    /// document. The server calls this once at boot, before the socket
+    /// serves; a second call keeps the first name.
+    pub fn set_settings_version(&self, version: &str) {
+        if self.settings_version.set(version.to_owned()).is_ok() {
+            self.publish_settings();
+        }
+    }
+
+    /// The effective-config document as it stood at the last load. Every
+    /// connection takes its own receiver; a reload that changed a drawn value
+    /// sends a new one to all of them.
+    pub fn subscribe_settings(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<Arc<forge_primitives::SettingsDocument>>> {
+        self.settings.subscribe()
+    }
+
+    /// Build the document from the live config and publish it when it
+    /// differs from what the socket already holds.
+    fn publish_settings(&self) {
+        let version = self.settings_version.get().map(String::as_str).unwrap_or_default();
+        let config = self.config_arc();
+        let document = Arc::new(crate::settings::document(&config, version, &self.config_path()));
+        if self.settings.borrow().as_ref() != Some(&document) {
+            self.settings.send_replace(Some(document));
+        }
     }
 
     /// The server browser's own knobs: `[browser]`'s encoding rate and
@@ -10007,6 +10050,7 @@ mod account_stamp_tests {
             auto_start: false,
             model: None,
             env: HashMap::new(),
+            env_file: None,
             max_workers: None,
             permission_mode,
             vault_roots: Vec::new(),
@@ -13229,8 +13273,14 @@ provider = "anthropic"
         .expect("write the new config");
 
         let reload = workspace.reload_config().expect("the new file is valid");
-        assert!(reload.changed.contains(&"accounts"), "the account set moved: {reload:?}");
-        assert!(reload.changed.contains(&"orgs"), "the project set moved: {reload:?}");
+        assert!(
+            reload.changed.iter().any(|key| key.starts_with("accounts.")),
+            "the account set moved: {reload:?}",
+        );
+        assert!(
+            reload.changed.iter().any(|key| key.starts_with("orgs.")),
+            "the project set moved: {reload:?}",
+        );
 
         let live = workspace.config_arc();
         assert_eq!(live.projects[0].model.as_deref(), Some("claude-opus-5"));
@@ -13287,11 +13337,11 @@ provider = "anthropic"
         let reload = workspace.reload_config().expect("the new file is valid");
 
         assert!(
-            reload.restart_only.contains(&"server.port"),
+            reload.restart_only.iter().any(|key| key == "server.port"),
             "the new port needs a restart: {reload:?}",
         );
         assert!(
-            !reload.changed.contains(&"server"),
+            !reload.changed.iter().any(|key| key.starts_with("server.")),
             "a port change is not a live server change: {reload:?}",
         );
         assert_eq!(
@@ -13410,8 +13460,8 @@ provider = "anthropic"
 
         let reload = workspace.reload_config().expect("the new file is valid");
 
-        assert!(reload.restart_only.contains(&"dictate"), "{reload:?}");
-        assert!(!reload.changed.contains(&"dictate"), "{reload:?}");
+        assert!(reload.restart_only.iter().any(|key| key.starts_with("dictate.")), "{reload:?}");
+        assert!(!reload.changed.iter().any(|key| key.starts_with("dictate.")), "{reload:?}");
     }
 
     /// A reload that did not move the gateway's rotation numbers must not

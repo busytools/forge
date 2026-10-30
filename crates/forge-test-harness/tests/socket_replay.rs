@@ -251,6 +251,7 @@ macro_rules! assert_serde_names {
 
 census!(ServerMessage,
     [
+        Settings struct,
         Greeting struct, Snapshot struct, Update struct, Page struct,
         SeatFrames struct,
         CommitDiff struct, FileContent struct, Reply struct,
@@ -744,7 +745,7 @@ fn frames_record() -> Value {
     assert_no_split_renames();
 
     // Every name this record carries, against the names serde accepts. The
-    // samples below check the same thing for eleven variants by encoding a
+    // samples below check the same thing for twelve variants by encoding a
     // value; this checks all of them, which is the part a `rename` could
     // otherwise move while the record stayed green.
     assert_serde_names!(r#"{"kind":"__forge_probe__"}"#, ServerMessage, SERVER_MESSAGE_VARIANTS);
@@ -754,6 +755,24 @@ fn frames_record() -> Value {
     assert_serde_names!(r#""__forge_probe__""#, Command, COMMAND_VARIANTS);
 
     let samples = [
+        ServerMessage::Settings {
+            document: forge_primitives::SettingsDocument {
+                version: "1.2.3".to_owned(),
+                source: "~/.claude/forge/forge.toml".to_owned(),
+                totals: forge_primitives::SettingsTotals { keys: 1, areas: 1 },
+                areas: vec![forge_primitives::SettingsArea {
+                    id: "server".to_owned(),
+                    name: "server".to_owned(),
+                    note: "the socket".to_owned(),
+                    keys: vec![forge_primitives::SettingsKey {
+                        path: "server.port".to_owned(),
+                        kind: forge_primitives::SettingKind::Number,
+                        value: serde_json::json!(8790),
+                        class: forge_primitives::EffectClass::Restart,
+                    }],
+                }],
+            },
+        },
         ServerMessage::Greeting {
             version: PROTOCOL_VERSION,
             forge_version: forge_server::FORGE_VERSION.to_owned(),

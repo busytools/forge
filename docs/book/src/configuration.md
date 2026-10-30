@@ -943,30 +943,45 @@ the error, and the last good config stays live. No partial application. Once
 a file is accepted, the config forge holds is the file; the table below says
 which parts a running forge adopts and which wait for a restart.
 
+Each key carries one of three classes, and the settings page draws the same
+class the reload reports:
+
+- **live** - read on the key's next use.
+- **next session** - read when a session or a connection opens.
+- **restart** - built once at boot; an edit needs a restart.
+
+A fourth display state, **not read yet**, marks a key the loader accepts and
+nothing consumes. The catalogue in `crates/forge-workspace/src/settings.rs`
+is the one source for all four, and a test fails when a key the loader
+accepts has no class.
+
 | Table or key | Takes effect |
 | --- | --- |
-| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`, `slack`; `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile`, `slack` | Live. The server's roster, pins and next spawn read the new values. An added project with `auto_start = true` starts; toggling `auto_start` on a project that already exists applies the next time it starts. A removed project leaves the server's roster; sessions already running keep running. An open client sees the new roster on its next home read. A Slack binding to a label already in `[[slack]]` applies to the next tool call; an entry's `workspace`, `token`, `poll_seconds` and `dm_poll_seconds`, and adding a `[[slack]]` entry, are restart-only - the clients are built at boot. |
-| `[[accounts]]` - `display_name`, `provider`, `token`, `base_url`, `models`, `model_slugs`, `model_aliases`, `env` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
-| `[env]` | Live. Folded into each account's env at load, so the next spawn carries it. |
-| `[models."<name>"]` | Live. The next spawn stamps the new parameters. |
-| `[handoff]` | Live. The next handoff reads it. |
-| `[systemone]` | Live for new sessions. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
+| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
+| `[[orgs.projects]]` - `name`, `path` | Live. The roster re-reads them; a removed project leaves it, and sessions already running keep running. |
+| `[[orgs.projects]]` - `auto_start`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile`; `[orgs.projects.slack] workspace` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `auto_start` on a project that already exists applies the next time it starts, and an added project with `auto_start = true` starts. A project's Slack binding applies to its next tool call. |
+| `[[accounts]]` - `display_name`, `provider`, `base_url`, `token`, `models`, `model_slugs`, `model_aliases` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
+| `[[accounts]]` - `env` | Next session. Folded into each account's env at load, so the next spawn carries it; a running child keeps its own environment. |
+| `[env]` | Next session. Folded into each account's env at load, so the next spawn carries it. |
+| `[models."<name>"]` | Next session. The next spawn stamps the new parameters. |
+| `[handoff]`, `[orgs.projects.handoff]` | Live. The next handoff reads it. |
+| `[systemone]` | Next session. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
 | `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. A reload that moved these replaces the rotation numbers; one that did not leaves the live cooldowns and streaks alone. |
 | `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
 | `[server] tool_record_cap_kb`, `first_frame_cap_kb` | Live for pages and `more`; a connection already open keeps the cap it read when it opened. |
 | `[server] enabled`, `bind`, `port` | Restart-only. Stored and named in the log; forge never rebinds a live socket. |
 | `[browser]` `idle_minutes` | Live. The service reads the idle clock on every pass. |
-| `[browser]` `fps`, `quality` | Applies to the next browser host. A host already running keeps the encoding it was created with. |
-| `[client] mark`, `theme`, `font` | Applies to the next connection. A client snapshots these at its handshake and keeps them until it reconnects. |
+| `[browser]` `fps`, `quality` | Next session: applies to the next browser host. A host already running keeps the encoding it was created with. |
+| `[client] mark`, `theme`, `font` | Live. The server pushes the whole effective config on every applied reload, and an open client re-themes, re-fonts and re-marks itself from it without a reconnect. |
 | `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
 | `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |
-| `[dictate]` `bind`, `mode` | Applies to the next seat read. The server reads them live, but a client's key handler holds the composer record it last read, so a reconnect or a new occupant refreshes it. |
-| `[dictate]` `styling`, `structure`, `context` | Applies to the next connection, which is when a client takes its capture axes. |
+| `[dictate]` `bind`, `mode` | Live. The server reads them on every key decision; a client's key handler holds the composer record it last read, so a new occupant or reconnect refreshes what it starts from. |
+| `[dictate]` `styling`, `structure`, `context` | Next session: applies to the next connection, which is when a client takes its capture axes. |
 | `[dictate]` `enabled`, `models_dir`, `language`, `normalizer`, `max_capture_minutes`, `transcribe_model`, `cleanup_model` | Restart-only. The preflight and the engine's own configuration are built once at boot; the log names it. |
 | `[[slack]]` `workspace`, `token`, `poll_seconds`, `dm_poll_seconds` | Restart-only. The client and its pump captured these when the subsystem started; the log names them. |
 | `[[slack]]` `thread_idle_days`, `stale_after_hours` | Live. `thread_idle_days` is read by each sweep and `stale_after_hours` when a block is drawn. |
-| `[gotify]` | Partly live. The `gotify__*` tools read the section on every call, and a section added while forge runs starts its pump when you subscribe. A stream already running keeps the connection it captured until it restarts. |
-| `[plugins]` `auto_update` | No reader yet. The edit is accepted and applies nothing. |
+| `[gotify]` `url`, `client_token` | Live. The `gotify__*` tools read the section on every call, and a section added while forge runs starts its pump when you subscribe. A stream already running keeps the connection it captured until it restarts. |
+| `[plugins]` `auto_update` | Not read yet. The loader accepts the key and nothing consumes it; the settings page labels it rather than hiding it, and a change applies nothing. |
 
 **A running session is never reconfigured.** Its account (except when the
 gateway's own rotation moves it off an exhausted one), model, permission mode,
