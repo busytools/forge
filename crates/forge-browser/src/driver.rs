@@ -30,12 +30,21 @@ use tokio::sync::broadcast;
 
 use crate::tabs::DriverTab;
 
-/// The longest one tool call is given before the driver is presumed mute.
+/// The whole budget one call is given before the driver is presumed mute.
 ///
-/// **A request timeout, because rmcp carries none by default.** The bound
-/// sits above upstream's own (a 60 s navigation, a 30 s wait) with room: it
-/// is the wedge-breaker, not a deadline the tools keep.
-pub const CALL_TIMEOUT: Duration = Duration::from_secs(150);
+/// **A request timeout, because rmcp carries none by default, and one budget
+/// per call**: retries and re-listings spend what is left rather than a fresh
+/// bound each, so a mute call answers by name inside it. The two sides set
+/// the number: upstream's worst legitimate call is a click that navigates,
+/// about 80 s (a 5 s action, a 60 s navigation, a 10 s load and the settle),
+/// and nextest terminates a test at 120 s, which a wedged call also spends a
+/// ~15 s host boot inside; 90 sits 10 s above the first and 15 s under the
+/// second.
+///
+/// **`browser_evaluate` and `browser_run_code_unsafe` await arbitrary code
+/// and set no timeout of their own**, so this is their only ceiling: a script
+/// that runs past it is killed by the same budget rather than left running.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// **The longest a driver start is given before it is presumed wedged.**
 /// Measured live 2026-10-07: a named profile's driver child spawned and sat
@@ -412,7 +421,17 @@ fn stale_ref_recovery(why: &str) -> Option<String> {
 /// probe can tell this failure from a tool's own and not by matching prose it
 /// would have to keep in step.
 pub fn did_not_answer(tool: &str, bound: Duration) -> String {
-    format!("the driver did not answer {tool} within {} s", bound.as_secs())
+    format!("the driver did not answer {tool} within {}", duration_words(bound))
+}
+
+/// A bound as a sentence names it: whole seconds, or milliseconds under one
+/// so a spent budget cannot read "within 0 s".
+pub(crate) fn duration_words(bound: Duration) -> String {
+    if bound >= Duration::from_secs(1) {
+        format!("{} s", bound.as_secs())
+    } else {
+        format!("{} ms", bound.as_millis())
+    }
 }
 
 /// Whether a failure is the driver never getting attached at all.
@@ -657,9 +676,17 @@ mod tests {
     /// **A bound of ours is a dead driver; a tool's own timeout is not.** The
     /// builder is the only place the sentence is written, so this reads it
     /// rather than matching prose by hand.
+    /// **A spent budget's remainder is under a second**, and whole seconds
+    /// would read "within 0 s".
+    #[test]
+    fn a_bound_under_a_second_is_named_in_milliseconds() {
+        assert_eq!(duration_words(Duration::from_millis(1)), "1 ms");
+        assert_eq!(duration_words(Duration::from_secs(90)), "90 s");
+    }
+
     #[test]
     fn a_call_bound_that_expired_is_a_dead_driver_and_a_tools_timeout_is_not() {
-        let expired = did_not_answer("browser_tabs", Duration::from_secs(150));
+        let expired = did_not_answer("browser_tabs", CALL_TIMEOUT);
         assert!(timed_out(&expired), "our own bound expiring is the driver's silence");
         assert!(died(&expired), "and it makes the driver dead");
         assert!(
