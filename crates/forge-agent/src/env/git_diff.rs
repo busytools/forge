@@ -61,7 +61,10 @@ const STDOUT_SIZE_CAP: usize = 8 * 1024 * 1024;
 /// sequence is ~50s (5 commands × 10s each), but in practice every
 /// command returns in <100 ms on a local repo. Timeouts only fire
 /// on hung network mounts or genuinely huge repositories.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+///
+/// Public so a test that waits on a scan derives its wedge from the budget
+/// the scan's children get rather than picking a number of its own.
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The budget the tests give a scan's `git` children: **not the shell's
 /// own.** A scan's commands are bounded by it while the machine starts each
