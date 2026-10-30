@@ -77,6 +77,7 @@ describe('the chat notice row', () => {
     for (const [severity, glyph, tone] of levels) {
       const html = render(Notice, { props: { notice: { severity, text: 'a line' } } }).body;
       expect(html, `${severity} draws its shape`).toContain(`#i-${glyph}`);
+      expect(html, `${severity} is an image a reader hears`).toContain('role="img"');
       expect(html, `${severity} names it`).toContain(`aria-label="${severity}"`);
       expect(html, `${severity} takes its tone`).toContain(`class="ic gl${tone}"`);
     }
