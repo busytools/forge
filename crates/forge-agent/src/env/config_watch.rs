@@ -229,10 +229,10 @@ mod tests {
     /// [`super::DEBOUNCE`] after its first event, so this is that window with
     /// the same again as margin.
     const QUIET: Duration = super::DEBOUNCE.saturating_mul(2);
-    /// A wedge detector, not a delivery budget: the wait ends when the watch
-    /// reports, and only a watch that never reports reaches this bound. It
-    /// sits under nextest's 120 s kill, where these run, so a stuck watch
-    /// fails with its property's own message.
+    /// The wait ends when the watch reports, so this bound is reached when no
+    /// report arrives within it: a stuck watch, or a delivery slower still.
+    /// It sits under nextest's 120 s kill, where these run, so that failure
+    /// names the property instead of dying as a bare timeout.
     const WEDGE: Duration = Duration::from_secs(100);
 
     async fn fixture() -> (tempfile::TempDir, std::path::PathBuf, UnboundedReceiver<()>, ConfigWatch)
@@ -275,6 +275,11 @@ mod tests {
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "one write is one notification, not a second after the burst",
         );
+        // The quiet window is evidence only while the watch can still
+        // report; a dead watch would pass it too, so a write now must
+        // report.
+        std::fs::write(&path, "again = 1\n").expect("write");
+        next(&mut rx, "the watch still reports after a single write").await;
     }
 
     /// The reload's own read must not feed the watch. inotify reports a read
@@ -372,6 +377,11 @@ mod tests {
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "only the watched path produces an event",
         );
+        // The quiet windows are evidence only while the watch can still
+        // report; a dead watch would pass them too, so a write now must
+        // report.
+        std::fs::write(&path, "after the sibling = 1\n").expect("write");
+        next(&mut rx, "the watch still reports after the sibling").await;
     }
 
     /// A file that stays missing past the grace window is still reported, and

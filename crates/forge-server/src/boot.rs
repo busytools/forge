@@ -757,10 +757,10 @@ port = {port}
         handle.abort();
     }
 
-    /// A wedge detector, not a delivery budget: the edit applies when the
-    /// watch reports, and only a watch that never reports reaches this bound,
-    /// which sits under nextest's 120 s kill so a stuck watch fails with its
-    /// own message.
+    /// The wait ends when the watch reports, so this bound is reached when no
+    /// report arrives within it: a stuck watch, or a delivery slower still.
+    /// It sits under nextest's 120 s kill, so that failure names the property
+    /// instead of dying as a bare timeout.
     const CONFIG_EDIT_WEDGE: Duration = Duration::from_secs(100);
 
     /// A write to the watched file applies to the running workspace, with no
