@@ -11,6 +11,7 @@ import { noteSnapshot, noteSubscribe } from './perf';
 import { ownSettingsFrame, settingsFrame } from './settings/frame';
 import {
   connect,
+  DIAL_BOUND_MS,
   LIVENESS_DEAD_MS,
   LIVENESS_EVERY_MS,
   RETRY_MS,
@@ -1917,6 +1918,44 @@ describe('the liveness probe', () => {
   it('ships the documented liveness pair', () => {
     expect(LIVENESS_EVERY_MS, 'a probe after 15 s of quiet').toBe(15_000);
     expect(LIVENESS_DEAD_MS, 'and the write bound plus a margin in a browser').toBe(65_000);
+  });
+
+  /**
+   * **A server older than the probe is not asked.** Its answer would be a
+   * `client_message` error, which the refusal arm books on the oldest waiting
+   * subscribe - a healthy subject marked refused every quiet spell.
+   */
+  it('does not probe a server older than the probe', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 19, settings: DEFAULT_SETTINGS });
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_EVERY_MS);
+    expect(pings(socket), 'a pre-liveness server is never asked').toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_DEAD_MS);
+    expect(socket.closed, 'and nothing reaps it for the silence').toBe(false);
+    expect(connection.status()).toBe('open');
+    connection.close();
+  });
+
+  /** **A dial that never completes is abandoned and retried.** A peer that
+   *  accepts TCP and stalls the handshake must not hold the retry loop. */
+  it('abandons a dial that never completes and retries', async () => {
+    vi.useFakeTimers();
+    FakeSocket.made = [];
+    vi.stubGlobal('WebSocket', FakeSocket);
+    const connection = connect('ws://127.0.0.1:1/socket');
+    const first = FakeSocket.made[0];
+    expect(first, 'the connection dialled').toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(DIAL_BOUND_MS);
+    expect(first?.closed, 'the stalled dial is abandoned').toBe(true);
+    expect(connection.status()).toBe('connecting');
+
+    await vi.advanceTimersByTimeAsync(RETRY_MS);
+    expect(FakeSocket.made.length, 'and the retry dials again').toBe(2);
+    connection.close();
   });
 
   /**

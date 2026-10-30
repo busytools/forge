@@ -62,6 +62,14 @@ const LIVENESS_DEAD: Duration = Duration::from_secs(10);
 /// returns.
 const DIAL_BOUND: Duration = Duration::from_secs(10);
 
+/// The protocol that added `ping` and `pong`.
+///
+/// **An older server answers a probe with `client_message`**, and this half
+/// books a `client_message` refusal on the oldest subscribe still waiting - so
+/// a probe sent to a skewed server would mark a healthy subject refused. The
+/// greeting says which server this is, so a pre-liveness one is never asked.
+const LIVENESS_PROTOCOL: u64 = 20;
+
 /// The bound one reply-carrying dispatch is given. The socket is loopback and
 /// its server answers in milliseconds; a reply that outlives this is the
 /// version-skew case an `error` frame answers without a reply id, or a wedge -
@@ -991,6 +999,9 @@ async fn run(
         let mut bytes_at = seen.load(Ordering::Relaxed);
         let mut heard_at = tokio::time::Instant::now();
         let mut probe: Option<tokio::time::Instant> = None;
+        // Until a greeting says otherwise, the server is assumed to speak the
+        // probe (the greeting is the first frame, long before the first beat).
+        let mut speaks_liveness = true;
         loop {
             // The next moment the link owes something: the probe's deadline
             // when one is out, else the quiet that earns a probe.
@@ -1006,15 +1017,27 @@ async fn run(
                         let parsed = serde_json::from_str::<Value>(&text);
                         let parse_ms = at.elapsed().as_secs_f64() * 1000.0;
                         match parsed {
-                            Ok(value) => receive(
-                                &value,
-                                text.len(),
-                                parse_ms,
-                                &mut pending,
-                                &mut attaches,
-                                &mut awaiting,
-                                &events,
-                            ),
+                            Ok(value) => {
+                                // **Which server this is, before the first
+                                // beat.** A pre-liveness server cannot answer
+                                // a probe, and its refusal would land on a
+                                // subscribe; the greeting is the answer.
+                                if value.get("kind").and_then(Value::as_str) == Some("greeting")
+                                    && let Some(version) =
+                                        value.get("version").and_then(Value::as_u64)
+                                {
+                                    speaks_liveness = version >= LIVENESS_PROTOCOL;
+                                }
+                                receive(
+                                    &value,
+                                    text.len(),
+                                    parse_ms,
+                                    &mut pending,
+                                    &mut attaches,
+                                    &mut awaiting,
+                                    &events,
+                                );
+                            }
                             Err(why) => say(&events, SocketEvent::Malformed(why.to_string())),
                         }
                     }
@@ -1328,6 +1351,9 @@ async fn run(
                         // the background: the socket may have died while the
                         // page slept and its own timer with it.
                         Outbound::Ping => {
+                            if !speaks_liveness {
+                                continue;
+                            }
                             if writer.send(ping_frame()).await.is_err() {
                                 break;
                             }
@@ -1360,6 +1386,13 @@ async fn run(
                             break;
                         }
                         None => {
+                            // **A pre-liveness server is not asked.** Its
+                            // refusal would be booked on a subscribe; the
+                            // quiet re-arms from now so the beat cannot spin.
+                            if !speaks_liveness {
+                                heard_at = tokio::time::Instant::now();
+                                continue;
+                            }
                             // **The deadline is stamped only once the send
                             // has answered**: a probe queued behind a busy
                             // write owes nothing until it reaches the peer.
@@ -2819,6 +2852,40 @@ pub(crate) mod tests {
             asked.elapsed() < LIVENESS_EVERY,
             "the probe arrived only after the quiet earned one, so the page's ask was dropped",
         );
+    }
+
+    /// **A pre-liveness server is never probed.** Its answer would be a
+    /// `client_message` refusal, and this half books one on the oldest
+    /// subscribe still waiting - a healthy subject marked refused every quiet
+    /// spell.
+    #[tokio::test(start_paused = true)]
+    async fn an_older_server_is_not_probed() {
+        let mut stub = stub().await;
+        let (_socket, mut rx) = connected_paused(&stub).await;
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 19, "settings": {} }))
+            .expect("the greeting lands");
+        settle(200).await;
+
+        // The first beat sees the greeting's own bytes as progress and
+        // resets; the SECOND is a whole quiet spell with nothing, which is
+        // where a probe would be earned - and refused.
+        tokio::time::advance(LIVENESS_EVERY).await;
+        settle(200).await;
+        tokio::time::advance(LIVENESS_EVERY).await;
+        settle(200).await;
+        tokio::time::advance(LIVENESS_DEAD).await;
+        settle(200).await;
+
+        if let Ok(frame) = stub.heard.try_recv() {
+            panic!("a pre-liveness server was probed: {frame}");
+        }
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, SocketEvent::Status(Status::Connecting)),
+                "an older server's silence reaped it",
+            );
+        }
     }
 
     /// **The shipping liveness pair is the value the book states.** What the

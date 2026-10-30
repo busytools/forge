@@ -376,6 +376,27 @@ export const LIVENESS_EVERY_MS = 15_000;
 export const LIVENESS_DEAD_MS = 65_000;
 
 /**
+ * The protocol that added `ping` and `pong`.
+ *
+ * **An older server answers a probe with `client_message`**, and that error is
+ * the one the refusal arm books on the oldest waiting subscribe - so a probe
+ * sent to a skewed server would mark a healthy subject refused. The client
+ * knows the server's number from the greeting, so it asks nothing of one that
+ * cannot answer.
+ */
+const LIVENESS_PROTOCOL = 20;
+
+/**
+ * How long a dial may hang before it is abandoned and retried.
+ *
+ * **The greeting bound is not this one**: `attempt.ts`'s `HANDSHAKE_MS` runs on
+ * the connect screen only, and a reconnect's `new WebSocket` had no timer at
+ * all - a peer that accepted TCP and stalled the handshake waited on the
+ * browser's own timeout. Mirrors the shell transport's dial bound.
+ */
+export const DIAL_BOUND_MS = 10_000;
+
+/**
  * A command's variant name.
  *
  * Externally tagged commands have exactly one key, so anything else is a
@@ -589,15 +610,16 @@ export function connect(
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
   /**
-   * The liveness timers: the quiet before a probe, and the deadline of the
-   * probe that is out.
+   * The connection's own timers: the quiet before a probe, the deadline of
+   * the probe that is out, and the bound on the dial.
    *
-   * **They belong to the socket they were armed for**, so `onclose` clears
-   * them - a late deadline from a replaced socket must not close the live
-   * one that replaced it.
+   * **They belong to the socket they were armed for**, so the drop path
+   * clears them - a late deadline from a replaced socket must not close the
+   * live one that replaced it.
    */
   let quiet: ReturnType<typeof setTimeout> | null = null;
   let dead: ReturnType<typeof setTimeout> | null = null;
+  let dial: ReturnType<typeof setTimeout> | null = null;
   /**
    * The open socket's own drop path, so a deadline can report the drop
    * without waiting for an event that may never come: a half-open peer never
@@ -620,8 +642,15 @@ export function connect(
   function clearLiveness(): void {
     if (quiet !== null) clearTimeout(quiet);
     if (dead !== null) clearTimeout(dead);
+    if (dial !== null) clearTimeout(dial);
     quiet = null;
     dead = null;
+    dial = null;
+  }
+
+  /** Whether the greeted server speaks the protocol that added `ping`. */
+  function speaksLiveness(): boolean {
+    return greetingProtocol === null || greetingProtocol >= LIVENESS_PROTOCOL;
   }
 
   /** Arm the probe for a link that has been quiet since now. */
@@ -635,10 +664,14 @@ export function connect(
    *
    * The deadline is armed after the send, so a probe queued behind a busy
    * socket owes the peer nothing until it is on the wire. Expiry closes the
-   * socket and `onclose` does the rest - one drop path rather than two.
+   * socket **and reports the drop itself**: a half-open peer never answers
+   * the closing handshake, so `onclose` may not come for minutes.
    */
   function probe(): void {
     if (!isOpen()) return;
+    // **A server older than the probe cannot answer it**, and its error would
+    // be booked as a subscribe refusal; the greeting already said so.
+    if (!speaksLiveness()) return;
     clearLiveness();
     // **The socket this probe was asked on, never a replacement.** A late
     // deadline that read the module's current socket would close the
@@ -891,6 +924,16 @@ export function connect(
     // Frames arrive as their bytes, not as a Blob: a canvas draws the bytes.
     next.binaryType = 'arraybuffer';
     socket = next;
+    // **A dial that never completes is abandoned**, exactly as a refused one
+    // is: the retry loop is the answer to both. `onclose` may never fire for
+    // a handshake the peer accepted and stalled, so the drop runs here - the
+    // same reason the liveness deadline reports its own.
+    dial = setTimeout(() => {
+      dial = null;
+      if (next !== socket) return;
+      next.close();
+      currentDrop?.();
+    }, DIAL_BOUND_MS);
 
     next.onopen = () => {
       if (next !== socket) return;
