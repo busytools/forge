@@ -165,9 +165,7 @@ again to every connection after each applied reload:
             "class": "restart",
             "edit": {
               "kind": "number",
-              "allowed": [],
-              "required": true,
-              "group": null
+              "required": true
             }
           }
         ]
@@ -196,9 +194,10 @@ the one source for the frame and for the reload's own summary.
 `fingerprint` is a digest of the raw file text the document was built
 from. `edit` says how a client draws the key's control: `kind` is
 `string`, `number`, `bool`, `enum` or `list`; `allowed` holds an enum's
-accepted names; `required` says whether adding the owning entry needs the
-key; and `group` names the repeated entry the key belongs to (`account`,
-`project`, `slack`, `model`, `org`) or `null` for a table's own keys.
+accepted names and is absent when the key has none; `required` says an
+empty value is a value rather than the key unset; and `group` names the
+repeated entry the key belongs to (`account`, `project`, `slack`,
+`model`, `org`), absent for a table's own keys.
 
 **Values cross as the file loaded them, unredacted.** The socket is
 reached over loopback or the private network, and that boundary is the
@@ -268,7 +267,7 @@ A save that writes nothing is answered with `settings_refused`:
 `invalid` (the candidate failed the boot loader; the message is the
 loader's own, including its line and key where it has one), `refused`
 (a guard declined it, naming what it found) or `io` (the file could not
-be read or written; nothing was applied). The writer preserves the
+be read or written; the write may or may not have landed). The writer preserves the
 file's comments and order, replaces the file by rename in the
 destination's own mode and through a symlink, and the guards live on the
 server so a hand-rolled client cannot force them.

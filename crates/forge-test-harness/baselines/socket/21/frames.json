@@ -845,6 +845,21 @@
         "keys"
       ]
     },
+    "SettingsRefused": {
+      "": [
+        "id",
+        "key_path",
+        "kind",
+        "message",
+        "reason"
+      ]
+    },
+    "SettingsSaved": {
+      "": [
+        "id",
+        "kind"
+      ]
+    },
     "SnapshotBoard": {
       "": [
         "data",

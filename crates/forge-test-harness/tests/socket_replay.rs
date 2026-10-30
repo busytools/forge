@@ -1022,6 +1022,19 @@ fn frames_record() -> Value {
             },
         }),
     );
+    // The save's two answers: the page matches them by `id`, and a rename of
+    // that field would leave every save unanswered until its bar times out.
+    payload_sampled
+        .insert("SettingsSaved".to_owned(), shape_of(&ServerMessage::SettingsSaved { id: 7 }));
+    payload_sampled.insert(
+        "SettingsRefused".to_owned(),
+        shape_of(&ServerMessage::SettingsRefused {
+            reason: forge_server::transport::envelope::SettingsRefusal::Invalid,
+            message: "forge.toml at ... failed to parse".to_owned(),
+            id: 7,
+            key_path: Some("server.port".to_owned()),
+        }),
+    );
     // **The machine turn's own field path.** A rename of `machine` makes the
     // client's `machineTurn()` read null, the composer never stands down, and
     // every other test stays green. The VALUE (`handoff`) is held by

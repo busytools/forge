@@ -23,14 +23,15 @@ values cross unredacted, which is the decision the WireGuard boundary
 carries. It also carries the fingerprint of the raw file text it was built
 from, and the edit metadata for every key.
 
-A save is one `settings_edit` message: the fingerprint, and the batch of
-edits (`set`, `add` or `remove`). The server reads the file, compares the
-fingerprint, applies the edits to its text with a comment-preserving
-writer, validates the candidate with the boot loader, and renames a temp
-file over the path. The watcher then reloads and its settings push is the
-save's answer; a save that wrote nothing is answered by `settings_refused`
-with the loader's own words. A push that never arrives is a timeout the
-bar reports.
+A save is one `settings_edit` message: the fingerprint, the batch of edits
+(`set`, `add` or `remove`), and the page's own `id`. The server reads the
+file, compares the fingerprint, applies the edits to its text with a
+comment-preserving writer, validates the candidate with the boot loader,
+and renames a temp file over the path. `settings_saved` acknowledges the
+save by its `id`; one that wrote nothing is answered by `settings_refused`
+with the loader's or the guard's own words. The watcher's reload push
+carries the new document to every client. A save with no answer is a
+timeout the bar reports.
 
 ## What it draws
 
@@ -110,10 +111,10 @@ bar reports.
 - **No connection** - the route draws the connect door, as the models page
   does.
 - **Unsaved** - the bar counts the batch and Save is the one door.
-- **Saving** - the button says so and the bar waits for the push.
+- **Saving** - the button says so and the bar waits for the save's answer.
 - **Refused** - stale (a reload-page door), invalid (the loader's words,
   anchored at its key), or a guard's own refusal.
-- **A save with no push** - the bar says no reload arrived and keeps the
+- **A save with no answer** - the bar says no answer arrived and keeps the
   batch.
 - **A new entry** - a skeleton in place with its required fields marked;
   an added entry is discarded or saved with the rest.

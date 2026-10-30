@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { HomeRead } from '../home/live';
+  import { goTo, holdRoute, type Route } from '../routes';
   import type { Connection } from '../socket';
   import type { SettingsDocument, SettingsEditRequest, SettingsKey } from '../wire/settings';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
@@ -42,10 +43,10 @@
     label: string;
     parent: string | null;
   };
+  /** What leaving a dirty draft means on this page. */
+  type Then = 'stop-editing' | 'back' | 'reload' | { route: Route };
   /** The one confirm the page has open. */
-  type Pending =
-    | { kind: 'remove'; entry: EntryTarget }
-    | { kind: 'discard'; then: 'stop-editing' | 'back' | 'reload' };
+  type Pending = { kind: 'remove'; entry: EntryTarget } | { kind: 'discard'; then: Then };
 
   let selected = $state<string | null>(null);
   let editing = $state(false);
@@ -144,6 +145,9 @@
         saving = false;
         savingId = null;
         clearTimer();
+        // **A refused save wrote nothing.** Its context must not survive to
+        // colour a later push as "saved. these need a server restart".
+        saveContext = null;
         refusal = {
           reason: message.reason,
           message: message.message,
@@ -164,28 +168,127 @@
     return () => clearTimeout(id);
   });
 
-  // Android's Back closes a dirty draft's page with the draft in it: the
-  // first change takes a history entry, and a pop asks first.
-  let guarded = false;
-  $effect(() => {
-    if (!editing || !dirty || guarded) return;
+  // **One owner of the page's history.** Android's Back closes a dirty
+  // draft with a confirm, and a dialog takes an entry of its own so Back
+  // closes it; two popstate listeners would answer each other's pops (a
+  // cancel reopened the dialog for ever), so this page places and settles
+  // every entry it pushes.
+  let draftEntry = false;
+  let dialogEntry = false;
+  /** A dialog button's answer, waiting on the entry its own pop removes. */
+  let settle: 'confirm' | 'cancel' | null = null;
+  let droppingDraft = false;
+  let afterDrop: (() => void) | null = null;
+  /** What to do once the draft's entry is off the stack. */
+  let leave: (() => void) | null = null;
+
+  function heldState(): Record<string, unknown> {
     const held: unknown = history.state;
-    const state = typeof held === 'object' && held !== null ? held : {};
-    history.pushState({ ...state, forgeSettingsDraft: true }, '', location.href);
-    guarded = true;
+    return typeof held === 'object' && held !== null ? (held as Record<string, unknown>) : {};
+  }
+
+  function pushDraftEntry(): void {
+    history.pushState({ ...heldState(), forgeSettingsDraft: true }, '', location.href);
+    draftEntry = true;
+  }
+
+  /** Drop the draft's entry, then do what the drop was holding up. */
+  function dropDraftEntry(after?: () => void): void {
+    if (!draftEntry) {
+      after?.();
+      return;
+    }
+    droppingDraft = true;
+    afterDrop = after ?? null;
+    history.back();
+  }
+
+  function openPending(next: Pending): void {
+    pending = next;
+    history.pushState({ ...heldState(), forgeSettingsDialog: true }, '', location.href);
+    dialogEntry = true;
+  }
+
+  /** A dialog's answer; the pop that removes its entry runs it. */
+  function settlePending(answer: 'confirm' | 'cancel'): void {
+    if (!dialogEntry) {
+      runPending(answer);
+      return;
+    }
+    settle = answer;
+    history.back();
+  }
+
+  function runPending(answer: 'confirm' | 'cancel'): void {
+    const held = pending;
+    pending = null;
+    if (held === null || answer === 'cancel') return;
+    if (held.kind === 'remove') {
+      removeEntry(draft, held.entry.area, held.entry.group, held.entry.path, held.entry.label);
+      return;
+    }
+    finish(held.then);
+  }
+
+  // The dirty draft keeps one entry; it is dropped the moment nothing is
+  // unsaved, so a stray entry does not swallow the next Back.
+  $effect(() => {
+    if (editing && dirty > 0) {
+      if (!draftEntry && !dialogEntry) pushDraftEntry();
+      return;
+    }
+    if (draftEntry && !dialogEntry) {
+      const after = leave;
+      leave = null;
+      dropDraftEntry(after ?? undefined);
+    }
   });
+
   $effect(() => {
     const onPop = (): void => {
-      if (!editing || !dirty) {
-        guarded = false;
+      if (droppingDraft) {
+        droppingDraft = false;
+        draftEntry = false;
+        const after = afterDrop;
+        afterDrop = null;
+        after?.();
         return;
       }
-      history.pushState({ forgeSettingsDraft: true }, '', location.href);
-      guarded = true;
-      pending = { kind: 'discard', then: 'back' };
+      if (settle !== null) {
+        const answer = settle;
+        settle = null;
+        dialogEntry = false;
+        runPending(answer);
+        return;
+      }
+      if (pending !== null) {
+        // Back closed the dialog; cancelling is what Back means.
+        dialogEntry = false;
+        runPending('cancel');
+        return;
+      }
+      if (editing && dirty > 0) {
+        // Back tried to leave with changes: keep the reader here and ask.
+        draftEntry = false;
+        pushDraftEntry();
+        openPending({ kind: 'discard', then: 'back' });
+        return;
+      }
+      draftEntry = false;
     };
     addEventListener('popstate', onPop);
     return () => removeEventListener('popstate', onPop);
+  });
+
+  // A programmatic move - a notification's Open - is the page's to refuse
+  // while a draft is unsaved; it asks, then forces the move on a confirm.
+  $effect(() => {
+    if (!editing || dirty === 0) return;
+    return holdRoute((route) => {
+      if (pending !== null) return false;
+      begin({ route });
+      return false;
+    });
   });
 
   function save(): void {
@@ -223,6 +326,8 @@
       if (!saving) return;
       saving = false;
       savingId = null;
+      // An unanswered save must not colour the next push as its own.
+      saveContext = null;
       refusal = {
         reason: 'refused',
         message: 'no answer arrived after the save; the server did not say whether it wrote',
@@ -232,27 +337,35 @@
   }
 
   /** Leave edit mode, navigate or reload - through one confirm when dirty. */
-  function begin(then: 'stop-editing' | 'back' | 'reload'): void {
+  function begin(then: Then): void {
     if (dirty) {
-      pending = { kind: 'discard', then };
+      openPending({ kind: 'discard', then });
       return;
     }
     finish(then);
   }
 
-  function finish(then: 'stop-editing' | 'back' | 'reload'): void {
+  function finish(then: Then): void {
     discard();
     if (then === 'stop-editing') {
       editing = false;
       baseline = null;
-    }
-    if (then === 'back') {
-      location.assign('/');
       return;
     }
-    if (then === 'reload') {
-      if (frame.status === 'ready') baseline = frame.document.fingerprint;
-      else location.reload();
+    // The move rides the draft entry's own pop, so the history stack is
+    // settled before the page leaves it.
+    leave =
+      then === 'back'
+        ? () => location.assign('/')
+        : then === 'reload'
+          ? () => location.reload()
+          : () => goTo(then.route, { force: true });
+    // `discard` above may already have emptied the draft; when the effect
+    // has not run yet, run the move now.
+    if (!draftEntry) {
+      const after = leave;
+      leave = null;
+      after?.();
     }
   }
 
@@ -335,10 +448,12 @@
         setEntryValue(draft, path, field, value)}
       onAdd={addNew}
       onRemoveRequest={(entry: EntryTarget) => {
-        pending = { kind: 'remove', entry };
+        openPending({ kind: 'remove', entry });
       }}
       onCancelAdd={(path: string) => {
         delete draft.adds[path];
+        // A later add of the same entry must take the keyboard again.
+        if (focusAdd === path) focusAdd = null;
       }}
       onUndoRemove={(path: string) => undoRemove(draft, path)}
       errorPath={refusal?.keyPath ?? null}
@@ -397,31 +512,18 @@
         title={`Remove ${pending.entry.label}?`}
         body={depends(pending.entry)}
         confirm="remove"
-        onconfirm={() => {
-          if (pending?.kind !== 'remove') return;
-          removeEntry(
-            draft,
-            pending.entry.area,
-            pending.entry.group,
-            pending.entry.path,
-            pending.entry.label,
-          );
-          pending = null;
-        }}
-        oncancel={() => (pending = null)}
+        fallback="settings-area-title"
+        onconfirm={() => settlePending('confirm')}
+        oncancel={() => settlePending('cancel')}
       />
     {:else if pending?.kind === 'discard'}
       <ConfirmDialog
         title="Discard these changes?"
         body="The edits, added entries and removals on this page will be lost."
         confirm="discard"
-        onconfirm={() => {
-          if (pending?.kind !== 'discard') return;
-          const then = pending.then;
-          pending = null;
-          finish(then);
-        }}
-        oncancel={() => (pending = null)}
+        fallback="settings-area-title"
+        onconfirm={() => settlePending('confirm')}
+        oncancel={() => settlePending('cancel')}
       />
     {/if}
   {/if}

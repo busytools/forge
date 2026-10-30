@@ -3,6 +3,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ServerMessage } from '../protocol';
+import { currentRoute, goTo } from '../routes';
+import { get } from 'svelte/store';
 import type { Connection } from '../socket';
 import type { SettingsDocument, SettingsEditWire } from '../wire/settings';
 import Settings from './Settings.svelte';
@@ -221,6 +223,8 @@ describe('the settings editor page', () => {
       .find((button) => button.textContent === 'cancel')
       ?.click();
     await settle();
+    await settle();
+    expect(document.querySelector('.settings-dialog'), 'the dialog is gone').toBeNull();
     expect(document.querySelector('.settings-mode')?.textContent, 'still editing').toContain(
       'editing',
     );
@@ -261,6 +265,64 @@ describe('the settings editor page', () => {
     );
   });
 
+  /**
+   * **One owner of popstate.** The dialog's entry and the page's dirty guard
+   * both answering a pop reopened the discard dialog for ever: cancelling a
+   * removal raised a spurious one.
+   */
+  it('cancelling a removal confirm closes it without raising a discard', async () => {
+    draw();
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    const granite = [...document.querySelectorAll<HTMLElement>('.settings-group')].find((group) =>
+      group.textContent?.includes('Granite'),
+    );
+    const remove = granite?.querySelector<HTMLButtonElement>('.settings-row-action.danger');
+    if (remove === undefined || remove === null)
+      throw new Error('the entry carries no remove door');
+    remove.click();
+    flushSync();
+    expect(document.querySelector('.settings-dialog')?.textContent).toContain('Granite');
+
+    [...document.querySelectorAll<HTMLButtonElement>('.settings-dialog .settings-btn')]
+      .find((button) => button.textContent === 'cancel')
+      ?.click();
+    await settle();
+    await settle();
+    expect(document.querySelector('.settings-dialog'), 'the dialog is gone').toBeNull();
+    expect(document.body.textContent, 'no discard confirm was raised').not.toContain(
+      'Discard these changes?',
+    );
+  });
+
+  /**
+   * **A programmatic move asks too.** A notification's Open is not a person
+   * pressing Back, and losing the draft to it would be silent.
+   */
+  it('asks before a programmatic move while the draft is dirty', () => {
+    currentRoute.set({ name: 'settings' });
+    draw();
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    rail('server').click();
+    flushSync();
+    const port =
+      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
+        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
+        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
+    if (port === null) throw new Error('the number control is not drawn');
+    port.value = '8791';
+    port.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    goTo({ name: 'home' });
+    flushSync();
+    expect(get(currentRoute).name, 'the page did not move').toBe('settings');
+    expect(document.querySelector('.settings-dialog')?.textContent).toContain(
+      'Discard these changes?',
+    );
+  });
+
   it('adds a skeleton entry and removes one behind a confirm', async () => {
     draw();
     (document.querySelector('.settings-mode') as HTMLButtonElement).click();
@@ -298,7 +360,11 @@ describe('the settings editor page', () => {
     ].find((button) => button.textContent === 'remove');
     if (confirm === undefined) throw new Error('the confirm has no remove button');
     confirm.click();
+    // The answer rides the dialog entry's own pop, so the removal lands one
+    // task after the click.
     await settle();
+    await settle();
+    expect(document.querySelector('.settings-dialog'), 'the dialog is gone').toBeNull();
     expect(document.body.textContent, 'the group reads as removed').toContain('removed on save');
   });
 });

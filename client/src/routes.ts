@@ -231,9 +231,27 @@ export const currentRoute = writable<Route>({ name: 'home' });
  * instead - a dead scratch stack, measured 2026-10-14. The search carries
  * nothing else: the parameter is its only reader.
  */
-export function goTo(route: Route): void {
+export function goTo(route: Route, options: { force?: boolean } = {}): void {
+  if (!options.force && hold !== null && !hold(route)) return;
   currentRoute.set(route);
   history.pushState(null, '', `${hrefFor(route)}${location.search}`);
+}
+
+/**
+ * A page's hold on a programmatic move - a notification's Open while a
+ * draft is unsaved, where leaving would drop it silently. Returns false to
+ * own the move (the page asks first, then calls `goTo` with `force`).
+ *
+ * **One holder at a time**: the page that is showing is the only one that
+ * can lose something.
+ */
+let hold: ((route: Route) => boolean) | null = null;
+
+export function holdRoute(guard: (route: Route) => boolean): () => void {
+  hold = guard;
+  return () => {
+    if (hold === guard) hold = null;
+  };
 }
 
 function encode(segment: string): string {

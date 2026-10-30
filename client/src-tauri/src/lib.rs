@@ -185,15 +185,17 @@ mod commands {
         bridge.more(&conversation, before, turns.unwrap_or(20))
     }
 
-    /// A batched save of `forge.toml`; false means no socket is open and
-    /// nothing went.
+    /// A batched save of `forge.toml`; `id` is the page's own number for it,
+    /// echoed by the acknowledgement or the refusal. False means no socket is
+    /// open and nothing went.
     #[tauri::command]
     pub fn client_settings_edit(
         bridge: tauri::State<'_, Arc<Bridge>>,
         fingerprint: String,
         edits: Value,
+        id: u64,
     ) -> bool {
-        bridge.settings_edit(fingerprint, edits)
+        bridge.settings_edit(fingerprint, edits, id)
     }
 
     /// One repair ask: the frames a seat's stream emitted between two numbers.

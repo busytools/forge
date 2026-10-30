@@ -9,7 +9,6 @@
 use forge_primitives::settings::{
     EditKind, SettingsDocument, SettingsEditOp, SettingsEditRequest, SettingsKey,
 };
-use regex::Regex;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 
 /// Why an edit could not be applied.
@@ -37,20 +36,33 @@ pub(crate) fn apply(
     // **A rename is applied last.** Locating an entry by its pre-edit name
     // (an org's, a project's, an account's) fails once that name moved, so a
     // batch that renames and edits the same entry applies the edits first.
-    let (renames, rest): (Vec<&SettingsEditRequest>, Vec<&SettingsEditRequest>) =
-        edits.iter().partition(|edit| {
-            edit.op == SettingsEditOp::Set && identity_pattern(edit, document).is_some()
-        });
+    // A project's rename goes before its org's: the project's own identity is
+    // the org's pre-edit name.
+    let mut rest: Vec<&SettingsEditRequest> = Vec::new();
+    let mut nested_renames: Vec<&SettingsEditRequest> = Vec::new();
+    let mut entry_renames: Vec<&SettingsEditRequest> = Vec::new();
+    for edit in edits {
+        match identity_pattern(edit, document) {
+            None => rest.push(edit),
+            Some("orgs[].projects[].name") => nested_renames.push(edit),
+            Some(_) => entry_renames.push(edit),
+        }
+    }
     for edit in rest {
         apply_one(&mut doc, edit, document)?;
     }
-    for edit in renames {
+    for edit in nested_renames {
+        apply_one(&mut doc, edit, document)?;
+    }
+    for edit in entry_renames {
         apply_one(&mut doc, edit, document)?;
     }
     let text = doc.to_string();
-    // toml_edit renders `\n`; a CRLF file comes back as it went in.
-    Ok(if current.contains("\r\n") && !text.contains('\r') {
-        text.replace('\n', "\r\n")
+    // toml_edit renders `\n`; a CRLF file comes back as it went in, including
+    // inside a multi-line string, where the newline is content rather than
+    // layout.
+    Ok(if current.contains("\r\n") {
+        text.replace("\r\n", "\n").replace('\n', "\r\n")
     } else {
         text
     })
@@ -67,8 +79,11 @@ fn identity_pattern<'a>(
     } else {
         edit.pattern.as_str()
     };
-    matches!(pattern, "orgs[].name" | "orgs[].projects[].name" | "accounts[].display_name")
-        .then_some(pattern)
+    matches!(
+        pattern,
+        "orgs[].name" | "orgs[].projects[].name" | "accounts[].display_name" | "slack[].workspace"
+    )
+    .then_some(pattern)
 }
 
 fn apply_one(
@@ -107,10 +122,10 @@ fn set_key(
     }
     let value = edit.value.clone().unwrap_or(serde_json::Value::Null);
     if value.is_null() {
-        return remove_leaf(doc, &key.pattern, &edit.key_path);
+        return remove_leaf(doc, key);
     }
     let toml = to_toml(&value, key.edit.kind, &key.edit.allowed, &edit.key_path)?;
-    let (steps, leaf) = locate(&key.pattern, &edit.key_path).ok_or_else(|| {
+    let (steps, leaf) = locate(key).ok_or_else(|| {
         invalid(
             format!("`{}` does not fill its catalogue pattern", edit.key_path),
             Some(edit.key_path.clone()),
@@ -137,15 +152,18 @@ fn remove_key(
             Some(edit.key_path.clone()),
         )
     })?;
-    remove_leaf(doc, &key.pattern, &edit.key_path)
+    remove_leaf(doc, key)
 }
 
-fn remove_leaf(doc: &mut DocumentMut, pattern: &str, path: &str) -> Result<(), WriteError> {
-    let (steps, leaf) = locate(pattern, path).ok_or_else(|| {
-        invalid(format!("`{path}` does not fill its catalogue pattern"), Some(path.to_owned()))
+fn remove_leaf(doc: &mut DocumentMut, key: &SettingsKey) -> Result<(), WriteError> {
+    let (steps, leaf) = locate(key).ok_or_else(|| {
+        invalid(
+            format!("`{}` does not fill its catalogue pattern", key.path),
+            Some(key.path.clone()),
+        )
     })?;
     let parent = descend(doc, &steps, false).ok_or_else(|| {
-        invalid(format!("`{path}` has no table to remove from"), Some(path.to_owned()))
+        invalid(format!("`{}` has no table to remove from", key.path), Some(key.path.clone()))
     })?;
     parent.remove(&leaf);
     Ok(())
@@ -162,41 +180,46 @@ enum Step {
 }
 
 /// Where a leaf sits: the steps to its parent and the leaf's own key.
-fn locate(pattern: &str, path: &str) -> Option<(Vec<Step>, String)> {
-    let parts = parts_of(pattern)?;
-    let regex = regex_for(&parts)?;
-    let captures = regex.captures(path)?;
-    let wildcards: Vec<String> = captures
-        .iter()
-        .skip(1)
-        .filter_map(|capture| capture.map(|c| c.as_str().to_owned()))
-        .collect();
-    let mut next = 0usize;
-    let mut take = || {
-        let value = wildcards.get(next).cloned();
-        next += 1;
-        value
-    };
+///
+/// **The instance names are the document's own, not a cut of the display
+/// path.** A dotted org beside one whose name is a prefix, or a project name
+/// that starts with the next key segment, makes a regex over the path read
+/// the wrong split; `group` already holds the names the row was built from,
+/// in the order the pattern's wildcards take them, and a trailing wildcard's
+/// value is the row's own leaf.
+fn locate(key: &SettingsKey) -> Option<(Vec<Step>, String)> {
+    let parts = parts_of(&key.pattern)?;
     let last = parts.last()?;
     let leaf = match last {
-        // A trailing wildcard is the leaf, and it is the LAST capture: the
-        // captures before it are the steps.
-        Part::Wildcard => wildcards.last()?.clone(),
+        Part::Wildcard => key.leaf.clone(),
         Part::Literal(value) | Part::Array(value) => value.clone(),
     };
+    // `group` also carries a table name for the areas whose rows sit under
+    // one (`slack[].token` groups as `["slack", workspace]`, `server.port`
+    // as `["server"]`), so the names a wildcard takes are its LAST entries.
+    let consuming = parts
+        .iter()
+        .take(parts.len() - 1)
+        .filter(|part| matches!(part, Part::Array(_) | Part::Wildcard))
+        .count();
+    let start = key.group.len().checked_sub(consuming)?;
+    let mut names = key.group[start..].iter();
     let mut steps = Vec::new();
     for part in parts.iter().take(parts.len() - 1) {
         match part {
             Part::Literal(value) => steps.push(Step::Key(value.clone())),
             Part::Array(value) => match value.as_str() {
-                "accounts" => steps.push(Step::Account(take()?)),
-                "orgs" => steps.push(Step::Org(take()?)),
-                "projects" => steps.push(Step::Project(take()?)),
-                "slack" => steps.push(Step::Slack(take()?)),
+                "accounts" => steps.push(Step::Account(names.next()?.clone())),
+                "orgs" => steps.push(Step::Org(names.next()?.clone())),
+                "projects" => steps.push(Step::Project(names.next()?.clone())),
+                "slack" => steps.push(Step::Slack(names.next()?.clone())),
                 _ => return None,
             },
-            Part::Wildcard => steps.push(Step::Key(take()?)),
+            Part::Wildcard => steps.push(Step::Key(names.next()?.clone())),
         }
+    }
+    if names.next().is_some() {
+        return None;
     }
     Some((steps, leaf))
 }
@@ -224,30 +247,6 @@ fn parts_of(pattern: &str) -> Option<Vec<Part>> {
         }
     }
     (!parts.is_empty()).then_some(parts)
-}
-
-fn regex_for(parts: &[Part]) -> Option<Regex> {
-    let mut pattern = String::from("^");
-    for (index, part) in parts.iter().enumerate() {
-        if index > 0 {
-            pattern.push_str("\\.");
-        }
-        match part {
-            Part::Literal(value) => pattern.push_str(&regex::escape(value)),
-            Part::Array(value) => {
-                pattern.push_str(&regex::escape(value));
-                pattern.push_str("\\.");
-                let wildcard = if index + 1 == parts.len() { "(.+)" } else { "(.+?)" };
-                pattern.push_str(wildcard);
-            }
-            Part::Wildcard => {
-                let wildcard = if index + 1 == parts.len() { "(.+)" } else { "(.+?)" };
-                pattern.push_str(wildcard);
-            }
-        }
-    }
-    pattern.push('$');
-    Regex::new(&pattern).ok()
 }
 
 /// The container a leaf's parent is: a table, or an inline table
@@ -289,10 +288,17 @@ impl Container<'_> {
                 // it was the last one.
                 let next = next_key_after(table, key);
                 // Read the leading text before the removal: a comment above
-                // the key lives on the key's own leaf decor, and a trailing
+                // a key lives on the key's own leaf decor, one above a
+                // sub-table's header on the table's own decor, and a trailing
                 // one on the value's suffix.
                 let prefix = table.get_key_value(key).map(|(held, item)| {
-                    let mut text = key_text(held);
+                    let mut text = String::new();
+                    if let Item::Table(inner) = item
+                        && let Some(raw) = inner.decor().prefix().and_then(|raw| raw.as_str())
+                    {
+                        text.push_str(raw);
+                    }
+                    text.push_str(&key_text(held));
                     let suffix = item_suffix(item);
                     if !suffix.trim().is_empty() {
                         if !text.is_empty() && !text.ends_with('\n') {
@@ -369,14 +375,16 @@ fn item_suffix(item: &Item) -> String {
 
 /// Remove one table from an array of tables, moving its comments onto the
 /// entry that follows (or the previous entry's trailing text when it was
-/// last) so a removal does not take the reader's notes with it.
-fn remove_entry_at(array: &mut ArrayOfTables, index: usize) {
+/// last) so a removal does not take the reader's notes with it. A prefix
+/// with nowhere to go - the array's only entry - is handed back for the
+/// parent table to carry.
+fn remove_entry_at(array: &mut ArrayOfTables, index: usize) -> Option<String> {
     let prefix = array
         .get(index)
         .and_then(|table| table.decor().prefix().and_then(|raw| raw.as_str()).map(str::to_owned));
     let Some(prefix) = prefix.filter(|text| !text.trim().is_empty()) else {
         array.remove(index);
-        return;
+        return None;
     };
     array.remove(index);
     if let Some(next) = array.get_mut(index) {
@@ -387,7 +395,9 @@ fn remove_entry_at(array: &mut ArrayOfTables, index: usize) {
             .map(str::to_owned)
             .unwrap_or_default();
         next.decor_mut().set_prefix(format!("{prefix}{existing}"));
-    } else if index > 0
+        return None;
+    }
+    if index > 0
         && let Some(previous) = array.get_mut(index - 1)
     {
         let existing = previous
@@ -397,7 +407,42 @@ fn remove_entry_at(array: &mut ArrayOfTables, index: usize) {
             .map(str::to_owned)
             .unwrap_or_default();
         previous.decor_mut().set_suffix(format!("{existing}{prefix}"));
+        return None;
     }
+    Some(prefix)
+}
+
+/// Put a leftover entry's comments at the end of the table that held the
+/// array, so an only-entry removal keeps them.
+fn keep_prefix(table: &mut Table, prefix: Option<String>) {
+    let Some(prefix) = prefix else { return };
+    let existing =
+        table.decor().suffix().and_then(|raw| raw.as_str()).map(str::to_owned).unwrap_or_default();
+    table.decor_mut().set_suffix(format!("{existing}{prefix}"));
+}
+
+/// Put a departed table's comments above the next root entry, or at the
+/// document's end when it was the last one.
+fn place_root_prefix(doc: &mut DocumentMut, next: Option<String>, prefix: &str) {
+    if prefix.trim().is_empty() {
+        return;
+    }
+    if let Some(next) = next
+        && let Some((mut key, _)) = doc.as_table_mut().get_key_value_mut(&next)
+    {
+        let existing = key
+            .leaf_decor()
+            .prefix()
+            .and_then(|raw| raw.as_str())
+            .map(str::to_owned)
+            .unwrap_or_default();
+        key.leaf_decor_mut().set_prefix(format!("{prefix}{existing}"));
+        return;
+    }
+    let root = doc.as_table_mut();
+    let existing =
+        root.decor().suffix().and_then(|raw| raw.as_str()).map(str::to_owned).unwrap_or_default();
+    root.decor_mut().set_suffix(format!("{existing}{prefix}"));
 }
 
 fn set_item_value(item: &mut Item, value: Value) {
@@ -622,17 +667,22 @@ fn add_entry(doc: &mut DocumentMut, edit: &SettingsEditRequest) -> Result<(), Wr
                 invalid("a Slack entry's path names the workspace", Some(edit.key_path.clone()))
             })?;
             let table = entry_table(value, Some("workspace"), name)?;
+            // **The entry's identity is the workspace its value names**, not
+            // the path's tail: entry_table keeps a value that carries its own
+            // `workspace`, and the exists check has to compare the same name
+            // the file will hold.
+            let identity = value.get("workspace").and_then(|held| held.as_str()).unwrap_or(name);
             let exists =
                 doc.as_table().get("slack").and_then(Item::as_array_of_tables).is_some_and(
                     |array| {
-                        array
-                            .iter()
-                            .any(|held| held.get("workspace").and_then(Item::as_str) == Some(name))
+                        array.iter().any(|held| {
+                            held.get("workspace").and_then(Item::as_str) == Some(identity)
+                        })
                     },
                 );
             if exists {
                 return Err(invalid(
-                    format!("a Slack workspace named `{name}` already exists"),
+                    format!("a Slack workspace named `{identity}` already exists"),
                     Some(edit.key_path.clone()),
                 ));
             }
@@ -735,7 +785,8 @@ fn remove_entry(doc: &mut DocumentMut, edit: &SettingsEditRequest) -> Result<(),
                 .iter()
                 .position(|table| table.get("display_name").and_then(Item::as_str) == Some(name))
                 .ok_or_else(not_found)?;
-            remove_entry_at(accounts, index);
+            let left = remove_entry_at(accounts, index);
+            keep_prefix(doc.as_table_mut(), left);
             Ok(())
         }
         "connectors" => {
@@ -749,7 +800,8 @@ fn remove_entry(doc: &mut DocumentMut, edit: &SettingsEditRequest) -> Result<(),
                 .iter()
                 .position(|table| table.get("workspace").and_then(Item::as_str) == Some(name))
                 .ok_or_else(not_found)?;
-            remove_entry_at(slack, index);
+            let left = remove_entry_at(slack, index);
+            keep_prefix(doc.as_table_mut(), left);
             Ok(())
         }
         "models" => {
@@ -759,7 +811,26 @@ fn remove_entry(doc: &mut DocumentMut, edit: &SettingsEditRequest) -> Result<(),
                 .get_mut("models")
                 .and_then(Item::as_table_mut)
                 .ok_or_else(not_found)?;
-            models.remove(name);
+            // The comment above `[models.foo]` lives on that sub-table's own
+            // decor, so the removal moves it like any other key's.
+            Container::Table(models).remove(name);
+            // `[models]` is implicit: an emptied one renders nothing and its
+            // suffix goes with it, so a comment left there moves to the next
+            // root entry (or the document's own end).
+            let emptied =
+                doc.as_table().get("models").and_then(Item::as_table).is_some_and(Table::is_empty);
+            if emptied {
+                let next = next_key_after(doc.as_table(), "models");
+                if let Some(Item::Table(mut table)) = doc.as_table_mut().remove("models") {
+                    let prefix = table
+                        .decor_mut()
+                        .suffix()
+                        .and_then(|raw| raw.as_str())
+                        .map(str::to_owned)
+                        .unwrap_or_default();
+                    place_root_prefix(doc, next, &prefix);
+                }
+            }
             Ok(())
         }
         "projects" => {
@@ -784,7 +855,15 @@ fn remove_entry(doc: &mut DocumentMut, edit: &SettingsEditRequest) -> Result<(),
                     table.get("name").and_then(Item::as_str) == Some(project.as_str())
                 })
                 .ok_or_else(not_found)?;
-            remove_entry_at(projects, index);
+            let left = remove_entry_at(projects, index);
+            if let Some(org_table) = doc
+                .as_table_mut()
+                .get_mut("orgs")
+                .and_then(Item::as_array_of_tables_mut)
+                .and_then(|orgs| orgs.get_mut(org_index))
+            {
+                keep_prefix(org_table, left);
+            }
             Ok(())
         }
         _ => Err(not_found()),
@@ -801,6 +880,23 @@ fn strip_prefix<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
 fn project_path(doc: &DocumentMut, path: &str) -> Option<(String, String)> {
     let rest = path.strip_prefix("orgs.")?;
     let orgs = doc.as_table().get("orgs")?.as_array_of_tables()?;
+    // **An exact identity comes first.** A project named `Team.projects.api`
+    // under org `Acme` and a project `api` under org `Acme.projects.Team`
+    // spell the same path, so the document's own pairs decide before any
+    // cut - only an entry that does not exist yet falls through to the
+    // longest org the path parses against.
+    for org_table in orgs {
+        let Some(org) = org_table.get("name").and_then(Item::as_str) else { continue };
+        let Some(projects) = org_table.get("projects").and_then(Item::as_array_of_tables) else {
+            continue;
+        };
+        for project_table in projects {
+            let Some(project) = project_table.get("name").and_then(Item::as_str) else { continue };
+            if path == format!("orgs.{org}.projects.{project}") {
+                return Some((org.to_owned(), project.to_owned()));
+            }
+        }
+    }
     let mut best: Option<(String, String)> = None;
     for table in orgs {
         let Some(org) = table.get("name").and_then(Item::as_str) else { continue };
@@ -1072,6 +1168,26 @@ token = "xoxp-example"
         assert!(out.contains("# the socket's port"), "the note above it stayed: {out}");
     }
 
+    /// **A table's last key takes its comment to the table's end.** Removing
+    /// it has no following key to carry the note.
+    #[test]
+    fn a_last_key_removal_keeps_its_comments() {
+        let raw =
+            FIXTURE.replace("bind = \"127.0.0.1\"", "# the bind address\nbind = \"127.0.0.1\"");
+        let document = document(&raw);
+        let (pattern, key_path) = key(&document, "server.bind");
+        let edit = SettingsEditRequest {
+            area: "server".to_owned(),
+            key_path,
+            pattern,
+            op: SettingsEditOp::Remove,
+            value: None,
+        };
+        let out = apply(&raw, &[edit], &document).expect("the key removes");
+        assert!(!out.contains("bind = "), "the key is gone: {out}");
+        assert!(out.contains("# the bind address"), "its note stayed: {out}");
+    }
+
     /// **A removal keeps the comments above the entry** it takes.
     #[test]
     fn an_entry_removal_keeps_its_comments() {
@@ -1125,6 +1241,100 @@ token = "xoxp-example"
         );
         let error = apply(FIXTURE, &[edit], &document).expect_err("the add is refused");
         assert!(error.message.contains("already exists"), "{}", error.message);
+    }
+
+    /// **A dotted org's project is located by the row's own names.** A path
+    /// cut would take the org's inner `.projects.` for the real one and read
+    /// the project as the rest of the name.
+    #[test]
+    fn an_edit_to_a_project_under_a_dotted_org_applies() {
+        let raw = FIXTURE.replace("name = \"Acme.Corp\"", "name = \"Acme.projects.Team\"");
+        let document = document(&raw);
+        let edit = set_edit(
+            &document,
+            "orgs.Acme.projects.Team.projects.api.v2.permission_mode",
+            serde_json::json!("plan"),
+        );
+        let out = apply(&raw, &[edit], &document).expect("the dotted org's project applies");
+        assert!(out.contains("permission_mode = \"plan\""), "{out}");
+    }
+
+    /// **A Slack workspace renamed and its token edited share one batch.**
+    /// The token edit is keyed by the pre-edit name, so the rename goes last.
+    #[test]
+    fn a_slack_rename_and_token_edit_apply_together() {
+        let document = document(FIXTURE);
+        let rename = set_edit(&document, "slack.Work.workspace", serde_json::json!("Home"));
+        let token = set_edit(&document, "slack.Work.token", serde_json::json!("xoxp-new"));
+        let out = apply(FIXTURE, &[token, rename], &document).expect("both apply");
+        assert!(out.contains("workspace = \"Home\""), "{out}");
+        assert!(out.contains("xoxp-new"), "{out}");
+    }
+
+    /// **A Slack add's identity is the workspace its value names.** A value
+    /// naming an existing workspace is refused even under a different path,
+    /// or the file holds two entries the pump cannot tell apart.
+    #[test]
+    fn adding_a_slack_entry_under_an_existing_workspace_is_refused() {
+        let document = document(FIXTURE);
+        let edit = entry_edit(
+            "connectors",
+            "slack.Other",
+            SettingsEditOp::Add,
+            Some(serde_json::json!({ "workspace": "Work", "token": "xoxp-other" })),
+        );
+        let error = apply(FIXTURE, &[edit], &document).expect_err("the duplicate is refused");
+        assert!(error.message.contains("already exists"), "{}", error.message);
+    }
+
+    /// **A model's removal keeps the comment above its header.**
+    #[test]
+    fn a_model_removal_keeps_its_comments() {
+        let raw = FIXTURE.replace(
+            "[models.\"deepseek-v4.1-flash\"]",
+            "# the flash model\n[models.\"deepseek-v4.1-flash\"]",
+        );
+        let document = document(&raw);
+        let edit = entry_edit("models", "models.deepseek-v4.1-flash", SettingsEditOp::Remove, None);
+        let out = apply(&raw, &[edit], &document).expect("the model removes");
+        assert!(!out.contains("[models."), "the table went: {out}");
+        assert!(out.contains("# the flash model"), "its note stayed: {out}");
+    }
+
+    /// **An array's only entry takes its comment with it when removed.**
+    #[test]
+    fn an_only_entry_removal_keeps_its_comments() {
+        let raw = FIXTURE.replace("[[slack]]", "# the only workspace\n[[slack]]");
+        let document = document(&raw);
+        let edit = entry_edit("connectors", "slack.Work", SettingsEditOp::Remove, None);
+        let out = apply(&raw, &[edit], &document).expect("the entry removes");
+        assert!(!out.contains("[[slack]]"), "the entry went: {out}");
+        assert!(out.contains("# the only workspace"), "its note stayed: {out}");
+    }
+
+    /// **A CRLF file keeps its endings inside a multi-line string too,**
+    /// where the newline is content rather than layout.
+    #[test]
+    fn a_crlf_multi_line_string_keeps_its_line_endings() {
+        let raw = "[server]\r\nport = 8790\r\nnote = \"\"\"one\r\ntwo\"\"\"\r\n";
+        let document = document(FIXTURE);
+        let edit = set_edit(&document, "server.port", serde_json::json!(8791));
+        let out = apply(raw, &[edit], &document).expect("the edit applies");
+        assert!(out.contains("one\r\ntwo"), "the string kept its own newline: {out:?}");
+        assert!(!out.replace("\r\n", "").contains('\n'), "no bare LF was introduced: {out:?}");
+    }
+
+    /// **A project renamed with its org in one batch applies both.** The
+    /// project's path is keyed by the org's pre-edit name, so it goes first.
+    #[test]
+    fn an_org_and_its_project_rename_together() {
+        let document = document(FIXTURE);
+        let org = set_edit(&document, "orgs.Acme.Corp.name", serde_json::json!("Acme.Labs"));
+        let project =
+            set_edit(&document, "orgs.Acme.Corp.projects.api.v2.name", serde_json::json!("api.v3"));
+        let out = apply(FIXTURE, &[org, project], &document).expect("both renames apply");
+        assert!(out.contains("name = \"Acme.Labs\""), "{out}");
+        assert!(out.contains("name = \"api.v3\""), "{out}");
     }
 
     /// **A dotted org is matched from the document's own names.** An org

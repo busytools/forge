@@ -390,8 +390,8 @@ pub enum ClientMessage {
         /// The page's own number for this save, echoed by
         /// [`ServerMessage::SettingsSaved`] and
         /// [`ServerMessage::SettingsRefused`] so a reply is matched to the
-        /// request that made it.
-        #[serde(default)]
+        /// request that made it. Required: a client that forgets it is
+        /// refused rather than silently answered as id 0.
         id: u64,
     },
 }

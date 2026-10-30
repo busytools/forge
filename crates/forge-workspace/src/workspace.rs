@@ -28,8 +28,9 @@ pub enum SettingsSaveError {
     /// An edit or the candidate failed validation. `key_path` anchors the
     /// first edit that fails on its own, where one does.
     Invalid { message: String, key_path: Option<String> },
-    /// A guard refused the save.
-    Refused { message: String },
+    /// A guard refused the save. `key_path` anchors the refusal at one of the
+    /// save's keys where the guard names one.
+    Refused { message: String, key_path: Option<String> },
     /// The file could not be read or written.
     Io(String),
 }
@@ -38,7 +39,7 @@ impl std::fmt::Display for SettingsSaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Stale => f.write_str("forge.toml has changed since this page loaded it"),
-            Self::Invalid { message, .. } | Self::Refused { message } | Self::Io(message) => {
+            Self::Invalid { message, .. } | Self::Refused { message, .. } | Self::Io(message) => {
                 f.write_str(message)
             }
         }
@@ -67,7 +68,34 @@ fn departures_from_edits(
         before.accounts.iter().map(|account| account.display_name.clone()).collect();
     let row =
         |path: &str| document.areas.iter().flat_map(|area| &area.keys).find(|key| key.path == path);
+    let pattern_of = |edit: &SettingsEditRequest| {
+        if edit.pattern.is_empty() {
+            row(&edit.key_path).map(|key| key.pattern.clone())
+        } else {
+            Some(edit.pattern.clone())
+        }
+    };
+    // **The writer applies renames last**, so the simulation does too - a
+    // batch that removes one entry and renames another into its place is
+    // legitimate, and applying the rename first reads both as departures.
+    let mut rest = Vec::new();
+    let mut nested_renames = Vec::new();
+    let mut entry_renames = Vec::new();
     for edit in edits {
+        match pattern_of(edit) {
+            Some(pattern) if pattern == "orgs[].projects[].name" => nested_renames.push(edit),
+            Some(pattern)
+                if matches!(
+                    pattern.as_str(),
+                    "orgs[].name" | "accounts[].display_name" | "slack[].workspace"
+                ) =>
+            {
+                entry_renames.push(edit);
+            }
+            _ => rest.push(edit),
+        }
+    }
+    for edit in rest.into_iter().chain(nested_renames).chain(entry_renames) {
         if edit.op == SettingsEditOp::Remove && edit.pattern.is_empty() {
             if edit.area == "accounts" {
                 if let Some(name) = edit.key_path.strip_prefix("accounts.") {
@@ -135,7 +163,19 @@ fn departures_from_edits(
 /// Slack, Gotify and System One token, and a save must keep whatever mode the
 /// operator gave it. A symlinked path is written through to its target, so a
 /// save cannot replace the link with a regular file.
-fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+/// Why a config write did not land.
+#[derive(Debug)]
+enum WriteRefusal {
+    /// The file moved after the page's fingerprint was checked.
+    Stale,
+    Io(std::io::Error),
+}
+
+fn write_atomically(
+    path: &Path,
+    contents: &str,
+    expected: Option<&str>,
+) -> Result<(), WriteRefusal> {
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let directory = target.parent().unwrap_or_else(|| Path::new("."));
     let temporary = directory.join(format!(".forge.toml.settings-{}", std::process::id()));
@@ -147,23 +187,38 @@ fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
             use std::os::unix::fs::OpenOptionsExt as _;
             options.mode(0o600);
         }
-        let mut file = options.open(&temporary)?;
+        let mut file = options.open(&temporary).map_err(WriteRefusal::Io)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             let mode = std::fs::metadata(&target).map_or(0o600, |meta| meta.permissions().mode());
-            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+            file.set_permissions(std::fs::Permissions::from_mode(mode))
+                .map_err(WriteRefusal::Io)?;
         }
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, &target)?;
-        // A directory handle cannot be fsynced on every filesystem; a real
-        // failure (an I/O error) is reported, since durability is unknown.
-        let held = std::fs::File::open(directory)?;
-        match held.sync_all() {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-            Err(error) => return Err(error),
+        file.write_all(contents.as_bytes()).map_err(WriteRefusal::Io)?;
+        file.sync_all().map_err(WriteRefusal::Io)?;
+        // **The file may have moved since the page's fingerprint was
+        // checked.** Reading it here, after the temp is written and before
+        // the rename, is the last moment the check can run.
+        if let Some(expected) = expected {
+            let current = std::fs::read_to_string(&target).map_err(WriteRefusal::Io)?;
+            if crate::config::fingerprint_of(&current) != expected {
+                return Err(WriteRefusal::Stale);
+            }
+        }
+        std::fs::rename(&temporary, &target).map_err(WriteRefusal::Io)?;
+        // **The rename already landed.** A directory fsync that fails leaves
+        // the file replaced and only its durability unknown, so the save is
+        // not reported as failed for it.
+        if let Ok(held) = std::fs::File::open(directory)
+            && let Err(error) = held.sync_all()
+            && error.kind() != std::io::ErrorKind::InvalidInput
+        {
+            tracing::warn!(
+                path = %target.display(),
+                %error,
+                "the config's directory could not be synced after the rename",
+            );
         }
         Ok(())
     })();
@@ -2470,22 +2525,33 @@ impl Workspace {
             departures_from_edits(&config, edits, &document);
         self.refuse_departures(&config, &departed_projects, &departed_accounts)?;
 
-        // An added project's tree must be there before the save lands: the
-        // loader accepts any string, and a row pointing at nothing is a
-        // project that can never start.
+        // A project's tree must be there before the save lands: the loader
+        // accepts any string, and a row pointing at nothing is a project
+        // that can never start. An add carries the path in its value; a set
+        // on the key replaces it. `~` expands as the loader expands it.
         for edit in edits {
-            if edit.op != SettingsEditOp::Add || edit.area != "projects" {
-                continue;
-            }
-            let added = edit.value.as_ref().and_then(|value| value.get("path"));
-            let path = added.and_then(serde_json::Value::as_str);
-            let holds = path.is_some_and(|path| std::path::Path::new(path).is_dir());
+            let path_value = match edit.op {
+                SettingsEditOp::Add if edit.area == "projects" => {
+                    edit.value.as_ref().and_then(|value| value.get("path"))
+                }
+                SettingsEditOp::Set
+                    if document.areas.iter().flat_map(|area| &area.keys).any(|key| {
+                        key.path == edit.key_path && key.pattern == "orgs[].projects[].path"
+                    }) =>
+                {
+                    edit.value.as_ref()
+                }
+                _ => continue,
+            };
+            let named = path_value.and_then(serde_json::Value::as_str);
+            let holds = named.is_some_and(|path| crate::config::expand_home(path).is_dir());
             if !holds {
                 return Err(SettingsSaveError::Refused {
                     message: format!(
-                        "an added project needs a path that is a directory; `{}` is not",
-                        path.unwrap_or("<unset>"),
+                        "a project needs a path that is a directory; `{}` is not",
+                        named.unwrap_or("<unset>"),
                     ),
+                    key_path: Some(edit.key_path.clone()),
                 });
             }
         }
@@ -2538,20 +2604,17 @@ impl Workspace {
         if candidate == current {
             return Err(SettingsSaveError::Refused {
                 message: "the file already matches this save; nothing was written".to_owned(),
+                key_path: None,
             });
         }
-        // **The file may have moved between the read and the write.** An
-        // editor or a sync client writing inside that window would be
-        // clobbered by the rename, so the fingerprint is read again
-        // immediately before it.
-        let before_write = std::fs::read_to_string(&path).map_err(|error| {
-            SettingsSaveError::Io(format!("forge.toml could not be read: {error}"))
-        })?;
-        if crate::config::fingerprint_of(&before_write) != fingerprint {
-            return Err(SettingsSaveError::Stale);
-        }
-        write_atomically(&path, &candidate).map_err(|error| {
-            SettingsSaveError::Io(format!("forge.toml could not be written: {error}"))
+        // **The file may have moved between the read and the write.**
+        // `write_atomically` re-reads it after the temp exists and before
+        // the rename, which is the last moment the check can run.
+        write_atomically(&path, &candidate, Some(fingerprint)).map_err(|error| match error {
+            WriteRefusal::Stale => SettingsSaveError::Stale,
+            WriteRefusal::Io(error) => {
+                SettingsSaveError::Io(format!("forge.toml could not be written: {error}"))
+            }
         })
     }
 
@@ -2579,6 +2642,7 @@ impl Workspace {
                          removing or renaming it",
                         live.join(", "),
                     ),
+                    key_path: None,
                 });
             }
         }
@@ -2598,6 +2662,7 @@ impl Workspace {
                         "account `{name}` is still loading its usage; the save refuses \
                          until its probe settles",
                     ),
+                    key_path: None,
                 });
             }
         }
@@ -3070,7 +3135,7 @@ impl Workspace {
         // `lead_session_key_for`. Nothing is written before this point -
         // a refusal ahead of it would pin an id no child ever adopts,
         // and the next boot would resume onto it.
-        let session_id = self.record_spawn_id(&session_slot, stored);
+        let session_id = self.record_spawn_id(&session_slot, stored.clone());
         tracing::info!(
             target: "forge_workspace::account",
             slot = %session_slot.display(),
@@ -3148,20 +3213,21 @@ impl Workspace {
         // handle reference. Otherwise create
         // fresh with conn = None and update post-Agent::spawn at line
         // ~470.
-        let domain_arc = {
+        let (domain_arc, domain_created) = {
             let mut handles = self.domain_handles.lock();
             // A DomainSession is often already registered at
             // `session_key` (the cron and gotify delivery paths register
             // a worker's domain before dispatching its spawn). Reuse it,
             // so whoever registered it keeps the handle reference it was
             // given; otherwise create fresh with conn = None and fill
-            // the handle in after `Agent::spawn`.
+            // the handle in after `Agent::spawn`. A handle this spawn
+            // created is removed again if the bind refuses.
             if let Some(existing) = handles.get(&session_slot).cloned() {
-                existing
+                (existing, false)
             } else {
                 let fresh = Arc::new(Mutex::new(DomainSession::new(session_slot.clone(), None)));
                 handles.insert(session_slot.clone(), Arc::clone(&fresh));
-                fresh
+                (fresh, true)
             }
         };
         // Carry `--new` onto the domain so a project lead's
@@ -3326,9 +3392,36 @@ impl Workspace {
         {
             let _settings = self.settings_write.lock();
             let held = self.config_arc();
-            if !held.projects.iter().any(|project| {
-                project.org == session_slot.org() && project.name == session_slot.project()
-            }) {
+            // **A save that has landed but that the watcher has not reloaded
+            // yet is not in `held`.** The file's own fingerprint says the
+            // config moved; the file's projects are then the set a bind must
+            // check, or a spawn in the reload window binds to a project the
+            // reload is about to remove.
+            let path = self.config_path();
+            let text = std::fs::read_to_string(&path).ok();
+            let current = match text
+                .as_ref()
+                .filter(|text| crate::config::fingerprint_of(text) != held.raw_fingerprint)
+            {
+                Some(text) => Some(crate::config::load_from_text(path, text)?),
+                None => None,
+            };
+            let present = match current.as_ref() {
+                Some(config) => config.projects.iter().any(|project| {
+                    project.org == session_slot.org() && project.name == session_slot.project()
+                }),
+                None => held.projects.iter().any(|project| {
+                    project.org == session_slot.org() && project.name == session_slot.project()
+                }),
+            };
+            if !present {
+                // The refusal lands after this spawn's own side effects; undo
+                // them, or the project reads live for ever and a boot resumes
+                // onto a transcript that never existed.
+                if domain_created {
+                    self.domain_handles.lock().remove(&session_slot);
+                }
+                self.forget_spawn_id(&session_slot, stored.as_deref());
                 return Err(WorkspaceError::SpawnResolvesToNoProject {
                     slot: session_slot.display(),
                 }
@@ -4518,6 +4611,30 @@ impl Workspace {
         let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.record_session_id(slot.org(), slot.project(), slot.label(), &id);
         id
+    }
+
+    /// Undo a spawn's recorded id after a bind refuses: the store keeps the
+    /// id it held before, or none at all, so a boot never resumes onto a
+    /// transcript that never existed.
+    fn forget_spawn_id(&self, slot: &SessionSlot, previous: Option<&str>) {
+        if let Some(previous) = previous {
+            self.record_session_id(slot.org(), slot.project(), slot.label(), previous);
+            return;
+        }
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return };
+        if let Err(error) =
+            crate::store::sessions::clear_session_id(db, slot.org(), slot.project(), slot.label())
+        {
+            tracing::warn!(
+                target: "forge_workspace::sessions",
+                org = slot.org(),
+                project = slot.project(),
+                label = slot.label(),
+                %error,
+                "clearing a refused spawn's session id failed",
+            );
+        }
     }
 
     /// Record the id the CLI adopted for a live session, so the store
@@ -13723,6 +13840,32 @@ provider = "anthropic"
         SettingsEditRequest { area, key_path, pattern, op: SettingsEditOp::Set, value: Some(value) }
     }
 
+    /// **A project's path is checked on a set too, and the refusal names the
+    /// key.** The loader accepts any string, so a row pointing at nothing is
+    /// a project that can never start.
+    #[tokio::test]
+    async fn a_project_path_set_that_is_not_a_directory_is_refused_at_its_key() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let fingerprint = settings_fingerprint(&workspace);
+        let edit = set_edit(
+            &workspace,
+            "orgs.Default.projects.forge.path",
+            serde_json::json!("/nonexistent/forge"),
+        );
+        let error =
+            workspace.save_settings(&fingerprint, &[edit]).expect_err("a missing directory");
+        match error {
+            SettingsSaveError::Refused { message, key_path } => {
+                assert!(message.contains("directory"), "{message}");
+                assert_eq!(key_path.as_deref(), Some("orgs.Default.projects.forge.path"));
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        let after = fs::read_to_string(workspace.config_path()).expect("read");
+        assert!(after.contains("path = \"~/Projects/forge\""), "the file did not move: {after}");
+    }
+
     /// A save writes the candidate, keeps the file's comments, and the next
     /// load reads the new value.
     #[tokio::test]
@@ -13812,7 +13955,7 @@ provider = "anthropic"
         let error =
             workspace.save_settings(&fingerprint, &[edit]).expect_err("a live project is refused");
         match error {
-            SettingsSaveError::Refused { message } => {
+            SettingsSaveError::Refused { message, .. } => {
                 assert!(message.contains("Default/forge/lead"), "the refusal named it: {message}");
             }
             other => panic!("expected a refusal, got {other:?}"),
@@ -13839,7 +13982,7 @@ provider = "anthropic"
             .save_settings(&fingerprint, &[edit])
             .expect_err("a loading account is refused");
         match error {
-            SettingsSaveError::Refused { message } => {
+            SettingsSaveError::Refused { message, .. } => {
                 assert!(message.contains("Stargate"), "the refusal named it: {message}");
                 assert!(message.contains("loading"), "the refusal said why: {message}");
             }
@@ -13860,10 +14003,27 @@ provider = "anthropic"
         let path = dir.path().join("forge.toml");
         std::fs::write(&path, "a = 1\n").expect("write");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-        write_atomically(&path, "a = 2\n").expect("write atomically");
+        write_atomically(&path, "a = 2\n", None).expect("write atomically");
         let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the config keeps the mode the operator gave it");
         assert_eq!(std::fs::read_to_string(&path).expect("read"), "a = 2\n");
+    }
+
+    /// **The file is re-read after the temp exists and before the rename.**
+    /// A fingerprint that no longer matches refuses, and the file is
+    /// untouched.
+    #[test]
+    fn a_write_refuses_a_file_that_moved_before_the_rename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("forge.toml");
+        std::fs::write(&path, "a = 1\n").expect("write");
+        let refusal = write_atomically(&path, "a = 2\n", Some("not-the-file"));
+        assert!(matches!(refusal, Err(WriteRefusal::Stale)), "{refusal:?}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "a = 1\n",
+            "the file did not move",
+        );
     }
 
     /// **A symlinked config stays a link.** The write goes through to the
@@ -13876,7 +14036,7 @@ provider = "anthropic"
         let link = dir.path().join("forge.toml");
         std::fs::write(&target, "a = 1\n").expect("write");
         std::os::unix::fs::symlink(&target, &link).expect("symlink");
-        write_atomically(&link, "a = 2\n").expect("write atomically");
+        write_atomically(&link, "a = 2\n", None).expect("write atomically");
         assert!(
             std::fs::symlink_metadata(&link).expect("metadata").file_type().is_symlink(),
             "the config is still a symlink",
@@ -13916,7 +14076,7 @@ provider = "anthropic"
             .save_settings(&fingerprint, &[edit])
             .expect_err("a live project rename is refused");
         match error {
-            SettingsSaveError::Refused { message } => {
+            SettingsSaveError::Refused { message, .. } => {
                 assert!(message.contains("Default/forge/lead"), "the refusal named it: {message}");
             }
             other => panic!("expected a refusal, got {other:?}"),
@@ -13940,7 +14100,7 @@ provider = "anthropic"
             .save_settings(&fingerprint, &[reference, edit])
             .expect_err("a loading rename is refused");
         match error {
-            SettingsSaveError::Refused { message } => {
+            SettingsSaveError::Refused { message, .. } => {
                 assert!(message.contains("Stargate"), "the refusal named it: {message}");
                 assert!(message.contains("loading"), "the refusal said why: {message}");
             }

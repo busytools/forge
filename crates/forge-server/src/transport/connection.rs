@@ -1719,8 +1719,8 @@ where
                         forge_workspace::SettingsSaveError::Invalid { message, key_path } => {
                             (SettingsRefusal::Invalid, message, key_path)
                         }
-                        forge_workspace::SettingsSaveError::Refused { message } => {
-                            (SettingsRefusal::Refused, message, None)
+                        forge_workspace::SettingsSaveError::Refused { message, key_path } => {
+                            (SettingsRefusal::Refused, message, key_path)
                         }
                         // A write that failed is not a guard's refusal: the
                         // page says the file could not be written.

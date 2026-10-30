@@ -1293,7 +1293,6 @@ dependencies = [
  "forge-workspace",
  "parking_lot",
  "redb",
- "regex",
  "reqwest",
  "rustix",
  "serde",

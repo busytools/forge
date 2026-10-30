@@ -656,9 +656,9 @@ class RustConnection implements Connection {
     return crossed;
   }
 
-  settingsEdit(fingerprint: string, edits: SettingsEditWire[]): boolean {
+  settingsEdit(fingerprint: string, edits: SettingsEditWire[], id: number): boolean {
     if (this.state !== 'open') return false;
-    void invoke('client_settings_edit', { fingerprint, edits }).catch((why: unknown) => {
+    void invoke('client_settings_edit', { fingerprint, edits, id }).catch((why: unknown) => {
       report('a settings save could not reach the shell', why);
     });
     return true;
