@@ -284,7 +284,7 @@
         <TakeCard {take} {phase} {wire} oncancel={onabandon} {silent} spread />
       {:else}
         <Field
-          editor="dock"
+          editor="bar"
           class="tb-field"
           bind:value={notes}
           rows={1}

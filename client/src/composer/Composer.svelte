@@ -1276,6 +1276,12 @@
       return;
     }
     if (takeoverAsk === null || takeoverAsk.request.id !== answered) return;
+    // **The words left, so the line owes the chat nothing.** A dictated line
+    // is a landed take, and the ask resolving runs the carry: left standing,
+    // it wrote the words the agent just read into the composer's draft.
+    box.dockDraft = '';
+    box.barLanded = null;
+    box.carried = null;
     takeoverAnswer('feedback');
   }
 
