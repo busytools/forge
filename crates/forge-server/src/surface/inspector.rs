@@ -197,9 +197,15 @@ impl ViewSurface {
         cwd: &std::path::Path,
         refresh: &forge_workspace::env::git_diff::BaseRefresh,
     ) -> Option<WorkSnapshot> {
+        // The refresh's own answer is the measurement the pinned scan carries:
+        // its state, the instant it was established, and the words a failure
+        // left. Stamping it with the scan's own clock would let a background
+        // fetch that lands while this scan waits be read as older than the
+        // read that is about to store it.
+        let measured = measurement_of(refresh);
         match self
             .workspace
-            .scan_work_pinned(slot, cwd, refresh.base_ref.as_deref(), Some(refresh.state))
+            .scan_work_pinned(slot, cwd, refresh.base_ref.as_deref(), Some(measured))
             .await
         {
             Ok(held) => Some(held),
@@ -231,9 +237,9 @@ impl ViewSurface {
         slot: &SessionSlot,
         cwd: &std::path::Path,
         base: Option<&str>,
-        measured: Option<forge_primitives::git_diff::BaseState>,
+        refresh: Option<&forge_workspace::env::git_diff::BaseRefresh>,
     ) -> WorkSnapshot {
-        self.workspace.scan_work_at_pinned_local(slot, cwd, base, measured).await
+        self.workspace.scan_work_at_pinned_local(slot, cwd, base, refresh.map(measurement_of)).await
     }
 
     /// Store a scan's answer, which is the write half of [`Self::work`].
@@ -332,6 +338,18 @@ impl ViewSurface {
         self.workspace
             .domain_session_for(slot)
             .map_or_else(Vec::new, |domain| domain.lock().task_rows())
+    }
+}
+
+/// The measurement a refresh's own answer represents: its state, the instant
+/// it was established, and git's words when it could not run.
+fn measurement_of(
+    refresh: &forge_workspace::env::git_diff::BaseRefresh,
+) -> forge_workspace::env::git_diff::BaseMeasurement {
+    forge_workspace::env::git_diff::BaseMeasurement {
+        at: refresh.at,
+        state: refresh.state,
+        error: refresh.error.clone(),
     }
 }
 

@@ -308,6 +308,8 @@ function record(
   watchBase: unknown = null,
   /** Why the base fetch did not run, in git's own words. */
   baseError: unknown = null,
+  /** Why the watch's own refresh could not run, beside the row's `base`. */
+  watchBaseError: unknown = null,
 ): SessionRecord {
   return {
     slot: SLOT,
@@ -316,6 +318,7 @@ function record(
     git: {
       defaultBranch,
       base: watchBase,
+      baseError: watchBaseError,
       ahead:
         commits.length === 0 && total === 0
           ? null
@@ -455,6 +458,8 @@ async function draw(
   watchBase: unknown = null,
   /** Why the base fetch did not run, in git's own words. */
   baseError: unknown = null,
+  /** Why the watch's own refresh could not run, beside the row's `base`. */
+  watchBaseError: unknown = null,
 ): Promise<void> {
   sent = [];
   asked = [];
@@ -482,6 +487,7 @@ async function draw(
       defaultBranch,
       watchBase,
       baseError,
+      watchBaseError,
     ),
     refused: null,
     review,
@@ -1815,6 +1821,69 @@ describe('the steppers', () => {
     expect(seat.rereads, 'the measurement disagrees with the drawn base').toEqual([
       { review: true },
     ]);
+  });
+
+  /**
+   * **A failed check's words are news even when its state is not.** A page that
+   * drew the base unchecked has to hear the reason the watch's refresh could
+   * not run; `unverified` alone is the state it already drew, so the words are
+   * what asks the page to read again.
+   */
+  it('asks its own read again when a failed measurement brings new words', async () => {
+    await draw([], [], true, DIFF, [], 0, { state: 'current' }, 'main', true, {
+      state: 'unverified',
+    });
+    vi.useFakeTimers();
+    expect(seat.rereads, 'the first measurement is what the page drew').toEqual([]);
+
+    // The watch's next check failed, with words the page has not drawn.
+    push({
+      wire: record(
+        IDLE,
+        [],
+        [],
+        DIFF,
+        [],
+        0,
+        { state: 'current' },
+        'main',
+        { state: 'unverified' },
+        null,
+        'fatal: could not resolve host: github.com',
+      ),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the debounce runs first').toEqual([]);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'then the page re-reads for the reason it now has').toEqual([
+      { review: true },
+    ]);
+
+    // The same failure again is not news.
+    push({
+      wire: record(
+        IDLE,
+        [],
+        [],
+        DIFF,
+        [],
+        0,
+        { state: 'current' },
+        'main',
+        { state: 'unverified' },
+        null,
+        'fatal: could not resolve host: github.com',
+      ),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'and the same words again ask nothing').toEqual([{ review: true }]);
   });
 
   /**

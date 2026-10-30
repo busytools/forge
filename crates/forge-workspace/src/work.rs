@@ -111,7 +111,11 @@ pub fn work_from_scan(diff: &GitDiffSnapshot, cwd: &Path) -> WorkState {
 /// `origin/main` while the count and the chain stay exactly as they were, and
 /// a review page drawing `current` over it would keep a label nobody
 /// re-checked.
-pub fn git_work_view(diff: &GitDiffSnapshot, base: Option<BaseState>) -> GitWorkView {
+pub fn git_work_view(
+    diff: &GitDiffSnapshot,
+    base: Option<BaseState>,
+    base_error: Option<&str>,
+) -> GitWorkView {
     let worktree = match &diff.worktree {
         forge_primitives::git_diff::LayerState::Populated(stats) => Some(stats.clone()),
         forge_primitives::git_diff::LayerState::Clean
@@ -122,7 +126,13 @@ pub fn git_work_view(diff: &GitDiffSnapshot, base: Option<BaseState>) -> GitWork
         forge_primitives::git_diff::LayerState::Clean
         | forge_primitives::git_diff::LayerState::ScanFailed => None,
     };
-    GitWorkView { default_branch: diff.default_branch.clone(), worktree, ahead, base }
+    GitWorkView {
+        default_branch: diff.default_branch.clone(),
+        worktree,
+        ahead,
+        base,
+        base_error: base_error.map(str::to_owned),
+    }
 }
 
 /// A seat's last scan of its working tree, and when it was taken.
@@ -143,13 +153,16 @@ pub struct WorkSnapshot {
     /// moved without the count moving is still a frame.
     pub base: Option<BaseState>,
     /// When the base above was established: the instant a completed refresh
-    /// measured it, or, for a state a read found itself, when that read ran.
-    /// **What tells a measurement that is news from one already superseded.**
-    /// A refresh that finished before the read must not overwrite the state
-    /// the read found; one that finished after it is the answer a page
-    /// waiting on an unchecked base is owed. Internal: the wire carries the
-    /// state alone.
+    /// measured it, or the instant a drawing read decided to answer its base
+    /// unchecked. **What tells a measurement that is news from one already
+    /// superseded.** A refresh that finished before the read must not
+    /// overwrite the state the read found; one that finished after it is the
+    /// answer a page waiting on an unchecked base is owed.
     pub base_at: Option<Instant>,
+    /// Git's own words for a refresh that could not run, carried with the
+    /// state so a page that only hears the row still names the reason. Empty
+    /// when the state was measured successfully or came from a read.
+    pub base_error: Option<String>,
 }
 
 /// How long a scan answers for: the staleness rule for the snapshot every
@@ -230,27 +243,24 @@ fn reads_again(read_at: Option<Instant>, dirty: bool, now: Instant, window: Dura
 
 /// The row a seat's viewers were last told, which is what keeps a still seat
 /// from announcing itself again every time it is read.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Announced {
     work: WorkState,
     git: GitWorkView,
     pr: Option<GitPrInfo>,
     closes: Vec<GitIssueRef>,
-    /// When the base this row states was measured. **A new measurement is news
-    /// even when it states the same base**: it is the check a page that drew
-    /// the base unchecked is waiting for, so the row values alone cannot say
-    /// whether anything happened.
-    base_at: Option<Instant>,
 }
 
 impl Announced {
     fn of(held: &WorkSnapshot) -> Self {
         Self {
             work: work_from_scan(&held.diff, &held.cwd),
-            git: git_work_view(&held.diff, held.base),
+            // **The base's words ride the row with its state**, so a landed
+            // check that failed differently is news a page can act on: the
+            // state alone may be the one it already drew.
+            git: git_work_view(&held.diff, held.base, held.base_error.as_deref()),
             pr: held.diff.pr.clone(),
             closes: held.diff.closes.clone(),
-            base_at: held.base_at,
         }
     }
 }
@@ -780,8 +790,10 @@ impl Workspace {
         // would otherwise wait the ten-second window for a frame it is owed.
         // The snapshot's own directory is the one whose base the row states.
         let base_landed = held.as_ref().is_some_and(|held| {
-            forge_agent::env::git_diff::last_base_measurement_at(&held.cwd)
-                .is_some_and(|(at, _)| held.base_at.is_none_or(|known| at > known))
+            held.diff.default_branch.as_deref().is_some_and(|branch| {
+                forge_agent::env::git_diff::last_base_measurement(&held.cwd, branch)
+                    .is_some_and(|measured| held.base_at.is_none_or(|known| measured.at > known))
+            })
         });
         if should_scan(held.as_ref(), dirty, Instant::now()) || pr_due || base_landed {
             #[cfg(any(test, feature = "testing"))]
@@ -796,10 +808,8 @@ impl Workspace {
             // move is only news if the state reaches the frame. A record read
             // never comes here with `Fetch` except a sessionless seat's
             // fallback, which has no store, no loop and nothing to keep fresh.
-            let measured = forge_agent::env::git_diff::last_base_measurement_at(Path::new(&cwd))
-                .map(|(at, state)| (state, at));
             return Ok(self
-                .scan_work_at_with_base(slot, Path::new(&cwd), pr, None, measured, false, force_pr)
+                .scan_work_at_with_base(slot, Path::new(&cwd), pr, None, None, false, force_pr)
                 .await);
         }
         self.work_snapshot(slot).ok_or_else(|| format!("{} has no stored scan", slot.display()))
@@ -839,11 +849,8 @@ impl Workspace {
         slot: &SessionSlot,
         cwd: &Path,
         base: Option<&str>,
-        measured: Option<BaseState>,
+        measured: Option<forge_agent::env::git_diff::BaseMeasurement>,
     ) -> WorkSnapshot {
-        // The read's own state is as of now, so nothing the store carries is
-        // newer than it.
-        let measured = measured.map(|state| (state, Instant::now()));
         self.scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured, false, false)
             .await
     }
@@ -853,18 +860,18 @@ impl Workspace {
     /// rather than the ref's name.
     ///
     /// `measured` is what the checkout's last completed base refresh measured,
-    /// with the instant it did; `None` keeps the state the store last carried,
-    /// so a scan that did not refresh does not erase it. **A measurement older
-    /// than the base the store carries is ignored**: a read that found the base
-    /// unchecked has already superseded it. `quiet` suppresses the background
-    /// kick on a `Fetch` scan.
+    /// with the instant it did and the words a failure left; `None` keeps the
+    /// state the store last carried, so a scan that did not refresh does not
+    /// erase it. **A measurement older than the base the store carries is
+    /// ignored**: a read that found the base unchecked has already superseded
+    /// it. `quiet` suppresses the background kick on a `Fetch` scan.
     async fn scan_work_at_with_base(
         &self,
         slot: &SessionSlot,
         cwd: &Path,
         pr: PrRefresh,
         base: Option<&str>,
-        measured: Option<(BaseState, Instant)>,
+        measured: Option<forge_agent::env::git_diff::BaseMeasurement>,
         quiet: bool,
         force_pr: bool,
     ) -> WorkSnapshot {
@@ -900,20 +907,37 @@ impl Workspace {
                 forge_agent::env::git_diff::scan_serving_cached_pr(cwd, &env, previous).await
             }
         };
+        // **The scan's own branch names the measurement it may adopt.** A
+        // caller holding one passes it; a caller without (the record's
+        // fallback, the seat's loop) takes the checkout's latest here, once
+        // the scan has resolved which base this row is about.
+        let measured = measured.or_else(|| {
+            diff.default_branch
+                .as_deref()
+                .and_then(|branch| forge_agent::env::git_diff::last_base_measurement(cwd, branch))
+        });
         let previous_base = held.as_ref().and_then(|held| held.base);
         let previous_base_at = held.as_ref().and_then(|held| held.base_at);
+        let previous_base_error = held.as_ref().and_then(|held| held.base_error.clone());
         // **A measurement older than the base this store carries is not
         // news.** A drawing read that found the base unchecked wrote that
-        // state with its own instant, so a fetch that finished before the read
-        // must leave it alone rather than relabel the page's own answer.
-        let (base, base_at) = match measured {
-            Some((state, at)) if previous_base_at.is_none_or(|known| at > known) => {
-                (Some(state), Some(at))
+        // state at its own decision instant, so a fetch that finished before
+        // the read must leave it alone rather than relabel the page's own
+        // answer.
+        let (base, base_at, base_error) = match measured {
+            Some(measured) if previous_base_at.is_none_or(|known| measured.at > known) => {
+                (Some(measured.state), Some(measured.at), measured.error)
             }
-            _ => (previous_base, previous_base_at),
+            _ => (previous_base, previous_base_at, previous_base_error),
         };
-        let held =
-            WorkSnapshot { diff, cwd: cwd.to_path_buf(), read_at: Instant::now(), base, base_at };
+        let held = WorkSnapshot {
+            diff,
+            cwd: cwd.to_path_buf(),
+            read_at: Instant::now(),
+            base,
+            base_at,
+            base_error,
+        };
         self.store_work_snapshot(slot, held.clone());
         held
     }
@@ -927,7 +951,7 @@ impl Workspace {
         slot: &SessionSlot,
         cwd: &Path,
         base: Option<&str>,
-        measured: Option<BaseState>,
+        measured: Option<forge_agent::env::git_diff::BaseMeasurement>,
     ) -> Result<WorkSnapshot, String> {
         if self.domain_session_for(slot).is_none() {
             return Err(format!("{} has no session to store a scan on", slot.display()));
@@ -964,9 +988,6 @@ impl Workspace {
             }
             None => None,
         };
-        // The refresh's own state is the read's, as of now: nothing the store
-        // carries is newer than it.
-        let measured = measured.map(|state| (state, Instant::now()));
         Ok(self
             .scan_work_at_with_base(slot, cwd, PrRefresh::ServeCached, base, measured, false, false)
             .await)
@@ -1203,6 +1224,11 @@ mod tests {
     use super::*;
     use crate::SeatUpdate;
 
+    /// How long a test waits for a scan's kicked fetch to land: the scan's own
+    /// ten-second child budget plus a loaded machine's slack, so the wait is a
+    /// failure bound rather than a race.
+    const KICK_SETTLE: Duration = Duration::from_secs(60);
+
     fn seat() -> SessionSlot {
         SessionSlot::lead("TestOrg", "forge")
     }
@@ -1431,6 +1457,7 @@ provider = "anthropic"
                 cwd: self.repo.path().to_path_buf(),
                 base: None,
                 base_at: None,
+                base_error: None,
             }
         }
     }
@@ -1504,6 +1531,7 @@ provider = "anthropic"
             read_at,
             base: None,
             base_at: None,
+            base_error: None,
         }
     }
 
@@ -2080,7 +2108,11 @@ provider = "anthropic"
                 dir.path(),
                 PrRefresh::ServeCached,
                 None,
-                Some((BaseState::Behind { behind: 2 }, Instant::now())),
+                Some(forge_agent::env::git_diff::BaseMeasurement {
+                    at: Instant::now(),
+                    state: BaseState::Behind { behind: 2 },
+                    error: None,
+                }),
                 false,
                 false,
             )
@@ -2094,7 +2126,7 @@ provider = "anthropic"
             "and a later local scan keeps it instead of erasing it",
         );
         assert_eq!(
-            git_work_view(&inherited.diff, inherited.base).base,
+            git_work_view(&inherited.diff, inherited.base, inherited.base_error.as_deref()).base,
             Some(BaseState::Behind { behind: 2 }),
             "so the row a view draws says what the base is",
         );
@@ -2143,14 +2175,15 @@ provider = "anthropic"
         // loaded machine schedules the task late and the assertion below says
         // whether it ever ran.
         let mut waited = Duration::ZERO;
-        while forge_agent::env::git_diff::last_base_measurement(repo).is_none()
-            && waited < Duration::from_secs(30)
+        while forge_agent::env::git_diff::last_base_measurement(repo, "origin/main").is_none()
+            && waited < KICK_SETTLE
         {
             tokio::time::sleep(Duration::from_millis(20)).await;
             waited += Duration::from_millis(20);
         }
         assert_eq!(
-            forge_agent::env::git_diff::last_base_measurement(repo),
+            forge_agent::env::git_diff::last_base_measurement(repo, "origin/main")
+                .map(|measured| measured.state),
             Some(BaseState::Current),
             "the kicked fetch measured a current base",
         );
@@ -2187,24 +2220,35 @@ provider = "anthropic"
             .expect("the seat reads its tree");
 
         let mut waited = Duration::ZERO;
-        while forge_agent::env::git_diff::last_base_measurement(repo).is_none()
-            && waited < Duration::from_secs(30)
+        while forge_agent::env::git_diff::last_base_measurement(repo, "origin/main").is_none()
+            && waited < KICK_SETTLE
         {
             tokio::time::sleep(Duration::from_millis(20)).await;
             waited += Duration::from_millis(20);
         }
         assert_eq!(
-            forge_agent::env::git_diff::last_base_measurement(repo),
+            forge_agent::env::git_diff::last_base_measurement(repo, "origin/main")
+                .map(|measured| measured.state),
             Some(BaseState::Current),
             "the kicked fetch measured a current base",
         );
 
         // **Nothing else may ask for this scan.** The tree is clean and the
-        // stored snapshot is milliseconds old, and the PR attempt is stamped
+        // stored snapshot is stamped read now, and the PR attempt is stamped
         // now so its own due-window cannot be what triggers the read; only the
-        // base landing is left.
+        // base landing is left. The read stamp matters under load: a poll that
+        // outlasted the ten-second window would let a stale row trigger the
+        // scan by time alone, and the mutation this test exists for survives.
         let mut stored = workspace.work_snapshot(&seat).expect("the first scan stored a row");
         stored.diff.pr_fetched_at = Some(std::time::SystemTime::now());
+        stored.read_at = Instant::now();
+        // **The row is the one a page drew before the check landed.** The
+        // first scan may have carried the measurement already when the local
+        // fetch beat its own tree walk; clearing it is what leaves the base
+        // landing as the only thing left to trigger the next scan.
+        stored.base = None;
+        stored.base_at = None;
+        stored.base_error = None;
         workspace.store_work_snapshot(&seat, stored);
 
         let next = workspace
@@ -2216,26 +2260,41 @@ provider = "anthropic"
             Some(BaseState::Current),
             "the completed refresh alone makes the row scan and carry it",
         );
+        let measured = forge_agent::env::git_diff::last_base_measurement(repo, "origin/main")
+            .expect("the measurement that landed");
+        assert_eq!(
+            next.base_at,
+            Some(measured.at),
+            "and the row carries the instant the measurement was taken, not when the row was stored",
+        );
     }
 
-    /// **A new measurement is news even when it states the same base.** The
-    /// row a viewer was told last is compared by value, and a completed check
-    /// that finds the base still current would otherwise announce nothing -
-    /// leaving a page that drew the base unchecked waiting for a frame that
-    /// never comes.
+    /// **A measurement's words are news even when its state is not.** The row
+    /// a viewer was told last is compared by value, and a check that failed
+    /// with new words is what a page that drew the base unchecked needs to act
+    /// on. A check that found exactly the same thing again is not news.
     #[test]
-    fn a_new_measurement_is_news_even_when_it_states_the_same_base() {
+    fn a_measurement_with_new_words_is_news_at_the_same_base() {
         let now = Instant::now();
         let mut first = a_snapshot(now, Path::new("/tmp/nowhere"));
-        first.base = Some(BaseState::Current);
+        first.base = Some(BaseState::Unverified);
         first.base_at = Some(now);
+        first.base_error = None;
         let mut second = first.clone();
-        second.base_at = Some(now + Duration::from_millis(1));
+        second.base_error = Some("fatal: could not resolve host".to_owned());
 
         assert_eq!(first.base, second.base, "the two rows state the same base");
         assert!(
             Announced::of(&first) != Announced::of(&second),
-            "but the check that took the second one is what a waiting page needs",
+            "but the words a failed check left are news a waiting page can act on",
+        );
+
+        let mut repeat = second.clone();
+        repeat.base_at = Some(now + Duration::from_millis(1));
+        assert_eq!(
+            Announced::of(&second),
+            Announced::of(&repeat),
+            "a check that found the same thing again is not news",
         );
     }
 
@@ -2263,7 +2322,11 @@ provider = "anthropic"
                 dir.path(),
                 PrRefresh::ServeCached,
                 None,
-                Some((BaseState::Current, older)),
+                Some(forge_agent::env::git_diff::BaseMeasurement {
+                    at: older,
+                    state: BaseState::Current,
+                    error: None,
+                }),
                 false,
                 false,
             )
@@ -2281,7 +2344,11 @@ provider = "anthropic"
                 dir.path(),
                 PrRefresh::ServeCached,
                 None,
-                Some((BaseState::Current, newer)),
+                Some(forge_agent::env::git_diff::BaseMeasurement {
+                    at: newer,
+                    state: BaseState::Current,
+                    error: None,
+                }),
                 false,
                 false,
             )

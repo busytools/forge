@@ -2367,12 +2367,7 @@ async fn session(
         None => match &refresh {
             Some(refresh) => (
                 surface
-                    .work_pinned_local(
-                        slot,
-                        &held.cwd,
-                        refresh.base_ref.as_deref(),
-                        Some(refresh.state),
-                    )
+                    .work_pinned_local(slot, &held.cwd, refresh.base_ref.as_deref(), Some(refresh))
                     .await,
                 refresh.base_ref.as_deref(),
             ),
@@ -2412,7 +2407,7 @@ async fn session(
     // The tree behind the row's depth, from the same held scan and through
     // the same constructor the pushed frame goes through - one derivation,
     // so a client that applies the update lands on the record's own answer.
-    let git = git_work_view(&held.diff, held.base);
+    let git = git_work_view(&held.diff, held.base, held.base_error.as_deref());
     let branch = work.branch.clone().unwrap_or_default();
     let at = std::time::Instant::now();
     let reviews = surface.reviews(slot.project(), &branch);
@@ -3673,6 +3668,7 @@ mod tests {
                 read_at: std::time::Instant::now(),
                 base: None,
                 base_at: None,
+                base_error: None,
             },
         );
 
@@ -4282,6 +4278,7 @@ mod tests {
                 read_at: std::time::Instant::now(),
                 base: None,
                 base_at: None,
+                base_error: None,
             },
         );
         let state = TransportState {
@@ -4354,6 +4351,7 @@ mod tests {
                 read_at: std::time::Instant::now(),
                 base: None,
                 base_at: None,
+                base_error: None,
             },
         );
         let thread = |id: &str,
@@ -4521,6 +4519,7 @@ mod tests {
                 read_at: std::time::Instant::now(),
                 base: None,
                 base_at: None,
+                base_error: None,
             },
         );
         let thread = |id: &str, side, text: &str, context: &[&str], commit: Option<&str>| {
@@ -4648,6 +4647,7 @@ mod tests {
                 read_at: std::time::Instant::now(),
                 base: None,
                 base_at: None,
+                base_error: None,
             },
         );
         let state = TransportState {
@@ -5081,6 +5081,7 @@ mod tests {
                 read_at: std::time::Instant::now(),
                 base: None,
                 base_at: None,
+                base_error: None,
             },
         );
         let work = Arc::new(WorkCache::new());
@@ -5128,6 +5129,7 @@ mod tests {
                 read_at: std::time::Instant::now(),
                 base: None,
                 base_at: None,
+                base_error: None,
             },
         );
         let state = TransportState {
@@ -5161,7 +5163,7 @@ mod tests {
         );
         assert_eq!(
             encoded["git"],
-            serde_json::to_value(forge_workspace::work::git_work_view(&held.diff, None))
+            serde_json::to_value(forge_workspace::work::git_work_view(&held.diff, None, None))
                 .expect("encode"),
             "and the tree behind the row's depth",
         );

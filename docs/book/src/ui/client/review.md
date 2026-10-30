@@ -76,14 +76,16 @@ flight answers at once with the base unchecked, pinned to the local tip the
 diff is read at: the page draws the line saying the base could not be checked,
 and no spinner. When that fetch lands, the seat's row carries the measurement
 at its next watch pass and arrives as `work_changed`; the page sees the
-measured base disagree with the one its own read drew and asks its own read
-again, which answers from the refresh that has just finished rather than
-paying the network twice. A refresh that completed within the last half minute
-answers a read directly, so the page turns verified on its own with no second
-fetch and no second click. A fetch another read is running is joined rather
-than repeated. Every other read of a seat with a session serves what the
-stores hold and never waits on the base (a seat with none still looks its PR up
-on the read - see the socket page - which is that read's own network call), so
+measured base - its state or the words a failed check left - disagree with
+the one its own read drew and asks its own read again, which answers from the
+refresh that has just finished rather than paying the network twice. A
+refresh that completed within the last half minute answers a read directly,
+so the page turns verified on its own with no second fetch and no second
+click. A fetch another read is running is joined rather than repeated; a
+background kick's is not waited on at all. Every other read of a seat with a
+session serves what the stores hold and never waits on the base (a seat with
+none still looks its PR up on the read - see the socket page - which is that
+read's own network call), so
 a record this page did not read itself is drawn with no base line at all: it
 has not checked, and the page says nothing it cannot back. When the fetch
 cannot run, the page says so above the canvas instead of drawing the files as

@@ -118,10 +118,16 @@
    * `base..HEAD`, so an upstream advance the branch does not contain moves
    * `origin/main` while the count and the chain stay as they were, and only
    * this says so.
+   *
+   * **The failure words are part of the value.** A check that ran and failed
+   * again with different words is a change the page has to act on, and the
+   * state alone cannot carry it: `unverified` with no words and `unverified`
+   * with a reason are the same string without this.
    */
-  function baseOf(base: BaseStateRecord | null | undefined): string | null {
+  function baseOf(base: BaseStateRecord | null | undefined, error: string | null): string | null {
     if (base === null || base === undefined) return null;
-    return base.state === 'behind' ? `behind:${base.behind}` : base.state;
+    const state = base.state === 'behind' ? `behind:${base.behind}` : base.state;
+    return error === null ? state : `${state} (${error})`;
   }
 
   /** One pending re-ask, debounced, with [`REASK_FLOOR_MS`] between reads. */
@@ -290,13 +296,13 @@
   $effect(() => {
     const at = subjectKey({ session: slot });
     if (record === null) return;
-    const measured = baseOf(record.git.base);
+    const measured = baseOf(record.git.base, record.git.baseError);
     const first = baseSeenAt !== at;
     if (!first && measured === seenBase) return;
     baseSeenAt = at;
     seenBase = measured;
     if (first) return;
-    if (measured !== baseOf(record.diff.base)) askAgainSoon();
+    if (measured !== baseOf(record.diff.base, record.diff.baseError)) askAgainSoon();
   });
 
   // A page that goes away asks nothing: the intent is given back with the

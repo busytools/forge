@@ -6061,6 +6061,7 @@ fn a_scan(
         read_at,
         base: None,
         base_at: None,
+        base_error: None,
     }
 }
 
@@ -6234,6 +6235,7 @@ async fn a_review_read_refreshes_the_base_and_the_count_with_it() {
             read_at: std::time::Instant::now(),
             base: None,
             base_at: None,
+            base_error: None,
         },
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -6836,6 +6838,7 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
             read_at: std::time::Instant::now(),
             base: None,
             base_at: None,
+            base_error: None,
         },
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");

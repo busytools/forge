@@ -107,9 +107,9 @@ pub(super) fn slow_fetch_at(dir: &std::path::Path, bin: &std::path::Path, secs: 
 }
 
 /// Point the repo at `dir` at a `git` whose `fetch` refuses and whose every
-/// other subcommand is the machine's own. A base refresh that cannot run while
-/// the remote can still be asked is the shape [`measure_lag`] reports: the
-/// remote tip is reachable, the local base is not refreshed.
+/// other subcommand is the machine's own: the shape a refresh that cannot run
+/// leaves behind - the base stays where it was, and the answer is unchecked
+/// with git's own words.
 #[cfg(test)]
 pub(super) fn fail_fetch_at(dir: &std::path::Path, bin: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt as _;
@@ -453,6 +453,7 @@ impl BaseRun {
             error: Some("the base refresh ended without an answer".to_owned()),
             cut: false,
             unanswered: true,
+            at: Instant::now(),
         })
     }
 }
@@ -545,17 +546,36 @@ impl Drop for LeaderGuard {
             error: Some("the base refresh ended without an answer".to_owned()),
             cut: false,
             unanswered: true,
+            at: Instant::now(),
         });
     }
+}
+
+/// One completed base refresh: when it measured, what it found, and git's own
+/// words when it could not run.
+///
+/// **The words ride the measurement** because a page that drew the base
+/// unchecked is owed the reason the background fetch gave, and the only path
+/// to it is the measurement this store holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseMeasurement {
+    pub at: Instant,
+    pub state: BaseState,
+    pub error: Option<String>,
 }
 
 /// What each checkout's last completed refresh measured, so a scan can carry
 /// it onto the seat's row without waiting for the fetch itself. Pruned on the
 /// same window as the kick, and the row keeps its stored base when an entry
 /// goes.
-static LAST_MEASURED: OnceLock<Mutex<HashMap<PathBuf, (Instant, BaseState)>>> = OnceLock::new();
+///
+/// **Keyed by the base branch as well as the checkout**: one worktree can draw
+/// two bases (a release branch against `origin/main`, then a hotfix against
+/// `origin/develop`), and a measurement of one must never answer the other.
+static LAST_MEASURED: OnceLock<Mutex<HashMap<(PathBuf, String), BaseMeasurement>>> =
+    OnceLock::new();
 
-fn remember_measurement(cwd: &Path, refresh: &BaseRefresh) {
+fn remember_measurement(cwd: &Path, default_branch: &str, refresh: &BaseRefresh) {
     // **A run that ended without answering measured nothing.** Its state is a
     // placeholder, and storing it would draw "could not be checked" on the next
     // scan's row for a fetch that never reported.
@@ -563,19 +583,29 @@ fn remember_measurement(cwd: &Path, refresh: &BaseRefresh) {
         return;
     }
     let mut held = LAST_MEASURED.get_or_init(|| Mutex::new(HashMap::new())).lock();
-    held.retain(|_, (at, _)| at.elapsed() < WATCH_REFRESH_INTERVAL);
-    held.insert(cwd.to_path_buf(), (Instant::now(), refresh.state));
+    held.retain(|_, measured| measured.at.elapsed() < WATCH_REFRESH_INTERVAL);
+    held.insert(
+        (cwd.to_path_buf(), default_branch.to_owned()),
+        BaseMeasurement {
+            // **The instant the answer's state was established**, not the
+            // instant it was recorded: a read that joined a run stores the
+            // same instant its own row carries, so the watch does not rescan
+            // for a measurement it has already adopted.
+            at: refresh.at,
+            state: refresh.state,
+            error: refresh.error.clone(),
+        },
+    );
 }
 
-/// The instant and state of this checkout's last completed base refresh,
-/// inside the window the kick runs on. `None` until one has completed.
-pub fn last_base_measurement_at(cwd: &Path) -> Option<(Instant, BaseState)> {
-    LAST_MEASURED.get_or_init(|| Mutex::new(HashMap::new())).lock().get(cwd).copied()
-}
-
-/// The state this checkout's last completed base refresh measured.
-pub fn last_base_measurement(cwd: &Path) -> Option<BaseState> {
-    last_base_measurement_at(cwd).map(|(_, state)| state)
+/// This checkout's last completed refresh of `default_branch`, inside the
+/// window the kick runs on. `None` until one has completed.
+pub fn last_base_measurement(cwd: &Path, default_branch: &str) -> Option<BaseMeasurement> {
+    LAST_MEASURED
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .get(&(cwd.to_path_buf(), default_branch.to_owned()))
+        .cloned()
 }
 
 /// The repository a checkout belongs to, as the fetch gate's key: git's
@@ -670,9 +700,11 @@ async fn settle_background_fetches() -> usize {
 /// path with its flags and lock line.
 ///
 /// **Nobody waits on this refresh**, and it may not spend a waiting reader's
-/// wait: a reader that arrives while it runs joins it (see [`refresh_base`])
-/// rather than queueing behind it and fetching again. The scan's `budget`
-/// bounds the background run, so a hung remote cannot leave a child behind.
+/// wait: a drawing read that arrives while it runs answers what it already
+/// holds and lets this run's answer serve the next read (see
+/// [`answer_without_fetch`]) rather than queueing behind it. A bounded caller
+/// still joins it, and the scan's `budget` bounds the run, so a hung remote
+/// cannot leave a child behind.
 ///
 /// **`scan_within` is the one scan that can serve a seat with no loop**: its
 /// record read would otherwise re-read the tree for ever against a ref
@@ -713,6 +745,13 @@ pub struct BaseRefresh {
     /// The state and error are a placeholder rather than a measurement, and no
     /// scan's row carries them.
     pub unanswered: bool,
+    /// **When this answer's state was established**: the instant a completed
+    /// refresh measured it, the instant a drawing read decided to answer the
+    /// base unchecked, or the instant the stored measurement being reused was
+    /// taken. A scan stamps the row's `base_at` from this rather than from its
+    /// own write, so a measurement that lands while the row is being stored is
+    /// still newer than the place it must land in.
+    pub at: Instant,
 }
 
 /// Refresh the base a drawn branch diff is measured against, and say how
@@ -750,23 +789,50 @@ pub async fn refresh_base_for_display(cwd: &Path, default_branch: &str) -> BaseR
 /// minute as its own check.
 const DISPLAY_MEASUREMENT_AGE: Duration = Duration::from_secs(30);
 
+/// Whether a completed measurement is recent enough to answer a drawing read
+/// without a refresh of its own. Its own function so the expiry side is a
+/// property with a seam: widening the window past this has to fail a test.
+fn recent_enough(measured: &BaseMeasurement, now: Instant) -> bool {
+    now.saturating_duration_since(measured.at) <= DISPLAY_MEASUREMENT_AGE
+}
+
 /// What a drawing read answers without a refresh of its own: `None` means it
 /// must lead or join one.
+///
+/// **An answer in hand is spent before the network is considered.** A refresh
+/// that finished within [`DISPLAY_MEASUREMENT_AGE`] is the check this read
+/// would have made, so it is answered as it stands - carrying the words a
+/// failed fetch left - and pinned to the local tip the diff is read at. If the
+/// tip cannot be read the answer degrades to `unverified`, as a fetch path's
+/// would.
 ///
 /// **A run a background kick leads is not a wait a reading spends.** The kick
 /// keeps the ref fresh for the next read; a page that joined it would pay the
 /// network for work it never asked for, which is the stall #2685 measured. The
-/// base is answered as unchecked, pinned to the local tip the diff is read at,
-/// and the run's own answer serves the next read.
-///
-/// **A run that has just finished is that answer.** The measurement carries a
-/// state but not the failure words that produced it; a page that needs them
-/// takes a refresh of its own, which a later read does.
+/// base is answered as unchecked, and the run's own answer serves the next
+/// read. `at` is the instant that decision was taken, not the instant the row
+/// is stored: a run publishing while the read is answered must still be newer
+/// than the place it has to land in.
 async fn answer_without_fetch(
     cwd: &Path,
     default_branch: &str,
     key: &RunKey,
 ) -> Option<BaseRefresh> {
+    let decided_at = Instant::now();
+    if let Some(measured) = last_base_measurement(cwd, default_branch)
+        && recent_enough(&measured, decided_at)
+    {
+        let base_ref = local_tip(cwd, default_branch, COMMAND_TIMEOUT).await;
+        let state = if base_ref.is_some() { measured.state } else { BaseState::Unverified };
+        return Some(BaseRefresh {
+            state,
+            base_ref,
+            error: measured.error,
+            cut: false,
+            unanswered: false,
+            at: measured.at,
+        });
+    }
     if background_run_waits(key) {
         return Some(BaseRefresh {
             state: BaseState::Unverified,
@@ -774,19 +840,10 @@ async fn answer_without_fetch(
             error: None,
             cut: false,
             unanswered: false,
+            at: decided_at,
         });
     }
-    let (at, state) = last_base_measurement_at(cwd)?;
-    if at.elapsed() > DISPLAY_MEASUREMENT_AGE {
-        return None;
-    }
-    Some(BaseRefresh {
-        state,
-        base_ref: local_tip(cwd, default_branch, COMMAND_TIMEOUT).await,
-        error: None,
-        cut: false,
-        unanswered: false,
-    })
+    None
 }
 
 /// [`refresh_base_for_display`] with a bound: a test gives the refresh one the
@@ -807,9 +864,11 @@ async fn refresh_base_within(cwd: &Path, default_branch: &str, budget: Duration)
 /// rather than the network ([`answer_without_fetch`]). Only a read with no
 /// answer of its own leads a refresh, and that one waits for it.
 ///
-/// **A caller with no bound inherits no bound.** The replace below covers the
-/// one way a bound-less caller can still end up on a bounded run: a kick
-/// registering it between the bypass's look and this call's join.
+/// **A cut run may not be a bound-less caller's answer.** A kick registering a
+/// run between the bypass's look and this call's join is the one way a
+/// bound-less caller can still end up on a bounded one; the replace below takes
+/// it back when that run's bound ended it or has already passed. A bounded run
+/// that finished inside its bound answers the read like any completed refresh.
 async fn refresh_base(cwd: &Path, default_branch: &str, bound: Option<Duration>) -> BaseRefresh {
     let key = (repo_key(cwd, COMMAND_TIMEOUT).await, default_branch.to_owned());
     if bound.is_none()
@@ -831,7 +890,7 @@ async fn refresh_base(cwd: &Path, default_branch: &str, bound: Option<Duration>)
     } else {
         refresh
     };
-    remember_measurement(cwd, &refresh);
+    remember_measurement(cwd, default_branch, &refresh);
     refresh
 }
 
@@ -872,8 +931,8 @@ async fn refresh_once(
     (refresh, run)
 }
 
-/// One refresh's own work: the fetch, then the state judged against the
-/// remote's tip, every step sharing `bound` when there is one.
+/// One refresh's own work: the fetch, then the state read off the ref that
+/// fetch wrote, every step sharing `bound` when there is one.
 async fn refresh_base_owned(
     cwd: &Path,
     default_branch: &str,
@@ -951,7 +1010,7 @@ async fn refresh_base_owned(
         };
         (state, local, None, false)
     };
-    BaseRefresh { state, base_ref, error, cut, unanswered: false }
+    BaseRefresh { state, base_ref, error, cut, unanswered: false, at: Instant::now() }
 }
 
 /// Whether forge builds the ssh command for this checkout's network children:
@@ -4535,7 +4594,7 @@ mod tests {
             "and the fetch it kicked moved the base to the remote's tip",
         );
         assert_eq!(
-            last_base_measurement(dir.path()),
+            last_base_measurement(dir.path(), "origin/main").map(|measured| measured.state),
             Some(BaseState::Current),
             "and the state it measured is what the row carries next",
         );
@@ -4631,6 +4690,7 @@ mod tests {
             error: None,
             cut: false,
             unanswered: false,
+            at: Instant::now(),
         });
         // The leader's own `Arc` is still here, exactly as a caller mid-flight
         // would hold it, so the registry entry outlives the publish.
@@ -4679,7 +4739,7 @@ mod tests {
             "a leader that ended unanswered is named: {answer:?}",
         );
         assert!(
-            last_base_measurement(dir.path()).is_none(),
+            last_base_measurement(dir.path(), "origin/main").is_none(),
             "and a placeholder state is not stored as the checkout's measurement",
         );
     }
@@ -4741,20 +4801,105 @@ mod tests {
         wait_for(|| held.starts() == 1, "the kicked fetch to start").await;
         held.release();
         let _ = settle_background_fetches().await;
-        wait_for(|| last_base_measurement(dir.path()).is_some(), "the measurement to land").await;
-        let measured = last_base_measurement(dir.path());
+        wait_for(
+            || last_base_measurement(dir.path(), "origin/main").is_some(),
+            "the measurement to land",
+        )
+        .await;
+        let measured = last_base_measurement(dir.path(), "origin/main");
 
-        let answer =
-            timeout(Duration::from_secs(2), refresh_base_for_display(dir.path(), "origin/main"))
-                .await
-                .expect("the reading answered from the measurement it holds");
+        let answer = timeout(TEST_GIT_BUDGET, refresh_base_for_display(dir.path(), "origin/main"))
+            .await
+            .expect("the reading answered from the measurement it holds");
 
         assert_eq!(held.starts(), 1, "the finished run answered the read; no second fetch");
-        assert_eq!(Some(answer.state), measured, "the state is the measurement the run took");
+        assert_eq!(
+            Some(answer.state),
+            measured.map(|measured| measured.state),
+            "the state is the measurement the run took"
+        );
         assert_eq!(answer.state, BaseState::Current, "the fixture's fetch makes the base current");
         assert!(answer.base_ref.is_some(), "pinned to the tip the fetch left");
         assert!(answer.error.is_none() && !answer.cut && !answer.unanswered);
         crate::env::git_command::clear_git_point(dir.path());
+    }
+
+    /// **The explicit refspec writes the base ref, not the repository's own.**
+    /// A repository whose `remote.origin.fetch` points somewhere else entirely
+    /// still gets `refs/remotes/origin/<b>` moved by the refspec `fetch_base`
+    /// passes, which is the reason the post-fetch `ls-remote` could go.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_explicit_refspec_writes_the_base_ref_whatever_the_remotes_own_says() {
+        let upstream = tempfile::tempdir().expect("a bare remote");
+        git_at(upstream.path(), &["init", "-q", "--bare"]);
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "base.txt", "base\n");
+        commit_all(&dir, "X base");
+        git_at(dir.path(), &["remote", "add", "origin", &upstream.path().to_string_lossy()]);
+        git_at(dir.path(), &["push", "-q", "-u", "origin", "main"]);
+        let stale = rev_parse_head(&dir);
+        // The repository's own fetch refspec writes a different namespace, so
+        // only the explicit refspec can move the ref this diff reads.
+        git_at(
+            dir.path(),
+            &["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/upstream/*"],
+        );
+        // Upstream moves on, and the base ref is still where it was.
+        write_file(&dir, "upstream.txt", "upstream\n");
+        commit_all(&dir, "Y upstream");
+        git_at(dir.path(), &["push", "-q", "origin", "main"]);
+        git_at(dir.path(), &["update-ref", "refs/remotes/origin/main", &stale]);
+
+        let refresh = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+
+        assert_eq!(
+            rev_parse(dir.path(), "refs/remotes/origin/main"),
+            rev_parse(upstream.path(), "main"),
+            "the explicit refspec moved the base ref the diff reads",
+        );
+        assert_eq!(refresh.state, BaseState::Current, "and the refreshed base is current");
+    }
+
+    /// **A measurement answers a read only inside its window.** The reuse is a
+    /// freshness claim, so its expiry is a property with its own test: widening
+    /// the window past it has to fail here.
+    #[test]
+    fn a_measurement_answers_a_reading_only_inside_its_window() {
+        let now = Instant::now();
+        let fresh = BaseMeasurement {
+            at: now.checked_sub(Duration::from_secs(29)).expect("the test clock is past boot"),
+            state: BaseState::Current,
+            error: None,
+        };
+        let stale = BaseMeasurement {
+            at: now.checked_sub(Duration::from_secs(31)).expect("the test clock is past boot"),
+            state: BaseState::Current,
+            error: None,
+        };
+
+        assert!(recent_enough(&fresh, now), "a 29 s old measurement answers the read");
+        assert!(!recent_enough(&stale, now), "a 31 s old measurement does not");
+    }
+
+    /// **A measurement answers only the base it measured.** One worktree can
+    /// draw two bases, so a measurement of `origin/main` must not answer a read
+    /// for `origin/develop`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_measurement_answers_only_the_branch_it_measured() {
+        let (_upstream, dir) = stale_base_fixture();
+
+        let _ = refresh_base_within(dir.path(), "origin/main", TEST_GIT_BUDGET).await;
+        crate::env::git_command::clear_git_point(dir.path());
+
+        assert!(
+            last_base_measurement(dir.path(), "origin/main").is_some(),
+            "the refresh recorded the base it measured",
+        );
+        assert!(
+            last_base_measurement(dir.path(), "origin/develop").is_none(),
+            "and it must not answer a read for a different base",
+        );
     }
 
     /// **A burst of readers costs one fetch, not one each.** The first leads a

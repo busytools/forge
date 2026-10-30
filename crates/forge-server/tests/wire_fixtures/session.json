@@ -286,6 +286,7 @@
   "git": {
     "default_branch": "main",
     "base": null,
+    "base_error": null,
     "worktree": {
       "files": [
         {
