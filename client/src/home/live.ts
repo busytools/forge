@@ -195,6 +195,11 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     if (timer !== null) return;
     timer = setTimeout(() => {
       timer = null;
+      // **A read that started inside the beat is the one this update wanted.**
+      // A return's ask lands here too; queueing a second whole encode behind
+      // it would let the first answer clear the flag while the second is in
+      // flight, and a third could follow.
+      if (held === null || reading || held.state().kind === 'refused') return;
       reads += 1;
       reading = true;
       connection.refresh('home');

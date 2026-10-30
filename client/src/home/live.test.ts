@@ -277,6 +277,23 @@ describe('the home over a connection', () => {
   });
 
   /**
+   * **A return inside the coalesce beat is the read the update wanted.** The
+   * timer fires after a return has already asked; queueing a second whole
+   * encode behind it lets the first answer clear the flag mid-flight and a
+   * third read follow.
+   */
+  it('a return inside the coalesce beat does not add a read', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    rereadHome(forge.connection);
+    await settle();
+    expect(forge.refreshed, 'the return and the beat asked twice').toEqual(['home']);
+    stop();
+  });
+
+  /**
    * **A refusal another subject owns is not the home's.** The board's refused
    * subscribe arrives as an `error` too; taking it for the home's would read
    * the home store and, with an update behind it, ask for a home read that
