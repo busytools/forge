@@ -110,7 +110,7 @@ impl LoggingRuntime {
 /// CLI's boot init frame says it received. The list is fixed once the child
 /// starts, so the pair is the only way a "tool not found" is traced to the
 /// side that actually lacked the name.
-const DEFAULT_LOG_DIRECTIVES: &str = "info,\
+pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.input=debug,\
     app.lifecycle=debug,\
     bridge.lifecycle=debug,\

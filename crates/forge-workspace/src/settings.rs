@@ -127,12 +127,6 @@ pub struct ConfigKey {
     rows: fn(&LoadedConfig) -> Vec<KeyRow>,
 }
 
-/// A key's class by its catalogue pattern, for the book's reconciliation
-/// and the completeness test.
-pub fn effect_class(path: &str) -> Option<EffectClass> {
-    all_keys().find(|key| key.path == path).map(|key| key.class)
-}
-
 fn all_keys() -> impl Iterator<Item = &'static ConfigKey> {
     ACCOUNT_KEYS
         .iter()
@@ -1500,6 +1494,16 @@ models = ["m"]
 
     fn slack_names(slack: &BTreeSet<String>) -> Vec<String> {
         slack.iter().map(|field| format!("slack[].{field}")).collect()
+    }
+
+    /// Every catalogued key names an area the sub-nav draws, so no key is
+    /// silently dropped from the document.
+    #[test]
+    fn every_key_names_a_drawn_area() {
+        let drawn: std::collections::BTreeSet<&str> = AREAS.iter().map(|area| area.id).collect();
+        for key in all_keys() {
+            assert!(drawn.contains(key.area), "{} names no drawn area", key.path);
+        }
     }
 
     /// Each class the page can draw has at least one key, so a class cannot

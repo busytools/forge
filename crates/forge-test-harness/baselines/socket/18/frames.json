@@ -801,6 +801,34 @@
         "project"
       ]
     },
+    "Settings": {
+      "": [
+        "document",
+        "kind"
+      ],
+      "/document": [
+        "areas",
+        "source",
+        "totals",
+        "version"
+      ],
+      "/document/areas[]": [
+        "id",
+        "keys",
+        "name",
+        "note"
+      ],
+      "/document/areas[]/keys[]": [
+        "class",
+        "kind",
+        "path",
+        "value"
+      ],
+      "/document/totals": [
+        "areas",
+        "keys"
+      ]
+    },
     "SnapshotBoard": {
       "": [
         "data",

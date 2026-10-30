@@ -119,7 +119,7 @@ again to every connection after each applied reload:
   "document": {
     "version": "1.1.34+abc1234",
     "source": "/home/me/.claude/forge/forge.toml",
-    "totals": { "keys": 232, "areas": 11 },
+    "totals": { "keys": 232, "areas": 12 },
     "areas": [
       {
         "id": "server",

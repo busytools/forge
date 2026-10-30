@@ -1952,6 +1952,50 @@ async fn a_foreign_origin_is_refused_at_the_upgrade() {
     }
 }
 
+/// **Two Origin headers are not one origin.** A client forge ships sends at
+/// most one, so a request carrying two is refused rather than resolved to
+/// whichever the gate happened to read first.
+#[tokio::test]
+async fn a_duplicate_origin_is_refused_at_the_upgrade() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+
+    let (url, _fleet) = a_server().await;
+    let mut request = url.into_client_request().expect("a client request");
+    request.headers_mut().append("Origin", "http://localhost:1420".parse().expect("a value"));
+    request.headers_mut().append("Origin", "http://localhost:1420".parse().expect("a value"));
+    let error =
+        tokio_tungstenite::connect_async(request).await.expect_err("the upgrade is refused");
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status(), 403, "a duplicate origin is forbidden");
+        }
+        other => panic!("expected an HTTP refusal, got {other:?}"),
+    }
+}
+
+/// **An Origin that is not text is not an origin.** The gate reads the
+/// header as text; bytes it cannot read are refused rather than ignored as
+/// if the request were a native client's.
+#[tokio::test]
+async fn a_non_text_origin_is_refused_at_the_upgrade() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+
+    let (url, _fleet) = a_server().await;
+    let mut request = url.into_client_request().expect("a client request");
+    request
+        .headers_mut()
+        .insert("Origin", HeaderValue::from_bytes(b"\xff\xfe").expect("an opaque value"));
+    let error =
+        tokio_tungstenite::connect_async(request).await.expect_err("the upgrade is refused");
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status(), 403, "a non-text origin is forbidden");
+        }
+        other => panic!("expected an HTTP refusal, got {other:?}"),
+    }
+}
+
 /// The shell's webview origin is allowed, and the settings frame follows the
 /// greeting on that connection as on any other.
 #[tokio::test]
@@ -2027,6 +2071,19 @@ async fn the_settings_frame_never_writes_its_values_to_the_log() {
         .expect("no error");
     let text = msg.to_text().expect("text");
     assert!(text.contains(SECRET), "precondition: the frame carries the project's env value");
+    // **The capture reads the shipped filter, not a narrower one.** A probe
+    // on an always-on target proves the test would see a record written
+    // beside the frame's push; without it, a filter that dropped that
+    // target would make the assertion below prove nothing.
+    tracing::debug!(
+        target: "app.lifecycle",
+        event_name = "capture_probe",
+        "the capture reads the shipped log directives",
+    );
+    assert!(
+        captured().contains("the capture reads the shipped log directives"),
+        "the capture must see the targets the shipped log enables",
+    );
     let _ = capture;
     assert!(!captured().contains(SECRET), "the frame's values never reach the tracing log");
 }
@@ -9290,7 +9347,10 @@ fn install_capture() -> Arc<Mutex<Vec<u8>>> {
             .flatten_event(true)
             // The relay's own lines are `forge_workspace::browser`: the
             // reaped holder's release reason is asserted from here.
-            .with_env_filter("forge_server=debug,forge_workspace=debug")
+            // The production filter, not a narrower one: a leak on any
+            // target the shipped log enables must reach this capture, and a
+            // test filter is blind to every target it does not name.
+            .with_env_filter(forge_server::logging::DEFAULT_LOG_DIRECTIVES)
             .with_writer(move || CaptureSink(Arc::clone(&sink)))
             .with_ansi(false)
             .finish();

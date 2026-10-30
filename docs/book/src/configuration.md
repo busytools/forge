@@ -958,9 +958,9 @@ accepts has no class.
 
 | Table or key | Takes effect |
 | --- | --- |
-| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
+| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace`, `[orgs.projects.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
 | `[[orgs.projects]]` - `name`, `path` | Live. The roster re-reads them; a removed project leaves it, and sessions already running keep running. |
-| `[[orgs.projects]]` - `auto_start`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile`; `[orgs.projects.slack] workspace` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `auto_start` on a project that already exists applies the next time it starts, and an added project with `auto_start = true` starts. A project's Slack binding applies to its next tool call. |
+| `[[orgs.projects]]` - `auto_start`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `vault_roots`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `auto_start` on a project that already exists applies the next time it starts, and an added project with `auto_start = true` starts. |
 | `[[accounts]]` - `display_name`, `provider`, `base_url`, `token`, `models`, `model_slugs`, `model_aliases` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
 | `[[accounts]]` - `env` | Next session. Folded into each account's env at load, so the next spawn carries it; a running child keeps its own environment. |
 | `[env]` | Next session. Folded into each account's env at load, so the next spawn carries it. |
@@ -982,7 +982,7 @@ accepts has no class.
 | `[dictate]` `enabled`, `models_dir`, `language`, `normalizer`, `max_capture_minutes`, `transcribe_model`, `cleanup_model` | Restart-only. The preflight and the engine's own configuration are built once at boot; the log names it. |
 | `[[slack]]` `workspace`, `token`, `poll_seconds`, `dm_poll_seconds` | Restart-only. The client and its pump captured these when the subsystem started; the log names them. |
 | `[[slack]]` `thread_idle_days`, `stale_after_hours` | Live. `thread_idle_days` is read by each sweep and `stale_after_hours` when a block is drawn. |
-| `[gotify]` `url`, `client_token` | Restart-only. The stream and its tools capture the section when the pump starts; a change is stored and the log names it, and a running stream keeps the connection it captured. |
+| `[gotify]` `url`, `client_token` | Restart-only. The `gotify__*` tools read the section on every call, so a new url or token reaches the tools at once; the stream pump captured its connection when it started and keeps it until a restart. A change is stored and the log names it. |
 | `[plugins]` `auto_update` | Not read yet. The loader accepts the key and nothing consumes it; the settings page labels it rather than hiding it, and a change applies nothing. |
 
 **A running session is never reconfigured.** Its account (except when the

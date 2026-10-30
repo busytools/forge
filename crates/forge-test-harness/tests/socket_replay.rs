@@ -952,6 +952,32 @@ fn frames_record() -> Value {
 
     let mut payload_sampled: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     payload_sampled.insert("ChatAppended".to_owned(), shape_of(&an_update(update_sample)));
+    // **The settings document's own field names.** The page parses this
+    // payload by hand with no compile link, so a rename of `document`,
+    // `totals`, `areas`, `keys`, `path`, `kind`, `value` or `class` would
+    // leave the page drawing an empty config while every census line stayed
+    // green.
+    payload_sampled.insert(
+        "Settings".to_owned(),
+        shape_of(&ServerMessage::Settings {
+            document: forge_primitives::SettingsDocument {
+                version: "1.2.3".to_owned(),
+                source: "~/.claude/forge/forge.toml".to_owned(),
+                totals: forge_primitives::SettingsTotals { keys: 1, areas: 1 },
+                areas: vec![forge_primitives::SettingsArea {
+                    id: "server".to_owned(),
+                    name: "server".to_owned(),
+                    note: "the socket".to_owned(),
+                    keys: vec![forge_primitives::SettingsKey {
+                        path: "server.port".to_owned(),
+                        kind: forge_primitives::SettingKind::Number,
+                        value: serde_json::json!(8790),
+                        class: forge_primitives::EffectClass::Restart,
+                    }],
+                }],
+            },
+        }),
+    );
     // **The machine turn's own field path.** A rename of `machine` makes the
     // client's `machineTurn()` read null, the composer never stands down, and
     // every other test stays green. The VALUE (`handoff`) is held by
