@@ -3,7 +3,7 @@
  * The push-to-talk key over a live takeover: the page under the bar owns the
  * keyboard, so a press of the binding must not start a take behind it.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { surface } from '../browser/surface.svelte';
 import { type Dictation, pushToTalkHandlers, type PushToTalk } from './dictate.svelte';
@@ -45,8 +45,21 @@ function release(handlers: ReturnType<typeof pushToTalkHandlers>): void {
   handlers.up(new KeyboardEvent('keyup', { code: BOUND.code, key: BOUND.key }));
 }
 
+/** A box holding the caret, as a page draws one: the caret is read off the
+ *  box's own editor name. */
+function focusBox(editor: string): void {
+  const box = document.createElement('textarea');
+  box.dataset['editor'] = editor;
+  document.body.append(box);
+  box.focus();
+}
+
 beforeEach(() => {
   surface.phase = 'closed';
+});
+
+afterEach(() => {
+  document.body.innerHTML = '';
 });
 
 describe('the push-to-talk key', () => {
@@ -102,25 +115,37 @@ describe('the push-to-talk key', () => {
     expect(began, 'nothing was begun at any point').not.toHaveBeenCalled();
   });
 
-  /// **A forge box still takes the key under a takeover.** The bar's feedback
-  /// line is drawn above the page rather than being part of it, so with the
-  /// caret in it the press belongs to a take exactly as the bar's mic does.
-  /// Anywhere else the page keeps the keyboard, which is the case above.
-  it("starts a take from the bar's line while a browser takeover is up", () => {
-    const line = document.createElement('textarea');
-    line.dataset['editor'] = 'bar';
-    document.body.append(line);
-    line.focus();
-    try {
+  /// **The key belongs to this client while the caret is in a box of its own
+  /// that takes dictation.** Each of the three is a door - the bar's feedback
+  /// line included, because it is the box still on screen when a takeover
+  /// owns the page - and a predicate narrowed to any one of them is the
+  /// decision about the page's keyboard going.
+  it.each(['composer', 'dock', 'bar'])(
+    'starts a take from the %s box while a browser takeover is up',
+    (editor) => {
+      focusBox(editor);
       const { wiring: w, act } = wiring();
       const handlers = pushToTalkHandlers(w);
       surface.phase = 'live';
       press(handlers);
-      expect(act, "a press in the bar's line begins the take").toHaveBeenCalledWith('begin');
-    } finally {
-      line.remove();
-    }
-  });
+      expect(act, `a press in the ${editor} box begins the take`).toHaveBeenCalledWith('begin');
+    },
+  );
+
+  /// **A box that takes no dictation is not a door.** The page under the
+  /// takeover keeps the keyboard for every other box the client names.
+  it.each(['board', 'palette', 'nowhere'])(
+    'starts no take from the %s box while a browser takeover is up',
+    (editor) => {
+      focusBox(editor);
+      const { wiring: w, act, began } = wiring();
+      const handlers = pushToTalkHandlers(w);
+      surface.phase = 'live';
+      press(handlers);
+      expect(act, `a press in the ${editor} box begins nothing`).not.toHaveBeenCalled();
+      expect(began, 'and the keyboard stays with the page').not.toHaveBeenCalled();
+    },
+  );
 
   /// **The stand-down is the takeover's, not the key's**: with no surface up
   /// the same press begins the take.

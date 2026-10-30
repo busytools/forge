@@ -7632,6 +7632,11 @@ describe("the takeover bar's feedback line", () => {
         .map((command) => Object.keys(command)[0]),
       'the words go to the session, and the hand-off ends as feedback',
     ).toEqual(['prompt_under', 'respond_browser_hand_off']);
+    const [prompt] = commands(harness).slice(before);
+    expect(
+      (prompt?.['prompt_under'] as Record<string, unknown> | undefined)?.['text'],
+      'the dictated words are the words the agent reads',
+    ).toBe('the words');
     await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
     flushSync();
 
@@ -7677,6 +7682,15 @@ describe("the takeover bar's feedback line", () => {
       document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
       'and the words stay on the line, to be sent again',
     ).toBe('the words');
+
+    // The refused press spent nothing: lowering the bar still hands the words
+    // to the chat, exactly as it does when no send was attempted.
+    barAction('back to chat').click();
+    await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
+    flushSync();
+    expect(drawn(), 'and lowering the bar hands them to the chat').toContain(
+      "What you said at the bar is in the chat's draft: the words",
+    );
   });
 
   /** **The card is this page's take, not the record's echo.** A take whose

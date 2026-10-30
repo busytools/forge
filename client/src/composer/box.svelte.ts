@@ -92,11 +92,6 @@ export class Box {
   /** A landing the bar's line took, which the carry hands over if the line goes. */
   barLanded = $state<string | null>(null);
   /**
-   * Whether the bar's line left as feedback: a line already sent is not
-   * carried into the chat's draft. Not `$state`: nothing draws from it.
-   */
-  barSent = false;
-  /**
    * Words the bar's line was holding when it went away, in the chat's draft
    * now - what the parked hand-off's card says so they are not invisible.
    */
