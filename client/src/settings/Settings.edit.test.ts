@@ -162,10 +162,17 @@ describe('the settings editor page', () => {
     ).toBe('server.port');
   });
 
-  /** A pop the confirm's history entry queues needs a task to land. */
-  async function settle(): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    flushSync();
+  /**
+   * A pop the confirm's history entry queues needs a task to land, and under
+   * a loaded runner one tick is not always enough: wait on the condition,
+   * bounded, rather than on a count of ticks.
+   */
+  async function settle(until: () => boolean = () => true): Promise<void> {
+    for (let at = 0; at < 20; at += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (until()) return;
+    }
   }
 
   it('draws a foreign push as a conflict instead of rebasing the draft', () => {
@@ -235,7 +242,7 @@ describe('the settings editor page', () => {
     [...document.querySelectorAll<HTMLButtonElement>('.settings-dialog .settings-btn')]
       .find((button) => button.textContent === 'discard')
       ?.click();
-    await settle();
+    await settle(() => document.querySelector('.settings-savebar') === null);
     expect(document.querySelector('.settings-mode')?.textContent, 'editing ended').toContain(
       'edit',
     );
@@ -287,8 +294,7 @@ describe('the settings editor page', () => {
     [...document.querySelectorAll<HTMLButtonElement>('.settings-dialog .settings-btn')]
       .find((button) => button.textContent === 'cancel')
       ?.click();
-    await settle();
-    await settle();
+    await settle(() => document.querySelector('.settings-dialog') === null);
     expect(document.querySelector('.settings-dialog'), 'the dialog is gone').toBeNull();
     expect(document.body.textContent, 'no discard confirm was raised').not.toContain(
       'Discard these changes?',
@@ -359,9 +365,7 @@ describe('the settings editor page', () => {
     [...document.querySelectorAll<HTMLButtonElement>('.settings-dialog .settings-btn')]
       .find((button) => button.textContent === 'discard')
       ?.click();
-    await settle();
-    await settle();
-    await settle();
+    await settle(() => get(currentRoute).name === 'home');
     expect(get(currentRoute).name, 'the held move ran on the confirm').toBe('home');
   });
 
@@ -402,10 +406,9 @@ describe('the settings editor page', () => {
     ].find((button) => button.textContent === 'remove');
     if (confirm === undefined) throw new Error('the confirm has no remove button');
     confirm.click();
-    // The answer rides the dialog entry's own pop, so the removal lands one
-    // task after the click.
-    await settle();
-    await settle();
+    // The answer rides the dialog entry's own pop, so the removal lands after
+    // the click.
+    await settle(() => (document.body.textContent ?? '').includes('removed on save'));
     expect(document.querySelector('.settings-dialog'), 'the dialog is gone').toBeNull();
     expect(document.body.textContent, 'the group reads as removed').toContain('removed on save');
   });
