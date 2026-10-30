@@ -155,6 +155,15 @@ struct State {
     /// rather than asking again. Cleared by the answer, a refusal, or a new
     /// connection.
     refreshing: HashSet<String>,
+    /// When the page last asked for a subject, so the reconcile does not ask
+    /// for the same one again inside the heartbeat window.
+    ///
+    /// **One return can name two reads.** The page's own return re-read asks
+    /// first; the first heartbeat after a lock is always stale (the page's
+    /// timers slept), and the reconcile would ask for every held non-seat
+    /// subject again - the home encode walks every project's working tree, on
+    /// the platform this cut exists for.
+    refreshed: HashMap<String, Instant>,
     /// The takeover's live viewer, re-attached on every reconnect while it
     /// is set; a lower clears it.
     attach: Option<Attach>,
@@ -267,6 +276,7 @@ impl Bridge {
                 suppressed: 0,
                 parked: VecDeque::new(),
                 refreshing: HashSet::new(),
+                refreshed: HashMap::new(),
                 attach: None,
                 attach_generation: 0,
                 shown: None,
@@ -791,8 +801,17 @@ impl Bridge {
             .get(&key)
             .map(|watch| (watch.answering, watch.review))
             .unwrap_or((false, review.unwrap_or(false)));
-        if let Some(socket) = &state.socket {
-            records::refresh(socket, what, answering, held_review);
+        let sent = match &state.socket {
+            Some(socket) => {
+                records::refresh(socket, what, answering, held_review);
+                true
+            }
+            None => false,
+        };
+        // Stamped only when the ask really went: a reconcile over this same
+        // return must not answer for a read that never left.
+        if sent {
+            state.refreshed.insert(key, Instant::now());
         }
     }
 
@@ -1034,7 +1053,14 @@ impl Bridge {
         }
         for (key, watch) in &state.held {
             let Some(session) = watch.what.get("session") else {
-                if let Some(socket) = &state.socket {
+                // **A subject the page just re-read is not read again.** The
+                // page's return and this stale beat name one return, and the
+                // first beat after a lock is always stale.
+                let fresh = state
+                    .refreshed
+                    .get(key)
+                    .is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
+                if !fresh && let Some(socket) = &state.socket {
                     records::refresh(socket, &watch.what, watch.answering, watch.review);
                 }
                 continue;
@@ -3124,5 +3150,33 @@ mod tests {
         assert_eq!(heard["id"], 4, "under the id the chooser was asked with");
         assert_eq!(heard["files"][0]["name"], "cv.pdf");
         assert_eq!(heard["files"][0]["data"], "aGVsbG8=", "the bytes cross base64");
+    }
+
+    /// **One return reads home once.** The page's own return re-read asks
+    /// first (`connect/resync.ts`); the first heartbeat after a lock is always
+    /// stale, and the reconcile must not ask for the same subject again - the
+    /// home encode walks every project's working tree.
+    #[tokio::test]
+    async fn a_return_does_not_read_home_twice() {
+        let (bridge, _rx) = bridge();
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(json!("home"), true, false);
+        let first = server.heard_until(|frame| frame["kind"] == "subscribe").await;
+        assert_eq!(first["what"], json!("home"), "the page holds home");
+
+        // The page's return re-read, as resync sends it.
+        bridge.refresh(&json!("home"), None);
+        let again = server.heard_until(|frame| frame["kind"] == "subscribe").await;
+        assert_eq!(again["what"], json!("home"), "the return asks for home");
+
+        // The first beat after the park is stale, and reconciles.
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), server.heard.recv()).await.is_err(),
+            "the reconcile read home again on the same return",
+        );
     }
 }
