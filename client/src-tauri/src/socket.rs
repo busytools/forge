@@ -1365,13 +1365,19 @@ async fn run(
                             if !greeted || !speaks_liveness {
                                 continue;
                             }
+                            // **A probe already out stands, exactly as the
+                            // page's own deadline does.** A second ask must
+                            // neither push the deadline out nor re-snapshot
+                            // the counter: bytes that answer the first probe
+                            // would stop counting as progress, and the beat
+                            // would reap a live link at the first deadline.
+                            if probe.is_some() {
+                                continue;
+                            }
                             if writer.send(ping_frame()).await.is_err() {
                                 break;
                             }
-                            // **An outstanding deadline is not pushed out.**
-                            // The page's ask says "ask now"; it does not grant
-                            // the probe already out another full bound.
-                            probe.get_or_insert(tokio::time::Instant::now());
+                            probe = Some(tokio::time::Instant::now());
                             // **Bytes already here are not the answer.** The
                             // counter's reading is snapshotted with the ask,
                             // so only progress AFTER it can clear the probe;
@@ -2883,11 +2889,19 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_older_server_is_not_probed() {
         let mut stub = stub().await;
-        let (_socket, mut rx) = connected_paused(&stub).await;
+        let (socket, mut rx) = connected_paused(&stub).await;
         stub.say
             .send(json!({ "kind": "greeting", "version": 19, "settings": {} }))
             .expect("the greeting lands");
         settle(200).await;
+
+        // **The page's ask is refused by the same greeting.** The timed beat
+        // is only half the rule; a return asks through this arm.
+        socket.ping();
+        settle(200).await;
+        if let Ok(frame) = stub.heard.try_recv() {
+            panic!("a page ask went to a pre-liveness server: {frame}");
+        }
 
         // The first beat sees the greeting's own bytes as progress and
         // resets; the SECOND is a whole quiet spell with nothing, which is
@@ -2980,6 +2994,37 @@ pub(crate) mod tests {
             dropped |= matches!(event, SocketEvent::Status(Status::Connecting));
         }
         assert!(dropped, "the second ask pushed the first deadline out");
+    }
+
+    /// **A pong that answered the first ask keeps it answered after a second
+    /// ask.** The page's probe returns early while one is out; the shell must
+    /// not re-snapshot the counter, or the answer would stop counting as
+    /// progress and the first deadline would reap a live link.
+    #[tokio::test(start_paused = true)]
+    async fn a_pong_answering_the_first_ask_survives_a_second_ask() {
+        let stub = stub().await;
+        let (socket, mut rx) = connected_paused(&stub).await;
+        stub.say
+            .send(json!({ "kind": "greeting", "version": 20, "settings": {} }))
+            .expect("the greeting lands");
+        settle(200).await;
+
+        socket.ping();
+        settle(200).await;
+        stub.say.send(json!({ "kind": "pong" })).expect("the answer lands");
+        settle(300).await;
+
+        socket.ping();
+        settle(200).await;
+        tokio::time::advance(LIVENESS_DEAD).await;
+        settle(200).await;
+
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, SocketEvent::Status(Status::Connecting)),
+                "the second ask re-snapshotted the counter, so the first answer stopped counting",
+            );
+        }
     }
 
     /// **The shipping liveness pair is the value the book states.** What the
