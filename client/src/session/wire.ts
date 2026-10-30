@@ -457,6 +457,11 @@ export interface GitWorkRecord {
    * those would keep a `current` label nobody re-checked.
    */
   base: BaseStateRecord | null;
+  /** Why the base refresh could not run, in git's own words, beside `base`.
+   *  **The row carries the reason** so a page that hears a failed check learns
+   *  why from the frame, and so a failure with new words is a change it can
+   *  act on even when the state is the one it already drew. */
+  baseError: string | null;
   ahead: {
     count: number;
     commits: {
@@ -1050,6 +1055,7 @@ export function gitFrom(value: unknown): GitWorkRecord {
     // seat's row, and a record read from an older server simply has none; a
     // page must not read that as a measured state.
     base: held['base'] === undefined ? null : baseStateFrom(held['base']),
+    baseError: text(held['base_error']),
     ahead:
       ahead === null || ahead === undefined
         ? null

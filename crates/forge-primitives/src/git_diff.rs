@@ -225,6 +225,13 @@ pub struct GitWorkView {
     /// commits exactly as they were, and this is the only field that says so.
     #[serde(default)]
     pub base: Option<BaseState>,
+    /// Git's own words for a base refresh that could not run, beside the
+    /// state it left. **The reason rides the row** so a page that hears a
+    /// failed check learns why from the frame rather than only from its next
+    /// read, and so a failure with new words is news even when the state is
+    /// the one already drawn. Absent on records from an older server.
+    #[serde(default)]
+    pub base_error: Option<String>,
 }
 
 #[cfg(test)]

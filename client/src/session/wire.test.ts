@@ -64,6 +64,7 @@ describe('a git record a server never sent', () => {
       defaultBranch: null,
       worktree: null,
       base: null,
+      baseError: null,
       ahead: null,
     });
   });
