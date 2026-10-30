@@ -5,10 +5,10 @@
  */
 
 import type { SettingsArea, SettingsClass, SettingsDocument, SettingsKey } from '../wire/settings';
-import { DEFAULT_MARK, THEME_NAMES } from '../wire/types';
+import { DEFAULT_MARK, DEFAULT_THEME } from '../wire/types';
 
 /** One instance's rows: an account, an org and one of its projects, a
- * connector's workspace table. */
+ *  Slack table and workspace, a model, a server table. */
 export interface SettingsGroup {
   label: string;
   class: SettingsClass | null;
@@ -48,15 +48,6 @@ export function classesOf(keys: SettingsKey[]): SettingsClass[] {
   return [...held].sort((one, two) => classRank(one) - classRank(two));
 }
 
-/**
- * The leaf a row draws: its own key name. The group header carries the
- * instance and the area header the table, so the row does not repeat either.
- */
-export function leafOf(path: string): string {
-  const at = path.lastIndexOf('.');
-  return at === -1 ? path : path.slice(at + 1);
-}
-
 export function classRank(held: SettingsClass): number {
   switch (held) {
     case 'live':
@@ -80,13 +71,19 @@ export function classRank(held: SettingsClass): number {
 export function groupsOf(area: SettingsArea): SettingsGroup[] {
   const groups = new Map<string, SettingsKey[]>();
   for (const key of area.keys) {
-    const label = groupLabel(area.id, key.path);
-    const rows = groups.get(label);
-    if (rows === undefined) groups.set(label, [key]);
+    // The server sends the instance names, so a name containing dots is
+    // one name rather than a path to split.
+    const id = key.group.join('\u0000');
+    const rows = groups.get(id);
+    if (rows === undefined) groups.set(id, [key]);
     else rows.push(key);
   }
-  return [...groups.entries()]
-    .map(([label, rows]) => ({ label, rows, class: strongest(rows) }))
+  return [...groups.values()]
+    .map((rows) => ({
+      label: (rows[0]?.group ?? []).join(' / '),
+      rows,
+      class: strongest(rows),
+    }))
     .sort((one, two) => one.label.localeCompare(two.label));
 }
 
@@ -98,7 +95,7 @@ export function groupsOf(area: SettingsArea): SettingsGroup[] {
  */
 const CLIENT_DEFAULTS: Readonly<Record<string, string>> = {
   'client.mark': `built-in ${DEFAULT_MARK}`,
-  'client.theme': `built-in ${THEME_NAMES[0]}`,
+  'client.theme': `built-in ${DEFAULT_THEME}`,
   'client.font': 'the bundled face',
 };
 
@@ -110,34 +107,4 @@ const CLIENT_DEFAULTS: Readonly<Record<string, string>> = {
 export function builtInFor(areaId: string, path: string): string | null {
   if (areaId !== 'client') return null;
   return CLIENT_DEFAULTS[path] ?? null;
-}
-
-function groupLabel(areaId: string, path: string): string {
-  const parts = path.split('.');
-  switch (areaId) {
-    case 'accounts':
-      return parts[1] ?? 'accounts';
-    case 'projects':
-      if (parts[0] === 'orgs' && parts[2] === 'projects') {
-        return `${parts[1] ?? 'org'} / ${parts[3] ?? 'project'}`;
-      }
-      return parts[1] ?? 'orgs';
-    case 'connectors':
-      return parts[0] === 'slack' ? `slack / ${parts[1] ?? ''}` : (parts[0] ?? 'connectors');
-    case 'models': {
-      // A model name carries dots (`deepseek-v4.1-flash`), so the segment
-      // cannot be split: the name is what sits between the table and the one
-      // key model rows hold.
-      const prefix = 'models.';
-      const suffix = '.auto_compact_window';
-      return path.startsWith(prefix) && path.endsWith(suffix)
-        ? path.slice(prefix.length, path.length - suffix.length)
-        : (parts[1] ?? 'models');
-    }
-    case 'server':
-      // The area holds two tables: the socket's own keys and `[browser]`'s.
-      return parts[0] ?? 'server';
-    default:
-      return '';
-  }
 }

@@ -41,8 +41,9 @@ carries.
   client does not know draws plainly with the server's own word; nothing
   disappears because a build is older than the document.
 - **A row draws its leaf.** The area header names the table and the group
-  header names the instance, so a row draws the key's own name; the whole
-  path stays in the document and in the row's title.
+  header names the instance, so a row draws the key's own name, which the
+  server sends as `leaf`; the whole path stays in the document and in the
+  row's title. A name containing dots, like a model slug, is one name.
 - **An area reports every class it holds.** A sub-nav row draws each
   distinct class its keys carry, not only the furthest, so an area holding
   both a restart key and an unread one says both.

@@ -766,6 +766,8 @@ fn frames_record() -> Value {
                     note: "the socket".to_owned(),
                     keys: vec![forge_primitives::SettingsKey {
                         path: "server.port".to_owned(),
+                        leaf: "port".to_owned(),
+                        group: vec!["server".to_owned()],
                         kind: forge_primitives::SettingKind::Number,
                         value: serde_json::json!(8790),
                         class: forge_primitives::EffectClass::Restart,
@@ -970,6 +972,8 @@ fn frames_record() -> Value {
                     note: "the socket".to_owned(),
                     keys: vec![forge_primitives::SettingsKey {
                         path: "server.port".to_owned(),
+                        leaf: "port".to_owned(),
+                        group: vec!["server".to_owned()],
                         kind: forge_primitives::SettingKind::Number,
                         value: serde_json::json!(8790),
                         class: forge_primitives::EffectClass::Restart,

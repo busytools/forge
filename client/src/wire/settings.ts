@@ -27,6 +27,10 @@ export type SettingsValue =
 
 export interface SettingsKey {
   path: string;
+  /** The key's own name as the row draws it; a name may contain dots. */
+  leaf: string;
+  /** The instance names the row belongs to; empty when ungrouped. */
+  group: string[];
   class: SettingsClass;
   /** The word the server sent, kept for a class this client does not know. */
   classLabel: string;
@@ -114,8 +118,13 @@ function keyFrom(value: unknown): SettingsKey {
   const key = narrow(value) ?? {};
   const rawClass = str(key.class) ?? '';
   const { class: klass, label } = settingsClass(rawClass);
+  const path = str(key.path) ?? '(unnamed key)';
   return {
-    path: str(key.path) ?? '(unnamed key)',
+    path,
+    // A frame without the split fields draws the whole path rather than a
+    // guess cut at its last dot.
+    leaf: str(key.leaf) ?? path,
+    group: strings(key.group) ?? [],
     class: klass,
     classLabel: label,
     value: valueFrom(str(key.kind) ?? '', key.value),

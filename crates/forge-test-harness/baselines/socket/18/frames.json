@@ -820,7 +820,9 @@
       ],
       "/document/areas[]/keys[]": [
         "class",
+        "group",
         "kind",
+        "leaf",
         "path",
         "value"
       ],

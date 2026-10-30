@@ -35,7 +35,7 @@ describe('the settings page', () => {
     draw(null);
     expect(rail()).toHaveLength(settingsWire.areas.length);
     expect(rail()[0]?.textContent, 'the first area is named and counted').toContain('accounts');
-    expect(rail()[0]?.textContent).toContain('6');
+    expect(rail()[0]?.textContent).toContain(String(settingsWire.areas[0]?.keys.length));
     expect(rail()[4]?.textContent, 'an empty area still has a row').toContain('documents');
     expect(rail()[4]?.textContent).toContain('0');
   });
@@ -67,7 +67,9 @@ describe('the settings page', () => {
       (name) => name.textContent,
     );
     expect(groups, 'a key-major table still reads one account at a time').toEqual([
+      'Acme.Corp',
       'Granite',
+      'OpenRouter',
       'Subspace',
     ]);
     expect(
@@ -76,6 +78,24 @@ describe('the settings page', () => {
       ),
       'each account keeps its own rows',
     ).toContain('token');
+  });
+
+  it('draws a dotted leaf and a dotted group whole', () => {
+    draw('accounts');
+    const slug = [
+      ...document.querySelectorAll<HTMLElement>('.settings-rows th[scope="row"] code'),
+    ].find(
+      (code) => code.getAttribute('title') === 'accounts.OpenRouter.model_slugs.glm-5.3-flash',
+    );
+    expect(slug?.textContent, 'the slug keeps its dots rather than losing all but 3-flash').toBe(
+      'glm-5.3-flash',
+    );
+    expect(
+      [...document.querySelectorAll('.settings-group-name')].map((name) =>
+        name.textContent?.trim(),
+      ),
+      'a dotted account name stays one group header',
+    ).toContain('Acme.Corp');
   });
 
   it('hands the picked area id up', () => {
@@ -158,12 +178,16 @@ describe('the settings page', () => {
           keys: [
             {
               path: 'client.mark',
+              leaf: 'mark',
+              group: [],
               class: 'live' as const,
               classLabel: 'live',
               value: { kind: 'string' as const, text: 'klin' },
             },
             {
               path: 'client.font',
+              leaf: 'font',
+              group: [],
               class: 'live' as const,
               classLabel: 'live',
               value: { kind: 'unset' as const },

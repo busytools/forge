@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { settingsWire } from '../dev/settings.fixture';
-import { builtInFor, classesOf, groupsOf, leafOf, selectedArea, strongest } from './view';
+import { builtInFor, classesOf, groupsOf, selectedArea, strongest } from './view';
 
 function area(id: string) {
   const found = settingsWire.areas.find((candidate) => candidate.id === id);
@@ -28,14 +28,14 @@ describe('the settings page view', () => {
     expect(missing, 'an empty document is not an unknown area').toBe(false);
   });
 
-  it('groups a key-major account table by account', () => {
+  it('groups a key-major account table by the instance the server names', () => {
     const groups = groupsOf(area('accounts'));
-    expect(groups.map((group) => group.label)).toEqual(['Granite', 'Subspace']);
-    expect(groups[1]?.rows.map((row) => row.path)).toEqual([
-      'accounts.Subspace.display_name',
-      'accounts.Subspace.token',
-    ]);
-    expect(groups[0]?.rows.map((row) => row.path)).toEqual([
+    expect(
+      groups.map((group) => group.label),
+      'a dotted instance stays one group',
+    ).toEqual(['Acme.Corp', 'Granite', 'OpenRouter', 'Subspace']);
+    const granite = groups.find((group) => group.label === 'Granite');
+    expect(granite?.rows.map((row) => row.path)).toEqual([
       'accounts.Granite.display_name',
       'accounts.Granite.token',
       'accounts.Granite.env.FLAG',
@@ -45,8 +45,10 @@ describe('the settings page view', () => {
 
   it('wears the furthest class a group holds', () => {
     const groups = groupsOf(area('accounts'));
-    expect(groups[1]?.class, 'a group with only live keys reads live').toBe('live');
-    expect(groups[0]?.class, 'a next-session key outranks its live siblings').toBe('next_session');
+    const granite = groups.find((group) => group.label === 'Granite');
+    expect(granite?.class, 'a next-session key outranks its live siblings').toBe('next_session');
+    const subspace = groups.find((group) => group.label === 'Subspace');
+    expect(subspace?.class, 'a group with only live keys reads live').toBe('live');
   });
 
   it('names the built-in a client axis falls back to', () => {
@@ -87,11 +89,15 @@ describe('the settings page view', () => {
     ).toEqual(['other', 'not_read_yet']);
   });
 
-  it('draws a row by its leaf key', () => {
-    expect(leafOf('server.port')).toBe('port');
-    expect(leafOf('orgs.Acme.Corp.projects.api.v2.model'), 'a dotted name stays in the group').toBe(
-      'model',
+  it('draws the leaf and group the server sends, dots and all', () => {
+    const slug = area('accounts').keys.find(
+      (key) => key.path === 'accounts.OpenRouter.model_slugs.glm-5.3-flash',
     );
-    expect(leafOf('accounts.One.env.FLAG')).toBe('FLAG');
+    expect(slug?.leaf, 'a dotted leaf is one name, not the tail of its last dot').toBe(
+      'glm-5.3-flash',
+    );
+    expect(slug?.group).toEqual(['OpenRouter']);
+    const dotted = area('accounts').keys.find((key) => key.path === 'accounts.Acme.Corp.token');
+    expect(dotted?.group, 'a dotted instance stays one group').toEqual(['Acme.Corp']);
   });
 });

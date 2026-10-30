@@ -48,6 +48,6 @@ describe('the settings route', () => {
     expect(document.body.textContent, 'the header names the source file').toContain(
       '~/.claude/forge/forge.toml',
     );
-    expect(document.body.textContent, 'and the key total').toContain('13');
+    expect(document.body.textContent, 'and the key total').toContain('15');
   });
 });

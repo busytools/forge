@@ -128,6 +128,8 @@ again to every connection after each applied reload:
         "keys": [
           {
             "path": "server.port",
+            "leaf": "port",
+            "group": ["server"],
             "kind": "number",
             "value": 8790,
             "class": "restart"
@@ -140,8 +142,13 @@ again to every connection after each applied reload:
 ```
 
 `path` is the concrete key, with the instance where the table repeats
-(`accounts.Subspace.token`). `kind` is the value's shape for drawing:
-`string`, `number`, `bool`, `list`, `table` or `set`. `class` is one of
+(`accounts.Subspace.token`). `leaf` is the key's own name as a row draws
+it, and `group` the instance names the row belongs to - an account, an org
+and a project, a Slack table and workspace, a model, a server table - or an
+empty list when the area's keys do not repeat. Both are the server's,
+because a name can contain dots (a model slug, an env var, a display name)
+and a reader cannot cut one from `path`. `kind` is the value's shape for
+drawing: `string`, `number`, `bool`, `list`, `table` or `set`. `class` is one of
 `live` (read on its next use), `next_session` (read when a session or a
 connection opens), `restart` (built once at boot) or `not_read_yet` (the
 loader accepts the key and nothing consumes it). The class catalogue in

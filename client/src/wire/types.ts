@@ -78,6 +78,9 @@ export const DEFAULT_MARK: MarkName = 'panes';
 /** The palettes `[client] theme` accepts, from `forge_primitives::client::THEME_NAMES`. */
 export const THEME_NAMES = ['dark'] as const;
 
+/** The palette drawn when no name is set. */
+export const DEFAULT_THEME: (typeof THEME_NAMES)[number] = 'dark';
+
 /** The typeface sets `[client] font` accepts, from `forge_primitives::client::FONT_NAMES`. */
 export const FONT_NAMES = ['system'] as const;
 

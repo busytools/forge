@@ -66,6 +66,14 @@ pub struct SettingsKey {
     /// The concrete key path, with the instance where the table repeats:
     /// `server.port`, `accounts.Subspace.token`.
     pub path: String,
+    /// The key's own name as a row draws it: the catalogue key's leaf, or
+    /// the slug or flag a repeated key names. A name may contain dots, so
+    /// a reader cannot cut it from `path`.
+    pub leaf: String,
+    /// The instance names the row belongs to, from the table's repeat keys:
+    /// an account, an org and a project, a Slack table and workspace, a
+    /// model, a server table. Empty when the area's keys do not repeat.
+    pub group: Vec<String>,
     pub kind: SettingKind,
     /// In the shape `kind` names: a JSON string, number, bool, array of
     /// strings, or object of string values.
@@ -126,6 +134,8 @@ mod tests {
     fn a_keys_debug_never_prints_its_value() {
         let key = SettingsKey {
             path: "accounts.Primary.token".to_owned(),
+            leaf: "token".to_owned(),
+            group: vec!["Primary".to_owned()],
             kind: SettingKind::String,
             value: serde_json::json!("sk-a-real-token"),
             class: EffectClass::Live,

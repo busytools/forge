@@ -707,9 +707,9 @@ describe('a row over the fleet', () => {
 
   it('draws the band with the address a reader recognises, not the socket URL', () => {
     const view = homeView(homeWire, 'ws://127.0.0.1:8790/socket');
-    // **The server card is the third way in** (Ved, 2026-10-12): it names
-    // the forge this client is on, and the whole card opens the connect
-    // screen - dictation and extensions' own pattern.
+    // **The server card is a way in** (Ved, 2026-10-12): it names the forge
+    // this client is on, and the whole card opens the connect screen - the
+    // pattern dictation, extensions and settings share.
     const server = view.band.find((card) => card.title === 'server');
     expect(server?.value).toBe('127.0.0.1:8790');
     expect(server?.detail).toBe('connect elsewhere');

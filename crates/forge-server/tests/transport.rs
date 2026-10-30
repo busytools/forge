@@ -1961,8 +1961,10 @@ async fn a_duplicate_origin_is_refused_at_the_upgrade() {
 
     let (url, _fleet) = a_server().await;
     let mut request = url.into_client_request().expect("a client request");
-    request.headers_mut().append("Origin", "http://localhost:1420".parse().expect("a value"));
-    request.headers_mut().append("Origin", "http://localhost:1420".parse().expect("a value"));
+    // A shell origin, allowed in a release build as well as a debug one, so
+    // this pins the duplicate rule rather than the dev allowance.
+    request.headers_mut().append("Origin", "tauri://localhost".parse().expect("a value"));
+    request.headers_mut().append("Origin", "tauri://localhost".parse().expect("a value"));
     let error =
         tokio_tungstenite::connect_async(request).await.expect_err("the upgrade is refused");
     match error {

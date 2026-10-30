@@ -1066,6 +1066,102 @@ const ENV_KEYS: &[ConfigKey] = &[ConfigKey {
 }];
 
 /// The whole document for one load, every catalogued key resolved.
+/// The instance names and the key's own name for one row.
+///
+/// A name can contain dots - an account display name, an org, a project, a
+/// model slug, an env var - so the split cannot be done on separators
+/// alone. The config's own instance names say where a name ends, and the
+/// catalogue's table segments say where a repeated key's own name begins.
+fn split_row(area: &str, path: &str, config: &LoadedConfig) -> (Vec<String>, String) {
+    match area {
+        "accounts" => {
+            if let Some((account, tail)) =
+                instance(path, "accounts.", config.accounts.iter().map(|a| a.display_name.as_str()))
+            {
+                return (
+                    vec![account.to_owned()],
+                    key_leaf(tail, &["model_slugs", "model_aliases", "env"]),
+                );
+            }
+        }
+        "projects" => {
+            let best = config
+                .projects
+                .iter()
+                .filter_map(|project| {
+                    let prefix = format!("orgs.{}.projects.{}.", project.org, project.name);
+                    path.strip_prefix(&prefix).map(|tail| (project, tail))
+                })
+                .max_by_key(|(project, _)| project.org.len() + project.name.len());
+            if let Some((project, tail)) = best {
+                return (
+                    vec![project.org.clone(), project.name.clone()],
+                    key_leaf(tail, &["env", "handoff", "slack"]),
+                );
+            }
+        }
+        "connectors" => {
+            if let Some((workspace, tail)) =
+                instance(path, "slack.", config.slack.iter().map(|s| s.workspace.as_str()))
+            {
+                return (vec!["slack".to_owned(), workspace.to_owned()], tail.to_owned());
+            }
+            if let Some((table, tail)) = path.split_once('.') {
+                return (vec![table.to_owned()], tail.to_owned());
+            }
+        }
+        "models" => {
+            if let Some((name, tail)) =
+                instance(path, "models.", config.models.keys().map(String::as_str))
+            {
+                return (vec![name.to_owned()], tail.to_owned());
+            }
+        }
+        "server" => {
+            if let Some((table, tail)) = path.split_once('.') {
+                return (vec![table.to_owned()], tail.to_owned());
+            }
+        }
+        "env" => {
+            if let Some(rest) = path.strip_prefix("env.") {
+                return (Vec::new(), rest.to_owned());
+            }
+        }
+        _ => {}
+    }
+    (Vec::new(), last_segment(path))
+}
+
+/// The longest of `names` the path names after `prefix`, and the key tail
+/// that follows it.
+fn instance<'a, 'b>(
+    path: &'b str,
+    prefix: &str,
+    names: impl Iterator<Item = &'a str>,
+) -> Option<(&'a str, &'b str)> {
+    let rest = path.strip_prefix(prefix)?;
+    names
+        .filter_map(|name| {
+            rest.strip_prefix(name).and_then(|tail| tail.strip_prefix('.').map(|tail| (name, tail)))
+        })
+        .max_by_key(|(name, _)| name.len())
+}
+
+/// The key's own name from a tail that may start with a repeated table:
+/// `model_slugs.glm-5.3-flash` names the slug, not the table.
+fn key_leaf(tail: &str, tables: &[&str]) -> String {
+    for table in tables {
+        if let Some(rest) = tail.strip_prefix(table).and_then(|rest| rest.strip_prefix('.')) {
+            return rest.to_owned();
+        }
+    }
+    last_segment(tail)
+}
+
+fn last_segment(path: &str) -> String {
+    path.rsplit('.').next().unwrap_or(path).to_owned()
+}
+
 pub(crate) fn document(config: &LoadedConfig, version: &str, source: &Path) -> SettingsDocument {
     let areas = AREAS
         .iter()
@@ -1076,11 +1172,16 @@ pub(crate) fn document(config: &LoadedConfig, version: &str, source: &Path) -> S
             keys: all_keys()
                 .filter(|key| key.area == area.id)
                 .flat_map(|key| {
-                    (key.rows)(config).into_iter().map(|row| SettingsKey {
-                        path: row.path,
-                        kind: row.kind,
-                        value: row.value,
-                        class: key.class,
+                    (key.rows)(config).into_iter().map(|row| {
+                        let (group, leaf) = split_row(area.id, &row.path, config);
+                        SettingsKey {
+                            path: row.path,
+                            leaf,
+                            group,
+                            kind: row.kind,
+                            value: row.value,
+                            class: key.class,
+                        }
                     })
                 })
                 .collect(),
@@ -1504,6 +1605,48 @@ models = ["m"]
         for key in all_keys() {
             assert!(drawn.contains(key.area), "{} names no drawn area", key.path);
         }
+    }
+
+    /// **A dotted name stays whole.** A model slug, an env flag, a display
+    /// name or a project can contain dots, so neither a row's leaf nor its
+    /// group may be cut at the last one.
+    #[test]
+    fn a_dotted_name_keeps_its_leaf_and_group() {
+        let config = load(EVERY_KEY);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+        let check = |area: &str, path: &str, leaf: &str, group: &[&str]| {
+            let drawn = document
+                .areas
+                .iter()
+                .find(|candidate| candidate.id == area)
+                .and_then(|area| area.keys.iter().find(|key| key.path == path))
+                .unwrap_or_else(|| panic!("{path} draws"));
+            assert_eq!(drawn.leaf, leaf, "{path} leaf");
+            let expected: Vec<String> = group.iter().map(|part| (*part).to_owned()).collect();
+            assert_eq!(drawn.group, expected, "{path} group");
+        };
+        check(
+            "accounts",
+            "accounts.Primary.model_slugs.glm-5.3-flash",
+            "glm-5.3-flash",
+            &["Primary"],
+        );
+        check("accounts", "accounts.Primary.env.PROVIDER_FLAG", "PROVIDER_FLAG", &["Primary"]);
+        check(
+            "projects",
+            "orgs.TestOrg.projects.proj.handoff.enabled",
+            "enabled",
+            &["TestOrg", "proj"],
+        );
+        check(
+            "models",
+            "models.glm-5.3-flash.auto_compact_window",
+            "auto_compact_window",
+            &["glm-5.3-flash"],
+        );
+        check("connectors", "slack.Test Slack.token", "token", &["slack", "Test Slack"]);
+        check("server", "browser.fps", "fps", &["browser"]);
+        check("usage", "usage.poll_seconds", "poll_seconds", &[]);
     }
 
     /// Each class the page can draw has at least one key, so a class cannot

@@ -234,10 +234,10 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 
 /* ---------- system band ---------- */
 
-/* Five cards across on a wide window, wrapping below - the last card can sit
+/* Six cards across on a wide window, wrapping below - the last card can sit
    alone in a middling band, and on a phone the fixed override below wraps
-   2+2+1. `auto-fit` at this floor is what puts all five in one row where the
-   room is, which a fixed count of five would refuse on a narrower window. */
+   2+2+2. `auto-fit` at this floor is what puts all six in one row where the
+   room is, which a fixed count of six would refuse on a narrower window. */
 .band { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .svc {
   background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
@@ -4681,7 +4681,7 @@ details[open] > summary .arw { opacity: 1; }
 
 .settings-page .settings-pending { color: var(--muted); font-size: var(--fs-base);
   margin-top: 12vh; text-align: center; }
-.settings-page .vh { position: absolute; width: 1px; height: 1px; margin: -1px;
+.vh { position: absolute; width: 1px; height: 1px; margin: -1px;
   padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 .settings-page .settings-meta { margin-left: auto; display: flex; flex-direction: column;

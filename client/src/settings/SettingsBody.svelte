@@ -6,7 +6,7 @@
   import { PROTOCOL_VERSION } from '../protocol';
   import type { SettingsDocument } from '../wire/settings';
   import ValueCell from './ValueCell.svelte';
-  import { builtInFor, classesOf, groupsOf, leafOf, selectedArea } from './view';
+  import { builtInFor, classesOf, groupsOf, selectedArea } from './view';
 
   /**
    * The page's drawing, prop-only: the document the server pushed, the
@@ -145,7 +145,7 @@
           <tbody>
             {#each group.rows as key (key.path)}
               <tr>
-                <th scope="row"><code title={key.path}>{leafOf(key.path)}</code></th>
+                <th scope="row"><code title={key.path}>{key.leaf}</code></th>
                 <td class="v">
                   <ValueCell value={key.value} builtIn={builtInFor(area.id, key.path)} />
                 </td>
