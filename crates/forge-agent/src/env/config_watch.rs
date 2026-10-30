@@ -254,7 +254,8 @@ mod tests {
     /// The wait is the stream, not a clock. fsevents holds a delivery for as
     /// long as the machine is loaded, so the bound here is a wedge detector
     /// rather than a delivery budget: the wait itself ends when the watch
-    /// reports, and only a watch that never reports reaches [`WEDGE`].
+    /// reports, so only a stuck watch, or a delivery slower than the bound,
+    /// reaches [`WEDGE`].
     async fn next(rx: &mut UnboundedReceiver<()>, why: &str) {
         match tokio::time::timeout(WEDGE, rx.recv()).await {
             Ok(Some(())) => {}

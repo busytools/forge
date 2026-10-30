@@ -766,9 +766,10 @@ port = {port}
     /// A write to the watched file applies to the running workspace, with no
     /// restart and no call from the test: the watch is the only path.
     ///
-    /// macOS skips it for the same reason `config_watch`'s delivery tests are
-    /// skipped there: fsevents stalled a report for 407 s under a full gate.
-    /// CI runs it on inotify.
+    /// macOS ignores it locally for the same reason `config_watch`'s delivery
+    /// tests are: fsevents stalled a report for 407 s under a full gate. The
+    /// macOS CI job runs it with `--run-ignored ignored-only`, and Ubuntu runs
+    /// it on inotify.
     #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
     #[tokio::test]
     async fn a_config_edit_reaches_the_running_workspace() {
@@ -781,7 +782,8 @@ port = {port}
         std::fs::write(&path, raw.replace("Stub", "Renamed")).expect("write");
 
         // The wait is the update stream, not a clock: fsevents schedules the
-        // delivery, and only a watch that never reports reaches the wedge.
+        // delivery, so only a stuck watch, or a delivery slower than the
+        // bound, reaches the wedge.
         let applied = tokio::time::timeout(CONFIG_EDIT_WEDGE, async {
             loop {
                 let frame = updates.recv().await.expect("the update stream stays open");
