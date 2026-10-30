@@ -251,6 +251,7 @@ macro_rules! assert_serde_names {
 
 census!(ServerMessage,
     [
+        Pong unit,
         Settings struct,
         Greeting struct, Snapshot struct, Update struct, Page struct,
         SeatFrames struct,
@@ -339,6 +340,7 @@ census!(Command,
 // command does nothing when it is pressed.
 census!(ClientMessage,
     [
+        Ping unit,
         Subscribe struct, Unsubscribe struct, Showing struct, Command struct, More struct,
         SeatRange struct,
         CommitDiff struct,

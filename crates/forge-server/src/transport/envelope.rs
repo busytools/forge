@@ -178,6 +178,14 @@ fn seat_liveness(update: &SessionUpdate) -> bool {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClientMessage {
+    /// A liveness probe, sent by a transport after a quiet spell and by the
+    /// page on a return from the background.
+    ///
+    /// **Application-level rather than a WebSocket control frame**: a browser
+    /// page cannot send a Ping, so control frames would leave the web build
+    /// with no probe at all. Any inbound frame answers one; this exists so a
+    /// quiet peer is always asked something.
+    Ping,
     Subscribe {
         what: Subject,
         /// Whether this client can answer the prompts it is shown.
@@ -385,6 +393,8 @@ pub struct BrowserFileWire {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerMessage {
+    /// The answer to [`ClientMessage::Ping`], and proof the peer is reading.
+    Pong,
     /// The effective config, pushed once after the greeting and again after
     /// every applied reload. Server-wide rather than seat-scoped: every
     /// connection draws the same document, and a connection that attaches

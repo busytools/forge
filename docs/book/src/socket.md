@@ -42,6 +42,19 @@ the rest stale until their next click - and a client re-attaching the seat
 it is showing must re-send `Showing` too, because the server's showing died
 with the old connection and nothing else would spend the seat's marks.
 
+**A client probes too, with `ping`.** The server's ping proves the peer is
+reading; it does not prove the peer will ever hear a close. A half-open
+socket - a locked phone, a network that went away - never delivers one, so a
+client that only answers would sit `open` for ever and draw pre-drop data as
+though it were live. Each transport sends `ping` after 15 seconds without an
+inbound frame and calls the link dead after 10 more with none: any inbound
+frame is the answer, the expiry closes the socket, and the ordinary
+reconnect runs. **The frame is application-level rather than a WebSocket
+control frame**, because a browser page cannot send a Ping through its
+WebSocket API - one mechanism serves the desktop, the phone and the web
+build alike, and the server answers it with `pong` and no workspace
+involvement at all.
+
 **One frame write is bounded too.** The server ends a connection when a
 single write takes longer than 60 seconds: a peer that stopped reading
 holds that write open while answering no ping, and TCP can take minutes to
@@ -58,7 +71,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 18,
+  "version": 20,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -210,6 +223,15 @@ as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
 
 ## What a client sends
+
+**`ping`** - a liveness probe with no fields. A transport sends it after 15
+seconds with no inbound frame, and a page sends one on a return from the
+background so a dead socket is caught by the deadline rather than up to a
+quiet spell later. **Any inbound frame answers it** - the `pong` exists so a
+quiet peer is always asked something - and the answer's value is the
+transport's, which closes the socket on the 10-second deadline and lets the
+ordinary reconnect run. The server clears its own keepalive on it like any
+other frame and answers with `pong`.
 
 **`subscribe {what, answering, review}`** - answered with a `snapshot` of the
 whole subject. The subscription this opens is the one updates arrive on. The
@@ -649,6 +671,9 @@ of prose on either side.
 
 ## What a client receives
 
+- **`pong`** - the answer to a `ping`, with no fields. It is the client's
+  proof that the link carries frames in both directions, and a client draws
+  nothing of it.
 - **`snapshot {subject, data}`** - a subject in full, in answer to a
   `subscribe`.
 - **`update {update, seq, span}`** - one `SessionUpdate`, for whichever

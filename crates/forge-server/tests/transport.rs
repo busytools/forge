@@ -10999,3 +10999,49 @@ async fn the_viewer_wire_attaches_relays_frames_and_guards_input() {
     };
     assert_eq!(controller, None, "the role is free again");
 }
+
+/// **A ping is answered, and that answer is what a client's liveness waits
+/// on.** A client cannot tell a half-open socket from a quiet one, so it
+/// sends a probe and closes the socket when the probe goes unanswered; a
+/// server that stayed silent would turn every quiet connection into a
+/// reconnect loop.
+#[tokio::test]
+async fn a_ping_is_answered_with_a_pong() {
+    let mut socket = connected().await;
+    send(&mut socket, ClientMessage::Ping).await;
+    let answer = next_server(&mut socket).await;
+    assert!(
+        matches!(answer, ServerMessage::Pong),
+        "a ping is answered with a pong, not {answer:?}",
+    );
+}
+
+/// **A probe is a frame like any other to the server's own keepalive.** The
+/// connection reaps a peer whose ping went unanswered for the dead bound; a
+/// peer sending its own pings is plainly there, and this pins that the new
+/// probe joins that rule rather than sitting beside it.
+///
+/// Time is paused and advanced, so the reap is watched rather than slept
+/// through: the beat's ping goes out at one second, the peer answers at that
+/// moment, and the connection is still there half a second later - past the
+/// 300 ms bound the beat's ping would have reaped at.
+#[tokio::test(start_paused = true)]
+async fn an_incoming_ping_clears_the_servers_outstanding_keepalive() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let heartbeat =
+        Heartbeat { every: Duration::from_millis(1_000), dead: Duration::from_millis(300) };
+    let (url, _state) = serve_fleet(&fleet, heartbeat).await;
+    let mut socket = connect(&url).await;
+
+    tokio::time::advance(Duration::from_millis(1_000)).await;
+    send(&mut socket, ClientMessage::Ping).await;
+    let ServerMessage::Pong = next_server(&mut socket).await else {
+        panic!("the peer's own ping is answered");
+    };
+
+    tokio::time::advance(Duration::from_millis(500)).await;
+    send(&mut socket, ClientMessage::Ping).await;
+    let ServerMessage::Pong = next_server(&mut socket).await else {
+        panic!("the peer that answered was reaped, so its frame did not clear the keepalive");
+    };
+}

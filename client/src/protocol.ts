@@ -24,7 +24,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 18;
+export const PROTOCOL_VERSION = 20;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -277,6 +277,16 @@ export interface BrowserTabList {
 
 /** What a client sends. */
 export type ClientMessage =
+  /**
+   * A liveness probe, sent after a quiet spell and on a return from the
+   * background.
+   *
+   * Application-level rather than a WebSocket control frame because a page
+   * cannot send one, so this is the one mechanism both transports use. Any
+   * inbound frame answers it; the reply proves the link carries frames in
+   * both directions.
+   */
+  | { kind: 'ping' }
   | {
       kind: 'subscribe';
       what: Subject;
@@ -401,6 +411,8 @@ export type ClientMessage =
 
 /** What the server sends. */
 export type ServerMessage =
+  /** The answer to a `ping`, and proof the peer is reading. */
+  | { kind: 'pong' }
   | {
       kind: 'greeting';
       version: number;
