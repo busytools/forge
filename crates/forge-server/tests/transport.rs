@@ -350,6 +350,16 @@ const DIRECT_WAIT: Duration = Duration::from_secs(5);
 const WATCH_WAIT: Duration =
     forge_workspace::work::SNAPSHOT_STALENESS.saturating_sub(Duration::from_secs(2));
 
+/// The wedge on one watch pass: the poke that wakes the loop, plus one full
+/// scan, whose children each run inside the scanner's own budget.
+///
+/// A wedge, not a latency target. This test can hold TWO passes - the one it
+/// waits on for the open's mark (a `Fetch` scan, because the read stored no PR
+/// stamp), and the driven one that moves the values - so nextest's kill for
+/// this test is set above twice this in `.config/nextest.toml`.
+const WATCH_PASS_WEDGE: Duration = forge_workspace::work::POKE_INTERVAL
+    .saturating_add(forge_workspace::env::git_diff::SCAN_WORST_CASE);
+
 /// The next update satisfying `want`, with everything that is not it passed
 /// over, for the reason [`snapshot_answering`] gives.
 ///
@@ -7158,13 +7168,44 @@ async fn a_refused_pin_re_reads_the_tree_against_the_refreshed_base() {
     );
 }
 
+/// Fold one frame into what the open-announcement test has seen, failing on a
+/// frame that carries the value the open's snapshot already did.
+///
+/// The two values the open's own frame carries are the work row, whose count
+/// read nothing was changed, and the file index, which had no `new.rs`; a
+/// frame carrying either of those is the second copy that test is for.
+fn fold_open_announcement(
+    update: &SessionUpdate,
+    seat: &SessionSlot,
+    moved_row: &mut bool,
+    moved_index: &mut bool,
+) {
+    match update {
+        SessionUpdate::WorkChanged { key, work, .. } if key == seat => {
+            // The open's row read nothing changed, so that copy coming back is
+            // the second send this test is for; a failed scan says nothing.
+            assert_ne!(work.changed, Some(0), "an open re-sent its work row");
+            *moved_row |= work.changed == Some(1);
+        }
+        SessionUpdate::FileIndexChanged { key, index, .. } if key == seat => {
+            assert!(index.entries.contains_key("new.rs"), "an open re-sent its file index");
+            *moved_index = true;
+        }
+        _ => {}
+    }
+}
+
 /// **An open announces nothing its snapshot already carried** (#2506 review).
 /// The record's read is the first pass's baseline, so a still tree sends no
 /// second copy of the work row or the file index - the two the open's own
 /// frame carries - while a value that moves still announces.
+///
+/// **No clock stands in for "the pass is over".** The frames ahead of the
+/// snapshot and the ones behind it go through the same fold, which fails on
+/// any that carries the value the snapshot carried, whenever it arrives.
 #[tokio::test]
 async fn an_open_announces_no_value_its_snapshot_carried() {
-    let (url, _fleet, state, _root) = a_repo_server().await;
+    let (url, fleet, state, _root) = a_repo_server().await;
     let repo =
         state.surface.roster().cwd_for(&lead_seat()).expect("the fixture seat has a directory");
     // Nothing is seeded: the record's own first read takes both stores under
@@ -7180,50 +7221,51 @@ async fn an_open_announces_no_value_its_snapshot_carried() {
         },
     )
     .await;
-    let (_, data, _) = snapshot_answering(&mut socket).await;
+    let (_, data, passed) = snapshot_answering(&mut socket).await;
     assert_eq!(data["work"]["branch"], "work", "the snapshot carries the read row: {data}");
+    // The fold below calls a `changed == 0` frame the snapshot's row, so the
+    // snapshot has to be the row with nothing changed for that to hold.
+    assert_eq!(data["work"]["changed"], 0, "and the row read a still tree: {data}");
 
-    // The first pass starts from the stores that read left, so nothing it
-    // reads is news: the window is the pass plus a beat.
-    let quiet = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
-    while tokio::time::Instant::now() < quiet {
-        let Some(ServerMessage::Update { update, .. }) = next_server_within(&mut socket, 500).await
-        else {
-            continue;
-        };
-        match *update {
-            SessionUpdate::WorkChanged { .. } => panic!("an open re-sent its work row"),
-            SessionUpdate::FileIndexChanged { .. } => panic!("an open re-sent its file index"),
-            _ => {}
-        }
-    }
+    // **The pass that starts from this read runs to its end before anything
+    // moves.** The watch raises its own mark at the end of every pass, so the
+    // test waits on that rather than on a clock, and whatever the pass sent
+    // is ahead of the moved values in the socket's own order.
+    let pass = fleet
+        .workspace()
+        .watch_pass_done_for_test(&lead_seat())
+        .expect("the subscribing seat is held");
+    tokio::time::timeout(WATCH_PASS_WEDGE, pass.notified())
+        .await
+        .expect("the seat's watch never finished a pass");
 
     // A moved value still announces: an untracked file enters the index, and
-    // an edit moves the row.
+    // an edit moves the row. The pass is driven rather than waited for,
+    // because a written file reaches the watch through the OS daemon, whose
+    // delivery the machine may hold back for minutes under load.
     std::fs::write(repo.join("new.rs"), "").expect("write");
-    loop {
-        let Some(ServerMessage::Update { update, .. }) =
-            next_server_within(&mut socket, 10_000).await
-        else {
-            panic!("a written file never reached the seat's viewers");
-        };
-        if let SessionUpdate::FileIndexChanged { index, .. } = *update {
-            assert!(index.entries.contains_key("new.rs"), "the index carries the file");
-            break;
-        }
-    }
     std::fs::write(repo.join("kept.txt"), "moved").expect("write");
-    loop {
+    fleet.workspace().note_tree_moved_for_test(&lead_seat());
+
+    let mut moved_index = false;
+    let mut moved_row = false;
+    // A frame the first pass sent before the snapshot was built is forwarded
+    // ahead of it instead of on the socket.
+    for update in &passed {
+        fold_open_announcement(update, &lead_seat(), &mut moved_row, &mut moved_index);
+    }
+    // One bound for the whole wait: the frames in between are the seat's own
+    // other news, and they must not buy a fresh wedge each.
+    let deadline = std::time::Instant::now() + WATCH_PASS_WEDGE;
+    while !(moved_index && moved_row) {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
         let Some(ServerMessage::Update { update, .. }) =
-            next_server_within(&mut socket, 10_000).await
+            next_server_within(&mut socket, u64::try_from(left.as_millis()).unwrap_or(u64::MAX))
+                .await
         else {
-            panic!("a moved row never reached the seat's viewers");
+            panic!("a moved value never reached the seat's viewers");
         };
-        if let SessionUpdate::WorkChanged { work, .. } = *update
-            && work.changed == Some(1)
-        {
-            break;
-        }
+        fold_open_announcement(&update, &lead_seat(), &mut moved_row, &mut moved_index);
     }
 }
 
