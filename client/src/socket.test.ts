@@ -1911,6 +1911,14 @@ describe('the liveness probe', () => {
     vi.useRealTimers();
   });
 
+  /** **The shipping pair is what the book states.** A drift here changes what
+   *  a page promises about a dead link, and the book is where a client author
+   *  reads it. */
+  it('ships the documented liveness pair', () => {
+    expect(LIVENESS_EVERY_MS, 'a probe after 15 s of quiet').toBe(15_000);
+    expect(LIVENESS_DEAD_MS, 'and the write bound plus a margin in a browser').toBe(65_000);
+  });
+
   /**
    * **A socket that stopped carrying frames is not open**, whatever its
    * status says. The probe goes unanswered here, and the expiry has to run

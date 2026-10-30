@@ -360,12 +360,20 @@ export const LIVENESS_EVERY_MS = 15_000;
 /**
  * How long a probe may go unanswered before the socket is called dead.
  *
+ * **A page sees whole messages only, so this must tolerate the server's own
+ * single-write bound.** The server ends a connection whose write takes longer
+ * than 60 s (`crates/forge-server/src/transport.rs`), and while it writes a
+ * frame - a 3.5 MB seat, measured at 31.6 s to a slow client - it reads no
+ * ping and its pong queues behind that frame. A 10 s deadline here would close
+ * a live socket mid-frame, redial, and re-ask the same record for ever. The
+ * shell's transport counts bytes instead and keeps the tight bound; a browser
+ * has no byte-level event to count.
+ *
  * The expiry closes the socket, which is the existing drop path: the status
- * moves to `connecting`, the retry is scheduled, and the page stops drawing
- * a half-open connection as though it were live. Worst-case detection is the
- * two added together, well inside the server's own 60 s reap.
+ * moves to `connecting` and the retry is scheduled. Worst-case detection is
+ * the two added together.
  */
-export const LIVENESS_DEAD_MS = 10_000;
+export const LIVENESS_DEAD_MS = 65_000;
 
 /**
  * A command's variant name.
@@ -819,6 +827,14 @@ export function connect(
           // **An unknown subject comes back as `client_message`**, because the
           // server could not read the frame that named it; the refused
           // subscription is the one this side is still waiting on.
+          //
+          // **A `ping` is another frame this arm can swallow by mistake.** An
+          // older server answers a probe with `client_message`, and with a
+          // subscribe still waiting that refusal would be booked on it - the
+          // page flips a healthy store to refused every quiet spell. Nothing
+          // here can tell the two apart from the frame alone, so the version
+          // skew is where it stops; a probe sent only to a server that can
+          // answer it is the fix, not this arm.
           const refused = refuse(message.why);
           if (refused !== null) message.subject = refused;
         } else {

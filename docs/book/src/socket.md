@@ -46,14 +46,19 @@ with the old connection and nothing else would spend the seat's marks.
 reading; it does not prove the peer will ever hear a close. A half-open
 socket - a locked phone, a network that went away - never delivers one, so a
 client that only answers would sit `open` for ever and draw pre-drop data as
-though it were live. Each transport sends `ping` after 15 seconds without an
-inbound frame and calls the link dead after 10 more with none: any inbound
-frame is the answer, the expiry closes the socket, and the ordinary
-reconnect runs. **The frame is application-level rather than a WebSocket
-control frame**, because a browser page cannot send a Ping through its
-WebSocket API - one mechanism serves the desktop, the phone and the web
-build alike, and the server answers it with `pong` and no workspace
-involvement at all.
+though it were live. Every client sends `ping` after 15 seconds with no
+inbound traffic, and the expiry closes the socket so the ordinary reconnect
+runs. **The answer is a byte, and the deadlines differ by what each side can
+see.** The shell's transport (desktop and phone) counts bytes under the
+socket and calls the link dead 10 seconds after a probe that drew none. A
+browser is handed whole messages only, so its deadline is the write bound
+above plus a margin (65 seconds): while the server spends up to 60 seconds
+writing one frame it cannot answer a probe, and a tighter deadline would
+close a live socket mid-frame and redial into the same record for ever.
+**The frame is application-level rather than a WebSocket control frame**,
+because a browser page cannot send a Ping through its WebSocket API - one
+mechanism serves the desktop, the phone and the web build alike, and the
+server answers it with `pong` and no workspace involvement at all.
 
 **One frame write is bounded too.** The server ends a connection when a
 single write takes longer than 60 seconds: a peer that stopped reading
@@ -224,14 +229,15 @@ as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 
 ## What a client sends
 
-**`ping`** - a liveness probe with no fields. A transport sends it after 15
-seconds with no inbound frame, and a page sends one on a return from the
+**`ping`** - a liveness probe with no fields. A client sends it after 15
+seconds with no inbound traffic, and a page sends one on a return from the
 background so a dead socket is caught by the deadline rather than up to a
-quiet spell later. **Any inbound frame answers it** - the `pong` exists so a
-quiet peer is always asked something - and the answer's value is the
-transport's, which closes the socket on the 10-second deadline and lets the
-ordinary reconnect run. The server clears its own keepalive on it like any
-other frame and answers with `pong`.
+quiet spell later. **Any inbound traffic answers it** - a byte to the shell's
+transport, a whole frame to a page - and the `pong` exists so a quiet peer is
+always asked something. The answer's value is the transport's: it closes the
+socket on its own deadline (10 seconds on the shell's transport, 65 in a
+browser) and lets the ordinary reconnect run. The server clears its own
+keepalive on it like any other frame and answers with `pong`.
 
 **`subscribe {what, answering, review}`** - answered with a `snapshot` of the
 whole subject. The subscription this opens is the one updates arrive on. The
