@@ -11021,10 +11021,10 @@ async fn a_ping_is_answered_with_a_pong() {
 /// peer sending its own pings is plainly there, and this pins that the new
 /// probe joins that rule rather than sitting beside it.
 ///
-/// Time is paused and advanced, so the reap is watched rather than slept
-/// through: the beat's ping goes out at one second, the peer answers at that
-/// moment, and the connection is still there half a second later - past the
-/// 300 ms bound the beat's ping would have reaped at.
+/// **The clock passes the NEXT beat, not a fraction of one**, so the reap is
+/// actually evaluated: the beat's ping goes out at one second with a 300 ms
+/// bound, the peer answers at that moment, and the next beat at two seconds
+/// then decides. Uncleared, that beat sees a one-second-old stamp and reaps.
 #[tokio::test(start_paused = true)]
 async fn an_incoming_ping_clears_the_servers_outstanding_keepalive() {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
@@ -11035,13 +11035,17 @@ async fn an_incoming_ping_clears_the_servers_outstanding_keepalive() {
 
     tokio::time::advance(Duration::from_millis(1_000)).await;
     send(&mut socket, ClientMessage::Ping).await;
-    let ServerMessage::Pong = next_server(&mut socket).await else {
-        panic!("the peer's own ping is answered");
-    };
+    let answered = next_server_within(&mut socket, 2_000).await;
+    assert!(
+        matches!(answered, Some(ServerMessage::Pong)),
+        "the peer's own ping is not answered: {answered:?}",
+    );
 
-    tokio::time::advance(Duration::from_millis(500)).await;
+    tokio::time::advance(Duration::from_millis(1_000)).await;
     send(&mut socket, ClientMessage::Ping).await;
-    let ServerMessage::Pong = next_server(&mut socket).await else {
-        panic!("the peer that answered was reaped, so its frame did not clear the keepalive");
-    };
+    let answered = next_server_within(&mut socket, 2_000).await;
+    assert!(
+        matches!(answered, Some(ServerMessage::Pong)),
+        "the peer that answered was reaped, so its frame did not clear the keepalive: {answered:?}",
+    );
 }

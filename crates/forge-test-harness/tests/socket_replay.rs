@@ -358,6 +358,27 @@ census!(ClientMessage,
     ],
     client_message_census, CLIENT_MESSAGE_VARIANTS);
 
+/// **The client writes `ping` by hand, and the literal is the cross-side
+/// pin.** The census compares serde's names against this record, and both
+/// move together under a rename - but the page's frame is a hand-written
+/// literal, so a server that renamed the variant would refuse every probe as a
+/// message it does not know while every check here stayed green. Pinned both
+/// ways: what the server writes, and that the page's exact frame decodes back.
+#[test]
+fn the_client_writes_ping_as_its_name() {
+    assert_eq!(
+        serde_json::to_value(ClientMessage::Ping).expect("the probe encodes"),
+        json!({ "kind": "ping" }),
+        "a probe no longer crosses as the ping tag"
+    );
+    let decoded: ClientMessage =
+        serde_json::from_str(r#"{"kind":"ping"}"#).expect("the page's probe frame parses");
+    assert!(
+        matches!(decoded, ClientMessage::Ping),
+        "the page's probe frame decoded as {decoded:?}",
+    );
+}
+
 /// **A unit command crosses as its own name, and the client writes that
 /// name.** The models page builds these frames by hand - a unit variant is
 /// the core's string form a client sends - so both halves are pinned for
