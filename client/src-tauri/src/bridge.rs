@@ -796,6 +796,17 @@ impl Bridge {
         }
     }
 
+    /// Probe the link now, on the page's return from the background.
+    ///
+    /// **The page's timers slept with it, and so did the socket's beat** -
+    /// this is what asks the question again at the moment the answer
+    /// matters, rather than up to a quiet spell later.
+    pub fn probe(&self) {
+        if let Some(socket) = &self.lock().socket {
+            socket.ping();
+        }
+    }
+
     /// The home roster moved: the asks it holds for a seat the person is not
     /// looking at.
     ///

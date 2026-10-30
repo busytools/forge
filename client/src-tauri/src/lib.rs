@@ -132,6 +132,13 @@ mod commands {
         bridge.refresh(&what, review);
     }
 
+    /// Probe the link now: the page's half of a return from the background,
+    /// where its timers slept through a spell the shell's socket lived in.
+    #[tauri::command]
+    pub fn client_probe(bridge: tauri::State<'_, Arc<Bridge>>) {
+        bridge.probe();
+    }
+
     /// Change a subject's held declaration without asking the server for
     /// anything: the page's own scope, said before a reconnect re-asks it.
     #[tauri::command]
@@ -542,6 +549,7 @@ pub fn run() {
             commands::client_subscribe,
             commands::client_unsubscribe,
             commands::client_refresh,
+            commands::client_probe,
             commands::client_showing,
             commands::client_relist,
             commands::client_declare,
@@ -601,6 +609,7 @@ pub fn run() {
             commands::client_subscribe,
             commands::client_unsubscribe,
             commands::client_refresh,
+            commands::client_probe,
             commands::client_showing,
             commands::client_relist,
             commands::client_declare,
@@ -676,6 +685,16 @@ pub fn run() {
             #[cfg(mobile)]
             crate::asks::set_foreground(foreground);
             review_asks(handle, foreground);
+        }
+        // **A mobile resume is the person coming back**, and the page hears
+        // it here: tao's Android window never reports focus, so a page left
+        // to a focus event would never re-read after a lock. Named apart
+        // from `attention` because the rule above is about asks and this is
+        // about data that went stale while the app slept.
+        #[cfg(mobile)]
+        if let tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Resumed, .. } = &event {
+            use tauri::Emitter as _;
+            let _ = handle.emit("client://foreground", ());
         }
     });
 }

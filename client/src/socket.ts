@@ -275,6 +275,14 @@ export interface Connection {
    */
   serverProtocol(): number | null;
   status(): ConnectionStatus;
+  /**
+   * Probe the link now rather than waiting out its quiet.
+   *
+   * A page returning from the background sends this first: the socket may
+   * have died while the page slept, and the deadline is what turns that into
+   * the reconnect the page needs. Nothing happens unless the socket is open.
+   */
+  probe(): void;
   close(): void;
 }
 
@@ -339,6 +347,25 @@ export const RETRY_MS = 50;
  * raising the ceiling must not silently shorten every wait in that file.
  */
 export const MAX_RETRY_MS = 2000;
+
+/**
+ * How long the link may be quiet before this side asks it a question.
+ *
+ * **A browser page cannot send a WebSocket Ping**, so liveness is an
+ * application frame the server answers. Any inbound frame answers it; this
+ * only goes out after a spell with nothing at all.
+ */
+export const LIVENESS_EVERY_MS = 15_000;
+
+/**
+ * How long a probe may go unanswered before the socket is called dead.
+ *
+ * The expiry closes the socket, which is the existing drop path: the status
+ * moves to `connecting`, the retry is scheduled, and the page stops drawing
+ * a half-open connection as though it were live. Worst-case detection is the
+ * two added together, well inside the server's own 60 s reap.
+ */
+export const LIVENESS_DEAD_MS = 10_000;
 
 /**
  * A command's variant name.
@@ -553,6 +580,23 @@ export function connect(
   let inputSeq = 0;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryDelay = RETRY_MS;
+  /**
+   * The liveness timers: the quiet before a probe, and the deadline of the
+   * probe that is out.
+   *
+   * **They belong to the socket they were armed for**, so `onclose` clears
+   * them - a late deadline from a replaced socket must not close the live
+   * one that replaced it.
+   */
+  let quiet: ReturnType<typeof setTimeout> | null = null;
+  let dead: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The open socket's own drop path, so a deadline can report the drop
+   * without waiting for an event that may never come: a half-open peer never
+   * answers the closing handshake, and the browser fires `onclose` only when
+   * the connection actually closes.
+   */
+  let currentDrop: (() => void) | null = null;
 
   /** The one place openness is decided, so no two callers can disagree. */
   function isOpen(): boolean {
@@ -563,6 +607,48 @@ export function connect(
     if (status === next) return;
     status = next;
     for (const fn of statuses) fn(next);
+  }
+
+  function clearLiveness(): void {
+    if (quiet !== null) clearTimeout(quiet);
+    if (dead !== null) clearTimeout(dead);
+    quiet = null;
+    dead = null;
+  }
+
+  /** Arm the probe for a link that has been quiet since now. */
+  function armQuiet(): void {
+    clearLiveness();
+    quiet = setTimeout(probe, LIVENESS_EVERY_MS);
+  }
+
+  /**
+   * Ask the server to prove the link is live now.
+   *
+   * The deadline is armed after the send, so a probe queued behind a busy
+   * socket owes the peer nothing until it is on the wire. Expiry closes the
+   * socket and `onclose` does the rest - one drop path rather than two.
+   */
+  function probe(): void {
+    if (!isOpen()) return;
+    clearLiveness();
+    // **The socket this probe was asked on, never a replacement.** A late
+    // deadline that read the module's current socket would close the
+    // connection that replaced the one it belonged to.
+    const asked = socket;
+    sendNow({ kind: 'ping' });
+    dead = setTimeout(() => {
+      dead = null;
+      const gone = asked;
+      if (gone === null) return;
+      gone.close();
+      // **The drop is reported here, not by the socket's own event.** A
+      // half-open peer never answers the closing handshake, so its `onclose`
+      // may not fire for minutes - the page would spend them drawing a dead
+      // link as open. A late close event from `gone` finds `socket` no
+      // longer itself and is ignored.
+      if (gone === socket) currentDrop?.();
+    }, LIVENESS_DEAD_MS);
   }
 
   function sendNow(message: ClientMessage): void {
@@ -689,6 +775,10 @@ export function connect(
 
   function handle(message: ServerMessage): void {
     switch (message.kind) {
+      // **The liveness answer, drawn by nothing.** The transport cleared its
+      // deadline in `onmessage` before this ran; a page has no row for it.
+      case 'pong':
+        return;
       case 'greeting': {
         settings = settingsFrom(message.settings);
         // Recorded on every greeting rather than only the first: a page left
@@ -791,6 +881,9 @@ export function connect(
       subscribed.clear();
       move('open');
       retryDelay = RETRY_MS;
+      // A fresh link starts its quiet here: no probe is out and nothing has
+      // been heard, so the first one is 15 s away.
+      armQuiet();
       for (const { subject, answering, review } of [...held.values()]) {
         // **A seat here was opened while the socket was DOWN.** `onclose`
         // takes the seats the old connection carried out of this list, so a
@@ -851,6 +944,10 @@ export function connect(
 
     next.onmessage = (event) => {
       if (next !== socket) return;
+      // **Any inbound frame answers the probe**, whatever it carried: the
+      // pong exists to guarantee one arrives, and a frame already flowing
+      // proves the same.
+      armQuiet();
       // **A binary message is a relayed browser frame.** The phone's canvas
       // draws it; a page with no viewer ignores it, which is the desktop,
       // where the shell took the same bytes off its own socket.
@@ -901,9 +998,15 @@ export function connect(
       }
     };
 
-    next.onclose = () => {
+    /**
+     * The connection this socket carried is gone, whether the browser said
+     * so or the liveness deadline did.
+     */
+    const dropped = (): void => {
       if (next !== socket) return;
+      clearLiveness();
       socket = null;
+      currentDrop = null;
       // A dropped socket's holds die with it: the reconnect's answer is the
       // whole record, and the numbers start wherever it says.
       opened.reset();
@@ -925,6 +1028,8 @@ export function connect(
       }
       scheduleRetry();
     };
+    next.onclose = dropped;
+    currentDrop = dropped;
 
     // An error is always followed by a close, which is where the retry is
     // scheduled - this reports it, because a socket that keeps failing is
@@ -1273,8 +1378,11 @@ export function connect(
     status() {
       return status;
     },
+    probe,
     close() {
       move('closed');
+      clearLiveness();
+      currentDrop = null;
       // A closed connection has nothing to ask on.
       bounds.stop();
       if (retry !== null) clearTimeout(retry);
