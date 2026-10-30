@@ -6468,6 +6468,8 @@ describe('the dock', () => {
     const send = document.querySelector('.takeover-bar .sendb');
     if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
     send.click();
+    // The ending answers only once the connection says the prompt crossed.
+    await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
     flushSync();
 
     const [prompt, answer] = commands(harness);
@@ -6510,11 +6512,60 @@ describe('the dock', () => {
 
     shared.down = false;
     send.click();
+    await vi.waitFor(() =>
+      expect(
+        commands(harness).map((command) => Object.keys(command)[0]),
+        'and the retry sends the words and then the ending',
+      ).toEqual(['prompt_under', 'respond_browser_hand_off']),
+    );
+  });
+
+  /**
+   * **The window #2688 names**: the socket is gone but the page has not
+   * processed the status, so the dispatch is taken and then refused rather
+   * than throwing here. Answering `feedback` on that would tell the session
+   * to read a prompt nobody sent; the bar keeps the words and the park.
+   */
+  it('keeps the words and the park when a send that looked open never crossed', async () => {
+    const shared = wire();
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await raised();
+    barAction('something').click();
     flushSync();
-    expect(
-      commands(harness).map((command) => Object.keys(command)[0]),
-      'and the retry sends the words and then the ending',
-    ).toEqual(['prompt_under', 'respond_browser_hand_off']);
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+
+    shared.dead = true;
+    send.click();
+    // The bar's own line is what the failure leaves, so once it is drawn the
+    // catch has run and the assertions below are safe to make.
+    await vi.waitFor(() => expect(drawn()).toContain('Not sent - the connection is down.'));
+    flushSync();
+    expect(commands(harness), 'the refused send answers nothing').toEqual([]);
+    expect(surface.phase, 'the takeover stays up for the retry').toBe('live');
+    expect(field.value, 'and the words stay where they were typed').toBe(
+      'the submit button did nothing',
+    );
+
+    shared.dead = false;
+    send.click();
+    await vi.waitFor(() =>
+      expect(
+        commands(harness).map((command) => Object.keys(command)[0]),
+        'the retry sends the words and then the ending',
+      ).toEqual(['prompt_under', 'respond_browser_hand_off']),
+    );
+    const prompt = commands(harness)[0]?.['prompt_under'] as Record<string, unknown>;
+    expect(prompt['text'], 'the retry carries the same words').toBe(
+      'the submit button did nothing',
+    );
   });
 
   /** **A key inside the raised takeover is the page's, not the dock's.** The
@@ -7564,6 +7615,136 @@ describe("the takeover bar's feedback line", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /** **The key is the bar's second door.** The takeover owns the keyboard for
+   *  the page under it, but the feedback line is this client's own box: with
+   *  the caret in it a press of the push-to-talk key begins the take there
+   *  exactly as the mic does - and its words land on that line, because the
+   *  bar is the box the take began in. With the caret anywhere else the page
+   *  keeps the keyboard (`push-to-talk.test.ts`). */
+  it('starts a take from the bar line on the push-to-talk key, and its words land there', async () => {
+    const harness = open({
+      record: record({
+        pending_asks: [browserHandOffAsk()],
+        composer: { take: null, notice: null, machine: null, bind: 'right_cmd', mode: 'auto' },
+      }),
+      dictation: true,
+    });
+
+    action('Open browser').click();
+    await opened();
+    barAction('something').click();
+    flushSync();
+    const line = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+
+    line.focus();
+    key('ControlRight', 'keydown');
+    await opened();
+    expect(commands(harness), 'the key opens the microphone at the bar').toMatchObject([
+      { dictate_stream: { key: SLOT } },
+    ]);
+
+    landBarTake(harness);
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'the words land where the key was pressed',
+    ).toBe('the words');
+  });
+
+  /** **The words left, so the chat gets nothing back.** A dictated line is a
+   *  landed take, and the ask resolving runs the carry - so the words the
+   *  agent just read were written into the composer's draft after the send.
+   *  A send spends the line: it clears, and the resolution finds nothing to
+   *  hand back. */
+  it('sends a dictated line and leaves none of it in the chat', async () => {
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
+    const harness = open({
+      dictation: true,
+      record: record({ pending_asks: [browserHandOffAsk()] }),
+    });
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+    landBarTake(harness);
+
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+    const before = commands(harness).length;
+    send.click();
+    // The ending answers only once the connection says the prompt crossed.
+    await vi.waitFor(() =>
+      expect(
+        commands(harness)
+          .slice(before)
+          .map((command) => Object.keys(command)[0]),
+        'the words go to the session, and the hand-off ends as feedback',
+      ).toEqual(['prompt_under', 'respond_browser_hand_off']),
+    );
+    flushSync();
+    const [prompt] = commands(harness).slice(before);
+    expect(
+      (prompt?.['prompt_under'] as Record<string, unknown> | undefined)?.['text'],
+      'the dictated words are the words the agent reads',
+    ).toBe('the words');
+    await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
+    flushSync();
+
+    harness.page.record = record({ pending_asks: [] });
+    flushSync();
+    expect(field().value, 'the resolved hand-off hands nothing back').toBe('');
+  });
+
+  /** **Words that never left stay where they were.** A send the socket
+   *  refused is a press with nothing behind it: the line keeps what was
+   *  dictated so the reader can send it again, and no clear may run ahead of
+   *  the dispatch's own refusal. */
+  it('keeps a dictated line on the bar when the send never left', async () => {
+    const shared = wire();
+    vi.mocked(showBrowser).mockResolvedValueOnce('the browser host exited');
+    const harness = open(
+      { dictation: true, record: record({ pending_asks: [browserHandOffAsk()] }) },
+      shared,
+    );
+    action('Open browser').click();
+    await vi.waitFor(() => expect(surface.phase, 'the page failed').toBe('failed'));
+    flushSync();
+    barAction('something').click();
+    flushSync();
+    await startBarTake();
+    landBarTake(harness);
+
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+    const before = commands(harness).length;
+    shared.down = true;
+    try {
+      send.click();
+      flushSync();
+    } finally {
+      shared.down = false;
+    }
+
+    expect(commands(harness).slice(before), 'a send the socket refused answers nothing').toEqual(
+      [],
+    );
+    expect(
+      document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea')?.value,
+      'and the words stay on the line, to be sent again',
+    ).toBe('the words');
+
+    // The refused press spent nothing: lowering the bar still hands the words
+    // to the chat, exactly as it does when no send was attempted.
+    barAction('back to chat').click();
+    await vi.waitFor(() => expect(surface.phase, 'the chat is back').toBe('closed'));
+    flushSync();
+    expect(drawn(), 'and lowering the bar hands them to the chat').toContain(
+      "What you said at the bar is in the chat's draft: the words",
+    );
   });
 
   /** **The card is this page's take, not the record's echo.** A take whose

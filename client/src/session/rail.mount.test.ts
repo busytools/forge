@@ -49,7 +49,7 @@ function recording(): Connection {
     release: refuse,
     dispatch: (command: Command) => {
       acted.push(command);
-      return null;
+      return Promise.resolve(null);
     },
     more: refuse,
     commitDiff: refuse,

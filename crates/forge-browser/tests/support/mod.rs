@@ -1,6 +1,10 @@
 //! Pieces the browser-host integration tests share: staging the real bundle
 //! and starting a host from it.
 //!
+//! **A fixture page uses `about:blank` frames, never an `srcdoc` iframe
+//! inside a `data:` document**: CEF 154.5.0 wedges on that pair and stops
+//! answering CDP.
+//!
 //! Each test file is its own crate, so this module is compiled per file and
 //! a helper only one of them uses is not dead code worth chasing.
 

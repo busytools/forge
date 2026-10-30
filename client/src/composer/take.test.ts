@@ -33,7 +33,7 @@ function fakeConnection(open = true) {
     dispatch(command: Command) {
       if (status !== 'open') throw new Error('the socket is not open');
       sent.push(command);
-      return null;
+      return Promise.resolve(null);
     },
     frame(bytes: Uint8Array) {
       if (status !== 'open') return false;

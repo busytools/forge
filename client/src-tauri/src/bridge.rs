@@ -1755,6 +1755,19 @@ mod tests {
         (Bridge::new(None, tx), rx)
     }
 
+    /// **No socket handle is a refusal, not a hang.** A dispatch with no
+    /// connection to send it on answers the page rather than leaving it on a
+    /// promise that can never settle (#2688).
+    #[tokio::test]
+    async fn a_bridge_with_no_socket_refuses_a_dispatch() {
+        let (bridge, _rx) = bridge();
+        let why = bridge
+            .dispatch(json!({ "cancel": {} }), false)
+            .await
+            .expect_err("there is no socket to send on");
+        assert_eq!(why, "the socket is not open");
+    }
+
     /// **A dropped offer is not a failed save.** The alert's title says
     /// which it is: an offer the backlog dropped never reached a save door,
     /// and a write that failed keeps the words a person already knows. The
