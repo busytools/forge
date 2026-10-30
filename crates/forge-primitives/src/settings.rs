@@ -57,7 +57,11 @@ pub struct SettingsArea {
 }
 
 /// One key's effective value and the class that says when a change lands.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Hand-written `Debug`: a key's value can be an account token, and the frame
+/// is the page's read rather than a diagnostic. The class and path stay
+/// legible; the value never prints.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsKey {
     /// The concrete key path, with the instance where the table repeats:
     /// `server.port`, `accounts.Subspace.token`.
@@ -67,6 +71,17 @@ pub struct SettingsKey {
     /// strings, or object of string values.
     pub value: serde_json::Value,
     pub class: EffectClass,
+}
+
+impl std::fmt::Debug for SettingsKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SettingsKey")
+            .field("path", &self.path)
+            .field("kind", &self.kind)
+            .field("value", &"[redacted]")
+            .field("class", &self.class)
+            .finish()
+    }
 }
 
 /// The header's own totals, built with the document so a client does not
@@ -98,5 +113,25 @@ impl SettingsDocument {
             areas: self.areas.len(),
         };
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The frame is the page's read, not a diagnostic: a token that rides in
+    /// it must not print through a debug log.
+    #[test]
+    fn a_keys_debug_never_prints_its_value() {
+        let key = SettingsKey {
+            path: "accounts.Primary.token".to_owned(),
+            kind: SettingKind::String,
+            value: serde_json::json!("sk-a-real-token"),
+            class: EffectClass::Live,
+        };
+        let shown = format!("{key:?}");
+        assert!(!shown.contains("sk-a-real-token"), "the value printed: {shown}");
+        assert!(shown.contains("accounts.Primary.token"), "the path stayed legible: {shown}");
     }
 }
