@@ -629,6 +629,10 @@ class RustConnection implements Connection {
     const crossed = answer.then(() => null);
     void crossed.catch((why: unknown) => {
       report('a command could not cross to the shell', why);
+      // The same reader-facing line the synchronous refusal draws (#1638):
+      // a command that did not leave is the loss the person pressed into,
+      // whichever half of the connection found out.
+      if (at !== undefined) refused(at);
     });
     return crossed;
   }

@@ -144,12 +144,12 @@ export interface Connection {
    * command that did not go, and a rejection nobody awaits is an error
    * nobody sees.
    *
-   * **A reply command's rejection says no usable answer arrived**, which is
-   * a different claim from the no-reply path's "it did not cross": the
-   * command was already sent, and its connection closed or its reply never
-   * came - an older server answers a command it does not know with an
-   * `error` frame naming no reply. A caller that dispatches one of the five
-   * owes the returned promise an answer: nothing else carries the outcome.
+   * **A reply command's rejection is ambiguous on purpose**: the command may
+   * never have crossed (the shell's writer failed) or it may have crossed
+   * with no usable answer (its connection closed, or the reply never came -
+   * an older server answers a command it does not know with an `error`
+   * frame naming no reply). A caller that dispatches one of the five owes
+   * the returned promise an answer: nothing else carries the outcome.
    */
   dispatch(command: Command, at?: SessionSlot): Promise<unknown>;
   /**

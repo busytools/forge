@@ -6544,10 +6544,9 @@ describe('the dock', () => {
 
     shared.dead = true;
     send.click();
-    // Two ticks: the rejection lands, and whatever the composer made of it
-    // runs before this reads it.
-    await Promise.resolve();
-    await Promise.resolve();
+    // The bar's own line is what the failure leaves, so once it is drawn the
+    // catch has run and the assertions below are safe to make.
+    await vi.waitFor(() => expect(drawn()).toContain('Not sent - the connection is down.'));
     flushSync();
     expect(commands(harness), 'the refused send answers nothing').toEqual([]);
     expect(surface.phase, 'the takeover stays up for the retry').toBe('live');
@@ -6562,6 +6561,10 @@ describe('the dock', () => {
         commands(harness).map((command) => Object.keys(command)[0]),
         'the retry sends the words and then the ending',
       ).toEqual(['prompt_under', 'respond_browser_hand_off']),
+    );
+    const prompt = commands(harness)[0]?.['prompt_under'] as Record<string, unknown>;
+    expect(prompt['text'], 'the retry carries the same words').toBe(
+      'the submit button did nothing',
     );
   });
 

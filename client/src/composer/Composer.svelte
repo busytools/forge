@@ -584,6 +584,7 @@
     box.dockLanded = null;
     box.barLanded = null;
     box.carried = null;
+    barRefused = null;
   });
 
   /**
@@ -1209,6 +1210,15 @@
         : 'browser hand-off',
   );
 
+  /**
+   * Why the bar's last send did not leave, drawn in the bar's own line.
+   *
+   * **The reader is looking at the bar, not the chat behind it**, so the
+   * seat's refusal row is invisible exactly when a send fails here. Cleared
+   * by typing or the next send, like the take's own line.
+   */
+  let barRefused = $state<string | null>(null);
+
   /** Done, Not now or feedback: the hand-off's answer, and the takeover comes down. */
   function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): void {
     if (takeoverAsk === null || !answering) return;
@@ -1243,7 +1253,12 @@
    */
   async function takeoverFeedback(text: string): Promise<void> {
     if (takeoverAsk === null || !answering) return;
+    // **The ask the words were written for**, read before the wait: a
+    // hand-off answered from another view while the frame crosses is not
+    // this send's to answer.
+    const answered = takeoverAsk.request.id;
     const uuid = mintPromptId();
+    barRefused = null;
     try {
       // **The crossing, not the send.** The dispatch answers once the frame
       // has left; a socket that went while the page still read open refuses
@@ -1256,9 +1271,11 @@
       // **Nothing left, so there is nothing to read.** Answering feedback here
       // would tell the session to read a message that never went, and the
       // park would end on words nobody sent; the dock stays live to retry.
+      barRefused = 'Not sent - the connection is down.';
       report('the feedback was not sent', error);
       return;
     }
+    if (takeoverAsk === null || takeoverAsk.request.id !== answered) return;
     takeoverAnswer('feedback');
   }
 
@@ -1354,12 +1371,13 @@
       onabandon={abandon}
       onmic={() => dictate.toggle()}
       {dictation}
-      takeline={takeoverLine}
+      takeline={barRefused !== null ? { tone: 'bad', text: barRefused } : takeoverLine}
       opening={openingShown}
       ondismiss={() => {
         // **Only a line that is there is dismissed.** Typing with no take
         // line must not clear one the reader already typed away, or a
         // composer notice can come back when the takeover lowers.
+        barRefused = null;
         if (box.dictateLine !== null) box.dismissed = box.dictateLine.text;
       }}
       ondone={answering ? () => takeoverAnswer('done') : null}

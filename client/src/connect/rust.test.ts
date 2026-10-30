@@ -297,7 +297,7 @@ describe('what the shell is told', () => {
  * way to tell that from success (#2688).
  */
 describe('a command whose outcome rides the subscription', () => {
-  it('resolves once the shell has written the frame', async () => {
+  it('answers a resolved promise for a command the shell took', async () => {
     const connection = await opened();
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') return Promise.resolve(OPEN);
@@ -327,11 +327,39 @@ describe('a command whose outcome rides the subscription', () => {
       if (command === 'client_dispatch') return Promise.reject(new Error('the socket is closed'));
       return Promise.resolve(undefined);
     });
+    const lines: Refusal[] = [];
+    const stop = onRefusal((line) => lines.push(line));
     expect(connection.status(), 'the page believed the socket was open').toBe('open');
     await expect(
-      connection.dispatch({ cancel: { key: slot } }),
+      connection.dispatch({ cancel: { key: slot } }, slot),
       'a command that never crossed is not a success',
     ).rejects.toThrow('the socket is closed');
+    expect(lines, 'and the loss is drawn in the seat the press was made in').toHaveLength(1);
+    stop();
+  });
+
+  /**
+   * **A caller that ignores the promise still gets the loss reported.** The
+   * catch inside `dispatch` is what keeps a forgotten rejection off the
+   * console; deleting it leaves every other test in this file green while a
+   * dead socket goes silent for every fire-and-forget send.
+   */
+  it('reports a failed crossing for a caller that ignores the promise', async () => {
+    const connection = await opened();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      if (command === 'client_dispatch') return Promise.reject(new Error('the socket is closed'));
+      return Promise.resolve(undefined);
+    });
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    void connection.dispatch({ cancel: { key: slot } });
+    await vi.waitFor(() =>
+      expect(warned, "the loss reaches the reader's log").toHaveBeenCalledWith(
+        'forge client: a command could not cross to the shell',
+        expect.any(Error),
+      ),
+    );
+    warned.mockRestore();
   });
 });
 
