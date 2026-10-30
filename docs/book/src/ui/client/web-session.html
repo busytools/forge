@@ -2615,142 +2615,146 @@ docs: The sprite a row draws, by the class it belongs to.</div>
             <span class="typed">and keep the multiSelect case too</span></div>
         </div>
 
-        <!-- A published change's four transitions - created, merged, closed,
-             reopened - keep a chat row. The action, repository and change
-             number are the line, the wire's own type and the URL a reader
-             opens ride the row as a chip and a tail, and the open body carries
-             the rest of the frame. Every other action is the strip's transient
-             line, not a conversation row; a tree mutation is the same line and
-             draws nothing here. Drawn open, which is the face this row exists
-             for. -->
-        <details class="leaf nrow" open>
-          <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">PR #2688 created in busytools/forge</span><span class="chip">code_change_published</span><span class="sub2">https://github.com/busytools/forge/pull/2688</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="nbody">
-              <div class="nfact"><span class="k">action</span><span class="v">created</span></div>
-              <div class="nfact"><span class="k">provider</span><span class="v">github</span></div>
-              <div class="nfact"><span class="k">repository</span><span class="v">busytools/forge</span></div>
-              <div class="nfact"><span class="k">change</span><span class="v">2688</span></div>
-              <div class="nfact"><span class="k">branch</span><span class="v">vcs-frames</span></div>
-              <div class="nfact"><span class="k">url</span><span class="v">https://github.com/busytools/forge/pull/2688</span></div>
-              <details class="raw">
-                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-              </details>
+        <div class="leaves">
+          <!-- A published change's four transitions - created, merged, closed,
+               reopened - keep a chat row. The action, repository and change
+               number are the line, the wire's own type and the URL a reader
+               opens ride the row as a chip and a tail, and the open body
+               carries the rest of the frame. Every other action is the strip's
+               transient line, not a conversation row; a tree mutation is the
+               same line and draws nothing here. Drawn open, which is the face
+               this row exists for. -->
+          <details class="leaf nrow" open>
+            <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">PR #2688 created in busytools/forge</span><span class="chip">code_change_published</span><span class="sub2">https://github.com/busytools/forge/pull/2688</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="nbody">
+                <div class="nfact"><span class="k">action</span><span class="v">created</span></div>
+                <div class="nfact"><span class="k">provider</span><span class="v">github</span></div>
+                <div class="nfact"><span class="k">repository</span><span class="v">busytools/forge</span></div>
+                <div class="nfact"><span class="k">change</span><span class="v">2688</span></div>
+                <div class="nfact"><span class="k">branch</span><span class="v">vcs-frames</span></div>
+                <div class="nfact"><span class="k">url</span><span class="v">https://github.com/busytools/forge/pull/2688</span></div>
+                <details class="raw">
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+                </details>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
 
-        <!-- A model swap: the CLI's own fallback line, a warning, opening
-             onto the trigger and the two model names. The header keeps the
-             seat's preferred model; this row is how a reader learns the words
-             above came from a different one. -->
-        <details class="leaf nrow">
-          <summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Fable 5 is unavailable; continuing on Opus 5.</span><span class="chip">model_fallback</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="nbody">
-              <div class="nfact"><span class="k">trigger</span><span class="v">overloaded</span></div>
-              <div class="nfact"><span class="k">original model</span><span class="v">claude-fable-5-1</span></div>
-              <div class="nfact"><span class="k">fallback model</span><span class="v">claude-opus-5-5</span></div>
-              <details class="raw">
-                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-              </details>
+          <!-- A model swap: the CLI's own fallback line, a warning, opening
+               onto the trigger and the two model names. The header keeps the
+               seat's preferred model; this row is how a reader learns the
+               words above came from a different one. -->
+          <details class="leaf nrow">
+            <summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Fable 5 is unavailable; continuing on Opus 5.</span><span class="chip">model_fallback</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="nbody">
+                <div class="nfact"><span class="k">trigger</span><span class="v">overloaded</span></div>
+                <div class="nfact"><span class="k">original model</span><span class="v">claude-fable-5-1</span></div>
+                <div class="nfact"><span class="k">fallback model</span><span class="v">claude-opus-5-5</span></div>
+                <details class="raw">
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+                </details>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
 
-        <!-- A memory recall: one line for the turn, the files in the open
-             body rather than one row per memory. -->
-        <details class="leaf nrow">
-          <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Recalled 2 memories</span><span class="chip">memory_recall</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="nbody">
-              <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-base-fetch-budget.md</span></div>
-              <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-switch-watch.md</span></div>
-              <div class="nfact"><span class="k">content</span><span class="v">A distilled paragraph from the memory store.</span></div>
-              <details class="raw">
-                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-              </details>
+          <!-- A memory recall: one line for the turn, the files in the open
+               body rather than one row per memory. -->
+          <details class="leaf nrow">
+            <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Recalled 2 memories</span><span class="chip">memory_recall</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="nbody">
+                <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-base-fetch-budget.md</span></div>
+                <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-switch-watch.md</span></div>
+                <div class="nfact"><span class="k">content</span><span class="v">A distilled paragraph from the memory store.</span></div>
+                <details class="raw">
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+                </details>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
 
-        <!-- A local command: the row names the command, and the print fills
-             its open body with what it printed. The CLI may send name and
-             print as one frame (2.1.280) or two (older); a print fills the
-             row the name opened, so a command is one row - and there is no
-             assistant twin on forge's stream. -->
-        <details class="leaf nrow">
-          <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Ran /usage</span><span class="chip">local_command</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="nbody">
-              <div class="nfact"><span class="k">output</span><span class="v">Session cost: $1.23</span></div>
-              <div class="nfact"><span class="k">level</span><span class="v">info</span></div>
-              <div class="nfact"><span class="k">context usage</span><span class="v">{"percent":12}</span></div>
-              <div class="nfact"><span class="k">usage report</span><span class="v">{"total_cost_usd":1.23}</span></div>
-              <details class="raw">
-                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-              </details>
+          <!-- A local command: the row names the command, and the print fills
+               its open body with what it printed. The CLI may send name and
+               print as one frame (2.1.280) or two (older); a print fills the
+               row the name opened, so a command is one row - and there is no
+               assistant twin on forge's stream. -->
+          <details class="leaf nrow">
+            <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Ran /usage</span><span class="chip">local_command</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="nbody">
+                <div class="nfact"><span class="k">output</span><span class="v">Session cost: $1.23</span></div>
+                <div class="nfact"><span class="k">level</span><span class="v">info</span></div>
+                <div class="nfact"><span class="k">context usage</span><span class="v">{"percent":12}</span></div>
+                <div class="nfact"><span class="k">usage report</span><span class="v">{"total_cost_usd":1.23}</span></div>
+                <details class="raw">
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+                </details>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
 
-        <!-- A project's development intent: a quiet fact the CLI's scan
-             found, with the evidence in its open body. -->
-        <details class="leaf nrow">
-          <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Project: Android app</span><span class="chip">dev_intent</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="nbody">
-              <div class="nfact"><span class="k">trigger</span><span class="v">android_manifest</span></div>
-              <details class="raw">
-                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-              </details>
+          <!-- A project's development intent: a quiet fact the CLI's scan
+               found, with the evidence in its open body. -->
+          <details class="leaf nrow">
+            <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Project: Android app</span><span class="chip">dev_intent</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="nbody">
+                <div class="nfact"><span class="k">trigger</span><span class="v">android_manifest</span></div>
+                <details class="raw">
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+                </details>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
 
-        <details class="leaf nrow"><summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Mode changed: default &#8594; acceptEdits</span></summary></details>
-        <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</span></summary></details>
-        <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">API retry after server_error HTTP 529</span><span class="chip">attempt 2 / 4</span><span class="sub2">retrying in 1.5s</span></summary></details>
-        <details class="leaf nrow"><summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</span></summary></details>
+          <details class="leaf nrow"><summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Mode changed: default &#8594; acceptEdits</span></summary></details>
+          <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</span></summary></details>
+          <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">API retry after server_error HTTP 529</span><span class="chip">attempt 2 / 4</span><span class="sub2">retrying in 1.5s</span></summary></details>
+          <details class="leaf nrow"><summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</span></summary></details>
+        </div>
 
-        <!-- A frame the page has no face for yet draws as itself, open here:
-             the wire's own type as the visible mark, the frame's fields as
-             labelled values under it, and the frame itself one control
-             further in (rule 25 keeps it reachable). This one also settles
-             the call it refused, which no result will. -->
-        <details class="leaf nrow" open>
-          <summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Bash refused: Contains simple_expansion</span><span class="chip">permission_denied</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="nbody">
-              <div class="nfact"><span class="k">tool</span><span class="v">Bash</span></div>
-              <div class="nfact"><span class="k">call</span><span class="v">toolu_denied</span></div>
-              <div class="nfact"><span class="k">reason</span><span class="v">Contains simple_expansion</span></div>
-              <div class="nfact"><span class="k">decision</span><span class="v">other</span></div>
-              <details class="raw">
-                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-              </details>
+        <div class="leaves">
+          <!-- A frame the page has no face for yet draws as itself, open here:
+               the wire's own type as a chip, the frame's fields as labelled
+               values under it, and the frame itself one control further in
+               (rule 25 keeps it reachable). This one also settles the call it
+               refused, which no result will. -->
+          <details class="leaf nrow" open>
+            <summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Bash refused: Contains simple_expansion</span><span class="chip">permission_denied</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="nbody">
+                <div class="nfact"><span class="k">tool</span><span class="v">Bash</span></div>
+                <div class="nfact"><span class="k">call</span><span class="v">toolu_denied</span></div>
+                <div class="nfact"><span class="k">reason</span><span class="v">Contains simple_expansion</span></div>
+                <div class="nfact"><span class="k">decision</span><span class="v">other</span></div>
+                <details class="raw">
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+                </details>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
 
-        <!-- An api error with its retry: the reader-facing `formatted` line,
-             the attempt chip, and the delay riding the same line as the row -
-             a line of their own would push the chevron under the words. -->
-        <details class="leaf nrow">
-          <summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">502 Durable Object is overloaded, retrying HTTP 502</span><span class="chip">api_error</span><span class="chip">attempt 1 / 300</span><span class="sub2">retrying in 610ms</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="nbody">
-              <div class="nfact"><span class="k">message</span><span class="v">502 Durable Object is overloaded, retrying</span></div>
-              <div class="nfact"><span class="k">status</span><span class="v">HTTP 502</span></div>
-              <div class="nfact"><span class="k">level</span><span class="v">error</span></div>
-              <div class="nfact"><span class="k">attempt</span><span class="v">1 of 300</span></div>
-              <div class="nfact"><span class="k">retry in</span><span class="v">610ms</span></div>
-              <details class="raw">
-                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-              </details>
+          <!-- An api error with its retry: the reader-facing `formatted` line,
+               the attempt chip, and the delay riding the same line as the row -
+               a line of their own would push the chevron under the words. -->
+          <details class="leaf nrow">
+            <summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">502 Durable Object is overloaded, retrying HTTP 502</span><span class="chip">api_error</span><span class="chip">attempt 1 / 300</span><span class="sub2">retrying in 610ms</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="nbody">
+                <div class="nfact"><span class="k">message</span><span class="v">502 Durable Object is overloaded, retrying</span></div>
+                <div class="nfact"><span class="k">status</span><span class="v">HTTP 502</span></div>
+                <div class="nfact"><span class="k">level</span><span class="v">error</span></div>
+                <div class="nfact"><span class="k">attempt</span><span class="v">1 of 300</span></div>
+                <div class="nfact"><span class="k">retry in</span><span class="v">610ms</span></div>
+                <details class="raw">
+                  <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+                </details>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
+        </div>
 
         <details class="hooks">
           <summary><span>hook summary &#183; 3 actions</span>
@@ -2771,7 +2775,9 @@ docs: The sprite a row draws, by the class it belongs to.</div>
              other's echo: the row above leads with the FAILURE mark - the mark
              follows the turn - and this line carries its words. The calls the
              turn left open draw as failed. -->
-        <details class="leaf nrow"><summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Turn failed: error_during_execution &#183; aborted_streaming [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null</span></summary></details>
+        <div class="leaves">
+          <details class="leaf nrow"><summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Turn failed: error_during_execution &#183; aborted_streaming [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null</span></summary></details>
+        </div>
       </div>
 
       <!-- The compaction point: drawn in the conversation at the boundary,
@@ -3156,10 +3162,14 @@ branch main, nothing to commit</div>
         </div>
 
         <div class="annot"><span class="dim">refused before leaving &#183; the dispatch never reached the socket, so no echo row exists: the line draws in the seat the click was made in, as a notice</span></div>
-        <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Not sent - the connection is down.</span></summary></details>
+        <div class="leaves">
+          <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Not sent - the connection is down.</span></summary></details>
+        </div>
 
         <div class="annot"><span class="dim">a service report &#183; keyless on the wire, so every open seat's chat draws it as the core pushes it, once per report</span></div>
-        <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Elevated error rates on the Anthropic API</span></summary></details>
+        <div class="leaves">
+          <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Elevated error rates on the Anthropic API</span></summary></details>
+        </div>
       </div>
 
       <div class="mine">
