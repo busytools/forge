@@ -8788,10 +8788,7 @@ fn a_current_model() -> forge_primitives::runtime::CurrentModel {
 /// `SessionReplaced` therefore carries a history past the frame's own 256 KiB
 /// bound rather than the window - an unemptied one still fails the same
 /// assertion - and the window is weighed once, on the copy the transport
-/// keeps. Under the full gate this test's own work is what nextest's 120 s
-/// kill stretches: measured 2026-10-30 at `SLOW` 30 s and terminated at
-/// 120.039 s beside a CEF live test that itself ran 60.9 s, while the test
-/// alone reads ~5 s.
+/// keeps.
 ///
 /// **The runtime is production's rather than the default's.** The transport's
 /// fold is a task of its own, and the single-threaded default would run it
