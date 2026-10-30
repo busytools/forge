@@ -2562,7 +2562,8 @@ provider = "anthropic"
             .expect("a minute ago");
         workspace.store_process_snapshot(&seat, Some(stale));
         hold_for_a_page(&workspace, &seat);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let within = POKE_INTERVAL.saturating_mul(10);
+        let deadline = tokio::time::Instant::now() + within;
         loop {
             let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
                 panic!("the first pass's own walk was never announced");
@@ -2576,28 +2577,20 @@ provider = "anthropic"
         }
 
         // A walk another writer made, writing the store the pass holds a
-        // baseline of.
-        //
-        // **The write is held there until it is announced.** The loop replaces
-        // a `SCAN_STALENESS`-old snapshot with its own walk, and a poke on a
-        // loaded machine can outlast that window: one write would be
-        // overwritten before the compare and the move lost for good.
+        // baseline of. Its stamp sits past the loop's window so the loop's own
+        // walk cannot replace it; a staleness check that ever treats a future
+        // stamp as stale puts this fixture back in that race.
         let mut moved_walk = walk_of(vec![entry_at(4242)]);
-        let deadline = tokio::time::Instant::now() + POKE_INTERVAL.saturating_mul(10);
-        let mut keep_moved = tokio::time::interval(SCAN_STALENESS / 4);
-        keep_moved.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        moved_walk.scanned_at = std::time::SystemTime::now() + within;
+        workspace.store_process_snapshot(&seat, Some(moved_walk));
+
+        let deadline = tokio::time::Instant::now() + within;
         loop {
-            moved_walk.scanned_at = std::time::SystemTime::now();
-            workspace.store_process_snapshot(&seat, Some(moved_walk.clone()));
-            let frame = tokio::select! {
-                frame = updates.recv() => frame,
-                _ = keep_moved.tick() => continue,
-                () = tokio::time::sleep_until(deadline) => {
-                    panic!("a walk the terminal moved never reached the seat's viewers")
-                }
+            let Ok(frame) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("the walk loop never announced the writer's walk");
             };
             let Some(moved) = frame else {
-                panic!("a walk the terminal moved never reached the seat's viewers");
+                panic!("the seat's updates stopped before the writer's walk was announced");
             };
             let SessionUpdate::ProcessesChanged { key, snapshot } =
                 std::sync::Arc::unwrap_or_clone(moved.update)
