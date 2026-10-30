@@ -97,4 +97,47 @@ describe('the settings page', () => {
       'some future class',
     );
   });
+
+  it('draws the built-in a client axis falls back to', () => {
+    const settingsDocument = {
+      version: 'v',
+      source: '~/.claude/forge/forge.toml',
+      totals: { keys: 2, areas: 1 },
+      areas: [
+        {
+          id: 'client',
+          name: 'client',
+          note: 'the sets a client draws with',
+          keys: [
+            {
+              path: 'client.mark',
+              class: 'live' as const,
+              classLabel: 'live',
+              value: { kind: 'string' as const, text: 'klin' },
+            },
+            {
+              path: 'client.font',
+              class: 'live' as const,
+              classLabel: 'live',
+              value: { kind: 'unset' as const },
+            },
+          ],
+        },
+      ],
+    };
+    app = mount(SettingsBody, {
+      target: document.body,
+      props: {
+        document: settingsDocument,
+        mark: null,
+        cliVersion: null,
+        selected: 'client',
+        onSelect: () => {},
+      },
+    });
+    flushSync();
+    expect(document.body.textContent, 'the unset font names the built-in face').toContain(
+      'not set · built-in Fira Code',
+    );
+  });
 });

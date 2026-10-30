@@ -1,7 +1,9 @@
 import { get } from 'svelte/store';
 import { describe, expect, it } from 'vitest';
 
-import { ownSettingsFrame, settingsFrame, takeSettings } from './frame';
+import { applySettings } from '../theme';
+import { DEFAULT_SETTINGS } from '../wire/types';
+import { clientAxes, ownSettingsFrame, settingsFrame, takeSettings } from './frame';
 
 /** A one-key document, so a test can tell two frames apart by their value. */
 function document(mark: string): unknown {
@@ -56,5 +58,56 @@ describe('the settings frame store', () => {
     ownSettingsFrame(person);
     takeSettings('not a document', person);
     expect(get(settingsFrame)).toMatchObject({ status: 'failed' });
+  });
+
+  /**
+   * **An unset axis is no setting at all.** The document carries `null`; the
+   * axes path must yield `font: null`, and the built-in stack is what
+   * applies. A display default fed back here would reach `fontStack` as an
+   * unknown name and remove `--ui` (Times).
+   */
+  it('applies the built-in stack for an unset font', () => {
+    const owner = {};
+    ownSettingsFrame(owner);
+    takeSettings(
+      {
+        version: 'v',
+        source: '~/.claude/forge/forge.toml',
+        totals: { keys: 3, areas: 1 },
+        areas: [
+          {
+            id: 'client',
+            name: 'client',
+            note: '',
+            keys: [
+              { path: 'client.mark', kind: 'string', value: null, class: 'live' },
+              { path: 'client.theme', kind: 'string', value: null, class: 'live' },
+              { path: 'client.font', kind: 'string', value: null, class: 'live' },
+            ],
+          },
+        ],
+      },
+      owner,
+    );
+    const axes = clientAxes(get(settingsFrame));
+    expect(axes, 'an unset axis yields no name').toEqual({ mark: null, theme: null, font: null });
+
+    const applied: Record<string, string> = {};
+    applySettings(
+      { ...DEFAULT_SETTINGS, ...axes },
+      {
+        style: {
+          setProperty: (token: string, value: string) => {
+            applied[token] = value;
+          },
+          removeProperty: (token: string) => {
+            delete applied[token];
+          },
+        },
+      },
+    );
+    expect(applied['--ui'], 'the built-in stack applies, so the page is not in Times').toContain(
+      'Fira Code',
+    );
   });
 });

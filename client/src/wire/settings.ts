@@ -21,6 +21,8 @@ export type SettingsValue =
   | { kind: 'list'; items: string[] }
   | { kind: 'table'; rows: { key: string; value: string }[] }
   | { kind: 'set'; items: string[] }
+  /** The file does not set the key; the page draws the effective built-in. */
+  | { kind: 'unset' }
   | { kind: 'other'; text: string };
 
 export interface SettingsKey {
@@ -115,6 +117,7 @@ function keyFrom(value: unknown): SettingsKey {
 }
 
 function valueFrom(kind: string, value: unknown): SettingsValue {
+  if (value === null || value === undefined) return { kind: 'unset' };
   if (!KINDS.has(kind)) return { kind: 'other', text: json(value) };
   switch (kind) {
     case 'string':

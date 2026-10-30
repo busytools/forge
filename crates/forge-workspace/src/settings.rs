@@ -93,6 +93,17 @@ fn text(path: impl Into<String>, value: impl Into<String>) -> KeyRow {
     KeyRow { path: path.into(), kind: SettingKind::String, value: json!(value.into()) }
 }
 
+/// An optional setting's raw value: the value when the file set it, and
+/// `null` when it did not. The effective built-in is the page's to draw, so
+/// the client's axes path never reads a display default back as a setting.
+fn text_set(path: impl Into<String>, value: Option<String>) -> KeyRow {
+    KeyRow {
+        path: path.into(),
+        kind: SettingKind::String,
+        value: value.map_or(serde_json::Value::Null, serde_json::Value::String),
+    }
+}
+
 fn number(path: impl Into<String>, value: impl serde::Serialize) -> KeyRow {
     KeyRow { path: path.into(), kind: SettingKind::Number, value: json!(value) }
 }
@@ -801,34 +812,19 @@ const CLIENT_KEYS: &[ConfigKey] = &[
         path: "client.mark",
         area: "client",
         class: EffectClass::Live,
-        rows: |config| {
-            vec![text(
-                "client.mark",
-                config.client.mark.clone().unwrap_or_else(|| "panes".to_owned()),
-            )]
-        },
+        rows: |config| vec![text_set("client.mark", config.client.mark.clone())],
     },
     ConfigKey {
         path: "client.theme",
         area: "client",
         class: EffectClass::Live,
-        rows: |config| {
-            vec![text(
-                "client.theme",
-                config.client.theme.clone().unwrap_or_else(|| "dark".to_owned()),
-            )]
-        },
+        rows: |config| vec![text_set("client.theme", config.client.theme.clone())],
     },
     ConfigKey {
         path: "client.font",
         area: "client",
         class: EffectClass::Live,
-        rows: |config| {
-            vec![text(
-                "client.font",
-                config.client.font.clone().unwrap_or_else(|| "Fira Code".to_owned()),
-            )]
-        },
+        rows: |config| vec![text_set("client.font", config.client.font.clone())],
     },
     ConfigKey {
         path: "dictate.enabled",
@@ -1540,6 +1536,35 @@ models = ["m"]
         }
         assert_eq!(document.version, "1.2.3");
         assert_eq!(document.source, "/tmp/forge.toml");
+    }
+
+    /// An axis the file does not set crosses as `null`, not as the display
+    /// default: the page draws the built-in, and the client's axes path never
+    /// applies a name it would resolve to nothing.
+    #[test]
+    fn an_unset_client_axis_is_null_in_the_document() {
+        let raw = EVERY_KEY
+            .replace("[client]\nmark = \"panes\"\ntheme = \"dark\"\nfont = \"system\"\n", "");
+        assert!(!raw.contains("[client]"), "precondition: the client table was removed");
+        let config = load(&raw);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+        let client = document
+            .areas
+            .iter()
+            .find(|area| area.id == "client")
+            .expect("the client area is drawn");
+        for path in ["client.mark", "client.theme", "client.font"] {
+            let key = client
+                .keys
+                .iter()
+                .find(|key| key.path == path)
+                .unwrap_or_else(|| panic!("{path} has no row"));
+            assert_eq!(
+                key.value,
+                serde_json::Value::Null,
+                "{path} must carry the raw unset value, not a display default",
+            );
+        }
     }
 
     /// A class split inside one table stays split in the reload summary: a

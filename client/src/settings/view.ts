@@ -77,6 +77,22 @@ export function groupsOf(area: SettingsArea): SettingsGroup[] {
     .sort((one, two) => one.label.localeCompare(two.label));
 }
 
+const CLIENT_DEFAULTS: Readonly<Record<string, string>> = {
+  'client.mark': 'panes',
+  'client.theme': 'dark',
+  'client.font': 'Fira Code',
+};
+
+/**
+ * The built-in a `client` axis draws when the file does not set it. The
+ * default is display only: it never reaches the axes path, which reads the
+ * raw value and gets `null`.
+ */
+export function builtInFor(areaId: string, path: string): string | null {
+  if (areaId !== 'client') return null;
+  return CLIENT_DEFAULTS[path] ?? null;
+}
+
 function groupLabel(areaId: string, path: string): string {
   const parts = path.split('.');
   switch (areaId) {

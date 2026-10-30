@@ -4,7 +4,7 @@
   import type { SettingsDocument } from '../wire/settings';
   import ClassMark from './ClassMark.svelte';
   import ValueCell from './ValueCell.svelte';
-  import { groupsOf, selectedArea, strongest } from './view';
+  import { builtInFor, groupsOf, selectedArea, strongest } from './view';
 
   /**
    * The page's drawing, prop-only: the document the server pushed, the
@@ -123,7 +123,9 @@
               {#each group.rows as key (key.path)}
                 <tr>
                   <th scope="row"><code>{key.path}</code></th>
-                  <td class="v"><ValueCell value={key.value} /></td>
+                  <td class="v">
+                    <ValueCell value={key.value} builtIn={builtInFor(area.id, key.path)} />
+                  </td>
                   <td class="e"><ClassMark held={key.class} label={key.classLabel} /></td>
                 </tr>
               {/each}

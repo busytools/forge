@@ -58,6 +58,20 @@ describe('the settings frame', () => {
     });
   });
 
+  it('draws an unset value as unset rather than as a name', () => {
+    const document = settingsDocumentFrom({
+      areas: [
+        {
+          id: 'client',
+          keys: [{ path: 'client.font', kind: 'string', value: null, class: 'live' }],
+        },
+      ],
+    });
+    expect(document?.areas[0]?.keys[0]?.value, 'null is the file not setting the key').toEqual({
+      kind: 'unset',
+    });
+  });
+
   it('draws a table value as its pairs', () => {
     const document = settingsDocumentFrom({
       areas: [

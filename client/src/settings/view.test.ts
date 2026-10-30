@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { settingsWire } from './testing';
-import { groupsOf, selectedArea, strongest } from './view';
+import { builtInFor, groupsOf, selectedArea, strongest } from './view';
 
 function area(id: string) {
   const found = settingsWire.areas.find((candidate) => candidate.id === id);
@@ -47,6 +47,13 @@ describe('the settings page view', () => {
     const groups = groupsOf(area('accounts'));
     expect(groups[1]?.class, 'a group with only live keys reads live').toBe('live');
     expect(groups[0]?.class, 'a next-session key outranks its live siblings').toBe('next_session');
+  });
+
+  it('names the built-in a client axis falls back to', () => {
+    expect(builtInFor('client', 'client.mark'), 'an unset mark draws panes').toBe('panes');
+    expect(builtInFor('client', 'client.theme'), 'an unset theme draws dark').toBe('dark');
+    expect(builtInFor('client', 'client.font'), 'an unset font draws Fira Code').toBe('Fira Code');
+    expect(builtInFor('server', 'server.port'), 'no other area has a client default').toBeNull();
   });
 
   it('orders the classes by what they cost to apply', () => {
