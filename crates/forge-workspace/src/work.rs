@@ -2424,7 +2424,9 @@ provider = "anthropic"
     /// The walk's window: nothing walked yet is
     /// walked, one inside the window is the answer rather than a reason to
     /// walk, and one past it is walked again and stored where views
-    /// read it.
+    /// read it. A stamp ahead of the clock counts as inside, on `elapsed()`'s
+    /// error branch, which is where `a_walk_another_writer_moved_is_announced`
+    /// keeps its store.
     #[tokio::test]
     async fn a_walk_happens_only_once_the_window_has_passed() {
         let dir = a_repo();
@@ -2460,6 +2462,27 @@ provider = "anthropic"
         assert!(
             workspace.process_snapshot(&seat).is_some_and(|held| held.scanned_at > long_ago),
             "and stored where the views read it",
+        );
+
+        // A stamp still ahead is not "not known fresh": classifying it as past
+        // the window would walk, and replace the store the writer's fixture
+        // keeps.
+        let ahead = std::time::SystemTime::now() + SCAN_STALENESS;
+        workspace.store_process_snapshot(
+            &seat,
+            Some(forge_agent::env::processes::ProcessSnapshot {
+                processes: walked.processes.clone(),
+                scanned_at: ahead,
+            }),
+        );
+        assert!(
+            !workspace.walk_processes_if_stale(&seat, pid).await,
+            "a snapshot stamped ahead of the clock is inside the window, not past it",
+        );
+        assert_eq!(
+            workspace.process_snapshot(&seat).map(|held| held.scanned_at),
+            Some(ahead),
+            "and the walk it did not take left that stamp in the store",
         );
     }
 
@@ -2565,8 +2588,11 @@ provider = "anthropic"
         let within = POKE_INTERVAL.saturating_mul(10);
         let deadline = tokio::time::Instant::now() + within;
         loop {
-            let Ok(Some(moved)) = tokio::time::timeout_at(deadline, updates.recv()).await else {
-                panic!("the first pass's own walk was never announced");
+            let Ok(frame) = tokio::time::timeout_at(deadline, updates.recv()).await else {
+                panic!("the walk loop never announced its first walk");
+            };
+            let Some(moved) = frame else {
+                panic!("the seat's updates stopped before the first walk was announced");
             };
             if matches!(
                 std::sync::Arc::unwrap_or_clone(moved.update),
@@ -2577,9 +2603,9 @@ provider = "anthropic"
         }
 
         // A walk another writer made, writing the store the pass holds a
-        // baseline of. Its stamp sits past the loop's window so the loop's own
-        // walk cannot replace it; a staleness check that ever treats a future
-        // stamp as stale puts this fixture back in that race.
+        // baseline of. Its stamp sits past the loop's window, so no walk that
+        // starts after this write replaces it; a staleness check that ever
+        // treats a future stamp as stale puts this fixture back in that race.
         let mut moved_walk = walk_of(vec![entry_at(4242)]);
         moved_walk.scanned_at = std::time::SystemTime::now() + within;
         workspace.store_process_snapshot(&seat, Some(moved_walk));
