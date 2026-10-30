@@ -129,6 +129,20 @@ function malformedOf(data: unknown): string | null {
  * left subscribed, listening, and asking the server for a full encode nobody
  * draws.
  */
+/**
+ * The home's own reread for a connection, where a page is watching it.
+ *
+ * **A reader's ask goes through the page's guards**, not around them: a
+ * return while a read is in flight would otherwise queue a second whole
+ * encode behind the first.
+ */
+const REREADS = new WeakMap<Connection, () => void>();
+
+/** Ask the home for one read through the page's own guards, if it is held. */
+export function rereadHome(connection: Connection): void {
+  REREADS.get(connection)?.();
+}
+
 export function watchHome(connection: Connection): Readable<HomeRead> {
   let held: Store | null = null;
   // A read is a full encode on the server, so asking again while one is in
@@ -234,6 +248,17 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     }
   }
 
+  /**
+   * One read through this page's guards: nothing while one is in flight, and
+   * nothing from a refused subject. The beat and a return both come here.
+   */
+  function reread(): void {
+    if (held === null || reading || held.state().kind === 'refused') return;
+    reads += 1;
+    reading = true;
+    connection.refresh('home');
+  }
+
   function watch(): void {
     // The home's subscription is where the connection declares what belongs to
     // it rather than to a page: it is usually the first subscribe the app
@@ -251,6 +276,9 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // unseen.
     held = connection.subscribe('home', { answering: true });
     reading = false;
+    // **Registered with the watch, not the store**, so a re-watch after the
+    // last reader left registers it again.
+    REREADS.set(connection, reread);
     stopMessages = connection.onMessage((message) => {
       if (message.kind === 'error') {
         // **An error is the home's answer only when it names the home or the

@@ -16,8 +16,9 @@
  * alt-tab would cost more than the staleness it fixes.
  */
 
+import { rereadBoard } from '../board/live';
 import { canHost } from '../browser/host';
-import type { Subject } from '../protocol';
+import { rereadHome } from '../home/live';
 import { rereadSeat } from '../session/live';
 import { report, type Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
@@ -32,16 +33,6 @@ import type { SessionSlot } from '../wire/types';
 export const RETURN_HIDE_MS = 2_000;
 
 /**
- * The subjects a return freshens, when this connection holds them.
- *
- * **`usage` is not here**, though the server serves it: no page subscribes to
- * it - the token and cost pool rides the home snapshot (`Subject::Usage`'s own
- * doc says a subscription is one scan and hears nothing after it), so a
- * refresh for it would be an ask nothing holds.
- */
-const RETURNED: readonly Subject[] = ['home', 'board'];
-
-/**
  * Re-read what a return makes stale, once.
  *
  * The probe first: a socket that died while the page slept would otherwise
@@ -50,9 +41,13 @@ const RETURNED: readonly Subject[] = ['home', 'board'];
 export function resync(connection: Connection, shown: SessionSlot | null): void {
   if (connection.status() !== 'open') return;
   connection.probe();
-  for (const what of RETURNED) {
-    if (connection.store(what) !== undefined) connection.refresh(what);
-  }
+  // **Each page's own read, through its guards.** A direct `refresh` here
+  // would queue a second whole encode behind a read already in flight, and
+  // ask for a subject nobody watches; the page knows both. **`usage` is not
+  // asked for at all**: no page subscribes to it - the token and cost pool
+  // rides the home snapshot.
+  rereadHome(connection);
+  rereadBoard(connection);
   if (shown !== null) rereadSeat(connection, shown);
 }
 

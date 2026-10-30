@@ -7,7 +7,7 @@ import { Stores } from '../stores';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { railFooter } from '../session/view';
-import { COALESCE_MS, watchHome, type HomeRead } from './live';
+import { COALESCE_MS, rereadHome, watchHome, type HomeRead } from './live';
 import { homeView } from './view';
 
 const HOME: Subject = 'home';
@@ -200,6 +200,30 @@ afterEach(() => {
 });
 
 describe('the home over a connection', () => {
+  /**
+   * **A return asks through the page's guards.** One read at a time: an ask
+   * while one is in flight would queue a second whole encode behind it, and a
+   * subject nobody watches is not asked for at all.
+   */
+  it('a return reads through the page, one at a time', () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'the return asks for the home').toEqual([HOME]);
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'a read in flight is not asked again').toEqual([HOME]);
+
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'the answered read frees the next').toEqual([HOME, HOME]);
+
+    stop();
+    forge.refreshed.length = 0;
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'an unwatched home is not asked for').toEqual([]);
+  });
+
   /**
    * **The connection declares itself answerable, usually on its first
    * subscribe.** The role belongs to the connection and only ever rises, and

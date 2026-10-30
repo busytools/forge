@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PROTOCOL_VERSION, type Subject } from '../protocol';
+import { rereadBoard } from '../board/live';
+import { rereadHome } from '../home/live';
+import { PROTOCOL_VERSION } from '../protocol';
 import { rereadSeat } from '../session/live';
 import type { Connection, ConnectionStatus } from '../socket';
-import { Stores } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import { resync, watchReturn } from './resync';
 
 /**
- * **The seat's half is `session/live`'s own reread**, which its tests pin;
- * what this file is for is the composition - that a return asks the seat it
- * shows, once, and only when the socket can answer.
+ * **Each page's half is its own reread**, which its tests pin; what this file
+ * is for is the composition - that a return asks the probe first, then each
+ * page, then the seat it shows, once, and only when the socket can answer.
  */
+vi.mock('../home/live', () => ({ rereadHome: vi.fn() }));
+vi.mock('../board/live', () => ({ rereadBoard: vi.fn() }));
 vi.mock('../session/live', () => ({ rereadSeat: vi.fn() }));
 
 /**
@@ -43,29 +46,20 @@ function inShell(on: boolean): void {
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
 /**
- * A connection that records the asks a return makes, with the real stores so
- * "the subjects this connection holds" is the same question the page asks.
- *
- * `calls` keeps the ORDER, which is the property the probe-first rule states;
- * `refreshed` is the subjects alone, for the assertions about which.
+ * A connection that records the asks a return makes, with `calls` keeping the
+ * ORDER - which is the property the probe-first rule states.
  */
 function fakeConnection() {
-  const stores = new Stores();
   const statuses = new Set<(status: ConnectionStatus) => void>();
-  const refreshed: Subject[] = [];
   const calls: string[] = [];
   let status: ConnectionStatus = 'open';
 
   const connection: Connection = {
-    subscribe(what) {
-      return stores.open(what);
+    subscribe() {
+      throw new Error('the page rereads are mocked, so nothing subscribes here');
     },
-    unsubscribe(what) {
-      return stores.close(what);
-    },
-    refresh(what) {
-      refreshed.push(what);
-      calls.push(`refresh:${typeof what === 'string' ? what : 'seat'}`);
+    unsubscribe() {},
+    refresh() {
       return true;
     },
     relist() {},
@@ -88,7 +82,7 @@ function fakeConnection() {
         statuses.delete(fn);
       };
     },
-    store: (what) => stores.get(what),
+    store: () => undefined,
     settings: () => null,
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
@@ -101,8 +95,6 @@ function fakeConnection() {
 
   return {
     connection,
-    stores,
-    refreshed,
     calls,
     setStatus(next: ConnectionStatus) {
       status = next;
@@ -135,11 +127,20 @@ async function returnAfter(ms: number): Promise<void> {
   visibilityChanged();
 }
 
+/** The page rereads, wired into the fake's ordered calls. */
+function pages(fake: ReturnType<typeof fakeConnection>): void {
+  vi.mocked(rereadHome).mockImplementation(() => fake.calls.push('home'));
+  vi.mocked(rereadBoard).mockImplementation(() => fake.calls.push('board'));
+  vi.mocked(rereadSeat).mockImplementation(() => fake.calls.push('seat'));
+}
+
 describe('the return re-read', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     setHidden(false);
-    vi.mocked(rereadSeat).mockClear();
+    vi.mocked(rereadHome).mockReset();
+    vi.mocked(rereadBoard).mockReset();
+    vi.mocked(rereadSeat).mockReset();
   });
 
   afterEach(() => {
@@ -151,37 +152,19 @@ describe('the return re-read', () => {
   });
 
   /**
-   * **A return asks once for everything the hide made stale**: the probe
-   * first, then each subject this connection holds, then the seat on screen.
-   * The order is the claim - a probe that lands after the reads answers for a
-   * link the reads may already have waited on.
+   * **A return asks once, in one order**: the probe first, then each page
+   * through its own guards, then the seat on screen. The order is the claim -
+   * a probe that lands after the reads answers for a link the reads may
+   * already have waited on.
    */
-  it('probes, then freshens what the connection holds, then re-reads the seat', async () => {
+  it('probes, then asks each page, then re-reads the shown seat', async () => {
     const fake = fakeConnection();
-    vi.mocked(rereadSeat).mockImplementation(() => {
-      fake.calls.push('seat');
-    });
+    pages(fake);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
-    fake.connection.subscribe('board');
-    fake.refreshed.length = 0;
 
     await returnAfter(5_000);
 
-    expect(fake.calls).toEqual(['probe', 'refresh:home', 'refresh:board', 'seat']);
-    stop();
-  });
-
-  /** A subject this connection does not hold is not asked for. */
-  it('asks only for the subjects the connection holds', async () => {
-    const fake = fakeConnection();
-    const stop = watchReturn(fake.connection, () => null);
-    fake.connection.subscribe('home');
-
-    await returnAfter(5_000);
-
-    expect(fake.refreshed).toEqual<Subject[]>(['home']);
-    expect(vi.mocked(rereadSeat), 'no seat is shown, so none is re-read').not.toHaveBeenCalled();
+    expect(fake.calls).toEqual(['probe', 'home', 'board', 'seat']);
     stop();
   });
 
@@ -191,40 +174,39 @@ describe('the return re-read', () => {
    */
   it('does nothing when the hide was under two seconds', async () => {
     const fake = fakeConnection();
+    pages(fake);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
 
     await returnAfter(1_000);
 
-    expect(fake.refreshed, 'a short hide asks nothing').toEqual([]);
-    expect(fake.calls, 'and probes nothing').toEqual([]);
+    expect(fake.calls, 'a short hide asks nothing').toEqual([]);
     stop();
   });
 
   /** A focus without a hide is an ordinary desktop focus change. */
   it('does nothing on a focus without a hide', () => {
     const fake = fakeConnection();
+    pages(fake);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
 
     window.dispatchEvent(new Event('focus'));
     document.dispatchEvent(new Event('visibilitychange'));
 
-    expect(fake.refreshed).toEqual([]);
+    expect(fake.calls).toEqual([]);
     stop();
   });
 
   /** Two triggers naming one return buy one read. */
   it('does not double-read when two returns land together', async () => {
     const fake = fakeConnection();
+    pages(fake);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
 
     await returnAfter(5_000);
     // A second visible signal with no hide in between.
     visibilityChanged();
 
-    expect(fake.refreshed, 'the second signal is the same return').toEqual<Subject[]>(['home']);
+    expect(vi.mocked(rereadHome), 'the second signal is the same return').toHaveBeenCalledTimes(1);
     stop();
   });
 
@@ -236,9 +218,9 @@ describe('the return re-read', () => {
    */
   it('re-reads on the shell saying the app is foreground again', async () => {
     const fake = fakeConnection();
+    pages(fake);
     inShell(true);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
     // The listener is installed behind a dynamic import, so it lands a
     // microtask after the watcher is made.
     await vi.advanceTimersByTimeAsync(0);
@@ -246,22 +228,22 @@ describe('the return re-read', () => {
 
     foreground[0]?.();
 
-    expect(fake.refreshed).toEqual<Subject[]>(['home']);
+    expect(fake.calls).toEqual(['probe', 'home', 'board', 'seat']);
     stop();
   });
 
   /** A mobile resume beside the page's own visibility return is one return. */
   it('counts a shell resume and a visibility return as one read', async () => {
     const fake = fakeConnection();
+    pages(fake);
     inShell(true);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
     await vi.advanceTimersByTimeAsync(0);
 
     await returnAfter(5_000);
     foreground[0]?.();
 
-    expect(fake.refreshed, 'the second trigger is the same return').toEqual<Subject[]>(['home']);
+    expect(vi.mocked(rereadHome), 'the second trigger is the same return').toHaveBeenCalledTimes(1);
     stop();
   });
 
@@ -272,9 +254,9 @@ describe('the return re-read', () => {
    */
   it('does not re-read on a bare visible signal after a shell resume', async () => {
     const fake = fakeConnection();
+    pages(fake);
     inShell(true);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
     await vi.advanceTimersByTimeAsync(0);
 
     setHidden(true);
@@ -285,7 +267,7 @@ describe('the return re-read', () => {
     setHidden(false);
     visibilityChanged();
 
-    expect(fake.refreshed, 'one return, one read').toEqual<Subject[]>(['home']);
+    expect(vi.mocked(rereadHome), 'one return, one read').toHaveBeenCalledTimes(1);
     stop();
   });
 
@@ -294,13 +276,13 @@ describe('the return re-read', () => {
    *  go anywhere anyway. */
   it('asks nothing while the socket is not open', async () => {
     const fake = fakeConnection();
+    pages(fake);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
     fake.setStatus('connecting');
 
     await returnAfter(5_000);
 
-    expect(fake.refreshed).toEqual([]);
+    expect(fake.calls).toEqual([]);
     stop();
   });
 
@@ -310,9 +292,9 @@ describe('the return re-read', () => {
    */
   it('asks nothing after it is stopped, and gives the listener back', async () => {
     const fake = fakeConnection();
+    pages(fake);
     inShell(true);
     const stop = watchReturn(fake.connection, () => LEAD);
-    fake.connection.subscribe('home');
     await vi.advanceTimersByTimeAsync(0);
     const unlisten = stops.at(-1);
 
@@ -331,29 +313,30 @@ describe('the return re-read', () => {
 
 describe('the resync itself', () => {
   beforeEach(() => {
-    vi.mocked(rereadSeat).mockClear();
+    vi.mocked(rereadHome).mockReset();
+    vi.mocked(rereadBoard).mockReset();
+    vi.mocked(rereadSeat).mockReset();
   });
 
   it('does nothing at all on a connection that is not open', () => {
     const fake = fakeConnection();
+    pages(fake);
     fake.setStatus('closed');
-    fake.connection.subscribe('home');
 
     resync(fake.connection, LEAD);
 
-    expect(fake.refreshed).toEqual([]);
     expect(fake.calls).toEqual([]);
     expect(vi.mocked(rereadSeat)).not.toHaveBeenCalled();
   });
 
-  /** A shown seat this connection never opened has nothing to ask on. */
-  it('asks for the shown seat only when there is one', () => {
+  /** The seat is the shown one, and only when there is one. */
+  it('asks the seat only when one is shown', () => {
     const fake = fakeConnection();
-    fake.connection.subscribe('home');
+    pages(fake);
 
     resync(fake.connection, null);
 
-    expect(fake.refreshed).toEqual<Subject[]>(['home']);
+    expect(fake.calls).toEqual(['probe', 'home', 'board']);
     expect(vi.mocked(rereadSeat)).not.toHaveBeenCalled();
   });
 });

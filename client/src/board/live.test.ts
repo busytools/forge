@@ -7,7 +7,7 @@ import { Stores } from '../stores';
 import type { BoardRead } from '../wire/board';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
-import { COALESCE_MS, watchBoard } from './live';
+import { COALESCE_MS, rereadBoard, watchBoard } from './live';
 
 const BOARD: Subject = 'board';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -131,6 +131,30 @@ afterEach(() => {
 });
 
 describe('the board over a connection', () => {
+  /**
+   * **A return asks through the page's guards.** One read at a time: an ask
+   * while one is in flight would queue a second whole encode behind it, and a
+   * subject nobody watches is not asked for at all.
+   */
+  it('a return reads through the page, one at a time', () => {
+    const fake = fakeConnection();
+    const stop = watchBoard(fake.connection).subscribe(() => {});
+
+    rereadBoard(fake.connection);
+    expect(fake.refreshed, 'the return asks for the board').toEqual([BOARD]);
+    rereadBoard(fake.connection);
+    expect(fake.refreshed, 'a read in flight is not asked again').toEqual([BOARD]);
+
+    fake.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    rereadBoard(fake.connection);
+    expect(fake.refreshed, 'the answered read frees the next').toEqual([BOARD, BOARD]);
+
+    stop();
+    fake.refreshed.length = 0;
+    rereadBoard(fake.connection);
+    expect(fake.refreshed, 'an unwatched board is not asked for').toEqual([]);
+  });
+
   it('subscribes once, shared by every reader of the board store', () => {
     const forge = fakeConnection();
     const first = watchBoard(forge.connection).subscribe(() => {});
