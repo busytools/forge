@@ -17,6 +17,7 @@
   import type { BoardRead } from '../wire/board';
   import Models from '../models/Models.svelte';
   import { notePerfSurface, perfSurface } from '../perf';
+  import { watchReturn } from '../connect/resync';
   import Review from '../review/Review.svelte';
   import Settings from '../settings/Settings.svelte';
   import { shownSeat, titleFor, type Route } from '../routes';
@@ -93,6 +94,18 @@
   $effect(() => {
     if (connection === null) return;
     connection.showing(shownSeat(route));
+  });
+
+  // **A return from the background re-reads what the hide made stale.** The
+  // visibility signal is every build's; the shell adds the mobile resume,
+  // which Android needs because its window never reports focus. The watcher
+  // reads the route when it fires, so a seat the page left is not re-read.
+  // On the shell the bridge's stale-beat reconcile names the same return, and
+  // it skips what this just asked for (`Bridge::reconcile`).
+  $effect(() => {
+    const open = connection;
+    if (open === null) return;
+    return watchReturn(open, () => shownSeat(route));
   });
 
   /**

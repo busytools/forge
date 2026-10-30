@@ -1901,6 +1901,7 @@ function drivable(refusedAtFirst = false): Driveable {
     // The state the case last drove it to, as both connections report theirs:
     // a seat asks before it takes its page listeners.
     status: () => status,
+    probe: () => {},
     close: () => {},
     land: (message) => {
       if (message.kind === 'snapshot') {

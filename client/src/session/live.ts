@@ -842,8 +842,9 @@ function createSeat(
    * ask on.** A visited seat keeps its subscription, so this guard is reached
    * only by a seat never opened - and the first visit's own subscribe is its
    * ask. A held seat asks whether or not a page is drawing it: the frames
-   * never stopped for it, and the return no longer re-reads, so this is the
-   * only ask a seat away from the reader has.
+   * never stopped for it, and a return re-reads only the seat the page SHOWS
+   * (`connect/resync.ts`), so this is the only ask a seat away from the
+   * reader has.
    */
   function reread(options?: { review?: boolean }): void {
     // A seat never opened has nothing to ask on; its first subscribe is its

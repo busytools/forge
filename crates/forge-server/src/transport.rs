@@ -194,7 +194,11 @@ pub mod wire;
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 18;
+///
+/// **v20 adds the liveness pair.** `ping` and `pong` are new variants rather
+/// than fields, and a server older than them answers a probe as a message it
+/// does not know - one `error` frame per probe - so the numbers move.
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

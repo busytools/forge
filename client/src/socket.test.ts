@@ -11,6 +11,9 @@ import { noteSnapshot, noteSubscribe } from './perf';
 import { ownSettingsFrame, settingsFrame } from './settings/frame';
 import {
   connect,
+  DIAL_BOUND_MS,
+  LIVENESS_DEAD_MS,
+  LIVENESS_EVERY_MS,
   RETRY_MS,
   type BrowserFrame,
   type Connection,
@@ -1831,5 +1834,280 @@ describe('frames this client draws', () => {
     } finally {
       warned.mockRestore();
     }
+  });
+});
+
+describe('the liveness probe', () => {
+  /**
+   * **A clock a test drives needs a socket a test drives.** The cases above
+   * use a real ws server, which is the honest transport but cannot be
+   * advanced ten seconds at a time; here the fake stands in for the
+   * browser's own and the timers are fake.
+   */
+  class FakeSocket {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSING = 2;
+    static readonly CLOSED = 3;
+    static made: FakeSocket[] = [];
+
+    readyState = FakeSocket.CONNECTING;
+    binaryType = 'arraybuffer';
+    readonly sent: ClientMessage[] = [];
+    closed = false;
+    onopen: (() => void) | null = null;
+    onmessage: ((event: { data: string }) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: ((event: unknown) => void) | null = null;
+
+    constructor(readonly url: string) {
+      FakeSocket.made.push(this);
+    }
+
+    send(text: string): void {
+      this.sent.push(JSON.parse(text) as ClientMessage);
+    }
+
+    /**
+     * Close from this side, with **no close event**: the peer never answers
+     * the closing handshake, which is the half-open socket the liveness
+     * exists for. The page has to report the drop itself rather than wait
+     * for an `onclose` the browser would not fire for minutes.
+     */
+    close(): void {
+      this.closed = true;
+      this.readyState = FakeSocket.CLOSED;
+    }
+
+    /** The server accepted the connection. */
+    open(): void {
+      this.readyState = FakeSocket.OPEN;
+      this.onopen?.();
+    }
+
+    /** One server frame, as its text arrived. */
+    deliver(message: ServerMessage): void {
+      this.onmessage?.({ data: JSON.stringify(message) });
+    }
+  }
+
+  /** The pings one fake socket sent. */
+  function pings(socket: FakeSocket): ClientMessage[] {
+    return socket.sent.filter((message) => message.kind === 'ping');
+  }
+
+  /** A connection whose first socket has opened, with fakes installed. */
+  function live(): { connection: Connection; socket: FakeSocket } {
+    FakeSocket.made = [];
+    vi.stubGlobal('WebSocket', FakeSocket);
+    const connection = connect('ws://127.0.0.1:1/socket');
+    const socket = FakeSocket.made[0];
+    expect(socket, 'the connection dialled').toBeDefined();
+    socket?.open();
+    return { connection, socket: socket as FakeSocket };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  /** **The shipping numbers are what the book states.** A drift here changes
+   *  what a page promises about a dead link, and the book is where a client
+   *  author reads it. */
+  it('ships the documented liveness pair and dial bound', () => {
+    expect(LIVENESS_EVERY_MS, 'a probe after 15 s of quiet').toBe(15_000);
+    expect(LIVENESS_DEAD_MS, 'and the write bound plus a margin in a browser').toBe(65_000);
+    expect(DIAL_BOUND_MS, 'a dial abandoned at 10 s').toBe(10_000);
+  });
+
+  /**
+   * **A server that speaks the probe is asked on the timed beat.** The v20
+   * half of the gate: only the older branch had a test.
+   */
+  it('probes a server that speaks the protocol', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_EVERY_MS);
+
+    expect(pings(socket), 'the quiet earns a probe').toHaveLength(1);
+    connection.close();
+  });
+
+  /**
+   * **A probe already out is not pushed out.** A return every few seconds
+   * would otherwise re-arm the deadline each time, and a dead link would stay
+   * `open` for as long as the person keeps coming back.
+   */
+  it('does not push an outstanding deadline out on a second probe', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+
+    connection.probe();
+    expect(pings(socket)).toHaveLength(1);
+    // A return 60 s later, while the first probe is still unanswered.
+    await vi.advanceTimersByTimeAsync(60_000);
+    connection.probe();
+    expect(pings(socket), 'the outstanding probe stands').toHaveLength(1);
+
+    // The first deadline reaches at 65 s, five seconds after the second ask.
+    await vi.advanceTimersByTimeAsync(LIVENESS_DEAD_MS - 60_000);
+    expect(socket.closed, 'the original deadline still fires').toBe(true);
+    connection.close();
+  });
+
+  /**
+   * **The page's own probe waits for a greeting.** A return can land before
+   * the greeting is read; asking a server that never said it speaks the probe
+   * would book its error on a subscribe.
+   */
+  it('does not probe on a return before the greeting is read', () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+
+    connection.probe();
+    expect(pings(socket), 'nothing is asked before the greeting').toHaveLength(0);
+
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+    connection.probe();
+    expect(pings(socket), 'and a v20 greeting unlocks it').toHaveLength(1);
+    connection.close();
+  });
+
+  /**
+   * **The previous connection's greeting does not carry over.** A page on v20
+   * whose server is rolled back to v19 while it sleeps must not probe the
+   * reconnected socket on the stale number.
+   */
+  it('does not probe a reconnect on the previous greeting', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+
+    // The socket drops; the retry dials a fresh one, which has not greeted.
+    socket.onclose?.();
+    await vi.advanceTimersByTimeAsync(RETRY_MS);
+    const next = FakeSocket.made[1];
+    expect(next, 'the retry dialled').toBeDefined();
+    next?.open();
+    connection.probe();
+
+    expect(pings(next as FakeSocket), "the stale v20 is not the new server's").toHaveLength(0);
+    connection.close();
+  });
+
+  /**
+   * **A server older than the probe is not asked.** Its answer would be a
+   * `client_message` error, which the refusal arm books on the oldest waiting
+   * subscribe - a healthy subject marked refused every quiet spell.
+   */
+  it('does not probe a server older than the probe', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 19, settings: DEFAULT_SETTINGS });
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_EVERY_MS);
+    expect(pings(socket), 'a pre-liveness server is never asked').toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_DEAD_MS);
+    expect(socket.closed, 'and nothing reaps it for the silence').toBe(false);
+    expect(connection.status()).toBe('open');
+    connection.close();
+  });
+
+  /** **A dial that never completes is abandoned and retried.** A peer that
+   *  accepts TCP and stalls the handshake must not hold the retry loop. */
+  it('abandons a dial that never completes and retries', async () => {
+    vi.useFakeTimers();
+    FakeSocket.made = [];
+    vi.stubGlobal('WebSocket', FakeSocket);
+    const connection = connect('ws://127.0.0.1:1/socket');
+    const first = FakeSocket.made[0];
+    expect(first, 'the connection dialled').toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(DIAL_BOUND_MS);
+    expect(first?.closed, 'the stalled dial is abandoned').toBe(true);
+    expect(connection.status()).toBe('connecting');
+
+    await vi.advanceTimersByTimeAsync(RETRY_MS);
+    expect(FakeSocket.made.length, 'and the retry dials again').toBe(2);
+    connection.close();
+  });
+
+  /**
+   * **A socket that stopped carrying frames is not open**, whatever its
+   * status says. The probe goes unanswered here, and the expiry has to run
+   * the drop path - `connecting`, then the retry - or the page draws a
+   * half-open connection as though it were live.
+   */
+  it('closes a socket whose probe goes unanswered and retries', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_EVERY_MS);
+    expect(pings(socket), 'the quiet is what earns a probe').toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_DEAD_MS);
+    expect(connection.status(), 'the unanswered probe reports the drop').toBe('connecting');
+    expect(socket.closed, 'the dead socket is closed').toBe(true);
+
+    await vi.advanceTimersByTimeAsync(RETRY_MS);
+    expect(FakeSocket.made.length, 'the retry dials again').toBe(2);
+    connection.close();
+  });
+
+  /** A probe the answer reaches in time keeps the connection open. */
+  it('keeps the connection open while probes are answered', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+
+    for (let beat = 1; beat <= 3; beat += 1) {
+      await vi.advanceTimersByTimeAsync(LIVENESS_EVERY_MS);
+      expect(pings(socket), 'each quiet earns one probe').toHaveLength(beat);
+      // The answer lands within the deadline; a deadline the answer did not
+      // clear would fire inside the next advance.
+      socket.deliver({ kind: 'pong' });
+    }
+    await vi.advanceTimersByTimeAsync(LIVENESS_DEAD_MS);
+    expect(socket.closed, 'an answered probe does not close the socket').toBe(false);
+    expect(connection.status()).toBe('open');
+    connection.close();
+  });
+
+  /**
+   * **The page's own probe goes out at once, deadline and all.** A return
+   * from the background asks rather than waiting out the quiet, and a probe
+   * nobody answers has to end the socket like the timed one does.
+   */
+  it('probes at once on a return, and closes when the probe goes unanswered', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    // The page asks only a server that has said it speaks the probe.
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+
+    connection.probe();
+    expect(pings(socket), 'the page asked for a probe').toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(LIVENESS_DEAD_MS);
+    expect(socket.closed, "the page's probe carries its own deadline").toBe(true);
+    expect(connection.status()).toBe('connecting');
+    connection.close();
+  });
+
+  /** The answer to the page's probe clears the deadline like any frame. */
+  it('clears the deadline of a probe the answer reached', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+
+    connection.probe();
+    await vi.advanceTimersByTimeAsync(5_000);
+    socket.deliver({ kind: 'pong' });
+    await vi.advanceTimersByTimeAsync(LIVENESS_DEAD_MS);
+    expect(socket.closed, 'the answer cleared the deadline').toBe(false);
+    connection.close();
   });
 });

@@ -53,6 +53,13 @@ tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "ti
 # set: a page may be served on wss://, and the webview's own WebSocket would
 # connect where this half could not, which is a fork nobody would see.
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+# The dial and its TLS are this half's own, so the socket can be wrapped in a
+# byte counter before tungstenite sees it: liveness is a question about bytes,
+# and a message is handed over only once the whole frame has arrived. Same
+# versions tungstenite resolves, and `ring` is the provider its feature set
+# already turns on, so this adds no second crypto backend.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-native-certs = "0.8"
 futures-util = "0.3"
 # The driver's image parts cross as base64; the wire wants the raw bytes.
 base64 = "0.22"
