@@ -38,6 +38,18 @@ const a_row = (overrides: Partial<NoticeRow> = {}): NoticeRow => ({
  * hand back a file URL. */
 const SHEET = readFileSync('src/assets/web.css', 'utf8');
 
+/** The declarations of the first rule whose selector list names `selector` -
+ * a list, because the notice row shares the leaf row's rule. Matching a whole
+ * member matters: `details.leaf > summary` is a prefix of the glyph rule. */
+function ruleBody(selector: string): string {
+  const code = SHEET.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const rule of code.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+    const members = (rule[1] ?? '').split(',').map((member) => member.trim().replace(/\s+/g, ' '));
+    if (members.includes(selector)) return rule[2] ?? '';
+  }
+  return '';
+}
+
 describe('the provisional notice, mounted', () => {
   it('keeps the expander on the header row and the frame behind its own control', () => {
     const app = mount(Notice, { target: document.body, props: { notice: a_row() } });
@@ -139,7 +151,7 @@ describe('the provisional notice, mounted', () => {
    * be a second row keeping the chrome in step by hand.
    */
   it("lays the header out with the leaf row's own rule", () => {
-    const rule = /details\.leaf > summary \{([^}]*)\}/.exec(SHEET)?.[1] ?? '';
+    const rule = ruleBody('details.leaf > summary');
     expect(rule, 'the sheet has no rule for a leaf row summary').not.toBe('');
     expect(rule, 'a block icon drops the chevron onto a line of its own').toMatch(
       /display:\s*flex/,

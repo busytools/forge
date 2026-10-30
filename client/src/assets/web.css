@@ -1783,26 +1783,31 @@ details.sfold div.wk:hover { background: none; }
 /* The kind's glyph, leading every row: the mark the family row used to carry.
    Muted while the row runs, and the tone it settles into is the outcome -
    green came back, red failed - so a settled row carries no second mark. */
-details.leaf > summary .gl { color: var(--muted); }
-details.leaf > summary .gl.ok { color: var(--ok); }
-details.leaf > summary .gl.warn { color: var(--warn); }
-details.leaf > summary .gl.err { color: var(--bad); }
+details.leaf > summary .gl, div.leaf > .rrow .gl { color: var(--muted); }
+details.leaf > summary .gl.ok, div.leaf > .rrow .gl.ok { color: var(--ok); }
+details.leaf > summary .gl.warn, div.leaf > .rrow .gl.warn { color: var(--warn); }
+details.leaf > summary .gl.err, div.leaf > .rrow .gl.err { color: var(--bad); }
 
 /* one call, opening on its own.
    The row sits a half-step under the prose: a size of its own between the
    data and the reading sizes, kept distinct by its muted tone with the prose
    at the reading one - a run of rows at the reading size outweighed the words
-   they sit among, and the data size read a touch small (Ved, 2026-10-04). */
-details.leaf > summary { list-style: none; display: flex; align-items: center; gap: 8px;
-  padding: 3px 9px 3px 8px; border-radius: 7px; cursor: pointer;
+   they sit among, and the data size read a touch small (Ved, 2026-10-04).
+   A `.rrow` is the same row without a disclosure: a static line has no
+   pointer and no hover, because it opens nothing. */
+details.leaf > summary, div.leaf > .rrow { list-style: none; display: flex; align-items: center;
+  gap: 8px; padding: 3px 9px 3px 8px; border-radius: 7px; cursor: pointer;
   font-family: var(--mono); font-size: 15px; color: var(--muted); }
+div.leaf > .rrow { cursor: default; }
 details.leaf > summary::-webkit-details-marker { display: none; }
 details.leaf > summary:hover { background: rgba(27,33,48,.4); }
 details.leaf[open] > summary { color: var(--text); }
-details.leaf > summary .tn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.leaf > summary .tn, div.leaf > .rrow .tn { overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
 /* A row's inline marks - a thought preview renders emphasis and code - take the
    prose tone rather than the row's own muting, so a mark reads as a mark. */
-details.leaf > summary .tn strong, details.leaf > summary .tn code { color: var(--text); }
+details.leaf > summary .tn strong, details.leaf > summary .tn code,
+div.leaf > .rrow .tn strong, div.leaf > .rrow .tn code { color: var(--text); }
 details.leaf > summary .arw { margin-left: auto; color: var(--dim); flex: none; }
 /* A thought's expansion is reasoning, not the turn's own words: it reads as a
    quiet block off the column - a hairline and the muted tone - instead of more
@@ -2556,17 +2561,31 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   .sess > .more > summary { min-width: 44px; }
 }
 
-/* A notice's own tails: the wire's type and a retry's attempt ride chips, and
-   the delay rides one more after them. `nrow` names the notice's row so the
-   body rules below cannot reach another leaf's body. */
-details.leaf.nrow > summary .chip { flex: none; white-space: nowrap; }
-details.leaf.nrow > summary .sub2 { color: var(--dim); font-size: var(--fs-label);
-  font-family: var(--mono); flex: none; }
+/* A notice's text is the message, not a call's title, so it wraps and keeps
+   the line breaks a failure or a delivery arrived with; a call's title may
+   clamp because the call opens onto its input, and a notice that clipped its
+   own reason would hide the one thing it exists to say. The tails fall after
+   the wrapped words when the row is narrow, and each can shrink and break
+   rather than push the row past the column. `nrow` names the notice's row so
+   these rules cannot reach another leaf's body. */
+details.leaf.nrow > summary, div.leaf.nrow > .rrow { flex-wrap: wrap; }
+/* The glyph and the text are one piece, so a wrapped text keeps its glyph on
+   its own first line instead of leaving it orphaned on a line above. */
+details.leaf.nrow > summary .lead, div.leaf.nrow > .rrow .lead { display: flex; align-items: center;
+  gap: 8px; flex: 0 1 auto; min-width: 0; }
+details.leaf.nrow > summary .tn, div.leaf.nrow > .rrow .tn { flex: 1 1 auto; min-width: 0;
+  white-space: pre-line; overflow: visible; text-overflow: clip; }
+details.leaf.nrow > summary .chip, div.leaf.nrow > .rrow .chip,
+details.leaf.nrow > summary .sub2, div.leaf.nrow > .rrow .sub2 { flex: 0 1 auto; min-width: 0;
+  overflow-wrap: anywhere; }
+/* The wire's type and a retry's attempt ride chips, and the delay rides one
+   more tail after them. */
+details.leaf.nrow > summary .sub2, div.leaf.nrow > .rrow .sub2 { color: var(--dim);
+  font-size: var(--fs-label); font-family: var(--mono); }
 /* The open row's face: the frame's facts as one labelled line each, and the
    frame itself behind one more control - rule 25 keeps the payload reachable
    without making JSON the row's face (Ved, 2026-10-28). */
-details.leaf.nrow .nbody { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px;
-  max-width: 72ch; }
+details.leaf.nrow .nbody { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
 /* A fact reads as one line, label and value together: the page's shared `.kv`
    pushes the two ends apart, which reads as two unrelated ends (Ved,
    2026-10-28). */

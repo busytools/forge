@@ -14,6 +14,12 @@
    * shapes differ, so the level is not carried by colour alone, and the
    * glyph's own name says it to a screen reader.
    *
+   * **The words wrap rather than clamp.** A call's title may ellipsize because
+   * the call still opens onto its input; a notice's text IS the message, and a
+   * narrow row that clipped it would leave the retry reason or a failure's
+   * next steps unreadable. A plain notice therefore is not a disclosure at
+   * all: it is the closed row, static, with no chevron to promise a body.
+   *
    * **A provisional notice opens onto the frame's own facts.** A frame this
    * build has no face for yet draws as itself, marked with its own type, and
    * the open body lists what the frame carried as labelled values - the raw
@@ -29,7 +35,7 @@
   const tone = $derived(
     notice.severity === 'warning' ? ' warn' : notice.severity === 'error' ? ' err' : '',
   );
-  /** A plain line has nothing behind it, so it draws no chevron and no body. */
+  /** Only a provisional row has a body, so only it is a disclosure. */
   const opens = $derived(notice.raw !== undefined);
 
   /** The raw frame is only rendered once its own control is open. */
@@ -37,8 +43,13 @@
 </script>
 
 {#snippet head()}
-  <Icon name={glyph} class={`gl${tone}`} label={notice.severity} />
-  <span class="tn">{notice.text}</span>
+  <!-- The glyph and the text travel as one piece: when the row is narrow the
+       text wraps under its own glyph rather than leaving the glyph alone on a
+       line, and the tails fall after the group. -->
+  <span class="lead">
+    <Icon name={glyph} class={`gl${tone}`} label={notice.severity} />
+    <span class="tn">{notice.text}</span>
+  </span>
   {#if notice.mark !== undefined}
     <span class="chip">{notice.mark}</span>
   {/if}
@@ -50,12 +61,12 @@
   {/if}
 {/snippet}
 
-<details class="leaf nrow">
-  <summary>
-    {@render head()}
-    {#if opens}<Chevron />{/if}
-  </summary>
-  {#if opens}
+{#if opens}
+  <details class="leaf nrow">
+    <summary>
+      {@render head()}
+      <Chevron />
+    </summary>
     <div class="body">
       <div class="nbody">
         {#each notice.fields ?? [] as field, index (`${index}:${field.label}`)}
@@ -69,5 +80,9 @@
         </details>
       </div>
     </div>
-  {/if}
-</details>
+  </details>
+{:else}
+  <div class="leaf nrow">
+    <div class="rrow">{@render head()}</div>
+  </div>
+{/if}

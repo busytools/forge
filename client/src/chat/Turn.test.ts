@@ -396,10 +396,23 @@ describe('one turn, as the page draws it', () => {
         use('c2', 'Read', { file_path: 'b.rs' }),
       ]),
       result('q1', 'answered', { answers: { 'Which one?': 'a' } }),
+      // A notice is a unit of its own, and it carries a leaves wrapper for the
+      // run's inset too. It is not a work run, so the count below must not see
+      // it as one.
+      {
+        type: 'system',
+        uuid: 'n1',
+        subtype: 'forge_notice',
+        severity: 'info',
+        text: 'Goal cleared',
+      },
     );
 
-    const runs = body.match(/<div class="leaves"/g) ?? [];
+    // The notice's own wrapper is a leaves list too, so the count takes only
+    // the work run's unmarked list - a notice is a unit, not a run.
+    const runs = body.match(/<div class="leaves">/g) ?? [];
     expect(runs, 'two runs, so two leaf lists').toHaveLength(2);
+    expect(body, 'the notice drew beside them').toContain('Goal cleared');
     expect(body).toContain('<div class="card">');
     expect(body, 'and each run keeps its own call').toContain('a.rs');
     expect(body, 'and the other its own').toContain('b.rs');

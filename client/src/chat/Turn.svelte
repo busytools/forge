@@ -169,8 +169,10 @@
           {:else if unit.kind === 'question'}
             <Card asked={unit.asked} />
           {:else if unit.kind === 'notice'}
-            <!-- A notice is a tool row, so it takes the run's own inset. -->
-            <div class="leaves"><Notice notice={unit.notice} /></div>
+            <!-- A notice is a tool row, so it takes the run's own inset. The
+                 extra class keeps it out of the work-run count: a notice is a
+                 unit, not a run. -->
+            <div class="leaves nrun"><Notice notice={unit.notice} /></div>
           {:else if unit.kind === 'skill'}
             <Skill name={unit.name} body={unit.body} />
           {:else if unit.kind === 'hooks'}
