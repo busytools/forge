@@ -23,13 +23,14 @@
      New here, and the shape the pages after this should take:
      .rail + .needchip + .pal (the projects pane, its brand-faced entry chip
      and Cmd+K's palette), .leaves
-     (a stretch of work: every call, message or thought a row of its own in
-     the order it arrived, the kind's glyph leading it, opening on its own),
+     (a stretch of work: every call, message, thought or notice a row of its
+     own in the order it arrived, the kind's glyph leading it, opening on its
+     own; a notice's level is its glyph - .nrow's rows - rather than a word),
      .mine (a user turn - the orange rule is the attribution, so it
      carries no label - whose words are markdown, like the work's, because the
      terminal folds a prompt as a document too),
      .attrow (what a turn attached),
-     .code, .dif, .notice, .card (an answered question), .mon,
+     .code, .dif, .nrow, .card (an answered question), .mon,
      details.cpoint (the compaction point: the settled form of the in-flight
      line, a hairline carrying the word and the count read before the cut),
      details.handoff (the row between two sessions: the pair it swapped, the
@@ -634,6 +635,7 @@
      second mark. */
   details.leaf > summary .gl { color: var(--muted); }
   details.leaf > summary .gl.ok { color: var(--ok); }
+  details.leaf > summary .gl.warn { color: var(--warn); }
   details.leaf > summary .gl.err { color: var(--bad); }
 
   /* one call, opening on its own - a half-step under the prose, kept distinct
@@ -933,64 +935,36 @@
   .card .a .picked { color: var(--ok); }
   .card .a .typed { color: var(--text); font-weight: 700; }
 
-  /* A notice body carries its own line breaks: a Gotify delivery is a title
-     line and then the message, and without this the two run together where the
-     client draws them apart. */
-  /* Scoped to the conversation, as the sheet scopes it: the composer's notice
-     row shares the name and states its own chrome. */
-  .conv .notice { margin: 10px 0; padding: 9px 13px; border-radius: 9px; font-size: var(--fs-prose);
-    white-space: pre-line; }
-  .conv .notice .sev { font-weight: 700; margin-right: 7px; }
-  .conv .notice.info { border: 1px solid var(--line); color: var(--dim); }
-  .conv .notice.warn { border: 1px solid rgba(201,161,59,.35); background: rgba(201,161,59,.07); color: var(--warn); }
-  .conv .notice.err { border: 1px solid rgba(224,104,62,.35); background: rgba(224,104,62,.07); color: var(--bad); }
-  .conv .notice .chip { float: right; font-family: var(--mono); font-size: 11.5px;
-    border: 1px solid rgba(201,161,59,.35); border-radius: 999px; padding: 1px 7px; margin-left: 10px; }
-  .conv .notice .sub2 { display: block; color: var(--dim); font-size: 12.5px; margin-top: 2px;
-    overflow-wrap: anywhere; }
-  /* A provisional notice: the wire's own type as a visible mark, and the
-     frame's fields behind the open. The word carries the signal, not the
-     colour. **The expander rides the header line**: the shared icon is a
-     block, so a summary without a row layout drops it onto a line of its own,
-     which read as an empty row under every notice and put the arrow below the
-     words once open (Ved, 2026-10-28). */
-  .conv .notice .mark { font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
-    color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; }
-  .conv details.notice > summary { list-style: none; cursor: pointer; display: flex;
-    align-items: center; gap: 7px; flex-wrap: wrap; }
-  .conv details.notice > summary::-webkit-details-marker { display: none; }
-  .conv details.notice > summary .mark,
-  .conv details.notice > summary .sev { flex: none; margin-right: 0; }
-  /* **The sub shrinks**: `flex: none` left it unable to, so a long URL could
-     not wrap and pushed the summary past the column. `min-width: 0` is what
-     lets a flex item go below its content width. */
-  .conv details.notice > summary .sub2 { display: inline; margin: 0; color: var(--dim);
-    font-size: 12.5px; flex: 0 1 auto; min-width: 0; }
-  .conv details.notice > summary .chip { float: none; margin-left: auto; flex: none; }
-  .conv details.notice > summary .arw { flex: none; margin-left: auto; color: var(--dim); }
-  /* With a chip present the chip takes the free space, so the arrow tucks in
-     behind it rather than splitting the gap with it. */
-  .conv details.notice > summary .chip + .arw { margin-left: 8px; }
-  .conv details.notice[open] > summary .arw { color: var(--accent); }
-  /* The open row's face: the frame's facts as the page's own label/value
-     lines, and the frame itself behind one more control - rule 25 keeps the
-     payload reachable without making JSON the row's face (Ved, 2026-10-28). */
-  .conv details.notice .nbody { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
-  /* A provisional row's facts read as one line each. The page's shared `.kv`
-     pushes a label and its value to opposite ends of the box, which left a
-     fact reading as two unrelated ends rather than one (Ved, 2026-10-28). */
-  .conv details.notice .nfact { display: flex; gap: 6px; padding: 1px 0;
+  /* The shared chip the review sets and a notice row both draw. */
+  .chip { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
+  /* A notice is a tool row: the level rides the glyph (a circle, a triangle,
+     a circle with an exclamation), the wire's type and a retry's attempt ride
+     chips, and the delay rides one more tail. `nrow` names the notice's row so
+     the body rules below cannot reach another leaf's body. */
+  details.leaf.nrow > summary .chip { flex: none; white-space: nowrap; }
+  details.leaf.nrow > summary .sub2 { color: var(--dim); font-size: var(--fs-label);
+    font-family: var(--mono); flex: none; }
+  /* The open row's face: the frame's facts as one labelled line each, and the
+     frame itself behind one more control - rule 25 keeps the payload
+     reachable without making JSON the row's face (Ved, 2026-10-28). */
+  details.leaf.nrow .nbody { margin-top: 8px; border-top: 1px solid var(--line);
+    padding-top: 6px; max-width: 72ch; }
+  /* A fact reads as one line, label and value together: the page's shared
+     `.kv` pushes the two ends apart, which reads as two unrelated ends
+     (Ved, 2026-10-28). */
+  details.leaf.nrow .nfact { display: flex; gap: 6px; padding: 1px 0;
     font-family: var(--mono); font-size: 12.5px; }
-  .conv details.notice .nfact .k { flex: none; color: var(--dim); }
-  .conv details.notice .nfact .k::after { content: ':'; }
-  .conv details.notice .nfact .v { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
-  .conv details.notice details.raw { margin-top: 6px; }
-  .conv details.notice details.raw > summary { list-style: none; cursor: pointer; display: flex;
+  details.leaf.nrow .nfact .k { flex: none; color: var(--dim); }
+  details.leaf.nrow .nfact .k::after { content: ':'; }
+  details.leaf.nrow .nfact .v { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+  details.leaf.nrow details.raw { margin-top: 6px; }
+  details.leaf.nrow details.raw > summary { list-style: none; cursor: pointer; display: flex;
     align-items: center; gap: 5px; font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
-  .conv details.notice details.raw > summary::-webkit-details-marker { display: none; }
-  .conv details.notice details.raw > summary .arw { flex: none; width: 11px; height: 11px; }
-  .conv details.notice details.raw[open] > summary .arw { color: var(--accent); }
-  .conv details.notice details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border: 1px solid var(--line);
+  details.leaf.nrow details.raw > summary::-webkit-details-marker { display: none; }
+  details.leaf.nrow details.raw > summary .arw { flex: none; width: 11px; height: 11px; }
+  details.leaf.nrow details.raw[open] > summary .arw { color: var(--accent); }
+  details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border: 1px solid var(--line);
     border-radius: var(--r); background: var(--s1); font-family: var(--mono); font-size: 11.5px;
     color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 
@@ -1595,6 +1569,9 @@
   <symbol id="i-processes" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="12" height="12" x="6" y="6" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
   <symbol id="i-question" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9a3 3 0 1 1 4 2.8c-.7.4-1 .9-1 1.7v.5"/><path d="M12 18h.01"/></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></symbol>
   <symbol id="i-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4v9a3 3 0 0 0 3 3h12"/><path d="m15 12 3 4-3 4"/></symbol>
@@ -2640,24 +2617,26 @@ docs: The sprite a row draws, by the class it belongs to.</div>
 
         <!-- A published change's four transitions - created, merged, closed,
              reopened - keep a chat row. The action, repository and change
-             number are the line, the URL a reader opens rides that line as
-             its quiet tail, and the open body carries the rest of the frame.
-             Every other action is the strip's transient line, not a
-             conversation row; a tree mutation is the same line and draws
-             nothing here. Drawn open, which is the face this row exists
+             number are the line, the wire's own type and the URL a reader
+             opens ride the row as a chip and a tail, and the open body carries
+             the rest of the frame. Every other action is the strip's transient
+             line, not a conversation row; a tree mutation is the same line and
+             draws nothing here. Drawn open, which is the face this row exists
              for. -->
-        <details class="notice info" open>
-          <summary><span class="mark">code_change_published</span><span class="sev">Info</span>PR #2688 created in busytools/forge<span class="sub2">https://github.com/busytools/forge/pull/2688</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">action</span><span class="v">created</span></div>
-            <div class="nfact"><span class="k">provider</span><span class="v">github</span></div>
-            <div class="nfact"><span class="k">repository</span><span class="v">busytools/forge</span></div>
-            <div class="nfact"><span class="k">change</span><span class="v">2688</span></div>
-            <div class="nfact"><span class="k">branch</span><span class="v">vcs-frames</span></div>
-            <div class="nfact"><span class="k">url</span><span class="v">https://github.com/busytools/forge/pull/2688</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
+        <details class="leaf nrow" open>
+          <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">PR #2688 created in busytools/forge</span><span class="chip">code_change_published</span><span class="sub2">https://github.com/busytools/forge/pull/2688</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="nbody">
+              <div class="nfact"><span class="k">action</span><span class="v">created</span></div>
+              <div class="nfact"><span class="k">provider</span><span class="v">github</span></div>
+              <div class="nfact"><span class="k">repository</span><span class="v">busytools/forge</span></div>
+              <div class="nfact"><span class="k">change</span><span class="v">2688</span></div>
+              <div class="nfact"><span class="k">branch</span><span class="v">vcs-frames</span></div>
+              <div class="nfact"><span class="k">url</span><span class="v">https://github.com/busytools/forge/pull/2688</span></div>
+              <details class="raw">
+                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+              </details>
+            </div>
           </div>
         </details>
 
@@ -2665,29 +2644,33 @@ docs: The sprite a row draws, by the class it belongs to.</div>
              onto the trigger and the two model names. The header keeps the
              seat's preferred model; this row is how a reader learns the words
              above came from a different one. -->
-        <details class="notice warn">
-          <summary><span class="mark">model_fallback</span><span class="sev">Warning</span>Fable 5 is unavailable; continuing on Opus 5.<svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">trigger</span><span class="v">overloaded</span></div>
-            <div class="nfact"><span class="k">original model</span><span class="v">claude-fable-5-1</span></div>
-            <div class="nfact"><span class="k">fallback model</span><span class="v">claude-opus-5-5</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
+        <details class="leaf nrow">
+          <summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Fable 5 is unavailable; continuing on Opus 5.</span><span class="chip">model_fallback</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="nbody">
+              <div class="nfact"><span class="k">trigger</span><span class="v">overloaded</span></div>
+              <div class="nfact"><span class="k">original model</span><span class="v">claude-fable-5-1</span></div>
+              <div class="nfact"><span class="k">fallback model</span><span class="v">claude-opus-5-5</span></div>
+              <details class="raw">
+                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+              </details>
+            </div>
           </div>
         </details>
 
         <!-- A memory recall: one line for the turn, the files in the open
              body rather than one row per memory. -->
-        <details class="notice info">
-          <summary><span class="mark">memory_recall</span><span class="sev">Info</span>Recalled 2 memories<svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-base-fetch-budget.md</span></div>
-            <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-switch-watch.md</span></div>
-            <div class="nfact"><span class="k">content</span><span class="v">A distilled paragraph from the memory store.</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
+        <details class="leaf nrow">
+          <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Recalled 2 memories</span><span class="chip">memory_recall</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="nbody">
+              <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-base-fetch-budget.md</span></div>
+              <div class="nfact"><span class="k">path</span><span class="v">/home/ved/.claude/projects/forge/memory/the-switch-watch.md</span></div>
+              <div class="nfact"><span class="k">content</span><span class="v">A distilled paragraph from the memory store.</span></div>
+              <details class="raw">
+                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+              </details>
+            </div>
           </div>
         </details>
 
@@ -2696,68 +2679,76 @@ docs: The sprite a row draws, by the class it belongs to.</div>
              print as one frame (2.1.280) or two (older); a print fills the
              row the name opened, so a command is one row - and there is no
              assistant twin on forge's stream. -->
-        <details class="notice info">
-          <summary><span class="mark">local_command</span><span class="sev">Info</span>Ran /usage<svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">output</span><span class="v">Session cost: $1.23</span></div>
-            <div class="nfact"><span class="k">level</span><span class="v">info</span></div>
-            <div class="nfact"><span class="k">context usage</span><span class="v">{"percent":12}</span></div>
-            <div class="nfact"><span class="k">usage report</span><span class="v">{"total_cost_usd":1.23}</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
+        <details class="leaf nrow">
+          <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Ran /usage</span><span class="chip">local_command</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="nbody">
+              <div class="nfact"><span class="k">output</span><span class="v">Session cost: $1.23</span></div>
+              <div class="nfact"><span class="k">level</span><span class="v">info</span></div>
+              <div class="nfact"><span class="k">context usage</span><span class="v">{"percent":12}</span></div>
+              <div class="nfact"><span class="k">usage report</span><span class="v">{"total_cost_usd":1.23}</span></div>
+              <details class="raw">
+                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+              </details>
+            </div>
           </div>
         </details>
 
         <!-- A project's development intent: a quiet fact the CLI's scan
              found, with the evidence in its open body. -->
-        <details class="notice info">
-          <summary><span class="mark">dev_intent</span><span class="sev">Info</span>Project: Android app<svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">trigger</span><span class="v">android_manifest</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
+        <details class="leaf nrow">
+          <summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Project: Android app</span><span class="chip">dev_intent</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="nbody">
+              <div class="nfact"><span class="k">trigger</span><span class="v">android_manifest</span></div>
+              <details class="raw">
+                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+              </details>
+            </div>
           </div>
         </details>
 
-        <div class="notice info"><span class="sev">Info</span>Mode changed: default &#8594; acceptEdits</div>
-        <div class="notice warn"><span class="sev">Warning</span>Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</div>
-        <div class="notice warn"><span class="chip">attempt 2 / 4</span><span class="sev">Warning</span>API retry after server_error HTTP 529<span class="sub2">retrying in 1.5s</span></div>
-        <div class="notice err"><span class="sev">Error</span>Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</div>
+        <details class="leaf nrow"><summary><svg class="ic gl"><use href="#i-info"/></svg><span class="tn">Mode changed: default &#8594; acceptEdits</span></summary></details>
+        <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Near rate-limit threshold. Resets in 1h 48m at 14:30 UTC.</span></summary></details>
+        <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">API retry after server_error HTTP 529</span><span class="chip">attempt 2 / 4</span><span class="sub2">retrying in 1.5s</span></summary></details>
+        <details class="leaf nrow"><summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</span></summary></details>
 
         <!-- A frame the page has no face for yet draws as itself, open here:
              the wire's own type as the visible mark, the frame's fields as
              labelled values under it, and the frame itself one control
              further in (rule 25 keeps it reachable). This one also settles
              the call it refused, which no result will. -->
-        <details class="notice err" open>
-          <summary><span class="mark">permission_denied</span><span class="sev">Error</span>Bash refused: Contains simple_expansion<svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">tool</span><span class="v">Bash</span></div>
-            <div class="nfact"><span class="k">call</span><span class="v">toolu_denied</span></div>
-            <div class="nfact"><span class="k">reason</span><span class="v">Contains simple_expansion</span></div>
-            <div class="nfact"><span class="k">decision</span><span class="v">other</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
+        <details class="leaf nrow" open>
+          <summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Bash refused: Contains simple_expansion</span><span class="chip">permission_denied</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="nbody">
+              <div class="nfact"><span class="k">tool</span><span class="v">Bash</span></div>
+              <div class="nfact"><span class="k">call</span><span class="v">toolu_denied</span></div>
+              <div class="nfact"><span class="k">reason</span><span class="v">Contains simple_expansion</span></div>
+              <div class="nfact"><span class="k">decision</span><span class="v">other</span></div>
+              <details class="raw">
+                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+              </details>
+            </div>
           </div>
         </details>
 
         <!-- An api error with its retry: the reader-facing `formatted` line,
              the attempt chip, and the delay riding the same line as the row -
              a line of their own would push the chevron under the words. -->
-        <details class="notice err">
-          <summary><span class="mark">api_error</span><span class="sev">Error</span>502 Durable Object is overloaded, retrying HTTP 502<span class="sub2">retrying in 610ms</span><span class="chip">attempt 1 / 300</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="nbody">
-            <div class="nfact"><span class="k">message</span><span class="v">502 Durable Object is overloaded, retrying</span></div>
-            <div class="nfact"><span class="k">status</span><span class="v">HTTP 502</span></div>
-            <div class="nfact"><span class="k">level</span><span class="v">error</span></div>
-            <div class="nfact"><span class="k">attempt</span><span class="v">1 of 300</span></div>
-            <div class="nfact"><span class="k">retry in</span><span class="v">610ms</span></div>
-            <details class="raw">
-              <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
-            </details>
+        <details class="leaf nrow">
+          <summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">502 Durable Object is overloaded, retrying HTTP 502</span><span class="chip">api_error</span><span class="chip">attempt 1 / 300</span><span class="sub2">retrying in 610ms</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          <div class="body">
+            <div class="nbody">
+              <div class="nfact"><span class="k">message</span><span class="v">502 Durable Object is overloaded, retrying</span></div>
+              <div class="nfact"><span class="k">status</span><span class="v">HTTP 502</span></div>
+              <div class="nfact"><span class="k">level</span><span class="v">error</span></div>
+              <div class="nfact"><span class="k">attempt</span><span class="v">1 of 300</span></div>
+              <div class="nfact"><span class="k">retry in</span><span class="v">610ms</span></div>
+              <details class="raw">
+                <summary><svg class="ic arw"><use href="#i-chev"/></svg>raw frame</summary>
+              </details>
+            </div>
           </div>
         </details>
 
@@ -2780,8 +2771,7 @@ docs: The sprite a row draws, by the class it belongs to.</div>
              other's echo: the row above leads with the FAILURE mark - the mark
              follows the turn - and this line carries its words. The calls the
              turn left open draw as failed. -->
-        <div class="notice err"><span class="sev">Error</span>Turn failed: error_during_execution &#183; aborted_streaming
-[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null</div>
+        <details class="leaf nrow"><summary><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Turn failed: error_during_execution &#183; aborted_streaming [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null</span></summary></details>
       </div>
 
       <!-- The compaction point: drawn in the conversation at the boundary,
@@ -3166,10 +3156,10 @@ branch main, nothing to commit</div>
         </div>
 
         <div class="annot"><span class="dim">refused before leaving &#183; the dispatch never reached the socket, so no echo row exists: the line draws in the seat the click was made in, as a notice</span></div>
-        <div class="notice warn"><span class="sev">Warning</span> Not sent - the connection is down.</div>
+        <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Not sent - the connection is down.</span></summary></details>
 
         <div class="annot"><span class="dim">a service report &#183; keyless on the wire, so every open seat's chat draws it as the core pushes it, once per report</span></div>
-        <div class="notice warn"><span class="sev">Warning</span> Elevated error rates on the Anthropic API</div>
+        <details class="leaf nrow"><summary><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Elevated error rates on the Anthropic API</span></summary></details>
       </div>
 
       <div class="mine">
