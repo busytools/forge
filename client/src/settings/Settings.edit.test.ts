@@ -15,7 +15,7 @@ import { emptyHome, settingsWire } from '../dev/settings.fixture';
  */
 let app: Record<string, unknown> | null = null;
 let listeners: Set<(message: ServerMessage) => void>;
-let sent: { fingerprint: string; edits: SettingsEditWire[] }[];
+let sent: { fingerprint: string; edits: SettingsEditWire[]; id: number }[];
 
 function connection(): Connection {
   return {
@@ -23,11 +23,17 @@ function connection(): Connection {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    settingsEdit: (fingerprint: string, edits: SettingsEditWire[]) => {
-      sent.push({ fingerprint, edits });
+    settingsEdit: (fingerprint: string, edits: SettingsEditWire[], id: number) => {
+      sent.push({ fingerprint, edits, id });
       return true;
     },
   } as unknown as Connection;
+}
+
+/** Deliver one server frame to every listener the page installed. */
+function hear(message: ServerMessage): void {
+  for (const listener of listeners) listener(message);
+  flushSync();
 }
 
 function draw(settingsDocument: SettingsDocument = settingsWire): void {
@@ -91,7 +97,10 @@ describe('the settings editor page', () => {
       },
     ]);
 
-    // The reload's push is the save's answer.
+    // The server's own acknowledgement, matched by the save's id, clears the
+    // draft; the reload's push follows.
+    hear({ kind: 'settings_saved', id: sent[0]?.id ?? 0 });
+
     const after: SettingsDocument = {
       ...settingsWire,
       fingerprint: 'ffffffffffffffff',
@@ -111,7 +120,7 @@ describe('the settings editor page', () => {
     settingsFrame.set({ status: 'ready', document: after });
     flushSync();
 
-    expect(document.querySelector('.settings-savebar'), 'the bar cleared').toBeNull();
+    expect(document.body.textContent, 'the bar says the save landed').toContain('saved');
     expect(
       document.querySelector('.settings-restart')?.textContent,
       'the restart banner names it',
@@ -135,15 +144,13 @@ describe('the settings editor page', () => {
     (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
     flushSync();
 
-    for (const listener of listeners) {
-      listener({
-        kind: 'settings_refused',
-        reason: 'invalid',
-        message: 'forge.toml at /tmp/forge.toml failed to parse in `port`: not a number',
-        key_path: 'server.port',
-      });
-    }
-    flushSync();
+    hear({
+      kind: 'settings_refused',
+      reason: 'invalid',
+      message: 'forge.toml at /tmp/forge.toml failed to parse in `port`: not a number',
+      id: sent[0]?.id ?? 0,
+      key_path: 'server.port',
+    });
     expect(document.body.textContent, 'the loader own words are on the bar').toContain(
       'not a number',
     );
@@ -153,7 +160,108 @@ describe('the settings editor page', () => {
     ).toBe('server.port');
   });
 
-  it('adds a skeleton entry and removes one behind a confirm', () => {
+  /** A pop the confirm's history entry queues needs a task to land. */
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+  }
+
+  it('draws a foreign push as a conflict instead of rebasing the draft', () => {
+    draw();
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    rail('server').click();
+    flushSync();
+    const port =
+      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
+        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
+        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
+    if (port === null) throw new Error('the number control is not drawn');
+    port.value = '8791';
+    port.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    settingsFrame.set({
+      status: 'ready',
+      document: { ...settingsWire, fingerprint: 'ffffffffffffffff' },
+    });
+    flushSync();
+
+    expect(document.body.textContent, 'the conflict is drawn').toContain(
+      'changed since this page loaded it',
+    );
+    expect(document.body.textContent, 'the draft is kept').toContain('1 unsaved');
+    expect(
+      (document.querySelector('.settings-btn.go') as HTMLButtonElement).disabled,
+      'saving against the old baseline is not offered',
+    ).toBe(true);
+  });
+
+  it('asks before leaving a dirty draft', async () => {
+    draw();
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    rail('server').click();
+    flushSync();
+    const port =
+      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
+        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
+        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
+    if (port === null) throw new Error('the number control is not drawn');
+    port.value = '8791';
+    port.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    expect(document.querySelector('.settings-dialog')?.textContent).toContain(
+      'Discard these changes?',
+    );
+    [...document.querySelectorAll<HTMLButtonElement>('.settings-dialog .settings-btn')]
+      .find((button) => button.textContent === 'cancel')
+      ?.click();
+    await settle();
+    expect(document.querySelector('.settings-mode')?.textContent, 'still editing').toContain(
+      'editing',
+    );
+    expect(document.body.textContent, 'the draft is still there').toContain('1 unsaved');
+
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    [...document.querySelectorAll<HTMLButtonElement>('.settings-dialog .settings-btn')]
+      .find((button) => button.textContent === 'discard')
+      ?.click();
+    await settle();
+    expect(document.querySelector('.settings-mode')?.textContent, 'editing ended').toContain(
+      'edit',
+    );
+    expect(document.querySelector('.settings-savebar'), 'the draft is gone').toBeNull();
+  });
+
+  it('ignores an acknowledgement that is not this save', () => {
+    draw();
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    rail('server').click();
+    flushSync();
+    const port =
+      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
+        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
+        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
+    if (port === null) throw new Error('the number control is not drawn');
+    port.value = '8791';
+    port.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
+    flushSync();
+
+    hear({ kind: 'settings_saved', id: (sent[0]?.id ?? 0) + 1 });
+    expect(document.body.textContent, 'another save did not clear this draft').toContain(
+      '1 unsaved',
+    );
+  });
+
+  it('adds a skeleton entry and removes one behind a confirm', async () => {
     draw();
     (document.querySelector('.settings-mode') as HTMLButtonElement).click();
     flushSync();
@@ -190,7 +298,7 @@ describe('the settings editor page', () => {
     ].find((button) => button.textContent === 'remove');
     if (confirm === undefined) throw new Error('the confirm has no remove button');
     confirm.click();
-    flushSync();
+    await settle();
     expect(document.body.textContent, 'the group reads as removed').toContain('removed on save');
   });
 });

@@ -43,6 +43,18 @@ describe('the settings editor', () => {
     expect(currentValue(draft, disabled), 'and the row draws the loaded value').toBe(512);
   });
 
+  it('clears an optional string to unset rather than to an empty value', () => {
+    const draft = emptyDraft();
+    const optional = key('accounts.Granite.env.FLAG');
+    setValue(draft, optional, '');
+    expect(draft.values[optional.path], 'an empty optional string is the key unset').toBe(null);
+    expect(editRequests(draft, settingsWire)[0]?.value).toBe(null);
+
+    const required = { ...optional, edit: { ...optional.edit, required: true } };
+    setValue(draft, required, '');
+    expect(draft.values[required.path], 'a required string keeps its empty text').toBe('');
+  });
+
   it('builds one set request per edited key, with its pattern and area', () => {
     const draft = emptyDraft();
     setValue(draft, key('server.port'), 8791);

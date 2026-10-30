@@ -16,6 +16,7 @@
     "SeatFrames": "seat_frames",
     "Settings": "settings",
     "SettingsRefused": "settings_refused",
+    "SettingsSaved": "settings_saved",
     "Snapshot": "snapshot",
     "Update": "update"
   },
@@ -832,6 +833,8 @@
         "value"
       ],
       "/document/areas[]/keys[]/edit": [
+        "allowed",
+        "group",
         "kind",
         "required"
       ],
@@ -1199,6 +1202,21 @@
         "label",
         "org",
         "project"
+      ]
+    },
+    "SettingsEdit": {
+      "": [
+        "edits",
+        "fingerprint",
+        "id",
+        "kind"
+      ],
+      "/edits[]": [
+        "area",
+        "key_path",
+        "op",
+        "pattern",
+        "value"
       ]
     },
     "Subscribe": {

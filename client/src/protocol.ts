@@ -400,7 +400,7 @@ export type ClientMessage =
    */
   | { kind: 'client_perf'; records: unknown[] }
   /** A batched save of the effective config. */
-  | { kind: 'settings_edit'; fingerprint: string; edits: SettingsEditWire[] };
+  | { kind: 'settings_edit'; fingerprint: string; edits: SettingsEditWire[]; id: number };
 
 /** What the server sends. */
 export type ServerMessage =
@@ -590,10 +590,13 @@ export type ServerMessage =
   /** A settings save that wrote nothing, and why. */
   | {
       kind: 'settings_refused';
-      reason: 'stale' | 'invalid' | 'refused';
+      reason: 'stale' | 'invalid' | 'refused' | 'io';
       message: string;
+      id: number;
       key_path?: string;
-    };
+    }
+  /** A settings save that wrote, matched to its request by `id`. */
+  | { kind: 'settings_saved'; id: number };
 
 /** The modifier keys a person held for one input gesture. */
 export interface InputModifiers {

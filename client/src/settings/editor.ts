@@ -124,8 +124,11 @@ function same(one: unknown, two: unknown): boolean {
 
 /** Record an edited value, dropping it when it is the loaded one again. */
 export function setValue(draft: Draft, key: SettingsKey, value: unknown): void {
-  if (same(value, valueOf(key.value))) delete draft.values[key.path];
-  else draft.values[key.path] = value;
+  // A cleared optional string is the key unset, not an empty one: `= ""`
+  // would shadow the key's default rather than fall back to it.
+  const held = key.edit.kind === 'string' && !key.edit.required && value === '' ? null : value;
+  if (same(held, valueOf(key.value))) delete draft.values[key.path];
+  else draft.values[key.path] = held;
 }
 
 export function setEntryValue(draft: Draft, path: string, field: string, value: unknown): void {

@@ -4794,76 +4794,85 @@ details[open] > summary .arw { opacity: 1; }
   text-decoration: line-through; }
 
 .settings-page .settings-rows input, .settings-page .settings-rows select,
-.settings-page .list-editor input { font-family: var(--mono); font-size: 13px;
+.list-editor input { font-family: var(--mono); font-size: 13px;
   color: var(--text); background: var(--bg); border: 1px solid var(--line);
   border-radius: 7px; padding: 5px 8px; min-width: 0; width: 100%; }
 .settings-page .settings-rows input:focus, .settings-page .settings-rows select:focus,
-.settings-page .list-editor input:focus { outline: none; border-color: var(--accent);
+.list-editor input:focus { outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(244,118,0,.12); }
-.settings-page .number-field { max-width: 160px; }
-.settings-page .select { max-width: 260px; }
-.settings-page .toggle { display: inline-flex; align-items: center; gap: 9px;
+/* The form kit's own controls, styled here rather than under the settings
+   page: any surface can mount them (rule 21). */
+.number-field { max-width: 160px; }
+.select { max-width: 260px; }
+.toggle { display: inline-flex; align-items: center; gap: 9px;
   background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: var(--muted); }
-.settings-page .toggle .track { width: 30px; height: 17px; border-radius: 99px;
+.toggle .track { width: 30px; height: 17px; border-radius: 99px;
   border: 1px solid var(--line); background: var(--s2); position: relative; }
-.settings-page .toggle .thumb { position: absolute; top: 2px; left: 2px; width: 11px;
+.toggle .thumb { position: absolute; top: 2px; left: 2px; width: 11px;
   height: 11px; border-radius: 50%; background: var(--dim); }
-.settings-page .toggle.on .track { border-color: var(--accent); background: var(--sel); }
-.settings-page .toggle.on .thumb { left: 15px; background: var(--accent); }
-.settings-page .toggle .word { font-family: var(--mono); font-size: 11px; }
-.settings-page .list-editor { display: flex; flex-direction: column; gap: 5px; }
-.settings-page .list-item { display: flex; align-items: center; gap: 6px; }
-.settings-page .list-x { font-family: var(--mono); font-size: 13px; color: var(--muted);
+.toggle.on .track { border-color: var(--accent); background: var(--sel); }
+.toggle.on .thumb { left: 15px; background: var(--accent); }
+.toggle .word { font-family: var(--mono); font-size: 11px; }
+.list-editor { display: flex; flex-direction: column; gap: 5px; }
+.list-item { display: flex; align-items: center; gap: 6px; }
+.list-x { font-family: var(--mono); font-size: 13px; color: var(--muted);
   background: none; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px;
   cursor: pointer; }
-.settings-page .list-x:hover { color: var(--bad); border-color: rgba(224,104,62,.4); }
-.settings-page .list-add { align-self: flex-start; font-family: var(--mono); font-size: 11px;
+.list-x:hover { color: var(--bad); border-color: rgba(224,104,62,.4); }
+.list-add { align-self: flex-start; font-family: var(--mono); font-size: 11px;
   color: var(--muted); background: none; border: 1px dashed var(--line); border-radius: 7px;
   padding: 3px 10px; cursor: pointer; }
-.settings-page .list-add:hover { border-color: var(--ctl); color: var(--text); }
+.list-add:hover { border-color: var(--ctl); color: var(--text); }
 
-.settings-page .settings-savebar { position: sticky; bottom: 0; z-index: 5;
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  margin-top: 20px; padding: 12px 16px calc(12px + var(--safe-bottom));
+/* The bottom dock holds the restart banner directly above the save bar: the
+   bar is sticky, and a banner at the page top is off-screen when it lands. */
+.settings-page .settings-dock { position: sticky; bottom: 0; z-index: 5;
+  display: flex; flex-direction: column; gap: 10px; margin-top: 20px;
+  padding-bottom: var(--safe-bottom); }
+.settings-page .settings-savebar { display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap; padding: 12px 16px;
   border: 1px solid var(--line); border-radius: var(--r); background: var(--s1);
   box-shadow: 0 -12px 32px -18px rgba(0,0,0,.9); }
 .settings-page .settings-savebar .count { font-family: var(--mono); font-size: 12.5px;
   color: var(--hot); white-space: nowrap; }
+.settings-page .settings-savebar .saved { font-family: var(--mono); font-size: 11.5px;
+  color: var(--ok); }
 .settings-page .settings-savebar .said { font-family: var(--mono); font-size: 11.5px;
   color: var(--muted); max-width: 70ch; }
 .settings-page .settings-savebar .said.bad { color: var(--bad); }
 .settings-page .settings-savebar .spacer { flex: 1; }
-.settings-page .settings-btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
+/* The dialog and its buttons are the confirm's own, shared by any surface. */
+.settings-btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
   font-size: 12.5px; border-radius: 9px; padding: 7px 14px; }
-.settings-page .settings-btn:disabled { opacity: .5; cursor: default; }
-.settings-page .settings-btn.go { background: var(--accent); color: var(--bg); font-weight: 640; }
-.settings-page .settings-btn.ghost { background: transparent; color: var(--muted);
+.settings-btn:disabled { opacity: .5; cursor: default; }
+.settings-btn.go { background: var(--accent); color: var(--bg); font-weight: 640; }
+.settings-btn.ghost { background: transparent; color: var(--muted);
   box-shadow: inset 0 0 0 1px var(--line); }
-.settings-page .settings-btn.ghost:hover { color: var(--text);
+.settings-btn.ghost:hover { color: var(--text);
   box-shadow: inset 0 0 0 1px var(--ctl); }
-.settings-page .settings-btn.danger { background: var(--bad); color: var(--bg); font-weight: 640; }
+.settings-btn.danger { background: var(--bad); color: var(--bg); font-weight: 640; }
 
-.settings-page .settings-scrim { position: fixed; inset: 0; z-index: 40; display: flex;
+.settings-scrim { position: fixed; inset: 0; z-index: 40; display: flex;
   align-items: center; justify-content: center; padding: 24px;
   background: rgba(4,5,10,.62); }
-.settings-page .settings-dialog { width: min(460px, 100%); background: var(--s1);
+.settings-dialog { width: min(460px, 100%); background: var(--s1);
   border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px 18px;
   box-shadow: 0 24px 60px rgba(0,0,0,.5); }
-.settings-page .settings-dialog .t { font-size: 17px; font-weight: 620; color: var(--text); }
-.settings-page .settings-dialog .s { font-size: var(--fs-data); color: var(--muted);
+.settings-dialog .t { font-size: 17px; font-weight: 620; color: var(--text); }
+.settings-dialog .s { font-size: var(--fs-data); color: var(--muted);
   margin: 8px 0 16px; }
-.settings-page .settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
+.settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (pointer: coarse) {
   .settings-page .settings-rail-item, .settings-page .settings-link,
   .settings-page .back, .settings-page .settings-mode, .settings-page .settings-add,
-  .settings-page .settings-row-action, .settings-page .settings-btn,
-  .settings-page .toggle, .settings-page .list-x, .settings-page .list-add {
+  .settings-page .settings-row-action, .settings-btn,
+  .toggle, .list-x, .list-add {
     min-height: 44px; }
   .settings-page .back, .settings-page .settings-link, .settings-page .settings-mode,
-  .settings-page .toggle, .settings-page .list-x { display: inline-flex; align-items: center; }
+  .toggle, .list-x { display: inline-flex; align-items: center; }
   .settings-page .settings-rows input, .settings-page .settings-rows select,
-  .settings-page .list-editor input { min-height: 44px; }
+  .list-editor input { min-height: 44px; }
 }
 @media (max-width: 760px) {
   .settings-page .settings-meta { margin-left: 0; align-items: flex-start; width: 100%; }

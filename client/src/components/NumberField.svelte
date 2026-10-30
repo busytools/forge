@@ -3,13 +3,19 @@
   let {
     value,
     label,
+    editor,
     onchange,
-  }: { value: number | null; label: string; onchange: (next: number | null) => void } = $props();
+  }: {
+    value: number | null;
+    label: string;
+    editor: string;
+    onchange: (next: number | null) => void;
+  } = $props();
 </script>
 
 <input
   class="number-field"
-  data-editor="settings"
+  data-editor={editor}
   type="number"
   step="1"
   aria-label={label}

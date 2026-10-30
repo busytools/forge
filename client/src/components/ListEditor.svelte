@@ -1,12 +1,16 @@
 <script lang="ts">
-  import Field from '../composer/Field.svelte';
-
   /** A list of strings: one box per item, and a press to add another. */
   let {
     values,
     label,
+    editor,
     onchange,
-  }: { values: string[]; label: string; onchange: (next: string[]) => void } = $props();
+  }: {
+    values: string[];
+    label: string;
+    editor: string;
+    onchange: (next: string[]) => void;
+  } = $props();
 
   function replace(at: number, text: string): void {
     const next = [...values];
@@ -18,12 +22,11 @@
 <div class="list-editor" role="group" aria-label={label}>
   {#each values as item, index (index)}
     <span class="list-item">
-      <Field
-        editor="settings"
-        element="input"
+      <input
+        data-editor={editor}
         value={item}
-        aria={{ label: `${label} item ${index + 1}` }}
-        oninput={(event: Event) => replace(index, (event.currentTarget as HTMLInputElement).value)}
+        aria-label={`${label} item ${index + 1}`}
+        oninput={(event) => replace(index, event.currentTarget.value)}
       />
       <button
         type="button"

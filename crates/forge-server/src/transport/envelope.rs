@@ -379,6 +379,12 @@ pub enum ClientMessage {
         /// The fingerprint of the raw file text the page loaded.
         fingerprint: String,
         edits: Vec<forge_primitives::settings::SettingsEditRequest>,
+        /// The page's own number for this save, echoed by
+        /// [`ServerMessage::SettingsSaved`] and
+        /// [`ServerMessage::SettingsRefused`] so a reply is matched to the
+        /// request that made it.
+        #[serde(default)]
+        id: u64,
     },
 }
 
@@ -392,6 +398,8 @@ pub enum SettingsRefusal {
     Invalid,
     /// A guard refused the save.
     Refused,
+    /// The file could not be read or written. Nothing was applied.
+    Io,
 }
 
 /// One chosen file on the wire: its name and its bytes, base64.
@@ -419,8 +427,16 @@ pub enum ServerMessage {
     SettingsRefused {
         reason: SettingsRefusal,
         message: String,
+        #[serde(default)]
+        id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         key_path: Option<String>,
+    },
+    /// A settings save that wrote. The reload push carries the new document;
+    /// this is the saver's own acknowledgement, matched by `id`, so a page
+    /// clears its draft only for its own save.
+    SettingsSaved {
+        id: u64,
     },
     Greeting {
         version: u32,

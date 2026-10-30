@@ -957,7 +957,6 @@ describe('axe over the rendered pages', () => {
         onRemoveRequest: () => {},
         onCancelAdd: () => {},
         onUndoRemove: () => {},
-        onDismissRestart: () => {},
       },
     }).body;
     expect(html, 'the sub-nav drew').toContain('accounts');
@@ -972,7 +971,7 @@ describe('axe over the rendered pages', () => {
       props: {
         document: settingsWire,
         mark: null,
-        cliVersion: 'v2.1.280',
+        cliVersion: '2.1.280',
         selected: 'server',
         onSelect: () => {},
         editing: true,
@@ -984,7 +983,6 @@ describe('axe over the rendered pages', () => {
         onRemoveRequest: () => {},
         onCancelAdd: () => {},
         onUndoRemove: () => {},
-        onDismissRestart: () => {},
       },
     }).body;
     expect(html, 'the number control drew').toContain('type="number"');

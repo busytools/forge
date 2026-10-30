@@ -32,9 +32,10 @@
     onRemoveRequest,
     onCancelAdd,
     onUndoRemove,
-    restart = [],
+    saving = false,
+    focusAdd = null,
     errorPath = null,
-    onDismissRestart,
+    onBack = () => {},
   }: {
     document: SettingsDocument;
     mark: string | null;
@@ -56,10 +57,14 @@
     }) => void;
     onCancelAdd: (path: string) => void;
     onUndoRemove: (path: string) => void;
-    restart?: string[];
+    /** A save is in flight: the surface is inert until its answer. */
+    saving?: boolean;
+    /** The added entry whose first field takes the keyboard. */
+    focusAdd?: string | null;
     /** The key an invalid save named, marked in its row. */
     errorPath?: string | null;
-    onDismissRestart: () => void;
+    /** The back link, intercepted while the draft is dirty. */
+    onBack?: (event: MouseEvent) => void;
   } = $props();
 
   const shown = $derived(selectedArea(document, selected));
@@ -69,6 +74,19 @@
   const added = $derived(
     area === null ? [] : Object.values(draft.adds).filter((entry) => entry.area === area.id),
   );
+
+  // A new entry draws at the end of the pane; without this a tap near the top
+  // looks like nothing happened. The first field takes the keyboard and the
+  // entry is scrolled into view.
+  $effect(() => {
+    if (focusAdd === null) return;
+    // `document` is the settings document here; the DOM is globalThis's.
+    const cell = globalThis.document.getElementById(`settings-add-first-${focusAdd}`);
+    if (cell === null) return;
+    cell.querySelector<HTMLElement>('input, select, button')?.focus();
+    // jsdom has no layout; the browser does.
+    cell.scrollIntoView?.({ block: 'nearest' });
+  });
 
   /** Open the first area and put the reader at the pane it opened. */
   function openFirst(id: string): void {
@@ -116,20 +134,13 @@
     class="settings-mode"
     class:editing
     aria-pressed={editing}
+    disabled={saving}
     onclick={onToggleEditing}
   >
     {editing ? 'editing' : 'edit'}
   </button>
-  <a class="back" href="/">&larr; home</a>
+  <a class="back" href="/" onclick={onBack}>&larr; home</a>
 </header>
-
-{#if restart.length > 0}
-  <div class="settings-restart" role="status">
-    <span class="t">saved. these need a server restart:</span>
-    <span class="keys">{restart.join(' · ')}</span>
-    <button type="button" class="settings-link" onclick={onDismissRestart}>dismiss</button>
-  </div>
-{/if}
 
 <div class="settings-legend" aria-label="what the effect classes mean">
   <span class="settings-legend-item"
@@ -145,7 +156,7 @@
   an area shows every class its keys hold; a dashed ring means a key there is read by nothing.
 </p>
 
-<div class="settings-split">
+<div class="settings-split" inert={saving}>
   <nav class="settings-rail" aria-label="config areas">
     {#each document.areas as row (row.id)}
       <button
@@ -294,13 +305,13 @@
           <caption class="vh">new {entry.group} {entry.label}</caption>
           <colgroup><col class="k" /><col /><col class="e" /></colgroup>
           <tbody>
-            {#each ENTRY_FIELDS[entry.group] ?? [] as field (field.key)}
+            {#each ENTRY_FIELDS[entry.group] ?? [] as field, index (field.key)}
               <tr>
                 <th scope="row">
                   <code>{field.key}</code>
                   {#if field.required}<span class="settings-required">required</span>{/if}
                 </th>
-                <td class="v">
+                <td class="v" id={index === 0 ? `settings-add-first-${entry.path}` : undefined}>
                   <EditCell
                     path={`${entry.path}.${field.key}`}
                     spec={addedSpec(entry.group, field)}

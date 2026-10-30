@@ -1708,21 +1708,29 @@ where
     // rather than per frame.
     let cap = state.surface.tool_record_cap_bytes();
     match client {
-        ClientMessage::SettingsEdit { fingerprint, edits } => {
-            if let Err(error) = state.surface.save_settings(&fingerprint, &edits) {
-                let (reason, message, key_path) = match error {
-                    forge_workspace::SettingsSaveError::Stale => {
-                        (SettingsRefusal::Stale, error.to_string(), None)
-                    }
-                    forge_workspace::SettingsSaveError::Invalid { message, key_path } => {
-                        (SettingsRefusal::Invalid, message, key_path)
-                    }
-                    forge_workspace::SettingsSaveError::Refused { message }
-                    | forge_workspace::SettingsSaveError::Io(message) => {
-                        (SettingsRefusal::Refused, message, None)
-                    }
-                };
-                send(socket, ServerMessage::SettingsRefused { reason, message, key_path }).await?;
+        ClientMessage::SettingsEdit { fingerprint, edits, id } => {
+            match state.surface.save_settings(&fingerprint, &edits) {
+                Ok(()) => send(socket, ServerMessage::SettingsSaved { id }).await?,
+                Err(error) => {
+                    let (reason, message, key_path) = match error {
+                        forge_workspace::SettingsSaveError::Stale => {
+                            (SettingsRefusal::Stale, error.to_string(), None)
+                        }
+                        forge_workspace::SettingsSaveError::Invalid { message, key_path } => {
+                            (SettingsRefusal::Invalid, message, key_path)
+                        }
+                        forge_workspace::SettingsSaveError::Refused { message } => {
+                            (SettingsRefusal::Refused, message, None)
+                        }
+                        // A write that failed is not a guard's refusal: the
+                        // page says the file could not be written.
+                        forge_workspace::SettingsSaveError::Io(message) => {
+                            (SettingsRefusal::Io, message, None)
+                        }
+                    };
+                    send(socket, ServerMessage::SettingsRefused { reason, message, id, key_path })
+                        .await?;
+                }
             }
             Ok(())
         }

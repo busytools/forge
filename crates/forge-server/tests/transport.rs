@@ -2073,9 +2073,23 @@ async fn a_settings_edit_writes_the_file_and_the_reload_pushes_it() {
     };
     send(
         &mut socket,
-        ClientMessage::SettingsEdit { fingerprint: document.fingerprint, edits: vec![edit] },
+        ClientMessage::SettingsEdit { fingerprint: document.fingerprint, edits: vec![edit], id: 7 },
     )
     .await;
+
+    // The saver's own acknowledgement comes first, matched by its id.
+    let msg = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("the save is acknowledged")
+        .expect("a frame")
+        .expect("no error");
+    let text = msg.to_text().expect("text");
+    let ServerMessage::SettingsSaved { id } =
+        serde_json::from_str(text).expect("the acknowledgement decodes")
+    else {
+        panic!("a written save is acknowledged, not {text}")
+    };
+    assert_eq!(id, 7, "the acknowledgement names this save");
 
     let path = fleet.workspace().config_path();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2130,6 +2144,7 @@ async fn a_stale_settings_edit_is_refused_and_writes_nothing() {
         ClientMessage::SettingsEdit {
             fingerprint: "0000000000000000".to_owned(),
             edits: vec![edit],
+            id: 8,
         },
     )
     .await;
@@ -2140,12 +2155,13 @@ async fn a_stale_settings_edit_is_refused_and_writes_nothing() {
         .expect("a frame")
         .expect("no error");
     let text = msg.to_text().expect("text");
-    let ServerMessage::SettingsRefused { reason, .. } =
+    let ServerMessage::SettingsRefused { reason, id, .. } =
         serde_json::from_str(text).expect("the refusal decodes")
     else {
         panic!("a stale save is refused, not {text}")
     };
     assert_eq!(reason, SettingsRefusal::Stale, "the reason says the file moved");
+    assert_eq!(id, 8, "the refusal names this save");
     assert_eq!(
         std::fs::read_to_string(&path).expect("read"),
         before,
@@ -2171,7 +2187,7 @@ async fn an_invalid_settings_edit_is_refused_with_the_loaders_words() {
     };
     send(
         &mut socket,
-        ClientMessage::SettingsEdit { fingerprint: document.fingerprint, edits: vec![edit] },
+        ClientMessage::SettingsEdit { fingerprint: document.fingerprint, edits: vec![edit], id: 9 },
     )
     .await;
 
@@ -2181,11 +2197,12 @@ async fn an_invalid_settings_edit_is_refused_with_the_loaders_words() {
         .expect("a frame")
         .expect("no error");
     let text = msg.to_text().expect("text");
-    let ServerMessage::SettingsRefused { reason, key_path, message } =
+    let ServerMessage::SettingsRefused { reason, key_path, message, id } =
         serde_json::from_str(text).expect("the refusal decodes")
     else {
         panic!("an invalid save is refused, not {text}")
     };
+    assert_eq!(id, 9, "the refusal names this save");
     assert_eq!(reason, SettingsRefusal::Invalid);
     assert_eq!(key_path.as_deref(), Some("usage.poll_seconds"));
     assert!(message.contains("want"), "the message names the shape: {message}");

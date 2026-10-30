@@ -251,7 +251,7 @@ macro_rules! assert_serde_names {
 
 census!(ServerMessage,
     [
-        Settings struct, SettingsRefused struct,
+        Settings struct, SettingsRefused struct, SettingsSaved struct,
         Greeting struct, Snapshot struct, Update struct, Page struct,
         SeatFrames struct,
         CommitDiff struct, FileContent struct, Reply struct,
@@ -776,9 +776,9 @@ fn frames_record() -> Value {
                         class: forge_primitives::EffectClass::Restart,
                         edit: forge_primitives::SettingsEdit {
                             kind: forge_primitives::EditKind::Number,
-                            allowed: Vec::new(),
+                            allowed: vec!["8790".to_owned(), "8791".to_owned()],
                             required: true,
-                            group: None,
+                            group: Some("server".to_owned()),
                         },
                     }],
                 }],
@@ -990,9 +990,9 @@ fn frames_record() -> Value {
                         class: forge_primitives::EffectClass::Restart,
                         edit: forge_primitives::SettingsEdit {
                             kind: forge_primitives::EditKind::Number,
-                            allowed: Vec::new(),
+                            allowed: vec!["8790".to_owned(), "8791".to_owned()],
                             required: true,
-                            group: None,
+                            group: Some("server".to_owned()),
                         },
                     }],
                 }],
@@ -1814,6 +1814,22 @@ fn client_sampled() -> BTreeMap<String, BTreeMap<String, Value>> {
     sampled.insert(
         "Subscribe".to_owned(),
         sample(ClientMessage::Subscribe { what: Subject::Home, answering: false, review: false }),
+    );
+    // The editor's save, which the page writes by hand through the shell: a
+    // rename of its fields fails nothing until a save is silently dropped.
+    sampled.insert(
+        "SettingsEdit".to_owned(),
+        sample(ClientMessage::SettingsEdit {
+            fingerprint: "0123456789abcdef".to_owned(),
+            edits: vec![forge_primitives::settings::SettingsEditRequest {
+                area: "server".to_owned(),
+                key_path: "server.port".to_owned(),
+                pattern: "server.port".to_owned(),
+                op: forge_primitives::settings::SettingsEditOp::Set,
+                value: Some(serde_json::json!(8791)),
+            }],
+            id: 7,
+        }),
     );
     // The repair ask, for the subscribe's reason: a client writes these fields
     // by hand, and a rename fails nothing until a gap is never filled.

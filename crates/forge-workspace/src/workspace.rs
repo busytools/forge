@@ -51,19 +51,119 @@ impl From<crate::settings_write::WriteError> for SettingsSaveError {
     }
 }
 
+/// The project pairs and account names a batch leaves behind, read off the
+/// batch and the loaded document rather than a second load: a removal drops
+/// an entry, and a set on one of the naming fields renames it. The loaded
+/// candidate is checked again after validation, so a shape this misses is
+/// still caught.
+fn departures_from_edits(
+    before: &LoadedConfig,
+    edits: &[SettingsEditRequest],
+    document: &forge_primitives::SettingsDocument,
+) -> (HashSet<(String, String)>, HashSet<String>) {
+    let mut projects: HashSet<(String, String)> =
+        before.projects.iter().map(|project| (project.org.clone(), project.name.clone())).collect();
+    let mut accounts: HashSet<String> =
+        before.accounts.iter().map(|account| account.display_name.clone()).collect();
+    let row =
+        |path: &str| document.areas.iter().flat_map(|area| &area.keys).find(|key| key.path == path);
+    for edit in edits {
+        if edit.op == SettingsEditOp::Remove && edit.pattern.is_empty() {
+            if edit.area == "accounts" {
+                if let Some(name) = edit.key_path.strip_prefix("accounts.") {
+                    accounts.remove(name);
+                }
+            } else if edit.area == "projects"
+                && let Some(project) = before.projects.iter().find(|project| {
+                    edit.key_path == format!("orgs.{}.projects.{}", project.org, project.name)
+                })
+            {
+                projects.remove(&(project.org.clone(), project.name.clone()));
+            }
+            continue;
+        }
+        if edit.op != SettingsEditOp::Set {
+            continue;
+        }
+        let pattern = if edit.pattern.is_empty() {
+            row(&edit.key_path).map(|key| key.pattern.clone())
+        } else {
+            Some(edit.pattern.clone())
+        };
+        let Some(pattern) = pattern else { continue };
+        let Some(key) = row(&edit.key_path) else { continue };
+        let renamed = edit.value.as_ref().and_then(serde_json::Value::as_str);
+        match pattern.as_str() {
+            "orgs[].projects[].name" => {
+                if let (Some(org), Some(project)) = (key.group.first(), key.group.get(1)) {
+                    projects.remove(&(org.clone(), project.clone()));
+                    if let Some(name) = renamed {
+                        projects.insert((org.clone(), name.to_owned()));
+                    }
+                }
+            }
+            "orgs[].name" => {
+                if let (Some(org), Some(name)) = (key.group.first(), renamed) {
+                    let moved: Vec<(String, String)> =
+                        projects.iter().filter(|(held, _)| held == org).cloned().collect();
+                    for (_, project) in moved {
+                        projects.remove(&(org.clone(), project.clone()));
+                        projects.insert((name.to_owned(), project));
+                    }
+                }
+            }
+            "accounts[].display_name" => {
+                if let Some(old) = key.group.first() {
+                    accounts.remove(old);
+                    if let Some(name) = renamed {
+                        accounts.insert(name.to_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (projects, accounts)
+}
+
 /// Replace `path` with `contents` through a temp file in the same directory:
 /// a reader sees the old file or the new one, never a half-written one, and
 /// the config watcher's re-arm survives the rename.
+///
+/// **The temp never widens the file.** It is created 0600 and takes the
+/// destination's mode before the rename: `forge.toml` holds every account,
+/// Slack, Gotify and System One token, and a save must keep whatever mode the
+/// operator gave it. A symlinked path is written through to its target, so a
+/// save cannot replace the link with a regular file.
 fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
-    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let directory = target.parent().unwrap_or_else(|| Path::new("."));
     let temporary = directory.join(format!(".forge.toml.settings-{}", std::process::id()));
     let outcome = (|| {
-        let mut file = std::fs::File::create(&temporary)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&target).map_or(0o600, |meta| meta.permissions().mode());
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        }
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
-        std::fs::rename(&temporary, path)?;
-        if let Ok(directory) = std::fs::File::open(directory) {
-            let _ = directory.sync_all();
+        std::fs::rename(&temporary, &target)?;
+        // A directory handle cannot be fsynced on every filesystem; a real
+        // failure (an I/O error) is reported, since durability is unknown.
+        let held = std::fs::File::open(directory)?;
+        match held.sync_all() {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+            Err(error) => return Err(error),
         }
         Ok(())
     })();
@@ -2361,72 +2461,147 @@ impl Workspace {
         let version = self.settings_version.get().map(String::as_str).unwrap_or_default();
         let document = crate::settings::document(&config, version, &path);
 
+        // **The live-session and loading-account guards run before the
+        // loader.** A removal that empties an org fails the loader's own
+        // "no projects" rule, and the guard's refusal owes the reader first;
+        // the departures are read off the batch itself here, then read again
+        // from the loaded candidate below.
+        let (departed_projects, departed_accounts) =
+            departures_from_edits(&config, edits, &document);
+        self.refuse_departures(&config, &departed_projects, &departed_accounts)?;
+
+        // An added project's tree must be there before the save lands: the
+        // loader accepts any string, and a row pointing at nothing is a
+        // project that can never start.
         for edit in edits {
-            if edit.op != SettingsEditOp::Remove || !edit.pattern.is_empty() {
+            if edit.op != SettingsEditOp::Add || edit.area != "projects" {
                 continue;
             }
-            if edit.area == "projects"
-                && let Some((org, project)) = crate::settings_write::project_path(&edit.key_path)
-            {
-                let live = self.live_sessions_of(org, project);
-                if !live.is_empty() {
-                    return Err(SettingsSaveError::Refused {
-                        message: format!(
-                            "project `{project}` has live sessions: {}; close them before \
-                             removing it",
-                            live.join(", "),
-                        ),
-                    });
-                }
-            }
-            // #2681: a retired entry still in `Loading` keeps
-            // `all_accounts_loaded` false for the process lifetime, so the
-            // save waits for the account's probe to settle.
-            if edit.area == "accounts"
-                && let Some(name) = edit.key_path.strip_prefix("accounts.")
-            {
-                let key = AccountKey(name.to_owned());
-                if self.accounts.ordered_account_keys().contains(&key)
-                    && self.accounts.loading_state(&key) == forge_gateway::LoadingState::Loading
-                {
-                    return Err(SettingsSaveError::Refused {
-                        message: format!(
-                            "account `{name}` is still loading its usage; the save refuses \
-                             until its probe settles",
-                        ),
-                    });
-                }
+            let added = edit.value.as_ref().and_then(|value| value.get("path"));
+            let path = added.and_then(serde_json::Value::as_str);
+            let holds = path.is_some_and(|path| std::path::Path::new(path).is_dir());
+            if !holds {
+                return Err(SettingsSaveError::Refused {
+                    message: format!(
+                        "an added project needs a path that is a directory; `{}` is not",
+                        path.unwrap_or("<unset>"),
+                    ),
+                });
             }
         }
 
         let candidate = crate::settings_write::apply(&current, edits, &document)
             .map_err(SettingsSaveError::from)?;
 
-        if let Err(error) = crate::config::load_from_text(path.clone(), &candidate) {
-            // Anchor the refusal at the first edit that fails on its own;
-            // the loader's own words carry the line and key it found.
-            for edit in edits {
-                let Ok(one) =
-                    crate::settings_write::apply(&current, std::slice::from_ref(edit), &document)
-                else {
-                    continue;
-                };
-                if let Err(one_error) = crate::config::load_from_text(path.clone(), &one) {
-                    return Err(SettingsSaveError::Invalid {
-                        message: one_error.to_string(),
-                        key_path: Some(edit.key_path.clone()),
-                    });
+        let after = match crate::config::load_from_text(path.clone(), &candidate) {
+            Ok(config) => config,
+            Err(error) => {
+                // Anchor the refusal at the first edit that fails on its own;
+                // the loader's own words carry the line and key it found.
+                for edit in edits {
+                    let Ok(one) = crate::settings_write::apply(
+                        &current,
+                        std::slice::from_ref(edit),
+                        &document,
+                    ) else {
+                        continue;
+                    };
+                    if let Err(one_error) = crate::config::load_from_text(path.clone(), &one) {
+                        return Err(SettingsSaveError::Invalid {
+                            message: one_error.to_string(),
+                            key_path: Some(edit.key_path.clone()),
+                        });
+                    }
                 }
+                return Err(SettingsSaveError::Invalid {
+                    message: error.to_string(),
+                    key_path: None,
+                });
             }
-            return Err(SettingsSaveError::Invalid { message: error.to_string(), key_path: None });
-        }
+        };
+
+        // **The guards are identity diffs, not op checks.** An entry the
+        // save leaves absent (removed, or renamed through `name` /
+        // `display_name`) is what the reload strands: a project's sessions
+        // keep running but leave every roster, and a retired account still
+        // loading leaves `all_accounts_loaded` false for the process's life
+        // (#2681). Both are refused by name.
+        let after_projects: HashSet<(String, String)> = after
+            .projects
+            .iter()
+            .map(|project| (project.org.clone(), project.name.clone()))
+            .collect();
+        let after_accounts: HashSet<String> =
+            after.accounts.iter().map(|account| account.display_name.clone()).collect();
+        self.refuse_departures(&config, &after_projects, &after_accounts)?;
 
         if candidate == current {
-            return Ok(());
+            return Err(SettingsSaveError::Refused {
+                message: "the file already matches this save; nothing was written".to_owned(),
+            });
+        }
+        // **The file may have moved between the read and the write.** An
+        // editor or a sync client writing inside that window would be
+        // clobbered by the rename, so the fingerprint is read again
+        // immediately before it.
+        let before_write = std::fs::read_to_string(&path).map_err(|error| {
+            SettingsSaveError::Io(format!("forge.toml could not be read: {error}"))
+        })?;
+        if crate::config::fingerprint_of(&before_write) != fingerprint {
+            return Err(SettingsSaveError::Stale);
         }
         write_atomically(&path, &candidate).map_err(|error| {
             SettingsSaveError::Io(format!("forge.toml could not be written: {error}"))
         })
+    }
+
+    /// Refuse a save that drops an entry something live depends on.
+    fn refuse_departures(
+        &self,
+        before: &LoadedConfig,
+        after_projects: &HashSet<(String, String)>,
+        after_accounts: &HashSet<String>,
+    ) -> Result<(), SettingsSaveError> {
+        let before_projects: HashSet<(String, String)> = before
+            .projects
+            .iter()
+            .map(|project| (project.org.clone(), project.name.clone()))
+            .collect();
+        let mut departed: Vec<&(String, String)> =
+            before_projects.difference(after_projects).collect();
+        departed.sort();
+        for (org, project) in departed {
+            let live = self.live_sessions_of(org, project);
+            if !live.is_empty() {
+                return Err(SettingsSaveError::Refused {
+                    message: format!(
+                        "project `{org} / {project}` has live sessions: {}; close them before \
+                         removing or renaming it",
+                        live.join(", "),
+                    ),
+                });
+            }
+        }
+
+        let before_accounts: HashSet<String> =
+            before.accounts.iter().map(|account| account.display_name.clone()).collect();
+        let mut departed: Vec<&String> = before_accounts.difference(after_accounts).collect();
+        departed.sort();
+        let held = self.accounts.ordered_account_keys();
+        for name in departed {
+            let key = AccountKey((*name).clone());
+            if held.contains(&key)
+                && self.accounts.loading_state(&key) == forge_gateway::LoadingState::Loading
+            {
+                return Err(SettingsSaveError::Refused {
+                    message: format!(
+                        "account `{name}` is still loading its usage; the save refuses \
+                         until its probe settles",
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// The sessions a project currently has live, by their slots' display
@@ -3140,7 +3315,25 @@ impl Workspace {
         // ours drops at end-of-scope (subprocess killed via Client's
         // existing Drop). Single-user scope makes the race effectively
         // impossible.
+        //
+        // **A session may not bind to a project the config no longer
+        // holds.** A save's identity diff and this bind are serialized on
+        // the settings write lock: either the save lands first (this
+        // refuses, and the child drops at end of scope) or the session is
+        // pooled first (the save's guard sees it and refuses). Without
+        // that, a spawn resolving mid-save leaves a session running but
+        // off every roster.
         {
+            let _settings = self.settings_write.lock();
+            let held = self.config_arc();
+            if !held.projects.iter().any(|project| {
+                project.org == session_slot.org() && project.name == session_slot.project()
+            }) {
+                return Err(WorkspaceError::SpawnResolvesToNoProject {
+                    slot: session_slot.display(),
+                }
+                .into());
+            }
             let mut pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_slot) {
                 return Ok(Arc::clone(&existing.handle));
@@ -13653,6 +13846,106 @@ provider = "anthropic"
             other => panic!("expected a refusal, got {other:?}"),
         }
         assert_eq!(fs::read_to_string(&path).expect("read"), before, "the file did not move");
+    }
+
+    /// **A save keeps the file's mode.** `forge.toml` holds every account,
+    /// Slack, Gotify and System One token, and the temp file must not land
+    /// its own 0644 over the operator's 0600.
+    #[cfg(unix)]
+    #[test]
+    fn a_settings_write_keeps_the_files_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("forge.toml");
+        std::fs::write(&path, "a = 1\n").expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        write_atomically(&path, "a = 2\n").expect("write atomically");
+        let mode = std::fs::metadata(&path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the config keeps the mode the operator gave it");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "a = 2\n");
+    }
+
+    /// **A symlinked config stays a link.** The write goes through to the
+    /// target rather than replacing the link with a regular file.
+    #[cfg(unix)]
+    #[test]
+    fn a_settings_write_follows_a_symlinked_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("real.toml");
+        let link = dir.path().join("forge.toml");
+        std::fs::write(&target, "a = 1\n").expect("write");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        write_atomically(&link, "a = 2\n").expect("write atomically");
+        assert!(
+            std::fs::symlink_metadata(&link).expect("metadata").file_type().is_symlink(),
+            "the config is still a symlink",
+        );
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "a = 2\n");
+    }
+
+    /// **The account guard refuses only an entry the save drops.** A save
+    /// that keeps the loading account is the positive control the guard's
+    /// own test needs: a guard that refused everything would pass that test
+    /// and fail this one.
+    #[tokio::test]
+    async fn an_unrelated_save_while_an_account_loads_is_written() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let fingerprint = settings_fingerprint(&workspace);
+        let edit = set_edit(&workspace, "usage.poll_seconds", serde_json::json!(120));
+        workspace
+            .save_settings(&fingerprint, &[edit])
+            .expect("a save that keeps the account writes");
+        let saved = fs::read_to_string(workspace.config_path()).expect("read");
+        assert!(saved.contains("poll_seconds = 120"), "the value landed: {saved}");
+    }
+
+    /// **A rename is a removal the guard can see.** Renaming a project with
+    /// a live session strands that session exactly as removing it would, so
+    /// the before/after identity diff refuses it by name.
+    #[tokio::test]
+    async fn a_project_rename_with_a_live_session_is_refused() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.register_domain_session(SessionSlot::lead("Default", "forge"), None);
+        let fingerprint = settings_fingerprint(&workspace);
+        let edit =
+            set_edit(&workspace, "orgs.Default.projects.forge.name", serde_json::json!("forge2"));
+        let error = workspace
+            .save_settings(&fingerprint, &[edit])
+            .expect_err("a live project rename is refused");
+        match error {
+            SettingsSaveError::Refused { message } => {
+                assert!(message.contains("Default/forge/lead"), "the refusal named it: {message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// **An account rename is a removal too.** The retired identity is the
+    /// one still loading, so renaming it is refused until the probe settles.
+    #[tokio::test]
+    async fn an_account_rename_while_loading_is_refused() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let fingerprint = settings_fingerprint(&workspace);
+        let edit =
+            set_edit(&workspace, "accounts.Stargate.display_name", serde_json::json!("Stargate2"));
+        // The org must keep referencing a declared account, or the loader
+        // refuses the candidate before the guard is reached.
+        let reference =
+            set_edit(&workspace, "orgs.Default.accounts", serde_json::json!(["Stargate2"]));
+        let error = workspace
+            .save_settings(&fingerprint, &[reference, edit])
+            .expect_err("a loading rename is refused");
+        match error {
+            SettingsSaveError::Refused { message } => {
+                assert!(message.contains("Stargate"), "the refusal named it: {message}");
+                assert!(message.contains("loading"), "the refusal said why: {message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     /// A bound port is stored but named restart-only; the socket is never

@@ -25,9 +25,9 @@ describe("the settings page's rules", () => {
     )?.[0];
     expect(rail ?? '', 'the sub-nav lost its height floor on a finger').not.toBe('');
 
-    const buttons = /\.settings-page \.settings-btn[^{}]*\{[^{}]*min-height:\s*44px/.exec(
-      coarse,
-    )?.[0];
+    // The save bar's buttons are the shared kit's, so the rule is not
+    // scoped under the page any more.
+    const buttons = /\.settings-btn[^{}]*\{[^{}]*min-height:\s*44px/.exec(coarse)?.[0];
     expect(buttons ?? '', 'the save bar lost its height floor on a finger').not.toBe('');
     const boxes = /\.settings-page \.settings-rows input[^{}]*\{[^{}]*min-height:\s*44px/.exec(
       coarse,

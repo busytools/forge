@@ -119,6 +119,7 @@ again to every connection after each applied reload:
   "document": {
     "version": "1.1.34+abc1234",
     "source": "/home/me/.claude/forge/forge.toml",
+    "fingerprint": "0123456789abcdef",
     "totals": { "keys": 232, "areas": 12 },
     "areas": [
       {
@@ -130,9 +131,16 @@ again to every connection after each applied reload:
             "path": "server.port",
             "leaf": "port",
             "group": ["server"],
+            "pattern": "server.port",
             "kind": "number",
             "value": 8790,
-            "class": "restart"
+            "class": "restart",
+            "edit": {
+              "kind": "number",
+              "allowed": [],
+              "required": true,
+              "group": null
+            }
           }
         ]
       }
@@ -147,13 +155,22 @@ it, and `group` the instance names the row belongs to - an account, an org
 and a project, a Slack table and workspace, a model, a server table - or an
 empty list when the area's keys do not repeat. Both are the server's,
 because a name can contain dots (a model slug, an env var, a display name)
-and a reader cannot cut one from `path`. `kind` is the value's shape for
-drawing: `string`, `number`, `bool`, `list`, `table` or `set`. `class` is one of
-`live` (read on its next use), `next_session` (read when a session or a
-connection opens), `restart` (built once at boot) or `not_read_yet` (the
-loader accepts the key and nothing consumes it). The class catalogue in
-`crates/forge-workspace/src/settings.rs` is the one source for the frame
-and for the reload's own summary.
+and a reader cannot cut one from `path`. `pattern` is the catalogue pattern
+the row fills (`accounts[].token`); a save sends it back so the writer
+locates the TOML item without re-parsing a display path. `kind` is the
+value's shape for drawing: `string`, `number`, `bool`, `list`, `table` or
+`set`. `class` is one of `live` (read on its next use), `next_session`
+(read when a session or a connection opens), `restart` (built once at
+boot) or `not_read_yet` (the loader accepts the key and nothing consumes
+it). The class catalogue in `crates/forge-workspace/src/settings.rs` is
+the one source for the frame and for the reload's own summary.
+
+`fingerprint` is a digest of the raw file text the document was built
+from. `edit` says how a client draws the key's control: `kind` is
+`string`, `number`, `bool`, `enum` or `list`; `allowed` holds an enum's
+accepted names; `required` says whether adding the owning entry needs the
+key; and `group` names the repeated entry the key belongs to (`account`,
+`project`, `slack`, `model`, `org`) or `null` for a table's own keys.
 
 **Values cross as the file loaded them, unredacted.** The socket is
 reached over loopback or the private network, and that boundary is the
@@ -175,6 +192,7 @@ A client saves a batch of edits with `settings_edit`:
 {
   "kind": "settings_edit",
   "fingerprint": "0123456789abcdef",
+  "id": 7,
   "edits": [
     { "area": "server", "key_path": "server.port", "pattern": "server.port",
       "op": "set", "value": 8791 }
@@ -183,19 +201,36 @@ A client saves a batch of edits with `settings_edit`:
 ```
 
 `fingerprint` is the one the page loaded from its settings document; a
-file whose raw text has moved since refuses the save. `op` is `set`,
-`add` or `remove`; an added entry carries its fields as `value`, and a
-removal of an entry carries an empty `pattern` with the entry's path.
+file whose raw text has moved since refuses the save, and it is read
+again immediately before the write so a file that moves in that window
+is refused too. `id` is the page's own number for the save; every answer
+echoes it, so a page clears its draft only for the save that made it.
+`op` is `set`, `add` or `remove`.
 
-**Success has no answer of its own**: the save writes the file, the
-watcher reloads it, and the resulting `settings` push is the reply, so
-the editor and every other client learn the outcome from the same frame.
+- **`set`** writes a key: `value` is its new value in the `edit.kind`'s
+  shape. A `null` value clears the key - the key goes back to unset and
+  its default applies - which is how an optional string is emptied.
+- **`add`** appends an entry: `pattern` is empty, `key_path` names the
+  new entry, and `value` is its fields.
+- **`remove`** with a `pattern` removes that key; with an empty `pattern`
+  it removes the entry `key_path` names. The guards are identity diffs,
+  so a rename is a removal too: a project or account the save leaves
+  absent is checked exactly as a removal is.
+
+A save that writes is answered with `settings_saved`, and the reload push
+follows it with every client's new document:
+
+```json
+{ "kind": "settings_saved", "id": 7 }
+```
+
 A save that writes nothing is answered with `settings_refused`:
 
 ```json
 {
   "kind": "settings_refused",
   "reason": "invalid",
+  "id": 7,
   "message": "forge.toml at ... failed to parse at line 12, column 14 in `port`: ...",
   "key_path": "server.port"
 }
@@ -203,10 +238,12 @@ A save that writes nothing is answered with `settings_refused`:
 
 `reason` is `stale` (the file moved; the page offers a reload),
 `invalid` (the candidate failed the boot loader; the message is the
-loader's own, including its line and key where it has one), or `refused`
-(a guard declined it, naming what it found). The writer preserves the
-file's comments and order, replaces the file by rename, and the guards
-live on the server so a hand-rolled client cannot force them.
+loader's own, including its line and key where it has one), `refused`
+(a guard declined it, naming what it found) or `io` (the file could not
+be read or written; nothing was applied). The writer preserves the
+file's comments and order, replaces the file by rename in the
+destination's own mode and through a symlink, and the guards live on the
+server so a hand-rolled client cannot force them.
 
 ## Subjects
 

@@ -38,13 +38,13 @@
     oninput={(event: Event) => onchange((event.currentTarget as HTMLInputElement).value)}
   />
 {:else if spec.kind === 'number'}
-  <NumberField value={number} label={path} {onchange} />
+  <NumberField editor="settings" value={number} label={path} {onchange} />
 {:else if spec.kind === 'bool'}
   <Toggle checked={boolean} label={path} {onchange} />
 {:else if spec.kind === 'enum'}
   <Select value={choice} options={spec.allowed} label={path} unset={!spec.required} {onchange} />
 {:else if spec.kind === 'list'}
-  <ListEditor values={items} label={path} {onchange} />
+  <ListEditor editor="settings" values={items} label={path} {onchange} />
 {:else}
   <span class="settings-value settings-dim">not editable here</span>
 {/if}

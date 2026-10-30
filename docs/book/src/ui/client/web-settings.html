@@ -160,6 +160,14 @@
   .settings-new { font-family: var(--mono); font-size: 10.5px; color: var(--blue);
     border: 1px solid rgba(97,160,224,.35); border-radius: 99px; padding: 0 8px; }
   .settings-removed { font-family: var(--mono); font-size: 11px; color: var(--bad); }
+  .list-editor { display: flex; flex-direction: column; gap: 5px; }
+  .list-item { display: flex; align-items: center; gap: 6px; }
+  .list-x { font-family: var(--mono); font-size: 13px; color: var(--muted);
+    background: none; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px;
+    cursor: pointer; }
+  .list-add { align-self: flex-start; font-family: var(--mono); font-size: 11px;
+    color: var(--muted); background: none; border: 1px dashed var(--line); border-radius: 7px;
+    padding: 3px 10px; cursor: pointer; }
   .settings-rows input, .settings-rows select { font-family: var(--mono); font-size: 13px;
     color: var(--text); background: var(--bg); border: 1px solid var(--line);
     border-radius: 7px; padding: 5px 8px; min-width: 0; width: 100%; }
@@ -215,7 +223,7 @@
         <span class="n">12</span> areas &middot;
         <code>~/.claude/forge/forge.toml</code></span>
     </span>
-    <span class="settings-mode">read-only</span>
+    <button class="settings-mode">edit</button>
     <a class="back" href="#">&larr; home</a>
   </header>
 
@@ -366,7 +374,7 @@
             <tr><th scope="row"><code title="accounts.Subspace.display_name">display_name</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" value="Subspace" aria-label="display_name" /></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
             <tr><th scope="row"><code title="accounts.Subspace.provider">provider</code><span class="settings-required">required</span></th><td class="v"><select aria-label="provider"><option>anthropic</option><option>openrouter</option></select></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
             <tr><th scope="row"><code title="accounts.Subspace.token">token</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" value="sk-ant-oat01-example" aria-label="token" /></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-            <tr><th scope="row"><code title="accounts.Subspace.models">models</code><span class="settings-required">required</span></th><td class="v"><input data-editor="settings" value="claude-opus-5-5[1m], claude-opus-5-5" aria-label="models" /></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+            <tr><th scope="row"><code title="accounts.Subspace.models">models</code><span class="settings-required">required</span></th><td class="v"><div class="list-editor" role="group" aria-label="models"><span class="list-item"><input data-editor="settings" value="claude-opus-5-5[1m]" aria-label="models item 1" /><button class="list-x" aria-label="remove models item 1">&times;</button></span><span class="list-item"><input data-editor="settings" value="claude-opus-5-5" aria-label="models item 2" /><button class="list-x" aria-label="remove models item 2">&times;</button></span><button class="list-add">add</button></div></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
           </tbody>
         </table>
 

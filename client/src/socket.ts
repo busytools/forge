@@ -252,10 +252,13 @@ export interface Connection {
    */
   settings(): ClientSettings | null;
   /**
-   * Send a batched settings save. False when nothing went. Absent on a
-   * double that never sends one; the page then reports that nothing went.
+   * Send a batched settings save. `id` is the page's own number for this
+   * save; the server echoes it on the acknowledgement or the refusal, so a
+   * reply is matched to the request that made it. False when nothing went;
+   * absent on a double that never sends one, and the page then reports that
+   * nothing went.
    */
-  settingsEdit?(fingerprint: string, edits: SettingsEditWire[]): boolean;
+  settingsEdit?(fingerprint: string, edits: SettingsEditWire[], id: number): boolean;
   /**
    * This connection's identity for the settings frame. The shell takes it
    * when it takes the connection, so a launch a submit replaced cannot
@@ -710,6 +713,7 @@ export function connect(
       // The editor's refusal is its page's: the switch knows the frame so it
       // is not reported as one the client cannot draw.
       case 'settings_refused':
+      case 'settings_saved':
         return;
       case 'snapshot':
         answered(message.subject);
@@ -1273,8 +1277,8 @@ export function connect(
     settings() {
       return settings;
     },
-    settingsEdit(fingerprint, edits) {
-      return sendClient({ kind: 'settings_edit', fingerprint, edits });
+    settingsEdit(fingerprint, edits, id) {
+      return sendClient({ kind: 'settings_edit', fingerprint, edits, id });
     },
     settingsOwner,
     skew() {
