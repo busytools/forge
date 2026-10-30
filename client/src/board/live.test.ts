@@ -80,7 +80,7 @@ function fakeConnection() {
         statuses.delete(fn);
       };
     },
-    dispatch: () => null,
+    dispatch: () => Promise.resolve(null),
     more: () => false,
     commitDiff: () => false,
     fileContent: () => false,

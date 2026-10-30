@@ -213,8 +213,10 @@ describe('the hook run row', () => {
       // The selector alone proves nothing, so the rule and the declaration are
       // pinned together: dropping the glyph's tone or swapping the token is what
       // turns a failed run green.
+      // The glyph's tone is shared with the static row, so the selector sits
+      // in a list; the rule and its declaration are still pinned together.
       expect(sheet, `${what} colours the failed row's glyph`).toMatch(
-        /details\.leaf > summary \.gl\.err \{[^}]*color: var\(--bad\)/,
+        /details\.leaf > summary \.gl\.err[^{]*\{[^}]*color: var\(--bad\)/,
       );
     }
   });

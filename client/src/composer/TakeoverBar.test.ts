@@ -383,6 +383,37 @@ describe("the takeover bar's feedback controls", () => {
       'the feedback line lost the send, so the sheet styles nothing here',
     ).not.toBeNull();
   });
+
+  /// **The line names its own box.** The caret table routes by this name, so
+  /// a line wearing the dock's is indistinguishable from the dock's box in
+  /// every rule that reads it.
+  it('names the feedback line as the bar, not the dock', async () => {
+    await stop();
+    surface.viewer = 1;
+    surface.controller = 1;
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    shown = mount(TakeoverBar, {
+      target,
+      props: {
+        title: 'browser hand-off',
+        onback: () => {},
+        ondone: () => {},
+        onnotnow: () => {},
+        onfeedback: () => {},
+      },
+    });
+    flushSync();
+    const wrong = [...target.querySelectorAll('button')].find((button) =>
+      button.textContent.includes('wrong'),
+    );
+    if (wrong === undefined) throw new Error('the bar draws no feedback door');
+    wrong.click();
+    flushSync();
+    const line = target.querySelector('.tb-feedback textarea');
+    if (!(line instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    expect(line.dataset['editor'], 'the line is its own box in the caret table').toBe('bar');
+  });
 });
 
 /** **An ask with no words draws no row**: a blank reason would otherwise be an

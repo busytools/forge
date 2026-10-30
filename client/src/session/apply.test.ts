@@ -333,6 +333,7 @@ describe('applyUpdate', () => {
       expect(next.git, 'the tree behind the row rides the same frame').toEqual({
         defaultBranch: 'main',
         base: null,
+        baseError: null,
         worktree: {
           files: [{ path: 'a.rs', added: 1, removed: 0, status: 'modified' }],
           totalFiles: 1,

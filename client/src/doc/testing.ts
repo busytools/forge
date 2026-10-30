@@ -138,11 +138,11 @@ export function fakeDoc(answer: DocAnswer): FakeDoc {
     // a fake with none answers as an install that only set `forge.toml`.
     settings: () => null,
     // A submit answers through a reply, as the server does; everything else
-    // the page sends is fire-and-forget and answers `null`.
-    dispatch(command: unknown): Promise<unknown> | null {
+    // the page sends answers the crossing, `null` inside.
+    dispatch(command: unknown): Promise<unknown> {
       sent.push(command);
       const variant = Object.keys(command as Record<string, unknown>)[0];
-      if (variant !== 'submit_review') return null;
+      if (variant !== 'submit_review') return Promise.resolve(null);
       if ('reject' in held.submitAnswer) {
         return Promise.reject(new Error(held.submitAnswer.reject));
       }

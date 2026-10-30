@@ -197,9 +197,15 @@ impl ViewSurface {
         cwd: &std::path::Path,
         refresh: &forge_workspace::env::git_diff::BaseRefresh,
     ) -> Option<WorkSnapshot> {
+        // The refresh's own answer is the measurement the pinned scan carries:
+        // its state, the instant it was established, and the words a failure
+        // left. Stamping it with the scan's own clock would let a background
+        // fetch that lands while this scan waits be read as older than the
+        // read that is about to store it.
+        let measured = measurement_of(refresh);
         match self
             .workspace
-            .scan_work_pinned(slot, cwd, refresh.base_ref.as_deref(), Some(refresh.state))
+            .scan_work_pinned(slot, cwd, refresh.base_ref.as_deref(), measured)
             .await
         {
             Ok(held) => Some(held),
@@ -231,9 +237,11 @@ impl ViewSurface {
         slot: &SessionSlot,
         cwd: &std::path::Path,
         base: Option<&str>,
-        measured: Option<forge_primitives::git_diff::BaseState>,
+        refresh: Option<&forge_workspace::env::git_diff::BaseRefresh>,
     ) -> WorkSnapshot {
-        self.workspace.scan_work_at_pinned_local(slot, cwd, base, measured).await
+        self.workspace
+            .scan_work_at_pinned_local(slot, cwd, base, refresh.and_then(measurement_of))
+            .await
     }
 
     /// Store a scan's answer, which is the write half of [`Self::work`].
@@ -335,6 +343,23 @@ impl ViewSurface {
     }
 }
 
+/// The measurement a refresh's own answer represents: its state, the instant
+/// it was established, and git's words when it could not run.
+///
+/// **A run that answered nothing is not a measurement.** One a bound cut and
+/// one whose leader panicked or was cancelled carry forge's own placeholder
+/// words; stored newest on the row they would read as git's words, and the
+/// store's own rule skips them so nothing would rescan it.
+fn measurement_of(
+    refresh: &forge_workspace::env::git_diff::BaseRefresh,
+) -> Option<forge_workspace::env::git_diff::BaseMeasurement> {
+    (!refresh.unanswered && !refresh.cut).then(|| forge_workspace::env::git_diff::BaseMeasurement {
+        at: refresh.at,
+        state: refresh.state,
+        error: refresh.error.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -349,6 +374,41 @@ mod tests {
 
     fn seat(label: &str) -> SessionSlot {
         SessionSlot::lead("TestOrg", label)
+    }
+
+    /// **A run that answered nothing is not a measurement.** The row must not
+    /// carry forge's own placeholder words for a fetch that never reported,
+    /// nor for one its bound cut.
+    #[test]
+    fn a_placeholder_answer_is_not_a_measurement() {
+        let answered = forge_workspace::env::git_diff::BaseRefresh {
+            state: forge_primitives::git_diff::BaseState::Current,
+            base_ref: Some("abc123".to_owned()),
+            error: None,
+            cut: false,
+            unanswered: false,
+            at: std::time::Instant::now(),
+        };
+        assert!(super::measurement_of(&answered).is_some(), "an answered run is the row's base");
+
+        for placeholder in [
+            forge_workspace::env::git_diff::BaseRefresh {
+                cut: true,
+                error: Some("the fetch did not finish inside the 10s it was given".to_owned()),
+                ..answered.clone()
+            },
+            forge_workspace::env::git_diff::BaseRefresh {
+                unanswered: true,
+                error: Some("the base refresh ended without an answer".to_owned()),
+                ..answered.clone()
+            },
+        ] {
+            assert_eq!(
+                super::measurement_of(&placeholder),
+                None,
+                "a run that answered nothing: {placeholder:?}",
+            );
+        }
     }
 
     /// **The inspector's hold is served at once** (#2506): opening a seat must

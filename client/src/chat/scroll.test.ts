@@ -1632,6 +1632,13 @@ describe(
      * page arrives while the follow is on and the column scrolls; the column is
      * what settles it, because it is what knows whether the whole conversation
      * is on screen (a fitting column must keep the page it just pulled).
+     *
+     * **The settle's draw is the landing task's second publish**, so the
+     * conversation defers it to the next painted frame rather than let the two
+     * coalesce (`soon`). A wait on wall-clock ticks is not ordered against that
+     * frame - green when it lands first, red when it does not - so the frame is
+     * driven here instead, and the assertion reads the settled record whatever
+     * the machine is doing.
      */
     it('settles the window when a landing arrives while the reader is at the latest', async () => {
       const server = stub();
@@ -1644,25 +1651,32 @@ describe(
       await tick();
       const before = last()?.length ?? 0;
 
-      // One landing of a single row over the window on its own.
-      const handed = records.length;
-      server.page([heavy('h1', OVER_WINDOW_MIB)], 'cursor-1');
-      await tick();
-      await tick();
+      vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] });
+      try {
+        // One landing of a single row over the window on its own.
+        const handed = records.length;
+        server.page([heavy('h1', OVER_WINDOW_MIB)], 'cursor-1');
+        // **The list was handed the landing before the settle.** The settled
+        // count alone also passes had the page been dropped before it ever
+        // appended, which is the case this witness separates out.
+        expect(
+          records.slice(handed).map((row) => row.length),
+          'the landing arrived',
+        ).toContain(before + 1);
 
-      // **The list was handed the landing before the settle.** The settled
-      // count alone also passes had the page been dropped before it ever
-      // appended, which is the case this witness separates out.
-      expect(
-        records.slice(handed).map((row) => row.length),
-        'the landing arrived',
-      ).toContain(before + 1);
-      // **And the row left is the newest**, not the page that landed above it.
-      expect(
-        [...document.querySelectorAll('.conv [data-t]')].map((row) => row.getAttribute('data-t')),
-        'the settle kept the newest row and dropped the page above it',
-      ).toEqual(['t0']);
-      expect(last()?.length ?? 0, 'the landing settled the window').toBe(before);
+        // The frame the settle's own draw waits on.
+        vi.advanceTimersByTime(16);
+        flushSync();
+
+        // **And the row left is the newest**, not the page that landed above it.
+        expect(
+          [...document.querySelectorAll('.conv [data-t]')].map((row) => row.getAttribute('data-t')),
+          'the settle kept the newest row and dropped the page above it',
+        ).toEqual(['t0']);
+        expect(last()?.length ?? 0, 'the landing settled the window').toBe(before);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   },
 );

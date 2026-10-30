@@ -8,10 +8,11 @@
  * **The set is the boxes' own vocabulary; the table answers only for the boxes
  * its one caller can name.** The composer's landing is that caller, so `focusOf`
  * answers for the composer's box, the dock's and `nowhere` - the connect
- * screen's, the palette's and the board's are in the set because boxes carry
- * those names, and one of them arriving resolves to `nowhere` rather than being
- * routed. The composer and the dock still move the caret in their own effects,
- * so a surface added here does not have its keyboard follow by itself.
+ * screen's, the palette's, the board's and the takeover bar's are in the set
+ * because boxes carry those names, and one of them arriving resolves to
+ * `nowhere` rather than being routed. The composer and the dock still move the
+ * caret in their own effects, so a surface added here does not have its keyboard
+ * follow by itself.
  *
  * Every box that can take text is one of these, and `editors.test.ts` sweeps the
  * tree for one that forgot to say so.
@@ -22,7 +23,15 @@
  * and a value rather than a bare type, so the census can assert membership in it
  * rather than a box's word for itself.
  */
-export const EDITORS = ['composer', 'dock', 'connect', 'palette', 'board', 'nowhere'] as const;
+export const EDITORS = [
+  'composer',
+  'dock',
+  'bar',
+  'connect',
+  'palette',
+  'board',
+  'nowhere',
+] as const;
 
 export type Editor = (typeof EDITORS)[number];
 
@@ -65,6 +74,7 @@ export function focusOf(where: Where): Editor {
     case 'connect':
     case 'board':
     case 'palette':
+    case 'bar':
       // The composer is this table's one caller and never names these: they are
       // boxes that exist, not boxes this table routes to.
       return 'nowhere';
@@ -79,4 +89,15 @@ export function focusOf(where: Where): Editor {
 
 function fallback(where: Where): Editor {
   return where.composerPresent === false ? 'nowhere' : 'composer';
+}
+
+/**
+ * Whether the caret is in one of this client's own dictation boxes: the one
+ * thing a takeover's page does not take, its bar being drawn above the page.
+ */
+export function caretTakesDictation(): boolean {
+  const active = document.activeElement;
+  const box = active instanceof HTMLElement ? active.closest('[data-editor]') : null;
+  const named = box?.getAttribute('data-editor') ?? null;
+  return named === 'composer' || named === 'dock' || named === 'bar';
 }

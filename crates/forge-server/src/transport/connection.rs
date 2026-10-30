@@ -3026,7 +3026,7 @@ fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
 
 /// The update as it crosses to a client.
 ///
-/// **A seat's transcript never rides an update to a client.** The three
+/// **A seat's transcript never rides an update to a client.** The two
 /// variants that carry one are the session task's seed for the transport's
 /// own copy, and a client answers them with a READ - the subscribe snapshot's
 /// windowed `conversation` and `more` above it (the client's own `REPLACES`

@@ -47,8 +47,8 @@ Everything the row must fold stays one tap away under `more`.
 
 ## The run of rows
 
-Every call, message and thought draws on its own row, in the order it
-arrived, and the list only appends: no kind gets a row of its own, the
+Every call, message, thought and notice draws on its own row, in the order
+it arrived, and the list only appends: no kind gets a row of its own, the
 kind's glyph rides the row that draws it, and nothing rearranges under the
 reader. A message is a tool row and so is a thought - the same rows and
 marks a run of calls draws - which is what makes traffic and reasoning
@@ -72,6 +72,15 @@ read as one system.
   of its own kind, a cron fire titled by the schedule that fired it. A
   Slack row whose block is late adds its age to the title, so a week-old
   message reads as history before the row is opened.
+- **A notice is a tool row, in the run's own inset.** An info, warning or
+  error line - a rate-limit window, an API retry, a turn that failed - draws
+  like a call: a glyph carries the level (a circle, a triangle, a circle with
+  an exclamation, so the shape says it and not only the tone) and the level
+  word is gone, the wire's own type and a retry's attempt ride it as chips,
+  and the delay rides a tail. Its words are the message, so they wrap and
+  keep the line breaks they arrived with where a call's title clamps. A plain
+  notice has nothing behind it, so it is a static row - no chevron, no body,
+  no pointer; a provisional one opens onto its facts and the frame.
 - **A nudge** - a chase warning, a worker's kick - is the machinery's own
   words, so it draws as a work row under the board's own mark rather than as
   the reader's: nobody typed it, and it never wears `.mine`. A long one - a
@@ -156,8 +165,8 @@ read as one system.
 - **A frame the page has no face for yet draws as itself, marked
   provisional.** An unknown top-level frame and an unknown content block, and
   the CLI's own system lines for a permission refusal, an API error, an
-  informational line and a notification, each draw as a notice whose mark is
-  the wire's own type. The open body lists what the frame carried as one-line
+  informational line and a notification, each draw as a notice row whose
+  level is its glyph and whose chip is the wire's own type. The open body lists what the frame carried as one-line
   labelled values - the tool and call a refusal names, an error's message,
   status and retry, an unknown frame's fields - and the frame itself sits
   behind a second control under them, so the payload stays reachable while

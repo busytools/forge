@@ -118,10 +118,16 @@
    * `base..HEAD`, so an upstream advance the branch does not contain moves
    * `origin/main` while the count and the chain stay as they were, and only
    * this says so.
+   *
+   * **The failure words are part of the value.** A check that ran and failed
+   * again with different words is a change the page has to act on, and the
+   * state alone cannot carry it: `unverified` with no words and `unverified`
+   * with a reason are the same string without this.
    */
-  function baseOf(base: BaseStateRecord | null | undefined): string | null {
+  function baseOf(base: BaseStateRecord | null | undefined, error: string | null): string | null {
     if (base === null || base === undefined) return null;
-    return base.state === 'behind' ? `behind:${base.behind}` : base.state;
+    const state = base.state === 'behind' ? `behind:${base.behind}` : base.state;
+    return error === null ? state : `${state} (${error})`;
   }
 
   /** One pending re-ask, debounced, with [`REASK_FLOOR_MS`] between reads. */
@@ -290,13 +296,24 @@
   $effect(() => {
     const at = subjectKey({ session: slot });
     if (record === null) return;
-    const measured = baseOf(record.git.base);
+    const measured = baseOf(record.git.base, record.git.baseError);
+    const drawn = baseOf(record.diff.base, record.diff.baseError);
     const first = baseSeenAt !== at;
     if (!first && measured === seenBase) return;
     baseSeenAt = at;
     seenBase = measured;
-    if (first) return;
-    if (measured !== baseOf(record.diff.base)) askAgainSoon();
+    if (first) {
+      // **A read that answered nothing still heals.** A refresh cut short or
+      // one whose leader was cancelled leaves this page's diff unchecked
+      // while the seat's row already states the store's check; that
+      // disagreement is the page's own read owing a check, and waiting for
+      // the watch's next pass would leave the wrong line up.
+      if (read.review && drawn === 'unverified' && measured !== null && measured !== drawn) {
+        askAgainSoon();
+      }
+      return;
+    }
+    if (measured !== drawn) askAgainSoon();
   });
 
   // A page that goes away asks nothing: the intent is given back with the
