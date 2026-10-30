@@ -119,17 +119,23 @@ export interface Connection {
    */
   release(what: Subject): void;
   /**
-   * Send a core command.
+   * Send a core command, answering whether it crossed.
    *
-   * Answers with a promise for the five commands whose outcome rides a reply
-   * because no update carries it, and `null` for every other command, whose
-   * outcome arrives through the subscription.
+   * The five commands whose outcome rides a reply promise that reply's body.
+   * Every other command promises `null` once the transport has taken it -
+   * the frame handed to the socket on the web, written by the shell's own
+   * writer on the desktop - so a caller that clears state on send clears
+   * only what actually left. A rejection on that path is a command that did
+   * NOT cross: the socket went between the open check and the write.
    *
-   * **The choice is not the caller's.** The server refuses a `reply_to` on a
-   * command that does not answer through one, and refuses its absence on a
-   * command that does, dispatching in neither case - so which of the two this
-   * is gets decided here, from the variant's name, rather than left for every
-   * page to remember.
+   * **A fire-and-forget caller may ignore the promise**, and the transport
+   * still reports a loss; one that needs certainty awaits it.
+   *
+   * **The choice of reply is not the caller's.** The server refuses a
+   * `reply_to` on a command that does not answer through one, and refuses
+   * its absence on a command that does, dispatching in neither case - so
+   * which of the two this is gets decided here, from the variant's name,
+   * rather than left for every page to remember.
    *
    * **A call while the socket is closed THROWS**, synchronously, before
    * anything is registered. The command is dropped, no answer is coming to
@@ -138,20 +144,14 @@ export interface Connection {
    * command that did not go, and a rejection nobody awaits is an error
    * nobody sees.
    *
-   * **So the promise and the throw are two different cases, not one.** A
-   * command that went answers with a promise; a command that did not go
-   * throws instead. Read `Promise<unknown> | null` as "went, answering
-   * through a reply or through the subscription" - never as "may reject".
-   * The rejection is the other case: a command already sent, whose
-   * connection then closes or whose reply the server never sends - an older
-   * server answers a command it does not know with an `error` frame naming
-   * no reply - has the promise it returned rejected, because a caller
-   * waiting on a channel that stays empty is worse off than one told.
-   *
-   * A caller that dispatches one of the five owes the returned promise an
-   * answer: nothing else carries the outcome.
+   * **A reply command's rejection says no usable answer arrived**, which is
+   * a different claim from the no-reply path's "it did not cross": the
+   * command was already sent, and its connection closed or its reply never
+   * came - an older server answers a command it does not know with an
+   * `error` frame naming no reply. A caller that dispatches one of the five
+   * owes the returned promise an answer: nothing else carries the outcome.
    */
-  dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null;
+  dispatch(command: Command, at?: SessionSlot): Promise<unknown>;
   /**
    * Ask for older turns of one conversation, answering whether the ask went.
    *
@@ -1104,7 +1104,7 @@ export function connect(
     return true;
   }
 
-  function dispatch(command: Command, at?: SessionSlot): Promise<unknown> | null {
+  function dispatch(command: Command, at?: SessionSlot): Promise<unknown> {
     // Before anything is registered, so a command that never went leaves no
     // promise behind for a later failure to reject.
     if (!isOpen()) {
@@ -1119,8 +1119,13 @@ export function connect(
 
     const variant = variantOf(command);
     if (!ANSWERS_THROUGH_A_REPLY.has(variant)) {
+      // **The write is synchronous here**, so by the time this line is
+      // reached the frame has crossed or `sendNow` has thrown: there is no
+      // window after it in which the answer could turn out wrong. The
+      // promise is the same shape the desktop answers with, so a caller
+      // cannot tell which transport it holds.
       sendNow({ kind: 'command', command, reply_to: null });
-      return null;
+      return Promise.resolve(null);
     }
 
     const bound = replyBoundFor(variant, replyBoundMs);

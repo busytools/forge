@@ -290,8 +290,53 @@ describe('what the shell is told', () => {
   });
 });
 
+/**
+ * **A no-reply command still answers the crossing.** Its outcome rides the
+ * subscription, so the only thing that can say the frame never reached the
+ * shell is this promise - and a caller that cleared its state on send had no
+ * way to tell that from success (#2688).
+ */
+describe('a command whose outcome rides the subscription', () => {
+  it('resolves once the shell has written the frame', async () => {
+    const connection = await opened();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      if (command === 'client_dispatch') return Promise.resolve(null);
+      return Promise.resolve(undefined);
+    });
+    await expect(
+      connection.dispatch({ cancel: { key: slot } }),
+      'an accepted command answers with a resolved promise, null inside',
+    ).resolves.toBeNull();
+    expect(invoke).toHaveBeenCalledWith('client_dispatch', {
+      command: { cancel: { key: slot } },
+      reply: false,
+    });
+  });
+
+  /**
+   * The window this exists for: the shell's socket has gone but the page has
+   * not processed the status, so the open check passes and the write fails.
+   * Reading that as success is a bar cleared and a hand-off answered for a
+   * message nobody received.
+   */
+  it('rejects when the shell could not write it, though the page still reads open', async () => {
+    const connection = await opened();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      if (command === 'client_dispatch') return Promise.reject(new Error('the socket is closed'));
+      return Promise.resolve(undefined);
+    });
+    expect(connection.status(), 'the page believed the socket was open').toBe('open');
+    await expect(
+      connection.dispatch({ cancel: { key: slot } }),
+      'a command that never crossed is not a success',
+    ).rejects.toThrow('the socket is closed');
+  });
+});
+
 describe('the five commands that answer through a reply', () => {
-  it('a reply command answers with its body and every other command returns null', async () => {
+  it('a reply command answers with its body and a no-reply one with the crossing', async () => {
     const connection = await opened();
     invoke.mockImplementation((command: string) => {
       if (command === 'client_state') return Promise.resolve(OPEN);
@@ -307,10 +352,12 @@ describe('the five commands that answer through a reply', () => {
       command: { spawn_worker: { label: 'x' } },
       reply: true,
     });
+    const crossed = connection.dispatch({ cancel: { key: slot } });
     expect(
-      connection.dispatch({ cancel: { key: slot } }),
-      'a command whose outcome rides the subscription returns null',
-    ).toBeNull();
+      crossed,
+      'a command whose outcome rides the subscription answers the crossing',
+    ).toBeInstanceOf(Promise);
+    await expect(crossed).resolves.toBeNull();
     expect(invoke).toHaveBeenCalledWith('client_dispatch', {
       command: { cancel: { key: slot } },
       reply: false,
@@ -371,10 +418,10 @@ describe('frames from the bridge', () => {
     ).toEqual([update]);
     expect(seen, 'every listener heard the message itself').toHaveLength(1);
     expect(seen[0]?.kind).toBe('update');
-    expect(
+    await expect(
       connection.dispatch({ read_call_output: { key: slot, call_id: 'c1' } }),
       'and a command still crosses after a frame',
-    ).toBeNull();
+    ).resolves.toBeNull();
   });
 
   it('a snapshot seeds its store, and a refusal lands in it and reaches the page', async () => {

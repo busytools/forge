@@ -333,7 +333,7 @@ describe('a project row', () => {
 describe('a closed seat', () => {
   /** A connection whose close goes; every other reach is the untouched one. */
   function closes(): Connection {
-    return { ...untouched(), dispatch: () => null };
+    return { ...untouched(), dispatch: () => Promise.resolve(null) };
   }
 
   /** A connection that hands every message to whatever is listening on it. */

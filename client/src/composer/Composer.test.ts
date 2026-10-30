@@ -6468,6 +6468,8 @@ describe('the dock', () => {
     const send = document.querySelector('.takeover-bar .sendb');
     if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
     send.click();
+    // The ending answers only once the connection says the prompt crossed.
+    await vi.waitFor(() => expect(commands(harness)).toHaveLength(2));
     flushSync();
 
     const [prompt, answer] = commands(harness);
@@ -6510,11 +6512,57 @@ describe('the dock', () => {
 
     shared.down = false;
     send.click();
+    await vi.waitFor(() =>
+      expect(
+        commands(harness).map((command) => Object.keys(command)[0]),
+        'and the retry sends the words and then the ending',
+      ).toEqual(['prompt_under', 'respond_browser_hand_off']),
+    );
+  });
+
+  /**
+   * **The window #2688 names**: the socket is gone but the page has not
+   * processed the status, so the dispatch is taken and then refused rather
+   * than throwing here. Answering `feedback` on that would tell the session
+   * to read a prompt nobody sent; the bar keeps the words and the park.
+   */
+  it('keeps the words and the park when a send that looked open never crossed', async () => {
+    const shared = wire();
+    const harness = open({ record: record({ pending_asks: [browserHandOffAsk()] }) }, shared);
+
+    action('Open browser').click();
+    await raised();
+    barAction('something').click();
     flushSync();
-    expect(
-      commands(harness).map((command) => Object.keys(command)[0]),
-      'and the retry sends the words and then the ending',
-    ).toEqual(['prompt_under', 'respond_browser_hand_off']);
+    const field = document.querySelector<HTMLTextAreaElement>('.takeover-bar textarea');
+    if (!(field instanceof HTMLTextAreaElement)) throw new Error('the bar drew no feedback line');
+    field.value = 'the submit button did nothing';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    const send = document.querySelector('.takeover-bar .sendb');
+    if (!(send instanceof HTMLElement)) throw new Error('the bar drew no send');
+
+    shared.dead = true;
+    send.click();
+    // Two ticks: the rejection lands, and whatever the composer made of it
+    // runs before this reads it.
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(commands(harness), 'the refused send answers nothing').toEqual([]);
+    expect(surface.phase, 'the takeover stays up for the retry').toBe('live');
+    expect(field.value, 'and the words stay where they were typed').toBe(
+      'the submit button did nothing',
+    );
+
+    shared.dead = false;
+    send.click();
+    await vi.waitFor(() =>
+      expect(
+        commands(harness).map((command) => Object.keys(command)[0]),
+        'the retry sends the words and then the ending',
+      ).toEqual(['prompt_under', 'respond_browser_hand_off']),
+    );
   });
 
   /** **A key inside the raised takeover is the page's, not the dock's.** The

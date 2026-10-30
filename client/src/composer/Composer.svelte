@@ -1241,11 +1241,14 @@
    * person declined, decide what to do instead" while they were mid-task
    * (live, 2026-10-26, twice on one CAPTCHA).
    */
-  function takeoverFeedback(text: string): void {
+  async function takeoverFeedback(text: string): Promise<void> {
     if (takeoverAsk === null || !answering) return;
     const uuid = mintPromptId();
     try {
-      void connection.dispatch(
+      // **The crossing, not the send.** The dispatch answers once the frame
+      // has left; a socket that went while the page still read open refuses
+      // here rather than after the bar was cleared.
+      await connection.dispatch(
         { prompt_under: { key: slot, text, attachments: [], uuid, source: 'you' } },
         slot,
       );

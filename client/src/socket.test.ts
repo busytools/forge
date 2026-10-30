@@ -597,7 +597,13 @@ describe('the connection', () => {
     await until(() => commands(server.received).length === 7, 'all seven commands');
 
     const sent = commands(server.received);
-    expect(plain).toEqual([null, null]);
+    // **The same answer the desktop gives**: a no-reply command promises the
+    // crossing, so a caller cannot tell which transport it holds. Here the
+    // frame is written inside the call, so the promise is already resolved.
+    for (const crossed of plain) {
+      expect(crossed, 'a no-reply command answers with a promise').toBeInstanceOf(Promise);
+    }
+    await expect(Promise.all(plain)).resolves.toEqual([null, null]);
     expect(sent.slice(0, 2).map((command) => command.reply_to)).toEqual([null, null]);
 
     const ids = sent.slice(2).map((command) => command.reply_to);
@@ -621,7 +627,10 @@ describe('the connection', () => {
   it('sends a unit variant as its own name, with no reply channel', async () => {
     const { server, conn } = await connected();
 
-    expect(conn.dispatch('dictate_catalogue_check')).toBeNull();
+    await expect(
+      conn.dispatch('dictate_catalogue_check'),
+      'a unit variant promises the crossing like any other no-reply command',
+    ).resolves.toBeNull();
     await until(() => commands(server.received).length === 1, 'the check command');
 
     const [sent] = commands(server.received);
