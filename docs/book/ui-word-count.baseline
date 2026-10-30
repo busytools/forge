@@ -6,8 +6,9 @@ src/ui/client/dictate-models.md 4020
 src/ui/client/document.md 2612
 src/ui/client/extensions.md 1780
 src/ui/client/files.md 1896
-src/ui/client/home.md 2781
-src/ui/client/index.md 716
+src/ui/client/home.md 2803
+src/ui/client/index.md 719
 src/ui/client/queue.md 772
 src/ui/client/review.md 5321
 src/ui/client/session.md 5199
+src/ui/client/settings.md 874

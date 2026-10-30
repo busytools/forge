@@ -44,6 +44,8 @@
 //!   identity.
 //! - [`handoff`] - one session swap: the record a row draws, the brief a
 //!   successor is given, and the numbers kept for tuning the trigger.
+//! - [`settings`] - the effective-config document a server pushes: the
+//!   areas, every key's value, and when an edit to it takes effect.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
@@ -82,6 +84,7 @@ pub mod server;
 pub mod session_meta;
 pub mod session_slot;
 pub mod session_update;
+pub mod settings;
 pub mod slack;
 pub mod subagents;
 pub mod tasks;
@@ -154,6 +157,9 @@ pub use session_slot::SessionSlot;
 pub use session_update::{
     BashOutputMetadata, ChunkContent, TaskMetadata, ToolCall, ToolCallContent, ToolCallLocation,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, ToolOutputMetadata,
+};
+pub use settings::{
+    EffectClass, SettingKind, SettingsArea, SettingsDocument, SettingsKey, SettingsTotals,
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 pub use tasks::{Task, TaskId, TaskStatus};

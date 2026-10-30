@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse as _, Response};
 use futures_util::{SinkExt as _, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -24,6 +25,7 @@ use serde_json::json;
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
 use super::frame::FrameTransport as _;
+use super::origin as origin_gate;
 use super::wire::{
     FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
     encode_subject, encode_subject_timed, floor_cursor, page,
@@ -426,7 +428,28 @@ pub async fn upgrade(
     ws: WebSocketUpgrade,
     State(state): State<Arc<TransportState>>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
 ) -> Response {
+    // A browser always sends one Origin; a second header, or one that is not
+    // text, is nothing a client forge ships produces.
+    let mut origin: Option<&str> = None;
+    let mut malformed = false;
+    for value in headers.get_all(header::ORIGIN) {
+        match (value.to_str(), origin) {
+            (Ok(text), None) => origin = Some(text),
+            _ => malformed = true,
+        }
+    }
+    if malformed || !origin_gate::allows(origin, &state.surface.server_config()) {
+        tracing::warn!(
+            target: "forge_server::transport",
+            event_name = "socket_origin_refused",
+            origin = origin.unwrap_or("<malformed>"),
+            peer = %peer,
+            "refused a socket upgrade from an origin forge does not serve",
+        );
+        return (StatusCode::FORBIDDEN, "origin refused").into_response();
+    }
     let limit = MAX_CLIENT_MESSAGE_BYTES;
     ws.max_frame_size(limit)
         .max_message_size(limit)
@@ -493,7 +516,18 @@ where
     {
         return;
     }
-    if let Err(error) = drive(&mut socket, &state, peer).await {
+    // The effective config follows the greeting in the same open: the
+    // greeting names the sets a client draws with, and the document is what
+    // the settings page reads. It is already encoded once for every
+    // connection.
+    let settings = state.settings.subscribe();
+    let sent_settings = state.settings.borrow().clone();
+    if let Some(text) = &sent_settings
+        && send_text(&mut socket, text).await.is_err()
+    {
+        return;
+    }
+    if let Err(error) = drive(&mut socket, &state, peer, settings, sent_settings).await {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_ended",
@@ -515,6 +549,8 @@ async fn drive<S>(
     socket: &mut S,
     state: &Arc<TransportState>,
     peer: std::net::SocketAddr,
+    settings: tokio::sync::watch::Receiver<Option<Arc<str>>>,
+    sent_settings: Option<Arc<str>>,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -576,8 +612,8 @@ where
         &mut updates,
         &mut dictate,
         &mut browser,
-        &mut reads,
-        &mut answers,
+        AnswerLanes { reads: &mut reads, answers: &mut answers },
+        SettingsPush { receiver: settings, sent: sent_settings },
         caller,
     )
     .await;
@@ -849,6 +885,20 @@ fn spawn_read(
 
 /// The connection's own loop, so that every way out of it runs the detach
 /// above rather than only the clean one.
+/// The connection's answer lanes, bundled so the loop's signature carries
+/// them as one piece of state rather than two.
+struct AnswerLanes<'a> {
+    reads: &'a mut Reads,
+    answers: &'a mut mpsc::UnboundedReceiver<Answer>,
+}
+
+/// The settings push this connection follows: the watch it hears and the
+/// frame its greeting already wrote.
+struct SettingsPush {
+    receiver: tokio::sync::watch::Receiver<Option<Arc<str>>>,
+    sent: Option<Arc<str>>,
+}
+
 async fn run_connection<S>(
     socket: &mut S,
     state: &Arc<TransportState>,
@@ -857,8 +907,8 @@ async fn run_connection<S>(
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
     browser: &mut BrowserViewing,
-    reads: &mut Reads,
-    answers: &mut mpsc::UnboundedReceiver<Answer>,
+    lanes: AnswerLanes<'_>,
+    settings_push: SettingsPush,
     caller: Caller,
 ) -> anyhow::Result<()>
 where
@@ -867,8 +917,15 @@ where
         + Unpin
         + Send,
 {
+    let AnswerLanes { reads, answers } = lanes;
+    let SettingsPush { receiver: settings, sent: sent_settings } = settings_push;
     let me = caller.id;
     let mut held = Batch::default();
+    let mut settings = settings;
+    let mut settings_open = true;
+    // The frame the greeting sent, so a watch version that has not moved
+    // past it is not written twice.
+    let mut last_settings = sent_settings;
     // The served-record bound every frame to a client takes (#2374), read once
     // rather than per frame.
     let cap = state.surface.tool_record_cap_bytes();
@@ -956,6 +1013,25 @@ where
                                 }
                             }
                         }
+                    }
+                }
+            }
+            // **A settings push is server-wide.** The document is encoded
+            // once and the same frame reaches every connection, so this
+            // branch writes bytes rather than building the frame. It flushes
+            // held frames first, like every out-of-band send here, so a
+            // settings value cannot overtake the updates that preceded it.
+            settings_changed = settings.changed(), if settings_open => {
+                if settings_changed.is_err() {
+                    settings_open = false;
+                } else {
+                    let current = settings.borrow_and_update().clone();
+                    if current != last_settings {
+                        batch::flush(socket, held.take()).await?;
+                        if let Some(text) = &current {
+                            send_text(socket, text).await?;
+                        }
+                        last_settings = current;
                     }
                 }
             }
@@ -3083,6 +3159,19 @@ where
     send_frame(socket, message).await.map(|_| ())
 }
 
+/// Write an already-encoded frame. The settings document is encoded once per
+/// reload and shared, so a connection writes its bytes rather than building
+/// the frame again.
+async fn send_text<S>(socket: &mut S, text: &str) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    write_within(WRITE_BOUND, async {
+        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
+    })
+    .await
+}
+
 /// Answer one strip ask: through the reply it carried, or as the error frame
 /// when it carried none.
 async fn answer_ask<S>(
@@ -3810,6 +3899,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::clone(&conversations),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4295,9 +4385,13 @@ mod tests {
         let (inbound, peer_in) = mpsc::unbounded_channel();
         let (writing, stuck) = oneshot::channel();
         let mut peer = StoppedReading { inbound: peer_in, writing: Some(writing) };
+        let settings = crate::transport::settings_channel();
         let driven = tokio::spawn({
             let state = Arc::clone(&state);
-            async move { drive(&mut peer, &state, attached_from()).await }
+            async move {
+                let receiver = settings.subscribe();
+                drive(&mut peer, &state, attached_from(), receiver, None).await
+            }
         });
 
         // The snapshot answering the subscribe is the frame whose write
@@ -4452,6 +4546,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4525,6 +4620,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4560,6 +4656,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -4608,6 +4705,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5155,6 +5253,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5263,6 +5362,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5353,6 +5453,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5503,6 +5604,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(conversations),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5676,6 +5778,7 @@ mod tests {
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
@@ -5835,7 +5938,11 @@ mod tests {
             }
         });
         let state = Arc::clone(state);
-        let driven = tokio::spawn(async move { drive(&mut peer, &state, attached_from()).await });
+        let settings = crate::transport::settings_channel();
+        let driven = tokio::spawn(async move {
+            let receiver = settings.subscribe();
+            drive(&mut peer, &state, attached_from(), receiver, None).await
+        });
         Driven { to_server, written, driven }
     }
 

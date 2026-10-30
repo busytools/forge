@@ -18,6 +18,7 @@
   import Models from '../models/Models.svelte';
   import { notePerfSurface, perfSurface } from '../perf';
   import Review from '../review/Review.svelte';
+  import Settings from '../settings/Settings.svelte';
   import { shownSeat, titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
   import type { Connection } from '../socket';
@@ -308,6 +309,15 @@
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}
+{:else if route.name === 'settings'}
+  {#if connection !== null}
+    <!-- The page reads the settings frame the connection is handed after
+         its greeting; there is no read verb, so it needs no subscription of
+         its own. The header's claude version is the home read's. -->
+    <Settings {home} mark={settings.mark} />
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
 {:else if route.name === 'doc'}
   {#if connection !== null}
     <!-- The viewer asks the connection for the document itself: the route
@@ -330,8 +340,8 @@
     <p class="pending">
       That is not a page forge serves. The home is at <a href="/">/</a>, a session at
       <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;</code>, its review at
-      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;/review</code>, and the models at
-      <code>/models</code>.
+      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;/review</code>, the models at
+      <code>/models</code>, and the settings at <code>/settings</code>.
     </p>
   </main>
 {/if}

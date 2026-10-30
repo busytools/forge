@@ -50,6 +50,7 @@ import { report, type BrowserFrame, type Connection, type ConnectionStatus } fro
 import { Stores, type Store } from '../stores';
 import { coversHome } from '../wire/fleet';
 import { settingsFrom } from '../wire/types';
+import { takeSettings } from '../settings/frame';
 import type { ClientSettings, SessionSlot } from '../wire/types';
 
 /**
@@ -185,6 +186,7 @@ function seatOfKey(key: string): string | null {
 }
 
 class RustConnection implements Connection {
+  readonly settingsOwner: object = {};
   private readonly stores = new Stores();
   private readonly listeners = new Set<(message: ServerMessage) => void>();
   private readonly statuses = new Set<(status: ConnectionStatus) => void>();
@@ -460,6 +462,9 @@ class RustConnection implements Connection {
         this.heldProtocol = typeof message.version === 'number' ? message.version : null;
         break;
       }
+      case 'settings':
+        takeSettings(message.document, this.settingsOwner);
+        break;
       case 'snapshot':
         this.bounds.clear(message.subject);
         this.stores.get(message.subject)?.set(message.data);

@@ -25,6 +25,7 @@ mod connection;
 pub mod conversation;
 pub mod envelope;
 pub mod frame;
+mod origin;
 mod probe;
 pub mod wire;
 
@@ -183,10 +184,17 @@ pub mod wire;
 /// draws a seat that never re-reads rather than one that breaks - which is
 /// why the bump, not the client's decode, is what tells it the server moved.
 ///
+/// **v18 is a bump for the settings frame.** `settings` carries the whole
+/// effective config, pushed once after the greeting and again after every
+/// applied reload. A v18 client's settings page waits for it, so a v17
+/// server's silence would draw as a page that never loads rather than as a
+/// version skew; the bump is what names the mismatch. `baselines/socket/17/`
+/// is the record a v17 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.
@@ -272,6 +280,10 @@ pub struct TransportState {
     pub work: Arc<WorkCache>,
     pub conversations: Arc<conversation::Conversations>,
     pub live: Mutex<Live>,
+    /// The settings frame, encoded once per document and shared by every
+    /// connection. `None` until the first document is published; a
+    /// connection that attaches later reads the current one.
+    pub settings: tokio::sync::watch::Sender<Option<Arc<str>>>,
     /// The server's browser fleet, when one is installed: the connection
     /// attaches viewers, routes input and takes the controller role through
     /// it. `None` is a transport with no fleet (tests, a platform with no
@@ -290,6 +302,12 @@ impl TransportState {
     /// something the socket needs that the workspace owns or that is the
     /// transport's own.
     pub fn for_workspace(workspace: &Arc<forge_workspace::Workspace>) -> Self {
+        let documents = workspace.subscribe_settings();
+        let initial = documents.borrow().clone().and_then(|document| encode_settings(&document));
+        let (settings, _settings_rx) = tokio::sync::watch::channel(initial);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(publish_settings(documents, settings.clone()));
+        }
         Self {
             surface: Arc::new(ViewSurface::new(Arc::clone(workspace))),
             work: Arc::new(WorkCache::new()),
@@ -298,6 +316,7 @@ impl TransportState {
             // attachment count has to see it: a turn finishing on a seat this
             // process shows is one the reader watched.
             live: Mutex::new(Live::new()),
+            settings,
             browser_host: workspace.browser_host(),
             heartbeat: Heartbeat::default(),
         }
@@ -311,6 +330,47 @@ impl TransportState {
     pub fn with_heartbeat(mut self, heartbeat: Heartbeat) -> Self {
         self.heartbeat = heartbeat;
         self
+    }
+}
+
+/// A settings watch holding no document, for a transport built by hand (a
+/// test): a connection with no frame draws its page's waiting state.
+#[cfg(any(test, feature = "testing"))]
+pub fn settings_channel() -> tokio::sync::watch::Sender<Option<Arc<str>>> {
+    tokio::sync::watch::channel(None).0
+}
+
+/// Encode one settings document once, so every connection writes the same
+/// bytes rather than building the frame for itself.
+fn encode_settings(document: &forge_primitives::SettingsDocument) -> Option<Arc<str>> {
+    let message = envelope::ServerMessage::Settings { document: document.clone() };
+    match serde_json::to_string(&message) {
+        Ok(text) => Some(Arc::from(text)),
+        Err(error) => {
+            tracing::error!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "settings_unencodable",
+                %error,
+                "the settings frame could not be encoded; connections draw no settings",
+            );
+            None
+        }
+    }
+}
+
+/// Follow the workspace's document and hand each new one to every connection
+/// through the watch, encoded once.
+async fn publish_settings(
+    mut documents: tokio::sync::watch::Receiver<Option<Arc<forge_primitives::SettingsDocument>>>,
+    settings: tokio::sync::watch::Sender<Option<Arc<str>>>,
+) {
+    while documents.changed().await.is_ok() {
+        let current = documents.borrow_and_update().clone();
+        let Some(document) = current else { continue };
+        let Some(encoded) = encode_settings(&document) else { continue };
+        if settings.borrow().as_deref() != Some(encoded.as_ref()) {
+            settings.send_replace(Some(encoded));
+        }
     }
 }
 

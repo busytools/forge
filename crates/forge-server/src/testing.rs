@@ -122,6 +122,9 @@ impl Fleet {
         // app-support base, so a fixture gets a durable layer without
         // opening a second handle on the same file.
         let workspace = Arc::new(Workspace::new_for_test(config_dir.to_owned())?);
+        // The settings frame the socket pushes on attach carries a build;
+        // the fixture names a stand-in so every connection is handed one.
+        workspace.set_settings_version("test-build");
         // An empty document, so no fixture reads the machine's own
         // `$HOME/.claude.json` for a preference.
         workspace.seed_test_user_preferences(serde_json::json!({}));

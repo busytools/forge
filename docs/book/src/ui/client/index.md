@@ -23,6 +23,7 @@ place.
 | Review | [review.md](./review.md) | `web-review.html` |
 | Dictation models | [dictate-models.md](./dictate-models.md) | `web-dictate-models.html` |
 | Extensions | [extensions.md](./extensions.md) | `web-extensions.html` |
+| Settings | [settings.md](./settings.md) | `web-settings.html` |
 | Files | [files.md](./files.md) | `web-files.html` |
 | A document | [document.md](./document.md) | `web-document.html` |
 | The browser surface | [browser.md](./browser.md) | `web-browser.html` |

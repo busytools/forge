@@ -718,6 +718,7 @@ On by default, so a restart leaves it serving.
 | `enabled` | boolean    | `true`      | Whether the server starts with forge. `false` is the opt-out, and the boot is identical either way - the socket simply does not bind.                                                                                                                                                                                                                                                                                                                                        |
 | `port`    | integer    | `8790`      | The port the server binds on `bind`, and a client is pointed at it by hand. `0` fails the load outright (`ServerPortInvalid`), and so does the gateway's own port (`ServerPortTakenByGateway`) - two listeners cannot share one. Neither check runs while the socket is disabled: a stale port on a section that never binds cannot stop the boot.                                                                                        |
 | `bind`    | IP address | `127.0.0.1` | The interface the server listens on. Loopback by default: reaching it from another machine means naming that machine's interface here, usually the WireGuard address. **forge is reached over loopback or a private network and is never exposed publicly.** That is the whole reason the socket carries no authentication - the private network is what the access control stands on, not a proxy to be added in front of a public bind. |
+| `allowed_origins` | array of strings | `[]` | Browser origins allowed to open the socket, beside the shell's own and the server's own address (`http://<bind>:<port>`, with the loopback aliases). A web client is served from wherever it is hosted, so its page origin belongs here; any other origin is refused at the upgrade before the greeting, and a request that sends no `Origin` at all is a native client and is allowed. Live: the next upgrade reads the new list. |
 | `first_frame_cap_kb` | integer | `512` | How many kilobytes of conversation a session's first snapshot carries. The newest whole turns are kept while they fit and the rest is paged through `more`, so a switch paints the page it is handed at once and the rest is available through `more` as the reader or the column asks; nothing is dropped and the order does not move. **The newest turn is served even when it alone is over the budget**, because a page of no turns draws the seat empty and half a turn is one a client cannot place. The page also stops at twenty turns whatever the budget. `0` serves the twenty turns whole, and a value that is not a whole number fails the load, naming the line and the key with the value redacted. Over loopback the socket write and the client's fold measure about 1 ms and 2 ms per megabyte, so this key is about the network: measured through a rate-limited socket, a 5.5 MB first page reaches the client in about 0.66 s on 100 Mbit/s and 2.7 s on 20, against 0.16 s and 0.6 s once the 512 KB budget has cut it to 1.16 MB. |
 | `tool_record_cap_kb` | integer | `64` | How large a frame's `tool_use_result` may be in anything a client is served, in kilobytes. **A record over it is reduced first**, keeping only the keys a client draws (a mutation's patch and outside-edit mark, a question's answers and notes); when those alone are still over, it keeps the one key the row's drawing needs - a question's `answers` or an edit's `structuredPatch` - so a question whose typed notes pushed it over keeps its answer and draws as the card it was. Only when nothing drawable fits does it become an `omitted` marker. Every path to a client is bounded - a page, a `more`, the live stream and both repairs - while the transcript keeps the record whole and the tool-result block draws as always. Every record a served copy bounds is logged at DEBUG as `tool_record_capped`, naming the seat, the tool call, the record's original size, the keys it kept and its `disposition` (`reduced` or `omitted`), so a reader asking where a payload went can find the exact call. **The line is per capped copy, not per record**: a subscribe caps the snapshot and its newest page separately, and a live frame is capped once per reading client, so the same call can log more than once in one open - the call's own id is what ties the lines together. `0` serves the records whole - the setting for a reader whose changes carry patches beyond the default. A seat whose mailbox tool results ran to ~4.9 MB each served a 70 MB page that took the client ~6.7 s to settle; the cap is what makes a page's size follow its conversation rather than its tool payloads. |
 
@@ -943,30 +944,46 @@ the error, and the last good config stays live. No partial application. Once
 a file is accepted, the config forge holds is the file; the table below says
 which parts a running forge adopts and which wait for a restart.
 
+Each key carries one of three classes, and the settings page draws the same
+class the reload reports:
+
+- **live** - read on the key's next use.
+- **next session** - read when a session or a connection opens.
+- **restart** - built once at boot; an edit needs a restart.
+
+A fourth display state, **not read yet**, marks a key the loader accepts and
+nothing consumes. The catalogue in `crates/forge-workspace/src/settings.rs`
+is the one source for all four, and a test fails when a key the loader
+accepts has no class.
+
 | Table or key | Takes effect |
 | --- | --- |
-| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`, `slack`; `[[orgs.projects]]` - names, paths, `model`, `permission_mode`, `max_workers`, `auto_start`, `env`, `env_file`, `vault_roots`, `handoff`, `browser_profile`, `slack` | Live. The server's roster, pins and next spawn read the new values. An added project with `auto_start = true` starts; toggling `auto_start` on a project that already exists applies the next time it starts. A removed project leaves the server's roster; sessions already running keep running. An open client sees the new roster on its next home read. A Slack binding to a label already in `[[slack]]` applies to the next tool call; an entry's `workspace`, `token`, `poll_seconds` and `dm_poll_seconds`, and adding a `[[slack]]` entry, are restart-only - the clients are built at boot. |
-| `[[accounts]]` - `display_name`, `provider`, `token`, `base_url`, `models`, `model_slugs`, `model_aliases`, `env` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
-| `[env]` | Live. Folded into each account's env at load, so the next spawn carries it. |
-| `[models."<name>"]` | Live. The next spawn stamps the new parameters. |
-| `[handoff]` | Live. The next handoff reads it. |
-| `[systemone]` | Live for new sessions. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
+| `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace`, `[orgs.projects.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
+| `[[orgs.projects]]` - `name`, `path` | Live. The roster re-reads them; a removed project leaves it, and sessions already running keep running. |
+| `[[orgs.projects]]` - `auto_start`, `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `vault_roots`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. Toggling `auto_start` on a project that already exists applies the next time it starts, and an added project with `auto_start = true` starts. |
+| `[[accounts]]` - `display_name`, `provider`, `base_url`, `token`, `models`, `model_slugs`, `model_aliases` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
+| `[[accounts]]` - `env` | Next session. Folded into each account's env at load, so the next spawn carries it; a running child keeps its own environment. |
+| `[env]` | Next session. Folded into each account's env at load, so the next spawn carries it. |
+| `[models."<name>"]` | Next session. The next spawn stamps the new parameters. |
+| `[handoff]`, `[orgs.projects.handoff]` | Live. The next handoff reads it. |
+| `[systemone]` | Next session. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
 | `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. A reload that moved these replaces the rotation numbers; one that did not leaves the live cooldowns and streaks alone. |
 | `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
 | `[server] tool_record_cap_kb`, `first_frame_cap_kb` | Live for pages and `more`; a connection already open keeps the cap it read when it opened. |
 | `[server] enabled`, `bind`, `port` | Restart-only. Stored and named in the log; forge never rebinds a live socket. |
+| `[server] allowed_origins` | Live. The next socket upgrade reads the new list; connections already open are untouched. |
 | `[browser]` `idle_minutes` | Live. The service reads the idle clock on every pass. |
-| `[browser]` `fps`, `quality` | Applies to the next browser host. A host already running keeps the encoding it was created with. |
-| `[client] mark`, `theme`, `font` | Applies to the next connection. A client snapshots these at its handshake and keeps them until it reconnects. |
+| `[browser]` `fps`, `quality` | Next session: applies to the next browser host. A host already running keeps the encoding it was created with. |
+| `[client] mark`, `theme`, `font` | Live. The server pushes the whole effective config on every applied reload, and an open client re-themes, re-fonts and re-marks itself from it without a reconnect. |
 | `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
 | `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |
-| `[dictate]` `bind`, `mode` | Applies to the next seat read. The server reads them live, but a client's key handler holds the composer record it last read, so a reconnect or a new occupant refreshes it. |
-| `[dictate]` `styling`, `structure`, `context` | Applies to the next connection, which is when a client takes its capture axes. |
+| `[dictate]` `bind`, `mode` | Live. The server reads them on every key decision; a client's key handler holds the composer record it last read, so a new occupant or reconnect refreshes what it starts from. |
+| `[dictate]` `styling`, `structure`, `context` | Next session: applies to the next connection, which is when a client takes its capture axes. |
 | `[dictate]` `enabled`, `models_dir`, `language`, `normalizer`, `max_capture_minutes`, `transcribe_model`, `cleanup_model` | Restart-only. The preflight and the engine's own configuration are built once at boot; the log names it. |
 | `[[slack]]` `workspace`, `token`, `poll_seconds`, `dm_poll_seconds` | Restart-only. The client and its pump captured these when the subsystem started; the log names them. |
 | `[[slack]]` `thread_idle_days`, `stale_after_hours` | Live. `thread_idle_days` is read by each sweep and `stale_after_hours` when a block is drawn. |
-| `[gotify]` | Partly live. The `gotify__*` tools read the section on every call, and a section added while forge runs starts its pump when you subscribe. A stream already running keeps the connection it captured until it restarts. |
-| `[plugins]` `auto_update` | No reader yet. The edit is accepted and applies nothing. |
+| `[gotify]` `url`, `client_token` | Restart-only. The `gotify__*` tools read the section on every call, so a new url or token reaches the tools at once; the stream pump captured its connection when it started and keeps it until a restart. A change is stored and the log names it. |
+| `[plugins]` `auto_update` | Not read yet. The loader accepts the key and nothing consumes it; the settings page labels it rather than hiding it, and a change applies nothing. |
 
 **A running session is never reconfigured.** Its account (except when the
 gateway's own rotation moves it off an exhausted one), model, permission mode,

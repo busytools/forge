@@ -28,6 +28,7 @@
   import { applySettings } from '../theme';
   import { watchUpdate } from '../update/state';
   import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
+  import { clientAxes, ownSettingsFrame, settingsFrame } from '../settings/frame';
   import { installBrowser, uninstallBrowser } from '../browser/surface.svelte';
   import Router from './Router.svelte';
 
@@ -148,6 +149,22 @@
       currentRoute.set(launched.route);
     }
   }
+
+  // **The settings frame is the one writer of the client's axes.** The
+  // greeting still carries them for the pre-attach handshake, but only this
+  // path applies them, so a reload can re-theme an open page without a
+  // reconnect and nothing applies a stale pair twice.
+  $effect(() => {
+    const axes = clientAxes($settingsFrame);
+    if (axes === null) return;
+    if (
+      settings.mark !== axes.mark ||
+      settings.theme !== axes.theme ||
+      settings.font !== axes.font
+    ) {
+      settings = { ...settings, ...axes };
+    }
+  });
 
   $effect(() => {
     applySettings(settings, document.documentElement);
@@ -370,7 +387,10 @@
     // subscribed to the home and still re-reading it, for the rest of the
     // session - and nothing would be drawing what it was keeping current.
     connection?.close();
-    settings = connected.settings;
+    // The axes come from the settings frame; the greeting's are the
+    // pre-attach copy of the same values and would be a second writer.
+    ownSettingsFrame(connected.connection.settingsOwner ?? connected.connection);
+    settings = { ...DEFAULT_SETTINGS, dictate: connected.settings.dictate };
     // As the person wrote it rather than the socket URL: this is what a field
     // shows them if they come back to the door.
     address = connected.address;

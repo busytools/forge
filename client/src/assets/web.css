@@ -234,10 +234,10 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 
 /* ---------- system band ---------- */
 
-/* Five cards across on a wide window, wrapping below - the last card can sit
+/* Six cards across on a wide window, wrapping below - the last card can sit
    alone in a middling band, and on a phone the fixed override below wraps
-   2+2+1. `auto-fit` at this floor is what puts all five in one row where the
-   room is, which a fixed count of five would refuse on a narrower window. */
+   2+2+2. `auto-fit` at this floor is what puts all six in one row where the
+   room is, which a fixed count of six would refuse on a narrower window. */
 .band { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .svc {
   background: linear-gradient(180deg, rgba(20,25,38,.75), rgba(13,17,26,.75));
@@ -4649,6 +4649,136 @@ details[open] > summary .arw { opacity: 1; }
   .extensions-page .ext-row { flex-wrap: wrap; }
   .extensions-page .ext-row .ext-src { flex-basis: 100%; order: 3; padding-left: 22px; }
   .extensions-page .ext-subwrap { grid-template-columns: 1fr; }
+}
+
+/* ---------- the settings page ---------- */
+/* The two-pane direction Ved picked (2026-10-29): a sub-nav of areas with
+   their key counts and every class they hold, one area's pane, and every
+   row carrying the class that says when an edit to it lands. The page's
+   own pieces are scoped: `.rail`, `.pane` and `.chip` are names other
+   surfaces already use. The class marks are shared components, so their
+   rules below are not. */
+
+.settings-page .settings-pending { color: var(--muted); font-size: var(--fs-base);
+  margin-top: 12vh; text-align: center; }
+.vh { position: absolute; width: 1px; height: 1px; margin: -1px;
+  padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+.settings-page .settings-meta { margin-left: auto; display: flex; flex-direction: column;
+  align-items: flex-end; gap: 3px; }
+.settings-page .settings-mode { font-family: var(--mono); font-size: 11px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 99px; padding: 2px 9px; white-space: nowrap; }
+.settings-page .settings-link { font: inherit; font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--blue); background: none; border: 0; padding: 0 0 0 8px; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 3px; }
+
+/* the effect classes: one shape per class, so colour is never the only
+   signal; the word rides the row too. */
+.settings-class { display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.settings-class-mark { width: 7px; height: 7px; flex: 0 0 7px; display: inline-block; }
+.settings-class[data-class="live"] .settings-class-mark { border-radius: 50%;
+  background: var(--accent); }
+.settings-class[data-class="next_session"] .settings-class-mark { background: var(--teal);
+  clip-path: polygon(8% 0, 100% 50%, 8% 100%); }
+.settings-class[data-class="restart"] { color: var(--warn); }
+.settings-class[data-class="restart"] .settings-class-mark { border: 2px solid var(--warn); }
+.settings-class[data-class="not_read_yet"] { color: var(--dim); }
+.settings-class[data-class="not_read_yet"] .settings-class-mark { border: 1.5px dashed var(--dim);
+  border-radius: 50%; }
+.settings-class[data-class="other"] { color: var(--muted); }
+.settings-class[data-class="other"] .settings-class-mark { border: 1.5px solid var(--muted);
+  transform: rotate(45deg); }
+.settings-class.icon { border: 0; padding: 0; }
+.settings-class.icon .settings-class-mark { width: 8px; height: 8px; flex-basis: 8px; }
+
+.settings-page .settings-legend { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 11px; color: var(--dim); margin: 0 0 6px; }
+.settings-page .settings-legend-item { display: inline-flex; align-items: center; gap: 7px; }
+.settings-page .settings-legend-note { font-family: var(--mono); font-size: 11px; color: var(--dim);
+  margin: 0 0 20px; }
+
+.settings-page .settings-split { display: flex; align-items: flex-start; }
+.settings-page .settings-rail { flex: 0 0 232px; padding: 2px 18px 2px 0; }
+.settings-page .settings-rail-item { display: flex; align-items: center; gap: 9px; width: 100%;
+  text-align: left; font-family: var(--mono); font-size: var(--fs-data); color: var(--muted);
+  background: none; border: 1px solid transparent; border-radius: 9px; padding: 9px 11px;
+  margin-bottom: 2px; cursor: pointer; }
+.settings-page .settings-rail-item:hover { background: var(--s2); color: var(--text); }
+.settings-page .settings-rail-item.on { background: var(--sel); color: var(--hot);
+  border-color: rgba(244,118,0,.25); box-shadow: inset 2px 0 0 var(--accent); }
+.settings-page .settings-rail-name { min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.settings-page .settings-rail-class { margin-left: auto; display: inline-flex; }
+.settings-page .settings-rail-count { flex: none; font-size: var(--fs-label); color: var(--dim); }
+.settings-page .settings-rail-item.on .settings-rail-count { color: var(--hot); }
+
+.settings-page .settings-pane { flex: 1 1 auto; min-width: 0; padding-left: 22px;
+  border-left: 1px solid var(--line); }
+.settings-page .settings-pane-head { display: flex; align-items: baseline; gap: 10px;
+  flex-wrap: wrap; margin: 2px 0 4px; }
+.settings-page .settings-pane-head .t { font-size: 19px; font-weight: 620; letter-spacing: -.01em;
+  color: var(--text); }
+.settings-page .settings-pane-head .s { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); }
+.settings-page .settings-keys { margin-left: auto; font-family: var(--mono); font-size: 11px;
+  color: var(--dim); }
+.settings-page .settings-empty { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--dim); margin: 14px 0; }
+
+.settings-page .settings-group { display: flex; align-items: center; gap: 10px;
+  padding: 18px 2px 7px; }
+.settings-page .settings-group-name { font-family: var(--mono); font-size: 11px;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.settings-page .settings-group-class { margin-left: auto; }
+
+.settings-page .settings-rows { width: 100%; border-collapse: collapse; table-layout: fixed;
+  border-top: 1px solid var(--line); }
+.settings-page .settings-rows col.k { width: 36%; }
+.settings-page .settings-rows col.e { width: 132px; }
+.settings-page .settings-rows th, .settings-page .settings-rows td { padding: 9px 10px 9px 0;
+  vertical-align: top; border-bottom: 1px solid rgba(34,42,60,.55); text-align: left;
+  font-weight: 400; }
+.settings-page .settings-rows tr:hover td, .settings-page .settings-rows tr:hover th {
+  background: rgba(27,33,48,.28); }
+.settings-page .settings-rows th[scope="row"] code { font-family: var(--mono); font-size: 13.5px;
+  color: var(--text); overflow-wrap: anywhere; }
+.settings-page .settings-rows td.v { font-family: var(--mono); font-size: 13px; color: var(--muted);
+  overflow-wrap: anywhere; }
+.settings-page .settings-value { white-space: pre-wrap; }
+.settings-page .settings-dim { color: var(--dim); }
+.settings-page .settings-chips { display: inline-flex; flex-wrap: wrap; gap: 5px;
+  vertical-align: middle; }
+.settings-page .settings-chips code { font-family: var(--mono); font-size: 11.5px; color: var(--text);
+  border: 1px solid var(--line); border-radius: 99px; padding: 0 7px;
+  background: rgba(13,17,26,.5); }
+.settings-page .settings-table { display: inline-flex; flex-direction: column; gap: 2px; }
+.settings-page .settings-table code { font-family: var(--mono); color: var(--text); }
+
+@media (pointer: coarse) {
+  .settings-page .settings-rail-item, .settings-page .settings-link,
+  .settings-page .back { min-height: 44px; }
+  .settings-page .back, .settings-page .settings-link { display: inline-flex; align-items: center; }
+}
+@media (max-width: 760px) {
+  .settings-page .settings-meta { margin-left: 0; align-items: flex-start; width: 100%; }
+  .settings-page .settings-split { flex-direction: column; }
+  .settings-page .settings-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
+    flex-wrap: wrap; gap: 6px; }
+  .settings-page .settings-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0;
+    border: 1px solid var(--line); padding: 6px 11px; }
+  .settings-page header.top .back { order: 1; }
+  .settings-page header.top .title { order: 3; flex-basis: 100%; }
+  .settings-page header.top .settings-meta { order: 4; }
+  .settings-page header.top .settings-mode { display: none; }
+  .settings-page .settings-rail-count { margin-left: 2px; }
+  .settings-page .settings-pane { width: 100%; padding-left: 0; border-left: 0; }
+  .settings-page .settings-keys { margin-left: 0; }
+  .settings-page .settings-rows { table-layout: auto; }
+  .settings-page .settings-rows col.k { width: 48%; }
+  .settings-page .settings-rows col.e { width: 112px; }
+  .settings-page .settings-rows th[scope="row"] code { font-size: 12.5px; }
+  .settings-page .settings-rows td.v { font-size: 12px; }
 }
 
 /* ---------- the document viewer ---------- */

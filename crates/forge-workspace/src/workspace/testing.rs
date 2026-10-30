@@ -392,9 +392,12 @@ impl Workspace {
         // `new_for_test`'s convention: the stub's whole app-support base
         // sits under the test's own config dir.
         let app_support = Some(config_dir.join("app-support"));
+        let (settings, _settings_rx) = tokio::sync::watch::channel(None);
         let workspace = Self {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
+            settings,
+            settings_version: std::sync::OnceLock::new(),
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
@@ -629,6 +632,7 @@ impl Workspace {
             auto_start: false,
             model: None,
             env: std::collections::HashMap::new(),
+            env_file: None,
             max_workers,
             permission_mode: forge_primitives::permission::PermissionMode::Auto,
             vault_roots: Vec::new(),

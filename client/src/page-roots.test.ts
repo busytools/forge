@@ -7,7 +7,7 @@
  * The component-scoped guard in `chat/Queue.test.ts` reads one component's
  * mounted subtree and cannot see a page root reaching another surface.
  *
- * **Checked at the definition, not at every application.** The seven page
+ * **Checked at the definition, not at every application.** The eight page
  * routes are enumerated here; each root is the page's name plus `-page`, the
  * sheet must scope rules BY the root (a selector whose subject is the root,
  * not a mention of it), and the route union must be covered so a new page
@@ -50,7 +50,7 @@ interface PageRoot {
   rootTag: 'main' | 'first';
 }
 
-/** The seven page routes and their roots. */
+/** The eight page routes and their roots. */
 const PAGES: PageRoot[] = [
   {
     page: 'board',
@@ -93,6 +93,12 @@ const PAGES: PageRoot[] = [
     components: ['src/session/Session.svelte'],
     root: 'session-page',
     rootTag: 'first',
+  },
+  {
+    page: 'settings',
+    components: ['src/settings/Settings.svelte'],
+    root: 'settings-page',
+    rootTag: 'main',
   },
 ];
 

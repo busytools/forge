@@ -5,7 +5,10 @@
 import { type AddressInfo, type RawData, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { get } from 'svelte/store';
+
 import { noteSnapshot, noteSubscribe } from './perf';
+import { ownSettingsFrame, settingsFrame } from './settings/frame';
 import {
   connect,
   RETRY_MS,
@@ -1781,6 +1784,50 @@ describe('frames this client draws', () => {
         warned.mock.calls.flat().join(' '),
         'a frame the client draws was reported as one it does not know',
       ).not.toContain('does not know');
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  /**
+   * **The settings frame is a server-wide read, not a diagnostic.** It is
+   * taken into the page's store, reported as unknown to nobody, and it writes
+   * no perf record: the perf log measures frames a page had to parse, and a
+   * document carrying the file's values is not one.
+   */
+  it('takes a settings frame without reporting it or writing a perf record', async () => {
+    const { server, conn } = await connected();
+    ownSettingsFrame(conn.settingsOwner ?? conn);
+    mockSnapshot.mockClear();
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const heard: ServerMessage[] = [];
+    conn.onMessage((message) => heard.push(message));
+    try {
+      server.send({
+        kind: 'settings',
+        document: {
+          version: 'v1.1.34',
+          source: '~/.claude/forge/forge.toml',
+          totals: { keys: 1, areas: 1 },
+          areas: [
+            {
+              id: 'server',
+              name: 'server',
+              note: 'the socket',
+              keys: [{ path: 'server.port', kind: 'number', value: 8790, class: 'restart' }],
+            },
+          ],
+        },
+      });
+
+      await until(() => heard.length === 1, 'the settings frame to arrive');
+      expect(heard[0]?.kind, 'the frame still reaches the listeners').toBe('settings');
+      expect(
+        warned.mock.calls.flat().join(' '),
+        'it is not a frame the client does not know',
+      ).not.toContain('does not know');
+      expect(get(settingsFrame).status, 'the page holds the document').toBe('ready');
+      expect(mockSnapshot, 'a settings frame writes no perf record').not.toHaveBeenCalled();
     } finally {
       warned.mockRestore();
     }

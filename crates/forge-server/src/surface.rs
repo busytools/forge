@@ -286,6 +286,13 @@ impl ViewSurface {
         self.workspace.note_client_detached();
     }
 
+    /// The live `[server]` snapshot, read by the socket's origin gate on
+    /// every upgrade so a reload's new allowances apply to the next
+    /// connection without a restart.
+    pub fn server_config(&self) -> forge_primitives::ServerConfig {
+        self.workspace.server_config()
+    }
+
     /// The `[client]` settings a connection greets with. Read when the
     /// connection opens, so an edit applies to the next connection.
     pub fn client_config(&self) -> forge_primitives::ClientConfig {

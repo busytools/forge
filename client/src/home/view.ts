@@ -751,9 +751,9 @@ function band(wire: HomeWire, address: string): BandCard[] {
   // the read of where this page is served from. Drawn as `host:port` rather
   // than the socket URL it is held as, which is what a reader recognises.
   //
-  // **The server card is the third way in**, with dictation and extensions:
-  // the whole card opens the connect screen, so pointing the client at
-  // another forge - a scratch stack, a second machine - needs no relaunch
+  // **The server card is a way in**, with dictation, extensions and
+  // settings: the whole card opens the connect screen, so pointing the
+  // client at another forge - a scratch stack, a second machine - needs no relaunch
   // (Ved, 2026-10-12: "rename that web to server... make that entire box
   // clickable, just like how Dictation and Extensions are").
   return [
@@ -811,6 +811,21 @@ export function extensionsCard(read: ExtensionsRead | null, refused = false): Ba
         ? `${stale} update${stale === 1 ? '' : 's'} waiting`
         : `${counts.marketplaces} marketplace${counts.marketplaces === 1 ? '' : 's'}`,
     href: door,
+  };
+}
+
+/**
+ * The settings card: the band card the home appends beside extensions, and
+ * a way in. The page reads its own document from the socket, so the card
+ * carries no state of the home's - it names what the page is.
+ */
+export function settingsCard(): BandCard {
+  return {
+    title: 'settings',
+    tone: 'ready',
+    value: 'read-only',
+    detail: 'the effective config',
+    href: hrefFor({ name: 'settings' }),
   };
 }
 

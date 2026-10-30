@@ -49,6 +49,10 @@ pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Ar
         Ok(w) => Arc::new(w),
         Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
     };
+    // The settings document carries the build that made it; this is the one
+    // place the server's own version reaches the workspace. The short stamp
+    // is the one the home's header draws as `server`.
+    workspace.set_settings_version(crate::FORGE_VERSION_SHORT);
 
     // Validate the CLI's positional `<PROJECT>` arg, if any, before any
     // view or spawn wave. This turns `forge xyz` (where `xyz` isn't in

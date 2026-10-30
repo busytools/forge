@@ -385,6 +385,14 @@ pub struct BrowserFileWire {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerMessage {
+    /// The effective config, pushed once after the greeting and again after
+    /// every applied reload. Server-wide rather than seat-scoped: every
+    /// connection draws the same document, and a connection that attaches
+    /// while a reload is in flight reads the current load here - which is
+    /// why no settings read verb exists.
+    Settings {
+        document: forge_primitives::SettingsDocument,
+    },
     Greeting {
         version: u32,
         /// The build that sent this, in the two forms a view's own

@@ -129,6 +129,28 @@ function frameText(raw: RawData): string {
  * An acceptance that then says nothing is what the handshake deadline is for,
  * and this is that window with its end under the test's control.
  */
+/** The client area the server would push for the stub's settings. An axis the
+ *  stub did not set crosses as `null`, as the real document does. */
+function documentFor(settings: Partial<ClientSettings>): unknown {
+  return {
+    version: 'test',
+    source: '~/.claude/forge/forge.toml',
+    totals: { keys: 3, areas: 1 },
+    areas: [
+      {
+        id: 'client',
+        name: 'client',
+        note: 'the sets a client draws with',
+        keys: [
+          { path: 'client.mark', kind: 'string', value: settings.mark ?? null, class: 'live' },
+          { path: 'client.theme', kind: 'string', value: settings.theme ?? null, class: 'live' },
+          { path: 'client.font', kind: 'string', value: settings.font ?? null, class: 'live' },
+        ],
+      },
+    ],
+  };
+}
+
 async function stubForge(
   settings: Partial<ClientSettings>,
   greeting: 'now' | 'held' = 'now',
@@ -150,14 +172,17 @@ async function stubForge(
   /** Every frame a client sent, which is what a release is read from. */
   const sent: { kind?: unknown; what?: unknown }[] = [];
 
-  const greet = (socket: WebSocket): void => {
+  const greet = (socket: WebSocket, at: number = version): void => {
     socket.send(
       JSON.stringify({
         kind: 'greeting',
-        version,
+        version: at,
         settings: { ...DEFAULT_SETTINGS, ...settings },
       }),
     );
+    // The document follows the greeting in the same open; the shell's axes
+    // are applied from this frame and not from the greeting.
+    socket.send(JSON.stringify({ kind: 'settings', document: documentFor(settings) }));
   };
   server.on('connection', (socket) => {
     // A home read is the fixture, so a page has a roster to reason over; a
@@ -192,14 +217,12 @@ async function stubForge(
     attached,
     /** Let the greeting go, which is what lands a held launch. */
     greet(again: number = version) {
+      for (const socket of server.clients) greet(socket, again);
+    },
+    /** Push a settings frame with axes of the caller's own. */
+    axes(next: Partial<ClientSettings>) {
       for (const socket of server.clients) {
-        socket.send(
-          JSON.stringify({
-            kind: 'greeting',
-            version: again,
-            settings: { ...DEFAULT_SETTINGS, ...settings },
-          }),
-        );
+        socket.send(JSON.stringify({ kind: 'settings', document: documentFor(next) }));
       }
     },
     /** The next home read, which the server pushes when the fleet moves. */
@@ -676,6 +699,27 @@ describe('the shell at launch', () => {
       rememberedAddress(),
       'a launch the app discarded still overwrote the address the person chose',
     ).toBe(asked.address);
+  });
+
+  /**
+   * **An unset axis is the built-in, not a name.** The document carries
+   * `null` for a `[client]` key the file does not set; a push that returns
+   * one to unset must restore the built-in stack rather than feeding a
+   * display default back through `fontStack`, which knows no such name and
+   * would remove `--ui` entirely (the page drew in Times).
+   */
+  it('draws the built-in stack when a pushed font is unset', async () => {
+    const forge = await stubForge({ font: 'system' });
+    forges.push(forge);
+    await openAt('/connect', forge.address);
+    await until(() => forge.live() === 1, 'the connection to take');
+    await until(() => appliedFont() === fontStack('system')?.ui, 'the system stack to apply');
+
+    forge.axes({ font: null });
+    await until(
+      () => appliedFont() === fontStack(null)?.ui,
+      'the unset font to draw the built-in stack',
+    );
   });
 });
 

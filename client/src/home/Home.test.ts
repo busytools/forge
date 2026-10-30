@@ -373,16 +373,16 @@ describe('the home page as it draws', () => {
 
     expect(body).toContain('href="/models"');
     expect(body, 'the door draws no marker a reader can see').toContain('i-chev');
-    // Two doors, not five: the band's other cards are facts about this forge.
+    // One models door: the band's other cards are facts or their own pages.
     expect(body.match(/href="\/models"/g)).toHaveLength(1);
   });
 
   /**
-   * The second door, and the one the view test cannot see either: the card
-   * is drawn as a real anchor to /extensions, with the chevron at rest. Its
-   * facts need the connection (the read is the card's own), so a rendered
-   * home without one draws the card's reading state - which is itself the
-   * state this asserts is honest.
+   * The extensions door, and the one the view test cannot see either: the
+   * card is drawn as a real anchor to /extensions, with the chevron at rest.
+   * Its facts need the connection (the read is the card's own), so a
+   * rendered home without one draws the card's reading state - which is
+   * itself the state this asserts is honest.
    */
   it('opens the extensions page from the extensions card', () => {
     const body = draw();
@@ -396,6 +396,20 @@ describe('the home page as it draws', () => {
     const door = body.match(/<a class="svc off" href="\/extensions">[\s\S]*?<\/a>/)?.[0] ?? '';
     expect(door, 'the title line carries the door chevron').toContain('i-chev');
     expect(body, 'no read without a connection, and the card says so').toContain('>reading<');
+  });
+
+  /**
+   * The settings page's only door on a desktop shell, which has no address
+   * bar. The card follows the same pattern as the pages beside it: a real
+   * anchor with the chevron drawn at rest.
+   */
+  it('opens the settings page from its own card', () => {
+    const body = draw();
+
+    expect(body, 'the card is the page door on a shell with no address bar').toContain(
+      'href="/settings"',
+    );
+    expect(body.match(/href="\/settings"/g), 'one door, not a row of them').toHaveLength(1);
   });
 
   /**

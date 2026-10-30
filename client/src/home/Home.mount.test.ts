@@ -75,7 +75,7 @@ describe('the extensions card over a connection', () => {
 
     const cards = [...document.querySelectorAll('.svc')];
     const card = cards.find((row) => row.querySelector('.k')?.textContent?.includes('extensions'));
-    expect(card, 'the fifth card drew').not.toBeUndefined();
+    expect(card, 'the extensions card drew').not.toBeUndefined();
     expect(card?.querySelector('.v')?.textContent, 'the read landed and the card says so').toBe(
       '2 plugins',
     );
