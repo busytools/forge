@@ -13,6 +13,8 @@
   <span class="settings-value settings-dim">
     not set{builtIn === null ? '' : ` · built-in ${builtIn}`}
   </span>
+{:else if value.kind === 'string' && value.text === ''}
+  <span class="settings-value settings-dim">none</span>
 {:else if value.kind === 'string' || value.kind === 'number' || value.kind === 'bool'}
   <span class="settings-value">{value.text}</span>
 {:else if value.kind === 'list' || value.kind === 'set'}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { settingsWire } from './testing';
-import { builtInFor, groupsOf, selectedArea, strongest } from './view';
+import { builtInFor, classesOf, groupsOf, leafOf, selectedArea, strongest } from './view';
 
 function area(id: string) {
   const found = settingsWire.areas.find((candidate) => candidate.id === id);
@@ -60,5 +60,20 @@ describe('the settings page view', () => {
     expect(strongest(area('connectors').keys), 'an unread key outranks an unknown class').toBe(
       'not_read_yet',
     );
+  });
+
+  it('lists every class an area holds, in the legend order', () => {
+    expect(
+      classesOf(area('connectors').keys),
+      'the unknown class and the unread key are both drawn, not only the furthest',
+    ).toEqual(['other', 'not_read_yet']);
+  });
+
+  it('draws a row by its leaf key', () => {
+    expect(leafOf('server.port')).toBe('port');
+    expect(leafOf('orgs.Acme.Corp.projects.api.v2.model'), 'a dotted name stays in the group').toBe(
+      'model',
+    );
+    expect(leafOf('accounts.One.env.FLAG')).toBe('FLAG');
   });
 });

@@ -340,8 +340,8 @@
     <p class="pending">
       That is not a page forge serves. The home is at <a href="/">/</a>, a session at
       <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;</code>, its review at
-      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;/review</code>, and the models at
-      <code>/models</code>.
+      <code>/session/&lt;org&gt;/&lt;project&gt;/&lt;label&gt;/review</code>, the models at
+      <code>/models</code>, and the settings at <code>/settings</code>.
     </p>
   </main>
 {/if}

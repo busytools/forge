@@ -27,9 +27,9 @@ carries.
 | --- | --- |
 | Header | The mark, `settings`, the server / socket / claude versions, the `read-only` chip, and the totals (keys, areas, the resolved `forge.toml` path). |
 | Legend | The four effect classes, each as a shape and its word. |
-| Sub-nav | The eleven areas, each with its key count and its strongest class. |
+| Sub-nav | The twelve areas, each with its key count and every class its keys hold. |
 | Pane | The area's name and note, then its rows grouped by the instance their path names (an account, an org and a project, a Slack workspace). |
-| A row | The key path, its value, and its class mark. |
+| A row | The key's leaf name, its value, and its class mark; the whole path is the row's title, and the group header carries the instance. |
 
 ## The rules
 
@@ -40,6 +40,12 @@ carries.
 - **Rows are never skipped.** An area, a key, a class or a value shape this
   client does not know draws plainly with the server's own word; nothing
   disappears because a build is older than the document.
+- **A row draws its leaf.** The area header names the table and the group
+  header names the instance, so a row draws the key's own name; the whole
+  path stays in the document and in the row's title.
+- **An area reports every class it holds.** A sub-nav row draws each
+  distinct class its keys carry, not only the furthest, so an area holding
+  both a restart key and an unread one says both.
 - **The client's axes come from this frame.** `[client] theme`, `font` and
   `mark` are applied when the document lands, so an open page re-themes,
   re-fonts and re-marks itself without a reconnect. The greeting still
@@ -79,9 +85,10 @@ are names other surfaces already use.
 ## The two widths
 
 Checked at 1600 and 430. At 1600 the rail is a fixed 232px column and the
-pane takes the rest. At 430 the rail wraps into a row of chips above the
-pane, the header's meta takes its own line, and the table keeps its three
-columns with tighter key text.
+pane takes the rest. At 430 the rail wraps into a row of bordered chips
+above the pane, the back link leads the header with the title on its own
+line and no read-only chip, and the table keeps its three columns with
+tighter key text.
 
 ## Touch
 

@@ -21,7 +21,7 @@ afterEach(async () => {
 function draw(selected: string | null, onSelect: (id: string) => void = () => {}): void {
   app = mount(SettingsBody, {
     target: document.body,
-    props: { document: settingsWire, mark: null, cliVersion: 'v2.1.280', selected, onSelect },
+    props: { document: settingsWire, mark: null, cliVersion: '2.1.280', selected, onSelect },
   });
   flushSync();
 }
@@ -46,7 +46,14 @@ describe('the settings page', () => {
     const keys = [...document.querySelectorAll('.settings-rows th[scope="row"]')].map(
       (cell) => cell.textContent,
     );
-    expect(keys).toEqual(['server.port', 'server.first_frame_cap_kb']);
+    expect(keys, 'a row draws its leaf, not the path its group already names').toEqual([
+      'port',
+      'first_frame_cap_kb',
+    ]);
+    expect(
+      document.querySelector('.settings-rows th[scope="row"] code')?.getAttribute('title'),
+      'the whole path stays reachable',
+    ).toBe('server.port');
     expect(document.body.textContent, 'the port is drawn as a restart').toContain('restart');
     expect(document.body.textContent, 'and its value').toContain('8790');
   });
@@ -65,7 +72,7 @@ describe('the settings page', () => {
         (cell) => cell.textContent,
       ),
       'each account keeps its own rows',
-    ).toContain('accounts.Subspace.token');
+    ).toContain('token');
   });
 
   it('hands the picked area id up', () => {
@@ -83,9 +90,21 @@ describe('the settings page', () => {
   });
 
   it('draws a selected area the document no longer holds, with a way back', () => {
-    draw('dictate');
+    draw('deprecated');
     expect(document.body.textContent).toContain('That area is not in this config');
-    expect(document.querySelector('.settings-link')?.textContent).toContain('Open accounts');
+    const back = document.querySelector<HTMLButtonElement>('.settings-link');
+    expect(back?.textContent).toContain('Open accounts');
+    back?.click();
+    expect(document.activeElement?.id, 'the reader lands on the pane it opened').toBe(
+      'settings-area-title',
+    );
+  });
+
+  it('draws every class an area holds on its rail row', () => {
+    draw(null);
+    const connectors = rail().find((item) => item.textContent?.includes('connectors'));
+    expect(connectors?.textContent, 'the unknown class is drawn').toContain('unknown class');
+    expect(connectors?.textContent, 'and the unread key beside it').toContain('not read yet');
   });
 
   it('draws a class this client does not know with its own word', () => {

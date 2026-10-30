@@ -244,7 +244,11 @@ export interface Connection {
    */
   onStatus(fn: (status: ConnectionStatus) => void): () => void;
   store(what: Subject): Store | undefined;
-  /** The client's mark, theme and font, from the greeting - the only place a client gets them. */
+  /**
+   * The axes the greeting carried, before a settings frame lands. Mark,
+   * theme and font are the frame's to apply; this carries the dictate axes
+   * and the pre-attach copy.
+   */
   settings(): ClientSettings | null;
   /**
    * This connection's identity for the settings frame. The shell takes it

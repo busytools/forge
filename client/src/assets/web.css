@@ -4708,6 +4708,7 @@ details[open] > summary .arw { opacity: 1; }
 .settings-page .settings-class[data-class="other"] { color: var(--muted); }
 .settings-page .settings-class[data-class="other"] .settings-class-mark { border: 1.5px solid var(--muted);
   transform: rotate(45deg); }
+.settings-page .settings-class.icon { border: 0; padding: 0; }
 .settings-page .settings-class.icon .settings-class-mark { width: 8px; height: 8px; flex-basis: 8px; }
 
 .settings-page .settings-legend { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
@@ -4783,7 +4784,12 @@ details[open] > summary .arw { opacity: 1; }
   .settings-page .settings-split { flex-direction: column; }
   .settings-page .settings-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
     flex-wrap: wrap; gap: 6px; }
-  .settings-page .settings-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0; }
+  .settings-page .settings-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0;
+    border: 1px solid var(--line); padding: 6px 11px; }
+  .settings-page header.top .back { order: 1; }
+  .settings-page header.top .title { order: 3; flex-basis: 100%; }
+  .settings-page header.top .settings-meta { order: 4; }
+  .settings-page header.top .settings-mode { display: none; }
   .settings-page .settings-rail-count { margin-left: 2px; }
   .settings-page .settings-pane { width: 100%; padding-left: 0; border-left: 0; }
   .settings-page .settings-keys { margin-left: 0; }

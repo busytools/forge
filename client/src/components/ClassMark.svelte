@@ -17,7 +17,7 @@
 </script>
 
 {#if held !== null}
-  <span class="settings-class" class:icon data-class={held}>
+  <span class="chip settings-class" class:icon data-class={held}>
     <span class="settings-class-mark" aria-hidden="true"></span>
     {#if icon}
       <span class="vh">{word}</span>

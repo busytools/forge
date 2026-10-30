@@ -54,7 +54,10 @@
   .back { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
     text-decoration: none; border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
 
-  /* the effect classes: one shape per class, the word beside it */
+  /* the effect classes: one shape per class, the word beside it, in the
+     global `.chip` pill the page's mark component wears */
+  .chip { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 99px; padding: 0 8px; }
   .settings-class { display: inline-flex; align-items: center; gap: 7px;
     font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
   .settings-class-mark { width: 7px; height: 7px; flex: 0 0 7px; display: inline-block; }
@@ -67,6 +70,7 @@
   .settings-class[data-class="not_read_yet"] { color: var(--dim); }
   .settings-class[data-class="not_read_yet"] .settings-class-mark { border: 1.5px dashed var(--dim);
     border-radius: 50%; }
+  .settings-class.icon { border: 0; padding: 0; }
   .settings-class.icon .settings-class-mark { width: 8px; height: 8px; flex-basis: 8px; }
   .settings-legend { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
     font-family: var(--mono); font-size: 11px; color: var(--dim); margin: 0 0 6px; }
@@ -157,8 +161,8 @@
         <span class="build"><span class="k">socket</span> <b>v18</b></span> &middot;
         <span class="build"><span class="k">claude</span> <b>v2.1.280</b></span>
       </span>
-      <span class="totals"><span class="n">232</span> keys &middot;
-        <span class="n">11</span> areas &middot;
+      <span class="totals"><span class="n">233</span> keys &middot;
+        <span class="n">12</span> areas &middot;
         <code>~/.claude/forge/forge.toml</code></span>
     </span>
     <span class="settings-mode">read-only</span>
@@ -166,55 +170,56 @@
   </header>
 
   <div class="settings-legend" aria-label="what the effect classes mean">
-    <span class="settings-legend-item"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span> reads the change on its next use</span>
-    <span class="settings-legend-item"><span class="settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span> read when a session or connection opens</span>
-    <span class="settings-legend-item"><span class="settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span> built once at boot</span>
-    <span class="settings-legend-item"><span class="settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span> nothing reads this key</span>
+    <span class="settings-legend-item"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span> reads the change on its next use</span>
+    <span class="settings-legend-item"><span class="chip settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span> read when a session or connection opens</span>
+    <span class="settings-legend-item"><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span> built once at boot</span>
+    <span class="settings-legend-item"><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span> nothing reads this key</span>
   </div>
-  <p class="settings-legend-note">an area shows the furthest its keys reach; a dashed ring means a key there is read by nothing.</p>
+  <p class="settings-legend-note">an area shows every class its keys hold; a dashed ring means a key there is read by nothing.</p>
 
   <div class="settings-split">
     <nav class="settings-rail" aria-label="config areas">
-      <button class="settings-rail-item on" aria-current="page"><span class="settings-rail-name">accounts</span><span class="settings-rail-class"><span class="settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">30</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-class"><span class="settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">162</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">connectors</span><span class="settings-rail-class"><span class="settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span> <span class="settings-class icon" data-class="not_read_yet"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">5</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">client</span><span class="settings-rail-class"><span class="settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">models</span><span class="settings-rail-class"><span class="settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">handoff</span><span class="settings-rail-class"><span class="settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">documents</span><span class="settings-rail-class"><span class="settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">usage</span><span class="settings-rail-class"><span class="settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">gateway</span><span class="settings-rail-class"><span class="settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">4</span></button>
-      <button class="settings-rail-item"><span class="settings-rail-name">env</span><span class="settings-rail-class"><span class="settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">6</span></button>
+      <button class="settings-rail-item on" aria-pressed="true"><span class="settings-rail-name">accounts</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">31</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">162</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">connectors</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="not_read_yet"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">16</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">9</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">client</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">dictate</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span> <span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">12</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">models</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">handoff</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">3</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">documents</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">usage</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="live"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">1</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">gateway</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="restart"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">4</span></button>
+      <button class="settings-rail-item"><span class="settings-rail-name">env</span><span class="settings-rail-class"><span class="chip settings-class icon" data-class="next_session"><span class="settings-class-mark"></span></span></span><span class="settings-rail-count">6</span></button>
     </nav>
 
     <section class="settings-pane">
       <div class="settings-pane-head">
         <h2 class="t">accounts</h2>
         <span class="s">the provider endpoints and credentials a session can spawn under</span>
-        <span class="settings-keys">30 keys</span>
+        <span class="settings-keys">31 keys</span>
       </div>
 
-      <div class="settings-group"><span class="settings-group-name">Subspace</span><span class="settings-group-class"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span></div>
+      <div class="settings-group"><span class="settings-group-name">Subspace</span><span class="settings-group-class"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span></div>
       <table class="settings-rows">
         <colgroup><col class="k" /><col /><col class="e" /></colgroup>
         <tbody>
-          <tr><th scope="row"><code>accounts.Subspace.display_name</code></th><td class="v">Subspace</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code>accounts.Subspace.provider</code></th><td class="v">anthropic</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code>accounts.Subspace.base_url</code></th><td class="v">not set</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code>accounts.Subspace.token</code></th><td class="v">sk-ant-oat01-example</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code>accounts.Subspace.models</code></th><td class="v"><span class="settings-chips"><code>claude-opus-5-5[1m]</code><code>claude-opus-5-5</code></span></td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.Subspace.display_name">display_name</code></th><td class="v">Subspace</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.Subspace.provider">provider</code></th><td class="v">anthropic</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.Subspace.base_url">base_url</code></th><td class="v">not set</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.Subspace.token">token</code></th><td class="v">sk-ant-oat01-example</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.Subspace.models">models</code></th><td class="v"><span class="settings-chips"><code>claude-opus-5-5[1m]</code><code>claude-opus-5-5</code></span></td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
         </tbody>
       </table>
 
-      <div class="settings-group"><span class="settings-group-name">OpenRouter</span><span class="settings-group-class"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span></div>
+      <div class="settings-group"><span class="settings-group-name">OpenRouter</span><span class="settings-group-class"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span></div>
       <table class="settings-rows">
         <colgroup><col class="k" /><col /><col class="e" /></colgroup>
         <tbody>
-          <tr><th scope="row"><code>accounts.OpenRouter.provider</code></th><td class="v">openrouter</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code>accounts.OpenRouter.base_url</code></th><td class="v">https://openrouter.ai/api</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code>accounts.OpenRouter.model_slugs.glm-5.3-flash</code></th><td class="v">z-ai/glm-5.3-flash</td><td class="e"><span class="settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
-          <tr><th scope="row"><code>accounts.OpenRouter.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS</code></th><td class="v">1048576</td><td class="e"><span class="settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.OpenRouter.provider">provider</code></th><td class="v">openrouter</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.OpenRouter.base_url">base_url</code></th><td class="v">https://openrouter.ai/api</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.OpenRouter.model_slugs.glm-5.3-flash">glm-5.3-flash</code></th><td class="v">z-ai/glm-5.3-flash</td><td class="e"><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></td></tr>
+          <tr><th scope="row"><code title="accounts.OpenRouter.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS">CLAUDE_CODE_MAX_CONTEXT_TOKENS</code></th><td class="v">1048576</td><td class="e"><span class="chip settings-class" data-class="next_session"><span class="settings-class-mark"></span><span class="settings-class-word">next session</span></span></td></tr>
         </tbody>
       </table>
     </section>
@@ -230,35 +235,35 @@
       <span class="title"><span class="t">settings</span><span class="s">the effective config, as loaded</span></span>
       <span class="settings-meta">
         <span class="versions"><span class="build"><span class="k">server</span> <b>v1.1.34</b></span> &middot; <span class="build"><span class="k">socket</span> <b>v18</b></span></span>
-        <span class="totals"><span class="n">232</span> keys &middot; <span class="n">11</span> areas</span>
+        <span class="totals"><span class="n">233</span> keys &middot; <span class="n">12</span> areas</span>
       </span>
     </header>
 
     <div class="settings-split">
       <div class="settings-rail">
-        <button class="settings-rail-item"><span class="settings-rail-name">accounts</span><span class="settings-rail-count">30</span></button>
+        <button class="settings-rail-item"><span class="settings-rail-name">accounts</span><span class="settings-rail-count">31</span></button>
         <button class="settings-rail-item"><span class="settings-rail-name">projects</span><span class="settings-rail-count">162</span></button>
-        <button class="settings-rail-item on" aria-current="page"><span class="settings-rail-name">connectors</span><span class="settings-rail-count">16</span></button>
-        <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-count">5</span></button>
+        <button class="settings-rail-item on" aria-pressed="true"><span class="settings-rail-name">connectors</span><span class="settings-rail-count">16</span></button>
+        <button class="settings-rail-item"><span class="settings-rail-name">server</span><span class="settings-rail-count">9</span></button>
       </div>
       <div class="settings-pane">
         <div class="settings-pane-head">
           <h2 class="t">connectors</h2>
           <span class="settings-keys">16 keys</span>
         </div>
-        <div class="settings-group"><span class="settings-group-name">slack / Trust Machines</span><span class="settings-group-class"><span class="settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span></div>
+        <div class="settings-group"><span class="settings-group-name">slack / Trust Machines</span><span class="settings-group-class"><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></span></div>
         <table class="settings-rows">
           <colgroup><col class="k" /><col /><col class="e" /></colgroup>
           <tbody>
-            <tr><th scope="row"><code>slack.Trust Machines.workspace</code></th><td class="v">Trust Machines</td><td class="e"><span class="settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></td></tr>
-            <tr><th scope="row"><code>slack.Trust Machines.token</code></th><td class="v">xoxp-example</td><td class="e"><span class="settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></td></tr>
+            <tr><th scope="row"><code title="slack.Trust Machines.workspace">workspace</code></th><td class="v">Trust Machines</td><td class="e"><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></td></tr>
+            <tr><th scope="row"><code title="slack.Trust Machines.token">token</code></th><td class="v">xoxp-example</td><td class="e"><span class="chip settings-class" data-class="restart"><span class="settings-class-mark"></span><span class="settings-class-word">restart</span></span></td></tr>
           </tbody>
         </table>
-        <div class="settings-group"><span class="settings-group-name">plugins</span><span class="settings-group-class"><span class="settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></span></div>
+        <div class="settings-group"><span class="settings-group-name">plugins</span><span class="settings-group-class"><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></span></div>
         <table class="settings-rows">
           <colgroup><col class="k" /><col /><col class="e" /></colgroup>
           <tbody>
-            <tr><th scope="row"><code>plugins.auto_update</code></th><td class="v">true</td><td class="e"><span class="settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></td></tr>
+            <tr><th scope="row"><code title="plugins.auto_update">auto_update</code></th><td class="v">true</td><td class="e"><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></td></tr>
           </tbody>
         </table>
       </div>

@@ -1,7 +1,7 @@
 /**
  * The settings page's own derivations: which area is drawn, how its rows
- * group, and the one class an area or a group wears. Nothing here reads the
- * socket, so the layout is testable without one.
+ * group, the classes an area holds and the one a group wears. Nothing here
+ * reads the socket, so the layout is testable without one.
  */
 
 import type { SettingsArea, SettingsClass, SettingsDocument, SettingsKey } from '../wire/settings';
@@ -35,6 +35,25 @@ export function strongest(keys: SettingsKey[]): SettingsClass | null {
     if (strongest === null || classRank(key.class) > classRank(strongest)) strongest = key.class;
   }
   return strongest;
+}
+
+/**
+ * Every distinct class an area holds, in the legend's order. The rail draws
+ * all of them: an area holding both a restart key and an unread one says so,
+ * rather than reporting only the furthest.
+ */
+export function classesOf(keys: SettingsKey[]): SettingsClass[] {
+  const held = new Set(keys.map((key) => key.class));
+  return [...held].sort((one, two) => classRank(one) - classRank(two));
+}
+
+/**
+ * The leaf a row draws: its own key name. The group header carries the
+ * instance and the area header the table, so the row does not repeat either.
+ */
+export function leafOf(path: string): string {
+  const at = path.lastIndexOf('.');
+  return at === -1 ? path : path.slice(at + 1);
 }
 
 export function classRank(held: SettingsClass): number {

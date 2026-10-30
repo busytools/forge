@@ -113,7 +113,8 @@ export interface StyleTarget {
 }
 
 /**
- * Apply what the greeting carried, to the document root.
+ * Apply a client's axes to the document root: the settings frame's when one
+ * has landed, the greeting's dictate axes before that.
  *
  * Inline custom properties rather than a `<style>` block: an injected rule
  * ties with the sheet's own `:root` on specificity and loses on document
