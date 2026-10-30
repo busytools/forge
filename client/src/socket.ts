@@ -280,7 +280,11 @@ export interface Connection {
    *
    * A page returning from the background sends this first: the socket may
    * have died while the page slept, and the deadline is what turns that into
-   * the reconnect the page needs. Nothing happens unless the socket is open.
+   * the reconnect the page needs.
+   *
+   * **Only a server that has greeted THIS connection and speaks the probe is
+   * asked**, and a probe already out is left standing rather than re-armed -
+   * a person returning every few seconds must not keep a dead link open.
    */
   probe(): void;
   close(): void;
@@ -598,6 +602,15 @@ export function connect(
   /** The greeting's own number, kept whether or not it skews. */
   let greetingProtocol: number | null = null;
   /**
+   * Whether THIS connection has greeted.
+   *
+   * **`greetingProtocol` outlives a drop**, because the footer draws the last
+   * server's number; a probe must not. A page on v20 whose server is rolled
+   * back to v19 while it sleeps would otherwise treat the stale 20 as the
+   * reconnected server's answer, and a return would probe a v19 socket.
+   */
+  let greeted = false;
+  /**
    * The seat this client has on screen, re-sent on every reconnect.
    *
    * The server's showing is per connection, and a drop ends it; `null` is
@@ -656,7 +669,7 @@ export function connect(
    * answer.
    */
   function speaksLiveness(): boolean {
-    return greetingProtocol === null || greetingProtocol >= LIVENESS_PROTOCOL;
+    return !greeted || greetingProtocol === null || greetingProtocol >= LIVENESS_PROTOCOL;
   }
 
   /**
@@ -668,7 +681,7 @@ export function connect(
    * subscribe - so a store nobody touched would flip to refused.
    */
   function probeNow(): void {
-    if (greetingProtocol === null || greetingProtocol < LIVENESS_PROTOCOL) return;
+    if (!greeted || greetingProtocol === null || greetingProtocol < LIVENESS_PROTOCOL) return;
     probe();
   }
 
@@ -851,6 +864,7 @@ export function connect(
         // the surfaces draw the notice from here. Nothing refuses.
         protocolSkew = skewOf(message);
         greetingProtocol = typeof message.version === 'number' ? message.version : null;
+        greeted = true;
         return;
       }
       case 'settings':
@@ -931,6 +945,8 @@ export function connect(
   function open(): void {
     retry = null;
     if (status === 'closed') return;
+    // A new dial starts ungreeted, whatever the last connection said.
+    greeted = false;
 
     let next: WebSocket;
     try {
@@ -1090,6 +1106,9 @@ export function connect(
       clearLiveness();
       socket = null;
       currentDrop = null;
+      // **The greeting died with the connection.** The footer keeps its
+      // number; a probe must wait for the next server to say what it speaks.
+      greeted = false;
       // A dropped socket's holds die with it: the reconnect's answer is the
       // whole record, and the numbers start wherever it says.
       opened.reset();

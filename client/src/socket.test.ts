@@ -1978,6 +1978,28 @@ describe('the liveness probe', () => {
   });
 
   /**
+   * **The previous connection's greeting does not carry over.** A page on v20
+   * whose server is rolled back to v19 while it sleeps must not probe the
+   * reconnected socket on the stale number.
+   */
+  it('does not probe a reconnect on the previous greeting', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    socket.deliver({ kind: 'greeting', version: 20, settings: DEFAULT_SETTINGS });
+
+    // The socket drops; the retry dials a fresh one, which has not greeted.
+    socket.onclose?.();
+    await vi.advanceTimersByTimeAsync(RETRY_MS);
+    const next = FakeSocket.made[1];
+    expect(next, 'the retry dialled').toBeDefined();
+    next?.open();
+    connection.probe();
+
+    expect(pings(next as FakeSocket), "the stale v20 is not the new server's").toHaveLength(0);
+    connection.close();
+  });
+
+  /**
    * **A server older than the probe is not asked.** Its answer would be a
    * `client_message` error, which the refusal arm books on the oldest waiting
    * subscribe - a healthy subject marked refused every quiet spell.
