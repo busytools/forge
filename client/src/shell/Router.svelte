@@ -100,6 +100,8 @@
   // visibility signal is every build's; the shell adds the mobile resume,
   // which Android needs because its window never reports focus. The watcher
   // reads the route when it fires, so a seat the page left is not re-read.
+  // On the shell the bridge's stale-beat reconcile names the same return, and
+  // it skips what this just asked for (`Bridge::reconcile`).
   $effect(() => {
     const open = connection;
     if (open === null) return;

@@ -6,7 +6,7 @@
  * link that is genuinely still open carries no news of the hours it slept
  * through: the records the page holds are as old as the hide, and a seat's
  * conversation does not refresh itself while nobody draws it. So a return
- * asks once - home, board, usage and the shown seat - and the probe goes
+ * asks once - home, board and the shown seat - and the probe goes
  * first so a dead socket is caught by its deadline rather than up to a quiet
  * spell later.
  *
@@ -31,8 +31,15 @@ import type { SessionSlot } from '../wire/types';
  */
 export const RETURN_HIDE_MS = 2_000;
 
-/** The subjects a return freshens, when this connection holds them. */
-const RETURNED: readonly Subject[] = ['home', 'board', 'usage'];
+/**
+ * The subjects a return freshens, when this connection holds them.
+ *
+ * **`usage` is not here**, though the server serves it: no page subscribes to
+ * it - the token and cost pool rides the home snapshot (`Subject::Usage`'s own
+ * doc says a subscription is one scan and hears nothing after it), so a
+ * refresh for it would be an ask nothing holds.
+ */
+const RETURNED: readonly Subject[] = ['home', 'board'];
 
 /**
  * Re-read what a return makes stale, once.
@@ -69,6 +76,8 @@ export function watchReturn(connection: Connection, shown: () => SessionSlot | n
   const freshen = (): void => {
     if (stopped) return;
     const now = Date.now();
+    // **A shell resume spends the hide**: a bare visible signal after it is
+    // the same return, however long the dedupe window has been.
     hiddenAt = null;
     if (now - lastReadAt < RETURN_HIDE_MS) return;
     lastReadAt = now;

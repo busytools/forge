@@ -18,13 +18,18 @@ vi.mock('../session/live', () => ({ rereadSeat: vi.fn() }));
 /**
  * The shell's resume listener, captured rather than registered: the event
  * the Rust half emits is the phone's only return signal, and a test drives
- * it from here.
+ * it from here. Each install's unlisten is kept so a stop can be watched.
  */
-const { foreground } = vi.hoisted(() => ({ foreground: [] as (() => void)[] }));
+const { foreground, stops } = vi.hoisted(() => ({
+  foreground: [] as (() => void)[],
+  stops: [] as ReturnType<typeof vi.fn>[],
+}));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: (name: string, fn: () => void) => {
     if (name === 'client://foreground') foreground.push(fn);
-    return Promise.resolve(() => {});
+    const stop = vi.fn();
+    stops.push(stop);
+    return Promise.resolve(stop);
   },
 }));
 
@@ -40,12 +45,15 @@ const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 /**
  * A connection that records the asks a return makes, with the real stores so
  * "the subjects this connection holds" is the same question the page asks.
+ *
+ * `calls` keeps the ORDER, which is the property the probe-first rule states;
+ * `refreshed` is the subjects alone, for the assertions about which.
  */
 function fakeConnection() {
   const stores = new Stores();
   const statuses = new Set<(status: ConnectionStatus) => void>();
   const refreshed: Subject[] = [];
-  let probed = 0;
+  const calls: string[] = [];
   let status: ConnectionStatus = 'open';
 
   const connection: Connection = {
@@ -57,6 +65,7 @@ function fakeConnection() {
     },
     refresh(what) {
       refreshed.push(what);
+      calls.push(`refresh:${typeof what === 'string' ? what : 'seat'}`);
       return true;
     },
     relist() {},
@@ -85,7 +94,7 @@ function fakeConnection() {
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => status,
     probe: () => {
-      probed += 1;
+      calls.push('probe');
     },
     close: () => {},
   };
@@ -94,7 +103,7 @@ function fakeConnection() {
     connection,
     stores,
     refreshed,
-    probed: () => probed,
+    calls,
     setStatus(next: ConnectionStatus) {
       status = next;
       for (const fn of [...statuses]) fn(next);
@@ -138,27 +147,28 @@ describe('the return re-read', () => {
     setHidden(false);
     inShell(false);
     foreground.length = 0;
+    stops.length = 0;
   });
 
   /**
    * **A return asks once for everything the hide made stale**: the probe
    * first, then each subject this connection holds, then the seat on screen.
+   * The order is the claim - a probe that lands after the reads answers for a
+   * link the reads may already have waited on.
    */
-  it('freshens home, board, usage and the shown seat once on a return', async () => {
+  it('probes, then freshens what the connection holds, then re-reads the seat', async () => {
     const fake = fakeConnection();
+    vi.mocked(rereadSeat).mockImplementation(() => {
+      fake.calls.push('seat');
+    });
     const stop = watchReturn(fake.connection, () => LEAD);
     fake.connection.subscribe('home');
     fake.connection.subscribe('board');
-    fake.connection.subscribe('usage');
     fake.refreshed.length = 0;
 
     await returnAfter(5_000);
 
-    expect(fake.probed(), 'the probe goes first, before the reads').toBe(1);
-    expect(fake.refreshed).toEqual<Subject[]>(['home', 'board', 'usage']);
-    expect(vi.mocked(rereadSeat).mock.calls, 'the seat shown is re-read').toEqual([
-      [fake.connection, LEAD],
-    ]);
+    expect(fake.calls).toEqual(['probe', 'refresh:home', 'refresh:board', 'seat']);
     stop();
   });
 
@@ -187,7 +197,7 @@ describe('the return re-read', () => {
     await returnAfter(1_000);
 
     expect(fake.refreshed, 'a short hide asks nothing').toEqual([]);
-    expect(fake.probed(), 'and probes nothing').toBe(0);
+    expect(fake.calls, 'and probes nothing').toEqual([]);
     stop();
   });
 
@@ -255,6 +265,30 @@ describe('the return re-read', () => {
     stop();
   });
 
+  /**
+   * **A shell resume spends the hide.** The signal names the return, so a
+   * bare visible signal that follows is the same return even after the dedupe
+   * window has passed - a stale hidden mark would re-read again.
+   */
+  it('does not re-read on a bare visible signal after a shell resume', async () => {
+    const fake = fakeConnection();
+    inShell(true);
+    const stop = watchReturn(fake.connection, () => LEAD);
+    fake.connection.subscribe('home');
+    await vi.advanceTimersByTimeAsync(0);
+
+    setHidden(true);
+    visibilityChanged();
+    await vi.advanceTimersByTimeAsync(3_000);
+    foreground[0]?.();
+    await vi.advanceTimersByTimeAsync(3_000);
+    setHidden(false);
+    visibilityChanged();
+
+    expect(fake.refreshed, 'one return, one read').toEqual<Subject[]>(['home']);
+    stop();
+  });
+
   /** A return while the socket is down asks nothing: the reconnect's own
    *  re-ask is the fresher read, and a refresh on a dead socket would not
    *  go anywhere anyway. */
@@ -268,6 +302,30 @@ describe('the return re-read', () => {
 
     expect(fake.refreshed).toEqual([]);
     stop();
+  });
+
+  /**
+   * **A stopped watcher is dead to both signals**, and it hands its shell
+   * listener back: one left behind pins the connection for the page's life.
+   */
+  it('asks nothing after it is stopped, and gives the listener back', async () => {
+    const fake = fakeConnection();
+    inShell(true);
+    const stop = watchReturn(fake.connection, () => LEAD);
+    fake.connection.subscribe('home');
+    await vi.advanceTimersByTimeAsync(0);
+    const unlisten = stops.at(-1);
+
+    stop();
+
+    expect(unlisten, 'the shell listener is given back').toHaveBeenCalled();
+    foreground[0]?.();
+    setHidden(true);
+    visibilityChanged();
+    await vi.advanceTimersByTimeAsync(5_000);
+    setHidden(false);
+    visibilityChanged();
+    expect(fake.calls, 'nothing is asked after the stop').toEqual([]);
   });
 });
 
@@ -284,7 +342,7 @@ describe('the resync itself', () => {
     resync(fake.connection, LEAD);
 
     expect(fake.refreshed).toEqual([]);
-    expect(fake.probed()).toBe(0);
+    expect(fake.calls).toEqual([]);
     expect(vi.mocked(rereadSeat)).not.toHaveBeenCalled();
   });
 

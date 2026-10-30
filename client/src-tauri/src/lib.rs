@@ -677,26 +677,36 @@ pub fn run() {
             }
             return;
         }
-        // **Looking away is when an ask on the shown seat becomes news**, and
-        // no frame carries that moment.
-        if let tauri::RunEvent::WindowEvent { event, .. } = &event
-            && let Some(foreground) = attention(event)
-        {
+        // **One window-event seam for both readers of attention.** The ask
+        // rule turns on whether the person is looking; the page's return
+        // re-read turns on a mobile resume, which `attention` already reads
+        // the same way - it just needs to hear it too.
+        if let tauri::RunEvent::WindowEvent { event, .. } = &event {
+            if let Some(foreground) = attention(event) {
+                #[cfg(mobile)]
+                crate::asks::set_foreground(foreground);
+                review_asks(handle, foreground);
+            }
+            // **A mobile resume is the person coming back**, and the page
+            // hears it here: tao's Android window never reports focus, so a
+            // page left to a focus event would never re-read after a lock.
             #[cfg(mobile)]
-            crate::asks::set_foreground(foreground);
-            review_asks(handle, foreground);
-        }
-        // **A mobile resume is the person coming back**, and the page hears
-        // it here: tao's Android window never reports focus, so a page left
-        // to a focus event would never re-read after a lock. Named apart
-        // from `attention` because the rule above is about asks and this is
-        // about data that went stale while the app slept.
-        #[cfg(mobile)]
-        if let tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::Resumed, .. } = &event {
-            use tauri::Emitter as _;
-            let _ = handle.emit("client://foreground", ());
+            if returned(event) {
+                use tauri::Emitter as _;
+                let _ = handle.emit("client://foreground", ());
+            }
         }
     });
+}
+
+/// Whether this event is a mobile resume: the person coming back, which the
+/// page hears as `client://foreground`.
+///
+/// **`attention` maps it too** - a resume is looking again - but the ask rule
+/// and the page's return re-read are different readers of the same event.
+#[cfg(mobile)]
+fn returned(event: &tauri::WindowEvent) -> bool {
+    matches!(event, tauri::WindowEvent::Resumed)
 }
 
 /// The foreground state a window event states, or `None` when it says
