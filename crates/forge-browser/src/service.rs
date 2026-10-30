@@ -318,7 +318,7 @@ impl BrowserService {
         // its channel, alive for the process's life.
         let weak = Arc::downgrade(self);
         handle.spawn(async move {
-            while let Some(request) = queue.recv().await {
+            while let Some(mut request) = queue.recv().await {
                 let Some(service) = weak.upgrade() else { break };
                 let key = request.key.clone();
                 let profile = service.profiles.lock().await.get(&key).cloned();
@@ -347,10 +347,21 @@ impl BrowserService {
                     let deadline = tokio::time::Instant::now() + PAIR_BOUND;
                     tokio::time::timeout(
                         PAIR_BOUND,
-                        service.reconcile(&profile, &driver, port, deadline),
+                        service.reconcile(
+                            &profile,
+                            &driver,
+                            port,
+                            deadline,
+                            ReconcilePass::Pairing { first: !request.warned },
+                        ),
                     )
                     .await
                 };
+                // **The first unlisted pass is the warning**, and every retry
+                // this request makes afterwards says the same thing at debug.
+                if matches!(outcome, Ok(false)) {
+                    request.warned = true;
+                }
                 let retry = if let Ok(listed) = outcome {
                     // **A pass that could not list pairs nothing**, so its
                     // birth is still the receiver's: it is retried exactly as
@@ -1472,7 +1483,7 @@ impl BrowserService {
             state.host.as_ref().map(|host| host.port)
         };
         if let Some(port) = port {
-            self.reconcile(profile, driver, port, deadline).await;
+            self.reconcile(profile, driver, port, deadline, ReconcilePass::Call(seat)).await;
         }
         match action {
             "list" => {}
@@ -1583,7 +1594,7 @@ impl BrowserService {
     async fn drive(
         &self,
         profile: &Arc<Profile>,
-        _seat: &SessionSlot,
+        seat: &SessionSlot,
         driver: &Arc<dyn TabDriver>,
         tab: u16,
         call: Drive<'_>,
@@ -1654,7 +1665,7 @@ impl BrowserService {
             tabs.retarget(tab, &row.target);
             tabs.update(tab, &row.title, &row.url);
         }
-        self.reconcile(profile, &driver, port, deadline).await;
+        self.reconcile(profile, &driver, port, deadline, ReconcilePass::Call(seat)).await;
         profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
         self.publish_rows(&profile.key).await;
         // **Failure handling is the caller's, after the chooser decision is
@@ -1891,19 +1902,35 @@ impl BrowserService {
         driver: &Arc<dyn TabDriver>,
         port: u16,
         deadline: tokio::time::Instant,
+        pass: ReconcilePass<'_>,
     ) -> bool {
         // **A reconcile in flight across a host death must not write its
         // events back over the empty list** the death just made. The
         // generation names the host this pass is pairing for.
         let generation = profile.host_generation.load(Ordering::Acquire);
-        let Ok(mut listing) = driver.tabs_within(left(deadline)).await else {
-            tracing::debug!(
-                event_name = "browser_reconcile_unlisted",
-                profile = %profile.key,
-                "reconcile could not list the driver's tabs"
-            );
-            self.publish_rows(&profile.key).await;
-            return false;
+        let mut listing = match driver.tabs_within(left(deadline)).await {
+            Ok(listing) => listing,
+            Err(why) => {
+                if pass.warns() {
+                    tracing::warn!(
+                        event_name = "browser_reconcile_unlisted",
+                        profile = %profile.key,
+                        pass = pass.name(),
+                        seat = ?pass.seat(),
+                        "reconcile could not list the driver's tabs: {why}"
+                    );
+                } else {
+                    tracing::debug!(
+                        event_name = "browser_reconcile_unlisted",
+                        profile = %profile.key,
+                        pass = pass.name(),
+                        seat = ?pass.seat(),
+                        "reconcile could not list the driver's tabs: {why}"
+                    );
+                }
+                self.publish_rows(&profile.key).await;
+                return false;
+            }
         };
         // **The events this pass takes are held, not owned.** The pairing pass
         // that runs here is bounded by a timeout, and a listing that never
@@ -4822,6 +4849,7 @@ impl Profile {
                                 opener,
                                 url: url.clone(),
                                 until: tokio::time::Instant::now() + POPUP_PAIR_UNTIL,
+                                warned: false,
                             });
                         }
                     }
@@ -5135,6 +5163,38 @@ const POPUP_PAIR_EVERY: Duration = Duration::from_millis(250);
 /// answers the birth instead of leaving it deferred until someone calls.
 const POPUP_PAIR_UNTIL: Duration = Duration::from_secs(12);
 
+/// Who asked for a reconcile: a session's call, or a popup birth waiting to
+/// be paired. A call answers a seat, so an unlisted pass can name it.
+///
+/// **A pairing pass retries every 250 ms for its birth's window**, so only
+/// its first unlisted pass is a problem worth a WARN; the retries stay at
+/// debug rather than repeating one line per attempt.
+enum ReconcilePass<'a> {
+    Call(&'a SessionSlot),
+    Pairing { first: bool },
+}
+
+impl ReconcilePass<'_> {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Call(_) => "call",
+            Self::Pairing { .. } => "pairing",
+        }
+    }
+
+    fn seat(&self) -> Option<&SessionSlot> {
+        match self {
+            Self::Call(seat) => Some(seat),
+            Self::Pairing { .. } => None,
+        }
+    }
+
+    /// Whether this unlisted pass is a problem worth a WARN.
+    fn warns(&self) -> bool {
+        matches!(self, Self::Call(_) | Self::Pairing { first: true })
+    }
+}
+
 /// One popup birth's pairing pass was asked for: the profile to pass over,
 /// and what the slow-pass line names.
 #[derive(Clone)]
@@ -5144,6 +5204,9 @@ struct PairingRequest {
     opener: u16,
     url: String,
     until: tokio::time::Instant,
+    /// Whether this request's first unlisted pass has already warned, so its
+    /// retries stay at debug.
+    warned: bool,
 }
 
 /// Watch the focused tab's own navigations and publish the bar's arrows.
@@ -5931,12 +5994,12 @@ fn device_pixels(css: u32, scale: f64) -> u32 {
 mod tests {
     use super::{
         BrowserService, Call, ChooserAnswer, ChooserFuture, ChooserLedger, DOWNLOAD_BACKLOG,
-        DeadDriverOutcome, DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, State,
-        UploadRequest, agent_upload_paths, agent_upload_refused, begin_upload, captured_generation,
-        clear_if_dead, dead_driver_answer, dead_host_answer, dead_page_answer, death_cause,
-        device_pixels, file_name, installed_generation, note_agent_answered, note_surfaced_opened,
-        note_upload_finished, owner_size, pair_tab_events, stage_agent_uploads, upload_request,
-        window_dimension, write_uploads,
+        DeadDriverOutcome, DeadHost, DeadPageOutcome, Driven, HostEnd, Profile, ReconcilePass,
+        State, UploadRequest, agent_upload_paths, agent_upload_refused, begin_upload,
+        captured_generation, clear_if_dead, dead_driver_answer, dead_host_answer, dead_page_answer,
+        death_cause, device_pixels, file_name, installed_generation, note_agent_answered,
+        note_surfaced_opened, note_upload_finished, owner_size, pair_tab_events,
+        stage_agent_uploads, upload_request, window_dimension, write_uploads,
     };
     use forge_primitives::SessionSlot;
     use forge_primitives::browser::BrowserDownload;
@@ -6829,7 +6892,15 @@ mod tests {
         // install must still be bounded by this, not by `CALL_TIMEOUT`.
         let budget = crate::driver::START_TIMEOUT + Duration::from_secs(1);
 
-        service.reconcile(&profile, &driver, 9, tokio::time::Instant::now() + budget).await;
+        service
+            .reconcile(
+                &profile,
+                &driver,
+                9,
+                tokio::time::Instant::now() + budget,
+                ReconcilePass::Pairing { first: true },
+            )
+            .await;
 
         let bounds = fresh.bounds();
         assert!(!bounds.is_empty(), "the fresh driver listed for the popup");
@@ -6871,7 +6942,13 @@ mod tests {
 
         // Well under a driver start, and well over the first listing.
         service
-            .reconcile(&profile, &driver, 9, tokio::time::Instant::now() + Duration::from_secs(1))
+            .reconcile(
+                &profile,
+                &driver,
+                9,
+                tokio::time::Instant::now() + Duration::from_secs(1),
+                ReconcilePass::Pairing { first: true },
+            )
             .await;
 
         assert_eq!(seen.listings(), 1, "the pass still listed once");
@@ -10699,7 +10776,7 @@ mod tests {
 #[cfg(test)]
 mod server_guards {
     use super::tests::{Caught, FakeDriver, ended, records, saw, seed_tab};
-    use super::{BrowserService, Call, Driven, Profile, pair_tab_events};
+    use super::{BrowserService, Call, Driven, Profile, ReconcilePass, pair_tab_events};
     use crate::control::HostEvent;
     use crate::driver::TabDriver;
     use crate::tabs::DriverTab;
@@ -10838,6 +10915,7 @@ mod server_guards {
                         &listing,
                         9,
                         tokio::time::Instant::now() + super::PAIR_BOUND,
+                        ReconcilePass::Pairing { first: true },
                     )
                     .await
             })
@@ -10884,6 +10962,7 @@ mod server_guards {
                         &listing,
                         9,
                         tokio::time::Instant::now() + super::PAIR_BOUND,
+                        ReconcilePass::Pairing { first: true },
                     )
                     .await
             })
@@ -10903,6 +10982,302 @@ mod server_guards {
             !deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
             "a stable pass kept an event it did not pair: {deferred:?}"
         );
+    }
+
+    /// **A reconcile from a call that cannot list names itself at WARN, with
+    /// its seat, its profile and the driver's reason, and the rows it leaves
+    /// are the registry's.** A mute driver must neither fail the call nor
+    /// answer silently with stale rows.
+    #[tokio::test]
+    async fn a_call_reconcile_that_cannot_list_names_its_seat_and_the_reason() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        service.install_fake(&seat, fake.clone()).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, seat.clone(), "T1", "T1", "stale row", "http://stale/")
+            .expect("the registry's row");
+        let (_, ring) = install_host(&profile, dir.path(), 21).await;
+        fake.timeout_every_listing();
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        let answer = service.call(&seat, "browser_tabs", json!({ "action": "list" })).await;
+        drop(guard);
+
+        let parts = answer.expect("the registry still answers the list");
+        let text = parts
+            .iter()
+            .find_map(|part| match part {
+                BrowserPart::Text { text } => Some(text.as_str()),
+                BrowserPart::Image { .. } => None,
+            })
+            .expect("the answer is one text part");
+        assert!(
+            text.contains("[stale row](http://stale/)"),
+            "the registry's row came back rather than a failure: {text}"
+        );
+        let (level, fields) = records(&caught)
+            .into_iter()
+            .find(|(_, fields)| fields.contains("event_name=\"browser_reconcile_unlisted\""))
+            .expect("the unlisted reconcile is named");
+        assert_eq!(
+            level,
+            tracing::Level::WARN,
+            "a driver that cannot list is forge's problem: {fields}"
+        );
+        assert!(fields.contains("profile=O/default"), "the profile is named: {fields}");
+        assert!(fields.contains("pass=\"call\""), "the pass that failed is named: {fields}");
+        assert!(
+            fields.contains("seat=Some(SessionSlot {"),
+            "the seat whose call it was is named: {fields}"
+        );
+        for named in ["org: \"O\"", "project: \"p\"", "label: \"lead\""] {
+            assert!(fields.contains(named), "the seat carries `{named}`: {fields}");
+        }
+        assert!(
+            fields.contains("did not answer browser_tabs"),
+            "the driver's reason is carried: {fields}"
+        );
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// A driver that answers every listing until its page call has run, then
+    /// goes mute: what a successful call's post-call reconcile sees.
+    struct MuteAfterCall {
+        listing: Vec<DriverTab>,
+        called: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl TabDriver for MuteAfterCall {
+        async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String> {
+            if self.called.load(Ordering::Acquire) {
+                return Err(crate::driver::did_not_answer("browser_tabs", bound));
+            }
+            Ok(self.listing.clone())
+        }
+
+        async fn select(&self, _index: usize, _bound: Duration) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn call_within(
+            &self,
+            _tool: &str,
+            _args: Value,
+            _bound: Duration,
+        ) -> Result<Vec<BrowserPart>, String> {
+            self.called.store(true, Ordering::Release);
+            Ok(vec![BrowserPart::Text { text: "the page".to_owned() }])
+        }
+
+        fn is_running(&self) -> bool {
+            true
+        }
+    }
+
+    /// **The post-call reconcile names its seat too.** A call that succeeds
+    /// and then finds the driver mute leaves the same record as the registry
+    /// path, and it must say whose call it was.
+    #[tokio::test]
+    async fn a_page_calls_reconcile_names_the_seat() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_boot(
+                &seat,
+                MuteAfterCall { listing: vec![row(1, "T1")], called: AtomicBool::new(false) },
+                (1, "T1".to_owned()),
+            )
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let (_, ring) = install_host(&profile, dir.path(), 22).await;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        let answer = service.call(&seat, "browser_snapshot", json!({})).await;
+        drop(guard);
+
+        assert!(answer.is_ok(), "the page call answered: {answer:?}");
+        let (level, fields) = records(&caught)
+            .into_iter()
+            .find(|(_, fields)| fields.contains("event_name=\"browser_reconcile_unlisted\""))
+            .expect("the post-call reconcile is named");
+        assert_eq!(level, tracing::Level::WARN, "a mute driver is forge's problem: {fields}");
+        assert!(fields.contains("pass=\"call\""), "the pass is named: {fields}");
+        assert!(fields.contains("seat=Some(SessionSlot {"), "the seat is named: {fields}");
+        assert!(fields.contains("label: \"lead\""), "the caller is named: {fields}");
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// **A pairing pass that cannot list warns once and retries quietly.** The
+    /// spawned pass retries every 250 ms for its birth's window, and a WARN
+    /// per attempt would be dozens of identical lines for one popup: the
+    /// first unlisted pass warns, the retries stay at debug, and every line
+    /// names the pass with no seat.
+    #[tokio::test(start_paused = true)]
+    async fn a_pairing_pass_that_cannot_list_warns_once_for_its_request() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let fake = FakeDriver::with_blank("T1");
+        fake.timeout_every_listing();
+        service.install_fake(&seat, fake).await;
+        let profile = service.find("O/default").await.expect("the profile");
+        let (_, ring) = install_host(&profile, dir.path(), 23).await;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        let _ = service.pairing.send(super::PairingRequest {
+            key: "O/default".to_owned(),
+            tab: 2,
+            opener: 1,
+            url: "about:blank".to_owned(),
+            until: tokio::time::Instant::now() + Duration::from_secs(1),
+            warned: false,
+        });
+        // Past the request's whole window, so every retry it makes has run.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        drop(guard);
+
+        let pairing: Vec<(tracing::Level, String)> = records(&caught)
+            .into_iter()
+            .filter(|(_, fields)| fields.contains("event_name=\"browser_reconcile_unlisted\""))
+            .filter(|(_, fields)| fields.contains("pass=\"pairing\""))
+            .collect();
+        assert!(pairing.len() >= 3, "the spawned pass retried its unlisted listing: {pairing:?}");
+        let warned = pairing.iter().filter(|(level, _)| *level == tracing::Level::WARN).count();
+        assert_eq!(warned, 1, "one warning per popup, not one per retry: {pairing:?}");
+        assert_eq!(
+            pairing[0].0,
+            tracing::Level::WARN,
+            "the first pass is the warning: {pairing:?}"
+        );
+        assert!(
+            pairing[1..].iter().all(|(level, _)| *level == tracing::Level::DEBUG),
+            "the retries stay at debug: {pairing:?}"
+        );
+        for (_, fields) in &pairing {
+            assert!(fields.contains("seat=None"), "a pairing pass has no seat: {fields}");
+            assert!(
+                fields.contains("did not answer browser_tabs"),
+                "every record carries the driver's reason: {fields}"
+            );
+        }
+        crate::osr::Ring::unlink(&ring);
+    }
+
+    /// A driver that lists once and then goes mute: what a pairing pass sees
+    /// when a popup's page is a beat late and the driver wedges after it.
+    struct ListsThenMute {
+        listing: Vec<DriverTab>,
+        listed: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl TabDriver for ListsThenMute {
+        async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String> {
+            if self.listed.swap(true, Ordering::AcqRel) {
+                return Err(crate::driver::did_not_answer("browser_tabs", bound));
+            }
+            Ok(self.listing.clone())
+        }
+
+        async fn select(&self, _index: usize, _bound: Duration) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn call_within(
+            &self,
+            _tool: &str,
+            _args: Value,
+            _bound: Duration,
+        ) -> Result<Vec<BrowserPart>, String> {
+            Ok(Vec::new())
+        }
+
+        fn is_running(&self) -> bool {
+            true
+        }
+    }
+
+    /// **A pass that listed is not a warning.** A popup whose page is a beat
+    /// late makes the first pass list fine and leave its birth deferred; the
+    /// WARN belongs to the later pass that cannot list, so `warned` must be
+    /// set by a warning rather than by every pass.
+    #[tokio::test(start_paused = true)]
+    async fn a_pairing_pass_that_lists_once_still_warns_when_it_goes_mute() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        service
+            .install_fake_with_successor(&seat, FakeDriver::with_blank("T1"), || {
+                Arc::new(ListsThenMute { listing: Vec::new(), listed: AtomicBool::new(false) })
+                    as Arc<dyn TabDriver>
+            })
+            .await;
+        let profile = service.find("O/default").await.expect("the profile");
+        seed_tab(&profile, &seat);
+        let (_, ring) = install_host(&profile, dir.path(), 24).await;
+        // The popup's birth is still waiting: the first listing holds only
+        // the tab the registry already knows, so the pass lists, pairs
+        // nothing and is retried.
+        let generation = profile.host_generation.load(Ordering::Acquire);
+        profile.deferred_tab_events.lock().unwrap_or_else(PoisonError::into_inner).push((
+            generation,
+            HostEvent::TabCreated {
+                tab: 2,
+                opener: Some(1),
+                url: "about:blank".to_owned(),
+                request: None,
+            },
+        ));
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::registry().with(caught.clone());
+        let guard = tracing::subscriber::set_default(subscriber);
+        let _ = service.pairing.send(super::PairingRequest {
+            key: "O/default".to_owned(),
+            tab: 2,
+            opener: 1,
+            url: "about:blank".to_owned(),
+            until: tokio::time::Instant::now() + Duration::from_secs(1),
+            warned: false,
+        });
+        // Past the request's whole window, so every retry it makes has run.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        drop(guard);
+
+        let pairing: Vec<(tracing::Level, String)> = records(&caught)
+            .into_iter()
+            .filter(|(_, fields)| fields.contains("event_name=\"browser_reconcile_unlisted\""))
+            .filter(|(_, fields)| fields.contains("pass=\"pairing\""))
+            .collect();
+        assert_eq!(
+            pairing.iter().filter(|(level, _)| *level == tracing::Level::WARN).count(),
+            1,
+            "the pass that could not list is the one warning: {pairing:?}"
+        );
+        assert_eq!(
+            pairing[0].0,
+            tracing::Level::WARN,
+            "the first record is the second pass's warning: {pairing:?}"
+        );
+        assert!(
+            pairing[1..].iter().all(|(level, _)| *level == tracing::Level::DEBUG),
+            "the retries stay at debug: {pairing:?}"
+        );
+        crate::osr::Ring::unlink(&ring);
     }
 
     /// **A pairing pass that runs out of time puts its births back.** The
@@ -10945,6 +11320,7 @@ mod server_guards {
                 &listing,
                 9,
                 tokio::time::Instant::now() + super::PAIR_BOUND,
+                ReconcilePass::Pairing { first: true },
             ),
         )
         .await;
@@ -11026,6 +11402,7 @@ mod server_guards {
             opener: 1,
             url: "about:blank".to_owned(),
             until: tokio::time::Instant::now() + Duration::from_secs(5),
+            warned: false,
         });
 
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -11079,7 +11456,13 @@ mod server_guards {
         let listing = driver(vec![row(1, "A"), row(2, "B")], None);
 
         service
-            .reconcile(&profile, &listing, port, tokio::time::Instant::now() + super::PAIR_BOUND)
+            .reconcile(
+                &profile,
+                &listing,
+                port,
+                tokio::time::Instant::now() + super::PAIR_BOUND,
+                ReconcilePass::Pairing { first: true },
+            )
             .await;
 
         let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -11100,7 +11483,13 @@ mod server_guards {
         let listing = driver(vec![row(1, "A"), row(2, "B")], None);
 
         service
-            .reconcile(&profile, &listing, port, tokio::time::Instant::now() + super::PAIR_BOUND)
+            .reconcile(
+                &profile,
+                &listing,
+                port,
+                tokio::time::Instant::now() + super::PAIR_BOUND,
+                ReconcilePass::Pairing { first: true },
+            )
             .await;
 
         let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
