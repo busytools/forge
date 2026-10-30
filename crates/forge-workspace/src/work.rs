@@ -875,6 +875,7 @@ impl Workspace {
         quiet: bool,
         force_pr: bool,
     ) -> WorkSnapshot {
+        let scan_started = Instant::now();
         let held = self.work_snapshot(slot);
         // **A forced read must not consult the cache at all.** Clearing the
         // stored stamp is not enough on its own: a Fetch scan already in
@@ -910,11 +911,15 @@ impl Workspace {
         // **The scan's own branch names the measurement it may adopt.** A
         // caller holding one passes it; a caller without (the record's
         // fallback, the seat's loop) takes the checkout's latest here, once
-        // the scan has resolved which base this row is about.
+        // the scan has resolved which base this row is about - and only one
+        // established before this scan began, because one that lands while
+        // the tree is being read describes a ref the row's count and files
+        // may predate. The next pass carries it, read against it.
         let measured = measured.or_else(|| {
-            diff.default_branch
-                .as_deref()
-                .and_then(|branch| forge_agent::env::git_diff::last_base_measurement(cwd, branch))
+            diff.default_branch.as_deref().and_then(|branch| {
+                forge_agent::env::git_diff::last_base_measurement(cwd, branch)
+                    .filter(|measured| measured.at <= scan_started)
+            })
         });
         let previous_base = held.as_ref().and_then(|held| held.base);
         let previous_base_at = held.as_ref().and_then(|held| held.base_at);
