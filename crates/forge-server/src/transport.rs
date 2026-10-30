@@ -334,6 +334,7 @@ impl TransportState {
 
 /// A settings watch holding no document, for a transport built by hand (a
 /// test): a connection with no frame draws its page's waiting state.
+#[cfg(any(test, feature = "testing"))]
 pub fn settings_channel() -> tokio::sync::watch::Sender<Option<Arc<str>>> {
     tokio::sync::watch::channel(None).0
 }
