@@ -58,23 +58,28 @@ pub mod resolver;
 const STDOUT_SIZE_CAP: usize = 8 * 1024 * 1024;
 
 /// Per-subprocess timeout. A scan's worst case is one budget per child, and a
-/// remote-less repository already issues ten of them (`SCAN_CHILDREN`); a
-/// resolved default branch adds the ahead layer's on top. In practice every
-/// command returns in <100 ms on a local repo, and timeouts only fire on hung
-/// network mounts or genuinely huge repositories.
+/// repository with no remote and no local default branch issues ten of them
+/// (`SCAN_CHILDREN`). In practice every command returns in <100 ms on a local
+/// repo, and timeouts only fire on hung network mounts or genuinely huge
+/// repositories.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The children one scan issues for a repository with no remote: `rev-parse`,
-/// the `origin/HEAD` probe plus four default-branch candidates, `status`, the
-/// worktree layer's `numstat` and `name-status`, and `for-each-ref` for the
-/// pushed sha. The PR lookup adds a `gh` child only once a pushed sha exists,
-/// which a remote-less repository has none of.
+/// The children one scan issues for a repository with no remote and no local
+/// default branch: `rev-parse`, the `origin/HEAD` probe plus its four
+/// candidates (all missed), `status`, the worktree layer's `numstat` and
+/// `name-status`, and `for-each-ref` for the pushed sha. The PR lookup adds a
+/// `gh` child only once a pushed sha exists, which such a repository has none
+/// of.
+///
+/// **That shape is the count.** One whose default does resolve leaves the
+/// probe loop early and runs the ahead layer instead, so it needs a count of
+/// its own; this constant is not it.
 #[cfg(any(test, feature = "testing"))]
 const SCAN_CHILDREN: u32 = 10;
 
-/// One scan's worst case for a repository with no remote, which is what a test
-/// waiting on a scan derives its own bound from. Test-only: production reads
-/// the per-child budget, never the count.
+/// One scan's worst case for the shape `SCAN_CHILDREN` counts, which is what a
+/// test waiting on a scan derives its own bound from. Test-only: production
+/// reads the per-child budget, never the count.
 #[cfg(any(test, feature = "testing"))]
 pub const SCAN_WORST_CASE: Duration =
     Duration::from_secs(COMMAND_TIMEOUT.as_secs() * SCAN_CHILDREN as u64);
