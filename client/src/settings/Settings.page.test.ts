@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import Settings from './Settings.svelte';
 import { settingsFrame } from './frame';
-import { emptyHome, settingsWire } from './testing';
+import { emptyHome, settingsWire } from '../dev/settings.fixture';
 
 /** The route component's own states: waiting for the frame, a frame this
  *  client could not read, and the document. */
@@ -48,6 +48,6 @@ describe('the settings route', () => {
     expect(document.body.textContent, 'the header names the source file').toContain(
       '~/.claude/forge/forge.toml',
     );
-    expect(document.body.textContent, 'and the key total').toContain('7');
+    expect(document.body.textContent, 'and the key total').toContain('13');
   });
 });

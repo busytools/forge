@@ -83,6 +83,7 @@ import {
   modelState,
   projectRows,
   refusal,
+  settingsCard,
   whenOf,
   ageOf,
   type ProjectRows,
@@ -1107,6 +1108,11 @@ describe('the band', () => {
       'accounts',
     ]);
     expect(cards.map((entry) => entry.href)).toEqual([null, '/connect', '/models', null]);
+  });
+
+  it('opens the settings page from its card', () => {
+    expect(settingsCard().href, 'the card is the page door').toBe('/settings');
+    expect(settingsCard().title).toBe('settings');
   });
 
   it('reads dictation as off when the config turned it off', () => {

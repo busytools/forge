@@ -1,5 +1,11 @@
-/** A settings document for the page's tests: every class, an empty area and a
- *  key-major account table, which is the shape the server builds. */
+/**
+ * A settings document for the page's tests: every class, two grouped
+ * tables, an empty area, and a key-major account table, which is the shape
+ * the server builds.
+ *
+ * A fixture, so it lives beside the dev route's own data rather than under
+ * the page it feeds: nothing the shipped app imports may reach this file.
+ */
 
 import type { SettingsDocument, SettingsKey } from '../wire/settings';
 
@@ -13,9 +19,9 @@ function key(
 }
 
 export const settingsWire: SettingsDocument = {
-  version: 'v1.1.34+abc1234',
+  version: '1.1.34+abc1234',
   source: '~/.claude/forge/forge.toml',
-  totals: { keys: 7, areas: 4 },
+  totals: { keys: 13, areas: 5 },
   areas: [
     {
       id: 'accounts',
@@ -33,10 +39,11 @@ export const settingsWire: SettingsDocument = {
     {
       id: 'server',
       name: 'server',
-      note: 'the socket a client reads through',
+      note: 'the socket a client reads through, and the browser the server hosts',
       keys: [
         key('server.port', 'restart', { kind: 'number', text: '8790' }),
         key('server.first_frame_cap_kb', 'live', { kind: 'number', text: '512' }),
+        key('browser.idle_minutes', 'live', { kind: 'number', text: '30' }),
       ],
     },
     {
@@ -48,7 +55,22 @@ export const settingsWire: SettingsDocument = {
         key('gotify.later', 'other', { kind: 'string', text: 'x' }, 'some future class'),
       ],
     },
-    { id: 'models', name: 'models', note: 'per-model parameters', keys: [] },
+    {
+      id: 'models',
+      name: 'models',
+      note: 'per-model parameters',
+      keys: [
+        key('models.deepseek-v4.1-flash.auto_compact_window', 'next_session', {
+          kind: 'number',
+          text: '983040',
+        }),
+        key('models.claude-opus-5-5.auto_compact_window', 'next_session', {
+          kind: 'number',
+          text: '1048576',
+        }),
+      ],
+    },
+    { id: 'documents', name: 'documents', note: 'the document hand-off', keys: [] },
   ],
 };
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { settingsWire } from './testing';
+import { settingsWire } from '../dev/settings.fixture';
 import { builtInFor, classesOf, groupsOf, leafOf, selectedArea, strongest } from './view';
 
 function area(id: string) {
@@ -50,10 +50,28 @@ describe('the settings page view', () => {
   });
 
   it('names the built-in a client axis falls back to', () => {
-    expect(builtInFor('client', 'client.mark'), 'an unset mark draws panes').toBe('panes');
-    expect(builtInFor('client', 'client.theme'), 'an unset theme draws dark').toBe('dark');
-    expect(builtInFor('client', 'client.font'), 'an unset font draws Fira Code').toBe('Fira Code');
+    expect(builtInFor('client', 'client.mark'), 'an unset mark draws the shipped mark').toBe(
+      'built-in panes',
+    );
+    expect(builtInFor('client', 'client.theme'), 'an unset theme draws the shipped palette').toBe(
+      'built-in dark',
+    );
+    expect(
+      builtInFor('client', 'client.font'),
+      'the bundled face has no settable name, so the cell does not print one',
+    ).toBe('the bundled face');
     expect(builtInFor('server', 'server.port'), 'no other area has a client default').toBeNull();
+  });
+
+  it('groups models by the model name, dots and all', () => {
+    expect(
+      groupsOf(area('models')).map((group) => group.label),
+      'the model is the visible identifier, not the tooltip',
+    ).toEqual(['claude-opus-5-5', 'deepseek-v4.1-flash']);
+  });
+
+  it('splits the server area into its two tables', () => {
+    expect(groupsOf(area('server')).map((group) => group.label)).toEqual(['browser', 'server']);
   });
 
   it('orders the classes by what they cost to apply', () => {

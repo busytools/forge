@@ -4673,10 +4673,11 @@ details[open] > summary .arw { opacity: 1; }
 
 /* ---------- the settings page ---------- */
 /* The two-pane direction Ved picked (2026-10-29): a sub-nav of areas with
-   their key counts and strongest effect, one area's pane, and every row
-   carrying the class that says when an edit to it lands. Everything is
-   scoped: `.rail`, `.pane` and `.chip` are names other surfaces already
-   use. */
+   their key counts and every class they hold, one area's pane, and every
+   row carrying the class that says when an edit to it lands. The page's
+   own pieces are scoped: `.rail`, `.pane` and `.chip` are names other
+   surfaces already use. The class marks are shared components, so their
+   rules below are not. */
 
 .settings-page .settings-pending { color: var(--muted); font-size: var(--fs-base);
   margin-top: 12vh; text-align: center; }
@@ -4693,23 +4694,23 @@ details[open] > summary .arw { opacity: 1; }
 
 /* the effect classes: one shape per class, so colour is never the only
    signal; the word rides the row too. */
-.settings-page .settings-class { display: inline-flex; align-items: center; gap: 7px;
+.settings-class { display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
-.settings-page .settings-class-mark { width: 7px; height: 7px; flex: 0 0 7px; display: inline-block; }
-.settings-page .settings-class[data-class="live"] .settings-class-mark { border-radius: 50%;
+.settings-class-mark { width: 7px; height: 7px; flex: 0 0 7px; display: inline-block; }
+.settings-class[data-class="live"] .settings-class-mark { border-radius: 50%;
   background: var(--accent); }
-.settings-page .settings-class[data-class="next_session"] .settings-class-mark { background: var(--teal);
+.settings-class[data-class="next_session"] .settings-class-mark { background: var(--teal);
   clip-path: polygon(8% 0, 100% 50%, 8% 100%); }
-.settings-page .settings-class[data-class="restart"] { color: var(--warn); }
-.settings-page .settings-class[data-class="restart"] .settings-class-mark { border: 2px solid var(--warn); }
-.settings-page .settings-class[data-class="not_read_yet"] { color: var(--dim); }
-.settings-page .settings-class[data-class="not_read_yet"] .settings-class-mark { border: 1.5px dashed var(--dim);
+.settings-class[data-class="restart"] { color: var(--warn); }
+.settings-class[data-class="restart"] .settings-class-mark { border: 2px solid var(--warn); }
+.settings-class[data-class="not_read_yet"] { color: var(--dim); }
+.settings-class[data-class="not_read_yet"] .settings-class-mark { border: 1.5px dashed var(--dim);
   border-radius: 50%; }
-.settings-page .settings-class[data-class="other"] { color: var(--muted); }
-.settings-page .settings-class[data-class="other"] .settings-class-mark { border: 1.5px solid var(--muted);
+.settings-class[data-class="other"] { color: var(--muted); }
+.settings-class[data-class="other"] .settings-class-mark { border: 1.5px solid var(--muted);
   transform: rotate(45deg); }
-.settings-page .settings-class.icon { border: 0; padding: 0; }
-.settings-page .settings-class.icon .settings-class-mark { width: 8px; height: 8px; flex-basis: 8px; }
+.settings-class.icon { border: 0; padding: 0; }
+.settings-class.icon .settings-class-mark { width: 8px; height: 8px; flex-basis: 8px; }
 
 .settings-page .settings-legend { display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
   font-family: var(--mono); font-size: 11px; color: var(--dim); margin: 0 0 6px; }

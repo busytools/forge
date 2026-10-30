@@ -384,6 +384,20 @@ describe('the home page as it draws', () => {
    * home without one draws the card's reading state - which is itself the
    * state this asserts is honest.
    */
+  /**
+   * The settings page's only door on a desktop shell, which has no address
+   * bar. The card follows the same pattern as the pages beside it: a real
+   * anchor with the chevron drawn at rest.
+   */
+  it('opens the settings page from its own card', () => {
+    const body = draw();
+
+    expect(body, 'the card is the page door on a shell with no address bar').toContain(
+      'href="/settings"',
+    );
+    expect(body.match(/href="\/settings"/g), 'one door, not a row of them').toHaveLength(1);
+  });
+
   it('opens the extensions page from the extensions card', () => {
     const body = draw();
 

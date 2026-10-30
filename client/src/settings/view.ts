@@ -5,6 +5,7 @@
  */
 
 import type { SettingsArea, SettingsClass, SettingsDocument, SettingsKey } from '../wire/settings';
+import { DEFAULT_MARK, THEME_NAMES } from '../wire/types';
 
 /** One instance's rows: an account, an org and one of its projects, a
  * connector's workspace table. */
@@ -71,13 +72,6 @@ export function classRank(held: SettingsClass): number {
   }
 }
 
-/** The classes an area holds, counted, in the legend's order. */
-export function classCounts(area: SettingsArea): Map<SettingsClass, number> {
-  const counts = new Map<SettingsClass, number>();
-  for (const key of area.keys) counts.set(key.class, (counts.get(key.class) ?? 0) + 1);
-  return counts;
-}
-
 /**
  * The area's rows, grouped by the instance their path names and ordered by
  * that label. A row's path is the server's own, so a shape this client does
@@ -96,10 +90,16 @@ export function groupsOf(area: SettingsArea): SettingsGroup[] {
     .sort((one, two) => one.label.localeCompare(two.label));
 }
 
+/**
+ * The built-in a `client` axis draws when the file does not set it, as the
+ * cell's whole phrase. The defaults come from the modules that own them, so
+ * a built-in that moves moves here too; `font` names no value because the
+ * built-in face has no settable name (`FONT_NAMES` holds only `system`).
+ */
 const CLIENT_DEFAULTS: Readonly<Record<string, string>> = {
-  'client.mark': 'panes',
-  'client.theme': 'dark',
-  'client.font': 'Fira Code',
+  'client.mark': `built-in ${DEFAULT_MARK}`,
+  'client.theme': `built-in ${THEME_NAMES[0]}`,
+  'client.font': 'the bundled face',
 };
 
 /**
@@ -124,6 +124,19 @@ function groupLabel(areaId: string, path: string): string {
       return parts[1] ?? 'orgs';
     case 'connectors':
       return parts[0] === 'slack' ? `slack / ${parts[1] ?? ''}` : (parts[0] ?? 'connectors');
+    case 'models': {
+      // A model name carries dots (`deepseek-v4.1-flash`), so the segment
+      // cannot be split: the name is what sits between the table and the one
+      // key model rows hold.
+      const prefix = 'models.';
+      const suffix = '.auto_compact_window';
+      return path.startsWith(prefix) && path.endsWith(suffix)
+        ? path.slice(prefix.length, path.length - suffix.length)
+        : (parts[1] ?? 'models');
+    }
+    case 'server':
+      // The area holds two tables: the socket's own keys and `[browser]`'s.
+      return parts[0] ?? 'server';
     default:
       return '';
   }

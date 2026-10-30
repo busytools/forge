@@ -23,7 +23,7 @@ nothing to draw, and the client never falls back to bundled data.
 | Stopped | the core's last fatal, above everything else: `forge stopped:` and the core's own words | `fatal_error` |
 | Upstream | the core's held service status, above the band and only when there is one: `claude status` and the status line's own words, in the warn tone or the bad one an error report takes | `service_status` |
 | Header | the brand mark, `forge`, and the three builds as labelled pairs - `server` (the forge serving the socket), `client` (this app) and `claude` (the CLI both drive) - with `socket` and its protocol beside them; each update notice sits on the build it belongs to (in a browser, the latest published), and the fleet totals close the line | `ClientSettings.mark` from the greeting; `forge_version_short`; `CLIENT_VERSION`; `PROTOCOL_VERSION`; `cli_version`; the shell's update check, or the served `latest.json`; `agents`, `fleet` and `projects` counted |
-| Band | five cards: the gateway listener, the client's own address, dictation, the account pool, and the extensions | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject |
+| Band | six cards: the gateway listener, the client's own address, dictation, the account pool, the extensions, and the settings | `accounts.gateway`, the connection the client made, `dictate.snapshot`, `accounts.loading`, the `extensions` subject |
 | Fleet sections | up to three sections, the rail's own: `needs you`, `working` and `asleep`, each appearing when it holds a project and carrying its count; the asleep section starts expanded here but folds behind its count when closed, so the page can put the quiet half away | the same rank the rail groups by, read from each project's strongest seat - an ask first, then a run, then a sleep |
 | Fleet row | one per project: the strongest seat mark, the project, its branch and changed-file count, when it last moved (the newest write among its seats and the sessions its catalog remembers, `now`/`3h`/`2d`, or `never` for a project with neither a seat nor a session behind it), its seats, `live of cap slots · queue · on you`, the named misses, and the ways in - the row itself, each seat, and the board | `fleet` for the counts and the misses; `projects` for the tree; `agents` and `projects[].sessions` for the seats and the age |
 
@@ -46,11 +46,13 @@ while a seat chip opens its own seat and `open board` opens the
 [board](./board.md). A project with no live seat is started by that same
 click, as a sleeping seat is from a session page's rail.
 
-**Three cards are ways in.** The dictation card opens the
+**Four cards are ways in.** The dictation card opens the
 [models page](./dictate-models.md), where the pins, the catalogue check and
 the feed are drawn; the extensions card opens the
 [extensions page](./extensions.md), where the plugin inventory, its
-components and the marketplaces are; and the server card opens the connect
+components and the marketplaces are; the settings card opens the
+[settings page](./settings.md), which a desktop shell cannot otherwise
+reach because it has no address bar; and the server card opens the connect
 screen (below). All are
 links at rest - a chevron on the card's title line, drawn dim rather than
 uncovered by the pointer, because an affordance only the hover uncovers is

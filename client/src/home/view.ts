@@ -814,6 +814,21 @@ export function extensionsCard(read: ExtensionsRead | null, refused = false): Ba
   };
 }
 
+/**
+ * The settings card: the band card the home appends beside extensions, and
+ * a way in. The page reads its own document from the socket, so the card
+ * carries no state of the home's - it names what the page is.
+ */
+export function settingsCard(): BandCard {
+  return {
+    title: 'settings',
+    tone: 'ready',
+    value: 'read-only',
+    detail: 'the effective config',
+    href: hrefFor({ name: 'settings' }),
+  };
+}
+
 /** The key a project and the seats that belong to it are matched by. */
 function keyOf(org: string, name: string): string {
   return `${org}\u0000${name}`;

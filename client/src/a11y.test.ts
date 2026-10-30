@@ -39,7 +39,7 @@ import Files from './files/Files.svelte';
 import ExtensionsBody from './extensions/ExtensionsBody.svelte';
 import { extensionsWire, project, recorder } from './extensions/testing';
 import SettingsBody from './settings/SettingsBody.svelte';
-import { settingsWire } from './settings/testing';
+import { settingsWire } from './dev/settings.fixture';
 import Home from './home/Home.svelte';
 import Models from './models/Models.svelte';
 import Review from './review/Review.svelte';
@@ -946,7 +946,7 @@ describe('axe over the rendered pages', () => {
       props: {
         document: settingsWire,
         mark: null,
-        cliVersion: 'v2.1.280',
+        cliVersion: '2.1.280',
         selected: null,
         onSelect: () => {},
       },

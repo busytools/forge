@@ -24,10 +24,10 @@ describe('a value cell', () => {
     expect(document.body.textContent?.trim(), 'an empty string reads none').toBe('none');
   });
 
-  it('draws an unset client axis with the built-in it falls back to', () => {
+  it('draws an unset client axis with the phrase its built-in supplies', () => {
     app = mount(ValueCell, {
       target: document.body,
-      props: { value: { kind: 'unset' }, builtIn: 'panes' },
+      props: { value: { kind: 'unset' }, builtIn: 'built-in panes' },
     });
     flushSync();
     expect(document.body.textContent, 'the built-in is display only').toContain('built-in panes');

@@ -92,6 +92,17 @@ describe('the settings frame', () => {
     expect(settingsDocumentFrom([1, 2])).toBeNull();
   });
 
+  it('answers null for a frame whose areas cannot be read', () => {
+    expect(
+      settingsDocumentFrom({ areas: 'not a list' }),
+      'a malformed areas list is a failed read, not a config that declares nothing',
+    ).toBeNull();
+    expect(
+      settingsDocumentFrom({ areas: [null] }),
+      'and so is an area that is not an object',
+    ).toBeNull();
+  });
+
   it('counts the areas itself when the frame carries no totals', () => {
     const document = settingsDocumentFrom({
       areas: [

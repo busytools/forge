@@ -8,7 +8,15 @@
   import type { Connection } from '../socket';
   import { install, restart, updateState } from '../update/state';
   import type { HomeWire } from '../wire/home';
-  import { ageOf, extensionsCard, fleetGroups, homeView, markOf, type FleetViewRow } from './view';
+  import {
+    ageOf,
+    extensionsCard,
+    fleetGroups,
+    homeView,
+    markOf,
+    settingsCard,
+    type FleetViewRow,
+  } from './view';
 
   /**
    * The home: every project, its agents, their states, and what needs you.
@@ -49,6 +57,7 @@
   const band = $derived([
     ...view.band,
     extensionsCard(extensions.read, extensions.refused !== null),
+    settingsCard(),
   ]);
   // The fleet: one row per project, grouped by the same three states the
   // rail groups by - needs you, working, asleep - so a project reads in the

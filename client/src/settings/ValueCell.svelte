@@ -3,15 +3,16 @@
 
   /**
    * One key's value, drawn by the shape the wire named for it. `builtIn` is
-   * the effective default a `client` axis falls back to when the file does
-   * not set it: display only, never the value the axes path reads.
+   * the whole phrase for the effective default a `client` axis falls back
+   * to when the file does not set it: display only, never the value the
+   * axes path reads, and never a name a reader could take for a setting.
    */
   let { value, builtIn = null }: { value: SettingsValue; builtIn?: string | null } = $props();
 </script>
 
 {#if value.kind === 'unset'}
   <span class="settings-value settings-dim">
-    not set{builtIn === null ? '' : ` · built-in ${builtIn}`}
+    not set{builtIn === null ? '' : ` · ${builtIn}`}
   </span>
 {:else if value.kind === 'string' && value.text === ''}
   <span class="settings-value settings-dim">none</span>

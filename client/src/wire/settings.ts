@@ -80,7 +80,13 @@ export function classWords(held: SettingsClass, label: string): string {
 export function settingsDocumentFrom(value: unknown): SettingsDocument | null {
   const root = narrow(value);
   if (root === null) return null;
-  const areas = arrayOf(root.areas).map((area, index) => areaFrom(area, index));
+  // A frame whose `areas` is not an array of objects is one this client
+  // cannot read. Letting it through as an empty list would draw a failed
+  // read as a config that declares nothing.
+  if (!Array.isArray(root.areas) || !root.areas.every((area) => narrow(area) !== null)) {
+    return null;
+  }
+  const areas = root.areas.map((area, index) => areaFrom(area, index));
   const keys = areas.reduce((total, area) => total + area.keys.length, 0);
   return {
     version: str(root.version) ?? '',

@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import SettingsBody from './SettingsBody.svelte';
-import { settingsWire } from './testing';
+import { settingsWire } from '../dev/settings.fixture';
 
 /**
  * The page's controls: the sub-nav switches the pane, and an area that is
@@ -36,8 +36,8 @@ describe('the settings page', () => {
     expect(rail()).toHaveLength(settingsWire.areas.length);
     expect(rail()[0]?.textContent, 'the first area is named and counted').toContain('accounts');
     expect(rail()[0]?.textContent).toContain('6');
-    expect(rail()[3]?.textContent, 'an empty area still has a row').toContain('models');
-    expect(rail()[3]?.textContent).toContain('0');
+    expect(rail()[4]?.textContent, 'an empty area still has a row').toContain('documents');
+    expect(rail()[4]?.textContent).toContain('0');
   });
 
   it('draws the selected area rows with their class words', () => {
@@ -47,11 +47,14 @@ describe('the settings page', () => {
       (cell) => cell.textContent,
     );
     expect(keys, 'a row draws its leaf, not the path its group already names').toEqual([
+      'idle_minutes',
       'port',
       'first_frame_cap_kb',
     ]);
     expect(
-      document.querySelector('.settings-rows th[scope="row"] code')?.getAttribute('title'),
+      [...document.querySelectorAll<HTMLElement>('.settings-rows th[scope="row"] code')]
+        .find((code) => code.textContent === 'port')
+        ?.getAttribute('title'),
       'the whole path stays reachable',
     ).toBe('server.port');
     expect(document.body.textContent, 'the port is drawn as a restart').toContain('restart');
@@ -85,8 +88,33 @@ describe('the settings page', () => {
   });
 
   it('draws an area with no keys as itself', () => {
-    draw('models');
+    draw('documents');
     expect(document.body.textContent).toContain('This area has no keys');
+  });
+
+  it('groups the models by model, which the group header names', () => {
+    draw('models');
+    expect(
+      [...document.querySelectorAll('.settings-group-name')].map((name) =>
+        name.textContent?.trim(),
+      ),
+      'each model is its own group, so the model is visible rather than a tooltip',
+    ).toEqual(['claude-opus-5-5', 'deepseek-v4.1-flash']);
+    expect(
+      [...document.querySelectorAll('.settings-rows th[scope="row"]')].map((cell) =>
+        cell.textContent?.trim(),
+      ),
+      'the row keeps the key name the group does not repeat',
+    ).toEqual(['auto_compact_window', 'auto_compact_window']);
+  });
+
+  it('splits the server area by the table each row comes from', () => {
+    draw('server');
+    expect(
+      [...document.querySelectorAll('.settings-group-name')].map((name) =>
+        name.textContent?.trim(),
+      ),
+    ).toEqual(['browser', 'server']);
   });
 
   it('draws a selected area the document no longer holds, with a way back', () => {
@@ -155,8 +183,9 @@ describe('the settings page', () => {
       },
     });
     flushSync();
-    expect(document.body.textContent, 'the unset font names the built-in face').toContain(
-      'not set · built-in Fira Code',
-    );
+    expect(
+      document.body.textContent,
+      'the unset font names the bundled face, not a settable name',
+    ).toContain('not set · the bundled face');
   });
 });

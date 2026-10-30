@@ -28,7 +28,7 @@ carries.
 | Header | The mark, `settings`, the server / socket / claude versions, the `read-only` chip, and the totals (keys, areas, the resolved `forge.toml` path). |
 | Legend | The four effect classes, each as a shape and its word. |
 | Sub-nav | The twelve areas, each with its key count and every class its keys hold. |
-| Pane | The area's name and note, then its rows grouped by the instance their path names (an account, an org and a project, a Slack workspace). |
+| Pane | The area's name and note, then its rows grouped by the instance their path names (an account, a model, an org and a project, a Slack workspace, the table a server key belongs to). |
 | A row | The key's leaf name, its value, and its class mark; the whole path is the row's title, and the group header carries the instance. |
 
 ## The rules
@@ -66,9 +66,9 @@ carries.
   says it is reading the effective config.
 - **A failed read** - the frame arrived and this client could not read it.
   The page says so rather than drawing an empty config.
-- **An unknown area** - a selected area the document no longer holds (a
-  reload can remove one). The pane says it is gone and offers the first
-  area.
+- **An unknown area** - a selected area the document does not hold (a
+  document from a different forge build can leave one out). The pane says
+  it is gone and offers the first area.
 - **An empty area** - an area with no keys, which a section that is absent
   or off can draw.
 - **No areas** - a document that declares nothing.
@@ -78,9 +78,11 @@ carries.
 ## The pieces it takes from the pages beside it
 
 The shared header (`header.top.pagetop`), the brand lockup, the type scale,
-the palette tokens, and the `.wrap` root. Its rows, rail and class marks are
-its own, scoped under `.settings-page`, because `.row`, `.rail` and `.chip`
-are names other surfaces already use.
+the palette tokens, and the `.wrap` root. Its rows and rail are its own,
+scoped under `.settings-page`, because `.row`, `.rail` and `.chip` are names
+other surfaces already use; the class marks are the shared
+`components/ClassMark.svelte` and their rules are not scoped, so a second
+surface can wear them.
 
 ## The two widths
 
@@ -94,5 +96,5 @@ tighter key text.
 
 The sub-nav items, the back link and the unknown-area's link are 44px
 targets under `(pointer: coarse)`. Nothing on the page is hover-only: the
-selected area carries a background, an inset bar and `aria-current`, and
+selected area carries a background, an inset bar and `aria-pressed`, and
 every class mark is a shape plus a word.
