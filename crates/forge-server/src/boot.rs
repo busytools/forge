@@ -769,18 +769,16 @@ port = {port}
         let raw = std::fs::read_to_string(&path).expect("read");
         std::fs::write(&path, raw.replace("Stub", "Renamed")).expect("write");
 
-        let applied = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let frame = updates.recv().await.expect("the update stream stays open");
-                if matches!(&*frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. })
-                {
-                    break;
-                }
+        // The wait is the update stream, not a clock: the watcher's delivery
+        // is fsevents' to schedule, and a fixed bound on it is what reddened
+        // this test under load. A watch that wedges is nextest's slow-timeout
+        // to catch.
+        loop {
+            let frame = updates.recv().await.expect("the update stream stays open");
+            if matches!(&*frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. }) {
+                break;
             }
-        })
-        .await;
-
-        assert!(applied.is_ok(), "the watched file's edit applies without a restart");
+        }
         assert_eq!(
             workspace.list_projects()[0].accounts,
             vec!["Renamed".to_owned()],

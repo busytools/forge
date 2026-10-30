@@ -220,8 +220,10 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::mpsc::UnboundedReceiver;
 
-    const WAIT: Duration = Duration::from_secs(5);
-    const QUIET: Duration = Duration::from_millis(800);
+    /// Two of the watch's own debounce windows: the code closes a burst
+    /// [`super::DEBOUNCE`] after its first event, so this is that window with
+    /// the same again as margin.
+    const QUIET: Duration = super::DEBOUNCE.saturating_mul(2);
 
     async fn fixture() -> (tempfile::TempDir, std::path::PathBuf, UnboundedReceiver<()>, ConfigWatch)
     {
@@ -231,23 +233,30 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let watch = watch(path.clone(), tx).expect("watch starts");
         // The write that created the file can mint its event just after the
-        // stream starts. Rewrite once and drain that burst, so each test
+        // stream starts. Rewrite once and wait for that burst, so each test
         // begins from a quiet watch rather than racing the fixture's own
-        // write.
+        // write. The wait is the stream, not a clock: fsevents schedules the
+        // delivery, and a watch that never reports its own write is a wedge
+        // rather than a slow machine.
         std::fs::write(&path, "initial = true\n").expect("settle write");
-        let _ = tokio::time::timeout(WAIT, rx.recv()).await;
+        next(&mut rx, "the watch reports the fixture's own write").await;
         (dir, path, rx, watch)
     }
 
-    async fn next(rx: &mut UnboundedReceiver<()>) -> bool {
-        tokio::time::timeout(WAIT, rx.recv()).await.is_ok()
+    /// The wait is the stream, not a clock. fsevents holds a delivery for as
+    /// long as the machine is loaded, and any fixed bound turns that into a
+    /// red. A closed stream means the watch task is gone, which fails here
+    /// with the property's own message; a task that wedges is nextest's
+    /// slow-timeout to catch.
+    async fn next(rx: &mut UnboundedReceiver<()>, why: &str) {
+        assert!(rx.recv().await.is_some(), "{why}");
     }
 
     #[tokio::test]
     async fn a_plain_write_notifies_once() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "changed = 1\n").expect("write");
-        assert!(next(&mut rx).await, "a write to the watched file notifies");
+        next(&mut rx, "a write to the watched file notifies").await;
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "one write is one notification, not a second after the burst",
@@ -261,7 +270,7 @@ mod tests {
     async fn a_read_does_not_notify() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "before the read = 1\n").expect("write");
-        assert!(next(&mut rx).await, "the watch is live before the read");
+        next(&mut rx, "the watch is live before the read").await;
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "one write is one notification",
@@ -299,13 +308,10 @@ mod tests {
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, "replaced = 1\n").expect("write temp");
         std::fs::rename(&tmp, &path).expect("rename over the config");
-        assert!(next(&mut rx).await, "a temp-file-plus-rename notifies");
+        next(&mut rx, "a temp-file-plus-rename notifies").await;
 
         std::fs::write(&path, "replaced = 2\n").expect("write after the rename");
-        assert!(
-            next(&mut rx).await,
-            "the watch was re-armed on the path, so the next save still notifies",
-        );
+        next(&mut rx, "the watch was re-armed on the path, so the next save still notifies").await;
     }
 
     #[tokio::test]
@@ -313,7 +319,7 @@ mod tests {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "first = 1\n").expect("first write");
         std::fs::write(&path, "second = 1\n").expect("second write");
-        assert!(next(&mut rx).await, "the burst notifies");
+        next(&mut rx, "the burst notifies").await;
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "both writes land in one burst, so the caller reloads once",
@@ -327,7 +333,7 @@ mod tests {
     async fn a_sibling_file_notifies_nothing() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::write(&path, "changed = 1\n").expect("write the watched file");
-        assert!(next(&mut rx).await, "the watched file still notifies");
+        next(&mut rx, "the watched file still notifies").await;
         assert!(
             tokio::time::timeout(QUIET, rx.recv()).await.is_err(),
             "one watched write is one notification",
@@ -346,16 +352,14 @@ mod tests {
     async fn a_deleted_file_still_notifies_and_its_return_applies() {
         let (_dir, path, mut rx, _watch) = fixture().await;
         std::fs::remove_file(&path).expect("remove");
-        assert!(
-            next(&mut rx).await,
+        next(
+            &mut rx,
             "a file gone past the grace window still reaches the caller, so the missing \
              path is reported",
-        );
+        )
+        .await;
 
         std::fs::write(&path, "back = 1\n").expect("recreate");
-        assert!(
-            next(&mut rx).await,
-            "a config that comes back is seen again, so its contents apply",
-        );
+        next(&mut rx, "a config that comes back is seen again, so its contents apply").await;
     }
 }
