@@ -1246,7 +1246,7 @@ mod tests {
             SessionUpdate::SlackDraftResolved {
                 key: seat.clone(),
                 id: uuid::Uuid::new_v4(),
-                ending: forge_primitives::slack::SlackDraftEnding::Expired,
+                ending: forge_primitives::slack::SlackDraftEnding::Abandoned,
             },
         ] {
             assert!(
