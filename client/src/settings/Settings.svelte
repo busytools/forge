@@ -367,13 +367,16 @@
         : then === 'reload'
           ? () => location.reload()
           : () => goTo(then.route, { force: true });
-    // **The move does not wait on the effect.** `discard` above may already
-    // have emptied the draft - a save's answer can land under the open
-    // confirm - so the entry is dropped here, and the effect is the backstop
-    // for a draft lost some other way.
-    const after = leave;
-    leave = null;
-    dropDraftEntry(after ?? undefined);
+    // **The effect drops the entry, outside this popstate dispatch.** The
+    // entries are `$state`, so a save's answer landing under the open confirm
+    // still re-runs it once the dialog entry goes; a nested `back()` here
+    // would be issued from inside a traversal. With no entry to drop - a
+    // clean page - the move runs now.
+    if (!draftEntry) {
+      const after = leave;
+      leave = null;
+      after?.();
+    }
   }
 
   function toggleEditing(): void {

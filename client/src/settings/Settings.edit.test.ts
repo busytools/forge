@@ -369,6 +369,55 @@ describe('the settings editor page', () => {
     expect(get(currentRoute).name, 'the held move ran on the confirm').toBe('home');
   });
 
+  /**
+   * **Cancelling under a save's answer does not leave the draft entry on the
+   * stack.** The draft emptied while the dialog was open, so nothing else
+   * drops its entry; a plain `let` for the entry flags left it behind and the
+   * next Back asked about a draft that was gone.
+   */
+  it('a save answer landing under the discard confirm leaves no draft entry on cancel', async () => {
+    currentRoute.set({ name: 'settings' });
+    // A sentinel under the page's own entries, so the state read at the end
+    // is this test's and not a neighbour's.
+    history.pushState({ clean: true }, '', location.href);
+    draw();
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    rail('server').click();
+    flushSync();
+    const port =
+      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
+        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
+        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
+    if (port === null) throw new Error('the number control is not drawn');
+    port.value = '8791';
+    port.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
+    flushSync();
+
+    goTo({ name: 'home' });
+    flushSync();
+    hear({ kind: 'settings_saved', id: sent[0]?.id ?? 0 });
+    expect(document.body.textContent, 'the ack cleared the draft').not.toContain('1 unsaved');
+    [...document.querySelectorAll<HTMLButtonElement>('.settings-dialog .settings-btn')]
+      .find((button) => button.textContent === 'cancel')
+      ?.click();
+    // The draft entry carries the sentinel's own fields onward, so wait on
+    // the mark being gone, not on the sentinel being current.
+    await settle(
+      () => (history.state as Record<string, unknown> | null)?.forgeSettingsDraft === undefined,
+    );
+    expect(
+      (history.state as Record<string, unknown> | null)?.forgeSettingsDraft,
+      'the draft entry was dropped on the cancel',
+    ).toBeUndefined();
+    expect(
+      (history.state as Record<string, unknown> | null)?.clean,
+      'and the page is back on its own entry',
+    ).toBe(true);
+  });
+
   it('adds a skeleton entry and removes one behind a confirm', async () => {
     draw();
     (document.querySelector('.settings-mode') as HTMLButtonElement).click();

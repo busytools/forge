@@ -382,8 +382,8 @@ pub enum ClientMessage {
     },
     /// A batched save of the effective config. A save that writes is
     /// answered with [`ServerMessage::SettingsSaved`]; one that does not is
-    /// answered with [`ServerMessage::SettingsRefused`]. The reload's push
-    /// follows either answer for every client.
+    /// answered with [`ServerMessage::SettingsRefused`]. A refused save
+    /// writes nothing, so no push follows it.
     SettingsEdit {
         /// The fingerprint of the raw file text the page loaded.
         fingerprint: String,

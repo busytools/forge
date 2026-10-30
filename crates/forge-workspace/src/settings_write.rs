@@ -1373,8 +1373,19 @@ enabled = true
         let edit =
             set_edit(&document, "orgs.Acme.projects.api.handoff.enabled", serde_json::json!(false));
         let out = apply(raw, &[edit], &document).expect("the edit applies");
-        assert_eq!(out.matches("enabled = false").count(), 1, "exactly one set: {out}");
-        assert_eq!(out.matches("enabled = true").count(), 1, "the sibling kept its value: {out}");
+        // **The false is `api`'s**, not merely one of the two: the sibling's
+        // table must still read true.
+        let mut blocks = out.split("[[orgs.projects]]");
+        blocks.next();
+        let api_block = blocks.next().unwrap_or_default();
+        let sibling_block = blocks.next().unwrap_or_default();
+        assert!(api_block.contains("name = \"api\""), "the first block is api: {out}");
+        assert!(api_block.contains("enabled = false"), "api's table took the set: {out}");
+        assert!(
+            sibling_block.contains("name = \"api.handoff\""),
+            "the second is the sibling: {out}"
+        );
+        assert!(sibling_block.contains("enabled = true"), "the sibling kept its value: {out}");
     }
 
     /// **The last model's comment survives its removal.** An implicit

@@ -13979,6 +13979,39 @@ provider = "anthropic"
         );
     }
 
+    /// **A real spawn refused by the loader between its id record and the
+    /// pool rolls both back.** The live config stays the valid one it loaded;
+    /// the file moves under it and no longer parses, so the bind's own re-read
+    /// refuses - the guarded return, not a hand-built guard.
+    #[tokio::test]
+    async fn a_spawn_refused_by_a_changed_config_rolls_back_its_id_and_domain() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        workspace.seed_test_ready_account("Stargate");
+        let slot = SessionSlot::lead("Default", "forge");
+        let previous = workspace
+            .stored_session_id(slot.org(), slot.project(), slot.label())
+            .expect("the store reads");
+        fs::write(forge_toml_path(dir.path()), "this is not toml [").expect("write the bad file");
+        let Err(error) = workspace.get_agent_handle(
+            SessionTarget::Default,
+            SessionLaunchSettings::default(),
+            &crate::protocol::SpawnRole::Lead,
+        ) else {
+            panic!("the bind's re-read refuses an unparseable file")
+        };
+        assert!(error.to_string().contains("failed to parse"), "the loader's words: {error}");
+        assert_eq!(
+            workspace.stored_session_id(slot.org(), slot.project(), slot.label()).expect("read"),
+            previous,
+            "the pinned id went back to the store's own",
+        );
+        assert!(
+            !workspace.domain_handles.lock().contains_key(&slot),
+            "the domain handle the spawn created went",
+        );
+    }
+
     /// A candidate the loader refuses writes nothing and carries the loader's
     /// own words, anchored at the key the save named.
     #[tokio::test]
