@@ -2154,9 +2154,10 @@ impl Workspace {
             self.accounts.replace_accounts(&next.accounts);
             self.gateway.set_org_pins(org_pins(&next));
             // The setter rebuilds the rotation state, which would empty the
-            // live cooldowns and streaks. Only a reload that moved the numbers
-            // is allowed to do that.
-            if reload.moved("gateway.") {
+            // live cooldowns and streaks. Only a live change to the numbers is
+            // allowed to do that: a port-only reload reports `server.port` as
+            // restart-only and must keep the state.
+            if reload.changed.iter().any(|path| path.starts_with("gateway.")) {
                 self.gateway.set_rotation_numbers(next.gateway_rotation);
             }
             *self.systemone.write() = systemone;
@@ -13502,7 +13503,16 @@ provider = "anthropic"
         );
 
         let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
-        raw.push_str("\n[gateway]\nstreak_count = 7\n");
+        raw.push_str("\n[gateway]\nport = 49322\n");
+        fs::write(forge_toml_path(dir.path()), raw).expect("write");
+        workspace.reload_config().expect("the new file is valid");
+        assert!(
+            workspace.gateway.is_cooling(&account),
+            "a restart-only gateway port is not a move of the rotation numbers",
+        );
+
+        let mut raw = fs::read_to_string(forge_toml_path(dir.path())).expect("read");
+        raw = raw.replace("port = 49322", "port = 49322\nstreak_count = 7");
         fs::write(forge_toml_path(dir.path()), raw).expect("write");
         workspace.reload_config().expect("the new file is valid");
         assert!(

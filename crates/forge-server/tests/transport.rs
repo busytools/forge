@@ -100,6 +100,27 @@ async fn connect(url: &str) -> Client {
     socket
 }
 
+/// [`connect`] with an `Origin` header, for the socket's gate. The greeting
+/// and the settings frame are already read, so the caller holds the same
+/// stream every other test starts from.
+async fn connect_with_origin(url: &str, origin: &str) -> Client {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+
+    let mut request = url.into_client_request().expect("a client request");
+    request.headers_mut().insert("Origin", origin.parse().expect("an origin header value"));
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(request).await.expect("the socket opens");
+    let msg = socket.next().await.expect("a greeting").expect("no error");
+    let greeting: ServerMessage =
+        serde_json::from_str(msg.to_text().expect("text")).expect("the greeting decodes");
+    assert!(matches!(greeting, ServerMessage::Greeting { .. }), "the greeting came first");
+    let msg = socket.next().await.expect("a settings frame").expect("no error");
+    let settings: ServerMessage =
+        serde_json::from_str(msg.to_text().expect("text")).expect("the frame decodes");
+    assert!(matches!(settings, ServerMessage::Settings { .. }), "the settings frame followed");
+    socket
+}
+
 /// A client on a server of its own, for a test that needs no fleet.
 async fn connected() -> Client {
     let (url, _fleet) = a_server().await;
@@ -1910,6 +1931,48 @@ async fn the_settings_frame_follows_the_greeting_and_carries_the_effective_confi
         forge_primitives::EffectClass::Restart,
         "the port is drawn as a restart, the class the reload reports it under",
     );
+}
+
+/// **The socket turns away a browser page forge did not serve**, at the
+/// upgrade and before the greeting or a settings frame exists for it.
+#[tokio::test]
+async fn a_foreign_origin_is_refused_at_the_upgrade() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+
+    let (url, _fleet) = a_server().await;
+    let mut request = url.into_client_request().expect("a client request");
+    request.headers_mut().insert("Origin", "https://evil.example".parse().expect("a header value"));
+    let error =
+        tokio_tungstenite::connect_async(request).await.expect_err("the upgrade is refused");
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status(), 403, "a foreign origin is forbidden");
+        }
+        other => panic!("expected an HTTP refusal, got {other:?}"),
+    }
+}
+
+/// The shell's webview origin is allowed, and the settings frame follows the
+/// greeting on that connection as on any other.
+#[tokio::test]
+async fn a_shell_origin_connects_and_reads_the_settings_frame() {
+    let (url, _fleet) = a_server().await;
+    let _socket = connect_with_origin(&url, "tauri://localhost").await;
+}
+
+/// An origin the operator listed in `[server] allowed_origins` is the web
+/// client's own, and it connects.
+#[tokio::test]
+async fn a_configured_web_origin_connects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir_with_server(
+        dir.path(),
+        &[("TestOrg", &["proj"])],
+        "[server]\nallowed_origins = [\"http://localhost:8080\"]\n",
+    )
+    .expect("the fleet builds");
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let _socket = connect_with_origin(&url, "http://localhost:8080").await;
 }
 
 /// An unchanged save publishes nothing: the workspace compares the document

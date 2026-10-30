@@ -25,6 +25,7 @@ mod connection;
 pub mod conversation;
 pub mod envelope;
 pub mod frame;
+mod origin;
 mod probe;
 pub mod wire;
 

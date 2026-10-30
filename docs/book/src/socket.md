@@ -18,6 +18,17 @@ network and is never exposed publicly**, which is the whole reason the
 socket carries no authentication: the network is what the access control
 stands on, not a proxy in front of a public bind.
 
+**A browser origin must be one forge serves.** A WebSocket handshake
+carries the page's `Origin`, and the server refuses a present origin that
+is not the shell's (`tauri://localhost`, `http://tauri.localhost`), one of
+the server's own (`http://<bind>:<port>`, read from the config), or one the
+operator listed in `[server] allowed_origins`. A web client is served from
+wherever it is hosted, so its page origin belongs in that list. A request
+with no `Origin` is a native client - the protocol client, a harness - and
+is allowed, because browsers always send one. A refusal happens before the
+greeting, answers 403, and logs `socket_origin_refused` with the origin and
+the peer.
+
 **The connection is kept alive by a ping.** The server pings every 15
 seconds and ends a connection whose ping has gone unanswered for 60: a
 peer that vanished without closing would otherwise read nothing for ever,

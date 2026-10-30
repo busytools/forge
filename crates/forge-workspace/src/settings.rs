@@ -27,9 +27,8 @@ pub struct AreaSpec {
 }
 
 /// The sub-nav's areas, in the order it draws them. `[browser]` rides with
-/// the server that hosts it and `[dictate]` with the client that captures
-/// through it, so the eleven here cover every table without a second rail
-/// entry for either.
+/// the server that hosts it; `[dictate]` is an area of its own, because the
+/// keypress, the engine and the transcript are not client presentation.
 pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "accounts",
@@ -51,10 +50,11 @@ pub const AREAS: &[AreaSpec] = &[
         name: "server",
         note: "the socket a client reads through, and the browser the server hosts",
     },
+    AreaSpec { id: "client", name: "client", note: "the sets a client draws with" },
     AreaSpec {
-        id: "client",
-        name: "client",
-        note: "the sets a client draws with, and the dictation it captures through",
+        id: "dictate",
+        name: "dictate",
+        note: "the keypress, the engine and the transcript a take goes through",
     },
     AreaSpec {
         id: "models",
@@ -140,6 +140,7 @@ fn all_keys() -> impl Iterator<Item = &'static ConfigKey> {
         .chain(CONNECTOR_KEYS)
         .chain(SERVER_KEYS)
         .chain(CLIENT_KEYS)
+        .chain(DICTATE_KEYS)
         .chain(MODEL_KEYS)
         .chain(HANDOFF_KEYS)
         .chain(DOCUMENT_KEYS)
@@ -586,7 +587,7 @@ const CONNECTOR_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "gotify.url",
         area: "connectors",
-        class: EffectClass::Live,
+        class: EffectClass::Restart,
         rows: |config| {
             config.gotify.as_ref().map(|g| text("gotify.url", &g.url)).into_iter().collect()
         },
@@ -594,7 +595,7 @@ const CONNECTOR_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "gotify.client_token",
         area: "connectors",
-        class: EffectClass::Live,
+        class: EffectClass::Restart,
         rows: |config| {
             config
                 .gotify
@@ -772,6 +773,12 @@ const SERVER_KEYS: &[ConfigKey] = &[
         rows: |config| vec![text("server.bind", config.server.bind.to_string())],
     },
     ConfigKey {
+        path: "server.allowed_origins",
+        area: "server",
+        class: EffectClass::Live,
+        rows: |config| vec![list("server.allowed_origins", config.server.allowed_origins.clone())],
+    },
+    ConfigKey {
         path: "server.first_frame_cap_kb",
         area: "server",
         class: EffectClass::Live,
@@ -826,15 +833,18 @@ const CLIENT_KEYS: &[ConfigKey] = &[
         class: EffectClass::Live,
         rows: |config| vec![text_set("client.font", config.client.font.clone())],
     },
+];
+
+const DICTATE_KEYS: &[ConfigKey] = &[
     ConfigKey {
         path: "dictate.enabled",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Restart,
         rows: |config| vec![flag("dictate.enabled", config.dictate.enabled)],
     },
     ConfigKey {
         path: "dictate.models_dir",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
@@ -845,7 +855,7 @@ const CLIENT_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.transcribe_model",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
@@ -856,7 +866,7 @@ const CLIENT_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.cleanup_model",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
@@ -867,7 +877,7 @@ const CLIENT_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.language",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Restart,
         rows: |config| {
             vec![text(
@@ -878,13 +888,13 @@ const CLIENT_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.normalizer",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Restart,
         rows: |config| vec![flag("dictate.normalizer", config.dictate.normalizer)],
     },
     ConfigKey {
         path: "dictate.max_capture_minutes",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Restart,
         rows: |config| {
             vec![number("dictate.max_capture_minutes", config.dictate.max_capture_minutes)]
@@ -892,19 +902,19 @@ const CLIENT_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.bind",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Live,
         rows: |config| vec![text("dictate.bind", config.dictate.bind.label())],
     },
     ConfigKey {
         path: "dictate.mode",
-        area: "client",
+        area: "dictate",
         class: EffectClass::Live,
         rows: |config| vec![text("dictate.mode", config.dictate.mode.label())],
     },
     ConfigKey {
         path: "dictate.styling",
-        area: "client",
+        area: "dictate",
         class: EffectClass::NextSession,
         rows: |config| {
             vec![text(
@@ -918,7 +928,7 @@ const CLIENT_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.structure",
-        area: "client",
+        area: "dictate",
         class: EffectClass::NextSession,
         rows: |config| {
             vec![text(
@@ -932,7 +942,7 @@ const CLIENT_KEYS: &[ConfigKey] = &[
     },
     ConfigKey {
         path: "dictate.context",
-        area: "client",
+        area: "dictate",
         class: EffectClass::NextSession,
         rows: |config| {
             vec![text(
@@ -1243,6 +1253,7 @@ port = 8790
 bind = "127.0.0.1"
 first_frame_cap_kb = 64
 tool_record_cap_kb = 8
+allowed_origins = ["http://localhost:8080"]
 
 [client]
 mark = "panes"
@@ -1519,13 +1530,13 @@ models = ["m"]
         }
     }
 
-    /// The document covers the eleven areas and counts what it draws.
+    /// The document covers the twelve areas and counts what it draws.
     #[test]
     fn the_document_covers_every_area_and_counts_its_keys() {
         let config = load(EVERY_KEY);
         let document = document(&config, "1.2.3", Path::new("/tmp/forge.toml"));
         assert_eq!(document.areas.len(), AREAS.len(), "every area is drawn");
-        assert_eq!(document.areas.len(), 11, "the sub-nav's eleven areas");
+        assert_eq!(document.areas.len(), 12, "the sub-nav's twelve areas");
         assert_eq!(
             document.totals.keys,
             document.areas.iter().map(|area| area.keys.len()).sum::<usize>(),
@@ -1576,12 +1587,21 @@ models = ["m"]
         let changed = EVERY_KEY
             .replace("first_frame_cap_kb = 64", "first_frame_cap_kb = 128")
             .replace("port = 8790", "port = 8791")
-            .replace("auto_update = true", "auto_update = false");
+            .replace("auto_update = true", "auto_update = false")
+            .replace("https://gotify.test", "https://gotify.example");
         let next = load(&changed);
         let reload = diff(&previous, &next);
         assert!(
             reload.changed.iter().any(|key| key == "server.first_frame_cap_kb"),
             "the cap is live: {reload:?}",
+        );
+        assert!(
+            reload.restart_only.iter().any(|key| key == "gotify.url"),
+            "the stream captured its url at boot, so the change needs a restart: {reload:?}",
+        );
+        assert!(
+            !reload.changed.iter().any(|key| key.starts_with("gotify.")),
+            "a stream's url is not applied live: {reload:?}",
         );
         assert!(
             reload.restart_only.iter().any(|key| key == "server.port"),
@@ -1595,6 +1615,30 @@ models = ["m"]
             !reload.changed.iter().any(|key| key.contains("plugins")),
             "a key nothing reads is not reported as applied: {reload:?}",
         );
+    }
+
+    /// `[dictate]` is an area of its own, and every key it holds is drawn
+    /// there rather than under the client that captures through it.
+    #[test]
+    fn the_dictate_area_is_its_own() {
+        let config = load(EVERY_KEY);
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+        let dictate = document
+            .areas
+            .iter()
+            .find(|area| area.id == "dictate")
+            .expect("the dictate area is drawn");
+        assert_eq!(dictate.keys.len(), 12, "every [dictate] key draws there");
+        assert!(
+            dictate.keys.iter().all(|key| key.path.starts_with("dictate.")),
+            "no other table's key rides in the dictate area",
+        );
+        let client = document
+            .areas
+            .iter()
+            .find(|area| area.id == "client")
+            .expect("the client area is drawn");
+        assert_eq!(client.keys.len(), 3, "the client area keeps its three axes only");
     }
 
     /// A key nothing reads still changes the document, which is what makes

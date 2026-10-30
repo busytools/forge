@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse as _, Response};
 use futures_util::{SinkExt as _, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -24,6 +25,7 @@ use serde_json::json;
 use super::batch::{self, Batch};
 use super::envelope::{ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, Subject};
 use super::frame::FrameTransport as _;
+use super::origin as origin_gate;
 use super::wire::{
     FileContentWire, OpenTimings, cap_message_record, cap_tool_records, conversation_for,
     encode_subject, encode_subject_timed, floor_cursor, page,
@@ -426,7 +428,28 @@ pub async fn upgrade(
     ws: WebSocketUpgrade,
     State(state): State<Arc<TransportState>>,
     ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
+    headers: HeaderMap,
 ) -> Response {
+    // A browser always sends one Origin; a second header, or one that is not
+    // text, is nothing a client forge ships produces.
+    let mut origin: Option<&str> = None;
+    let mut malformed = false;
+    for value in headers.get_all(header::ORIGIN) {
+        match (value.to_str(), origin) {
+            (Ok(text), None) => origin = Some(text),
+            _ => malformed = true,
+        }
+    }
+    if malformed || !origin_gate::allows(origin, &state.surface.server_config()) {
+        tracing::warn!(
+            target: "forge_server::transport",
+            event_name = "socket_origin_refused",
+            origin = origin.unwrap_or("<malformed>"),
+            peer = %peer,
+            "refused a socket upgrade from an origin forge does not serve",
+        );
+        return (StatusCode::FORBIDDEN, "origin refused").into_response();
+    }
     let limit = MAX_CLIENT_MESSAGE_BYTES;
     ws.max_frame_size(limit)
         .max_message_size(limit)

@@ -42,6 +42,11 @@ pub struct ServerConfig {
     /// `0` serves the page the turn count asks for, for a reader who would
     /// rather have the whole window in one frame.
     pub first_frame_cap_kb: u64,
+    /// Extra browser origins allowed to open the socket, beside the shell's
+    /// own and the server's own. A web client is served from wherever it is
+    /// hosted, so only the operator knows that origin; an empty list allows
+    /// none.
+    pub allowed_origins: Vec<String>,
 }
 
 /// The port the server binds when `[server] port` is absent. Distinct
@@ -64,6 +69,7 @@ impl Default for ServerConfig {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             tool_record_cap_kb: DEFAULT_TOOL_RECORD_CAP_KB,
             first_frame_cap_kb: DEFAULT_FIRST_FRAME_CAP_KB,
+            allowed_origins: Vec::new(),
         }
     }
 }
