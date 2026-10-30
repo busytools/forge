@@ -129,6 +129,8 @@ objc2-avf-audio = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+# The socket tests set SO_LINGER to make a dropped stub a reset.
+socket2 = "0.6"
 tempfile = "3"
 # `tauri::test::mock_context`, for the main-thread overlay check's real app.
 tauri = { version = "2", features = ["test"] }

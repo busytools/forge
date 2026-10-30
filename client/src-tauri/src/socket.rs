@@ -1368,20 +1368,9 @@ pub(crate) mod tests {
                 let Ok((stream, _)) = listener.accept().await else { return };
                 if reset {
                     // A zero linger turns the drop into a reset, which is the
-                    // state a client's next write fails on. `unsafe` because
-                    // the option is a raw setsockopt; the fd is live here and
-                    // the struct outlives the call.
-                    use std::os::fd::AsRawFd;
-                    let linger = libc::linger { l_onoff: 1, l_linger: 0 };
-                    unsafe {
-                        libc::setsockopt(
-                            stream.as_raw_fd(),
-                            libc::SOL_SOCKET,
-                            libc::SO_LINGER,
-                            std::ptr::addr_of!(linger).cast(),
-                            std::mem::size_of::<libc::linger>() as libc::socklen_t,
-                        );
-                    }
+                    // state a client's next write fails on.
+                    let held = socket2::SockRef::from(&stream);
+                    let _ = held.set_linger(Some(Duration::ZERO));
                 }
                 let heard_tx = heard_tx.clone();
                 let mut said = say_for_task.subscribe();
