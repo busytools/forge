@@ -1824,6 +1824,40 @@ describe('the steppers', () => {
   });
 
   /**
+   * **A record whose own read answered nothing still heals.** A refresh cut
+   * short, or one whose leader was cancelled, leaves the page's diff
+   * unchecked while the seat's row already states the store's check; that
+   * disagreement in the record the page opened on is its own read owing a
+   * check, and it asks again rather than waiting for the watch's next pass.
+   */
+  it('asks its own read again when the record row checks a base its own read did not', () => {
+    seat.rereads = [];
+    seat.watched = [];
+    seat.cleared = [];
+    seat.listeners.clear();
+    app = mount(Review, {
+      target: document.body,
+      props: { connection: connection(), slot: SLOT, dictation: true },
+    });
+    flushSync();
+    vi.useFakeTimers();
+    push({
+      wire: record(IDLE, [], [], DIFF, [], 0, { state: 'unverified' }, 'main', {
+        state: 'current',
+      }),
+      refused: null,
+      review: true,
+    });
+    flushSync();
+    expect(seat.rereads, 'the debounce runs first').toEqual([]);
+    vi.advanceTimersByTime(2_001);
+    flushSync();
+    expect(seat.rereads, 'then the page asks its own read for the check it never made').toEqual([
+      { review: true },
+    ]);
+  });
+
+  /**
    * **A failed check's words are news even when its state is not.** A page that
    * drew the base unchecked has to hear the reason the watch's refresh could
    * not run; `unverified` alone is the state it already drew, so the words are

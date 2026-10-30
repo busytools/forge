@@ -2208,16 +2208,41 @@ fn awaits_seal_history(state: &TransportState, slot: &SessionSlot) -> bool {
     !matching && state.surface.seat_epoch_opened_with_rows(slot)
 }
 
+/// The refresh a record may state as its own check: none when the run
+/// answered nothing (its leader panicked or was cancelled, or a bound cut
+/// it), because the words beside that state are forge's own rather than
+/// git's.
+fn checked_refresh(
+    refresh: Option<&forge_workspace::env::git_diff::BaseRefresh>,
+) -> Option<&forge_workspace::env::git_diff::BaseRefresh> {
+    refresh.filter(|refresh| !refresh.unanswered && !refresh.cut)
+}
+
+/// Why a record's `diff` could not check its base: the refresh's words when
+/// it ran, the store's when the refresh answered nothing, and none when no
+/// refresh ran - the field names git's words, never forge's own.
+fn diff_base_error<'a>(
+    refresh: Option<&'a forge_workspace::env::git_diff::BaseRefresh>,
+    stored_error: Option<&'a str>,
+) -> Option<&'a str> {
+    match (refresh, checked_refresh(refresh)) {
+        (_, Some(refresh)) => refresh.error.as_deref(),
+        (Some(_), None) => stored_error,
+        (None, None) => None,
+    }
+}
+
 /// The base a record's `git` row states. **When the read refreshed, the row
 /// states the check its `diff` was read against**, never the store's newer
 /// measurement (a bypass answered while a fetch landed); a read that did not
-/// refresh states what the store holds.
+/// refresh, or one whose refresh answered nothing, states what the store
+/// holds.
 fn stated_base<'a>(
     refresh: Option<&'a forge_workspace::env::git_diff::BaseRefresh>,
     stored: Option<forge_primitives::git_diff::BaseState>,
     stored_error: Option<&'a str>,
 ) -> (Option<forge_primitives::git_diff::BaseState>, Option<&'a str>) {
-    match refresh {
+    match checked_refresh(refresh) {
         Some(refresh) => (Some(refresh.state), refresh.error.as_deref()),
         None => (stored, stored_error),
     }
@@ -2408,8 +2433,10 @@ async fn session(
     };
     // Why the refresh could not run, in git's own words: the page draws it
     // beside the base line rather than only saying the base could not be
-    // checked. An ordinary read has no refresh and names no failure.
-    let base_error = refresh.as_ref().and_then(|refresh| refresh.error.as_deref());
+    // checked. An ordinary read has no refresh and names no failure, and a
+    // placeholder refresh names the store's own check rather than forge's
+    // words for a run that never reported.
+    let base_error = diff_base_error(refresh.as_ref(), held.base_error.as_deref());
     let at = std::time::Instant::now();
     let diff = scan_content(&held.cwd, &held.diff, base, base_ref, base_error).await;
     timings.content_ms = slice_ms(at);
@@ -2661,6 +2688,51 @@ mod tests {
             super::stated_base(None, Some(BaseState::Current), Some("last check")),
             (Some(BaseState::Current), Some("last check")),
             "and a read that did not refresh states what the store holds",
+        );
+        assert!(super::checked_refresh(Some(&refresh)).is_some(), "an answered run is a check");
+        let mut failed = refresh.clone();
+        failed.error = Some("fatal: could not resolve host".to_owned());
+        assert_eq!(
+            super::diff_base_error(Some(&failed), Some("last check")),
+            Some("fatal: could not resolve host"),
+            "a run that ran and failed names its own words",
+        );
+
+        for placeholder in [
+            BaseRefresh {
+                cut: true,
+                error: Some("the fetch did not finish inside the 10s it was given".to_owned()),
+                ..refresh.clone()
+            },
+            BaseRefresh {
+                unanswered: true,
+                error: Some("the base refresh ended without an answer".to_owned()),
+                ..refresh.clone()
+            },
+        ] {
+            assert!(
+                super::checked_refresh(Some(&placeholder)).is_none(),
+                "a placeholder run is not a check",
+            );
+            assert_eq!(
+                super::stated_base(
+                    Some(&placeholder),
+                    Some(BaseState::Current),
+                    Some("last check")
+                ),
+                (Some(BaseState::Current), Some("last check")),
+                "so the row falls back to the store, never to forge's own words",
+            );
+            assert_eq!(
+                super::diff_base_error(Some(&placeholder), Some("git's own failure")),
+                Some("git's own failure"),
+                "and the diff's reason is git's words, never forge's own",
+            );
+        }
+        assert_eq!(
+            super::diff_base_error(None, Some("last check")),
+            None,
+            "a read with no refresh names no failure of its own",
         );
     }
 

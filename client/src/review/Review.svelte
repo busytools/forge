@@ -297,12 +297,23 @@
     const at = subjectKey({ session: slot });
     if (record === null) return;
     const measured = baseOf(record.git.base, record.git.baseError);
+    const drawn = baseOf(record.diff.base, record.diff.baseError);
     const first = baseSeenAt !== at;
     if (!first && measured === seenBase) return;
     baseSeenAt = at;
     seenBase = measured;
-    if (first) return;
-    if (measured !== baseOf(record.diff.base, record.diff.baseError)) askAgainSoon();
+    if (first) {
+      // **A read that answered nothing still heals.** A refresh cut short or
+      // one whose leader was cancelled leaves this page's diff unchecked
+      // while the seat's row already states the store's check; that
+      // disagreement is the page's own read owing a check, and waiting for
+      // the watch's next pass would leave the wrong line up.
+      if (read.review && drawn === 'unverified' && measured !== null && measured !== drawn) {
+        askAgainSoon();
+      }
+      return;
+    }
+    if (measured !== drawn) askAgainSoon();
   });
 
   // A page that goes away asks nothing: the intent is given back with the
