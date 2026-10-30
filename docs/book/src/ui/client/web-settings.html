@@ -186,6 +186,7 @@
     box-shadow: 0 -12px 32px -18px rgba(0,0,0,.9); }
   .settings-savebar .count { font-family: var(--mono); font-size: 12.5px; color: var(--hot); }
   .settings-savebar .said { font-family: var(--mono); font-size: 11.5px; color: var(--bad); }
+  .settings-savebar .saved { font-family: var(--mono); font-size: 11.5px; color: var(--ok); }
   .settings-savebar .spacer { flex: 1; }
   .settings-btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
     font-size: 12.5px; border-radius: 9px; padding: 7px 14px; }
@@ -405,6 +406,16 @@
       <span class="spacer"></span>
       <button class="settings-btn ghost">discard</button>
       <button class="settings-btn go">save</button>
+    </div>
+
+    <div class="settings-savebar" role="region" aria-label="a foreign push while dirty">
+      <span class="count">3 unsaved</span>
+      <span class="saved">saved</span>
+      <span class="said">forge.toml changed since this page loaded it; reload to edit it</span>
+      <button class="settings-btn">reload</button>
+      <span class="spacer"></span>
+      <button class="settings-btn ghost">discard</button>
+      <button class="settings-btn go" disabled>save</button>
     </div>
 
     <div class="settings-dialog" role="dialog" aria-modal="true">

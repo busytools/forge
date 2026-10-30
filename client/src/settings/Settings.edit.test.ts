@@ -323,6 +323,48 @@ describe('the settings editor page', () => {
     );
   });
 
+  /**
+   * **A save's answer can land while the discard confirm is open.** The
+   * draft empties under the dialog, and confirming must still leave - the
+   * leave rides the draft entry's own pop, which the page must notice even
+   * though `dirty` stopped changing.
+   */
+  it('a save answer landing under the discard confirm still moves the page', async () => {
+    currentRoute.set({ name: 'settings' });
+    draw();
+    (document.querySelector('.settings-mode') as HTMLButtonElement).click();
+    flushSync();
+    rail('server').click();
+    flushSync();
+    const port =
+      [...document.querySelectorAll<HTMLElement>('.settings-rows tr')]
+        .find((row) => row.querySelector('code')?.getAttribute('title') === 'server.port')
+        ?.querySelector<HTMLInputElement>('.number-field') ?? null;
+    if (port === null) throw new Error('the number control is not drawn');
+    port.value = '8791';
+    port.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    (document.querySelector('.settings-btn.go') as HTMLButtonElement).click();
+    flushSync();
+
+    goTo({ name: 'home' });
+    flushSync();
+    expect(document.querySelector('.settings-dialog')?.textContent).toContain(
+      'Discard these changes?',
+    );
+
+    // The save's own acknowledgement empties the draft under the dialog.
+    hear({ kind: 'settings_saved', id: sent[0]?.id ?? 0 });
+    expect(document.body.textContent, 'the ack cleared the draft').not.toContain('1 unsaved');
+    [...document.querySelectorAll<HTMLButtonElement>('.settings-dialog .settings-btn')]
+      .find((button) => button.textContent === 'discard')
+      ?.click();
+    await settle();
+    await settle();
+    await settle();
+    expect(get(currentRoute).name, 'the held move ran on the confirm').toBe('home');
+  });
+
   it('adds a skeleton entry and removes one behind a confirm', async () => {
     draw();
     (document.querySelector('.settings-mode') as HTMLButtonElement).click();

@@ -88,6 +88,8 @@
     refusal = null;
     conflict = null;
     saved = false;
+    // An added entry that is gone takes its focus claim with it.
+    focusAdd = null;
   }
 
   // **A push while the draft is dirty does not rebase it.** The draft was
@@ -137,6 +139,7 @@
         refusal = null;
         conflict = null;
         saved = true;
+        focusAdd = null;
         baseline = frameFingerprint;
         return;
       }
@@ -173,8 +176,12 @@
   // closes it; two popstate listeners would answer each other's pops (a
   // cancel reopened the dialog for ever), so this page places and settles
   // every entry it pushes.
-  let draftEntry = false;
-  let dialogEntry = false;
+  // `$state`, because the effects below must re-run when an entry comes or
+  // goes: an acknowledgement landing while a dialog is open clears the draft
+  // without changing `dirty` again, and a plain `let` would strand the leave
+  // callback.
+  let draftEntry = $state(false);
+  let dialogEntry = $state(false);
   /** A dialog button's answer, waiting on the entry its own pop removes. */
   let settle: 'confirm' | 'cancel' | null = null;
   let droppingDraft = false;
@@ -237,7 +244,7 @@
       if (!draftEntry && !dialogEntry) pushDraftEntry();
       return;
     }
-    if (draftEntry && !dialogEntry) {
+    if (draftEntry && !dialogEntry && !droppingDraft) {
       const after = leave;
       leave = null;
       dropDraftEntry(after ?? undefined);
@@ -360,13 +367,13 @@
         : then === 'reload'
           ? () => location.reload()
           : () => goTo(then.route, { force: true });
-    // `discard` above may already have emptied the draft; when the effect
-    // has not run yet, run the move now.
-    if (!draftEntry) {
-      const after = leave;
-      leave = null;
-      after?.();
-    }
+    // **The move does not wait on the effect.** `discard` above may already
+    // have emptied the draft - a save's answer can land under the open
+    // confirm - so the entry is dropped here, and the effect is the backstop
+    // for a draft lost some other way.
+    const after = leave;
+    leave = null;
+    dropDraftEntry(after ?? undefined);
   }
 
   function toggleEditing(): void {

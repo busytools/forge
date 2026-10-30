@@ -43,7 +43,7 @@ timeout the bar reports.
 | Pane | The area's name and note, then its rows grouped by the instance their path names (an account, a model, an org and a project, a Slack workspace, the table a server key belongs to). |
 | A row | The key's leaf name, its value, and its class mark; the whole path is the row's title, and the group header carries the instance. |
 | The editor | The `edit` chip in the header turns every value into its control, adds the add doors and per-entry removals, and draws the save bar. |
-| Save bar | The unsaved count, Save and Discard, and the refusal in the loader's words when a save writes nothing. |
+| Save bar | The unsaved count, Save and Discard, the saved line for a moment, and what a save that wrote nothing says: stale offers a reload, invalid is the loader's words anchored at its key, a guard names what it found, and `io` says the file could not be read or written. A foreign push while dirty draws a conflict and its own reload. |
 | Restart banner | After a save lands, exactly the restart-class keys it carried, with no restart button. |
 
 ## The rules
@@ -112,8 +112,14 @@ timeout the bar reports.
   does.
 - **Unsaved** - the bar counts the batch and Save is the one door.
 - **Saving** - the button says so and the bar waits for the save's answer.
+- **Saved** - the bar says saved for a moment, and the restart banner names
+  the restart-class keys the save carried, if any.
 - **Refused** - stale (a reload-page door), invalid (the loader's words,
-  anchored at its key), or a guard's own refusal.
+  anchored at its key), a guard's own refusal, or `io` (the file could not
+  be read or written; nothing was applied).
+- **A conflict** - another writer pushed a different file while the draft
+  was dirty; the draft is kept, saving is withheld, and the bar offers a
+  reload.
 - **A save with no answer** - the bar says no answer arrived and keeps the
   batch.
 - **A new entry** - a skeleton in place with its required fields marked;

@@ -380,9 +380,10 @@ pub enum ClientMessage {
     ClientPerf {
         records: Vec<serde_json::Value>,
     },
-    /// A batched save of the effective config. The success answer is the
-    /// settings push the reload produces; a save that does not write is
-    /// answered with [`ServerMessage::SettingsRefused`].
+    /// A batched save of the effective config. A save that writes is
+    /// answered with [`ServerMessage::SettingsSaved`]; one that does not is
+    /// answered with [`ServerMessage::SettingsRefused`]. The reload's push
+    /// follows either answer for every client.
     SettingsEdit {
         /// The fingerprint of the raw file text the page loaded.
         fingerprint: String,
@@ -406,7 +407,8 @@ pub enum SettingsRefusal {
     Invalid,
     /// A guard refused the save.
     Refused,
-    /// The file could not be read or written. Nothing was applied.
+    /// The file could not be read or written. Nothing was applied: a write
+    /// that lands and then fails its directory fsync is reported as written.
     Io,
 }
 

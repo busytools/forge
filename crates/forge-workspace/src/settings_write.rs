@@ -60,12 +60,12 @@ pub(crate) fn apply(
     let text = doc.to_string();
     // toml_edit renders `\n`; a CRLF file comes back as it went in, including
     // inside a multi-line string, where the newline is content rather than
-    // layout.
-    Ok(if current.contains("\r\n") {
-        text.replace("\r\n", "\n").replace('\n', "\r\n")
-    } else {
-        text
-    })
+    // layout. **The layout is read from the first newline**: a CRLF inside a
+    // string in an otherwise LF file is content and must not decide it.
+    let crlf = current
+        .find('\n')
+        .is_some_and(|at| at > 0 && current.as_bytes().get(at - 1) == Some(&b'\r'));
+    Ok(if crlf { text.replace("\r\n", "\n").replace('\n', "\r\n") } else { text })
 }
 
 /// The catalogue pattern of an edit when it is one of the fields that names
@@ -165,7 +165,13 @@ fn remove_leaf(doc: &mut DocumentMut, key: &SettingsKey) -> Result<(), WriteErro
     let parent = descend(doc, &steps, false).ok_or_else(|| {
         invalid(format!("`{}` has no table to remove from", key.path), Some(key.path.clone()))
     })?;
-    parent.remove(&leaf);
+    let leftover = parent.remove(&leaf);
+    // The key was the table's last; its comments belong at the table's end.
+    if let Some(prefix) = leftover
+        && let Some(Container::Table(table)) = descend(doc, &steps, false)
+    {
+        keep_suffix(table, &prefix);
+    }
     Ok(())
 }
 
@@ -181,47 +187,155 @@ enum Step {
 
 /// Where a leaf sits: the steps to its parent and the leaf's own key.
 ///
-/// **The instance names are the document's own, not a cut of the display
-/// path.** A dotted org beside one whose name is a prefix, or a project name
-/// that starts with the next key segment, makes a regex over the path read
-/// the wrong split; `group` already holds the names the row was built from,
-/// in the order the pattern's wildcards take them, and a trailing wildcard's
-/// value is the row's own leaf.
+/// **The row's own instance names are tried first, then the path's own
+/// split.** `group` holds the names the row was built from, but `split_row`
+/// cannot tell a name from a key segment: projects `api` and `api.handoff`
+/// both match the row `orgs.Acme.projects.api.handoff.enabled`, and its
+/// longest-name rule picks the sibling. So a group split is used only when
+/// it reassembles the row's path exactly, and the fallback reads the path
+/// against the pattern's literal segments.
 fn locate(key: &SettingsKey) -> Option<(Vec<Step>, String)> {
     let parts = parts_of(&key.pattern)?;
-    let last = parts.last()?;
-    let leaf = match last {
-        Part::Wildcard => key.leaf.clone(),
-        Part::Literal(value) | Part::Array(value) => value.clone(),
-    };
+    if let Some(found) = locate_from_group(key, &parts) {
+        return Some(found);
+    }
+    locate_from_path(key, &parts)
+}
+
+/// The split from the row's `group`, accepted only when it rebuilds the row's
+/// own path.
+fn locate_from_group(key: &SettingsKey, parts: &[Part]) -> Option<(Vec<Step>, String)> {
     // `group` also carries a table name for the areas whose rows sit under
     // one (`slack[].token` groups as `["slack", workspace]`, `server.port`
     // as `["server"]`), so the names a wildcard takes are its LAST entries.
     let consuming = parts
         .iter()
-        .take(parts.len() - 1)
+        .take(parts.len().saturating_sub(1))
         .filter(|part| matches!(part, Part::Array(_) | Part::Wildcard))
         .count();
     let start = key.group.len().checked_sub(consuming)?;
-    let mut names = key.group[start..].iter();
-    let mut steps = Vec::new();
-    for part in parts.iter().take(parts.len() - 1) {
-        match part {
-            Part::Literal(value) => steps.push(Step::Key(value.clone())),
-            Part::Array(value) => match value.as_str() {
-                "accounts" => steps.push(Step::Account(names.next()?.clone())),
-                "orgs" => steps.push(Step::Org(names.next()?.clone())),
-                "projects" => steps.push(Step::Project(names.next()?.clone())),
-                "slack" => steps.push(Step::Slack(names.next()?.clone())),
-                _ => return None,
-            },
-            Part::Wildcard => steps.push(Step::Key(names.next()?.clone())),
-        }
-    }
-    if names.next().is_some() {
+    let names: Vec<String> = key.group[start..].to_vec();
+    let (steps, leaf, rebuilt) = build(parts, &names, &key.leaf)?;
+    (rebuilt == key.path).then_some((steps, leaf))
+}
+
+/// The split read off the row's path: each wildcard takes the shortest name
+/// that lets the rest of the pattern match, so the pattern's literal
+/// segments anchor it.
+fn locate_from_path(key: &SettingsKey, parts: &[Part]) -> Option<(Vec<Step>, String)> {
+    let mut names = Vec::new();
+    if !match_path(parts, &key.path, &mut names) {
         return None;
     }
-    Some((steps, leaf))
+    let (steps, leaf, rebuilt) = build(parts, &names, &key.leaf)?;
+    (rebuilt == key.path).then_some((steps, leaf))
+}
+
+/// Turn one set of instance names into steps, and rebuild the path they
+/// should produce.
+fn build(parts: &[Part], names: &[String], leaf_hint: &str) -> Option<(Vec<Step>, String, String)> {
+    let last = parts.last()?;
+    let leaf = match last {
+        Part::Wildcard => leaf_hint.to_owned(),
+        Part::Literal(value) | Part::Array(value) => value.clone(),
+    };
+    let mut next = names.iter();
+    let mut steps = Vec::new();
+    let mut rebuilt = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            rebuilt.push('.');
+        }
+        match part {
+            Part::Literal(value) => {
+                rebuilt.push_str(value);
+                // The last literal is the leaf itself, which `build` returns.
+                if index + 1 < parts.len() {
+                    steps.push(Step::Key(value.clone()));
+                }
+            }
+            Part::Array(table) => {
+                rebuilt.push_str(table);
+                if index + 1 == parts.len() {
+                    continue;
+                }
+                rebuilt.push('.');
+                let name = next.next()?;
+                rebuilt.push_str(name);
+                steps.push(array_step(table, name)?);
+            }
+            Part::Wildcard => {
+                if index + 1 == parts.len() {
+                    rebuilt.push_str(&leaf);
+                } else {
+                    let name = next.next()?;
+                    rebuilt.push_str(name);
+                    steps.push(Step::Key(name.clone()));
+                }
+            }
+        }
+    }
+    if next.next().is_some() {
+        return None;
+    }
+    Some((steps, leaf, rebuilt))
+}
+
+fn array_step(table: &str, name: &str) -> Option<Step> {
+    Some(match table {
+        "accounts" => Step::Account(name.to_owned()),
+        "orgs" => Step::Org(name.to_owned()),
+        "projects" => Step::Project(name.to_owned()),
+        "slack" => Step::Slack(name.to_owned()),
+        _ => return None,
+    })
+}
+
+/// Match a pattern against a display path, shortest wildcard names first, and
+/// collect the instance names in wildcard order.
+fn match_path(parts: &[Part], path: &str, names: &mut Vec<String>) -> bool {
+    let Some((part, rest)) = parts.split_first() else {
+        return path.is_empty();
+    };
+    match part {
+        Part::Literal(value) => {
+            if rest.is_empty() {
+                return path == value;
+            }
+            path.strip_prefix(value)
+                .and_then(|tail| tail.strip_prefix('.'))
+                .is_some_and(|tail| match_path(rest, tail, names))
+        }
+        Part::Array(table) => {
+            if rest.is_empty() {
+                return path == table;
+            }
+            let Some(tail) = path.strip_prefix(table).and_then(|tail| tail.strip_prefix('.'))
+            else {
+                return false;
+            };
+            split_then(tail, names, rest)
+        }
+        // A trailing wildcard is the leaf, which `build` takes from the row;
+        // the rebuilt path is what checks it.
+        Part::Wildcard => rest.is_empty() || split_then(path, names, rest),
+    }
+}
+
+/// Try each dot boundary of `path` as a wildcard name, shortest first, and
+/// keep the name only when the rest of the pattern matches.
+fn split_then(path: &str, names: &mut Vec<String>, rest: &[Part]) -> bool {
+    for (at, ch) in path.char_indices() {
+        if ch != '.' || at == 0 {
+            continue;
+        }
+        names.push(path[..at].to_owned());
+        if match_path(rest, &path[at + 1..], names) {
+            return true;
+        }
+        names.pop();
+    }
+    false
 }
 
 #[derive(Clone, Debug)]
@@ -279,7 +393,11 @@ impl Container<'_> {
         }
     }
 
-    fn remove(self, key: &str) {
+    /// Remove a key, moving its comments onto the next key in the table.
+    /// When there is no next key the comments are handed back, because
+    /// whether the table's own suffix renders depends on the table: an
+    /// implicit `[models]` parent never renders one.
+    fn remove(self, key: &str) -> Option<String> {
         match self {
             Self::Table(table) => {
                 // **A key's comments live in its decor prefix**, so removing
@@ -312,9 +430,9 @@ impl Container<'_> {
                     text
                 });
                 let removed = table.remove(key);
-                let Some(prefix) = prefix else { return };
+                let prefix = prefix?;
                 if removed.is_none() || prefix.trim().is_empty() {
-                    return;
+                    return None;
                 }
                 if let Some((mut next, _)) = next.and_then(|next| table.get_key_value_mut(&next)) {
                     let existing = next
@@ -324,18 +442,13 @@ impl Container<'_> {
                         .map(str::to_owned)
                         .unwrap_or_default();
                     next.leaf_decor_mut().set_prefix(format!("{prefix}{existing}"));
-                } else {
-                    let existing = table
-                        .decor()
-                        .suffix()
-                        .and_then(|raw| raw.as_str())
-                        .map(str::to_owned)
-                        .unwrap_or_default();
-                    table.decor_mut().set_suffix(format!("{existing}{prefix}"));
+                    return None;
                 }
+                Some(prefix)
             }
             Self::Inline(table) => {
                 table.remove(key);
+                None
             }
         }
     }
@@ -415,7 +528,13 @@ fn remove_entry_at(array: &mut ArrayOfTables, index: usize) -> Option<String> {
 /// Put a leftover entry's comments at the end of the table that held the
 /// array, so an only-entry removal keeps them.
 fn keep_prefix(table: &mut Table, prefix: Option<String>) {
-    let Some(prefix) = prefix else { return };
+    if let Some(prefix) = prefix {
+        keep_suffix(table, &prefix);
+    }
+}
+
+/// Append text to a table's own trailing decor.
+fn keep_suffix(table: &mut Table, prefix: &str) {
     let existing =
         table.decor().suffix().and_then(|raw| raw.as_str()).map(str::to_owned).unwrap_or_default();
     table.decor_mut().set_suffix(format!("{existing}{prefix}"));
@@ -813,24 +932,29 @@ fn remove_entry(doc: &mut DocumentMut, edit: &SettingsEditRequest) -> Result<(),
                 .ok_or_else(not_found)?;
             // The comment above `[models.foo]` lives on that sub-table's own
             // decor, so the removal moves it like any other key's.
-            Container::Table(models).remove(name);
-            // `[models]` is implicit: an emptied one renders nothing and its
-            // suffix goes with it, so a comment left there moves to the next
-            // root entry (or the document's own end).
+            let removed_comments = Container::Table(models).remove(name);
             let emptied =
                 doc.as_table().get("models").and_then(Item::as_table).is_some_and(Table::is_empty);
+            let next = next_key_after(doc.as_table(), "models");
+            let mut prefix = removed_comments.unwrap_or_default();
             if emptied {
-                let next = next_key_after(doc.as_table(), "models");
-                if let Some(Item::Table(mut table)) = doc.as_table_mut().remove("models") {
-                    let prefix = table
-                        .decor_mut()
-                        .suffix()
-                        .and_then(|raw| raw.as_str())
-                        .map(str::to_owned)
-                        .unwrap_or_default();
-                    place_root_prefix(doc, next, &prefix);
+                // `[models]` may be an explicit header: its own comment lives
+                // on the root key and the table's decor, and removing the
+                // emptied key would take it.
+                if let Some((key, item)) = doc.as_table().get_key_value("models") {
+                    prefix.push_str(&key_text(key));
+                    if let Item::Table(table) = item
+                        && let Some(raw) = table.decor().prefix().and_then(|raw| raw.as_str())
+                    {
+                        prefix.push_str(raw);
+                    }
                 }
+                doc.as_table_mut().remove("models");
             }
+            // An implicit `[models]` never renders its suffix, so anything
+            // freed - the last model's comment, or the header's - moves to
+            // the next root entry (or the document's own end).
+            place_root_prefix(doc, next, &prefix);
             Ok(())
         }
         "projects" => {
@@ -1208,6 +1332,128 @@ token = "xoxp-example"
         let out = apply(&raw, &[edit], &document).expect("the edit applies");
         assert!(out.contains("\r\n"), "still CRLF: {out:?}");
         assert!(!out.replace("\r\n", "").contains('\n'), "no bare LF was introduced: {out:?}");
+    }
+
+    /// **A sibling whose name continues the path is not the target.**
+    /// Projects `api` and `api.handoff` both match the row for `api`'s own
+    /// handoff table, and the row's group names the longer one.
+    #[test]
+    fn a_sibling_named_like_the_next_segment_is_not_the_target() {
+        let raw = r#"
+[models."m"]
+auto_compact_window = 1
+
+[[accounts]]
+display_name = "One"
+provider = "anthropic"
+token = "t"
+models = ["m"]
+
+[[orgs]]
+name = "Acme"
+accounts = ["One"]
+
+[[orgs.projects]]
+name = "api"
+path = "/tmp/api"
+model = "m"
+
+[orgs.projects.handoff]
+enabled = true
+
+[[orgs.projects]]
+name = "api.handoff"
+path = "/tmp/api.handoff"
+model = "m"
+
+[orgs.projects.handoff]
+enabled = true
+"#;
+        let document = document(raw);
+        let edit =
+            set_edit(&document, "orgs.Acme.projects.api.handoff.enabled", serde_json::json!(false));
+        let out = apply(raw, &[edit], &document).expect("the edit applies");
+        assert_eq!(out.matches("enabled = false").count(), 1, "exactly one set: {out}");
+        assert_eq!(out.matches("enabled = true").count(), 1, "the sibling kept its value: {out}");
+    }
+
+    /// **The last model's comment survives its removal.** An implicit
+    /// `[models]` never renders a suffix, so the note moves above the next
+    /// root entry.
+    #[test]
+    fn a_last_model_removal_keeps_its_comments() {
+        let raw = r#"
+[models."a"]
+auto_compact_window = 1
+
+# the bee model
+[models."b"]
+auto_compact_window = 2
+
+[[accounts]]
+display_name = "One"
+provider = "anthropic"
+token = "t"
+models = ["a"]
+
+[[orgs]]
+name = "Acme"
+accounts = ["One"]
+
+[[orgs.projects]]
+name = "api"
+path = "/tmp/api"
+model = "a"
+"#;
+        let document = document(raw);
+        let edit = entry_edit("models", "models.b", SettingsEditOp::Remove, None);
+        let out = apply(raw, &[edit], &document).expect("the model removes");
+        assert!(!out.contains("models.\"b\""), "the model went: {out}");
+        assert!(out.contains("# the bee model"), "its note stayed: {out}");
+    }
+
+    /// **An explicit `[models]` header's comment survives its last model.**
+    #[test]
+    fn an_explicit_models_header_keeps_its_comment() {
+        let raw = r#"
+# the models
+[models]
+
+[models."a"]
+auto_compact_window = 1
+
+[[accounts]]
+display_name = "One"
+provider = "anthropic"
+token = "t"
+models = ["a"]
+
+[[orgs]]
+name = "Acme"
+accounts = ["One"]
+
+[[orgs.projects]]
+name = "api"
+path = "/tmp/api"
+model = "a"
+"#;
+        let document = document(raw);
+        let edit = entry_edit("models", "models.a", SettingsEditOp::Remove, None);
+        let out = apply(raw, &[edit], &document).expect("the model removes");
+        assert!(!out.contains("models.\"a\""), "the model went: {out}");
+        assert!(out.contains("# the models"), "the header's note stayed: {out}");
+    }
+
+    /// **An LF file stays LF when a multi-line string carries a CRLF.** The
+    /// string's newline is content; the layout is the file's first newline.
+    #[test]
+    fn an_lf_file_keeps_lf_when_a_string_contains_crlf() {
+        let raw = "[server]\nport = 8790\nnote = \"\"\"one\r\ntwo\"\"\"\n";
+        let document = document(FIXTURE);
+        let edit = set_edit(&document, "server.port", serde_json::json!(8791));
+        let out = apply(raw, &[edit], &document).expect("the edit applies");
+        assert!(out.contains("one\r\ntwo"), "the string's own CRLF stayed: {out:?}");
+        assert!(!out.contains("\r\nport"), "the layout stayed LF: {out:?}");
     }
 
     /// **A rename and an edit of the same entry share one batch.** The edit

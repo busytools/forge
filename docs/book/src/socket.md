@@ -194,10 +194,11 @@ the one source for the frame and for the reload's own summary.
 `fingerprint` is a digest of the raw file text the document was built
 from. `edit` says how a client draws the key's control: `kind` is
 `string`, `number`, `bool`, `enum` or `list`; `allowed` holds an enum's
-accepted names and is absent when the key has none; `required` says an
-empty value is a value rather than the key unset; and `group` names the
-repeated entry the key belongs to (`account`, `project`, `slack`,
-`model`, `org`), absent for a table's own keys.
+accepted names and is absent when the key has none; `required` says the
+key may not be unset, so an emptied optional string clears it while a
+required one keeps its value; and `group` names the repeated entry the
+key belongs to (`account`, `project`, `slack`, `model`, `org`), absent
+for a table's own keys.
 
 **Values cross as the file loaded them, unredacted.** The socket is
 reached over loopback or the private network, and that boundary is the
@@ -229,20 +230,23 @@ A client saves a batch of edits with `settings_edit`:
 
 `fingerprint` is the one the page loaded from its settings document; a
 file whose raw text has moved since refuses the save, and it is read
-again immediately before the write so a file that moves in that window
-is refused too. `id` is the page's own number for the save; every answer
-echoes it, so a page clears its draft only for the save that made it.
-`op` is `set`, `add` or `remove`.
+again after the temp file exists and before the rename, so a file that
+moves in that window is refused too. `id` is the page's own number for
+the save; every answer echoes it, so a page clears its draft only for
+the save that made it. `area` is the page's area id the edit was made
+under. `op` is `set`, `add` or `remove`.
 
 - **`set`** writes a key: `value` is its new value in the `edit.kind`'s
   shape. A `null` value clears the key - the key goes back to unset and
   its default applies - which is how an optional string is emptied.
 - **`add`** appends an entry: `pattern` is empty, `key_path` names the
-  new entry, and `value` is its fields.
+  new entry, `value` is its fields, and `area` is one of `accounts`,
+  `projects`, `connectors` or `models`.
 - **`remove`** with a `pattern` removes that key; with an empty `pattern`
-  it removes the entry `key_path` names. The guards are identity diffs,
-  so a rename is a removal too: a project or account the save leaves
-  absent is checked exactly as a removal is.
+  it removes the entry `key_path` names, with the same four `area`
+  values. The guards are identity diffs, so a rename is a removal too: a
+  project or account the save leaves absent is checked exactly as a
+  removal is.
 
 A save that writes is answered with `settings_saved`, and the reload push
 follows it with every client's new document:
@@ -267,7 +271,7 @@ A save that writes nothing is answered with `settings_refused`:
 `invalid` (the candidate failed the boot loader; the message is the
 loader's own, including its line and key where it has one), `refused`
 (a guard declined it, naming what it found) or `io` (the file could not
-be read or written; the write may or may not have landed). The writer preserves the
+be read or written; nothing was applied). The writer preserves the
 file's comments and order, replaces the file by rename in the
 destination's own mode and through a symlink, and the guards live on the
 server so a hand-rolled client cannot force them.

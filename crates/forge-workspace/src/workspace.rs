@@ -52,6 +52,30 @@ impl From<crate::settings_write::WriteError> for SettingsSaveError {
     }
 }
 
+/// Undo a spawn's own side effects when it is refused before the session is
+/// pooled: the id it recorded and a domain handle it created. Armed from the
+/// id record to the pool insert; an unarmed guard does nothing, so the
+/// pooled and refused paths both end in a plain drop.
+struct SpawnRollback {
+    workspace: Arc<Workspace>,
+    slot: SessionSlot,
+    stored: Option<String>,
+    domain_created: bool,
+    armed: bool,
+}
+
+impl Drop for SpawnRollback {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if self.domain_created {
+            self.workspace.domain_handles.lock().remove(&self.slot);
+        }
+        self.workspace.forget_spawn_id(&self.slot, self.stored.as_deref());
+    }
+}
+
 /// The project pairs and account names a batch leaves behind, read off the
 /// batch and the loaded document rather than a second load: a removal drops
 /// an entry, and a set on one of the naming fields renames it. The loaded
@@ -3135,6 +3159,17 @@ impl Workspace {
         // `lead_session_key_for`. Nothing is written before this point -
         // a refusal ahead of it would pin an id no child ever adopts,
         // and the next boot would resume onto it.
+        // **One rollback for everything between the id record and the pool
+        // insert.** Any refusal in between - the loader, a missing project,
+        // the bind - would otherwise leave a live-looking domain handle and
+        // an id no child ever adopted.
+        let mut rollback = SpawnRollback {
+            workspace: Arc::clone(self),
+            slot: session_slot.clone(),
+            stored: stored.clone(),
+            domain_created: false,
+            armed: true,
+        };
         let session_id = self.record_spawn_id(&session_slot, stored.clone());
         tracing::info!(
             target: "forge_workspace::account",
@@ -3230,6 +3265,7 @@ impl Workspace {
                 (fresh, true)
             }
         };
+        rollback.domain_created = domain_created;
         // Carry `--new` onto the domain so a project lead's
         // Connected-time respawn skips the store lookup and brings its
         // workers up fresh alongside the fresh lead.
@@ -3415,13 +3451,9 @@ impl Workspace {
                 }),
             };
             if !present {
-                // The refusal lands after this spawn's own side effects; undo
-                // them, or the project reads live for ever and a boot resumes
+                // The guard rolls this spawn's side effects back on the way
+                // out, or the project reads live for ever and a boot resumes
                 // onto a transcript that never existed.
-                if domain_created {
-                    self.domain_handles.lock().remove(&session_slot);
-                }
-                self.forget_spawn_id(&session_slot, stored.as_deref());
                 return Err(WorkspaceError::SpawnResolvesToNoProject {
                     slot: session_slot.display(),
                 }
@@ -3429,6 +3461,7 @@ impl Workspace {
             }
             let mut pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_slot) {
+                rollback.armed = false;
                 return Ok(Arc::clone(&existing.handle));
             }
             pool.insert(
@@ -3441,6 +3474,8 @@ impl Workspace {
                     session_id: session_id.clone(),
                 },
             );
+            // The session is pooled: its id and domain are its own now.
+            rollback.armed = false;
         }
 
         // Spawn the per-session `SessionTask` actor. Idempotent -
@@ -13904,6 +13939,44 @@ provider = "anthropic"
             .expect_err("a stale save is refused");
         assert_eq!(error, SettingsSaveError::Stale);
         assert_eq!(fs::read_to_string(&path).expect("read"), before, "the file did not move");
+    }
+
+    /// **A spawn refused before the pool gives back what it wrote.** The id
+    /// it recorded returns to the store's own and a domain handle it created
+    /// goes, or the project reads live for ever and a boot resumes a
+    /// transcript that never existed.
+    #[tokio::test]
+    async fn a_refused_spawn_rolls_back_its_id_and_domain() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let slot = SessionSlot::lead("Default", "forge");
+        let previous = workspace
+            .stored_session_id(slot.org(), slot.project(), slot.label())
+            .expect("the store reads");
+        let minted = workspace.record_spawn_id(&slot, previous.clone());
+        assert_ne!(previous.as_deref(), Some(minted.as_str()), "the spawn pinned a new id");
+        workspace
+            .domain_handles
+            .lock()
+            .insert(slot.clone(), Arc::new(Mutex::new(DomainSession::new(slot.clone(), None))));
+        {
+            let _rollback = SpawnRollback {
+                workspace: Arc::clone(&workspace),
+                slot: slot.clone(),
+                stored: previous.clone(),
+                domain_created: true,
+                armed: true,
+            };
+        }
+        assert_eq!(
+            workspace.stored_session_id(slot.org(), slot.project(), slot.label()).expect("read"),
+            previous,
+            "the pinned id went back to the store's own",
+        );
+        assert!(
+            !workspace.domain_handles.lock().contains_key(&slot),
+            "the domain handle the spawn created went",
+        );
     }
 
     /// A candidate the loader refuses writes nothing and carries the loader's
