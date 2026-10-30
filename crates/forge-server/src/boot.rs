@@ -761,8 +761,20 @@ port = {port}
         handle.abort();
     }
 
+    /// The wait ends when the watch reports, so this bound is reached when no
+    /// report arrives within it: a stuck watch, or a delivery slower still.
+    /// It sits under nextest's 120 s kill, so that failure names the property
+    /// instead of dying as a bare timeout.
+    const CONFIG_EDIT_WEDGE: Duration = Duration::from_secs(100);
+
     /// A write to the watched file applies to the running workspace, with no
     /// restart and no call from the test: the watch is the only path.
+    ///
+    /// macOS ignores it locally for the same reason `config_watch`'s delivery
+    /// tests are: fsevents stalled a report for 407 s under a full gate. The
+    /// macOS CI job runs it with `--run-ignored ignored-only`, and Ubuntu runs
+    /// it on inotify.
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
     #[tokio::test]
     async fn a_config_edit_reaches_the_running_workspace() {
         let (workspace, _dir) = boot_fixture();
@@ -773,7 +785,10 @@ port = {port}
         let raw = std::fs::read_to_string(&path).expect("read");
         std::fs::write(&path, raw.replace("Stub", "Renamed")).expect("write");
 
-        let applied = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        // The wait is the update stream, not a clock: fsevents schedules the
+        // delivery, so only a stuck watch, or a delivery slower than the
+        // bound, reaches the wedge.
+        let applied = tokio::time::timeout(CONFIG_EDIT_WEDGE, async {
             loop {
                 let frame = updates.recv().await.expect("the update stream stays open");
                 if matches!(&*frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. })
@@ -783,8 +798,10 @@ port = {port}
             }
         })
         .await;
-
-        assert!(applied.is_ok(), "the watched file's edit applies without a restart");
+        assert!(
+            applied.is_ok(),
+            "the watched file's edit reaches the running workspace within {CONFIG_EDIT_WEDGE:?}",
+        );
         assert_eq!(
             workspace.list_projects()[0].accounts,
             vec!["Renamed".to_owned()],
