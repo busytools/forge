@@ -25,6 +25,18 @@ slow-timeout = { period = "60s", terminate-after = 8 }
 filter = 'test(the_committed_socket_contract_is_still_what_the_server_emits) or test(every_subject_round_trips_through_its_fixture)'
 success-output = "immediate"
 
+# **This test can hold two full watch passes**, each a scan of ten budgeted
+# `git` children: the pass whose mark it waits on, and the driven pass that
+# moves the values. Its own wedge for one pass is `POKE_INTERVAL +
+# SCAN_WORST_CASE` = 101 s, so the whole test can legitimately run to 202 s on
+# a loaded machine. The default 30 s x 4 kill (120 s) would take it there, so
+# this override puts the kill at 3 x 101 s = 303 s - above the 202 s the test
+# itself allows, and still a named stop rather than a job timeout. The test's
+# own message is the red before either bound.
+[[profile.default.overrides]]
+filter = 'test(an_open_announces_no_value_its_snapshot_carried)'
+slow-timeout = { period = "101s", terminate-after = 3 }
+
 # **The CEF live tests boot real browser hosts**, each a Chromium of its own,
 # and the host's ready check allows fifteen seconds from its own start. Two
 # at a time starved the macOS CI runner once the suite reached 165 tests

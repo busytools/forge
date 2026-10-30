@@ -57,14 +57,27 @@ pub mod resolver;
 /// to unbounded memory growth on a corrupted-git-output edge case.
 const STDOUT_SIZE_CAP: usize = 8 * 1024 * 1024;
 
-/// Per-subprocess timeout. Worst case across the full scan
-/// sequence is ~50s (5 commands × 10s each), but in practice every
-/// command returns in <100 ms on a local repo. Timeouts only fire
-/// on hung network mounts or genuinely huge repositories.
-///
-/// Public so a test that waits on a scan derives its wedge from the budget
-/// the scan's children get rather than picking a number of its own.
-pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+/// Per-subprocess timeout. A scan's worst case is one budget per child, and a
+/// remote-less repository already issues ten of them (`SCAN_CHILDREN`); a
+/// resolved default branch adds the ahead layer's on top. In practice every
+/// command returns in <100 ms on a local repo, and timeouts only fire on hung
+/// network mounts or genuinely huge repositories.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The children one scan issues for a repository with no remote: `rev-parse`,
+/// the `origin/HEAD` probe plus four default-branch candidates, `status`, the
+/// worktree layer's `numstat` and `name-status`, and `for-each-ref` for the
+/// pushed sha. The PR lookup adds a `gh` child only once a pushed sha exists,
+/// which a remote-less repository has none of.
+#[cfg(any(test, feature = "testing"))]
+const SCAN_CHILDREN: u32 = 10;
+
+/// One scan's worst case for a repository with no remote, which is what a test
+/// waiting on a scan derives its own bound from. Test-only: production reads
+/// the per-child budget, never the count.
+#[cfg(any(test, feature = "testing"))]
+pub const SCAN_WORST_CASE: Duration =
+    Duration::from_secs(COMMAND_TIMEOUT.as_secs() * SCAN_CHILDREN as u64);
 
 /// The budget the tests give a scan's `git` children: **not the shell's
 /// own.** A scan's commands are bounded by it while the machine starts each

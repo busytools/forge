@@ -316,14 +316,15 @@ const DIRECT_WAIT: Duration = Duration::from_secs(5);
 const WATCH_WAIT: Duration =
     forge_workspace::work::SNAPSHOT_STALENESS.saturating_sub(Duration::from_secs(2));
 
-/// The wedge on one watch pass: the poke that wakes the loop, and the scan it
-/// then takes, whose children each run inside the scanner's own budget (the
-/// scanner documents its sequence as five of them).
+/// The wedge on one watch pass: the poke that wakes the loop, plus one full
+/// scan, whose children each run inside the scanner's own budget.
 ///
-/// A wedge, not a latency target: a watch that never takes its pass reds by
-/// the assertion's own name rather than at nextest's 120 s kill.
+/// A wedge, not a latency target. This test can hold TWO passes - the one it
+/// waits on for the open's mark (a `Fetch` scan, because the read stored no PR
+/// stamp), and the driven one that moves the values - so nextest's kill for
+/// this test is set above twice this in `.config/nextest.toml`.
 const WATCH_PASS_WEDGE: Duration = forge_workspace::work::POKE_INTERVAL
-    .saturating_add(forge_workspace::env::git_diff::COMMAND_TIMEOUT.saturating_mul(5));
+    .saturating_add(forge_workspace::env::git_diff::SCAN_WORST_CASE);
 
 /// The next update satisfying `want`, with everything that is not it passed
 /// over, for the reason [`snapshot_answering`] gives.
@@ -6972,6 +6973,9 @@ async fn an_open_announces_no_value_its_snapshot_carried() {
     .await;
     let (_, data, passed) = snapshot_answering(&mut socket).await;
     assert_eq!(data["work"]["branch"], "work", "the snapshot carries the read row: {data}");
+    // The fold below calls a `changed == 0` frame the snapshot's row, so the
+    // snapshot has to be the row with nothing changed for that to hold.
+    assert_eq!(data["work"]["changed"], 0, "and the row read a still tree: {data}");
 
     // **The pass that starts from this read runs to its end before anything
     // moves.** The watch raises its own mark at the end of every pass, so the
