@@ -408,9 +408,15 @@ describe('one turn, as the page draws it', () => {
       },
     );
 
-    // The notice's own wrapper is a leaves list too, so the count takes only
-    // the work run's unmarked list - a notice is a unit, not a run.
-    const runs = body.match(/<div class="leaves">/g) ?? [];
+    // The notice's own wrapper is a leaves list too, so the count asks what a
+    // run IS: a list whose first row is a work row. A notice is a unit, not a
+    // run, and its row carries `nrow`.
+    const runs =
+      body.match(/<div class="leaves">(?:<!--[^>]*-->)*<details class="leaf(?![^>]*\bnrow\b)/g) ??
+      [];
+    expect(body, 'the notice still takes the run inset').toMatch(
+      /<div class="leaves">(?:<!--[^>]*-->)*(?:<details class="leaf nrow"|<div class="leaf nrow")/,
+    );
     expect(runs, 'two runs, so two leaf lists').toHaveLength(2);
     expect(body, 'the notice drew beside them').toContain('Goal cleared');
     expect(body).toContain('<div class="card">');

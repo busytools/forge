@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 
+import { JSDOM } from 'jsdom';
 import { flushSync, mount, unmount } from 'svelte';
 import { describe, expect, it } from 'vitest';
 
 import Notice from './Notice.svelte';
 import type { Notice as NoticeRow } from './units';
+import { repoPath } from '../repo';
 import { violationsOf } from '../testing/axe';
 
 /**
@@ -33,10 +35,57 @@ const a_row = (overrides: Partial<NoticeRow> = {}): NoticeRow => ({
   ...overrides,
 });
 
+/** A plain line: the shape ordinary notices use, since only a provisional
+ * frame carries `raw`. */
+const a_plain = (overrides: Partial<NoticeRow> = {}): NoticeRow => ({
+  severity: 'info',
+  text: 'Goal cleared',
+  ...overrides,
+});
+
 /** The sheet, because the extra row was a LAYOUT fault a DOM read cannot see.
  * Read by path rather than `import.meta.url`: the jsdom environment does not
  * hand back a file URL. */
 const SHEET = readFileSync('src/assets/web.css', 'utf8');
+const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
+
+/** The book page's own copy of the rules it draws with. */
+const BOOK = /<style>([\s\S]*?)<\/style>/.exec(PAGE)?.[1] ?? '';
+
+/** The two sheets a page reads: the app's, and the book's own drawing of it. */
+const SHEETS: Array<[string, string]> = [
+  ['web.css', SHEET],
+  ['the book drawing', BOOK],
+];
+
+/**
+ * What the cascade sets on a notice's title, for one row shape and one sheet.
+ *
+ * **jsdom evaluates no media features**, so this reads the wide-width cascade;
+ * the sheet scan in `Notice.test.ts` is what catches a clamp an at-rule
+ * carries. Together they cover both directions of the C1 defect.
+ */
+function titleStyle(sheet: string, notice: NoticeRow): Record<string, string> {
+  // Mounted rather than server-rendered: this file runs in jsdom, where the
+  // component resolves to its client build and `svelte/server` cannot draw it.
+  const host = document.createElement('div');
+  const app = mount(Notice, { target: host, props: { notice } });
+  flushSync();
+  const markup = host.innerHTML;
+  void unmount(app);
+  const dom = new JSDOM(
+    `<!doctype html><html><head><style>${sheet}</style></head><body><div class="conv">${markup}</div></body></html>`,
+    { pretendToBeVisual: true },
+  );
+  const title = dom.window.document.querySelector('.tn');
+  if (title === null) throw new Error('the row drew no title');
+  const style = dom.window.getComputedStyle(title);
+  return {
+    'white-space': style.getPropertyValue('white-space'),
+    overflow: style.getPropertyValue('overflow'),
+    'text-overflow': style.getPropertyValue('text-overflow'),
+  };
+}
 
 /** The declarations of the first rule whose selector list names `selector` -
  * a list, because the notice row shares the leaf row's rule. Matching a whole
@@ -57,7 +106,7 @@ describe('the provisional notice, mounted', () => {
       flushSync();
       const row = document.querySelector('details.leaf');
       if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
-      expect(row.className, 'the notice draws as a tool row').toContain('nrow');
+      expect(row.matches('details.leaf.nrow'), 'the notice draws as a tool row').toBe(true);
       expect(row.open, 'a provisional row starts closed').toBe(false);
       expect(
         row.querySelector('summary .arw'),
@@ -166,7 +215,9 @@ describe('the provisional notice, mounted', () => {
   it('keeps each fact line together rather than pushing its two ends apart', () => {
     const rule = /details\.leaf\.nrow \.nfact \{([^}]*)\}/.exec(SHEET)?.[1];
     expect(rule, 'the sheet has no rule for the fact line').toBeDefined();
-    expect(rule ?? '', 'a justified pair splits a fact into two ends').not.toMatch(/space-between/);
+    expect(rule ?? '', 'a justified pair splits a fact into two ends').not.toMatch(
+      /justify-content/,
+    );
   });
 
   /** The open body under axe: a closed `<details>` is walked by nothing. */
@@ -185,6 +236,53 @@ describe('the provisional notice, mounted', () => {
       expect(await violationsOf(`<main>${main.innerHTML}</main>`)).toEqual([]);
     } finally {
       void unmount(app);
+      main.remove();
+      document.body.innerHTML = '';
+    }
+  });
+
+  /**
+   * **Both row shapes wrap, proved where the cascade lands.** The rule pin in
+   * `Notice.test.ts` reads the sheet; this reads the computed title, so
+   * deleting a shape's selector member (which leaves that shape on the base
+   * clamp) fails here even when the other member keeps the text rule alive.
+   */
+  it('wraps the title on both row shapes, in both sheets', () => {
+    const shapes: Array<[string, NoticeRow]> = [
+      ['plain', a_plain({ severity: 'warning', text: 'a long line that must be read' })],
+      ['provisional', a_row({ severity: 'warning', text: 'a long line that must be read' })],
+    ];
+    for (const [shape, notice] of shapes) {
+      for (const [what, sheet] of SHEETS) {
+        const style = titleStyle(sheet, notice);
+        expect(style['white-space'], `${shape}/${what} keeps line breaks`).toBe('pre-line');
+        expect(style.overflow, `${shape}/${what} shows all of it`).toBe('visible');
+        expect(style['text-overflow'], `${shape}/${what} does not ellipsize`).toBe('clip');
+      }
+    }
+  });
+
+  /**
+   * **The static row under axe.** It is a div, not a disclosure, so nothing
+   * else walks it: all three levels, mounted as a reader meets them.
+   */
+  it('draws every static level with no violations', async () => {
+    const main = document.createElement('main');
+    document.body.append(main);
+    const levels: NoticeRow[] = [
+      a_plain({ severity: 'info', text: 'Goal cleared' }),
+      a_plain({ severity: 'warning', text: 'Near rate-limit threshold.' }),
+      a_plain({ severity: 'error', text: 'The tool call was refused.' }),
+    ];
+    const apps = levels.map((notice) => mount(Notice, { target: main, props: { notice } }));
+    try {
+      flushSync();
+      expect(main.textContent ?? '', 'all three levels drew, so axe saw them').toContain(
+        'The tool call was refused.',
+      );
+      expect(await violationsOf(`<main>${main.innerHTML}</main>`)).toEqual([]);
+    } finally {
+      for (const app of apps) void unmount(app);
       main.remove();
       document.body.innerHTML = '';
     }

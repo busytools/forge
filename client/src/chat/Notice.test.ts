@@ -3,35 +3,75 @@ import { readFileSync } from 'node:fs';
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 
+import { repoPath } from '../repo';
 import Notice from './Notice.svelte';
 import type { NoticeSeverity } from './units';
 
-/**
- * The sheet, as text: what chrome a row draws is a class question, and jsdom
- * does no layout, so a rendered assertion cannot see it.
- */
 const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
 
-/** The declarations of the first rule whose selector list names `selector`. */
-function ruleBody(selector: string): string {
-  const code = SHEET.replace(/\/\*[\s\S]*?\*\//g, '');
-  for (const rule of code.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
-    const members = (rule[1] ?? '').split(',').map((member) => member.trim().replace(/\s+/g, ' '));
-    if (members.includes(selector)) return rule[2] ?? '';
-  }
-  return '';
+/** The book page's own copy of the rules it draws with. */
+const BOOK = /<style>([\s\S]*?)<\/style>/.exec(PAGE)?.[1] ?? '';
+
+/** The two sheets a page reads: the app's, and the book's own drawing of it. */
+const SHEETS: Array<[string, string]> = [
+  ['web.css', SHEET],
+  ['the book drawing', BOOK],
+];
+
+interface Rule {
+  selectors: string[];
+  body: string;
+  /** Whether an at-rule encloses the rule, where a wide read cannot see it. */
+  nested: boolean;
 }
 
-/** Every selector member the sheet writes that contains `fragment`. */
-function selectorsMatching(fragment: string): string[] {
-  const code = SHEET.replace(/\/\*[\s\S]*?\*\//g, '');
-  const found: string[] = [];
-  for (const rule of code.matchAll(/([^{}]+)\{/g)) {
-    for (const member of (rule[1] ?? '').split(',')) {
-      if (member.trim().includes(fragment)) found.push(member.trim());
+/**
+ * Every style rule in a sheet, at any nesting depth.
+ *
+ * **A walk, not a regex.** A rule smuggled into an at-rule is what a
+ * wide-width read cannot see, and a line-wise scan misses it entirely; this
+ * records the nesting instead. The body of a plain rule holds declarations
+ * only, so the walk steps over it whole.
+ */
+function rulesIn(sheet: string): Rule[] {
+  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '');
+  const found: Rule[] = [];
+  const walk = (from: number, to: number, nested: boolean): void => {
+    let at = from;
+    while (at < to) {
+      const open = code.indexOf('{', at);
+      if (open === -1 || open >= to) return;
+      let depth = 1;
+      let end = open + 1;
+      while (end < to && depth > 0) {
+        const char = code[end];
+        if (char === '{') depth += 1;
+        else if (char === '}') depth -= 1;
+        end += 1;
+      }
+      const head = code.slice(at, open).trim();
+      if (head.startsWith('@')) {
+        walk(open + 1, end - 1, true);
+      } else {
+        found.push({
+          selectors: head.split(',').map((member) => member.trim().replace(/\s+/g, ' ')),
+          body: code.slice(open + 1, end - 1),
+          nested,
+        });
+      }
+      at = end;
     }
-  }
+  };
+  walk(0, code.length, false);
   return found;
+}
+
+/** The declarations of the first top-level rule naming `selector`, or ''. */
+function topLevelBody(sheet: string, selector: string): string {
+  return (
+    rulesIn(sheet).find((rule) => !rule.nested && rule.selectors.includes(selector))?.body ?? ''
+  );
 }
 
 describe('the chat notice row', () => {
@@ -63,7 +103,10 @@ describe('the chat notice row', () => {
     );
     expect(html, 'the attempt rides the row as a chip').toContain('attempt 2 / 4');
     expect(html, 'and the delay is its tail').toContain('retrying in 1.5s');
-    expect(html, 'the level word is gone').not.toContain('Warning');
+    // The glyph's aria-label carries the level, so the check is on the words a
+    // reader SEES: tags stripped, the level word must not appear in any case.
+    const words = html.replace(/<[^>]*>/g, ' ');
+    expect(words, 'the level word is gone').not.toMatch(/warning/i);
   });
 
   /** Every level names its own shape; the word that carried it is gone, so
@@ -102,31 +145,87 @@ describe('the chat notice row', () => {
   });
 
   /**
-   * A notice's text IS the message: a narrow row must wrap it rather than
-   * clamp it the way a call's title clamps (C1). The plain row covers the
-   * same rule because both row shapes share it.
+   * **A notice's text IS the message, and both row shapes wrap it.** The
+   * plain shape is the ordinary one (`raw` is only built by `provisional()`),
+   * so a pin on the provisional member alone leaves the shape readers mostly
+   * meet free to take the call title's clamp - which is the C1 defect, at the
+   * width it is about. The rule must also be top-level: a clamp added inside
+   * an at-rule lands at the narrow widths a wide read cannot see.
    */
-  it('wraps the notice text where a call title clamps', () => {
-    const rule = ruleBody('details.leaf.nrow > summary .tn');
-    expect(rule, 'the sheet has no rule for the notice title').not.toBe('');
-    expect(rule, 'keeps the line breaks the text arrived with').toMatch(/white-space:\s*pre-line/);
-    expect(rule, 'and shows all of it').toMatch(/overflow:\s*visible/);
-    expect(rule, 'rather than ellipsizing it').toMatch(/text-overflow:\s*clip/);
-    expect(rule, 'which a clamp would undo').not.toMatch(/nowrap/);
+  it('wraps the notice text on both row shapes, in both sheets, at every width', () => {
+    for (const [what, sheet] of SHEETS) {
+      for (const selector of ['details.leaf.nrow > summary .tn', 'div.leaf.nrow > .rrow .tn']) {
+        const body = topLevelBody(sheet, selector);
+        expect(body, `${what}: ${selector} is written at the top level`).not.toBe('');
+        expect(body, `${what}: ${selector} keeps line breaks`).toMatch(/white-space:\s*pre-line/);
+        expect(body, `${what}: ${selector} shows all of it`).toMatch(/overflow:\s*visible/);
+        expect(body, `${what}: ${selector} does not ellipsize`).toMatch(/text-overflow:\s*clip/);
+        expect(body, `${what}: ${selector} breaks a long token`).toMatch(
+          /overflow-wrap:\s*anywhere/,
+        );
+      }
+
+      // A clamp written for the notice's title at ANY depth is the same
+      // defect, so the scan hoists it out of any at-rule rather than trusting
+      // a wide-width cascade read.
+      const titleRules = rulesIn(sheet).filter((rule) =>
+        rule.selectors.some((member) => member.includes('.nrow') && member.includes('.tn')),
+      );
+      expect(titleRules.length, `${what}: the scan found the title rules`).toBeGreaterThan(0);
+      for (const rule of titleRules) {
+        expect(
+          rule.body,
+          `${what}: ${rule.selectors.join(', ')} clamps the notice title`,
+        ).not.toMatch(/(white-space:\s*nowrap|text-overflow:\s*ellipsis|overflow:\s*hidden)/);
+      }
+    }
+  });
+
+  /** The row wraps so the tails fall after a wrapped text, and the glyph's
+   * group can shrink to make room instead of squeezing the words to nothing. */
+  it('lays the notice row out to wrap, with the glyph group able to shrink', () => {
+    for (const [what, sheet] of SHEETS) {
+      for (const selector of ['details.leaf.nrow > summary', 'div.leaf.nrow > .rrow']) {
+        expect(topLevelBody(sheet, selector), `${what}: ${selector} wraps`).toMatch(
+          /flex-wrap:\s*wrap/,
+        );
+      }
+      for (const selector of ['details.leaf.nrow > summary .lead', 'div.leaf.nrow > .rrow .lead']) {
+        expect(topLevelBody(sheet, selector), `${what}: ${selector} can shrink`).toMatch(
+          /min-width:\s*0/,
+        );
+      }
+    }
   });
 
   /** The published-change URL and a long chip must not push the row past the
    * column: each tail can shrink and break (I2). */
   it('keeps the tails able to shrink and break', () => {
-    for (const selector of [
-      'details.leaf.nrow > summary .sub2',
-      'details.leaf.nrow > summary .chip',
-    ]) {
-      const rule = ruleBody(selector);
-      expect(rule, `${selector} is written`).not.toBe('');
-      expect(rule, `${selector} shrinks`).toMatch(/flex:\s*0 1 auto/);
-      expect(rule, `${selector} can go below its content`).toMatch(/min-width:\s*0/);
-      expect(rule, `${selector} can break a long word`).toMatch(/overflow-wrap:\s*anywhere/);
+    for (const [what, sheet] of SHEETS) {
+      for (const shape of ['details.leaf.nrow > summary', 'div.leaf.nrow > .rrow']) {
+        for (const tail of ['.sub2', '.chip']) {
+          const selector = `${shape} ${tail}`;
+          const body = topLevelBody(sheet, selector);
+          expect(body, `${what}: ${selector} is written`).not.toBe('');
+          expect(body, `${what}: ${selector} shrinks`).toMatch(/flex:\s*0 1 auto/);
+          expect(body, `${what}: ${selector} can go below its content`).toMatch(/min-width:\s*0/);
+          expect(body, `${what}: ${selector} can break a long word`).toMatch(
+            /overflow-wrap:\s*anywhere/,
+          );
+        }
+      }
+    }
+  });
+
+  /** **The warning glyph has a tone of its own**, and the state-tone check can
+   * only catch a wrong token while the rule exists. */
+  it('gives the warning glyph its tone', () => {
+    for (const [what, sheet] of SHEETS) {
+      for (const selector of ['details.leaf > summary .gl.warn', 'div.leaf > .rrow .gl.warn']) {
+        expect(topLevelBody(sheet, selector), `${what}: ${selector} is written`).toMatch(
+          /color:\s*var\(--warn\)/,
+        );
+      }
     }
   });
 
@@ -155,9 +254,26 @@ describe('the chat notice row', () => {
    * reads the conversation's rules at all, so an empty result means absence
    * rather than a blind matcher. */
   it('leaves the banner chrome out of the sheet', () => {
-    const conversation = selectorsMatching('.conv ');
-    expect(conversation.length, 'the scanner reads the conversation').toBeGreaterThan(0);
-    const banner = conversation.filter((selector) => selector.includes('.notice'));
-    expect(banner, 'a banner rule survived the markup it drew').toEqual([]);
+    for (const [what, sheet] of SHEETS) {
+      const members = rulesIn(sheet).flatMap((rule) => rule.selectors);
+      const conversation = members.filter((selector) => selector.includes('.conv'));
+      expect(conversation.length, `${what}: the scanner reads the conversation`).toBeGreaterThan(0);
+      expect(
+        conversation.filter((selector) => selector.includes('.notice')),
+        `${what}: a banner rule survived the markup it drew`,
+      ).toEqual([]);
+    }
+  });
+
+  /** A bare `.notice` rule reaches the composer's own notice row, which wears
+   * the name for its own chrome. The chat's rules are not the only ones that
+   * can collide, so the guard is on the bare name, not on this PR's scope. */
+  it('wears no notice name bare enough to reach another surface', () => {
+    for (const [what, sheet] of SHEETS) {
+      const bare = rulesIn(sheet)
+        .flatMap((rule) => rule.selectors)
+        .filter((selector) => (selector.split(/\s+|[>+~]/)[0] ?? '').includes('.notice'));
+      expect(bare, `${what}: an unscoped .notice rule reaches another surface`).toEqual([]);
+    }
   });
 });

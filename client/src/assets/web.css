@@ -2571,10 +2571,13 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
 details.leaf.nrow > summary, div.leaf.nrow > .rrow { flex-wrap: wrap; }
 /* The glyph and the text are one piece, so a wrapped text keeps its glyph on
    its own first line instead of leaving it orphaned on a line above. */
-details.leaf.nrow > summary .lead, div.leaf.nrow > .rrow .lead { display: flex; align-items: center;
+details.leaf.nrow > summary .lead, div.leaf.nrow > .rrow .lead { display: flex; align-items: flex-start;
   gap: 8px; flex: 0 1 auto; min-width: 0; }
+/* The glyph sits against the text's first line, not the middle of a wrapped
+   block: four is half a row line's remaining height above the 14px mark. */
+details.leaf.nrow > summary .lead .gl, div.leaf.nrow > .rrow .lead .gl { margin-top: 4px; }
 details.leaf.nrow > summary .tn, div.leaf.nrow > .rrow .tn { flex: 1 1 auto; min-width: 0;
-  white-space: pre-line; overflow: visible; text-overflow: clip; }
+  white-space: pre-line; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 details.leaf.nrow > summary .chip, div.leaf.nrow > .rrow .chip,
 details.leaf.nrow > summary .sub2, div.leaf.nrow > .rrow .sub2 { flex: 0 1 auto; min-width: 0;
   overflow-wrap: anywhere; }
@@ -2968,8 +2971,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 
 /* A notice shares the row with the take and wins it. Each rule here is scoped
    to `.comp` and states the row's own chrome, so the chrome depends on no
-   shared name - the chat's delivery notices are scoped to `.conv` for the same
-   reason. */
+   shared name. */
 .comp .notice { font-family: var(--mono); font-size: var(--fs-data);
   padding: 0; margin: 0; border-radius: 0; white-space: normal; }
 /* The band's own words, for a reader who is not looking at it: the open is
