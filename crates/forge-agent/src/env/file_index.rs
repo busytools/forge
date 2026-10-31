@@ -190,19 +190,6 @@ pub fn start_watch(
 /// costs the index. Paths under `.git` are ignored by the filter, so a commit
 /// or a stage fires nothing at all - those ride the caller's own cadence.
 pub fn start_change_watch(root: PathBuf, respect_gitignore: bool) -> (Receiver<()>, CancelToken) {
-    start_change_watch_inner(root, respect_gitignore, None)
-}
-
-/// [`start_change_watch`] with an optional mark for when notify is listening.
-///
-/// The arming happens on the watch's own thread, and a write sent before it
-/// lands is swallowed; a caller that needs to write exactly once waits for
-/// this mark rather than polling.
-fn start_change_watch_inner(
-    root: PathBuf,
-    respect_gitignore: bool,
-    armed: Option<mpsc::Sender<()>>,
-) -> (Receiver<()>, CancelToken) {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = Arc::clone(&cancel);
     let (tx, rx) = mpsc::channel::<()>();
@@ -226,9 +213,6 @@ fn start_change_watch_inner(
         {
             tracing::warn!(target: "forge_agent::env::file_index", %err, "change watch start failed");
             return;
-        }
-        if let Some(armed) = armed {
-            let _ = armed.send(());
         }
 
         let mut filter = WatchFilter::new(&root, respect_gitignore);
@@ -679,35 +663,41 @@ mod tests {
     }
 
     /// The wait ends when the watch reports, so this bound is reached only by
-    /// a stuck watch or a delivery slower still. It sits under nextest's
-    /// 120 s kill, where this runs, so the failure names the property instead
-    /// of dying as a bare timeout.
+    /// a stuck watch or a delivery slower still. The test holds one such
+    /// wait, so it sits 20 s under nextest's 120 s kill and the failure names
+    /// the property instead of dying as a bare timeout.
     const WEDGE: Duration = Duration::from_secs(100);
 
     /// The change watch reports a write to the tree.
     ///
-    /// **The write is sent once, after the watch says it is listening.** The
-    /// arming happens on the watch's own thread; a write that beat it would
-    /// be reported as swallowed, which is a race rather than the property.
+    /// **The wait is the stream, not a clock.** The watch arms on its own
+    /// thread and a write that beats it is swallowed, so a writer keeps
+    /// writing until the report lands; what ends the test is the watch
+    /// reporting, and [`WEDGE`] is only the stuck-watch detector.
     #[test]
     fn the_change_watch_reports_a_write() {
         let dir = fixture();
         let root = dir.path();
-        let (armed_tx, armed_rx) = mpsc::channel();
-        let (rx, _cancel) = start_change_watch_inner(root.to_path_buf(), true, Some(armed_tx));
+        let (rx, _cancel) = start_change_watch(root.to_path_buf(), true);
 
-        match armed_rx.recv_timeout(WEDGE) {
-            Ok(()) => {}
-            Err(RecvTimeoutError::Timeout) => {
-                panic!("the change watch never armed within {WEDGE:?}")
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                panic!("the change watch ended before it armed")
-            }
-        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let stop = Arc::clone(&stop);
+            let root = root.to_path_buf();
+            std::thread::spawn(move || {
+                let mut attempt = 0;
+                while !stop.load(AtomicOrdering::Relaxed) {
+                    touch(&root.join(format!("src/write-{attempt}.rs")));
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            })
+        };
+        let reported = rx.recv_timeout(WEDGE);
+        stop.store(true, AtomicOrdering::Relaxed);
+        let _ = writer.join();
 
-        touch(&root.join("src/write.rs"));
-        match rx.recv_timeout(WEDGE) {
+        match reported {
             Ok(()) => {}
             Err(RecvTimeoutError::Timeout) => panic!(
                 "a write to the watched tree was swallowed: nothing was reported within {WEDGE:?}"
