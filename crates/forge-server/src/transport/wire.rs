@@ -988,7 +988,7 @@ fn placement_wire(placement: AnchorPlacement) -> ThreadResolutionWire {
 /// turn has no boundary to cut on, and its rows reach a late-attaching view
 /// only in runs. What a client is owed there is the pair: a page never opens
 /// on a tool result without the call that produced it.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TurnWire {
     /// `None` when nothing named the turn: the key comes from a `Result`

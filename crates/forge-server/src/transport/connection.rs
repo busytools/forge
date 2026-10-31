@@ -2099,11 +2099,7 @@ where
                 for anchor in anchors {
                     match rows_below_floor(state, &seat, &cwd, anchor, turns).await {
                         BelowFloor::Page(page) => {
-                            let cron_names = crate::transport::wire::cron_names_of(
-                                &state.surface,
-                                &seat,
-                                &page.turns,
-                            );
+                            let cron_names = cron_names_off_loop(state, &seat, &page.turns).await;
                             return send(
                                 socket,
                                 ServerMessage::Page {
@@ -2211,8 +2207,7 @@ where
                     .await;
                 }
             };
-            let cron_names =
-                crate::transport::wire::cron_names_of(&state.surface, &seat, &page.turns);
+            let cron_names = cron_names_off_loop(state, &seat, &page.turns).await;
             send(
                 socket,
                 ServerMessage::Page {
@@ -3447,6 +3442,35 @@ fn row_cursor_of(offset: u64, row: &str) -> String {
 /// right behind it. A few names ahead is what skips past one, and each name
 /// the file refuses costs it one bounded search, so the count stays small.
 const BOUNDARY_TRIES: usize = 8;
+
+/// The cron pairings a page's rows need, read off the connection loop.
+///
+/// The store lookup is a disk read, and the two `more` answers would
+/// otherwise pay it inline while other seats' frames queue behind them; the
+/// record path already computes it in its own blocking task.
+async fn cron_names_off_loop(
+    state: &TransportState,
+    seat: &SessionSlot,
+    turns: &[crate::transport::wire::TurnWire],
+) -> std::collections::BTreeMap<String, forge_primitives::cron::CronName> {
+    let surface = Arc::clone(&state.surface);
+    let named = seat.clone();
+    let seat = seat.clone();
+    let turns = turns.to_vec();
+    tokio::task::spawn_blocking(move || {
+        crate::transport::wire::cron_names_of(&surface, &seat, &turns)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        tracing::warn!(
+            event_name = "cron_names_lookup_failed",
+            slot = %named.display(),
+            %error,
+            "the page's cron pairings could not be read; its rows fall back to the prompt"
+        );
+        std::collections::BTreeMap::new()
+    })
+}
 
 /// The rows a walk below the window may start from, the walk's own stop
 /// first and the rest of the window behind it.
@@ -6151,14 +6175,16 @@ mod tests {
         }
         let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
             .expect("the fleet builds");
+        // Two rows, so a walk can ask BELOW the second and get a page whose
+        // span holds the fired prompt: the below-floor answer is its own read
+        // site and carries the pairing too.
+        let cron_row = r#"{"type":"user","uuid":"p-cron","message":{"role":"user","content":[{"type":"text","text":"[Cron]\n\nsummarise overnight CI"}]}}"#;
+        let after_row = r#"{"type":"assistant","uuid":"a-after","message":{"id":"m-after","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"done"}]}}"#;
         fleet
-            .seed_transcript(
-                "TestOrg",
-                "proj",
-                "lead",
-                &[r#"{"type":"user","uuid":"p-cron","message":{"role":"user","content":[{"type":"text","text":"[Cron]\n\nsummarise overnight CI"}]}}"#],
-            )
-            .expect("the fired prompt's row");
+            .seed_transcript("TestOrg", "proj", "lead", &[cron_row, after_row])
+            .expect("the fired prompt's row and the one after it");
+        // The byte the second row starts at: the first row and its newline.
+        let below_the_second_row = format!("r:{}:a-after", cron_row.len() + 1);
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         fleet.hold_conversation(&state, "TestOrg", "proj", "lead").expect("the held conversation");
         let slot = lead();
@@ -6208,6 +6234,45 @@ mod tests {
                 })
             },
             "the page carrying its cron pairing",
+        )
+        .await;
+
+        // **The below-floor answer is its own read site.** A walk past the
+        // held window is cut from the transcript, and it must carry the
+        // pairing the same way (#1815).
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::More {
+                    conversation: slot.clone(),
+                    before: Some(below_the_second_row),
+                    turns: 5,
+                })
+                .expect("the ask encodes")
+                .into(),
+            ))
+            .expect("the walk's ask goes");
+        until(
+            || {
+                let frames = written.lock().expect("the frame log");
+                let pages: Vec<&ServerMessage> = frames
+                    .iter()
+                    .filter(|frame| matches!(frame, ServerMessage::Page { .. }))
+                    .collect();
+                pages.len() >= 2
+                    && matches!(
+                        pages.last(),
+                        Some(ServerMessage::Page { turns, cron_names, .. })
+                            if cron_names
+                                .get("p-cron")
+                                .and_then(|name| name.description.as_deref())
+                                == Some("Morning summary")
+                                && turns.iter().flat_map(|turn| turn.messages.iter()).any(|frame| {
+                                    frame.get("uuid").and_then(serde_json::Value::as_str)
+                                        == Some("p-cron")
+                                })
+                    )
+            },
+            "the below-floor page carrying its cron pairing, with the fired row in its span",
         )
         .await;
 

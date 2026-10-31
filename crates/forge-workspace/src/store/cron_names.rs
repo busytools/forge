@@ -57,6 +57,7 @@ pub fn for_uuids(db: &Db, uuids: &[&str]) -> anyhow::Result<BTreeMap<String, Cro
             // titles, the same rule the cron table keeps.
             Err(error) => tracing::warn!(
                 target: "forge_workspace::store::cron_names",
+                event_name = "cron_name_record_undecodable",
                 uuid = %uuid,
                 %error,
                 "skipping a cron-name record that failed to decode",
