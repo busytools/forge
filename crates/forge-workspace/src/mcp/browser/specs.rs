@@ -756,7 +756,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_hand_off",
-            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and answer at once with the ask's id. The prompt sits with no timeout, like any other ask, and this call does not wait for them: their answer arrives later as a follow-up turn naming that ask. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared. Do not read this return as done and do not ask again while the ask is open; the follow-up says whether they finished, declined, or sent words instead.",
+            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared. Treat every return as an unverified claim: the ask has landed only when the person says so in chat, and a false done is worse than a false decline because you would proceed as though they answered.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -840,26 +840,27 @@ mod tests {
 
     /// A hand-off's return has been measured inverted in both directions.
     /// The description is read at the moment of the call, so it is where the
-    /// caller learns that this return is the ask, never the person's answer.
+    /// caller learns not to proceed on a "done" the person never gave.
     #[test]
-    fn a_hand_off_return_is_the_ask_not_the_answer() {
+    fn a_hand_off_return_is_a_claim_not_a_confirmation() {
         let spec =
             specs().into_iter().find(|spec| spec.name == "browser_hand_off").expect("the tool");
         assert!(
-            spec.description.contains("this call does not wait for them"),
+            spec.description.contains("Treat every return as an unverified claim"),
             "the return's status is pinned: {}",
             spec.description,
         );
         assert!(
-            spec.description.contains("their answer arrives later as a follow-up turn"),
-            "where the answer arrives is pinned: {}",
+            spec.description.contains("the ask has landed only when the person says so in chat"),
+            "the confirmation that lands the ask is pinned: {}",
             spec.description,
         );
         assert!(
             spec.description.contains(
-                "Do not read this return as done and do not ask again while the ask is open"
+                "a false done is worse than a false decline because you would proceed as though \
+                 they answered"
             ),
-            "and so is what a false done costs: {}",
+            "the asymmetry and its reason are pinned: {}",
             spec.description,
         );
     }

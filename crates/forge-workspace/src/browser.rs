@@ -1,13 +1,11 @@
 //! The browser the sessions drive: the port the tools ask through, and the
-//! hand-offs that raise an ask on the person.
+//! hand-offs that park on the person.
 //!
 //! **A port, not a dependency.** forge-server owns the browser fleet - the
 //! CEF hosts, the drivers and the profiles - and implements [`BrowserHost`],
 //! so a session's call reaches a browser without this crate knowing where
 //! that browser lives. A workspace with no fleet installed is a test or a
 //! view; its browser tools answer [`NO_BROWSER_HOST`].
-
-use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::{HandOff, HandOffAnswer, HandOffEnding};
@@ -253,40 +251,6 @@ impl Workspace {
         runtime.spawn(async move { host.hand_off_finished(&seat, tab).await });
     }
 
-    /// Ask the person at a client to act in one of the seat's tabs, and
-    /// answer at once with the ask's id.
-    ///
-    /// **The person's word arrives later**, as a follow-up turn through
-    /// `deliver_ask_answer`: the CLI aborts an MCP call after 70 seconds and
-    /// a person may take longer. The tab hold and the refusal for a tab that
-    /// is not the seat's are `register_browser_hand_off`'s, before any ask
-    /// exists.
-    pub async fn hand_off_browser(
-        self: &Arc<Self>,
-        caller: &SessionSlot,
-        reason: &str,
-        tab: u16,
-    ) -> Result<uuid::Uuid, String> {
-        let handoff = HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab };
-        let (id, mut answer) = self.register_browser_hand_off(caller, handoff).await?;
-        // The fail-closed read: the stream could not take the update, so no
-        // view can show the ask - the tool says so now rather than promising
-        // a follow-up nothing will draw.
-        if matches!(answer.try_recv(), Err(oneshot::error::TryRecvError::Closed)) {
-            return Err("no attached client can show the browser hand-off".to_owned());
-        }
-        let workspace = Arc::downgrade(self);
-        let caller = caller.clone();
-        let reason = reason.to_owned();
-        tokio::spawn(async move {
-            let ending = answer.await.unwrap_or(HandOffEnding::Abandoned);
-            if let Some(workspace) = workspace.upgrade() {
-                workspace.deliver_ask_answer(&caller, browser_answer(id, tab, &reason, ending));
-            }
-        });
-        Ok(id)
-    }
-
     /// Whether a hand-off with this id is still registered to `caller`,
     /// without removing it - the read the dispatch guard makes before an
     /// answer.
@@ -332,28 +296,6 @@ impl Workspace {
             answer,
         });
         true
-    }
-}
-
-/// The follow-up turn a browser hand-off's ending delivers.
-fn browser_answer(id: uuid::Uuid, tab: u16, reason: &str, ending: HandOffEnding) -> String {
-    match ending {
-        HandOffEnding::Done => format!(
-            "[browser_hand_off {id}] The person is done in the browser (tab {tab}: {reason}); \
-             carry on from where you left off."
-        ),
-        HandOffEnding::NotNow => format!(
-            "[browser_hand_off {id}] The person declined to act for now (tab {tab}: {reason}); \
-             the browser is as it was - decide what to do instead."
-        ),
-        HandOffEnding::Feedback => format!(
-            "[browser_hand_off {id}] The person sent you a message about the page instead of \
-             done or not now (tab {tab}: {reason}); read it and carry on - the browser is as it \
-             was."
-        ),
-        HandOffEnding::Abandoned => format!(
-            "[browser_hand_off {id}] The hand-off ended without an answer (tab {tab}: {reason})."
-        ),
     }
 }
 

@@ -356,9 +356,9 @@ pub enum Command {
         answer: forge_primitives::browser::HandOffAnswer,
     },
     /// Answer a parked document hand-off: `NotNow` declines it, `Done`
-    /// releases it with what the viewer's finish filed. The spawned waiter
-    /// is what turns this into the call's follow-up turn; `key` names the
-    /// owner the answer is checked against.
+    /// releases it with what the viewer's finish filed. The blocked
+    /// `hand_off_document` call is awaiting this; `key` names the owner the
+    /// answer is checked against.
     AnswerDocumentHandOff {
         key: SessionSlot,
         id: uuid::Uuid,

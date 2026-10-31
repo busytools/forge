@@ -4592,15 +4592,17 @@ mod tests {
         let refused = fleet
             .workspace()
             .hand_off_document(&seat, "docs/readme.md", false)
+            .await
             .expect_err("no connection, so nothing to open on");
         assert_eq!(refused, forge_workspace::documents::NO_VIEWER_CLIENT);
 
         let attached = AttachedClient::new(&state.surface);
-        let (_resolved, id) = fleet
-            .workspace()
-            .hand_off_document(&seat, "docs/readme.md", false)
-            .expect("an attached connection is what the hand-off raises");
-        let raised = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let handed = {
+            let ws = fleet.workspace();
+            let seat = seat.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", false).await })
+        };
+        let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match updates
                     .recv()
@@ -4614,8 +4616,7 @@ mod tests {
             }
         })
         .await
-        .expect("the ask reaches the connection's stream");
-        assert_eq!(raised, id, "the ask is the one the call answered with");
+        .expect("an attached connection is what the hand-off parks on");
 
         // The answer rides the command a client's done sends, so the
         // dispatch guard and the registry are both on this path.
@@ -4627,12 +4628,13 @@ mod tests {
                 answer: forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
             })
             .expect("the answer lands on the parked ask");
-        assert!(fleet.workspace().pending_asks(&seat).is_empty(), "and the park releases");
+        handed.await.expect("the task joins").expect("and the park releases");
 
         drop(attached);
         let refused = fleet
             .workspace()
             .hand_off_document(&seat, "docs/readme.md", false)
+            .await
             .expect_err("the connection went, so the claim goes with it");
         assert_eq!(refused, forge_workspace::documents::NO_VIEWER_CLIENT);
     }

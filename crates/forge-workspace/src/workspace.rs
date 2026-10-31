@@ -993,8 +993,8 @@ pub struct Workspace {
     /// Browser hand-offs parked for the person at a client, keyed by their id
     /// and carrying the session that asked. The owner is stored beside each so
     /// an answer is only ever applied by the session it was addressed to; the
-    /// spawned waiter awaits the sender, with no timeout, for as long as the
-    /// person takes.
+    /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
+    /// for as long as the person takes.
     pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
     /// How many asks have ever arrived for a seat. **The ask's identity on the
     /// wire**: one ask replacing another reads as a different ask, and
@@ -5464,24 +5464,6 @@ impl Workspace {
             });
         }
         result
-    }
-
-    /// Dispatch a held ask's answer as the follow-up turn its tool promised.
-    ///
-    /// **The answer cannot ride the `tools/call` response.** The `claude`
-    /// CLI aborts an MCP call after 70 seconds, and a person can take hours,
-    /// so the ask tools answer with the ask's id and the ending arrives
-    /// here as a new turn, the way a peer message or a cron fire does.
-    pub(crate) fn deliver_ask_answer(self: &Arc<Self>, key: &SessionSlot, text: String) {
-        if let Err(error) = self.dispatch_forged_prompt(key, text) {
-            tracing::warn!(
-                target: "forge_workspace::mcp",
-                event_name = "ask_answer_undeliverable",
-                slot = %key.display(),
-                %error,
-                "the answer to a held ask could not be dispatched; its seat is gone",
-            );
-        }
     }
 
     /// Tell a row's live owner what the user just did to it, one line.
@@ -22434,11 +22416,11 @@ mod git_scan_cwd_tests {
     }
 
     /// A hand-off reads the document out of the seat's OWN tree, asks the
-    /// seat's clients to open it with the resolved path, and **answers at
-    /// once with the ask** - the reader's finish arrives later as a
-    /// follow-up turn, because the CLI aborts an MCP call after 70 seconds.
+    /// seat's clients to open it with the resolved path, and **parks until
+    /// the reader answers** - the finish is what releases the call, and the
+    /// answer carries what it filed.
     #[tokio::test]
-    async fn a_document_hand_off_answers_with_the_ask_and_delivers_the_finish_as_a_follow_up() {
+    async fn a_document_hand_off_parks_on_the_ask_and_answers_with_the_ending() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_str().expect("utf8").to_owned();
         let (ws, mut updates) = Workspace::testing_stub();
@@ -22457,14 +22439,13 @@ mod git_scan_cwd_tests {
         // case on this machine), which is what a viewer deep-links by.
         let expected = cwd.canonicalize().expect("canonical").join("docs/readme.md");
         ws.note_client_attached();
-        ws.enable_test_dispatch_intercept();
 
-        let (resolved, id) = ws
-            .hand_off_document(&session_key, "docs/readme.md", true)
-            .expect("the call answers the ask, not the reader's finish");
-        assert_eq!(resolved, expected.to_string_lossy(), "with the resolved path - the address");
-
-        // The ask crosses, carrying the id the call answered with.
+        let handed = {
+            let ws = Arc::clone(&ws);
+            let seat = session_key.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", true).await })
+        };
+        // The ask crosses, carrying the id the answer will name.
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match updates
@@ -22484,7 +22465,6 @@ mod git_scan_cwd_tests {
         })
         .await
         .expect("the ask reaches the seat's stream");
-        assert_eq!(ask.0, id, "the ask is the one the call named");
         assert_eq!(ask.1, expected.to_string_lossy(), "with the resolved path - the address");
         assert!(ask.2, "and the flag the hand-off passed");
 
@@ -22494,36 +22474,16 @@ mod git_scan_cwd_tests {
             DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) },
         ));
 
-        // The finish arrives as a follow-up turn of the seat's own.
-        let follow_up = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
-                {
-                    Some(SessionUpdate::ChatAppended { msg, source, .. }) => {
-                        if let Message::User { message, .. } = msg
-                            && let Some(forge_primitives::ContentBlock::Text { text, .. }) =
-                                message.content.first()
-                        {
-                            break (text.clone(), source);
-                        }
-                    }
-                    Some(_) => {}
-                    None => panic!("the stream ended before the follow-up"),
-                }
-            }
-        })
-        .await
-        .expect("the finish reaches the seat's stream");
+        let (resolved, ending) = handed.await.expect("the task joins").expect("the hand-off lands");
+        assert_eq!(resolved, expected.to_string_lossy(), "answered with the resolved path");
+        assert_eq!(ending, DocumentHandOffEnding::Done { review_id: Some("r-1".to_owned()) });
         assert!(
-            follow_up.0.contains(&format!("[documents__hand_off {id}]")),
-            "the follow-up names the ask: {}",
-            follow_up.0,
+            std::iter::from_fn(|| updates.try_recv().ok()).any(|frame| matches!(
+                &*frame.update,
+                SessionUpdate::DocumentHandOffResolved { id, .. } if *id == ask.0
+            )),
+            "and the resolution crosses, so a view that did not answer closes its ask",
         );
-        assert!(follow_up.0.contains("r-1"), "and the review the finish filed: {}", follow_up.0);
-        assert_eq!(follow_up.1, Some(PromptSource::Forge), "forge's own turn, not a person's");
     }
 
     /// A refused read raises nothing, parks on nothing, and answers the
@@ -22544,8 +22504,10 @@ mod git_scan_cwd_tests {
         let cwd = project_root.join(".claude/worktrees/implementer");
         std::fs::create_dir_all(&cwd).expect("the worktree");
 
-        let refused =
-            ws.hand_off_document(&session_key, "gone.md", false).expect_err("nothing to read");
+        let refused = ws
+            .hand_off_document(&session_key, "gone.md", false)
+            .await
+            .expect_err("nothing to read");
 
         assert!(refused.contains("no document at"), "{refused}");
         assert!(
@@ -22582,6 +22544,7 @@ mod git_scan_cwd_tests {
 
         let refused = ws
             .hand_off_document(&session_key, "docs/readme.md", false)
+            .await
             .expect_err("no client, so nothing to open on");
         assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT, "the refusal is the named one");
         assert!(
@@ -22593,9 +22556,11 @@ mod git_scan_cwd_tests {
         );
 
         ws.note_client_attached();
-        let (_resolved, id) = ws
-            .hand_off_document(&session_key, "docs/readme.md", false)
-            .expect("an attached client is what the ask needs");
+        let handed = {
+            let ws = Arc::clone(&ws);
+            let seat = session_key.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", false).await })
+        };
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match updates
@@ -22610,17 +22575,18 @@ mod git_scan_cwd_tests {
             }
         })
         .await
-        .expect("the ask reaches the seat's stream");
-        assert_eq!(ask, id);
+        .expect("an attached client is what the hand-off waits for");
         ws.resolve_document_hand_off(
             ask,
             &session_key,
             DocumentHandOffEnding::Done { review_id: None },
         );
+        handed.await.expect("the task joins").expect("and the park releases");
 
         ws.note_client_detached();
         let refused = ws
             .hand_off_document(&session_key, "docs/readme.md", false)
+            .await
             .expect_err("the client left, so the open is unclaimed again");
         assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT);
     }
@@ -22690,6 +22656,7 @@ mod git_scan_cwd_tests {
 
         let refused = ws
             .hand_off_document(&session_key, "docs/plan.md", false)
+            .await
             .expect_err("the stable address now refuses");
         assert!(refused.contains("no document at"), "and says what it met: {refused}");
 

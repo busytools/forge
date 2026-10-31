@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::BrowserPart;
+use forge_primitives::browser::{
+    BrowserPart, HandOff, HandOffAnswer, HandOffEnding, HandOffSource,
+};
 use serde_json::Value;
 
 use crate::browser::NO_BROWSER_HOST;
@@ -28,23 +30,23 @@ pub trait BrowserFacade: Send + Sync {
     ) -> Result<Vec<BrowserPart>, String>;
 
     /// Ask the person at a client to act in one of the seat's browser tabs,
-    /// and answer at once with the ask's id.
+    /// and wait for their word.
     ///
-    /// **The person's word arrives later** as a follow-up turn, because the
-    /// CLI aborts an MCP call after 70 seconds and a person may take longer.
-    /// The one refusal that does not raise an ask is a stream nobody can
-    /// answer on, which fails closed rather than parking a prompt no view can
+    /// **No timeout.** The ask dock's own timelines say a held prompt sits for
+    /// hours, and the session is meant to wait as long as it takes; the one
+    /// refusal that does not wait is a stream nobody can answer on, which
+    /// fails closed rather than parking the session on a prompt no view can
     /// draw.
     async fn hand_off(
         &self,
         seat: &SessionSlot,
         reason: &str,
         tab: u16,
-    ) -> Result<uuid::Uuid, String>;
+    ) -> Result<HandOffEnding, String>;
 }
 
 /// Production impl: the server's fleet, and the workspace itself for the one
-/// tool that raises an ask on the person rather than calling the browser.
+/// tool that parks on the person rather than on the browser.
 pub struct ProdBrowserFacade {
     workspace: std::sync::Weak<Workspace>,
 }
@@ -77,11 +79,45 @@ impl BrowserFacade for ProdBrowserFacade {
         seat: &SessionSlot,
         reason: &str,
         tab: u16,
-    ) -> Result<uuid::Uuid, String> {
+    ) -> Result<HandOffEnding, String> {
         let Some(workspace) = self.workspace.upgrade() else {
             return Err("the workspace went away before the hand-off was staged".to_owned());
         };
-        workspace.hand_off_browser(seat, reason, tab).await
+        let handoff = HandOff { id: uuid::Uuid::new_v4(), reason: reason.to_owned(), tab };
+        let (id, answer) = workspace.register_browser_hand_off(seat, handoff).await?;
+        let guard =
+            ResolveHandOffOnDrop { workspace: Arc::clone(&workspace), id, caller: seat.clone() };
+        let ending = answer.await.map_err(|_| {
+            // The fail-closed read: the stream could not take the update, so
+            // no view can show the dock - and holding the session on a prompt
+            // nobody can answer would park it forever.
+            "no attached client can show the browser hand-off".to_owned()
+        })?;
+        drop(guard);
+        Ok(ending)
+    }
+}
+
+/// Resolves a parked hand-off when the awaiting handler goes - a session that
+/// died mid-wait, never a decision. A resolve that already happened makes the
+/// drop a no-op, which is why the approved path can just let it fall.
+struct ResolveHandOffOnDrop {
+    workspace: Arc<Workspace>,
+    id: uuid::Uuid,
+    caller: SessionSlot,
+}
+
+impl Drop for ResolveHandOffOnDrop {
+    fn drop(&mut self) {
+        self.workspace.resolve_browser_hand_off(
+            self.id,
+            &self.caller,
+            HandOffAnswer {
+                ending: HandOffEnding::Abandoned,
+                source: HandOffSource::Abandoned,
+                client: None,
+            },
+        );
     }
 }
 
@@ -96,8 +132,8 @@ pub struct MockBrowserFacade {
     pub seats: parking_lot::Mutex<Vec<SessionSlot>>,
     /// The outcome every call answers with.
     pub answer: parking_lot::Mutex<Result<Vec<BrowserPart>, String>>,
-    /// The ask id every hand-off answers with, and what it was asked.
-    pub hand_off_answer: parking_lot::Mutex<Result<uuid::Uuid, String>>,
+    /// What `hand_off` answers with, and what it was asked.
+    pub hand_off_answer: parking_lot::Mutex<Result<HandOffEnding, String>>,
     pub hand_offs: parking_lot::Mutex<Vec<(String, u16)>>,
 }
 
@@ -110,7 +146,7 @@ impl MockBrowserFacade {
             answer: parking_lot::Mutex::new(Ok(vec![BrowserPart::Text {
                 text: "done".to_owned(),
             }])),
-            hand_off_answer: parking_lot::Mutex::new(Ok(uuid::Uuid::new_v4())),
+            hand_off_answer: parking_lot::Mutex::new(Ok(HandOffEnding::Done)),
             hand_offs: parking_lot::Mutex::new(Vec::new()),
         }
     }
@@ -139,7 +175,7 @@ impl BrowserFacade for MockBrowserFacade {
         seat: &SessionSlot,
         reason: &str,
         tab: u16,
-    ) -> Result<uuid::Uuid, String> {
+    ) -> Result<HandOffEnding, String> {
         self.seats.lock().push(seat.clone());
         self.hand_offs.lock().push((reason.to_owned(), tab));
         self.hand_off_answer.lock().clone()
@@ -173,88 +209,52 @@ mod tests {
         assert_eq!(answer, Ok(vec![BrowserPart::Text { text: "clicked".to_owned() }]));
     }
 
-    /// **The call answers the ask, not the person.** The CLI aborts an MCP
-    /// call after 70 seconds, so a hand-off that waited on the person would
-    /// die mid-ask; the return carries the id, and the person's word arrives
-    /// as a follow-up turn naming it.
+    /// **The waiter going away is its own ending.** A session that dies (or a
+    /// handler dropped mid-wait) must clear the registry and tell the views
+    /// which ending took the hand-off, rather than leaving a dock up for a
+    /// prompt no answer can reach.
     #[tokio::test]
-    async fn the_hand_off_answers_the_ask_before_the_person_does() {
+    async fn a_hand_off_waiter_that_dies_is_reported_as_abandoned() {
         let (workspace, mut rx) = Workspace::testing_stub();
         let (calls, _heard) = mpsc::unbounded_channel();
         workspace.install_browser_host(Arc::new(StubHost { calls }));
-        workspace.enable_test_dispatch_intercept();
         let facade = ProdBrowserFacade::from_workspace(&workspace);
         let seat = SessionSlot::lead("TestOrg", "proj");
-
-        let id = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            facade.hand_off(&seat, "solve the CAPTCHA", 2),
-        )
-        .await
-        .expect("the call answers without waiting for the person")
-        .expect("the ask is raised");
-        assert!(
-            workspace.browser_handoffs.lock().contains_key(&id),
-            "the ask is still parked when the call has already answered",
-        );
-
-        assert!(workspace.resolve_browser_hand_off(
-            id,
-            &seat,
-            forge_primitives::browser::HandOffAnswer {
-                ending: forge_primitives::browser::HandOffEnding::Done,
-                source: forge_primitives::browser::HandOffSource::Dock,
-                client: None,
-            },
-        ));
-        let follow_up = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                match rx.recv().await.map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)) {
-                    Some(crate::protocol::SessionUpdate::ChatAppended { msg, source, .. }) => {
-                        if let forge_primitives::Message::User { message, .. } = msg
-                            && let Some(forge_primitives::ContentBlock::Text { text, .. }) =
-                                message.content.first()
-                        {
-                            break (text.clone(), source);
-                        }
-                    }
-                    Some(_) => {}
-                    None => panic!("the stream ended before the follow-up"),
-                }
+        let task = tokio::spawn({
+            let facade = Arc::clone(&facade);
+            let seat = seat.clone();
+            async move { facade.hand_off(&seat, "solve the CAPTCHA", 2).await }
+        });
+        // The hand-off lands in the registry, which is what the blocked call
+        // just did.
+        for _ in 0..200 {
+            if workspace.browser_handoffs.lock().keys().next().is_some() {
+                break;
             }
-        })
-        .await
-        .expect("the person's word reaches the seat's stream");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
         assert!(
-            follow_up.0.contains(&format!("[browser_hand_off {id}]")),
-            "the follow-up names the ask: {}",
-            follow_up.0,
+            workspace.browser_handoffs.lock().keys().next().is_some(),
+            "the blocked call parked a hand-off",
         );
-        assert!(follow_up.0.contains("is done"), "and what the person did: {}", follow_up.0);
+
+        task.abort();
+        let _ = task.await;
+
+        let mut resolved = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::BrowserHandOffResolved { answer, .. } =
+                &*frame.update
+            {
+                resolved.push(answer.ending);
+            }
+        }
         assert_eq!(
-            follow_up.1,
-            Some(crate::protocol::PromptSource::Forge),
-            "forge's own turn, not a person's",
+            resolved,
+            vec![HandOffEnding::Abandoned],
+            "a dropped waiter clears the registry and says which ending took the hand-off",
         );
-    }
-
-    /// **A stream nobody can answer is refused at the call, not promised as
-    /// a follow-up.** The tool's description says a hand-off with no client
-    /// fails by name, and that failure is what tells the caller not to
-    /// retry in a loop.
-    #[tokio::test]
-    async fn a_hand_off_with_no_answering_client_fails_by_name() {
-        let (workspace, rx) = Workspace::testing_stub();
-        let (calls, _heard) = mpsc::unbounded_channel();
-        workspace.install_browser_host(Arc::new(StubHost { calls }));
-        drop(rx);
-        let facade = ProdBrowserFacade::from_workspace(&workspace);
-        let seat = SessionSlot::lead("TestOrg", "proj");
-
-        let refused = facade.hand_off(&seat, "look at this", 2).await;
-
-        assert_eq!(refused, Err("no attached client can show the browser hand-off".to_owned()));
-        assert!(workspace.browser_handoffs.lock().is_empty(), "nothing is left parked");
+        assert!(workspace.browser_handoffs.lock().is_empty(), "and leaves nothing registered");
     }
 
     /// With no fleet on the workspace, the facade answers the named refusal
