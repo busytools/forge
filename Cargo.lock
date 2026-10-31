@@ -1224,6 +1224,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs",
+ "forge-agent",
  "forge-browser",
  "forge-dictate",
  "forge-primitives",

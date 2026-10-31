@@ -103,6 +103,9 @@ tracing-subscriber = { workspace = true }
 # The headless tests derive their waits from the SDK's own budgets: the
 # spawn's init handshake and the child's close wait.
 forge-sdk = { workspace = true }
+# The default-directives test builds the scan's expected directive from the
+# target the sites emit under, so renaming one cannot leave the other behind.
+forge-agent = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]`. The write bound's
 # tests reach its 60 s without waiting it: the fake peer's write never
 # completes, and the paused clock advances to the bound the connection armed.

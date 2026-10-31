@@ -461,18 +461,20 @@ mod tests {
         // session's own data rather than forge's health, and without the
         // directive the records land nowhere at all.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_agent::userdata::catalog::scan=debug"));
-        // The scan's lite-read failures carry a target of their own,
-        // `agent.catalog_scan`, which the module-path directive above does
-        // not match: a target is not a module path. Without this directive
-        // those records - the only trace of a session whose transcript could
-        // not be read - land nowhere at all. Matched as a whole directive
-        // rather than a substring, so a prefix that only ends in this target
-        // cannot satisfy the pin.
+        // The scan's lite-read failures carry a target of their own, which
+        // the module-path directive above does not match: a target is not a
+        // module path. Without this directive those records - the only trace
+        // of a session whose transcript could not be read - land nowhere at
+        // all. The expected directive is built from the constant the sites
+        // emit under, so renaming that constant cannot leave the directive
+        // pointing at a name no record carries; matched as a whole directive
+        // rather than a substring, so a prefix ending in this target cannot
+        // satisfy the pin.
+        let scan_directive = format!("{}=debug", forge_agent::logging::targets::CATALOG_SCAN);
         assert!(
-            DEFAULT_LOG_DIRECTIVES
-                .split(',')
-                .any(|directive| directive.trim() == "agent.catalog_scan=debug"),
-            "the lite-read target has a directive of its own: {DEFAULT_LOG_DIRECTIVES}",
+            DEFAULT_LOG_DIRECTIVES.split(',').any(|directive| directive.trim() == scan_directive),
+            "the lite-read target has a directive of its own ({scan_directive}): \
+             {DEFAULT_LOG_DIRECTIVES}",
         );
         // `forge_workspace::output_tail` carries the tail read's
         // unreadable-line record, demoted there for the same reason: a line
@@ -711,7 +713,7 @@ mod tests {
     /// an `open` shape and a `stop` shape key apart.
     #[test]
     fn a_directive_key_keeps_a_brace_shape_whole() {
-        assert_eq!(directive_key("browser[take{kind=open}]=trace"), "browser[take{kind=open}]",);
+        assert_eq!(directive_key("browser[take{kind=open}]=trace"), "browser[take{kind=open}]");
         assert_ne!(
             directive_key("browser[take{kind=open}]=trace"),
             directive_key("browser[take{kind=stop}]=debug"),
