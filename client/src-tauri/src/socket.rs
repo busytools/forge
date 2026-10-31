@@ -1762,6 +1762,14 @@ pub(crate) mod tests {
         );
     }
 
+    /// **The read loop's own bound is the socket's documented 256 MiB**, which
+    /// the page's inflate matches; a silent change is a frame the other half
+    /// refuses.
+    #[test]
+    fn the_frame_bound_is_the_documented_256_mib() {
+        assert_eq!(MAX_FRAME_BYTES, 256 << 20);
+    }
+
     /// **A compressed frame is decoded by this half, in the socket's order**
     /// (#2560). A text frame, a gzip body behind the compressed kind, then
     /// another text frame: the page's events carry all three in the order
