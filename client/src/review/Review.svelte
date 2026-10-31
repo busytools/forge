@@ -1479,7 +1479,7 @@
     gap: 8px;
     max-width: 460px;
     background: var(--s1);
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: 8px;
     padding: 4px 10px;
     cursor: pointer;
@@ -1519,7 +1519,7 @@
     font-size: var(--fs-data);
     color: var(--muted);
     background: none;
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: 8px;
     padding: 3px 9px;
     cursor: pointer;
@@ -1556,7 +1556,7 @@
     font-family: var(--mono);
     font-size: var(--fs-data);
     color: var(--muted);
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-left: 0;
     padding: 3px 8px;
     white-space: nowrap;
