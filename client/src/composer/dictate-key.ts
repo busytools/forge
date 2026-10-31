@@ -106,6 +106,32 @@ export function markChorded(held: Held | null): Held | null {
 }
 
 /**
+ * The DOM code a macOS modifier's raw `keyCode` names, or `null` for a key
+ * this client does not bind.
+ *
+ * **The shell forwards the raw side, and this page owns the binding.** AppKit
+ * numbers the keys, not the sides: 54 is the right Command and 55 the left;
+ * 59 is the left Control and 62 the right, which is the same pair the DOM
+ * spells `MetaRight`/`MetaLeft` and `ControlLeft`/`ControlRight`.
+ */
+export function modifierCode(
+  keycode: number,
+): 'MetaLeft' | 'MetaRight' | 'ControlLeft' | 'ControlRight' | null {
+  switch (keycode) {
+    case 54:
+      return 'MetaRight';
+    case 55:
+      return 'MetaLeft';
+    case 59:
+      return 'ControlLeft';
+    case 62:
+      return 'ControlRight';
+    default:
+      return null;
+  }
+}
+
+/**
  * Whether an event is a bare modifier rather than a key.
  *
  * Every bare modifier is consumed without chording the hold, because a
