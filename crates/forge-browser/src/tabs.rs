@@ -7,6 +7,7 @@
 //! numbers by the guid and refreshes the target from every listing.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::{BrowserTabRow, BrowserTabState};
@@ -104,6 +105,8 @@ pub struct TabRegistry {
 
 pub(crate) struct Tab {
     pub(crate) owner: SessionSlot,
+    /// When the tab was taken for its owner, as a refusal by name reports it.
+    since: Instant,
     /// The tab whose page opened this one; `None` for a tab a session owns
     /// outright. A popup closing hands its session back here.
     opener: Option<u16>,
@@ -141,6 +144,7 @@ impl TabRegistry {
             number,
             Tab {
                 owner,
+                since: Instant::now(),
                 opener: None,
                 id: id.to_owned(),
                 target: target.to_owned(),
@@ -270,6 +274,25 @@ impl TabRegistry {
 
     pub fn owner(&self, tab: u16) -> Option<&SessionSlot> {
         self.tabs.get(&tab).map(|tab| &tab.owner)
+    }
+
+    /// The sessions other than `except` holding a tab, each with how long it
+    /// has held its oldest one: what a host end must not take with it.
+    pub fn other_owners(&self, except: &SessionSlot) -> Vec<(SessionSlot, Duration)> {
+        let now = Instant::now();
+        let mut held: Vec<(SessionSlot, Instant)> = Vec::new();
+        for tab in self.tabs.values() {
+            if &tab.owner == except {
+                continue;
+            }
+            match held.iter_mut().find(|(owner, _)| owner == &tab.owner) {
+                Some((_, since)) => *since = (*since).min(tab.since),
+                None => held.push((tab.owner.clone(), tab.since)),
+            }
+        }
+        held.into_iter()
+            .map(|(owner, since)| (owner, now.saturating_duration_since(since)))
+            .collect()
     }
 
     pub fn mark_busy(&mut self, tab: u16, busy: bool) {

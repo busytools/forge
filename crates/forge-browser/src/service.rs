@@ -1043,11 +1043,11 @@ impl BrowserService {
                             && Self::drop_dead_driver(&profile, generation, &why).await
                         {
                             Self::mark_host_suspect(&profile, generation).await;
-                            if let Some(answer) = self.end_marked_host(&profile, &why).await {
+                            if let Some(answer) = self.end_marked_host(&profile, seat, &why).await {
                                 return Err(answer);
                             }
                         }
-                        Err(self.settle_suspect(&profile, why).await)
+                        Err(self.settle_suspect(&profile, seat, why).await)
                     }
                 };
             }
@@ -1062,7 +1062,7 @@ impl BrowserService {
                         Self::drop_dead_driver(&profile, generation, &why).await;
                     }
                     drop(decision);
-                    return Err(self.settle_suspect(&profile, why).await);
+                    return Err(self.settle_suspect(&profile, seat, why).await);
                 }
             },
         };
@@ -1095,6 +1095,7 @@ impl BrowserService {
         let outcome = self
             .after_failure(
                 &profile,
+                seat,
                 Driven { generation, pid, port, tab, deadline },
                 Call { tool: driver_tool, reported, args: &retry_args },
                 outcome,
@@ -1167,9 +1168,14 @@ impl BrowserService {
 
     /// End the host a failure path already marked as wedged, if one is
     /// marked. Answers the sentence the call returns instead of its own.
-    async fn end_marked_host(&self, profile: &Arc<Profile>, why: &str) -> Option<String> {
+    async fn end_marked_host(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+        why: &str,
+    ) -> Option<String> {
         let suspect = profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner).take()?;
-        let host = self.end_dead_host(profile, suspect, why).await;
+        let host = self.end_dead_host(profile, seat, suspect, why).await;
         Some(dead_host_answer(profile, host, why))
     }
 
@@ -1177,10 +1183,15 @@ impl BrowserService {
     /// **Runs with no chooser decision held**: the marker exists so the end
     /// can be reached from here rather than from inside the listing path,
     /// where an upload's own decision lock would be waited on.
-    async fn settle_suspect(&self, profile: &Arc<Profile>, why: String) -> String {
+    async fn settle_suspect(
+        &self,
+        profile: &Arc<Profile>,
+        seat: &SessionSlot,
+        why: String,
+    ) -> String {
         let suspect = profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner).take();
         let Some(drove) = suspect else { return why };
-        let host = self.end_dead_host(profile, drove, &why).await;
+        let host = self.end_dead_host(profile, seat, drove, &why).await;
         dead_host_answer(profile, host, &why)
     }
 
@@ -2148,6 +2159,7 @@ impl BrowserService {
     async fn after_failure(
         &self,
         profile: &Arc<Profile>,
+        seat: &SessionSlot,
         driven: Driven,
         call: Call<'_>,
         outcome: Result<Vec<BrowserPart>, String>,
@@ -2169,7 +2181,7 @@ impl BrowserService {
         // can take the chooser decision without waiting on this same call.
         // The marker names the host; a successor started since is not taken
         // for it (#2573).
-        if let Some(answer) = self.end_marked_host(profile, &why).await {
+        if let Some(answer) = self.end_marked_host(profile, seat, &why).await {
             return Err(answer);
         }
         let again = Call { tool, reported, args };
@@ -2178,10 +2190,11 @@ impl BrowserService {
             // has spent its one budget, and a rebuild plus a retry would
             // spend a second; the slot goes so the next call starts fresh.
             // **A fresh driver whose page call is mute too is the host's
-            // pages**: the host is ended so the next call starts a new one.
+            // pages**: the host is ended so the next call starts a new one,
+            // unless another session's page would go with it (#2728).
             if Self::drop_dead_driver(profile, generation, &why).await {
                 Self::mark_host_suspect(profile, generation).await;
-                if let Some(answer) = self.end_marked_host(profile, &why).await {
+                if let Some(answer) = self.end_marked_host(profile, seat, &why).await {
                     return Err(answer);
                 }
             }
@@ -2189,14 +2202,16 @@ impl BrowserService {
         }
         if driver::stale_page(&why) {
             return self
-                .rebuild_after_dead_page(profile, generation, drove, tab, again, deadline, &why)
+                .rebuild_after_dead_page(
+                    profile, seat, generation, drove, tab, again, deadline, &why,
+                )
                 .await;
         }
         if driver::died(&why) {
             // **A driver that never answered is dead, not a page.** It is
             // replaced on this call rather than waiting for a restart.
             return self
-                .replace_dead_driver(profile, generation, drove, tab, again, deadline, &why)
+                .replace_dead_driver(profile, seat, generation, drove, tab, again, deadline, &why)
                 .await;
         }
         // **A driver built against a browser that is gone is dropped.** The
@@ -2234,10 +2249,16 @@ impl BrowserService {
     async fn end_dead_host(
         &self,
         profile: &Arc<Profile>,
+        seat: &SessionSlot,
         drove: HostIdentity,
         why: &str,
     ) -> DeadHost {
         let _decision = profile.file_decision.lock().await;
+        // **A host another session's page is open on is never ended**: one
+        // host per profile is what the browser requires, so ending it loses
+        // that page with the sign-in behind it (#2728).
+        let holders =
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).other_owners(seat);
         let mut tail = String::new();
         let host = {
             let mut state = profile.state.lock().await;
@@ -2252,6 +2273,9 @@ impl BrowserService {
                         && state.driver_generation == drove.generation => {}
                 Some(_) => return DeadHost::NotOurs,
                 None => return DeadHost::AlreadyGone,
+            }
+            if !holders.is_empty() {
+                return DeadHost::Shared { pid: drove.pid, port: drove.port, holders };
             }
             state.driver = None;
             state.cdp.clear();
@@ -2325,12 +2349,13 @@ impl BrowserService {
     async fn end_rebuilt_host(
         &self,
         profile: &Arc<Profile>,
+        seat: &SessionSlot,
         drove: HostIdentity,
         fresh_generation: u64,
         why: String,
     ) -> String {
         let rebuilt = Self::live_host(profile, fresh_generation).await.unwrap_or(drove);
-        let host = self.end_dead_host(profile, rebuilt, &why).await;
+        let host = self.end_dead_host(profile, seat, rebuilt, &why).await;
         dead_host_answer(profile, host, &why)
     }
 
@@ -2339,6 +2364,7 @@ impl BrowserService {
     async fn rebuild_after_dead_page(
         &self,
         profile: &Arc<Profile>,
+        seat: &SessionSlot,
         generation: u64,
         drove: HostIdentity,
         tab: u16,
@@ -2416,7 +2442,7 @@ impl BrowserService {
                 }
                 Err(cannot) if driver::died(&cannot) => {
                     return Err(self
-                        .end_rebuilt_host(profile, drove, fresh_generation, cannot)
+                        .end_rebuilt_host(profile, seat, drove, fresh_generation, cannot)
                         .await);
                 }
                 // **A listing that failed for any other reason was never
@@ -2466,6 +2492,7 @@ impl BrowserService {
     async fn replace_dead_driver(
         &self,
         profile: &Arc<Profile>,
+        seat: &SessionSlot,
         generation: u64,
         drove: HostIdentity,
         tab: u16,
@@ -2495,8 +2522,9 @@ impl BrowserService {
             Ok(fresh) => fresh,
             Err(cannot) => {
                 // **A replacement that cannot start leaves the host suspect**:
-                // end the host this call drove, if it is still the one there.
-                self.end_dead_host(profile, drove, &cannot).await;
+                // end the host this call drove, if it is still the one there
+                // and no other session's page would go with it.
+                self.end_dead_host(profile, seat, drove, &cannot).await;
                 return Err(dead_driver_answer(DeadDriverOutcome::ReplaceFailed { why: &cannot }));
             }
         };
@@ -2510,7 +2538,9 @@ impl BrowserService {
                 page.as_deref().and_then(|page| Self::tab_index(profile, tab, page, &listing))
             }
             Err(cannot) if driver::died(&cannot) => {
-                return Err(self.end_rebuilt_host(profile, drove, fresh_generation, cannot).await);
+                return Err(self
+                    .end_rebuilt_host(profile, seat, drove, fresh_generation, cannot)
+                    .await);
             }
             // **A listing that failed for any other reason was never read**:
             // nothing is known about the page, so it is not gone.
@@ -5552,7 +5582,7 @@ struct HostIdentity {
 }
 
 /// What became of a host a call tried to end.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum DeadHost {
     /// This call ended it, with the identity a recurrence is diagnosed by.
     Ended { pid: u32, port: u16 },
@@ -5563,6 +5593,9 @@ enum DeadHost {
     AlreadyGone,
     /// Another host serves the profile now; this call ends nothing.
     NotOurs,
+    /// Other sessions hold tabs on this host, so it was left running. Each
+    /// entry is a session and how long it has held its oldest tab.
+    Shared { pid: u32, port: u16, holders: Vec<(SessionSlot, Duration)> },
 }
 
 /// **The answer never leads with the driver's `_page` TypeError**: it names
@@ -5633,6 +5666,36 @@ fn dead_host_answer(profile: &Profile, host: DeadHost, why: &str) -> String {
             profile.dir.display(),
         ),
         DeadHost::NotOurs => format!("the browser driver stopped answering: {why}"),
+        DeadHost::Shared { pid, port, holders } => format!(
+            "the browser host (pid {pid}, port {port}, profile {}) is in use by {}, so it was left \
+             running rather than ended: {why}. Call browser_tabs to see the tabs, or try again \
+             once that session is done.",
+            profile.dir.display(),
+            holders_words(&holders),
+        ),
+    }
+}
+
+/// **Who else is holding a host, as the refusal names them**: each session
+/// and how long it has held its oldest tab.
+fn holders_words(holders: &[(SessionSlot, Duration)]) -> String {
+    holders
+        .iter()
+        .map(|(seat, held)| format!("{} (a tab held for {})", seat.display(), held_words(*held)))
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+/// How long a tab has been held, as a sentence names it.
+fn held_words(held: Duration) -> String {
+    if held < Duration::from_secs(1) {
+        "under a second".to_owned()
+    } else if held < Duration::from_secs(60) {
+        format!("{} s", held.as_secs())
+    } else if held < Duration::from_secs(60 * 60) {
+        format!("{} min", held.as_secs() / 60)
+    } else {
+        format!("{} h", held.as_secs() / 3600)
     }
 }
 
@@ -6405,6 +6468,69 @@ mod tests {
         crate::osr::Ring::unlink(&ring_name);
     }
 
+    /// **A timeout never ends a host another session's page is open on.** Two
+    /// sessions share a profile by owning a tab each of the one host; the
+    /// caller that times out is refused by name, and the host stays up with
+    /// the other session's page (#2728).
+    #[tokio::test]
+    async fn a_timeout_on_a_host_another_session_holds_is_refused_not_ended() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let worker = SessionSlot::worker("O", "p", "w");
+        let wedged = FakeDriver::with_blank("T1");
+        let seen = wedged.clone();
+        let successor = FakeDriver::with_blank("T1");
+        let replaced = successor.clone();
+        service
+            .install_fake_with_successor(&lead, wedged.clone(), move || {
+                Arc::new(replaced.clone()) as Arc<dyn crate::driver::TabDriver>
+            })
+            .await;
+        service.call(&lead, "browser_snapshot", json!({})).await.expect("the lead's tab");
+        seen.push_target("T2");
+        successor.push_target("T2");
+        service.call(&worker, "browser_snapshot", json!({})).await.expect("the worker's tab");
+        let profile = service.find("O/default").await.expect("the profile");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).numbers(),
+            vec![1, 2],
+            "each session owns one tab of the one host",
+        );
+        let ring_name = format!("/forge-shared-host-{}", std::process::id());
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port: 9,
+            ring: Arc::new(ring),
+            profile: dir.path().join("host-shared"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+        // Every listing times out from here, on the driver and its
+        // replacement: the second mute would end a host this call alone owned.
+        wedged.timeout_every_listing();
+        successor.timeout_every_listing();
+
+        let first = service
+            .call(&lead, "browser_snapshot", json!({}))
+            .await
+            .expect_err("a mute listing drops its driver for the next call");
+        assert!(first.contains("the driver did not answer"), "{first}");
+        let refused = service
+            .call(&lead, "browser_snapshot", json!({}))
+            .await
+            .expect_err("a fresh driver that still times out refuses the caller");
+        assert!(refused.contains("O/p/w"), "the holder is named: {refused}");
+        assert!(refused.contains("a tab held for"), "and since when: {refused}");
+        assert!(!refused.contains("was ended"), "no end is claimed: {refused}");
+        assert!(profile.state.lock().await.host.is_some(), "the shared host was left running");
+        assert!(successor.listings() > 0, "the replacement driver had to list before the refusal");
+        crate::osr::Ring::unlink(&ring_name);
+    }
+
     /// **A rebuild that replaces the host ends the host standing after it.**
     /// A rebuild starts a new host when the old one died, so the fresh
     /// driver serves a host the call never looked up; a listing that dies
@@ -6448,6 +6574,7 @@ mod tests {
         let refused = service
             .replace_dead_driver(
                 &profile,
+                &seat,
                 generation,
                 drove,
                 1,
@@ -7124,7 +7251,7 @@ mod tests {
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
-        let host = service.end_dead_host(&profile, drove, why).await;
+        let host = service.end_dead_host(&profile, &seat, drove, why).await;
         drop(guard);
         let answer = dead_host_answer(&profile, host, why);
 
@@ -7173,7 +7300,7 @@ mod tests {
         *profile.boot.lock().unwrap_or_else(PoisonError::into_inner) = Some((1, "T1".to_owned()));
         let stale =
             super::HostIdentity { pid: successor.pid + 1, port: successor.port + 1, generation: 0 };
-        let host = service.end_dead_host(&profile, stale, "a delayed timeout").await;
+        let host = service.end_dead_host(&profile, &seat, stale, "a delayed timeout").await;
 
         assert!(matches!(host, DeadHost::NotOurs), "the successor is not this call's to end");
         assert!(profile.state.lock().await.host.is_some(), "the successor host is still there");
@@ -7192,7 +7319,7 @@ mod tests {
         // pid**: the pid alone must be enough to refuse it.
         let same_port =
             super::HostIdentity { pid: successor.pid + 1, port: successor.port, generation: 0 };
-        let host = service.end_dead_host(&profile, same_port, "a delayed timeout").await;
+        let host = service.end_dead_host(&profile, &seat, same_port, "a delayed timeout").await;
         assert!(matches!(host, DeadHost::NotOurs), "a same-port successor is not this call's");
         assert!(profile.state.lock().await.host.is_some(), "and it is still serving");
         crate::osr::Ring::unlink(&ring_name);
@@ -7227,7 +7354,7 @@ mod tests {
         let drove = super::HostIdentity { pid: std::process::id(), port: 9, generation: 0 };
         profile.state.lock().await.driver_generation = 7;
 
-        let host = service.end_dead_host(&profile, drove, "a delayed timeout").await;
+        let host = service.end_dead_host(&profile, &seat, drove, "a delayed timeout").await;
 
         assert!(matches!(host, DeadHost::NotOurs), "a newer driver's host is not this call's");
         assert!(profile.state.lock().await.host.is_some(), "the host is still serving");
@@ -8076,6 +8203,7 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
+                &seat,
                 Driven {
                     generation: 1,
                     pid: 1,
@@ -8109,6 +8237,7 @@ mod tests {
         let why = service
             .after_failure(
                 &profile,
+                &seat,
                 Driven {
                     generation: 2,
                     pid: 1,
@@ -8130,6 +8259,7 @@ mod tests {
         let again = service
             .after_failure(
                 &profile,
+                &seat,
                 Driven {
                     generation: 2,
                     pid: 1,
@@ -8264,6 +8394,7 @@ mod tests {
         let (outcome, ()) = tokio::join!(
             service.after_failure(
                 &profile,
+                &seat,
                 Driven {
                     generation: 1,
                     pid: 1,
@@ -11612,10 +11743,11 @@ mod server_guards {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
         let (identity, ring) = install_host(&profile, dir.path(), 9).await;
         profile.up.store(true, Ordering::Release);
 
-        let _ = service.end_dead_host(&profile, identity, "the test ends it").await;
+        let _ = service.end_dead_host(&profile, &seat, identity, "the test ends it").await;
 
         assert!(
             !profile.up.load(Ordering::Acquire),
@@ -11640,7 +11772,7 @@ mod server_guards {
         let (first, first_ring) = install_host(&profile, dir.path(), 9).await;
         profile.up.store(true, Ordering::Release);
 
-        let _ = service.end_dead_host(&profile, first, "the first call ends it").await;
+        let _ = service.end_dead_host(&profile, &seat, first, "the first call ends it").await;
         let sentence = profile.failures.borrow().clone();
 
         // A successor starts on the SAME port - the freed one it reuses - with
@@ -11651,10 +11783,10 @@ mod server_guards {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(1, seat, "T2", "T2", "", "")
+            .adopt(1, seat.clone(), "T2", "T2", "", "")
             .expect("the successor's row");
 
-        let again = service.end_dead_host(&profile, first, "a second call ends it").await;
+        let again = service.end_dead_host(&profile, &seat, first, "a second call ends it").await;
 
         assert!(
             matches!(again, super::DeadHost::NotOurs),
@@ -11702,6 +11834,7 @@ mod server_guards {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
         let (identity, ring) = install_host(&profile, dir.path(), 10).await;
         std::fs::create_dir_all(&profile.dir).expect("the profile dir");
         std::fs::write(
@@ -11714,11 +11847,11 @@ mod server_guards {
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
         let host = service
-            .end_dead_host(&profile, identity, "the driver's initializeServer timed out")
+            .end_dead_host(&profile, &seat, identity, "the driver's initializeServer timed out")
             .await;
         drop(guard);
 
-        assert!(matches!(host, super::DeadHost::Ended { .. }), "the host was not ended: {host:?}");
+        assert!(matches!(&host, super::DeadHost::Ended { .. }), "the host was not ended: {host:?}");
         let records = ended(&caught);
         assert_eq!(records.len(), 1, "one end, one record: {records:?}");
         let (level, fields) = &records[0];
@@ -11774,6 +11907,7 @@ mod server_guards {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
         let mut exited = std::process::Command::new("true").spawn().expect("a child");
         let pid = exited.id();
         exited.wait().expect("the child exits");
@@ -11785,11 +11919,14 @@ mod server_guards {
         // **The capture is live**: the absence below is only as good as the
         // layer that would have seen a record.
         tracing::info!(event_name = "test_sentinel", "the capture is live");
-        let host = service.end_dead_host(&profile, identity, "a listing timed out").await;
+        let host = service.end_dead_host(&profile, &seat, identity, "a listing timed out").await;
         drop(guard);
 
         assert!(saw(&caught, "test_sentinel"), "the capture is not seeing records");
-        assert!(matches!(host, super::DeadHost::AlreadyGone), "a gone host is not ended: {host:?}");
+        assert!(
+            matches!(&host, super::DeadHost::AlreadyGone),
+            "a gone host is not ended: {host:?}"
+        );
         assert!(ended(&caught).is_empty(), "a gone host was recorded as an end: {caught:?}");
         crate::osr::Ring::unlink(&ring);
     }
@@ -11861,9 +11998,11 @@ mod server_guards {
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
         let args = json!({});
+        let seat = SessionSlot::lead("O", "p");
         let _ = service
             .after_failure(
                 &profile,
+                &seat,
                 Driven {
                     generation: identity.generation,
                     pid: identity.pid,
@@ -12216,6 +12355,7 @@ mod server_guards {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
+        let seat = SessionSlot::lead("O", "p");
         let stub = dir.path().join("gone-host-2.sh");
         write_exec(&stub, "#!/bin/sh\nexit 0\n");
         let (pid, port) = spawn_stub(&stub, &profile, dir.path());
@@ -12228,7 +12368,7 @@ mod server_guards {
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
-        let host = service.end_dead_host(&profile, identity, "a listing timed out").await;
+        let host = service.end_dead_host(&profile, &seat, identity, "a listing timed out").await;
         tokio::time::advance(Duration::from_secs(2)).await;
         tokio::task::yield_now().await;
         tokio::task::yield_now().await;
