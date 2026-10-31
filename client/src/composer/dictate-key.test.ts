@@ -16,6 +16,7 @@ import {
   down,
   markChorded,
   modeFrom,
+  modifierCode,
   up,
   TAP_MS,
   type Held,
@@ -105,5 +106,27 @@ describe('a press and its release', () => {
 
   it('carries no instruction from a release with no press', () => {
     expect(up(null, 10, 'auto').action).toBeNull();
+  });
+});
+
+/**
+ * **The shell carries sides; this page owns the binding.** AppKit numbers the
+ * modifier keys 54, 55, 59 and 62, and each is one side of Command or Control;
+ * a table with a side crossed never matches the key `forge.toml` bound, and
+ * nothing in the take's own path would notice.
+ */
+describe("the overlay's modifier keycodes", () => {
+  it('names the side each raw keycode is', () => {
+    expect(modifierCode(54), 'right Command').toBe('MetaRight');
+    expect(modifierCode(55), 'left Command').toBe('MetaLeft');
+    expect(modifierCode(59), 'left Control').toBe('ControlLeft');
+    expect(modifierCode(62), 'right Control').toBe('ControlRight');
+  });
+
+  it('names nothing for a modifier this client does not bind', () => {
+    expect(modifierCode(56), 'left Shift').toBeNull();
+    expect(modifierCode(60), 'right Shift').toBeNull();
+    expect(modifierCode(58), 'left Option').toBeNull();
+    expect(modifierCode(0), 'any key at all').toBeNull();
   });
 });
