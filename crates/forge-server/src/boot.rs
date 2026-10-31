@@ -406,6 +406,11 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // hold their boot values for the process's life.
     workspace.start_usage_poller();
 
+    // Rotation cooldowns change what a project row's `would_bind` answers,
+    // on a write and again on the clock that thaws them; this is the one
+    // watcher that turns both into a roster announcement.
+    workspace.start_rotation_announcer();
+
     // Bind the gateway's inference listener and open the boot gate for
     // it. Every spawned session's base URL names this port: a failed bind
     // holds the gate shut AND spawn attempts are refused at the spawn

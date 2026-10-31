@@ -462,6 +462,7 @@ impl Workspace {
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),

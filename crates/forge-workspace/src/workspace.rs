@@ -798,6 +798,9 @@ pub struct Workspace {
     /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
     /// calls early-return to avoid spawning duplicate poller tasks.
     usage_poller_started: std::sync::atomic::AtomicBool,
+    /// Set the first time [`Self::start_rotation_announcer`] runs, so a
+    /// second call cannot double every cooldown's roster frame.
+    rotation_announcer_started: std::sync::atomic::AtomicBool,
     /// Set the first time [`Self::start_dictate_preflight`] runs, so a
     /// second call cannot spawn a second prewarm over the same models. Set
     /// before the `[dictate] enabled` gate: the flag reads "the boot wave
@@ -2286,6 +2289,7 @@ impl Workspace {
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
             usage_poller_started: std::sync::atomic::AtomicBool::new(false),
+            rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
@@ -4160,6 +4164,58 @@ impl Workspace {
                          spawn attempts are refused until forge restarts",
                     );
                 }
+            }
+        });
+    }
+
+    /// Announce the roster on every rotation change: a cooldown a live 429
+    /// starts (a write the gateway publishes) and the clock-driven thaw
+    /// after it (which no write announces, so this task sleeps to it).
+    ///
+    /// **A project row's `would_bind` is derived from the selection walk**,
+    /// so both moments change what the home draws with nothing else to hang
+    /// an update on. Started once at boot; a second call is ignored, since a
+    /// second watcher would double every frame.
+    pub fn start_rotation_announcer(self: &Arc<Self>) {
+        if self.rotation_announcer_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            tracing::debug!(
+                target: "forge_workspace::workspace",
+                "start_rotation_announcer called more than once; ignoring",
+            );
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let mut rotation = self.gateway.rotation_watch();
+        tokio::spawn(async move {
+            loop {
+                let Some(workspace) = weak.upgrade() else { return };
+                let thaw = workspace.gateway.soonest_cooldown_end(std::time::SystemTime::now());
+                drop(workspace);
+                match thaw {
+                    None => {
+                        // Nothing is cooling: the next wake is a write.
+                        if rotation.changed().await.is_err() {
+                            return;
+                        }
+                    }
+                    Some(end) => {
+                        let wait = end
+                            .duration_since(std::time::SystemTime::now())
+                            .unwrap_or(std::time::Duration::ZERO);
+                        // A cooldown that started or was replaced restarts
+                        // the sleep; the thaw itself ends it.
+                        tokio::select! {
+                            () = tokio::time::sleep(wait) => {}
+                            changed = rotation.changed() => {
+                                if changed.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                let Some(workspace) = weak.upgrade() else { return };
+                workspace.announce_accounts_changed();
             }
         });
     }
@@ -13107,6 +13163,38 @@ provider = "anthropic"
             ids.iter().all(|id| id.starts_with("forge_nudge_")),
             "a machinery dispatch carries the marker whatever door it took: {ids:?}",
         );
+    }
+
+    /// **A cooldown and its thaw each announce the roster.** A project row's
+    /// `would_bind` is derived from the selection walk, so a home subscriber
+    /// that hears nothing keeps drawing an account's old bindability. The
+    /// cooling start is a write the gateway publishes; the thaw is only a
+    /// clock, so the announcer sleeps to it.
+    #[tokio::test]
+    async fn a_rotation_cool_and_its_thaw_each_announce_the_accounts() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.start_rotation_announcer();
+
+        let reset_at = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+            + 2;
+        ws.gateway.report_probe_limit(&AccountKey("Cooling".to_owned()), Some(reset_at));
+
+        let mut announced = 0;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while announced < 2 {
+            let frame = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("the cool and the thaw both announce inside the bound")
+                .expect("the update channel stays open");
+            if matches!(&*frame.update, SessionUpdate::AccountsChanged { .. }) {
+                announced += 1;
+            }
+        }
+        assert_eq!(announced, 2, "one frame for the cool and one for the thaw");
     }
 
     /// **Both rows that open a turn carry the stamp a clock is read from**:

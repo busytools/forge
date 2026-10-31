@@ -109,6 +109,12 @@ impl RotationState {
         self.cooldowns.lock().get(key).copied()
     }
 
+    /// The soonest cooldown still live at `now`, across every account. A
+    /// reader sleeps until it to announce the thaw the clock alone decides.
+    pub fn soonest_cooldown_end(&self, now: SystemTime) -> Option<SystemTime> {
+        self.cooldowns.lock().values().copied().filter(|until| *until > now).min()
+    }
+
     /// The soonest a cooling account among `keys` recovers, for the
     /// failure message. `None` when none of them is cooling.
     pub fn soonest_reset_among(&self, keys: &[AccountKey], now: SystemTime) -> Option<SystemTime> {
