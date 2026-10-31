@@ -93,11 +93,37 @@ pub(crate) fn open_device(wanted: Option<&str>) -> Result<cpal::Device, Error> {
     })
 }
 
-/// How a capture opens: the stream config the device will run at, and the
-/// rate its samples arrive at when that is not already [`SAMPLE_RATE`].
+/// The sample formats the capture can open. Anything else is refused at the
+/// plan rather than when the stream is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputFormat {
+    F32,
+    /// Converted to f32 as it arrives: the downstream pipeline reads f32, and
+    /// several devices - Android's `aaudio` inputs among them - offer only
+    /// this one.
+    I16,
+}
+
+impl InputFormat {
+    /// The format `cpal` reports as one this capture can take.
+    fn of(format: cpal::SampleFormat) -> Option<Self> {
+        match format {
+            cpal::SampleFormat::F32 => Some(Self::F32),
+            cpal::SampleFormat::I16 => Some(Self::I16),
+            _ => None,
+        }
+    }
+}
+
+/// How a capture opens: the stream config the device will run at, the format
+/// its stream delivers, and the rate its samples arrive at when that is not
+/// already [`SAMPLE_RATE`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InputPlan {
     pub(crate) config: cpal::StreamConfig,
+    /// The format the stream is built for; the planner never yields one the
+    /// capture cannot open.
+    pub(crate) sample_format: InputFormat,
     /// `Some` when the device cannot offer [`SAMPLE_RATE`] itself and
     /// its audio needs converting; `None` when the samples flow
     /// through untouched.
@@ -106,22 +132,52 @@ pub(crate) struct InputPlan {
 
 /// Pick an input the models can read.
 ///
-/// A device offering [`SAMPLE_RATE`] in F32 opens natively, fewest
-/// channels winning: less to average, less to go wrong. One that does
-/// not still opens its best F32 config - fewest channels, then the
-/// rate nearest the model rate - and its audio is downmixed and
-/// resampled with a real filter downstream. Measured on the target
-/// hardware, which offers 16, 24 and 32 kHz and never fewer than two
-/// channels - so requiring mono here would have meant no microphone at
-/// all - and on USB microphones that offer only 48 kHz.
+/// A device offering [`SAMPLE_RATE`] opens natively, fewest channels winning:
+/// less to average, less to go wrong. F32 is preferred at equal channels
+/// because it skips the conversion, but I16 is taken where that is all the
+/// device has. One that cannot serve the model rate still opens its best
+/// config - fewest channels, then the rate nearest the model rate - and its
+/// audio is downmixed and resampled with a real filter downstream. Measured
+/// on the target hardware, which offers 16, 24 and 32 kHz and never fewer
+/// than two channels - so requiring mono here would have meant no microphone
+/// at all - and on USB microphones that offer only 48 kHz.
 ///
-/// What is still refused is a device with no F32 config at all: the
-/// error names everything it offered, so the mismatch is legible.
+/// What is still refused is a device offering neither F32 nor I16: the error
+/// names the formats the capture takes, then everything the device offered,
+/// so the mismatch is legible as the format it is.
 pub(crate) fn input_config(device: &cpal::Device) -> Result<InputPlan, Error> {
     let supported = device
         .supported_input_configs()
         .map_err(|error| Error::Capture { message: error.to_string() })?;
     input_plan(supported)
+}
+
+/// One openable offer, scored the way the negotiation chooses between them.
+#[derive(Debug, Clone)]
+struct Candidate {
+    /// Channels first, then the distance from the model rate, and only then
+    /// the format, where F32 wins a tie because it needs no conversion.
+    rank: (u16, u32, u8),
+    rate: cpal::SampleRate,
+    config: cpal::StreamConfig,
+    format: InputFormat,
+}
+
+impl Candidate {
+    fn new(
+        channels: u16,
+        distance: u32,
+        rate: cpal::SampleRate,
+        config: cpal::StreamConfig,
+        format: InputFormat,
+    ) -> Self {
+        Self {
+            rank: (channels, distance, u8::from(format != InputFormat::F32)),
+            rate,
+            config,
+            format,
+        }
+    }
 }
 
 /// The negotiation over synthetic ranges, so a device is not needed to
@@ -131,55 +187,55 @@ fn input_plan(
 ) -> Result<InputPlan, Error> {
     let wanted: cpal::SampleRate = SAMPLE_RATE;
     let mut offered = Vec::new();
-    let mut native: Option<cpal::StreamConfig> = None;
-    // (channels, distance from the model rate, rate, config)
-    let mut fallback: Option<(u16, u32, cpal::SampleRate, cpal::StreamConfig)> = None;
+    let mut native: Option<Candidate> = None;
+    let mut fallback: Option<Candidate> = None;
     for range in supported {
+        let reported = range.sample_format();
         offered.push(format!(
             "{}ch {}-{}Hz {:?}",
             range.channels(),
             range.min_sample_rate(),
             range.max_sample_rate(),
-            range.sample_format()
+            reported
         ));
-        if range.sample_format() != cpal::SampleFormat::F32 {
+        let Some(format) = InputFormat::of(reported) else {
             continue;
-        }
+        };
         if let Some(config) = range.try_with_sample_rate(wanted) {
             let config: cpal::StreamConfig = config.into();
-            if native.as_ref().is_none_or(|b| config.channels < b.channels) {
-                native = Some(config);
+            let candidate = Candidate::new(config.channels, 0, wanted, config, format);
+            if native.as_ref().is_none_or(|best| candidate.rank < best.rank) {
+                native = Some(candidate);
             }
             continue;
         }
         // The range cannot serve the model rate itself, so its nearest
         // end is the resample candidate.
         let rate = SAMPLE_RATE.clamp(range.min_sample_rate(), range.max_sample_rate());
-        let candidate = (
-            range.channels(),
-            rate.abs_diff(SAMPLE_RATE),
-            rate,
-            cpal::StreamConfig {
-                channels: range.channels(),
-                sample_rate: rate,
-                buffer_size: cpal::BufferSize::Default,
-            },
-        );
-        let better = match fallback {
-            None => true,
-            Some((channels, distance, _, _)) => {
-                candidate.0 < channels || (candidate.0 == channels && candidate.1 < distance)
-            }
+        let config = cpal::StreamConfig {
+            channels: range.channels(),
+            sample_rate: rate,
+            buffer_size: cpal::BufferSize::Default,
         };
-        if better {
+        let candidate =
+            Candidate::new(range.channels(), rate.abs_diff(SAMPLE_RATE), rate, config, format);
+        if fallback.as_ref().is_none_or(|best| candidate.rank < best.rank) {
             fallback = Some(candidate);
         }
     }
-    if let Some(config) = native {
-        return Ok(InputPlan { config, resample_from: None });
+    if let Some(native) = native {
+        return Ok(InputPlan {
+            config: native.config,
+            sample_format: native.format,
+            resample_from: None,
+        });
     }
     fallback
-        .map(|(_, _, rate, config)| InputPlan { config, resample_from: Some(rate) })
+        .map(|candidate| InputPlan {
+            config: candidate.config,
+            sample_format: candidate.format,
+            resample_from: Some(candidate.rate),
+        })
         .ok_or(Error::UnsupportedInput { wanted: SAMPLE_RATE, offered: offered.join(", ") })
 }
 
@@ -261,36 +317,61 @@ mod tests_input_config {
     }
 
     #[test]
-    fn a_device_with_no_f32_offer_at_all_is_still_refused_with_what_it_offers() {
-        let err =
-            input_plan([range(2, 44_100, 44_100, SampleFormat::I16)]).expect_err("no F32, no open");
+    fn an_i16_offer_opens_in_its_own_format() {
+        // The Android rig's aaudio inputs: cpal reports them I16-only, and
+        // the capture used to refuse every one while the picker listed them
+        // (#2362). I16 is converted to the f32 the pipeline reads.
+        let plan = input_plan([range(2, 16_000, 16_000, SampleFormat::I16)])
+            .expect("an I16 offer is usable");
+        assert_eq!(plan.sample_format, InputFormat::I16, "the stream is built for I16");
+        assert_eq!((plan.config.channels, plan.config.sample_rate), (2, 16_000));
+        assert_eq!(plan.resample_from, None, "the native rate needs no resampling");
+    }
+
+    #[test]
+    fn an_i16_device_without_16k_still_takes_the_resample_fallback() {
+        let plan = input_plan([range(1, 48_000, 48_000, SampleFormat::I16)])
+            .expect("an I16 offer is usable");
+        assert_eq!(plan.sample_format, InputFormat::I16);
+        assert_eq!(plan.resample_from, Some(48_000), "the rate still goes through the resampler");
+    }
+
+    #[test]
+    fn a_device_with_no_offer_this_crate_can_take_names_the_format_first() {
+        // Nothing the capture can open: the refusal names the format the
+        // capture takes and then the rate it needed, because the mismatch a
+        // reader has to chase is the format - the old sentence named the rate
+        // alone and sent them after the wrong problem.
+        let err = input_plan([range(2, 44_100, 44_100, SampleFormat::U8)])
+            .expect_err("no F32 or I16, no open");
+        let sentence = err.to_string();
+        assert!(
+            sentence.starts_with("the input device offers no F32 or I16 stream for 16000 Hz input"),
+            "the mismatch is the format first and the rate second: {sentence}"
+        );
+        assert!(
+            sentence.contains("2ch 44100-44100Hz U8"),
+            "the refusal must keep naming what the device offered, got: {sentence}"
+        );
         match err {
-            Error::UnsupportedInput { wanted, offered } => {
-                assert_eq!(wanted, SAMPLE_RATE);
-                assert!(
-                    offered.contains("2ch 44100-44100Hz"),
-                    "the refusal must keep naming what the device offered, got: {offered}"
-                );
-            }
-            other => panic!("the no-F32 refusal must stay UnsupportedInput, got: {other:?}"),
+            Error::UnsupportedInput { wanted, .. } => assert_eq!(wanted, SAMPLE_RATE),
+            other => panic!("the no-format refusal must stay UnsupportedInput, got: {other:?}"),
         }
     }
 
     #[test]
-    fn an_f32_offer_wins_even_when_a_non_f32_range_serves_16k() {
-        // Only the F32 stream can be opened, so a native 16 kHz I16
-        // range must not beat an F32 range that needs conversion.
+    fn a_native_i16_offer_wins_over_an_f32_one_that_needs_converting() {
+        // Both are openable now, and the native rate is the better stream:
+        // no resampling, and mono costs less to downmix. An F32 offer at a
+        // rate that needs conversion must not beat it.
         let plan = input_plan([
             range(1, 16_000, 16_000, SampleFormat::I16),
             range(2, 48_000, 48_000, SampleFormat::F32),
         ])
-        .expect("an F32 offer exists");
-        assert_eq!(
-            plan.resample_from,
-            Some(48_000),
-            "the F32 offer is the only one this crate can open"
-        );
-        assert_eq!((plan.config.channels, plan.config.sample_rate), (2, 48_000));
+        .expect("both offers are usable");
+        assert_eq!(plan.resample_from, None, "a native 16 kHz stream is the one this crate opens");
+        assert_eq!((plan.config.channels, plan.config.sample_rate), (1, 16_000));
+        assert_eq!(plan.sample_format, InputFormat::I16);
     }
 
     #[test]

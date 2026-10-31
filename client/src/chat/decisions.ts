@@ -303,7 +303,7 @@ function answerOf(value: unknown, input: unknown): DecisionAnswer | null {
     return {
       kind: 'score',
       score,
-      levels: levelsOf(input, answer['probabilities']),
+      levels: levelsOf(input, answer),
       confidence: unitOrNull(answer['confidence']),
     };
   }
@@ -341,22 +341,44 @@ function probabilitiesOf(
 }
 
 /**
+ * The words the caller gave a level, or null where it gave none. A level
+ * that is a bare object with no naming field is named by nobody here, which
+ * is what lets the result's legend fill it in.
+ */
+function ownNameOf(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const said = value.trim();
+    return said === '' ? null : said;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  return namingField(value as Record<string, unknown>);
+}
+
+/**
  * A score's levels: the call's criteria, each paired with the probability the
  * result gave for its index. A level the result skipped keeps its name and a
  * null value; a structured level keeps its own words and value rather than
  * taking the whole distribution with it; no criteria or no distribution at
  * all draws no levels.
+ *
+ * **A level is named by the caller's own words first, then the result's
+ * legend.** The legend maps each position to the model's rendering of that
+ * level, and it is the only name a structured level without a naming field
+ * has - the criteria alone would draw it as `structured value`.
  */
-function levelsOf(input: unknown, value: unknown): Level[] | null {
+function levelsOf(input: unknown, answer: Record<string, unknown>): Level[] | null {
   const criteria = obj(input)['criteria'];
   if (!Array.isArray(criteria) || criteria.length === 0) return null;
+  const value = answer['probabilities'];
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const probabilities = value as Record<string, unknown>;
+  const legend = obj(answer['legend']);
   const levels: Level[] = [];
   for (const [at, held] of criteria.entries()) {
     const row = rowOf(held, 'structured value');
+    const fromLegend = str(legend, String(at))?.trim() ?? '';
     levels.push({
-      name: row?.text ?? String(at),
+      name: ownNameOf(held) ?? (fromLegend === '' ? null : fromLegend) ?? row?.text ?? String(at),
       value: finite(probabilities[String(at)]),
       raw: row?.raw ?? null,
     });

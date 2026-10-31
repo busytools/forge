@@ -479,6 +479,12 @@ export type ServerMessage =
       conversation: SessionSlot;
       turns: unknown[];
       cursor: string | null;
+      /**
+       * The schedules the fired prompts in these turns came from, keyed by the
+       * prompt's own id. Absent on a server too old to carry the pair, and
+       * omitted by this one when the page holds no fired row.
+       */
+      cron_names?: Record<string, { cron_id: string; description?: string | null }>;
       reconciled?: boolean;
     }
   /**
