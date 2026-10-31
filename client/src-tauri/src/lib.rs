@@ -1146,6 +1146,7 @@ mod tests {
     fn the_shipped_logger_keeps_the_press_line_and_drops_its_neighbours() {
         use tauri::test::{mock_builder, mock_context, noop_assets};
         use tauri_plugin_log::log::{Level, Log as _, Metadata};
+        use tauri_plugin_log::{Target, TargetKind};
 
         use super::{LOG_MAX, client_logger, mic};
 
@@ -1155,8 +1156,15 @@ mod tests {
         }
 
         let app = mock_builder().build(mock_context(noop_assets())).expect("a mock app builds");
-        let (_plugin, max, logger) =
-            client_logger().split(app.handle()).expect("the logger builds");
+        // **The plugin's default target is the OS log directory**, which for
+        // this mock is `~/Library/Logs/test.log`: a gate run would litter the
+        // home directory. The level and the filter are what this test is
+        // about, so the one target it keeps is stdout.
+        let (_plugin, max, logger) = client_logger()
+            .clear_targets()
+            .target(Target::new(TargetKind::Stdout))
+            .split(app.handle())
+            .expect("the logger builds");
         assert_eq!(max, LOG_MAX, "the facade allows what the filter keeps");
         assert!(
             logger.enabled(&metadata(Level::Debug, mic::LOG_TARGET)),
