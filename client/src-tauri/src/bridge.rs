@@ -529,8 +529,11 @@ impl Bridge {
     /// ordered stream on the wire whatever sent them.
     pub fn browser_input(&self, event: forge_primitives::browser::BrowserInputEvent) {
         let seq = self.input_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        self.mark_browser_input(&event);
         if let Some(socket) = self.socket() {
+            // **A gesture with no socket never leaves**, so it is not marked:
+            // a mark with no frame after it would read as a page that never
+            // drew what was never sent.
+            self.mark_browser_input(&event);
             socket.browser_input(seq, event);
         }
     }
