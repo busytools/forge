@@ -563,6 +563,26 @@ async fn author_of(
     Ok(name)
 }
 
+/// The name the token's own user goes by, or `None` when no name can be
+/// resolved and the caller falls back to whatever the wire offered.
+///
+/// Kept on the host as well as in `own`, because the host outlives a
+/// sweep: a later `auth.test` that fails must not resurrect an app name
+/// the host remembered.
+async fn own_name(
+    host: &dyn SlackHost,
+    api: &dyn SlackApi,
+    workspace: &str,
+    own: &mut OwnIdentity<'_>,
+) -> Result<Option<String>, SlackError> {
+    let id = own.id;
+    if let Some(name) = own.resolve_name(api, workspace).await? {
+        host.set_user_name(workspace, id, name);
+        return Ok(Some(name.to_owned()));
+    }
+    Ok(host.user_name(workspace, own.id).filter(|name| !name.is_empty()))
+}
+
 /// Resolves one author outright, without the per-conversation memo
 /// [`author_of`] keeps.
 async fn resolve_author(
@@ -576,12 +596,9 @@ async fn resolve_author(
     // A message the user posts through the Slack app carries the app's
     // `bot_profile`; his own id is recognised before that name is read.
     if user == own.id
-        && let Some(name) = own.resolve_name(api, workspace).await?
+        && let Some(name) = own_name(host, api, workspace, own).await?
     {
-        // Kept for the sweeps whose `auth.test` fails: the fall-through
-        // below must not resurrect an app name the host remembered.
-        host.set_user_name(workspace, user, name);
-        return Ok(Some(name.to_owned()));
+        return Ok(Some(name));
     }
     if let Some(known) = host.user_name(workspace, user) {
         // An empty name is what a settled refusal leaves behind.
@@ -1683,6 +1700,8 @@ pub(crate) async fn sweep_mentions(
         return Ok(SweepOutcome { delivered: 0, ..Default::default() });
     };
 
+    let mut own = OwnIdentity { id: &user_id, name: None, asked: false };
+
     let watermark = match host.watermark(workspace, MENTION_CURSOR) {
         Ok(watermark) => watermark,
         Err(error) => {
@@ -1760,6 +1779,24 @@ pub(crate) async fn sweep_mentions(
             if host.own_post(workspace, &hit.conversation_id, &hit.ts) {
                 continue;
             }
+            // A search hit sends the handle alongside the id, so the
+            // mention path needs no lookup at all - except for the user's
+            // own posts, where that handle can be the Slack app's name.
+            let author = if hit.user.as_deref() == Some(own.id) {
+                match own_name(host, api, workspace, &mut own).await {
+                    Ok(name) => name.or_else(|| hit.username.clone().filter(|name| !name.is_empty())),
+                    Err(SlackError::RateLimited { retry_after, .. }) => {
+                        return Ok(SweepOutcome {
+                            delivered,
+                            rate_limited: Some(retry_after),
+                            ..Default::default()
+                        });
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                hit.username.clone().filter(|name| !name.is_empty())
+            };
             let message = SlackMessage {
                 workspace: workspace.to_owned(),
                 conversation: hit.conversation_id.clone(),
@@ -1770,9 +1807,7 @@ pub(crate) async fn sweep_mentions(
                 ts: hit.ts.clone(),
                 thread_ts: hit.thread_ts.clone(),
                 user: hit.user.clone(),
-                // A search hit sends the handle alongside the id, so the
-                // mention path needs no lookup at all.
-                author: hit.username.clone().filter(|name| !name.is_empty()),
+                author,
                 text: hit.text.clone(),
                 // A search hit carries neither: only a conversation read
                 // reports the reply markers.
@@ -5790,6 +5825,33 @@ mod tests {
             Some("architect"),
             "the handle Slack sent is what the block shows",
         );
+    }
+
+    /// The user writes to himself from the Slack app, so the search hit's
+    /// `username` can be the app's name - the same `Forge: ...` label the
+    /// conversation path already refuses for that id. His own id is
+    /// recognised before the wire's handle is believed, and the sweep asks
+    /// `auth.test` once however many of his own mentions it carries.
+    #[tokio::test]
+    async fn the_users_own_mention_takes_his_name_over_the_apps() {
+        let host = FakeHost::with_subscriptions(vec![sub_mentions("acme")]);
+        let mut first = search_match("300.2", "C1", "note to self <@U1>");
+        first.user = Some("U1".to_owned());
+        first.username = Some("Forge".to_owned());
+        let mut second = search_match("200.1", "C2", "another <@U1>");
+        second.user = Some("U1".to_owned());
+        second.username = Some("Forge".to_owned());
+        host.seed_search(vec![first, second]);
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+
+        let delivered = host.delivered();
+        assert_eq!(delivered.len(), 2, "both of his own mentions arrive");
+        assert!(
+            delivered.iter().all(|message| message.author.as_deref() == Some("tester")),
+            "his own mentions carry his handle, not the app's name: {delivered:?}",
+        );
+        assert_eq!(host.auth_test_calls(), 1, "one identity for the sweep, not one per hit");
     }
 
     /// A conversation's message carries a bare id, so the name has to be
