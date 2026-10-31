@@ -4882,10 +4882,11 @@ impl Workspace {
     /// store's tag cache like the boot scan: an unchanged transcript is not
     /// re-read end to end for a list a reader opens for a moment.
     ///
-    /// The cap bounds the ANSWER, not the reads: `list_sessions` reads every
-    /// transcript before it filters and cuts. That is why a lead takes the
-    /// catalog above; a worker's own directory is its worktree, which holds
-    /// its runs and little else.
+    /// The cap bounds the ANSWER, not the reads - but a worker's scan is
+    /// narrowed before them: a transcript its cached tag rules out is not
+    /// read (#2567), so a non-git worker sharing the project root no longer
+    /// pays the project's whole scan. A lead takes the catalog above for a
+    /// list that costs no read at all.
     async fn scan_sessions(
         &self,
         cwd: &str,

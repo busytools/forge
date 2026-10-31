@@ -686,7 +686,10 @@ pub enum Workers {
 ///
 /// `tag_cache` carries the previous run's tag scans so an unchanged
 /// transcript is not re-read end to end. `None` reads every byte of
-/// every file, which is what a caller with no store must do.
+/// every file, which is what a caller with no store must do. A worker's
+/// listing also skips the READ of a transcript that cache tags for another
+/// seat: its tag cannot match, and the head-and-tail read is the cost a
+/// non-git worker on a large project paid on every seat open (#2567).
 pub async fn list_sessions(
     config_dir: &Path,
     directory: Option<&str>,
@@ -721,6 +724,33 @@ pub async fn list_sessions(
             if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
                 candidates.push(path);
             }
+        }
+    }
+
+    // **A worker's listing does not read what its own tag already rules out**
+    // (#2567). The head-and-tail read of every transcript in the directory is
+    // the whole cost of a `/resume` list on a non-git worker, which shares
+    // the project root with its lead; an unchanged file the cache tags for
+    // another seat (or for none) is dropped here instead. The answer is the
+    // same rows either way, so the skip names itself on the log.
+    if let (Workers::Only(label), Some(cache)) = (&workers, tag_cache) {
+        let wanted = worker_tag(label);
+        let before = candidates.len();
+        candidates.retain(|path| match cache.settled_tag(path) {
+            Some(Some(tag)) => tag == wanted,
+            Some(None) => false,
+            // Not cached, or behind its file: its tag is not known, so read it.
+            None => true,
+        });
+        if before > candidates.len() {
+            tracing::debug!(
+                target: "forge_agent::catalog::scan",
+                event_name = "session_scan_narrowed",
+                label = %label,
+                skipped = before - candidates.len(),
+                read = candidates.len(),
+                "transcripts whose cached tag rules them out were not read",
+            );
         }
     }
 
@@ -1443,6 +1473,16 @@ impl SessionTagCache {
 
     fn get(&self, path: &Path) -> Option<SessionTagScan> {
         self.prior.get(path.to_str()?).cloned()
+    }
+
+    /// The tag this transcript carried at its last scan, when the file has
+    /// not changed since. `None` when nothing is cached or the entry is
+    /// behind the file on disk - a `/new` re-tag lands in the bytes since,
+    /// so a stale entry cannot rule a transcript out.
+    fn settled_tag(&self, path: &Path) -> Option<Option<String>> {
+        let size = std::fs::metadata(path).ok()?.len();
+        let held = self.get(path)?;
+        (held.scanned_len == size).then_some(held.tag)
     }
 
     fn put(&self, path: &Path, scan: SessionTagScan) {
@@ -2742,6 +2782,84 @@ mod tests {
             session_ids(&worker),
             vec!["alpha-own"],
             "a worker's listing is the sessions its own label ran, not its prefix kin's"
+        );
+    }
+
+    /// **A worker's listing does not read what its cached tags already rule
+    /// out** (#2567). The head-and-tail read of every transcript in the
+    /// directory was the whole cost of a `/resume` list on a non-git worker,
+    /// which shares the project root with its lead. The answer is the same
+    /// rows either way, so the skip is read off its own log line.
+    #[tokio::test]
+    async fn a_workers_listing_skips_what_its_cached_tags_rule_out() {
+        let logs = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(logs.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().join("project");
+        fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.to_string_lossy().into_owned();
+        let dir = dir_for(tmp.path(), &cwd);
+        fs::create_dir_all(&dir).unwrap();
+        write_session_jsonl(&dir, "lead-own", &transcript(None));
+        write_session_jsonl(&dir, "beta-own", &transcript(Some("forge:worker:beta")));
+        write_session_jsonl(&dir, "alpha-own", &transcript(Some("forge:worker:alpha")));
+
+        // A boot scan's cache: one full pass, then exactly what it learned.
+        let first = std::sync::Arc::new(SessionTagCache::new(std::collections::HashMap::new()));
+        let read =
+            list_sessions(tmp.path(), Some(&cwd), None, 0, Workers::Hidden, Some(&first)).await;
+        assert_eq!(read.len(), 1, "precondition: a lead's listing hides its workers");
+        let prior: std::collections::HashMap<String, SessionTagScan> =
+            first.updates().into_iter().collect();
+        assert_eq!(prior.len(), 3, "and the pass still read every transcript's tag");
+        let warm = std::sync::Arc::new(SessionTagCache::new(prior));
+
+        let worker = list_sessions(
+            tmp.path(),
+            Some(&cwd),
+            None,
+            0,
+            Workers::Only("alpha".to_owned()),
+            Some(&warm),
+        )
+        .await;
+        assert_eq!(
+            session_ids(&worker),
+            vec!["alpha-own"],
+            "the listing is still the label's own sessions",
+        );
+        let logged = String::from_utf8(logs.0.lock().clone()).unwrap();
+        assert!(
+            logged.contains("session_scan_narrowed") && logged.contains("skipped=2"),
+            "the two transcripts the cache ruled out are named as skipped: {logged}",
+        );
+
+        // **A transcript that grew is read, not skipped.** The bytes since the
+        // last scan can carry a `/new` re-tag, so a cache entry behind its
+        // file proves nothing - and here the new tag makes the file the
+        // worker's own.
+        let mut retagged = transcript(Some("forge:worker:beta"));
+        retagged.push_str("{\"type\":\"tag\",\"tag\":\"forge:worker:alpha\"}\n");
+        write_session_jsonl(&dir, "beta-own", &retagged);
+        let again = list_sessions(
+            tmp.path(),
+            Some(&cwd),
+            None,
+            0,
+            Workers::Only("alpha".to_owned()),
+            Some(&warm),
+        )
+        .await;
+        assert_eq!(
+            session_ids(&again),
+            vec!["beta-own", "alpha-own"],
+            "a transcript that changed after its scan must be read, not skipped",
         );
     }
 
