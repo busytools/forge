@@ -13,10 +13,12 @@
  */
 
 import { isTauri } from '@tauri-apps/api/core';
-import { untrack } from 'svelte';
+import { onDestroy, untrack } from 'svelte';
 
+import { onModifier, onModifierChord } from '../browser/link';
 import { surface } from '../browser/surface.svelte';
 import type { DictateAxes } from '../session/wire';
+import { report } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { boxKey } from './box.svelte';
 import { caretTakesDictation } from './editors';
@@ -25,6 +27,7 @@ import {
   down,
   isBareModifier,
   markChorded,
+  modifierCode,
   up,
   type Action,
   type Bind,
@@ -72,6 +75,18 @@ export interface PushToTalk {
    */
   machine: () => boolean;
   /**
+   * Whether a live takeover's bar is this surface's dictation box right now.
+   *
+   * The bar's feedback line is the only text box above the page it stands
+   * for, so a press belongs there whatever the caret is on - including the
+   * page itself, which is where a reader driving it leaves the keyboard.
+   *
+   * **A bar whose line the reader cannot close is not one**: while the page
+   * is opening, or showing a tab the hand-off did not name, the key begins
+   * nothing, exactly as the line's own toggle is not offered.
+   */
+  barLine: () => boolean;
+  /**
    * Where the keyboard goes when a press begins a take: the shortcut is how a
    * reader begins without the mouse, so the transcript lands where their keys
    * already are.
@@ -97,13 +112,94 @@ export function bindPushToTalk(wiring: PushToTalk): void {
 
   $effect(() => {
     if (!wiring.offered()) return;
+    // **A press whose release landed while the window was away is forgotten**,
+    // or the next press would be taken for a repeat and silently ignored. The
+    // release itself is not replayed: the gesture is over.
+    const lost = (): void => handlers.reset();
     window.addEventListener('keydown', handlers.down, true);
     window.addEventListener('keyup', handlers.up);
+    window.addEventListener('blur', lost);
+    document.addEventListener('visibilitychange', lost);
     return () => {
       window.removeEventListener('keydown', handlers.down, true);
       window.removeEventListener('keyup', handlers.up);
+      window.removeEventListener('blur', lost);
+      document.removeEventListener('visibilitychange', lost);
     };
   });
+
+  // **The press is forgotten when the surface goes, not when the effect
+  // re-runs**: `offered` moves while a key is held (a box opens or closes
+  // under it), and a reset there would drop the release that ends the take
+  // the press began - the invariant the handlers are hoisted for.
+  onDestroy(() => handlers.reset());
+
+  // **The overlay holds the keyboard while a takeover is up**, so a bare
+  // modifier reaches the page as no keydown at all: the shell hears it as
+  // `flagsChanged:` and forwards the raw side. It goes into the SAME handler
+  // pair the window registered - never a synthesized event with a listener of
+  // its own - so two deliveries of one press cannot act twice: `down()` sees
+  // the press already tracked and carries no instruction.
+  //
+  // **The chord's other key has to come with it.** The page sees none of the
+  // keys the overlay forwards to the driven page, so a Command/Control chord
+  // would release a take its modifier began without ever marking it chorded -
+  // and the release would submit it. The shell says a key arrived under the
+  // held modifier; the page marks the press it already tracks.
+  $effect(() => {
+    if (!wiring.offered()) return;
+    if (surface.phase === 'closed') return;
+    const stops: (() => void)[] = [];
+    let live = true;
+    const keep = (started: Promise<() => void> | null): void => {
+      if (started === null) return;
+      void started
+        .then((off) => {
+          if (live) stops.push(off);
+          else off();
+        })
+        // **A refused listen is retried by the next run of this effect** - the
+        // next takeover - rather than killing the overlay route in silence.
+        .catch((why: unknown) => report('the overlay key route did not open', why));
+    };
+    keep(onModifier((press) => routeModifier(handlers, press)));
+    keep(onModifierChord(() => handlers.chord()));
+    return () => {
+      live = false;
+      for (const stop of stops.splice(0)) stop();
+    };
+  });
+}
+
+/** What the key's handlers read off an event, so a route with no DOM event
+ *  can hand them the same shape. A `KeyboardEvent` already is one. */
+export interface KeyEvent {
+  code: string;
+  key: string;
+  repeat?: boolean;
+}
+
+/**
+ * One bare modifier from the overlay, through the key's own handlers.
+ *
+ * The shell carries the raw `keyCode` and whether it is now down; this page
+ * decides which side is bound. A modifier's DOM `key` rides along so the
+ * other side's Command or Control is consumed as a bare modifier rather than
+ * chording a press in flight, exactly as the window route consumes it.
+ */
+export function routeModifier(
+  handlers: { down: (event: KeyEvent) => void; up: (event: KeyEvent) => void },
+  press: { code: number; down: boolean },
+): void {
+  const code = modifierCode(press.code);
+  if (code === null) return;
+  const event: KeyEvent = {
+    code,
+    key: code.startsWith('Meta') ? 'Meta' : 'Control',
+    repeat: false,
+  };
+  if (press.down) handlers.down(event);
+  else handlers.up(event);
 }
 
 /**
@@ -113,22 +209,38 @@ export function bindPushToTalk(wiring: PushToTalk): void {
  * a rule of the page it types into, not of the window it is heard on.
  */
 export function pushToTalkHandlers(wiring: PushToTalk): {
-  down: (event: KeyboardEvent) => void;
-  up: (event: KeyboardEvent) => void;
+  down: (event: KeyEvent) => void;
+  up: (event: KeyEvent) => void;
+  /** **A key arrived under the bound modifier**, which the overlay's route
+   *  reports and the window route hears itself: the press in flight is a
+   *  chord, and its release discards the take it began. */
+  chord: () => void;
+  /** **Forget the press in flight**, which a window that lost focus and came
+   *  back must: its release landed somewhere else, and a press kept on record
+   *  would swallow the next one as a repeat. */
+  reset: () => void;
 } {
   /** Whether this platform delivers Cmd, which is what a binding names. */
   const mac = navigator.platform.toLowerCase().includes('mac');
   /** The key's press in flight, from its press to its release. */
   let pressed: Held | null = null;
 
-  const onDown = (event: KeyboardEvent): void => {
-    // **A live takeover owns the keyboard, except in this client's own
-    // dictation boxes**: its keys belong to the page under the bar, so a
-    // press must not start a take behind it - on the web that is a
-    // microphone opened under a page being driven. The bar's feedback line
-    // is a forge box drawn above that page, so a press with the caret in it
-    // belongs to the take exactly as the bar's mic does.
-    if (surface.phase !== 'closed' && !caretTakesDictation()) return;
+  const onDown = (event: KeyEvent): void => {
+    const dictate = wiring.dictate();
+    // **A take is in flight from the press that opens it**, not only from
+    // the moment the capture lands: the microphone's open is seconds long on
+    // a permission prompt, and a reader pressing again there means the stop.
+    // The open belongs to the seat it was made for, so one left behind on
+    // another seat is not this press's to stop.
+    const inFlight = dictate.held || dictate.openingHere;
+    // **A live takeover owns the keyboard, except for the presses that are
+    // this client's own**: the bar's feedback line, which is the only text
+    // box above the page and so belongs to a take wherever the caret is, and
+    // a take this page is capturing, which always ends on the key. Every
+    // other press belongs to the page under the bar - on the web, a take
+    // there would be a microphone opened under a page being driven.
+    if (surface.phase !== 'closed' && !caretTakesDictation() && !wiring.barLine() && !inFlight)
+      return;
     // A held key repeats, and a repeat carries no instruction - without
     // this a toggle take stops once per repeat.
     if (event.repeat) return;
@@ -139,7 +251,16 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
       if (!isBareModifier(event.key)) pressed = markChorded(pressed);
       return;
     }
-    const step = down(pressed, wiring.dictate().held, Date.now(), wiring.mode());
+    if (pressed !== null) {
+      // **A press already in flight is the truth**, and the press arriving now
+      // changes nothing; said rather than dropped in silence, so a key that
+      // keeps doing nothing has a line that explains it.
+      report(
+        'a key press was dropped while one was already in flight',
+        'the first press has not been released',
+      );
+    }
+    const step = down(pressed, inFlight, Date.now(), wiring.mode());
     // **A machine turn refuses a BEGIN, not the key.** In toggle mode the
     // press IS the stop and in auto mode a finish needs the press on record,
     // so a take already in flight must still end here: the box draws no row
@@ -151,7 +272,7 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
     if (step.action === 'begin') wiring.onBegin();
     if (step.action !== null) wiring.dictate().act(step.action);
   };
-  const onUp = (event: KeyboardEvent): void => {
+  const onUp = (event: KeyEvent): void => {
     // **A release still lands while a takeover is up**: a press that began
     // before it opened has a capture waiting for this release.
     if (event.code !== boundCode(wiring.bind(), mac)) return;
@@ -159,7 +280,13 @@ export function pushToTalkHandlers(wiring: PushToTalk): {
     pressed = step.held;
     if (step.action !== null) wiring.dictate().act(step.action);
   };
-  return { down: onDown, up: onUp };
+  const onChord = (): void => {
+    pressed = markChorded(pressed);
+  };
+  const reset = (): void => {
+    pressed = null;
+  };
+  return { down: onDown, up: onUp, chord: onChord, reset };
 }
 
 /**
@@ -328,6 +455,14 @@ export class Dictation {
    * the everyday case, and it is seconds long.
    */
   #pending: Action | null = null;
+  /**
+   * The seat the open in flight was made for.
+   *
+   * **An open outlives a seat switch**, and it belongs to the seat it was
+   * pressed on: a press on the seat moved to must not queue the stop that
+   * ends a capture the reader cannot see.
+   */
+  #openingSeat: SessionSlot | null = null;
   /** The bound's own timer, cleared with the take that set it. */
   #quiet: ReturnType<typeof setTimeout> | null = null;
   readonly #wiring: DictationWiring;
@@ -336,9 +471,34 @@ export class Dictation {
     this.#wiring = wiring;
   }
 
-  /** Whether the seat's record shows a take this page did not start. */
+  /**
+   * Whether a take is in flight on the seat this page shows: this page's own
+   * capture there, or one the seat's record shows. What a bound key reads to
+   * decide a press is the stop rather than a begin.
+   *
+   * **A take this page still holds on another seat is not this seat's**: the
+   * key on the seat moved to must refuse the begin by name, as the mic's own
+   * press does, rather than silently submitting a take the reader cannot see.
+   */
   get held(): boolean {
-    return this.#wiring.shown();
+    return (
+      this.#wiring.shown() ||
+      (this.take !== null && boxKey(this.take.seat) === boxKey(this.#wiring.seat()))
+    );
+  }
+
+  /**
+   * Whether the open in flight belongs to the seat this page shows.
+   *
+   * A press during a slow open is the stop; an open left behind on another
+   * seat is not this seat's, and neither stopping nor queueing is its.
+   */
+  get openingHere(): boolean {
+    return (
+      this.opening &&
+      this.#openingSeat !== null &&
+      boxKey(this.#openingSeat) === boxKey(this.#wiring.seat())
+    );
   }
 
   /**
@@ -367,6 +527,7 @@ export class Dictation {
     this.#wiring.onStart();
     // A gesture from an earlier attempt has nothing to stop.
     this.#pending = null;
+    this.#openingSeat = this.#wiring.seat();
     this.opening = true;
     try {
       // The pick in force AT THE PRESS, read once: the panel stays live
@@ -431,6 +592,7 @@ export class Dictation {
       }
     } finally {
       this.opening = false;
+      this.#openingSeat = null;
     }
   }
 
@@ -462,8 +624,17 @@ export class Dictation {
       void this.begin();
       return;
     }
-    // A gesture during the open is HELD for the take it belongs to.
+    // **An open belongs to the seat it was made for.** A gesture is HELD for
+    // that take; a finish on the seat moved to names the microphone as busy
+    // rather than queueing a submit for a capture this reader cannot see. An
+    // ABANDON still queues: Escape on the new seat discards the take this
+    // page began, which is the arm-drop the surface has always owed.
     if (this.opening) {
+      const open = this.#openingSeat;
+      if (action === 'finish' && open !== null && boxKey(open) !== boxKey(this.#wiring.seat())) {
+        this.#wiring.onRefused({ tone: 'bad', text: busyLine(open) });
+        return;
+      }
       this.#pending = action;
       return;
     }
@@ -471,6 +642,15 @@ export class Dictation {
     // the frames stop with it.
     const live = untrack(() => this.take);
     if (live !== null) {
+      // **A take on ANOTHER seat is not this one's to SUBMIT.** The
+      // microphone is this client's, but the take belongs to the seat it
+      // started on - so a finish is refused by name rather than silently
+      // submitting a take this reader cannot see. A cancel is the Escape
+      // door's abandon, which reaches the take wherever the reader moved to.
+      if (action === 'finish' && boxKey(live.seat) !== boxKey(this.#wiring.seat())) {
+        this.#wiring.onRefused({ tone: 'bad', text: busyLine(live.seat) });
+        return;
+      }
       live.stop(action === 'finish');
       return;
     }
@@ -487,14 +667,6 @@ export class Dictation {
   /** What the mic's own press asks for: begin, or finish what is live. */
   toggle(): void {
     const live = untrack(() => this.take);
-    // **A take on ANOTHER seat is not this row's to end.** The microphone is
-    // this client's, but the take belongs to the seat it started on - so the
-    // press is refused by name rather than silently stopping a take this
-    // reader cannot see.
-    if (live !== null && boxKey(live.seat) !== boxKey(this.#wiring.seat())) {
-      this.#wiring.onRefused({ tone: 'bad', text: busyLine(live.seat) });
-      return;
-    }
     if (this.opening || live !== null || this.#wiring.shown()) {
       this.act('finish');
       return;

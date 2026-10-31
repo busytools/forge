@@ -1111,11 +1111,22 @@ impl Bridge {
                 .and_then(|conversation| conversation.get("cursor"))
                 .cloned()
                 .unwrap_or_default();
+            // **The record's cron pairing rides the page too.** The record
+            // stores the server's data whole, and this synthesized page is
+            // the only read a parked desktop page gets: dropping the pairing
+            // here would untitle a cron row that fired during the park
+            // (#1815).
+            let cron_names = record
+                .get("conversation")
+                .and_then(|conversation| conversation.get("cron_names"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             self.emit(ClientEvent::Inbound(json!({
                 "kind": "page",
                 "conversation": session,
                 "cursor": cursor,
                 "turns": turns,
+                "cron_names": cron_names,
                 // **Told apart from an answer**: a page read while an older
                 // ask is "in flight" would be spliced as an older page and
                 // scramble the order, so the page is marked as the catch-up
@@ -2146,6 +2157,7 @@ mod tests {
                 "conversation": {
                     "turns": [{ "key": "t1", "messages": [] }],
                     "cursor": "7",
+                    "cron_names": { "p-cron": { "cron_id": "c1", "description": "Morning summary" } },
                 },
             })),
         );
@@ -2188,6 +2200,11 @@ mod tests {
         assert_eq!(page["reconciled"], json!(true), "and it says which kind of page it is");
         assert_eq!(page["turns"][0]["key"], json!("t1"));
         assert_eq!(page["conversation"], seat()["session"]);
+        assert_eq!(
+            page["cron_names"],
+            json!({ "p-cron": { "cron_id": "c1", "description": "Morning summary" } }),
+            "the record's cron pairing rides the catch-up page, or a parked cron row reloads untitled",
+        );
         assert_eq!(bridge.lock().suppressed, 0, "the spell is spent");
     }
 

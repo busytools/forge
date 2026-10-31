@@ -37,7 +37,9 @@ the heading, so a closed section cannot read as an empty one.
 
 Every cell of a fleet row is the server's own read. The mark is the
 strongest of the project's seat states, drawn with the same shapes a seat
-row uses; the counts are the server's (`slots` is the project's resolved
+row uses - or, for a project holding no seat, the rail's dormant mark:
+asleep once the catalog remembers a session, `never` only when nothing has
+ever run there; the counts are the server's (`slots` is the project's resolved
 worker cap); and a miss is named rather than implied - a queue stalling with
 a free slot, a worker holding no row, or a project that cannot start, which
 is the refusal the row drew before the fleet. The whole row opens the

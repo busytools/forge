@@ -21,12 +21,21 @@ fn main() -> std::process::ExitCode {
     match forge_client::browser::cef::surface::testing::the_overlay_view_ivars_hold(
         app.handle().clone(),
     ) {
+        Ok(()) => println!("the overlay view stores, clears and drops its ivars"),
+        Err(why) => {
+            eprintln!("the overlay view check failed: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+    match forge_client::browser::cef::surface::testing::the_overlay_view_forwards_its_keys(
+        app.handle().clone(),
+    ) {
         Ok(()) => {
-            println!("the overlay view stores, clears and drops its ivars");
+            println!("the overlay forwards its modifier and chord events");
             std::process::ExitCode::SUCCESS
         }
         Err(why) => {
-            eprintln!("the overlay view check failed: {why}");
+            eprintln!("the overlay key check failed: {why}");
             std::process::ExitCode::FAILURE
         }
     }

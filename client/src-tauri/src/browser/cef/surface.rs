@@ -133,7 +133,31 @@ struct OverlayIvars {
     app: Mutex<Option<tauri::AppHandle>>,
     /// The picture this view is drawing: a gesture is mapped through it.
     picture: Mutex<Option<Picture>>,
+    /// Each forwarded modifier side's own state.
+    ///
+    /// **The aggregate `Command`/`Control` flag cannot tell the sides apart**:
+    /// with one Command held, releasing the other still leaves `Command` set,
+    /// so a direction read off the flag reports that release as a second
+    /// press and the page never ends its take. Only this per-side state says
+    /// which side changed and which way.
+    modifiers: Mutex<ModifierMask>,
 }
+
+/// The forwarded modifier sides, one bit each.
+type ModifierMask = u8;
+const LEFT_COMMAND: ModifierMask = 1 << 0;
+const RIGHT_COMMAND: ModifierMask = 1 << 1;
+const LEFT_CONTROL: ModifierMask = 1 << 2;
+const RIGHT_CONTROL: ModifierMask = 1 << 3;
+
+/// The overlay's two key events, as the page listens for them.
+///
+/// **Both sides of the language boundary spell these literals**, so a rename
+/// on either side alone kills desktop dictation with every other test green;
+/// `the_overlay_events_are_the_names_the_page_listens_for` reads the page's
+/// own listeners back.
+const MODIFIER_EVENT: &str = "browser_modifier";
+const MODIFIER_CHORD_EVENT: &str = "browser_modifier_chord";
 
 /// The drawn picture's two spaces: the frame's own pixels, and the page's
 /// viewport they were painted from.
@@ -141,6 +165,56 @@ struct OverlayIvars {
 struct Picture {
     pixels: (f64, f64),
     page: (f64, f64),
+}
+
+/// One bare modifier's change, as the webview reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+struct ModifierPress {
+    /// The raw `keyCode`: 54 right Command, 55 left Command, 59 left Control,
+    /// 62 right Control.
+    code: u16,
+    /// Whether that modifier is down after the change.
+    down: bool,
+}
+
+/// **A bare modifier arrives as `flagsChanged:`, never as `keyDown:`.** The
+/// shell carries the raw side and the direction and decides nothing about the
+/// binding; the client owns which side is its key.
+fn modifier_press(
+    keycode: u16,
+    flags: objc2_app_kit::NSEventModifierFlags,
+    held: &mut ModifierMask,
+) -> Option<ModifierPress> {
+    use objc2_app_kit::NSEventModifierFlags as Flags;
+    let (side, other, family) = match keycode {
+        54 => (RIGHT_COMMAND, LEFT_COMMAND, Flags::Command),
+        55 => (LEFT_COMMAND, RIGHT_COMMAND, Flags::Command),
+        59 => (LEFT_CONTROL, RIGHT_CONTROL, Flags::Control),
+        62 => (RIGHT_CONTROL, LEFT_CONTROL, Flags::Control),
+        _ => return None,
+    };
+    let was = *held & side != 0;
+    // **With the other side held the aggregate flag says only that the family
+    // is still down**, so this side's own change is the direction; otherwise
+    // the flag decides, which also re-syncs after an event the view never saw.
+    let down =
+        if flags.contains(family) && (*held & other != 0) { !was } else { flags.contains(family) };
+    if down {
+        *held |= side;
+    } else {
+        *held &= !side;
+    }
+    Some(ModifierPress { code: keycode, down })
+}
+
+/// **The other half of a chord.** While the overlay holds the keyboard the
+/// page never sees the key that makes a forwarded modifier a chord, so a
+/// Command/Control chord would leave the take its press began standing and
+/// submit it on release. The shell reports only that a key arrived under a
+/// held Command/Control; the page marks the press it already tracks.
+fn chord_arrived(flags: objc2_app_kit::NSEventModifierFlags) -> bool {
+    use objc2_app_kit::NSEventModifierFlags as Flags;
+    flags.contains(Flags::Command) || flags.contains(Flags::Control)
 }
 
 /// The picture one drawn frame puts on screen.
@@ -153,7 +227,7 @@ fn picture_of(frame: &Frame) -> Picture {
 
 impl Default for OverlayIvars {
     fn default() -> Self {
-        Self { app: Mutex::new(None), picture: Mutex::new(None) }
+        Self { app: Mutex::new(None), picture: Mutex::new(None), modifiers: Mutex::new(0) }
     }
 }
 
@@ -237,6 +311,9 @@ define_class!(
             event: &objc2_app_kit::NSEvent,
         ) -> objc2::runtime::Bool {
             let flags = event.modifierFlags();
+            if chord_arrived(flags) {
+                self.chord_signal();
+            }
             let route = route_equivalent(
                 character_of(event).unwrap_or('\0'),
                 flags.contains(objc2_app_kit::NSEventModifierFlags::Command),
@@ -269,6 +346,9 @@ define_class!(
         #[unsafe(method(keyDown:))]
         unsafe fn key_down(&self, event: &objc2_app_kit::NSEvent) {
             let flags = event.modifierFlags();
+            if chord_arrived(flags) {
+                self.chord_signal();
+            }
             let command = flags.contains(objc2_app_kit::NSEventModifierFlags::Command);
             let shift = flags.contains(objc2_app_kit::NSEventModifierFlags::Shift);
             let option = flags.contains(objc2_app_kit::NSEventModifierFlags::Option);
@@ -319,6 +399,22 @@ define_class!(
         #[unsafe(method(keyUp:))]
         unsafe fn key_up(&self, _event: &objc2_app_kit::NSEvent) {
             // Text rides `insertText`; the specials were sent whole on down.
+        }
+
+        /// **A bare modifier never reaches `keyDown:`.** AppKit turns it into
+        /// `flagsChanged:`, and with no implementation here it was dropped
+        /// before it reached either the page or the webview - so the
+        /// push-to-talk key did nothing while the overlay held the keyboard.
+        /// The raw side and direction go to the page, which owns the binding.
+        #[unsafe(method(flagsChanged:))]
+        unsafe fn flags_changed(&self, event: &objc2_app_kit::NSEvent) {
+            let press = {
+                let Ok(mut held) = self.ivars().modifiers.lock() else { return };
+                modifier_press(event.keyCode(), event.modifierFlags(), &mut held)
+            };
+            if let Some(press) = press {
+                self.emit(MODIFIER_EVENT, press);
+            }
         }
     }
 
@@ -411,8 +507,20 @@ impl OverlayView {
     /// the webview and the overlay holds first responder, so Cmd+W lowers the
     /// surface and the page's bar then carries back-to-chat, Done and Not now.
     fn lower_surface(&self) {
+        self.emit("browser_surface_lower", ());
+    }
+
+    /// **The page marks its own press from this**, exactly as the DOM route
+    /// marks it on the key it hears: the shell says only that a key arrived
+    /// under a held Command/Control, and never which key or which binding.
+    fn chord_signal(&self) {
+        self.emit(MODIFIER_CHORD_EVENT, ());
+    }
+
+    /// Hand one event to the page, through the app this view was given.
+    fn emit(&self, event: &'static str, payload: impl serde::Serialize + Clone) {
         if let Some(app) = self.ivars().app.lock().ok().and_then(|slot| slot.clone()) {
-            let _ = app.emit("browser_surface_lower", ());
+            let _ = app.emit(event, payload);
         }
     }
 
@@ -1012,6 +1120,100 @@ mod tests {
             40.0,
             "and the read-back mirrors the same way"
         );
+    }
+
+    /// **`flagsChanged:` is the only place a bare modifier exists.** The
+    /// responder cannot be built headless - an `NSView` needs the main thread
+    /// and a window - so what is pinned is the payload decision the method
+    /// hands to `emit`: the side the person pressed and whether it is now
+    /// down. The method itself is the ivars lock, the emit and this call.
+    #[test]
+    fn a_bare_modifier_carries_its_side_and_direction() {
+        use objc2_app_kit::NSEventModifierFlags as Flags;
+        let mut held = 0;
+        assert_eq!(
+            modifier_press(54, Flags::Command, &mut held),
+            Some(ModifierPress { code: 54, down: true }),
+            "the right Command going down"
+        );
+        assert_eq!(
+            modifier_press(54, Flags::empty(), &mut held),
+            Some(ModifierPress { code: 54, down: false }),
+            "and coming up"
+        );
+        assert_eq!(
+            modifier_press(59, Flags::Control, &mut held),
+            Some(ModifierPress { code: 59, down: true }),
+            "the left Control going down"
+        );
+        assert_eq!(
+            modifier_press(62, Flags::empty(), &mut held),
+            Some(ModifierPress { code: 62, down: false }),
+            "and the right coming up"
+        );
+        assert_eq!(
+            modifier_press(56, Flags::Shift, &mut held),
+            None,
+            "shift is not a side this client binds"
+        );
+        assert_eq!(modifier_press(0, Flags::empty(), &mut held), None, "nor any other key");
+    }
+
+    /// **The aggregate flag cannot tell the sides apart.** Holding one Command
+    /// and pressing and releasing the other leaves `Command` set throughout;
+    /// a direction read off the aggregate reported the release as a second
+    /// press, so the page never ended the take its first press began.
+    #[test]
+    fn the_other_command_held_does_not_hide_a_release() {
+        use objc2_app_kit::NSEventModifierFlags as Flags;
+        let mut held = 0;
+        assert_eq!(
+            modifier_press(55, Flags::Command, &mut held).map(|press| press.down),
+            Some(true),
+            "the left Command goes down"
+        );
+        assert_eq!(
+            modifier_press(54, Flags::Command, &mut held).map(|press| press.down),
+            Some(true),
+            "the right goes down while the left is held"
+        );
+        assert_eq!(
+            modifier_press(54, Flags::Command, &mut held).map(|press| press.down),
+            Some(false),
+            "the right goes up while the left is still held"
+        );
+        assert_eq!(
+            modifier_press(55, Flags::empty(), &mut held).map(|press| press.down),
+            Some(false),
+            "the left goes up"
+        );
+    }
+
+    /// **The two overlay events cross a language boundary as literals.** A
+    /// rename on either side alone kills desktop dictation with every other
+    /// test green, so the page's own listeners are read back out of the file.
+    #[test]
+    fn the_overlay_events_are_the_names_the_page_listens_for() {
+        let page = include_str!("../../../../src/browser/shell.ts");
+        for name in [MODIFIER_EVENT, MODIFIER_CHORD_EVENT] {
+            let listens = page.contains(&format!("listen('{name}'"))
+                || page.contains(&format!("listen<unknown>('{name}'"));
+            assert!(listens, "the page no longer listens for {name}");
+        }
+    }
+
+    /// **A chord is any key under a held Command or Control.** The page's
+    /// press is discarded on its release; without this signal the release
+    /// submits a take the person never meant to keep. A bare Shift is not a
+    /// chord for this client, because no take starts on it.
+    #[test]
+    fn a_chord_is_a_key_under_a_held_command_or_control() {
+        use objc2_app_kit::NSEventModifierFlags as Flags;
+        assert!(chord_arrived(Flags::Command), "Command and a key");
+        assert!(chord_arrived(Flags::Command | Flags::Shift), "Command and Shift and a key");
+        assert!(chord_arrived(Flags::Control), "Control and a key");
+        assert!(!chord_arrived(Flags::Shift), "Shift alone begins no take to discard");
+        assert!(!chord_arrived(Flags::empty()), "and a plain key is not a chord");
     }
 
     /// **Only exactly Command is the takeover's**, and only with the overlay

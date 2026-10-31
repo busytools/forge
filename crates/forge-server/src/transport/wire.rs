@@ -11,7 +11,7 @@
 //! the client is not today's pages: it is built against this wire, and a
 //! field missing here cannot be added later without a server change.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -644,6 +644,45 @@ pub struct ConversationWire {
     /// contains it.
     #[serde(default)]
     pub handoff: Option<forge_primitives::HandoffRecord>,
+    /// The schedules the fired prompts in these turns came from, keyed by the
+    /// prompt's own id.
+    ///
+    /// **The read half of the pairing `CronPromptAppended` carries once.**
+    /// The frame titles the row while it lands, and the row replayed from the
+    /// transcript afterwards carries the prompt alone - so the pairing rides
+    /// the read too, for the rows this page holds and no others.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cron_names: BTreeMap<String, forge_primitives::cron::CronName>,
+}
+
+/// The schedules the fired prompts in `turns` came from, keyed by the
+/// prompt's own id.
+///
+/// Only a delivery row is looked up: its prompt id is the pairing's key, and
+/// the map holds nothing for a row no schedule produced.
+pub fn cron_names_of(
+    surface: &ViewSurface,
+    slot: &SessionSlot,
+    turns: &[TurnWire],
+) -> BTreeMap<String, forge_primitives::cron::CronName> {
+    let mut uuids: Vec<&str> = Vec::new();
+    for turn in turns {
+        for frame in &turn.messages {
+            if frame.get("type").and_then(Value::as_str) != Some("user") {
+                continue;
+            }
+            let Some(uuid) = frame.get("uuid").and_then(Value::as_str) else {
+                continue;
+            };
+            if !uuid.is_empty() && !uuids.contains(&uuid) {
+                uuids.push(uuid);
+            }
+        }
+    }
+    if uuids.is_empty() {
+        return BTreeMap::new();
+    }
+    surface.cron_names(slot, &uuids)
 }
 
 /// The review reads for one branch, each carrying its own answer.
@@ -949,7 +988,7 @@ fn placement_wire(placement: AnchorPlacement) -> ThreadResolutionWire {
 /// turn has no boundary to cut on, and its rows reach a late-attaching view
 /// only in runs. What a client is owed there is the pair: a page never opens
 /// on a tool result without the call that produced it.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TurnWire {
     /// `None` when nothing named the turn: the key comes from a `Result`
@@ -2298,10 +2337,11 @@ async fn session(
     // itself: a mailbox seat's structured records made one page 70 MB (#2374).
     let cap = surface.tool_record_cap_bytes();
     let first_frame = surface.first_frame_cap_bytes();
-    let (turns, cursor, compaction_count, page_ms, covered, handoff) = match conversation {
+    let read = match conversation {
         Some(held) => {
             let seat = slot.clone();
             let capped = seat.clone();
+            let surface = Arc::clone(&state.surface);
             tokio::task::spawn_blocking(move || {
                 let at = std::time::Instant::now();
                 // **The record's conversation IS a page, cursor and all**
@@ -2328,14 +2368,14 @@ async fn session(
                 if first_frame == usize::MAX {
                     cap_tool_records(&mut page.turns, cap, &capped);
                 }
-                (
-                    page.turns,
-                    page.cursor,
-                    count,
-                    at.elapsed().as_secs_f64() * 1000.0,
-                    covered,
-                    handoff,
-                )
+                let names = cron_names_of(&surface, &capped, &page.turns);
+                // **The page's cost is the whole subscribe's**, the cron read
+                // included: the standing watch reads this number against the
+                // record it explains, so a read it excludes reads as cheaper
+                // than the record. The row is annotating the page, but it is
+                // part of building the answer.
+                let page_ms = at.elapsed().as_secs_f64() * 1000.0;
+                (page.turns, page.cursor, count, page_ms, covered, handoff, names)
             })
             .await
             .unwrap_or_else(|error| {
@@ -2345,11 +2385,12 @@ async fn session(
                     slot = %seat.display(),
                     "the fold did not finish; the record is answered without it",
                 );
-                (Vec::new(), None, 0, 0.0, 0, None)
+                (Vec::new(), None, 0, 0.0, 0, None, BTreeMap::new())
             })
         }
-        None => (Vec::new(), None, 0, 0.0, 0, None),
+        None => (Vec::new(), None, 0, 0.0, 0, None, BTreeMap::new()),
     };
+    let (turns, cursor, compaction_count, page_ms, covered, handoff, cron_names) = read;
     let handoff = handoff_row(header.session_id.as_ref(), handoff, |occupant| {
         surface.handoff_record(slot, occupant)
     });
@@ -2552,7 +2593,7 @@ async fn session(
         monitors: surface.monitors(slot),
         pending_ask: asks.first().map(PendingAskWire::from),
         pending_asks: asks.iter().map(PendingAskWire::from).collect(),
-        conversation: ConversationWire { turns, cursor, compaction_count, handoff },
+        conversation: ConversationWire { turns, cursor, compaction_count, handoff, cron_names },
         header: SessionHeaderWire {
             session_id: header.session_id.clone(),
             seq,
@@ -2631,6 +2672,84 @@ async fn session(
 
 #[cfg(test)]
 mod tests {
+    /// **The read half of the cron pairing rides the page.** A cron row drawn
+    /// while its delivery frame lands is titled by the schedule; the same row
+    /// replayed from a transcript after a reload has no frame to read. The
+    /// conversation read therefore carries the pair for exactly the rows it
+    /// serves, and this pins that a page of frames gets it (#1815).
+    #[test]
+    fn a_conversation_page_carries_the_schedule_each_fired_prompt_came_from() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let support = dir.path().join("app-support");
+        std::fs::create_dir_all(&support).expect("app-support");
+        {
+            let db = forge_workspace::store::Db::open(&support.join("db.redb")).expect("open db");
+            forge_workspace::store::cron_names::put(
+                &db,
+                "p-reload",
+                &forge_primitives::cron::CronName {
+                    cron_id: "c1".to_owned(),
+                    description: Some("Morning summary".to_owned()),
+                },
+            )
+            .expect("write the pairing");
+            forge_workspace::store::cron_names::put(
+                &db,
+                "a-1",
+                &forge_primitives::cron::CronName {
+                    cron_id: "not-a-fire".to_owned(),
+                    description: Some("an assistant row's id".to_owned()),
+                },
+            )
+            .expect("write a pairing under a non-prompt id too");
+        }
+        let fleet =
+            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("a fleet");
+        let page = vec![super::TurnWire {
+            key: None,
+            messages: vec![
+                serde_json::json!({
+                    "type": "user",
+                    "uuid": "p-reload",
+                    "message": {
+                        "role": "user",
+                        "content": [{ "type": "text", "text": "[Cron]\n\nsummarise overnight CI" }],
+                    },
+                }),
+                serde_json::json!({
+                    "type": "assistant",
+                    "uuid": "a-1",
+                    "message": { "role": "assistant", "content": [] },
+                }),
+                serde_json::json!({
+                    "type": "user",
+                    "uuid": "p-other",
+                    "message": {
+                        "role": "user",
+                        "content": [{ "type": "text", "text": "my own words" }],
+                    },
+                }),
+            ],
+        }];
+
+        let seat = forge_primitives::SessionSlot::lead("TestOrg", "proj");
+        let names = super::cron_names_of(&fleet.surface(), &seat, &page);
+        assert_eq!(
+            names.get("p-reload").and_then(|name| name.description.as_deref()),
+            Some("Morning summary"),
+            "the fired row's schedule rides the read, as its delivery frame once did",
+        );
+        assert!(
+            !names.contains_key("p-other"),
+            "a page carries the pairings its own fired rows need and no others",
+        );
+        assert!(
+            !names.contains_key("a-1"),
+            "a pairing stored under an id an ASSISTANT row carries is not a fired prompt, so the \
+             type filter must keep it out of the map",
+        );
+    }
+
     /// The transcript rows one turn leaves: what the user wrote, what the
     /// assistant said, and the result that closes it. The result carries a
     /// `uuid`, which is what the fold names the turn by - so a turn's report
