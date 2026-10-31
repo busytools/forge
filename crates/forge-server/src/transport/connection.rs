@@ -4551,6 +4551,21 @@ mod tests {
             panic!("a non-declaring client's frame was not text: {:?}", held.first())
         };
         assert_eq!(sent.as_str().as_ptr(), address, "a non-declaring client's frame was rebuilt");
+
+        // **The threshold is inclusive**: a frame of exactly the minimum
+        // compresses for a client that declared the capability.
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let frame = Message::Text("x".repeat(COMPRESSED_MIN_BYTES).into());
+        futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        let held = recorded.lock().expect("the frame log");
+        assert!(
+            matches!(
+                held.first(),
+                Some(Message::Binary(bytes)) if bytes.first().copied() == Some(COMPRESSED_JSON_TAG)
+            ),
+            "a frame at the threshold must cross compressed",
+        );
     }
 
     /// The clock a measured write reads, recording the frame each start was
@@ -5816,6 +5831,86 @@ mod tests {
         assert!(
             page.cursor.is_some(),
             "and the walk above it continues from the row it stopped at",
+        );
+    }
+
+    /// **A 0 `more` budget still caps the records the transcript serves**
+    /// (#2374): the below-floor path is one of the three places an uncut page
+    /// reaches the record cap, and without this the cap could be deleted here
+    /// with the suite green.
+    #[tokio::test]
+    async fn a_zero_more_page_cap_caps_the_records_below_the_floor() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            "[server]\nmore_page_cap_kb = 0\ntool_record_cap_kb = 1\n",
+        )
+        .expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let mut rows = transcript_rows(80);
+        // Turn 23 carries a record past the 1 KB cap, inside the page below
+        // the anchor.
+        let big = [
+            "{\"type\":\"user\",\"uuid\":\"u23\",\"session_id\":\"s1\",\
+             \"message\":{\"role\":\"user\",\"content\":\"turn 23\"}}"
+                .to_owned(),
+            "{\"type\":\"assistant\",\"uuid\":\"a23\",\
+             \"message\":{\"id\":\"m23\",\"role\":\"assistant\",\
+             \"model\":\"claude-opus-5\",\
+             \"content\":[{\"type\":\"text\",\"text\":\"reply 23\"}]}}"
+                .to_owned(),
+            format!(
+                "{{\"type\":\"user\",\"uuid\":\"t23\",\"session_id\":\"s1\",\
+                 \"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\
+                 \"tool_use_id\":\"call-23\",\"content\":\"ok\"}}]}},\
+                 \"toolUseResult\":{{\"payload\":\"{}\"}}}}",
+                "x".repeat(20_000),
+            ),
+            "{\"type\":\"result\",\"uuid\":\"r23\",\"subtype\":\"success\",\
+             \"duration_ms\":1,\"duration_api_ms\":1,\"is_error\":false,\
+             \"num_turns\":1,\"session_id\":\"s1\"}"
+                .to_owned(),
+        ];
+        rows.splice(23..24, big);
+        fleet
+            .seed_transcript(
+                "TestOrg",
+                "proj",
+                "lead",
+                &rows.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+            .expect("the session's transcript");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let cwd = state.surface.roster().cwd_for(&seat).expect("the seat's own directory");
+        let below = forge_primitives::TranscriptAnchor { row: "u25".to_owned(), offset: None };
+        let BelowFloor::Page(page) = rows_below_floor(&state, &seat, &cwd, Some(below), 4).await
+        else {
+            panic!("the transcript answers a page below the floor")
+        };
+        assert_eq!(
+            turn_texts(&page),
+            vec!["turn 21", "turn 22", "turn 23", "turn 24"],
+            "the newest turns below the anchor",
+        );
+        let record = page
+            .turns
+            .iter()
+            .flat_map(|turn| turn.messages.iter())
+            .find(|frame| frame["uuid"] == "t23")
+            .expect("the record's frame is in the page");
+        assert_eq!(
+            record["tool_use_result"]["omitted"], true,
+            "the record is capped below the floor: {record}",
         );
     }
 

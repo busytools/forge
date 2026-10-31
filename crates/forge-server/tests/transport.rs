@@ -4073,6 +4073,7 @@ async fn the_configured_record_cap_reaches_the_served_page() {
 /// conversation. Nothing is dropped and the order does not move.
 #[tokio::test]
 async fn the_configured_first_frame_budget_is_completed_by_the_walk_above_it() {
+    install_capture();
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir_with_server(
         dir.path(),
@@ -4107,6 +4108,13 @@ async fn the_configured_first_frame_budget_is_completed_by_the_walk_above_it() {
     assert!(
         first.windows(2).all(|pair| turn_number(&pair[0]) < turn_number(&pair[1])),
         "and it keeps the conversation's order: {first:?}",
+    );
+    assert!(
+        captured()
+            .lines()
+            .any(|line| line.contains("page_cut_by_budget") && line.contains("first_frame_cap_kb")),
+        "a cut first frame is logged with the key that cut it: {}",
+        captured(),
     );
 
     let mut cursor = data["conversation"]["cursor"].as_str().map(str::to_owned);
@@ -4188,39 +4196,97 @@ async fn a_newest_turn_over_the_budget_is_served_whole() {
 }
 
 /// **`first_frame_cap_kb = 0` serves the count's page.** The opt-out is the
-/// twenty turns a budget would cut, not the one turn its floor keeps.
+/// twenty turns a budget would cut, not the one turn its floor keeps. **A 0
+/// budget still caps the records it serves** (#2374): the uncut page is what
+/// reaches `cap_tool_records`, and a page the budget never cut is not logged
+/// as cut.
 #[tokio::test]
 async fn a_zero_first_frame_cap_serves_the_twenty_turn_page() {
+    install_capture();
     let dir = tempfile::tempdir().expect("tempdir");
+    // A project of its own, so the no-cut assertion reads only this page.
     let fleet = Fleet::in_dir_with_server(
         dir.path(),
-        &[("TestOrg", &["proj"])],
-        "[server]\nfirst_frame_cap_kb = 0\n",
+        &[("TestOrg", &["zero"])],
+        "[server]\nfirst_frame_cap_kb = 0\ntool_record_cap_kb = 1\n",
     )
     .expect("the fleet builds");
     let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
-    let rows: Vec<String> = (0..20).map(a_turns_rows).collect();
+    let mut rows: Vec<String> = (0..19).map(a_turns_rows).collect();
+    rows.push(a_big_result_rows(19, 20_000));
     let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
-    fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
+    fleet.seed_transcript("TestOrg", "zero", "lead", &borrowed).expect("the transcript seeds");
     fleet
-        .hold_conversation(&state, "TestOrg", "proj", "lead")
+        .hold_conversation(&state, "TestOrg", "zero", "lead")
         .expect("the seat's conversation is held");
+    let seat = SessionSlot::lead("TestOrg", "zero");
 
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: false,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Session(seat), answering: false, review: false },
     )
     .await;
     let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
         panic!("a snapshot is the answer to a subscribe")
     };
-    let first = said_words(&data["conversation"]["turns"]);
-    assert_eq!(first.len(), 20, "a 0 cap serves every turn the count asks for: {first:?}");
+    let turns = data["conversation"]["turns"].as_array().expect("the page carries turns");
+    assert_eq!(turns.len(), 20, "a 0 cap serves every turn the count asks for");
+    let record = turns
+        .iter()
+        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+        .find(|frame| frame["uuid"] == "t19")
+        .expect("the big record's frame is in the page");
+    assert_eq!(
+        record["tool_use_result"]["omitted"], true,
+        "a 0 page budget still caps the record: {record}",
+    );
+}
+
+/// **A first frame that fits its budget is not logged as cut.** The cut line
+/// is what tells a short page from a finished walk; one written for a page
+/// the budget never touched says the opposite and is just as wrong.
+#[tokio::test]
+async fn a_fitting_first_frame_is_not_logged_as_cut() {
+    install_capture();
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A project of its own, so the assertion reads only this page.
+    let fleet = Fleet::in_dir_with_server(
+        dir.path(),
+        &[("TestOrg", &["fit"])],
+        "[server]\nfirst_frame_cap_kb = 64\n",
+    )
+    .expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let rows: Vec<String> = (0..5).map(a_turns_rows).collect();
+    let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "fit", "lead", &borrowed).expect("the transcript seeds");
+    fleet
+        .hold_conversation(&state, "TestOrg", "fit", "lead")
+        .expect("the seat's conversation is held");
+    let seat = SessionSlot::lead("TestOrg", "fit");
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe { what: Subject::Session(seat), answering: false, review: false },
+    )
+    .await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
+        panic!("a snapshot is the answer to a subscribe")
+    };
+    assert_eq!(
+        data["conversation"]["turns"].as_array().map(Vec::len),
+        Some(5),
+        "precondition: the page fits its budget",
+    );
+    assert!(
+        !captured()
+            .lines()
+            .any(|line| line.contains("page_cut_by_budget") && line.contains("TestOrg/fit/lead")),
+        "a page the budget never cut was logged as cut: {}",
+        captured(),
+    );
 }
 
 /// **A `more` page is held to a byte budget too.** The first frame has had
@@ -4308,20 +4374,23 @@ async fn a_more_page_is_held_to_the_more_page_budget() {
 
 /// **`more_page_cap_kb = 0` serves the turns the client asked for.** The
 /// opt-out is the count's page rather than the one the budget's floor keeps.
+/// **A 0 budget still caps the records it serves** (#2374): the uncut page is
+/// what reaches `cap_tool_records`.
 #[tokio::test]
 async fn a_zero_more_page_cap_serves_the_asked_turns() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir_with_server(
         dir.path(),
         &[("TestOrg", &["proj"])],
-        "[server]\nmore_page_cap_kb = 0\n",
+        "[server]\nmore_page_cap_kb = 0\ntool_record_cap_kb = 1\n",
     )
     .expect("the fleet builds");
     let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
     // **Over the default budget on purpose**: 8 x 250 KB is 2 MB, so only a
     // genuinely unbounded budget serves all eight - a cap near the default
     // would serve two and this test could not tell the opt-out from the cap.
-    let rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 250_000)).collect();
+    let mut rows: Vec<String> = (0..8).map(|turn| a_turns_rows_padded(turn, 250_000)).collect();
+    rows.push(a_big_result_rows(8, 20_000));
     let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
     fleet.seed_transcript("TestOrg", "proj", "lead", &borrowed).expect("the transcript seeds");
     fleet
@@ -4329,12 +4398,21 @@ async fn a_zero_more_page_cap_serves_the_asked_turns() {
         .expect("the seat's conversation is held");
 
     let mut socket = connect(&url).await;
-    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 8 })
+    send(&mut socket, ClientMessage::More { conversation: lead_seat(), before: None, turns: 9 })
         .await;
     let ServerMessage::Page { turns, .. } = next_server(&mut socket).await else {
         panic!("a page is the answer to a request for more")
     };
-    assert_eq!(page_words(&turns).len(), 8, "a 0 cap serves every turn the client asked for");
+    assert_eq!(turns.len(), 9, "a 0 cap serves every turn the client asked for");
+    let record = turns
+        .iter()
+        .flat_map(|turn| turn.messages.iter())
+        .find(|frame| frame["uuid"] == "t8")
+        .expect("the big record's frame is in the page");
+    assert_eq!(
+        record["tool_use_result"]["omitted"], true,
+        "a 0 page budget still caps the record: {record}",
+    );
 }
 
 /// The next JSON frame, inflated when it crossed compressed.
