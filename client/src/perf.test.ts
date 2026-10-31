@@ -23,6 +23,7 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
   let longTask: ((ms: number, name: string) => void) | null = null;
   let heartbeat: ((lateMs: number) => void) | null = null;
   let heartbeatFailed: ((why: string) => void) | null = null;
+  let visibility: ((hidden: boolean) => void) | null = null;
   const deferred: (() => void)[] = [];
   let stopped = false;
 
@@ -46,6 +47,12 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
       return () => {
         heartbeat = null;
         heartbeatFailed = null;
+      };
+    },
+    observeVisibility: (cb) => {
+      visibility = cb;
+      return () => {
+        visibility = null;
       };
     },
     // The record for a slow frame is written one macrotask after it, so a
@@ -85,6 +92,8 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
     longTask: (ms: number, name = 'self') => longTask?.(ms, name),
     beat: (lateMs = 5) => heartbeat?.(lateMs),
     failHeartbeat: (why = '') => heartbeatFailed?.(why),
+    /** The page's visibility changing, as the browser reports it. */
+    hidden: (hidden: boolean) => visibility?.(hidden),
     /** The macrotask turn the slow frame's record is written on. */
     settle: () => {
       for (let cb = deferred.shift(); cb !== undefined; cb = deferred.shift()) cb();
@@ -330,6 +339,38 @@ describe('the frame probe', () => {
     expect(frames[0]?.worker_max_late_ms, 'the WORST lateness, not the last one').toBe(2400);
     expect(frames[0]?.worker_expected_beats, 'five ticks were due over five seconds').toBe(5);
     expect(frames[0]?.worker_tick_ms, 'and the tick it is read against').toBe(1000);
+  });
+
+  /**
+   * **A gap without the window's visibility reads as a freeze either way.**
+   * A hidden document is not being painted at all - WebKit stops producing
+   * frames - and `client/src/paint.ts` already reads `document.hidden` for
+   * exactly that reason. The slow-frame record says which it was, so a
+   * multi-second gap on an occluded window is not read as a stuck thread.
+   */
+  it("says whether the slow frame's gap overlapped a hidden period", () => {
+    const h = harness();
+    // The first frame has no gap to measure: the baseline frame is the one
+    // the slow one is read against.
+    h.frame(16);
+    h.hidden(true);
+    // **No frames land while hidden - that is the shape being recorded.** The
+    // page returns and the first frame after it measures the whole gap, by
+    // which time `document.hidden` already reads false.
+    h.advance(5_000);
+    h.hidden(false);
+    h.advance(16);
+    h.frame(16);
+    h.settle();
+    const hidden = h.records.flat().find((record) => record.kind === 'frame');
+    expect(hidden?.hidden, 'a gap that overlapped a hidden window is named as one').toBe(true);
+
+    // A gap that stayed visible says so.
+    h.frame(16);
+    h.frame(120);
+    h.settle();
+    const shown = h.records.flat().filter((record) => record.kind === 'frame')[1];
+    expect(shown?.hidden, 'and a gap on a painting window says it was not hidden').toBe(false);
   });
 
   /**
@@ -1113,6 +1154,137 @@ describe('the switch gap marks (#2513)', () => {
     const [first, second] = h.records.flat().filter((record) => record.kind === 'subscribe');
     expect(first?.since_click_ms).toBe(1_000);
     expect(second?.since_click_ms).toBeUndefined();
+  });
+
+  /**
+   * **A click dies with a subscribe for another seat.** The reader went
+   * elsewhere, so a later subscribe of the clicked seat is not that click's
+   * measurement - only the sessionless home loop leaves the click armed.
+   */
+  it('drops a click when another seat is subscribed', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/agent');
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(1_000);
+    h.probe.noteSubscribe('forge/beta', false);
+    h.advance(2_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const [other, later] = h.records.flat().filter((record) => record.kind === 'subscribe');
+    expect(other?.since_click_ms, 'the other seat is not the click').toBeUndefined();
+    expect(
+      later?.since_click_ms,
+      'a click outlived the subscribe that went elsewhere',
+    ).toBeUndefined();
+  });
+
+  /**
+   * **A click is spent on its own seat's subscribe and no other.** A seat the
+   * client already holds opens no subscribe, so a bare timestamp outlived the
+   * click - and the next automatic subscribe of an unrelated subject reported
+   * the old click's age as its own gap. Measured on the shipping client: a
+   * click at 1793438352496, then 18,006 ms later an `auto:true` subscribe
+   * with no session carrying `since_click_ms: 18006`, with none between.
+   */
+  it('does not hand a click to a subscribe for another subject', () => {
+    const h = harness();
+    // The reader is on another seat and clicks this one: a real switch.
+    h.probe.setSurface('session', 'forge/agent');
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(18_006);
+    h.probe.noteSubscribe(null, false);
+    h.advance(20);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const [other, same] = h.records.flat().filter((record) => record.kind === 'subscribe');
+    expect(
+      other?.since_click_ms,
+      'a session-less subscribe names the old click gap',
+    ).toBeUndefined();
+    expect(
+      same?.since_click_ms,
+      'an unrelated ack landed first and cost the click its own measurement',
+    ).toBe(18_026);
+  });
+
+  /**
+   * **A click on the seat already drawn opens nothing.** No switch and no
+   * read follow it, so arming it would hand a later reconnect an old gap as
+   * its own. The click record is still written; the timestamp is not armed.
+   */
+  it('does not arm a click on the seat already drawn', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/lead');
+    h.probe.noteConversationOpened('forge/lead');
+    h.probe.noteDrawn('conversation');
+    // A baseline frame, then a fast one: the open settles on the fast frame.
+    h.frame(16);
+    h.frame(16);
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(30_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const subscribe = h.records.flat().find((record) => record.kind === 'subscribe');
+    expect(
+      subscribe?.since_click_ms,
+      'a click that opened nothing was armed anyway',
+    ).toBeUndefined();
+  });
+
+  /**
+   * **A waking line does not spend the click.** A cold seat draws its waking
+   * placeholder before its read lands, and only the CONTENT drawing proves
+   * the click opened no read - a placeholder clearing the click would lose
+   * the measurement of a cold switch entirely.
+   */
+  it('keeps the click across a waking draw on a cold seat', () => {
+    const h = harness();
+    // The reader is on another seat and clicks this one: a real switch.
+    h.probe.setSurface('session', 'forge/agent');
+    h.probe.noteSeatClick('forge/lead');
+    h.probe.noteConversationOpened('forge/lead');
+    h.probe.noteDrawn('waking');
+    h.advance(1_200);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const subscribe = h.records.flat().find((record) => record.kind === 'subscribe');
+    expect(
+      subscribe?.since_click_ms,
+      'a waking line spent the click before the seat was read',
+    ).toBe(1_200);
+  });
+
+  /**
+   * **A seat switch that opens nothing clears its click.** A revisit to a
+   * held seat draws from what the client kept and subscribes nothing; the
+   * content drawing landing is what proves the click opened no read, and the
+   * click must not outlive it. A switch to another seat ends it the same way:
+   * no subscribe will ever belong to the seat the reader left.
+   */
+  it('clears the click when the switch opens no subscribe', () => {
+    const h = harness();
+    // The reader is on another seat and clicks this one: a real switch.
+    h.probe.setSurface('session', 'forge/agent');
+    h.probe.noteSeatClick('forge/lead');
+    h.probe.noteConversationOpened('forge/lead');
+    h.probe.noteDrawn('conversation');
+    h.advance(30_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    h.probe.noteSeatClick('forge/lead');
+    h.probe.noteConversationOpened('forge/busymail');
+    h.advance(5_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const [drawn, switched] = h.records.flat().filter((record) => record.kind === 'subscribe');
+    expect(
+      drawn?.since_click_ms,
+      'a click the switch never spent outlived its open',
+    ).toBeUndefined();
+    expect(
+      switched?.since_click_ms,
+      'a click for the seat the reader left outlived the switch',
+    ).toBeUndefined();
   });
 
   it('is not unprompted when the click came after the snapshot', () => {

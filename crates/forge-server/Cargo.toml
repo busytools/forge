@@ -36,6 +36,8 @@ axum = { workspace = true, features = ["ws"] }
 # A document's bytes cross the socket base64: the wire is JSON, and a byte
 # array would serialise as a number per byte.
 base64 = { workspace = true }
+# A frame over the compression threshold crosses gzipped as binary kind 3.
+flate2 = { workspace = true }
 # The protocol client's own arguments. A BIN cannot see dev-dependencies, so
 # a binary crate's arguments are a real dependency or they are hand-parsed.
 clap = { workspace = true }

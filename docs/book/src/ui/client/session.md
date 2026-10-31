@@ -279,14 +279,16 @@ fitting state itself and keeps asking as pages land, until the history
 fills the room or ends.
 
 **The held history settles on the newest window.** Reading back through a
-seat keeps whatever the reader pulls, and the server answers pages below its
-own window from the transcript with no byte budget - on the seat from #2532 a
-walk to the 64th page answer pulled 55 MB of pages. So when the reader comes
-back to the latest, the oldest pages are dropped until the held set fits
-8 MiB, and a seat the reader has left settles on each page that lands while it
-is away. Dropping is by whole page and never under
-the row at the column's top edge: a page's rows share the cursor that
-re-fetches it, so a row cut from inside one would be skipped. The newest page
+seat keeps whatever the reader pulls, and the server answers every page below
+its own window from the transcript under the same `[server] more_page_cap_kb`
+byte budget as any other `more` page, so a page is never a whole transcript
+read. One turn over the budget still rides whole, so a long walk can still
+hold more than 8 MiB: when the reader comes back to the latest, the oldest
+pages are dropped until the held set fits 8 MiB, and a seat the reader has
+left settles on each page that lands while it is away. Dropping is by whole
+page and never under the row at the column's top edge: a page's rows share
+the cursor that re-fetches it, so a row cut from inside one would be skipped.
+The newest page
 and the subscribe seed stay whole even when they alone are over the window -
 their rows name the place above themselves, and no `more` can return them.
 The first page left carries the cursor that re-fetches it - the one its page
