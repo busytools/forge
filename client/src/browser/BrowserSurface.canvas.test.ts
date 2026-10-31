@@ -582,6 +582,36 @@ describe('the canvas viewer', () => {
     expect(perf.input).toHaveBeenCalledWith('key', 2, null);
   });
 
+  /// **The rest of the gesture vocabulary is marked too**: a release, inserted
+  /// text and a wheel each leave their own step.
+  it('marks a release, inserted text and a wheel', () => {
+    const { connection, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector('.surface-ime');
+    if (canvas === null || !(ime instanceof HTMLInputElement)) {
+      throw new Error('the page area or its keyboard field is missing');
+    }
+    surface.id = 1;
+    surface.viewer = 7;
+    surface.controller = 7;
+    flushSync();
+
+    canvas.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true }));
+    ime.value = 'x';
+    ime.dispatchEvent(new InputEvent('input', { bubbles: true }));
+
+    expect(perf.input, 'the release is a step of its own').toHaveBeenCalledWith(
+      'mouse:release',
+      2,
+      null,
+    );
+    expect(perf.input, 'and the wheel').toHaveBeenCalledWith('wheel', 2, null);
+    expect(perf.input, 'and inserted text').toHaveBeenCalledWith('text', 2, null);
+    expect(events, 'one gesture each, all sent').toHaveLength(3);
+  });
+
   /// **A gesture the socket refused never left**, so it leaves no mark: the
   /// log would pair it with a frame it never asked for.
   it('marks nothing for a gesture the socket refused', () => {
