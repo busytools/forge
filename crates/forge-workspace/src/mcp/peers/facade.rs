@@ -203,13 +203,7 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         // **The handler runs inline on this thread**, so its answer is
         // already in the channel. An empty channel is still not a success:
         // a delivery nobody answered is a delivery nobody can claim.
-        match reply.try_recv() {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(message)) => Err(DeliverError::DispatchFailed { message }),
-            Err(_) => Err(DeliverError::DispatchFailed {
-                message: "the delivery handler took the command and answered nothing".to_owned(),
-            }),
-        }
+        delivery_answer(reply.try_recv())
     }
 
     fn handoff(&self, caller: &SessionSlot, note: String) -> Result<(), HandoffError> {
@@ -224,6 +218,20 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         }
         ws.dispatch(Command::Handoff { key: caller.clone(), brief: Some(note) })
             .map_err(|_| HandoffError::SessionGone { slot: caller.display() })
+    }
+}
+
+/// The handler's answer narrowed to the facade's own: a command the
+/// workspace took but nobody answered is a refusal, not a success (#2342).
+fn delivery_answer(
+    reply: Result<Result<(), String>, tokio::sync::oneshot::error::TryRecvError>,
+) -> Result<(), DeliverError> {
+    match reply {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => Err(DeliverError::DispatchFailed { message }),
+        Err(_) => Err(DeliverError::DispatchFailed {
+            message: "the delivery handler took the command and answered nothing".to_owned(),
+        }),
     }
 }
 
@@ -384,6 +392,23 @@ mod tests {
             result,
             Err(DeliverError::UnknownTarget { ref name }) if name == "forced"
         ));
+    }
+
+    /// **A handler that answers nothing is not an ack.** The command was
+    /// taken; the empty channel is the delivery nobody can claim, and
+    /// mapping it to `Ok(())` is the warn-and-Ok overclaim returning
+    /// (#2342).
+    #[test]
+    fn a_handler_that_answers_nothing_is_not_an_ack() {
+        let (sender, mut reply) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        drop(sender);
+        match delivery_answer(reply.try_recv()) {
+            Err(DeliverError::DispatchFailed { message }) => assert!(
+                message.contains("answered nothing"),
+                "the refusal says the command was taken but unanswered: {message}",
+            ),
+            other => panic!("an empty answer must not read as delivered; got {other:?}"),
+        }
     }
 }
 
