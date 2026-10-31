@@ -593,8 +593,12 @@ impl Workspace {
     ) {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
+        let created;
         let mut record = match crate::store::slack::thread(db, workspace, conversation, parent_ts) {
-            Ok(Some(record)) => record,
+            Ok(Some(record)) => {
+                created = false;
+                record
+            }
             Ok(None) => {
                 // A thread whose newest reply is already older than the idle
                 // window would be dropped the moment the sweep listed it, and
@@ -603,6 +607,7 @@ impl Workspace {
                 if thread_idle_days(since) >= self.slack_thread_idle_days(workspace) {
                     return;
                 }
+                created = true;
                 forge_primitives::slack::SlackThreadRecord {
                     cursor: since.to_owned(),
                     owners: Vec::new(),
@@ -630,7 +635,23 @@ impl Workspace {
                 %error,
                 "writing a Slack thread failed",
             );
+            return;
         }
+        if created {
+            self.slack_thread_first_walks.lock().insert((
+                workspace.to_owned(),
+                conversation.to_owned(),
+                parent_ts.to_owned(),
+            ));
+        }
+    }
+
+    /// Drop a removed thread's in-memory clocks, so a thread re-followed
+    /// under the same parent starts clean.
+    fn forget_thread_clocks(&self, workspace: &str, conversation: &str, parent_ts: &str) {
+        let key = (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned());
+        self.slack_thread_full_reads.lock().remove(&key);
+        self.slack_thread_first_walks.lock().remove(&key);
     }
 
     /// Record that the user is in a thread, so every later walk reads past the
@@ -723,10 +744,12 @@ impl Workspace {
             });
             if record.owners.is_empty() {
                 let _ = crate::store::slack::remove_thread(db, workspace, conversation, &parent_ts);
+                self.forget_thread_clocks(workspace, conversation, &parent_ts);
                 continue;
             }
             if thread_idle_days(&record.cursor) >= self.slack_thread_idle_days(workspace) {
                 let _ = crate::store::slack::remove_thread(db, workspace, conversation, &parent_ts);
+                self.forget_thread_clocks(workspace, conversation, &parent_ts);
                 tracing::debug!(
                     target: "forge_workspace::slack",
                     workspace,
@@ -1417,6 +1440,41 @@ impl SlackHost for SlackSubsystemHost {
     fn mark_thread_participating(&self, workspace: &str, conversation: &str, parent_ts: &str) {
         let Some(ws) = self.0.upgrade() else { return };
         ws.mark_slack_thread_participating(workspace, conversation, parent_ts);
+    }
+
+    fn thread_full_read_at(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) -> Option<std::time::SystemTime> {
+        let ws = self.0.upgrade()?;
+        ws.slack_thread_full_reads
+            .lock()
+            .get(&(workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()))
+            .copied()
+    }
+
+    fn mark_thread_full_read(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        at: std::time::SystemTime,
+    ) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.slack_thread_full_reads
+            .lock()
+            .insert((workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()), at);
+    }
+
+    fn take_thread_first_walk(&self, workspace: &str, conversation: &str, parent_ts: &str) -> bool {
+        let Some(ws) = self.0.upgrade() else { return false };
+        ws.slack_thread_first_walks.lock().remove(&(
+            workspace.to_owned(),
+            conversation.to_owned(),
+            parent_ts.to_owned(),
+        ))
     }
 
     fn first_author_failure(&self, workspace: &str, user: &str) -> bool {

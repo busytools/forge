@@ -495,6 +495,8 @@ impl Workspace {
             slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
             slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
+            slack_thread_full_reads: Mutex::new(std::collections::HashMap::new()),
+            slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),

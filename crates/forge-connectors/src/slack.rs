@@ -84,6 +84,31 @@ pub trait SlackHost: Send + Sync {
     /// cursor instead of reading the thread whole to find out again.
     fn mark_thread_participating(&self, workspace: &str, conversation: &str, parent_ts: &str);
 
+    /// When this thread was last read whole, if it ever was. The per-tick
+    /// walk is cheap and re-reads only from the newest reply, so a correction
+    /// to an older reply is found by the periodic whole read this stamps.
+    fn thread_full_read_at(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) -> Option<std::time::SystemTime>;
+
+    /// Record a whole-thread read at `at`.
+    fn mark_thread_full_read(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        at: std::time::SystemTime,
+    );
+
+    /// Whether this thread's next walk is its first since the row was
+    /// created, consuming the mark. A first walk filters by `ts` alone: the
+    /// seed is `latest_reply`, which an edit does not move, so an edit-aware
+    /// filter would hand over corrections the previous row already had.
+    fn take_thread_first_walk(&self, workspace: &str, conversation: &str, parent_ts: &str) -> bool;
+
     /// Whether this is the first time an author lookup has failed for this
     /// user. The lookup is retried either way; this only decides whether the
     /// failure is worth a line a reader sees, since a persistent one - a
@@ -731,6 +756,11 @@ pub enum SlackError {
     Transport { method: String, detail: String },
     /// HTTP 429. Slack's Web API surfaces these as a status, not an `ok: false`.
     RateLimited { method: String, retry_after: Duration },
+    /// A walk hit its page cap. The pages collected are the oldest the walk
+    /// saw, not the whole thread, so it is a refusal rather than a success:
+    /// advancing a cursor over a partial read would hide every reply past
+    /// the cap for good.
+    Truncated { method: String, pages: usize },
 }
 
 impl std::fmt::Display for SlackError {
@@ -746,6 +776,12 @@ impl std::fmt::Display for SlackError {
             Self::Transport { method, detail } => write!(f, "slack {method} transport: {detail}"),
             Self::RateLimited { method, retry_after } => {
                 write!(f, "slack {method} rate limited, retry in {}s", retry_after.as_secs())
+            }
+            Self::Truncated { method, pages } => {
+                write!(
+                    f,
+                    "slack {method} exceeded {pages} pages; the walk is longer than forge reads"
+                )
             }
         }
     }
@@ -793,6 +829,17 @@ const MAX_HISTORY_PAGES: usize = 200;
 /// A cursor Slack hands back unchanged must not spin the reply walk
 /// forever, the same guard the conversation walk carries.
 const MAX_REPLY_PAGES: usize = 200;
+
+/// How often a participating thread is read whole. The per-tick walk is
+/// cheap - it re-reads from the newest reply - so this is the only pass that
+/// finds a correction to a reply below that one, and reading every long
+/// thread whole on every tick would spend the sweep's rate budget.
+pub(crate) const FULL_THREAD_READ_INTERVAL: Duration = Duration::from_secs(600);
+
+/// Whole-thread reads one conversation may spend per sweep. Each pages
+/// through its thread, so the budget keeps one long thread from using calls
+/// the rest of the sweep needs.
+const MAX_FULL_THREAD_READS_PER_SWEEP: usize = 2;
 
 /// How long one Web API call gets. The pump waits this long, and every
 /// Web API request carries it, so a post that stalls cannot pin its
@@ -956,9 +1003,13 @@ async fn fetch_replies(
                     channel,
                     parent = %ts,
                     pages,
-                    "conversations.replies kept handing back a cursor; stopping the walk",
+                    "conversations.replies exceeded the page cap; the thread is longer than \
+                     forge reads, so the walk is not treated as complete",
                 );
-                return Ok(out);
+                return Err(SlackError::Truncated {
+                    method: "conversations.replies".to_owned(),
+                    pages,
+                });
             }
             None => return Ok(out),
         }
@@ -1145,6 +1196,9 @@ pub(crate) async fn sweep_scope(
     }
 
     let mut delivered = 0;
+    // A throttled thread arms the pump's backoff without ending the sweep;
+    // every other step's early return carries its own.
+    let mut rate_limited: Option<Duration> = None;
     let mut conversation_gone = false;
     let mut own = OwnIdentity { id: &user_id, name: None, asked: false };
     for conversation in &conversations {
@@ -1487,6 +1541,8 @@ pub(crate) async fn sweep_scope(
         // Threads followed from earlier deliveries. Replies never appear
         // in history and the parent ages past the conversation watermark,
         // so each tracked thread is walked on its own cursor.
+        let now = std::time::SystemTime::now();
+        let mut full_reads = 0usize;
         for thread in host.followed_threads(workspace, &conversation.id) {
             let cursor = match host.thread_watermark(workspace, &conversation.id, &thread.parent_ts)
             {
@@ -1504,58 +1560,84 @@ pub(crate) async fn sweep_scope(
                 }
             };
             // A parent the window still shows says whether the thread moved
-            // at all, and one that did not costs no call. A parent the
-            // window has lost has to be fetched to find out - which is the
-            // one call per sweep the aged-out case has always cost. A
-            // thread the user is in is read regardless: `latest_reply` does
-            // not move when a reply is edited, so the window cannot say a
-            // correction arrived.
-            // A parent the window still shows says whether the thread moved
-            // at all, and one that did not costs no call. A parent the
-            // window has lost has to be fetched to find out - which is the
-            // one call per sweep the aged-out case has always cost. A
-            // thread the user is in is read regardless: `latest_reply` does
-            // not move when a reply is edited, so the window cannot say a
-            // correction arrived.
+            // at all, and one that did not costs no call. A parent the window
+            // has lost has to be fetched to find out - which is the one call
+            // per sweep the aged-out case has always cost.
+            let first_walk =
+                host.take_thread_first_walk(workspace, &conversation.id, &thread.parent_ts);
             if !thread.participating
+                && !first_walk
                 && let Some(latest) = latest_replies.get(thread.parent_ts.as_str())
                 && cursor.as_deref().is_some_and(|cursor| *latest <= cursor)
             {
                 continue;
             }
-            // **The whole thread, every tick.** A correction keeps its
-            // reply's `ts`, so a read past the cursor never sees one, and
-            // whether the user is in the thread is read off the replies -
-            // his own reply can sit behind the anchor's seed.
-            let replies = match fetch_replies(api, &conversation.id, &thread.parent_ts, None).await
-            {
-                Ok(replies) => replies,
-                Err(SlackError::RateLimited { retry_after, .. }) => {
-                    return Ok(SweepOutcome {
-                        delivered,
-                        rate_limited: Some(retry_after),
-                        ..Default::default()
-                    });
-                }
-                // One thread's failure is not the workspace's: the
-                // walk continues with the threads after it, and the
-                // cursor stays where it was.
-                Err(error) => {
-                    tracing::warn!(
-                        target: "forge_connectors::slack",
-                        workspace,
-                        conversation = %conversation.id,
-                        parent = %thread.parent_ts,
-                        %error,
-                        "walking a followed thread failed; skipping it this tick",
-                    );
-                    continue;
-                }
+            // **Cheap every tick, whole on a slower clock.** A correction
+            // keeps its reply's `ts`, so only a whole read finds one below
+            // the newest reply; reading every long thread whole every tick
+            // would spend the sweep's rate budget, so the whole pass runs
+            // once per `FULL_THREAD_READ_INTERVAL` and at most
+            // `MAX_FULL_THREAD_READS_PER_SWEEP` times a sweep. Whether the
+            // user is in a thread is read off the replies, so a first walk
+            // and a thread he is not in still read whole.
+            let full_due = thread.participating
+                && !first_walk
+                && full_reads < MAX_FULL_THREAD_READS_PER_SWEEP
+                && host
+                    .thread_full_read_at(workspace, &conversation.id, &thread.parent_ts)
+                    .is_none_or(|at| at + FULL_THREAD_READ_INTERVAL <= now);
+            if full_due {
+                full_reads += 1;
+            }
+            let read_from: Option<String> = if full_due || first_walk || !thread.participating {
+                None
+            } else {
+                cursor.as_deref().map(just_below)
             };
+            let replies =
+                match fetch_replies(api, &conversation.id, &thread.parent_ts, read_from.as_deref())
+                    .await
+                {
+                    Ok(replies) => replies,
+                    // One thread must not spend the whole sweep: a throttle
+                    // arms the pump's backoff and the walk moves on.
+                    Err(SlackError::RateLimited { retry_after, .. }) => {
+                        rate_limited = rate_limited.or(Some(retry_after));
+                        continue;
+                    }
+                    // One thread's failure is not the workspace's: the walk
+                    // continues with the threads after it, and the cursor
+                    // stays where it was. A thread past the page cap refuses
+                    // too, so a partial read cannot advance the cursor.
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "forge_connectors::slack",
+                            workspace,
+                            conversation = %conversation.id,
+                            parent = %thread.parent_ts,
+                            %error,
+                            "walking a followed thread failed; skipping it this tick",
+                        );
+                        continue;
+                    }
+                };
             let participated = thread.participating || participating(&replies, &user_id);
             if participated && !thread.participating {
                 host.mark_thread_participating(workspace, &conversation.id, &thread.parent_ts);
             }
+            if full_due {
+                host.mark_thread_full_read(workspace, &conversation.id, &thread.parent_ts, now);
+            }
+            // A first walk filters by `ts` alone: its seed is `latest_reply`,
+            // which an edit does not move, so an edit-aware filter would hand
+            // over corrections the previous row already had.
+            let news = |reply: &SlackHistoryMessage| {
+                if first_walk {
+                    is_newer(&reply.ts, cursor.as_deref())
+                } else {
+                    is_news(reply, cursor.as_deref())
+                }
+            };
             // Everything this walk saw, whether or not it went anywhere: his
             // own reply is never delivered, and a thread he is not in is not
             // read again until it moves. Advancing over what was read is what
@@ -1563,7 +1645,7 @@ pub(crate) async fn sweep_scope(
             // cost no call at all - held back only by a failed hand-off.
             let newest_seen: Option<String> = replies
                 .iter()
-                .filter(|reply| reply.ts != thread.parent_ts && is_news(reply, cursor.as_deref()))
+                .filter(|reply| reply.ts != thread.parent_ts && news(reply))
                 .map(|reply| newest_stamp(reply).to_owned())
                 .max();
             if !participated {
@@ -1581,12 +1663,10 @@ pub(crate) async fn sweep_scope(
             // sent it, so an owner is handed one block rather than one per
             // reply - the shape the conversation batch delivers.
             let mut deliverable: Vec<(&SlackHistoryMessage, Option<String>)> = Vec::new();
+            let mut thread_throttled = false;
             for reply in &replies {
                 // Slack repeats the parent on every page of the walk.
-                if reply.ts == thread.parent_ts
-                    || !is_news(reply, cursor.as_deref())
-                    || !seen.insert(reply.ts.clone())
-                {
+                if reply.ts == thread.parent_ts || !news(reply) || !seen.insert(reply.ts.clone()) {
                     continue;
                 }
                 // Replies never appear in history, so this walk is the one
@@ -1603,14 +1683,15 @@ pub(crate) async fn sweep_scope(
                 match author_of(host, api, workspace, reply, &mut names, &mut own).await {
                     Ok(author) => deliverable.push((reply, author)),
                     Err(SlackError::RateLimited { retry_after, .. }) => {
-                        return Ok(SweepOutcome {
-                            delivered,
-                            rate_limited: Some(retry_after),
-                            ..Default::default()
-                        });
+                        rate_limited = rate_limited.or(Some(retry_after));
+                        thread_throttled = true;
+                        break;
                     }
                     Err(error) => return Err(error),
                 }
+            }
+            if thread_throttled {
+                continue;
             }
             let mut walk_failed = false;
             for owner in &thread.owners {
@@ -1660,7 +1741,7 @@ pub(crate) async fn sweep_scope(
         }
     }
 
-    Ok(SweepOutcome { delivered, conversation_gone, ..Default::default() })
+    Ok(SweepOutcome { delivered, rate_limited, conversation_gone })
 }
 
 /// The watermark key for a workspace's whole mention stream. One cursor,
@@ -3150,6 +3231,27 @@ mod tests {
         assert_eq!(page.messages[1].edited, None, "an untouched message carries no edit");
     }
 
+    /// `search.messages` carries the author's id beside the handle, and the
+    /// mention sweep tells his own post from the app's name by that id. A
+    /// decode that dropped it would silently put `Forge` back on his words.
+    #[test]
+    fn search_decodes_the_user_id_beside_the_username() {
+        let body = r#"{
+          "ok": true,
+          "messages": {
+            "matches": [
+              {"ts":"200.1","text":"ping <@U1>","channel":{"id":"C1","name":"general"},
+               "username":"Forge","user":"U1"}
+            ],
+            "next_cursor": ""
+          }
+        }"#;
+        let page = decode_search(body).expect("decodes");
+        let hit = &page.matches[0];
+        assert_eq!(hit.user.as_deref(), Some("U1"), "the id is what the own-id rule reads");
+        assert_eq!(hit.username.as_deref(), Some("Forge"), "and the app's handle rides along");
+    }
+
     /// Slack calls the newest bound `latest`, and a bound that was not asked
     /// for must be absent rather than empty.
     #[test]
@@ -3273,6 +3375,8 @@ mod tests {
         /// How many `conversations.replies` calls were made, so a test can
         /// assert a thread that has not moved costs none.
         replies_calls: std::sync::Mutex<usize>,
+        /// The 0-based `conversations.replies` call that answers 429.
+        replies_rate_limit_at: std::sync::Mutex<Option<usize>>,
         /// How many `conversations.history` calls were made, so a test can
         /// assert which clock read a conversation and how often.
         history_calls: std::sync::Mutex<usize>,
@@ -3297,6 +3401,9 @@ mod tests {
         deliver_attempts: std::sync::Mutex<usize>,
         /// Followed threads keyed `workspace/conversation/parent`.
         threads: std::sync::Mutex<HashMap<String, SlackThreadRecord>>,
+        /// Whole-read stamps and first-walk marks, keyed the same way.
+        thread_full_reads: std::sync::Mutex<HashMap<String, std::time::SystemTime>>,
+        thread_first_walks: std::sync::Mutex<HashSet<String>>,
         /// The outbound ledger, keyed `workspace/conversation/ts`.
         own_posts: std::sync::Mutex<HashSet<String>>,
         /// Conversations with a post in flight, keyed
@@ -3387,6 +3494,11 @@ mod tests {
 
         fn fail_with_rate_limit(&mut self, retry_after: Duration) {
             self.rate_limited = Some(retry_after);
+        }
+
+        /// Make the nth (0-based) `conversations.replies` call answer 429.
+        fn rate_limit_replies_at(&self, call: usize) {
+            *self.replies_rate_limit_at.lock().expect("lock") = Some(call);
         }
 
         fn delivered(&self) -> Vec<SlackMessage> {
@@ -3658,6 +3770,44 @@ mod tests {
             }
         }
 
+        fn thread_full_read_at(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent_ts: &str,
+        ) -> Option<std::time::SystemTime> {
+            self.thread_full_reads
+                .lock()
+                .expect("lock")
+                .get(&format!("{workspace}/{conversation}/{parent_ts}"))
+                .copied()
+        }
+
+        fn mark_thread_full_read(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent_ts: &str,
+            at: std::time::SystemTime,
+        ) {
+            self.thread_full_reads
+                .lock()
+                .expect("lock")
+                .insert(format!("{workspace}/{conversation}/{parent_ts}"), at);
+        }
+
+        fn take_thread_first_walk(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent_ts: &str,
+        ) -> bool {
+            self.thread_first_walks
+                .lock()
+                .expect("lock")
+                .remove(&format!("{workspace}/{conversation}/{parent_ts}"))
+        }
+
         fn follow_thread(
             &self,
             workspace: &str,
@@ -3666,10 +3816,12 @@ mod tests {
             owner: SlackThreadOwner,
             since: &str,
         ) {
-            let mut threads = self.threads.lock().expect("lock");
-            let record = threads
-                .entry(format!("{workspace}/{conversation}/{parent_ts}"))
-                .or_insert_with(|| {
+            let key = format!("{workspace}/{conversation}/{parent_ts}");
+            let created = {
+                let mut threads = self.threads.lock().expect("lock");
+                let entry = threads.entry(key.clone());
+                let created = matches!(&entry, std::collections::hash_map::Entry::Vacant(_));
+                let record = entry.or_insert_with(|| {
                     // The real host starts a new thread at the caller's
                     // since, so the first replies walk reaches everything
                     // after the message that anchored it.
@@ -3679,8 +3831,13 @@ mod tests {
                         participating: false,
                     }
                 });
-            if !record.owners.contains(&owner) {
-                record.owners.push(owner);
+                if !record.owners.contains(&owner) {
+                    record.owners.push(owner);
+                }
+                created
+            };
+            if created {
+                self.thread_first_walks.lock().expect("lock").insert(key);
             }
         }
 
@@ -3816,7 +3973,18 @@ mod tests {
             _limit: u32,
             cursor: Option<&str>,
         ) -> Result<MessagePage, SlackError> {
-            *self.replies_calls.lock().expect("lock") += 1;
+            let call = {
+                let mut calls = self.replies_calls.lock().expect("lock");
+                let call = *calls;
+                *calls += 1;
+                call
+            };
+            if *self.replies_rate_limit_at.lock().expect("lock") == Some(call) {
+                return Err(SlackError::RateLimited {
+                    method: "conversations.replies".to_owned(),
+                    retry_after: Duration::from_secs(5),
+                });
+            }
             let pages = self.replies.lock().expect("lock");
             let Some(seeded) = pages.get(&format!("{channel}/{ts}")) else {
                 return Ok(MessagePage { messages: Vec::new(), next_cursor: None });
@@ -5090,6 +5258,112 @@ mod tests {
             host.thread_cursor("acme", "C1", "100.0").as_deref(),
             Some("990.0"),
             "and the thread cursor clears the edit, so the next tick does not re-offer it",
+        );
+    }
+
+    /// A thread row re-created after its owners went re-follows at
+    /// `latest_reply`, which an edit does not move. The first walk filters by
+    /// `ts` alone, so an old correction the previous row already handed over
+    /// is not delivered again; the periodic whole read is what finds edits
+    /// once the row has been walked.
+    #[tokio::test]
+    async fn a_recreated_thread_does_not_replay_an_edit_its_seed_already_passed() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        // The channel moved past the thread, so only the thread walk can see
+        // these replies.
+        host.set_watermark("acme", "C1", "300.0");
+        let parent = parent_with_latest_reply("100.0", 2, "200.0");
+        let mut corrected = reply("150.0", "100.0", "U8", "the answer, corrected");
+        corrected.edited = Some("990.0".to_owned());
+        host.seed_history("C1", vec![]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![parent, history_message("105.0", "U1", "his own reply"), corrected],
+        );
+        // A re-created row, seeded at the thread's newest reply.
+        host.follow_thread("acme", "C1", "100.0", thread_owner("forge", Some("tester")), "200.0");
+
+        sweep(&host, &host, "acme").await.expect("the first walk");
+        assert!(
+            !host.delivered().iter().any(|message| message.ts == "150.0"),
+            "the first walk filters by ts: {:?}",
+            host.delivered(),
+        );
+
+        sweep(&host, &host, "acme").await.expect("the periodic whole read");
+        assert!(
+            host.delivered()
+                .iter()
+                .any(|message| message.ts == "150.0" && message.text == "the answer, corrected"),
+            "the whole read finds the correction: {:?}",
+            host.delivered(),
+        );
+    }
+
+    /// A thread longer than the page cap refuses rather than reading as a
+    /// complete walk: the pages collected are the oldest, so returning them
+    /// as success would advance a cursor past every reply the walk never
+    /// reached.
+    #[tokio::test]
+    async fn a_thread_past_the_page_cap_refuses_instead_of_returning_the_oldest_pages() {
+        let host = FakeHost::default();
+        let pages: Vec<Vec<SlackHistoryMessage>> = (0..=MAX_REPLY_PAGES)
+            .map(|n| vec![reply(&format!("{}.0", 200 + n), "100.0", "U8", "a reply")])
+            .collect();
+        host.seed_replies_pages("C1", "100.0", pages);
+
+        let err = fetch_replies(&host, "C1", "100.0", None)
+            .await
+            .expect_err("the walk must not read as complete");
+
+        assert!(
+            matches!(&err, SlackError::Truncated { pages, .. } if *pages == MAX_REPLY_PAGES),
+            "the refusal names the cap it hit: {err:?}",
+        );
+    }
+
+    /// **One thread's throttle must not end the sweep.** A 429 on a thread's
+    /// read arms the pump's backoff and the walk moves on, so the threads
+    /// behind it still deliver and the mention stream is still reached.
+    #[tokio::test]
+    async fn a_throttled_thread_does_not_starve_the_threads_after_it() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        // Past both parents, so only the thread walk can see either reply.
+        host.set_watermark("acme", "C1", "300.0");
+        host.seed_history("C1", vec![]);
+        for (parent, reply_ts) in [("100.0", "150.0"), ("200.0", "250.0")] {
+            host.seed_replies("C1", parent, vec![reply(reply_ts, parent, "U8", "the answer")]);
+            host.follow_thread(
+                "acme",
+                "C1",
+                parent,
+                thread_owner("forge", Some("tester")),
+                "050.0",
+            );
+            host.mark_thread_participating("acme", "C1", parent);
+        }
+        host.rate_limit_replies_at(0);
+
+        let outcome = sweep(&host, &host, "acme").await.expect("a 429 is not an error");
+
+        assert_eq!(outcome.rate_limited, Some(Duration::from_secs(5)), "the pump still backs off");
+        assert_eq!(host.replies_calls(), 2, "the throttled thread did not end the walk");
+        assert_eq!(
+            host.delivered().len(),
+            1,
+            "the thread after the throttled one still delivered: {:?}",
+            host.delivered(),
         );
     }
 
