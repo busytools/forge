@@ -18,20 +18,25 @@ use serde_json::Value;
 /// A wedge bound for a wait on the child's own delivery - the line it logs
 /// once its socket is listening. The wait itself ends when the delivery
 /// lands, so this is reached only by a stuck child or a delivery slower
-/// still; the kill these tests run with sits above the largest sum of them
-/// (see `.config/nextest.toml`), so the failure names its property instead
-/// of dying as a bare timeout.
+/// still; `the_nextest_kill_stays_above_every_wait_stack` keeps the kill this
+/// binary runs with above the largest stack, so the failure names its
+/// property instead of dying as a bare timeout.
 const WEDGE: Duration = Duration::from_secs(100);
 
 /// The session spawn's own budget plus a settle margin, the same derivation
 /// forge-workspace's `spawn_wait` uses: a wait shorter than the budget under
 /// it fails a machine that is merely slow.
-///
-/// This covers the spawn layer only. The boot wave that dispatches the spawn
-/// first holds up to its own 60 s `BOOT_WAVE_WAIT` for the accounts, so a
-/// session that never appears can take that hold plus this wait.
 fn spawn_wait() -> Duration {
     forge_sdk::INIT_HANDSHAKE_TIMEOUT + Duration::from_secs(5)
+}
+
+/// A marker the mock writes once its spawn has run: the boot wave may hold
+/// its own [`BOOT_WAVE_WAIT`] for the accounts before dispatching, and the
+/// spawn then has [`spawn_wait`] of its own.
+///
+/// [`BOOT_WAVE_WAIT`]: forge_server::boot::BOOT_WAVE_WAIT
+fn marker_wait() -> Duration {
+    forge_server::boot::BOOT_WAVE_WAIT + spawn_wait()
 }
 
 /// A stop's own budget plus a settle margin. The workspace's `TEARDOWN_WAIT`
@@ -39,6 +44,54 @@ fn spawn_wait() -> Duration {
 /// the exit's own 5 s on top of that sum.
 fn stop_wait() -> Duration {
     forge_sdk::CLOSE_WAIT_TIMEOUT + Duration::from_secs(10)
+}
+
+/// **The kill and the waits it has to clear live in two files and nothing
+/// wires them together.** A budget that grows past the kill's sum would show
+/// up only as a bare nextest timeout with no property named, so this reads
+/// the override and checks the arithmetic its comment states.
+#[test]
+fn the_nextest_kill_stays_above_every_wait_stack() {
+    let config =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.config/nextest.toml"))
+            .expect("read the nextest config");
+    let ours = config
+        .split("[[profile.default.overrides]]")
+        .find(|block| block.contains("binary(headless_server)"))
+        .expect("the headless server override is present");
+    let period: u64 = ours
+        .split("period = \"")
+        .nth(1)
+        .and_then(|rest| rest.split('s').next())
+        .and_then(|seconds| seconds.parse().ok())
+        .expect("the override names its period in whole seconds");
+    let after: u64 = ours
+        .split("terminate-after = ")
+        .nth(1)
+        .and_then(|rest| rest.split(|char: char| !char.is_ascii_digit()).next())
+        .and_then(|count| count.parse().ok())
+        .expect("the override names its terminate-after");
+    let kill = Duration::from_secs(period * after);
+
+    // One entry per test that holds waits, in the shape it is written.
+    let stacks = [
+        // The stop scenario runs once per signal.
+        (WEDGE + marker_wait() + stop_wait() + stop_wait()) * 2,
+        // One marker, one stop, one descendant.
+        WEDGE + marker_wait() + stop_wait() + stop_wait(),
+        // The direct-signal test: the pid marker and the TERM trap.
+        WEDGE + marker_wait() + marker_wait() + stop_wait() + stop_wait(),
+        // Two sessions' markers and both descendants.
+        WEDGE + marker_wait() + marker_wait() + stop_wait() + stop_wait() + stop_wait(),
+        // Two boots around one walk.
+        (WEDGE + stop_wait()) * 2 + Duration::from_secs(3),
+        // Two listening waits around a refused boot.
+        (WEDGE * 3) + stop_wait(),
+    ];
+    for stack in stacks {
+        assert!(stack < kill, "a legitimate stack of {stack:?} must stay under the {kill:?} kill");
+    }
+    assert!(WEDGE < kill, "one listening wedge of {WEDGE:?} must stay under the {kill:?} kill");
 }
 
 /// Two ports the OS just handed out.
@@ -122,6 +175,13 @@ fn server_command(
     command
         .arg("--log-file")
         .arg(log)
+        // **The listening line must not depend on the developer's shell.** The
+        // filter falls back to `RUST_LOG` when the flag is absent, so a
+        // `RUST_LOG=warn` would hide the record every wait reads and turn
+        // these tests into 100 s wedges naming the wrong thing.
+        .arg("--log-filter")
+        .arg("info,app.lifecycle=debug")
+        .env_remove("RUST_LOG")
         .env("HOME", home)
         // The data dir too: on a Linux runner with XDG_DATA_HOME exported,
         // the store and the single-instance lock would resolve outside the
@@ -195,8 +255,9 @@ async fn wait_for_serving(port: u16, log: &std::path::Path, server: &mut tokio::
             drop(server.kill().await);
             let stderr = drain_stderr(server).await;
             panic!(
-                "the server never announced its socket listening on {port} within {WEDGE:?}: \
-                 {stderr}"
+                "the server never announced its socket listening on {port} within {WEDGE:?} \
+                 (log {}): {stderr}",
+                log.display()
             );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -323,7 +384,7 @@ port = {gateway_port}
 
 /// The pid the session's mock child wrote, or a failure naming the tree.
 async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
-    let deadline = std::time::Instant::now() + spawn_wait();
+    let deadline = std::time::Instant::now() + marker_wait();
     loop {
         if let Ok(text) = std::fs::read_to_string(marker)
             && let Ok(pid) = text.trim().parse()
@@ -334,7 +395,7 @@ async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
             std::time::Instant::now() <= deadline,
             "the session's child never wrote its descendant's pid to {} within {:?}",
             marker.display(),
-            spawn_wait(),
+            marker_wait(),
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -342,8 +403,9 @@ async fn wait_for_marker_pid(marker: &std::path::Path) -> u32 {
 
 /// Wait for a file the mock child writes, or answer false once `bound`
 /// passes. Each caller hands the budget for its own step: the pid marker is
-/// written at the child's start and carries the spawn's budget, while the
-/// TERM trap fires as the signal lands and needs only a couple of seconds.
+/// written by the spawn and carries [`marker_wait`], while the TERM trap
+/// fires as the signal lands and carries [`stop_wait`] like every other
+/// signal-driven step.
 async fn wait_for_file(path: &std::path::Path, bound: Duration) -> bool {
     let deadline = std::time::Instant::now() + bound;
     while std::time::Instant::now() < deadline {
@@ -536,10 +598,10 @@ async fn one_stop_takes_two_sessions_down() {
         wait_until_gone(alpha_pid).await && wait_until_gone(beta_pid).await,
         "both sessions' trees die with the stop: {alpha_pid}, {beta_pid}"
     );
-    assert!(
-        elapsed < Duration::from_secs(10),
-        "the stop finishes well inside one teardown budget: {elapsed:?}"
-    );
+    // `stop_wait` is the workspace's one `TEARDOWN_WAIT` plus the exit's
+    // margin: passing it means the drain spent one shared budget, not one per
+    // session.
+    assert!(elapsed < stop_wait(), "the stop finishes inside one stop budget: {elapsed:?}");
 }
 
 /// The positive control for the marker: SIGTERM sent straight at the
@@ -570,7 +632,11 @@ async fn a_termination_sent_straight_at_the_child_marks_it() {
     let descendant = wait_for_marker_pid(&marker).await;
     let _orphan = Orphan(descendant);
     let pid_marker = dir.path().join("child-term.pid");
-    assert!(wait_for_file(&pid_marker, spawn_wait()).await, "the fixture never wrote its own pid");
+    let marker_bound = marker_wait();
+    assert!(
+        wait_for_file(&pid_marker, marker_bound).await,
+        "the fixture never wrote its own pid within {marker_bound:?}"
+    );
     let child_pid: u32 = std::fs::read_to_string(&pid_marker)
         .expect("read the child's pid")
         .trim()
@@ -579,10 +645,11 @@ async fn a_termination_sent_straight_at_the_child_marks_it() {
 
     send_signal(child_pid, "-TERM").await;
 
+    let trap_bound = stop_wait();
     assert!(
-        wait_for_file(&child_marker, Duration::from_secs(5)).await,
-        "the child's TERM trap did not fire on a signal sent straight at it, so the group \
-         test's absent marker would prove nothing"
+        wait_for_file(&child_marker, trap_bound).await,
+        "the child's TERM trap did not fire within {trap_bound:?} of a signal sent straight at \
+         it, so the group test's absent marker would prove nothing"
     );
 
     terminate(server.id().expect("the server has a pid while it runs")).await;
@@ -677,11 +744,10 @@ async fn a_second_instance_is_refused_with_the_holders_pid() {
     let holder = first.id().expect("the first server has a pid while it runs");
 
     let log_second = home.join("server-second.log");
-    let second =
-        tokio::time::timeout(stop_wait(), server_command(&home, &config, &log_second).output())
-            .await
-            .expect("the refused boot answers within the stop budget")
-            .expect("the second boot runs");
+    let second = tokio::time::timeout(WEDGE, server_command(&home, &config, &log_second).output())
+        .await
+        .expect("the refused boot answers within the wedge")
+        .expect("the second boot runs");
     assert!(!second.status.success(), "the second boot is refused rather than served");
     let refusal = String::from_utf8_lossy(&second.stderr);
     assert!(
