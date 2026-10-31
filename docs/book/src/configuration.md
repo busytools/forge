@@ -971,7 +971,7 @@ accepts has no class.
 | `[systemone]` | Next session. A session's MCP facade captures the client when it spawns, so a session already running keeps the tools it had. |
 | `[gateway] streak_count`, `streak_window_secs`, `no_reset_cooldown_secs` | Live. A reload that moved these replaces the rotation numbers; one that did not leaves the live cooldowns and streaks alone. |
 | `[gateway] port` | Restart-only. Stored and named in the log; forge does not move a live listener. |
-| `[server] tool_record_cap_kb`, `first_frame_cap_kb`, `more_page_cap_kb` | Live for pages and `more`; a connection already open keeps the cap it read when it opened. |
+| `[server] tool_record_cap_kb`, `first_frame_cap_kb`, `more_page_cap_kb` | Live. The cap is read where a page or record is cut, so a reload applies to the next one served, on a connection already open included; what was already sent is not re-cut. |
 | `[server] enabled`, `bind`, `port` | Restart-only. Stored and named in the log; forge never rebinds a live socket. |
 | `[server] allowed_origins` | Live. The next socket upgrade reads the new list; connections already open are untouched. |
 | `[browser]` `idle_minutes` | Live. The service reads the idle clock on every pass. |
