@@ -20,6 +20,32 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
+/// `path` with its longest existing prefix resolved through symlinks and the
+/// rest kept as spelled: `canonicalize` fails wholesale once the last
+/// component is gone, and the two sides of a comparison then use different
+/// spellings of the same directory.
+fn resolve_existing_prefix(path: &Path) -> PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    let mut missing = Vec::new();
+    let mut head = path.to_path_buf();
+    loop {
+        let Some(parent) = head.parent().map(Path::to_path_buf) else { break };
+        let Some(name) = head.file_name() else { break };
+        missing.push(name.to_owned());
+        if let Ok(resolved) = std::fs::canonicalize(&parent) {
+            let mut out = resolved;
+            for part in missing.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        head = parent;
+    }
+    path.to_path_buf()
+}
+
 /// Why a settings save did not write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingsSaveError {
@@ -7287,9 +7313,15 @@ impl Workspace {
     /// `run_dir`: the directory their worker runs in, or the sanitised
     /// key that directory is stored under.
     fn projects_composing(&self, run_dir: &std::path::Path, label: &str) -> Vec<(String, String)> {
-        let composed = std::fs::canonicalize(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
+        // **One spelling per path, resolved the same way on both sides.** A
+        // worker directory that is gone cannot be canonicalised at all, so
+        // `resolve_existing_prefix` resolves the part that exists and keeps
+        // the rest; the key is then built from that same spelling rather than
+        // resolved a second time, or a directory removed between the two
+        // resolutions would compare under a different key than its path.
+        let composed = resolve_existing_prefix(run_dir);
         let key = forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-            &run_dir.to_string_lossy(),
+            &composed.to_string_lossy(),
         ));
         let key_of = |dir: &std::path::Path| {
             forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
@@ -7304,9 +7336,9 @@ impl Workspace {
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| forge_agent::env::worktree::is_git_repo(&view.path));
-                let root = std::fs::canonicalize(&view.path).unwrap_or_else(|_| view.path.clone());
+                let root = resolve_existing_prefix(&view.path);
                 let dir = crate::mcp::workers::types::worker_tag_dir(&root, label, is_git);
-                let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+                let dir = resolve_existing_prefix(&dir);
                 dir == composed || key_of(&dir) == key
             })
             .map(|view| (view.org, view.name))
@@ -20890,6 +20922,50 @@ provider = "anthropic"
             ws.projects_composing(&a_dir, "shared"),
             vec![("TestOrg".to_owned(), "proj-a".to_owned())],
             "the git checkout that only shares the sanitised key is not counted",
+        );
+    }
+
+    /// A worker directory that is gone still names the project whose
+    /// worktree it was, even when the tag row spells the root through a
+    /// symlink: nothing below the root exists, so nothing can be
+    /// canonicalised, and both sides have to resolve the same existing
+    /// prefix to compare equal.
+    #[tokio::test]
+    async fn a_gone_worker_dir_behind_a_symlink_still_names_its_project() {
+        let holder = tempfile::tempdir().expect("holder");
+        let real = holder.path().join("real");
+        let project = real.join("proj");
+        std::fs::create_dir_all(&project).expect("project dir");
+        run_git_in(&project, &["init", "-q"]);
+        let link = holder.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                project.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        let gone = link.join("proj").join(".claude/worktrees/shared");
+        assert!(!gone.exists(), "the worker's tree is gone, which is the case under test");
+        assert_eq!(
+            ws.projects_composing(&gone, "shared"),
+            vec![("TestOrg".to_owned(), "proj-a".to_owned())],
+            "a gone worker dir behind a symlink names its project",
         );
     }
 
