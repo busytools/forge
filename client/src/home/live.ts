@@ -295,6 +295,13 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         if (named || held?.state().kind === 'refused') {
           reading = false;
           read(folded);
+          // **The staleness stays.** A refused subject can take no read at
+          // all - both `schedule` and `reread` refuse one - so the update that
+          // landed while this read was in flight is not spent here: it is
+          // spent by the snapshot that re-establishes the subject, through the
+          // snapshot arm below. Clearing it here dropped that update for good
+          // (#2559), and the transport refuses the store before this listener
+          // ever sees the frame, so a re-ask from this arm could never fire.
         }
         return;
       }

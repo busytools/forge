@@ -66,6 +66,22 @@ const spoken = (key: string): unknown => ({
 });
 
 /**
+ * One frame as the live path first had it: no id, so `fold` keys its row by
+ * its position in the turn.
+ */
+const idless = (role: 'user' | 'assistant', text: string): unknown => ({
+  type: role,
+  message: { role, content: [{ type: 'text', text }] },
+});
+
+/** The same frame as the read carries it, with the id the CLI minted. */
+const identified = (uuid: string, role: 'user' | 'assistant', text: string): unknown => ({
+  type: role,
+  uuid,
+  message: { role, content: [{ type: 'text', text }] },
+});
+
+/**
  * Lay the drawn rows out by hand, because jsdom performs no layout.
  *
  * Each row gets a box `height` tall from the column's own top, in the order the
@@ -1589,6 +1605,94 @@ describe('whether the column follows the newest end', () => {
     await settle();
 
     expect(element.offset, "the reader's row carried them through the reorder").toBe(90);
+  });
+
+  /**
+   * **A re-keyed row is still the reader's place.** The read's copy of an
+   * exchange can carry the ids the live frames did not, so the rows stay where
+   * they are while their keys change - and the anchor, held by the old key,
+   * missed on every later restore and left the reader behind (#1834). A miss
+   * the conversation no longer holds re-captures from the viewport.
+   */
+  it('re-captures the anchor when a page re-keys the row the reader holds', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    // One turn of two rows, both keyed by their position: no frame carries an
+    // id yet.
+    server.page([
+      {
+        key: 't9',
+        messages: [idless('user', 'first line'), idless('user', 'second line')],
+      },
+    ]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // The read's copy of the same exchange, carrying the ids: same rows, same
+    // order, new keys.
+    server.page([
+      {
+        key: 't9',
+        messages: [identified('u1', 'user', 'first line'), identified('u2', 'user', 'second line')],
+      },
+    ]);
+    flushSync();
+    layOut(40);
+    await settle();
+
+    // The move a stale anchor could no longer follow.
+    layOut(40, 240);
+    resized();
+    await settle();
+
+    expect(element.offset, "the reader's row carried them down with it").toBe(250);
+  });
+
+  /**
+   * **A row taken away is re-captured too, not only a re-keyed one.** The
+   * fold can drop the row the reader holds; their place is still whatever
+   * row holds the viewport's top edge, and leaving the anchor on a key the
+   * conversation no longer draws strands it (#1834).
+   */
+  it('re-captures the anchor when the row it holds is taken away', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('a'), spoken('b'), spoken('c'), spoken('d')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    clear();
+
+    // The row the reader holds is gone, and the rows after it close up.
+    document.querySelectorAll('.conv .turn [data-k]')[1]?.remove();
+    layOut(40);
+    resized();
+    await settle();
+
+    // A later move above them is carried from the re-captured place.
+    layOut(40, 240);
+    resized();
+    await settle();
+
+    expect(element.offset, "the reader's row carried them down with it").toBe(250);
   });
 
   /**

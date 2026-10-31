@@ -94,8 +94,62 @@ function withPanels(module: Module): Module {
   return module;
 }
 
+/**
+ * Name every data cell with its column's heading, on the token itself.
+ *
+ * **A table that cannot fit is stacked, and a stacked cell needs its label.**
+ * The header row is hidden in the stacked layout, so each cell carries the
+ * heading it would have sat under; the sheet draws that in `::before`. Worked
+ * on the token stream rather than in the renderer because a cell's column is
+ * its place in the row, which the rendered HTML no longer knows.
+ */
+function withStackedTables(module: Module): Module {
+  module.core.ruler.push('table_cell_labels', (state) => {
+    const tokens = state.tokens;
+    /** The heading of each column, by index, as the header row states it. */
+    let headings: string[] = [];
+    let inHead = false;
+    let column = 0;
+    for (let at = 0; at < tokens.length; at += 1) {
+      const token = tokens[at];
+      if (token === undefined) continue;
+      if (token.type === 'table_open') {
+        headings = [];
+        inHead = false;
+        column = 0;
+      } else if (token.type === 'thead_open') {
+        inHead = true;
+      } else if (token.type === 'thead_close') {
+        inHead = false;
+      } else if (token.type === 'tr_open') {
+        column = 0;
+      } else if (token.type === 'th_open') {
+        if (inHead) {
+          const inline = tokens[at + 1];
+          headings[column] =
+            inline === undefined
+              ? ''
+              : module.renderer.renderInlineAsText(
+                  inline.children ?? [],
+                  module.options,
+                  state.env,
+                );
+        }
+        column += 1;
+      } else if (token.type === 'td_open') {
+        const heading = headings[column];
+        if (heading !== undefined && heading !== '') token.attrSet('data-label', heading);
+        column += 1;
+      }
+    }
+  });
+  return module;
+}
+
 withPanels(READER);
 withPanels(PROMPT);
+withStackedTables(READER);
+withStackedTables(PROMPT);
 
 /**
  * `text` as HTML, with everything that is not markdown left as text.

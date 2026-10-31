@@ -277,6 +277,77 @@ describe('the home over a connection', () => {
   });
 
   /**
+   * **A refused read settles nothing the update asked for.** The store is
+   * refused before the frame reaches this listener, so no read can go out
+   * from the error arm at all - the update's mark must survive the refusal
+   * and be spent by the snapshot that re-establishes the subject (#2559).
+   */
+  it('keeps the mid-read update for the snapshot that re-establishes a refused subject', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'the first update did not ask for a read').toEqual(['home']);
+
+    // The transport refuses the store first, then delivers the frame - the
+    // order `socket.ts` keeps, and the reason a re-ask here could not fire.
+    forge.stores.get('home')?.refuse('this forge holds no home');
+    forge.arrive(UPDATE);
+    forge.arrive({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'this forge holds no home',
+      seat: null,
+      subject: 'home',
+    });
+    await settle();
+    expect(forge.refreshed, 'no read can go out while the subject is refused').toEqual(['home']);
+
+    // The subject comes back: its snapshot is newer than the update, and the
+    // mark it spends asks for the read the refusal could not.
+    forge.stores.get('home')?.set({});
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
+    await settle();
+    expect(forge.refreshed, 'the update that landed mid-read was dropped').toEqual([
+      'home',
+      'home',
+    ]);
+    stop();
+  });
+
+  /**
+   * **An unrelated refusal does not settle the home's read.** The error arm
+   * acts only on its own subject: another subject's refusal must leave the
+   * read in flight, so a later update is not asked for twice while the first
+   * answer is still owed.
+   */
+  it("does not settle the home's in-flight read on another subject's refusal", async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'the first update did not ask for a read').toEqual(['home']);
+
+    forge.arrive({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'this forge holds no board',
+      seat: null,
+      subject: 'board',
+    });
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, "another subject's refusal freed the home's ask").toEqual(['home']);
+
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
+    await settle();
+    expect(forge.refreshed, 'and the answer spends the update behind it').toEqual(['home', 'home']);
+    stop();
+  });
+
+  /**
    * **A return inside the coalesce beat is the read the update wanted.** The
    * timer fires after a return has already asked; queueing a second whole
    * encode behind it lets the first answer clear the flag mid-flight and a

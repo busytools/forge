@@ -212,6 +212,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "handoff.enabled" => BOOLEAN,
         "systemone.timeout_ms"
         | "server.first_frame_cap_kb"
+        | "server.more_page_cap_kb"
         | "server.tool_record_cap_kb"
         | "browser.fps"
         | "browser.quality"
@@ -914,6 +915,12 @@ const SERVER_KEYS: &[ConfigKey] = &[
         rows: |config| vec![number("server.first_frame_cap_kb", config.server.first_frame_cap_kb)],
     },
     ConfigKey {
+        path: "server.more_page_cap_kb",
+        area: "server",
+        class: EffectClass::Live,
+        rows: |config| vec![number("server.more_page_cap_kb", config.server.more_page_cap_kb)],
+    },
+    ConfigKey {
         path: "server.tool_record_cap_kb",
         area: "server",
         class: EffectClass::Live,
@@ -1500,6 +1507,7 @@ enabled = true
 port = 8790
 bind = "127.0.0.1"
 first_frame_cap_kb = 64
+more_page_cap_kb = 64
 tool_record_cap_kb = 8
 allowed_origins = ["http://localhost:8080"]
 
