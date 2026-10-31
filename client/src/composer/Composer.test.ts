@@ -3220,6 +3220,40 @@ describe('the seat the box belongs to', () => {
     expect(field().value, "the cancelled take's arm rode a landing that was not its own").toBe('');
   });
 
+  /**
+   * **The record's own copy of the armed take's landing reaches the box.**
+   * A whole-record read taken across the landing frame carries the words as
+   * `carried`, and the take's generation - which the page holds while its
+   * take is drawn - is what tells them from an older re-hand and places them,
+   * rather than leaving them for a frame that never comes (#2283).
+   */
+  it("places the armed take's own carried landing from the record", async () => {
+    const harness = open({ dictation: true });
+
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+
+    // The read lands holding the take the microphone is still recording,
+    // with that take's own landing re-handed beside it. A live take draws its
+    // card rather than the field, so the take has to end before the box it
+    // filled is on screen.
+    const carried = {
+      kind: 'landed',
+      text: 'the words',
+      truncated: false,
+      generation: 4,
+      carried: true,
+    };
+    harness.page.record = withNotice(carried, take({ generation: 4 }));
+    flushSync();
+    endTake(harness);
+    harness.page.record = withNotice(carried);
+    flushSync();
+
+    expect(field().value, "the take's own words land in the box").toBe('the words');
+  });
+
   it('does not mark a refused send on a seat that never sent it', () => {
     const shared = wire();
     const harness = open({}, shared);
@@ -3304,6 +3338,38 @@ describe('the seat the box belongs to', () => {
       echoAt(ELSEWHERE),
       'and the seat still waiting on its own send is untouched',
     ).toMatchObject({ state: 'sending', words: 'and the gate too' });
+  });
+
+  /**
+   * **A numbered refusal whose press is gone marks nothing.** A second quick
+   * send takes the seat's one echo, so the older press may hold none - and
+   * that older reason must not be read against the live send (#1583).
+   */
+  it('drops a numbered refusal whose own press the seat has replaced', () => {
+    const shared = wire();
+    const harness = open({}, shared);
+    type('the first words');
+    sendBox();
+    const first = harness.sent[0]?.command['prompt_under'] as Record<string, unknown>;
+
+    type('the second words');
+    sendBox();
+    expect(harness.sent, 'both sends went out').toHaveLength(2);
+    const second = harness.sent[1]?.command['prompt_under'] as Record<string, unknown>;
+    expect(first['dispatch_id']).not.toBe(second['dispatch_id']);
+
+    shared.say({
+      kind: 'error',
+      what: 'dispatch',
+      why: 'that seat is gone',
+      dispatch_id: first['dispatch_id'] as number,
+    });
+    flushSync();
+
+    expect(
+      echoAt(SLOT),
+      'the send on screen is not marked with the press it replaced',
+    ).toMatchObject({ state: 'sending', words: 'the second words' });
   });
 });
 
@@ -4409,23 +4475,20 @@ describe('the dock', () => {
   });
 
   /**
-   * **A preview is line-structured, and its lines are the structure.**
-   * The CLI writes these payloads as lines - a plan, a diff, a list of
-   * steps - and the reader was shown them joined into one paragraph, which
-   * is the wrong document rather than a wrapping of the right one (#1634).
+   * **A preview is line-structured ASCII, so it is drawn as its own source.**
+   * A plan, a diff, a list of steps: a line beginning `+`, `-` or `#` is that
+   * line, not a list item or a heading, and its indentation is its own. The
+   * markdown renderer read all four as structure, which is the wrong document
+   * rather than a wrapping of the right one (#1634).
    */
-  it('keeps the lines a preview is written in', () => {
+  it('draws a preview payload as its own source, not as markdown', () => {
+    const payload = 'plan:\n+ added\n- removed\n# not a heading\n    indented';
     open({
       record: record({
         pending_asks: [
           questionAsk('tu-q', {
             options: [
-              {
-                option_id: 'q-plan',
-                label: 'The plan',
-                description: null,
-                preview: 'step one\nstep two',
-              },
+              { option_id: 'q-plan', label: 'The plan', description: null, preview: payload },
             ],
           }),
         ],
@@ -4434,10 +4497,11 @@ describe('the dock', () => {
 
     const preview = document.querySelector('.dock .preview');
     if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    expect(preview.textContent, 'the payload is drawn line for line').toBe(payload);
     expect(
-      preview.innerHTML,
-      'the preview renders the lines it was written in, not one joined paragraph',
-    ).toContain('<br>');
+      preview.querySelector('ul, ol, h1, h2, pre code'),
+      'and no line of it is read as markdown',
+    ).toBeNull();
   });
 
   /**
@@ -4477,18 +4541,17 @@ describe('the dock', () => {
    * link rather than the panel: a guard on the panel would take Enter from
    * the reader who tabbed into it to answer.
    */
-  it('gives Enter on a link inside a preview to the link, and keeps it for the region', () => {
+  it('answers the marked row on Enter in the preview region', () => {
+    // **An option's preview is drawn as its own source** (#1634), so it holds
+    // no link for Enter to land on - the region's own Enter is the row's
+    // answer. (The held post keeps markdown, and its link rule has its own
+    // case below.)
     const harness = open({
       record: record({
         pending_asks: [
           questionAsk('tu-q', {
             options: [
-              {
-                option_id: 'q-link',
-                label: 'The runbook',
-                description: null,
-                preview: 'Read [the runbook](https://example.com/runbook) first.',
-              },
+              { option_id: 'q-run', label: 'The runbook', description: null, preview: 'run it' },
               { option_id: 'q-prod', label: 'Production', description: null, preview: null },
             ],
           }),
@@ -4498,18 +4561,7 @@ describe('the dock', () => {
 
     const preview = document.querySelector('.dock .preview');
     if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
-    const link = preview.querySelector('a');
-    if (!(link instanceof HTMLAnchorElement)) throw new Error('the preview drew no link');
-
-    const onLink = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
-    link.dispatchEvent(onLink);
-    flushSync();
-
-    expect(onLink.defaultPrevented, "the link's Enter was not swallowed").toBe(false);
-    expect(
-      commands(harness),
-      "and the dock answered nothing under it: following the link is the link's",
-    ).toEqual([]);
+    expect(preview.querySelector('a'), 'the source preview draws no link').toBeNull();
 
     const onRegion = new KeyboardEvent('keydown', {
       key: 'Enter',
@@ -4519,13 +4571,13 @@ describe('the dock', () => {
     preview.dispatchEvent(onRegion);
     flushSync();
 
-    expect(onRegion.defaultPrevented, 'the region still answers its own Enter').toBe(true);
+    expect(onRegion.defaultPrevented, 'the region answers its own Enter').toBe(true);
     expect(commands(harness), 'and answers the marked row').toEqual([
       {
         respond_question: {
           key: SLOT,
           tool_id: 'tu-q',
-          outcome: { outcome: 'answered', selected_option_ids: ['q-link'], annotation: null },
+          outcome: { outcome: 'answered', selected_option_ids: ['q-run'], annotation: null },
         },
       },
     ]);

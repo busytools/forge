@@ -3300,6 +3300,9 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .preview { border: 1px solid var(--line); border-radius: 9px;
   padding: 7px 11px; font-size: var(--fs-data); color: var(--muted);
   max-height: min(34vh, 320px); overflow-y: auto; }
+/* A preview payload is source, so its lines are the document (#1634). */
+.dock .preview .src { margin: 0; font-family: var(--mono); white-space: pre-wrap;
+  overflow-wrap: anywhere; }
 /* The escape hatch is the row's own box, so the field carries no chrome of
    its own: no border, no second panel, no indent - the caret sits in the row
    under its own words, and what is typed there is the answer. */

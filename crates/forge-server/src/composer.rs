@@ -135,9 +135,8 @@ impl Composer {
     /// **Only the landed words take them.** A comment about something else
     /// leaves the take's words in the seat: the reader has still not sent
     /// them (#2283).
-    pub fn sent(&mut self, slot: &SessionSlot, words: &[String]) {
-        let Some(landed) = self.landed.get(slot) else { return };
-        if words.contains(&landed.text) {
+    pub fn sent(&mut self, slot: &SessionSlot, words: &str) {
+        if self.landed.get(slot).is_some_and(|landed| landed.text == words) {
             self.landed.remove(slot);
         }
     }

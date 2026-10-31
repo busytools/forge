@@ -3671,10 +3671,16 @@ fn dispatch_answering(
             let command = Command::DespawnWorker { project_key, label, force, respond: Some(tx) };
             answered(state, command, to, rx, reply_tx);
         }
-        Command::UpsertReviewThread { project, branch, thread, origin, .. } => {
+        Command::UpsertReviewThread { project, branch, thread, origin, sent_words, .. } => {
             let (tx, rx) = oneshot::channel();
-            let command =
-                Command::UpsertReviewThread { project, branch, thread, origin, respond: Some(tx) };
+            let command = Command::UpsertReviewThread {
+                project,
+                branch,
+                thread,
+                origin,
+                sent_words,
+                respond: Some(tx),
+            };
             answered(state, command, to, rx, reply_tx);
         }
         Command::DeleteReviewThread { project, branch, thread_id, .. } => {
@@ -3779,28 +3785,39 @@ fn refusal_tag(refusal: &DispatchError) -> &'static str {
     }
 }
 
-/// The words a review write sends, and the seat they were the reader's in.
+/// The words a review write sends, the seat they were the reader's in, and
+/// what the write's own reply says when it landed.
 ///
 /// The composer's own fold sees prompt rows and answers; a review or document
 /// comment mints neither, so this is the one place the seat's landed take
-/// learns the words left (#2283). Every user turn the write carries is
-/// offered, so an edit of an earlier turn spends them too.
-fn words_sent(command: &Command) -> Option<(SessionSlot, Vec<String>)> {
+/// learns the words left (#2283). **The words are the press's own**, as an
+/// ask's `answered_with` states its: the thread carries every turn it ever
+/// had, so scanning them would spend a take on an old comment saying the same
+/// thing (#2283).
+struct SentWords {
+    seat: SessionSlot,
+    words: String,
+    /// Whether the command's reply says the store took the write.
+    landed: fn(&serde_json::Value) -> bool,
+}
+
+/// Whether an upsert's reply says the store took the write.
+fn upsert_landed(body: &serde_json::Value) -> bool {
+    body.as_bool() == Some(true)
+}
+
+/// Whether a submit's reply carries a sealed round, which `null` does not.
+fn submit_landed(body: &serde_json::Value) -> bool {
+    !body.is_null()
+}
+
+fn words_sent(command: &Command) -> Option<SentWords> {
     match command {
-        Command::UpsertReviewThread { thread, origin, .. } => {
-            let seat = origin.as_ref()?;
-            let words: Vec<String> = thread
-                .comments
-                .iter()
-                .filter(|comment| {
-                    matches!(comment.author, forge_primitives::review::ReviewAuthor::User)
-                })
-                .map(|comment| comment.text.clone())
-                .collect();
-            (!words.is_empty()).then(|| (seat.clone(), words))
+        Command::UpsertReviewThread { origin: Some(seat), sent_words: Some(words), .. } => {
+            Some(SentWords { seat: seat.clone(), words: words.clone(), landed: upsert_landed })
         }
-        Command::SubmitReview { origin, summary: Some(summary), .. } => {
-            Some((origin.clone(), vec![summary.clone()]))
+        Command::SubmitReview { origin, summary: Some(words), .. } => {
+            Some(SentWords { seat: origin.clone(), words: words.clone(), landed: submit_landed })
         }
         _ => None,
     }
@@ -3916,19 +3933,33 @@ fn answered<T: serde::Serialize + Send + 'static>(
     state: &TransportState,
     command: Command,
     to: u64,
-    answer: oneshot::Receiver<T>,
+    mut answer: oneshot::Receiver<T>,
     reply_tx: &mpsc::UnboundedSender<Answer>,
 ) {
     let sent = words_sent(&command);
     let outcome = state.surface.dispatch(command);
-    // A write the seat made takes the words it carried with it - decided
-    // here, where the command and the live state are both in hand.
-    if outcome.is_ok()
-        && let Some((seat, words)) = sent
-    {
-        Live::lock(&state.live).composer_sent(&seat, &words);
-    }
     let reply_tx = reply_tx.clone();
+    // **A review write answers inside its own dispatch** - the handler writes
+    // the store and sends the reply before returning - so the value is here,
+    // and the spend can read the store's verdict rather than the routing's: a
+    // write the store refused (`false`, `null`) leaves the words in the seat
+    // (#2283). Every other reply-carrying command answers later, on its own
+    // task, and spends nothing.
+    if let Ok(reply) = answer.try_recv() {
+        let body = match outcome {
+            Ok(()) => serde_json::to_value(&reply).unwrap_or_else(|_| {
+                serde_json::Value::String("the answer could not be encoded".to_owned())
+            }),
+            Err(refusal) => serde_json::Value::String(refusal.to_string()),
+        };
+        if let Some(sent) = &sent
+            && (sent.landed)(&body)
+        {
+            Live::lock(&state.live).composer_sent(&sent.seat, &sent.words);
+        }
+        let _ = reply_tx.send(Answer::Reply(Box::new(ServerMessage::Reply { reply_to: to, body })));
+        return;
+    }
     tokio::spawn(async move {
         let body = match (outcome, answer.await) {
             (Ok(()), Ok(reply)) => serde_json::to_value(reply).unwrap_or_else(|_| {
@@ -3957,22 +3988,23 @@ mod tests {
     /// The composer's own fold sees prompt rows and answers; a comment mints
     /// neither, so without this the seat hands words the reader already sent
     /// back to the next box that reads it (#2283).
-    #[tokio::test]
-    async fn a_review_write_spends_the_landed_words_it_carries() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
-            .expect("the fleet builds");
-        let state = TransportState {
-            surface: fleet.surface(),
+    /// The transport over `workspace`, with the caches a connection needs and
+    /// nothing else.
+    fn a_transport(workspace: Arc<forge_workspace::Workspace>) -> TransportState {
+        TransportState {
+            surface: Arc::new(crate::surface::ViewSurface::new(workspace)),
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(crate::transport::conversation::Conversations::new()),
             live: Mutex::new(crate::live::Live::new()),
             settings: crate::transport::settings_channel(),
             browser_host: None,
             heartbeat: Heartbeat::default(),
-        };
-        let seat = SessionSlot::lead("TestOrg", "proj");
-        let comment = |text: &str| forge_primitives::review::ReviewThread {
+        }
+    }
+
+    /// One review thread carrying `text`, as the page writes one.
+    fn a_review_thread(text: &str) -> forge_primitives::review::ReviewThread {
+        forge_primitives::review::ReviewThread {
             id: "t1".to_owned(),
             anchor: forge_primitives::review::ReviewAnchor {
                 path: "src/a.rs".to_owned(),
@@ -3992,43 +4024,119 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             commit: None,
-        };
-        let write = |text: &str| {
-            let (tx, rx) = oneshot::channel();
-            let command = Command::UpsertReviewThread {
-                project: "proj".to_owned(),
-                branch: "b".to_owned(),
-                thread: comment(text),
-                origin: Some(seat.clone()),
-                respond: Some(tx),
-            };
-            let (reply_tx, replies) = mpsc::unbounded_channel();
-            answered(&state, command, 7, rx, &reply_tx);
-            drop(replies);
-        };
+        }
+    }
 
-        Live::lock(&state.live).apply(&SessionUpdate::DictateEnded {
+    /// Seed `seat` with a landed take of `text`, as the stream hands one over.
+    fn land(transport: &TransportState, seat: &SessionSlot, text: &str) {
+        Live::lock(&transport.live).apply(&SessionUpdate::DictateEnded {
             key: seat.clone(),
             outcome: crate::surface::DictateOutcome::Landed {
-                text: "spoken words".to_owned(),
+                text: text.to_owned(),
                 truncated: false,
             },
             generation: 1,
             surface: None,
             initiator: None,
         });
+    }
 
-        write("something else");
+    /// Whether the seat's landed words are still waiting to be sent.
+    fn still_landed(transport: &TransportState, seat: &SessionSlot) -> bool {
+        Live::lock(&transport.live).snapshot().composer.landed(seat).is_some()
+    }
+
+    /// One upsert through the transport's reply path, sending `sent`'s words.
+    fn upsert(transport: &TransportState, seat: &SessionSlot, sent: &str) {
+        let (tx, rx) = oneshot::channel();
+        let command = Command::UpsertReviewThread {
+            project: "proj".to_owned(),
+            branch: "b".to_owned(),
+            thread: a_review_thread(sent),
+            origin: Some(seat.clone()),
+            sent_words: Some(sent.to_owned()),
+            respond: Some(tx),
+        };
+        let (reply_tx, replies) = mpsc::unbounded_channel();
+        answered(transport, command, 7, rx, &reply_tx);
+        drop(replies);
+    }
+
+    /// **A review write spends the landed words it sends, and only those.**
+    /// The composer's own fold sees prompt rows and answers; a comment mints
+    /// neither, so without this the seat hands words the reader already sent
+    /// back to the next box that reads it (#2283).
+    #[tokio::test]
+    async fn a_review_write_spends_the_landed_words_it_sends() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let transport = a_transport(fleet.workspace());
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        land(&transport, &seat, "spoken words");
+
+        upsert(&transport, &seat, "something else");
         assert!(
-            Live::lock(&state.live).snapshot().composer.landed(&seat).is_some(),
-            "words a write does not carry are still the seat's to re-hand",
+            still_landed(&transport, &seat),
+            "words a write does not send are still the seat's to re-hand",
         );
 
-        write("spoken words");
+        upsert(&transport, &seat, "spoken words");
+        assert!(!still_landed(&transport, &seat), "and the write that sent them spends them",);
+    }
+
+    /// **A closed store is not a send.** The write's own reply says the store
+    /// refused it (`false`), and the words stay in the seat rather than being
+    /// spent on the routing's success (#2283).
+    #[tokio::test]
+    async fn a_review_write_a_closed_store_refuses_leaves_the_words() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // The stub opens no store, which is the fixture's own state: a review
+        // write against it answers `false`.
+        let (workspace, _updates) =
+            forge_workspace::Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        let transport = a_transport(workspace);
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        land(&transport, &seat, "spoken words");
+
+        upsert(&transport, &seat, "spoken words");
         assert!(
-            Live::lock(&state.live).snapshot().composer.landed(&seat).is_none(),
-            "and the write that carried them spends them",
+            still_landed(&transport, &seat),
+            "a store that refused the write did not take the words",
         );
+    }
+
+    /// **A submitted review carries its summary into the same spend**, and
+    /// only on a reply that says the round was sealed (#2283).
+    #[tokio::test]
+    async fn a_submit_spends_the_landed_words_its_summary_sends() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let transport = a_transport(fleet.workspace());
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        land(&transport, &seat, "spoken words");
+
+        let submit = |summary: &str| {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::SubmitReview {
+                project: "proj".to_owned(),
+                branch: "b".to_owned(),
+                summary: Some(summary.to_owned()),
+                thread_ids: Vec::new(),
+                origin: seat.clone(),
+                respond: Some(tx),
+            };
+            let (reply_tx, replies) = mpsc::unbounded_channel();
+            answered(&transport, command, 7, rx, &reply_tx);
+            drop(replies);
+        };
+
+        submit("a different overview");
+        assert!(still_landed(&transport, &seat), "a summary that is not the words leaves them");
+
+        submit("spoken words");
+        assert!(!still_landed(&transport, &seat), "and the summary that is them spends them",);
     }
 
     /// The transport answers a call's output read from its own held copy: the

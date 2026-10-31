@@ -274,7 +274,7 @@
   /* The shared arrow, shown on the door the way the row links show it, and
      turned by the state the door announces. */
   .pop .dev .arw { margin-left: auto; color: var(--dim); opacity: 1; }
-  .pop .dev.open .arw { transform: rotate(90deg); color: var(--accent); }
+  .pop .dev[aria-expanded="true"] .arw { transform: rotate(90deg); color: var(--accent); }
   .pop .ft { padding: 13px 15px 14px; }
   .pop .rst { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 
@@ -885,7 +885,7 @@ each is a row of chips rather than a list of rows.</p>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">TRANSCRIBING</div>
-          <div class="dev open"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
+          <div class="dev" aria-expanded="true"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           <div class="list">
             <div class="drow on"><span class="nm">cohere-transcribe-03-2026-Q4_K_M.gguf</span></div>
             <div class="drow"><span class="nm">granite-speech-5.0-470m-turboctc-nc-Q4_K_M.gguf</span></div>
@@ -900,7 +900,7 @@ each is a row of chips rather than a list of rows.</p>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">CLEANUP</div>
-          <div class="dev open"><span class="nm">s1-mini-q4_k_m.gguf</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
+          <div class="dev" aria-expanded="true"><span class="nm">s1-mini-q4_k_m.gguf</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           <div class="list">
             <div class="drow on"><span class="nm">s1-mini-q4_k_m.gguf</span></div>
             <div class="note">nothing else on this machine takes this role &#183; the models page installs more</div>
@@ -917,7 +917,7 @@ each is a row of chips rather than a list of rows.</p>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">INPUT DEVICE</div>
-          <div class="dev open"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
+          <div class="dev" aria-expanded="true"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">Shure SM7B</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           <div class="list">
             <div class="note bad">the inputs could not be listed &#183; try again</div>
           </div>
@@ -958,7 +958,7 @@ each is a row of chips rather than a list of rows.</p>
       <div class="pop">
         <div class="ax" style="padding-bottom:14px">
           <div class="lbl">INPUT DEVICE</div>
-          <div class="dev open"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">System default</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
+          <div class="dev" aria-expanded="true"><svg class="ic"><use href="#i-mic"/></svg><span class="nm">System default</span><svg class="ic arw"><use href="#i-chev"/></svg></div>
           <div class="list">
             <div class="drow"><span class="nm">System default</span></div>
             <div class="drow"><span class="nm">Microphone 1</span></div>

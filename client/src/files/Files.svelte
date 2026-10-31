@@ -731,7 +731,7 @@
       commit: null,
     });
     comment.busy = true;
-    const { went } = await write(upsertCommand(slot, treeScope(slot), thread));
+    const { went } = await write(upsertCommand(slot, treeScope(slot), thread, text));
     comment.busy = false;
     if (!went) return;
     closeComposer();
@@ -739,7 +739,9 @@
 
   async function replied(thread: ReviewThreadRecord, text: string): Promise<boolean> {
     reply.busy = true;
-    const { went } = await write(upsertCommand(slot, treeScope(slot), withReply(thread, text)));
+    const { went } = await write(
+      upsertCommand(slot, treeScope(slot), withReply(thread, text), text),
+    );
     reply.busy = false;
     if (!went) return false;
     reply.thread = null;
@@ -756,7 +758,7 @@
   ): Promise<boolean> {
     reply.busy = true;
     const { went } = await write(
-      upsertCommand(slot, treeScope(slot), withEditedTurn(thread, index, text)),
+      upsertCommand(slot, treeScope(slot), withEditedTurn(thread, index, text), text),
     );
     reply.busy = false;
     if (!went) return false;

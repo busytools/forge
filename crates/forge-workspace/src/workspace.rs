@@ -6604,7 +6604,14 @@ impl Workspace {
                     let _enter = span.enter();
                     self.release_session_with_cascade(&session_key);
                 }
-                Command::UpsertReviewThread { project, branch, thread, origin: _, respond } => {
+                Command::UpsertReviewThread {
+                    project,
+                    branch,
+                    thread,
+                    origin: _,
+                    sent_words: _,
+                    respond,
+                } => {
                     let span = tracing::info_span!(
                         "upsert_review_thread",
                         project = %project,
@@ -15723,6 +15730,7 @@ provider = "anthropic"
                 branch: "feat".to_owned(),
                 thread: thread.clone(),
                 origin: None,
+                sent_words: None,
                 respond: Some(respond_tx),
             })
             .expect("dispatch");
@@ -25041,6 +25049,28 @@ mod prompt_frame_origin_tests {
         assert!(commands.is_empty(), "and nothing is dispatched: {commands:?}");
     }
 
+    /// One bare invocation, answered: what a view dispatches and the notices
+    /// that answer it.
+    fn bare(
+        ws: &std::sync::Arc<Workspace>,
+        rx: &mut mpsc::UnboundedReceiver<SeatUpdate>,
+        seat: &SessionSlot,
+        text: &str,
+    ) -> Vec<(NoticeSeverity, String)> {
+        let dispatched = ws.dispatch_from_view(Command::Prompt {
+            key: seat.clone(),
+            text: text.to_owned(),
+            attachments: Vec::new(),
+        });
+        assert!(dispatched.is_ok(), "the core takes {text}: {dispatched:?}");
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
+                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// **A bare `/mode` and `/effort` answer the value in force.** The core
     /// holds what the session reported, so the reader is told it rather than
     /// handed the usage line (#1626).
@@ -25055,31 +25085,57 @@ mod prompt_frame_origin_tests {
             domain.observed_effort = Some(forge_primitives::EffortLevel::High);
         }
 
-        for text in ["/mode", "/effort"] {
-            let dispatched = ws.dispatch_from_view(Command::Prompt {
-                key: seat.clone(),
-                text: text.to_owned(),
-                attachments: Vec::new(),
-            });
-            assert!(dispatched.is_ok(), "the core takes {text}: {dispatched:?}");
-        }
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/mode"),
+            vec![(NoticeSeverity::Info, "Mode: plan".to_owned())],
+            "the hook's observation is what the session runs",
+        );
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/effort"),
+            vec![(NoticeSeverity::Info, "Effort: high".to_owned())],
+        );
 
-        let notices: Vec<(NoticeSeverity, String)> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
-                SessionUpdate::Notice { severity, text, .. } => Some((severity, text)),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            matches!(
-                notices.as_slice(),
-                [(NoticeSeverity::Info, mode), (NoticeSeverity::Info, effort)]
-                    if mode == "Mode: plan" && effort == "Effort: high"
-            ),
-            "the reader is told what the session is running: {notices:?}",
+        // **The launch's own setting answers where no hook has reported**,
+        // which is the precedence the inspector draws - the two surfaces
+        // cannot disagree about the same session.
+        {
+            let mut domain = domain.lock();
+            domain.observed_permission_mode = None;
+            domain.configured_permission_mode =
+                Some(forge_primitives::permission::PermissionMode::Ask);
+            domain.observed_effort = None;
+            domain.configured_effort = forge_primitives::EffortLevel::Low;
+        }
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/mode"),
+            vec![(NoticeSeverity::Info, "Mode: default".to_owned())],
+            "with nothing observed the launch's mode answers",
+        );
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/effort"),
+            vec![(NoticeSeverity::Info, "Effort: low".to_owned())],
         );
         let commands = ws.drain_test_dispatch_buffer();
-        assert!(commands.is_empty(), "and neither reads dispatches anything: {commands:?}");
+        assert!(commands.is_empty(), "and neither read dispatches anything: {commands:?}");
+    }
+
+    /// **A seat with no session at all answers the usage line it answered
+    /// before** (#1626): the read is the domain's, and a slot no task holds
+    /// has nothing to report.
+    #[test]
+    fn a_bare_mode_and_effort_with_no_session_answer_their_usage() {
+        let (ws, mut rx, seat) = a_fleet();
+
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/mode"),
+            vec![(NoticeSeverity::Error, "Usage: /mode <id>".to_owned())],
+        );
+        assert_eq!(
+            bare(&ws, &mut rx, &seat, "/effort"),
+            vec![(NoticeSeverity::Error, "Usage: /effort <level>".to_owned())],
+        );
+        let commands = ws.drain_test_dispatch_buffer();
+        assert!(commands.is_empty(), "and neither read dispatches anything: {commands:?}");
     }
 
     /// Slash text this session cannot run is answered where it is typed,

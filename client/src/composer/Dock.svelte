@@ -920,12 +920,18 @@
        panel is drawn. **A tab stop, because it is a document**: the keys that
        read the rest of it have to reach it. It is not a widget, so it takes
        no widget role for being focusable. -->
-  {#snippet previewRegion(label: string, text: string, lines: boolean)}
+  {#snippet previewRegion(label: string, text: string, source: boolean)}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div class="preview" tabindex="0" role="region" aria-label={label} data-preview>
-      <!-- An option's preview is line-structured ASCII the CLI writes as
-           lines, so its breaks are the document (#1634). -->
-      <Prose {text} preserveLines={lines} />
+      <!-- **An option's preview is line-structured ASCII**, so it is drawn as
+           its own source: a line beginning `+`, `-` or `#` is that line and
+           not a list item or a heading (#1634). A held post is markdown and
+           renders as markdown. -->
+      {#if source}
+        <pre class="src">{text}</pre>
+      {:else}
+        <Prose {text} />
+      {/if}
     </div>
   {/snippet}
 

@@ -152,6 +152,7 @@ describe('the model rows', () => {
       button.textContent?.includes('cohere-transcribe'),
     );
     expect(dev, 'the transcribing row drew no door').not.toBeUndefined();
+    expect(dev?.querySelector('svg.arw'), 'and the row draws the shared arrow').not.toBeNull();
     dev?.click();
     flushSync();
 

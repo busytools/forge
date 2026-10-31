@@ -146,7 +146,7 @@ impl Live {
     /// A write sent the seat's words down a path the update stream does not
     /// carry; the composer's own rule decides whether they were its landed
     /// take's (#2283).
-    pub fn composer_sent(&mut self, slot: &SessionSlot, words: &[String]) {
+    pub fn composer_sent(&mut self, slot: &SessionSlot, words: &str) {
         self.composer.sent(slot, words);
     }
 

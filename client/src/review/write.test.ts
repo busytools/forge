@@ -131,13 +131,15 @@ describe('the commands the page writes', () => {
     expect(thread.status, 'a fresh comment is open').toBe('Open');
     expect(thread.commit, 'all changes').toBeNull();
 
-    const command = upsertCommand(SLOT, 'work/review-page', thread);
+    const command = upsertCommand(SLOT, 'work/review-page', thread, 'why this?');
     expect(command.upsert_review_thread.project).toBe('forge');
     expect(command.upsert_review_thread.thread.id).toBe(thread.id);
-    // **The write names the seat whose words it sends** (#2283): the core
-    // takes a landed take's words away when a comment carries them, and the
-    // seat is what tells it which take.
+    // **The write names the seat whose words it sends, and the words**
+    // (#2283): the core takes a landed take's words away when a comment
+    // carries them, and the thread re-carries every old turn - so the press
+    // states its own rather than being searched for.
     expect(command.upsert_review_thread.origin).toEqual(SLOT);
+    expect(command.upsert_review_thread.sent_words).toBe('why this?');
   });
 
   it('appends a reply without disturbing what is already on the thread', () => {

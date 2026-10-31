@@ -1538,6 +1538,14 @@ describe('the reader own words before the core has them', () => {
     // settles the mark by that id, so a second mint beside it would leave the
     // cancel unable to reach the retry.
     expect(resent?.id, 'and the mark names the id the retry went out under').toBe(resentUuid);
+    // **The retry names its own dispatch too** (#1583): a refusal of it must
+    // reach this send and no other, and the mark holds the number the command
+    // carried.
+    const resentDispatch = (
+      resentCommand as { prompt_under?: { dispatch_id?: unknown } } | undefined
+    )?.prompt_under?.dispatch_id;
+    expect(typeof resentDispatch, 'the retry mints a dispatch id').toBe('number');
+    expect(resent?.dispatch, 'and the mark holds the one it sent').toBe(resentDispatch);
   });
 
   /**

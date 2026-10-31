@@ -159,6 +159,21 @@ describe('the composer record', () => {
   });
 
   /**
+   * **The record's take keeps its generation**, which is what tells its own
+   * landing from an older re-hand when a read arrives across the landing
+   * (#2283). Dropping the parse leaves every test above green and reverts the
+   * landing memory at all four surfaces.
+   */
+  it("keeps the take's own generation off the record", () => {
+    const composer = composerFrom({
+      take: { phase: 'recording', levels: [], peak_db: -50, progress: [0, null], generation: 4 },
+      notice: null,
+      machine: null,
+    });
+    expect(composer.take?.generation, 'the take names its own number').toBe(4);
+  });
+
+  /**
    * **The machine turn narrows to one of the two this build draws, and a
    * state a newer server sends reads as none** - the least-alarming reading:
    * the composer stays usable rather than freezing on a word it cannot

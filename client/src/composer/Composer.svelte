@@ -841,13 +841,17 @@
         return;
       }
       if (message.what !== 'dispatch') return;
-      // **A refusal names the press it refuses.** The send minted a dispatch
-      // id and the core echoes it, so two seats waiting on a send are not both
-      // marked by one refusal, and a refusal that lands after the reader moved
-      // still reaches the seat it belongs to (#1583). A server that predates
-      // the field names none, and the outstanding set below is the fallback.
+      // **A numbered refusal belongs to the press it names, matched or not.**
+      // The send minted a dispatch id and the core echoes it, so two seats
+      // waiting on a send are not both marked, and a refusal that lands after
+      // the reader moved still reaches its own send (#1583). **A press with no
+      // echo left is not another send's**: a second quick send takes the
+      // seat's one echo, and marking what is outstanding with the older
+      // press's reason would be a stranger's failure (#1583). Only a server
+      // that predates the field names none, and that is the fallback below.
       if (typeof message.dispatch_id === 'number') {
-        if (echoes.refuseDispatch(message.dispatch_id, message.why)) return;
+        echoes.refuseDispatch(message.dispatch_id, message.why);
+        return;
       }
       // **A take's own refusal is not an answer's.** This composer knows it
       // dispatched one, and the wire's `what` cannot say which command a

@@ -4438,6 +4438,64 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **A settled row takes the unmatched copy the same way.** The issue's
+   * second half: when the row it would join has already settled (a `result`
+   * in it), the copy still keeps the page's position rather than landing
+   * below frames the row already held (#1584).
+   */
+  it('places an unmatched mid-turn copy in a settled row by its page position', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    try {
+      server.send(page([turn('t0', 'earlier')], null));
+      for (const frame of [typed('open'), said('call one'), said('call two')]) {
+        server.update({ chat_appended: { key: LEAD, msg: frame } });
+      }
+      const queued = {
+        type: 'user',
+        uuid: 'cli-queued-2',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'queued_command',
+              commandMode: 'prompt',
+              prompt: 'the words that never echoed',
+              source_uuid: 'forge_mid_2',
+            },
+          ],
+        },
+      };
+
+      // The page's cut, settled: its row carries the exchange's own result.
+      server.send(
+        page(
+          [
+            { key: null, messages: [typed('open'), said('call one'), said('call two')] },
+            { key: null, messages: [queued, said('call two'), ended()] },
+          ],
+          null,
+        ),
+      );
+
+      const carriers = get(chat.value).turns.filter((row) =>
+        JSON.stringify(row.messages).includes('the words that never echoed'),
+      );
+      expect(carriers, 'the copy draws in one row, not a second one').toHaveLength(1);
+      const order = (carriers[0]?.messages ?? []).map((message) => JSON.stringify(message));
+      const at = (needle: string): number => order.findIndex((held) => held.includes(needle));
+      expect(
+        at('the words that never echoed'),
+        'the settled row still places the copy where the page had it',
+      ).toBeLessThan(at('call two'));
+      expect(at('the words that never echoed')).toBeGreaterThan(at('call one'));
+    } finally {
+      stop();
+    }
+  });
+
+  /**
    * **A live frame that landed after the page was read sits at the row's end,
    * and the page's frames never go below it.**
    *

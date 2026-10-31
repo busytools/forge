@@ -796,6 +796,12 @@ pub enum Command {
         /// client older than the field, and from a write no seat made.
         #[serde(default)]
         origin: Option<SessionSlot>,
+        /// **The words this press sent**, as the ask's `answered_with` states
+        /// its own: the thread carries every turn it ever had, so the composer
+        /// cannot tell the new comment from an old one that happens to match a
+        /// landed take (#2283). `None` from a client older than the field.
+        #[serde(default)]
+        sent_words: Option<String>,
         #[serde(skip)]
         respond: Option<oneshot::Sender<bool>>,
     },
