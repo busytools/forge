@@ -1,0 +1,6 @@
+          case "select": {
+            if (params2.index === void 0)
+              throw new Error("Tab index is required");
+            await context.selectTab(params2.index);
+            break;
+          }

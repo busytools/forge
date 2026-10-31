@@ -1,10 +1,9 @@
 //! The Playwright driver's tab list, as the service reads it.
 //!
-//! **Upstream's list is positional and renumbers on every close**, and CEF
-//! swaps a page's CDP target id when it navigates. The patched driver appends
-//! one line naming each tab's page guid (the stable identity) and its target
-//! id right now (where CDP drives it); the service keys its own small tab
-//! numbers by the guid and refreshes the target from every listing.
+//! **The CDP target id is the one name a page has that the browser and the
+//! driver agree on.** Upstream's list is positional and renumbers on every
+//! close, so the service keys its own small tab numbers by the page target
+//! and drives and selects by it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -18,9 +17,7 @@ use serde::Deserialize;
 pub struct DriverTab {
     #[serde(rename = "i")]
     pub index: usize,
-    /// The page guid: the one name that survives a navigation.
-    pub id: String,
-    /// The page's CDP target id right now; CEF swaps it on navigation.
+    /// The page's CDP target id.
     pub target: String,
     pub title: String,
     pub url: String,
@@ -46,23 +43,6 @@ pub fn strip_export(text: &str) -> String {
         listing.push('\n');
     }
     listing
-}
-
-/// The Playwright index of the tab a page guid names. **An empty name names
-/// nothing**, the same refusal [`index_of_target`] makes for an empty target.
-pub fn index_of(tabs: &[DriverTab], page: &str) -> Option<usize> {
-    if page.is_empty() {
-        return None;
-    }
-    tabs.iter().find(|tab| tab.id == page).map(|tab| tab.index)
-}
-
-/// The Playwright index of the page a CDP target names right now.
-pub fn index_of_target(tabs: &[DriverTab], target: &str) -> Option<usize> {
-    if target.is_empty() {
-        return None;
-    }
-    tabs.iter().find(|tab| tab.target == target).map(|tab| tab.index)
 }
 
 /// The pages the driver lists that no tab claims. **A page the driver made
@@ -110,9 +90,7 @@ pub(crate) struct Tab {
     /// The tab whose page opened this one; `None` for a tab a session owns
     /// outright. A popup closing hands its session back here.
     opener: Option<u16>,
-    /// The page guid the driver names the tab by; stable across navigation.
-    pub(crate) id: String,
-    /// The page's current CDP target id; CEF swaps it on navigation.
+    /// The page's CDP target id: the name the browser and the driver share.
     pub(crate) target: String,
     title: String,
     url: String,
@@ -127,7 +105,6 @@ impl TabRegistry {
         &mut self,
         number: u16,
         owner: SessionSlot,
-        id: &str,
         target: &str,
         title: &str,
         url: &str,
@@ -146,7 +123,6 @@ impl TabRegistry {
                 owner,
                 since: Instant::now(),
                 opener: None,
-                id: id.to_owned(),
                 target: target.to_owned(),
                 title: title.to_owned(),
                 url: url.to_owned(),
@@ -161,7 +137,6 @@ impl TabRegistry {
         &mut self,
         opener: u16,
         number: u16,
-        id: &str,
         target: &str,
         title: &str,
         url: &str,
@@ -170,7 +145,7 @@ impl TabRegistry {
             .owner(opener)
             .cloned()
             .ok_or_else(|| format!("the popup's opener tab {opener} is not open"))?;
-        let adopted = self.adopt(number, owner, id, target, title, url)?;
+        let adopted = self.adopt(number, owner, target, title, url)?;
         if let Some(tab) = self.tabs.get_mut(&adopted) {
             tab.opener = Some(opener);
         }
@@ -259,15 +234,6 @@ impl TabRegistry {
         Ok(())
     }
 
-    pub fn number_of(&self, page: &str) -> Option<u16> {
-        self.tabs.iter().find(|(_, tab)| tab.id == page).map(|(number, _)| *number)
-    }
-
-    /// The page guid the driver names this tab by.
-    pub fn id(&self, tab: u16) -> Option<&str> {
-        self.tabs.get(&tab).map(|tab| tab.id.as_str())
-    }
-
     pub fn target(&self, tab: u16) -> Option<&str> {
         self.tabs.get(&tab).map(|tab| tab.target.as_str())
     }
@@ -301,77 +267,12 @@ impl TabRegistry {
         }
     }
 
-    pub fn update(&mut self, tab: u16, title: &str, url: &str) {
-        if let Some(entry) = self.tabs.get_mut(&tab) {
-            title.clone_into(&mut entry.title);
-            url.clone_into(&mut entry.url);
-        }
-    }
-
-    /// **A navigation can swap the page target id.** CEF gives a navigated
-    /// page a new DevTools target, while the driver's Tab survives it; the
-    /// registry follows the driver's row so the next call selects the page
-    /// that is really there.
-    pub fn retarget(&mut self, tab: u16, target: &str) {
-        if let Some(entry) = self.tabs.get_mut(&tab) {
-            target.clone_into(&mut entry.target);
-        }
-        self.unresolved.remove(&tab);
-    }
-
-    /// Re-pair one row with the name a fresh driver gives its page. **A
-    /// driver replacement renames every page** - the guid belongs to the
-    /// driver's connection - while the CDP target is the browser's and
-    /// survives it. The number stays this registry's.
-    pub fn reidentify(&mut self, tab: u16, id: &str) {
-        if let Some(entry) = self.tabs.get_mut(&tab) {
-            id.clone_into(&mut entry.id);
-        }
-        self.unresolved.remove(&tab);
-    }
-
-    /// Re-pair every row the fresh listing names by its target, answering how
-    /// many changed. A row whose target the listing does not carry is left
-    /// alone: its page may be mid-navigation, and inventing a name for it is
-    /// how a tab comes to mean another page. **Rows sharing a target are not
-    /// renamed here**: the repair refuses to write one guid onto two rows.
-    /// (The call and watch paths can still resolve such a target; this only
-    /// keeps the repair from choosing for them.) The pairing goes through
-    /// [`Self::reidentify`], so a re-paired row is no longer unresolved and
-    /// the orphan prune runs again.
-    pub fn reidentify_from(&mut self, listing: &[DriverTab]) -> usize {
-        let mut sharing: HashMap<&str, usize> = HashMap::new();
-        for tab in self.tabs.values() {
-            if !tab.target.is_empty() {
-                *sharing.entry(tab.target.as_str()).or_default() += 1;
-            }
-        }
-        let duplicated: HashSet<String> = sharing
-            .into_iter()
-            .filter(|(_, count)| *count > 1)
-            .map(|(target, _)| target.to_owned())
-            .collect();
-        if !duplicated.is_empty() {
-            tracing::debug!(
-                event_name = "browser_tab_target_duplicated",
-                targets = ?duplicated,
-                "rows share a CDP target; the repair renames none of them"
-            );
-        }
-        let mut changed = 0;
-        for number in self.tabs.keys().copied().collect::<Vec<_>>() {
-            let Some(tab) = self.tabs.get(&number) else { continue };
-            if tab.target.is_empty() || duplicated.contains(tab.target.as_str()) {
-                continue;
-            }
-            let Some(row) = listing.iter().find(|row| row.target == tab.target) else {
-                continue;
-            };
-            if row.id != tab.id {
-                self.reidentify(number, &row.id);
-                changed += 1;
-            }
-        }
+    /// Replace a row's title and url, answering whether either changed.
+    pub fn update(&mut self, tab: u16, title: &str, url: &str) -> bool {
+        let Some(entry) = self.tabs.get_mut(&tab) else { return false };
+        let changed = entry.title != title || entry.url != url;
+        title.clone_into(&mut entry.title);
+        url.clone_into(&mut entry.url);
         changed
     }
 
@@ -427,20 +328,18 @@ mod tests {
     fn the_hosts_number_is_the_tabs_name() {
         let seat = SessionSlot::lead("O", "p");
         let mut registry = TabRegistry::default();
-        let one =
-            registry.adopt(1, seat.clone(), "p1", "t1", "one", "http://a/").expect("the first tab");
-        let two = registry
-            .adopt(2, seat.clone(), "p2", "t2", "two", "http://b/")
-            .expect("the second tab");
+        let one = registry.adopt(1, seat.clone(), "t1", "one", "http://a/").expect("the first tab");
+        let two =
+            registry.adopt(2, seat.clone(), "t2", "two", "http://b/").expect("the second tab");
         assert_eq!((one, two), (1, 2));
         assert!(
-            registry.adopt(2, seat.clone(), "p3", "t3", "three", "http://c/").is_err(),
+            registry.adopt(2, seat.clone(), "t3", "three", "http://c/").is_err(),
             "a number is never reused",
         );
         registry.close(one);
-        assert_eq!(registry.number_of("p2"), Some(two), "a page keeps its number");
+        assert_eq!(registry.owner(two), Some(&seat), "a page keeps its number");
         assert!(
-            registry.adopt(1, seat, "p4", "t4", "four", "http://d/").is_err(),
+            registry.adopt(1, seat, "t4", "four", "http://d/").is_err(),
             "a closed number stays retired",
         );
     }
@@ -450,7 +349,7 @@ mod tests {
         let lead = SessionSlot::lead("O", "p");
         let worker = SessionSlot::worker("O", "p", "w");
         let mut registry = TabRegistry::default();
-        let mine = registry.adopt(1, lead.clone(), "p1", "t1", "one", "u").expect("the tab");
+        let mine = registry.adopt(1, lead.clone(), "t1", "one", "u").expect("the tab");
         assert_eq!(registry.current(&lead), Some(mine), "a new tab is its owner's current");
         assert!(registry.select(&worker, mine).is_err(), "a foreign tab is refused");
         assert!(registry.close_owned(&worker, mine).is_err(), "and not closed");
@@ -470,10 +369,10 @@ mod tests {
         let worker = SessionSlot::worker("O", "p", "w");
         let other = SessionSlot::worker("O", "p", "x");
         let mut registry = TabRegistry::default();
-        registry.adopt(1, lead.clone(), "p1", "T1", "", "").expect("the caller's tab");
-        registry.adopt(2, worker.clone(), "p2", "T2", "", "").expect("the worker's first");
-        registry.adopt(3, worker.clone(), "p3", "T3", "", "").expect("the worker's second");
-        registry.adopt(4, other.clone(), "p4", "T4", "", "").expect("another seat's tab");
+        registry.adopt(1, lead.clone(), "T1", "", "").expect("the caller's tab");
+        registry.adopt(2, worker.clone(), "T2", "", "").expect("the worker's first");
+        registry.adopt(3, worker.clone(), "T3", "", "").expect("the worker's second");
+        registry.adopt(4, other.clone(), "T4", "", "").expect("another seat's tab");
         let now = Instant::now();
         let old = now.checked_sub(Duration::from_secs(5 * 60)).expect("an earlier instant");
         let new = now.checked_sub(Duration::from_secs(60)).expect("a later instant");
@@ -505,11 +404,9 @@ mod tests {
         let lead = SessionSlot::lead("O", "p");
         let worker = SessionSlot::worker("O", "p", "w");
         let mut registry = TabRegistry::default();
-        let held =
-            registry.adopt(1, lead.clone(), "p1", "t1", "one", "http://a/").expect("the held tab");
-        let busy = registry
-            .adopt(2, worker.clone(), "p2", "t2", "two", "http://b/")
-            .expect("the busy tab");
+        let held = registry.adopt(1, lead.clone(), "t1", "one", "http://a/").expect("the held tab");
+        let busy =
+            registry.adopt(2, worker.clone(), "t2", "two", "http://b/").expect("the busy tab");
         registry.mark_busy(busy, true);
         let rows = registry.rows(&HashSet::from([held]), &HashSet::new());
         assert_eq!(rows[0].state, BrowserTabState::Held);
@@ -519,9 +416,8 @@ mod tests {
 
         // **A person's control is a use too.** A tab nobody's call is driving
         // reads in use while a viewer holds its role.
-        let driven = registry
-            .adopt(3, worker.clone(), "p3", "t3", "three", "http://c/")
-            .expect("the driven tab");
+        let driven =
+            registry.adopt(3, worker.clone(), "t3", "three", "http://c/").expect("the driven tab");
         let rows = registry.rows(&HashSet::from([held]), &HashSet::from([driven]));
         assert_eq!(rows[2].state, BrowserTabState::InUse, "the controlled tab is in use");
 
@@ -541,27 +437,12 @@ mod tests {
     fn only_a_driver_made_page_is_an_orphan() {
         let seat = SessionSlot::lead("O", "p");
         let mut registry = TabRegistry::default();
-        registry.adopt(1, seat, "p1", "T1", "one", "http://a/").expect("the host tab");
+        registry.adopt(1, seat, "T1", "one", "http://a/").expect("the host tab");
         let listing = [
-            DriverTab {
-                index: 0,
-                id: "p1".into(),
-                target: "T1".into(),
-                title: String::new(),
-                url: String::new(),
-                current: false,
-            },
-            DriverTab {
-                index: 1,
-                id: "p2".into(),
-                target: "T2".into(),
-                title: String::new(),
-                url: String::new(),
-                current: true,
-            },
+            tab_row(0, "T1"),
+            tab_row(1, "T2"),
             DriverTab {
                 index: 2,
-                id: "p3".into(),
                 target: String::new(),
                 title: String::new(),
                 url: String::new(),
@@ -571,70 +452,6 @@ mod tests {
         assert_eq!(orphan_targets(&registry, &listing), vec!["T2".to_owned()]);
     }
 
-    #[test]
-    fn a_navigation_retargets_the_tabs_page() {
-        let seat = SessionSlot::lead("O", "p");
-        let mut registry = TabRegistry::default();
-        let tab = registry
-            .adopt(1, seat.clone(), "page1", "old-target", "", "about:blank")
-            .expect("the tab");
-        registry.retarget(tab, "new-target");
-        assert_eq!(registry.target(tab), Some("new-target"), "the CDP target follows the page");
-        assert_eq!(registry.number_of("page1"), Some(tab), "the page guid is the stable name");
-        assert_eq!(registry.number_of("old-target"), None, "a test does not need the target");
-        assert_eq!(registry.owner(tab), Some(&seat), "the number and owner stay");
-    }
-
-    /// **A fresh driver renames every page; the target is what survives it.**
-    /// Each row is re-paired by its target, a page the listing does not name
-    /// keeps its old name, and the number stays the registry's.
-    #[test]
-    fn a_replaced_driver_is_re_paired_by_target() {
-        let seat = SessionSlot::lead("O", "p");
-        let mut registry = TabRegistry::default();
-        let one = registry
-            .adopt(1, seat.clone(), "old-1", "T1", "one", "http://a/")
-            .expect("the first tab");
-        let two = registry
-            .adopt(2, seat.clone(), "old-2", "T2", "two", "http://b/")
-            .expect("the second tab");
-        let listing = [tab_row(0, "new-1", "T1"), tab_row(1, "new-2", "T2")];
-
-        assert_eq!(super::index_of_target(&listing, "T2"), Some(1), "the target names the index");
-        assert_eq!(super::index_of_target(&listing, ""), None, "an unread target names nothing");
-        assert_eq!(registry.reidentify_from(&listing), 2, "both rows follow their targets");
-        assert_eq!(registry.id(one), Some("new-1"));
-        assert_eq!(registry.id(two), Some("new-2"));
-        assert_eq!(registry.number_of("new-1"), Some(one), "the page keeps its number");
-
-        // A page the fresh listing does not name is left alone: inventing a
-        // name for it is how a tab comes to mean another page.
-        let missing = [tab_row(0, "new-1", "T1")];
-        assert_eq!(registry.reidentify_from(&missing), 0);
-        assert_eq!(registry.id(two), Some("new-2"), "the unnamed row keeps its name");
-
-        // **An empty guid names nothing**, the same refusal an empty target
-        // makes; a page that names nothing must not select the first row.
-        assert_eq!(super::index_of(&listing, ""), None, "an empty guid names no page");
-
-        // Two rows sharing a target are left alone: naming both after one
-        // page would let either number drive it.
-        let mut shared = TabRegistry::default();
-        let one = shared
-            .adopt(1, seat.clone(), "s1", "TS", "one", "http://a/")
-            .expect("the first shared row");
-        let two = shared
-            .adopt(2, seat.clone(), "s2", "TS", "two", "http://b/")
-            .expect("the second shared row");
-        assert_eq!(
-            shared.reidentify_from(&[tab_row(0, "fresh", "TS")]),
-            0,
-            "a target two rows share re-pairs nothing",
-        );
-        assert_eq!(shared.id(one), Some("s1"));
-        assert_eq!(shared.id(two), Some("s2"));
-    }
-
     /// **A close clears the unresolved flag, and a number with no row is
     /// never marked**: a close landing between a listing and its mark must
     /// not hold the prune on a retired number.
@@ -642,7 +459,7 @@ mod tests {
     fn an_unresolved_flag_goes_with_its_row() {
         let seat = SessionSlot::lead("O", "p");
         let mut registry = TabRegistry::default();
-        let one = registry.adopt(1, seat, "p1", "T1", "one", "u").expect("the tab");
+        let one = registry.adopt(1, seat, "T1", "one", "u").expect("the tab");
         registry.mark_unresolved(one);
         assert_eq!(registry.unresolved_tabs(), vec![one]);
         registry.close(one);
@@ -654,10 +471,9 @@ mod tests {
         assert!(registry.unresolved_tabs().is_empty(), "a retired number is never marked");
     }
 
-    fn tab_row(index: usize, id: &str, target: &str) -> DriverTab {
+    fn tab_row(index: usize, target: &str) -> DriverTab {
         DriverTab {
             index,
-            id: id.to_owned(),
             target: target.to_owned(),
             title: String::new(),
             url: String::new(),
@@ -669,17 +485,16 @@ mod tests {
     fn a_popup_belongs_to_its_openers_owner() {
         let worker = SessionSlot::worker("O", "p", "w");
         let mut registry = TabRegistry::default();
-        let opener = registry.adopt(1, worker.clone(), "p1", "t1", "one", "u").expect("the opener");
-        let popup = registry
-            .create_under(opener, 2, "p2", "t2", "two", "http://b/")
-            .expect("the opener exists");
+        let opener = registry.adopt(1, worker.clone(), "t1", "one", "u").expect("the opener");
+        let popup =
+            registry.create_under(opener, 2, "t2", "two", "http://b/").expect("the opener exists");
         assert_eq!(
             registry.owner(popup),
             Some(&worker),
             "the popup is the opener's, not the caller's"
         );
         assert!(
-            registry.create_under(99, 3, "p3", "t3", "three", "http://c/").is_err(),
+            registry.create_under(99, 3, "t3", "three", "http://c/").is_err(),
             "an unknown opener is refused",
         );
     }
@@ -692,16 +507,14 @@ mod tests {
     fn a_popup_closing_returns_the_session_to_its_opener() {
         let worker = SessionSlot::worker("O", "p", "w");
         let mut registry = TabRegistry::default();
-        let opener = registry.adopt(1, worker.clone(), "p1", "t1", "one", "u").expect("the opener");
-        let popup =
-            registry.create_under(opener, 2, "p2", "t2", "two", "http://b/").expect("the popup");
+        let opener = registry.adopt(1, worker.clone(), "t1", "one", "u").expect("the opener");
+        let popup = registry.create_under(opener, 2, "t2", "two", "http://b/").expect("the popup");
         assert_eq!(registry.current(&worker), Some(popup), "the popup is where the session is");
         registry.close(popup);
         assert_eq!(registry.current(&worker), Some(opener), "the session is back on the opener");
 
-        let popup = registry
-            .create_under(opener, 3, "p3", "t3", "three", "http://c/")
-            .expect("a second popup");
+        let popup =
+            registry.create_under(opener, 3, "t3", "three", "http://c/").expect("a second popup");
         registry.close(opener);
         assert_eq!(registry.current(&worker), Some(popup), "the popup keeps its place");
         assert_eq!(registry.owner(popup), Some(&worker), "and its owner");
@@ -709,11 +522,9 @@ mod tests {
         // **A chain survives its middle.** A popup opened by a popup hands the
         // session back past the one that has gone, not to a number nobody
         // holds.
-        let root = registry.adopt(4, worker.clone(), "p4", "t4", "four", "u").expect("a root");
-        let middle =
-            registry.create_under(root, 5, "p5", "t5", "five", "http://e/").expect("the middle");
-        let leaf =
-            registry.create_under(middle, 6, "p6", "t6", "six", "http://f/").expect("the leaf");
+        let root = registry.adopt(4, worker.clone(), "t4", "four", "u").expect("a root");
+        let middle = registry.create_under(root, 5, "t5", "five", "http://e/").expect("the middle");
+        let leaf = registry.create_under(middle, 6, "t6", "six", "http://f/").expect("the leaf");
         assert_eq!(registry.current(&worker), Some(leaf), "the leaf is where the session is");
         registry.close(middle);
         assert_eq!(registry.current(&worker), Some(leaf), "the middle closing leaves the leaf");
@@ -729,15 +540,14 @@ mod tests {
     /// agent never sees it: the service re-renders the list in forge's words.
     #[test]
     fn the_export_names_each_tab_target_and_position() {
-        let text = "FORGE-TABS [{\"i\":0,\"id\":\"page@1\",\"target\":\"T1\",\"title\":\"one\",\
-                    \"url\":\"http://a/\",\"current\":true},{\"i\":1,\"id\":\"page@2\",\
+        let text = "FORGE-TABS [{\"i\":0,\"target\":\"T1\",\"title\":\"one\",\
+                    \"url\":\"http://a/\",\"current\":true},{\"i\":1,\
                     \"target\":\"T2\",\"title\":\"two\",\"url\":\"http://b/\",\"current\":false}]\n\
                     - 0: (current) [one](http://a/)\n- 1: [two](http://b/)\n";
         let tabs = parse_export(text).expect("the export parses");
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs[1].index, 1);
-        assert_eq!(tabs[1].id, "page@2", "the guid is the stable name");
-        assert_eq!(tabs[1].target, "T2", "and the target is where CDP drives it now");
+        assert_eq!(tabs[1].target, "T2", "the target is where CDP drives it");
         assert_eq!(tabs[1].title, "two");
         assert!(tabs[0].current, "the first tab is the current one");
         assert!(
@@ -752,23 +562,5 @@ mod tests {
     fn the_export_is_stripped_from_the_agent_visible_text() {
         let text = "FORGE-TABS []\n- 0: (current) [one](http://a/)\n";
         assert_eq!(strip_export(text), "- 0: (current) [one](http://a/)\n");
-    }
-
-    /// **A page is found by its guid, never by the target a navigation
-    /// swapped.** A dead-page retry that looked up the old target found
-    /// nothing and drove whatever page the fresh driver called current.
-    #[test]
-    fn a_page_is_found_by_its_guid_after_the_target_moved() {
-        let listing = [super::DriverTab {
-            index: 3,
-            id: "page@1".to_owned(),
-            target: "T-after".to_owned(),
-            title: "one".to_owned(),
-            url: "http://a/".to_owned(),
-            current: false,
-        }];
-        assert_eq!(super::index_of(&listing, "page@1"), Some(3), "the guid finds the page");
-        assert_eq!(super::index_of(&listing, "T-before"), None, "the old target is gone");
-        assert_eq!(super::index_of(&listing, "T-after"), None, "the target is not the identity");
     }
 }

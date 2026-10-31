@@ -1317,6 +1317,14 @@ impl HostRuntime {
                         );
                     }
                 }
+                crate::input::HostInput::Dialog { tab, accept, prompt } => {
+                    if !crate::jsdialog::answer(tab, accept, prompt.as_deref()) {
+                        eprintln!(
+                            "cef host: a dialog answer named no open dialog (event_name \
+                             cef_dialog_answer_stray, tab {tab})"
+                        );
+                    }
+                }
                 crate::input::HostInput::RecordStart { tab, path } => {
                     self.recording.start(tab, &path);
                 }
@@ -1625,6 +1633,11 @@ pub fn run(args: &Args) -> ExitCode {
         // CEF before the frame it causes is asked for.
         runtime.apply_inputs();
         runtime.popups.bootstrap(elapsed_ms());
+        // **A dialog nobody answers is dismissed on this thread.** Its CEF
+        // callback is the UI thread's, and this pump is that thread; the
+        // deadline is what keeps one paused page from holding the browser's
+        // calls for ever (#2732).
+        crate::jsdialog::expire(elapsed_ms());
         // **8 ms, not 16.** A BeginFrame every screen refresh is the paint
         // rate, but a click landing just after one waited out the whole
         // interval; asking more often lets the next frame start sooner and
@@ -1799,6 +1812,10 @@ cef::wrap_life_span_handler! {
         /// and nothing in this host watches render-process termination.
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             self.popups.forget(self.tab);
+            // **A dialog open on this browser goes with it.** The callback has
+            // nothing left to answer, and an entry kept for a destroyed page
+            // would be expired against a browser that no longer exists.
+            crate::jsdialog::forget(self.tab);
         }
     }
 }
@@ -1840,6 +1857,13 @@ cef::wrap_client! {
 
         fn dialog_handler(&self) -> Option<DialogHandler> {
             Some(crate::dialog::handler(self.tab))
+        }
+
+        /// **A page's JavaScript dialog is answered here.** With no handler
+        /// CEF raises a modal nothing in this windowless host can draw or
+        /// answer, and the page's own thread waits behind it for ever (#2732).
+        fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
+            Some(crate::jsdialog::handler(self.tab))
         }
 
         fn download_handler(&self) -> Option<DownloadHandler> {
