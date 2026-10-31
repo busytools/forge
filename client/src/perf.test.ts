@@ -1181,8 +1181,55 @@ describe('the switch gap marks (#2513)', () => {
     ).toBeUndefined();
     expect(
       same?.since_click_ms,
-      'and the click is spent rather than left armed for a later read',
+      'an unrelated ack landed first and cost the click its own measurement',
+    ).toBe(18_026);
+  });
+
+  /**
+   * **A click on the seat already drawn opens nothing.** No switch and no
+   * read follow it, so arming it would hand a later reconnect an old gap as
+   * its own. The click record is still written; the timestamp is not armed.
+   */
+  it('does not arm a click on the seat already drawn', () => {
+    const h = harness();
+    h.probe.setSurface('session', 'forge/lead');
+    h.probe.noteConversationOpened('forge/lead');
+    h.probe.noteDrawn('conversation');
+    // A baseline frame, then a fast one: the open settles on the fast frame.
+    h.frame(16);
+    h.frame(16);
+    h.probe.noteSeatClick('forge/lead');
+    h.advance(30_000);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const subscribe = h.records.flat().find((record) => record.kind === 'subscribe');
+    expect(
+      subscribe?.since_click_ms,
+      'a click that opened nothing was armed anyway',
     ).toBeUndefined();
+  });
+
+  /**
+   * **A waking line does not spend the click.** A cold seat draws its waking
+   * placeholder before its read lands, and only the CONTENT drawing proves
+   * the click opened no read - a placeholder clearing the click would lose
+   * the measurement of a cold switch entirely.
+   */
+  it('keeps the click across a waking draw on a cold seat', () => {
+    const h = harness();
+    // The reader is on another seat and clicks this one: a real switch.
+    h.probe.setSurface('session', 'forge/agent');
+    h.probe.noteSeatClick('forge/lead');
+    h.probe.noteConversationOpened('forge/lead');
+    h.probe.noteDrawn('waking');
+    h.advance(1_200);
+    h.probe.noteSubscribe('forge/lead', false);
+
+    const subscribe = h.records.flat().find((record) => record.kind === 'subscribe');
+    expect(
+      subscribe?.since_click_ms,
+      'a waking line spent the click before the seat was read',
+    ).toBe(1_200);
   });
 
   /**

@@ -989,7 +989,10 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     },
     noteSeatClick(seat: string): void {
       const at = now();
-      clickAt = { at, seat };
+      // **A click on the seat already on screen opens nothing**: no switch,
+      // no read, so arming it would hand a later reconnect an old gap as its
+      // own. The click record is still written - it is a real action.
+      clickAt = seat === session ? null : { at, seat };
       lastUserActionAt = at;
       emit({
         schema: SCHEMA,
@@ -1009,11 +1012,16 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       connSubscribes += 1;
       connSurface = surface;
       connSession = session;
-      // **A click is spent by the first subscribe of its OWN seat** (#2708).
+      // **A click is spent by the first subscribe of its OWN seat.** A
+      // subscribe for another seat supersedes it, because the reader went
+      // elsewhere; a sessionless subscribe - the automatic home loop - is no
+      // seat switch and leaves the click armed, so an unrelated ack landing
+      // first cannot cost the click the seat switch it was measuring
+      // (#2513, #2708).
       const clicked = clickAt;
-      clickAt = null;
-      const sinceClick =
-        clicked !== null && seat !== null && clicked.seat === seat ? at - clicked.at : undefined;
+      const own = clicked !== null && seat !== null && clicked.seat === seat;
+      if (own || seat !== null) clickAt = null;
+      const sinceClick = own && clicked !== null ? at - clicked.at : undefined;
       emit({
         schema: SCHEMA,
         kind: 'subscribe',
