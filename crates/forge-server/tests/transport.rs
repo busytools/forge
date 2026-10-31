@@ -2037,6 +2037,15 @@ async fn a_configured_web_origin_connects() {
     let _socket = connect_with_origin(&url, "http://forge-web.example:8080").await;
 }
 
+/// A page the user serves on any loopback port connects over a real
+/// handshake and reads the settings frame, in a release build as well as a
+/// debug one.
+#[tokio::test]
+async fn a_loopback_origin_connects() {
+    let (url, _fleet) = a_server().await;
+    let _socket = connect_with_origin(&url, "http://localhost:53219").await;
+}
+
 /// An unchanged save publishes nothing: the workspace compares the document
 /// it would build with the one the socket holds.
 #[tokio::test]

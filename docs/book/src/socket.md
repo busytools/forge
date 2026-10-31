@@ -18,19 +18,20 @@ network and is never exposed publicly**, which is the whole reason the
 socket carries no authentication: the network is what the access control
 stands on, not a proxy in front of a public bind.
 
-**A browser origin must be one forge serves.** A WebSocket handshake
+**A browser origin must be one of the user's own.** A WebSocket handshake
 carries the page's `Origin`, and the server refuses a present origin that
-is not the shell's (`tauri://localhost`, `http://tauri.localhost`), one of
-the server's own (`http://<bind>:<port>`, read from the config), a page
-served on the user's own machine (`localhost`, `127.0.0.1` or `[::1]`, on
-either web scheme and any port), or one the operator listed in
+is not the shell's (`tauri://localhost`, `http://tauri.localhost`,
+`https://tauri.localhost`), one of the server's own (`http://<bind>:<port>`,
+read from the config), a page served on the user's own machine - the
+`localhost` name or any loopback IP address, on either web scheme and any
+port, in every build - or one the operator listed in
 `[server] allowed_origins`. A web client served from another address has
-its page origin in that list. **The host is compared as parsed, so a
-lookalike such as `localhost.evil.com` is its own host and stays
-refused.** A request with no `Origin` is a native client - the protocol
-client, a harness - and is allowed, because browsers always send one. A
-refusal happens before the greeting, answers 403, and logs
-`socket_origin_refused` with the origin and the peer.
+its page origin in that list. **The authority is read as a host and an
+optional numeric port, so a lookalike such as `localhost.evil.com` or
+`[::1].evil.com` stays refused.** A request with no `Origin` is a native
+client - the protocol client, a harness - and is allowed, because browsers
+always send one. A refusal happens before the greeting, answers 403, and
+logs `socket_origin_refused` with the origin and the peer.
 
 **The connection is kept alive by a ping.** The server pings every 15
 seconds and ends a connection whose ping has gone unanswered for 60: a

@@ -19,10 +19,46 @@ use forge_primitives::server::ServerConfig;
 const SHELL_ORIGINS: &[&str] =
     &["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"];
 
-/// The hosts a page served on the user's own machine is reached at. Any port
-/// and either web scheme, in a release build as well as a debug one, so a dev
-/// client attaches to the running server instead of a scratch forge.
-const LOOPBACK_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]"];
+/// Whether `origin` is a page served on the user's own machine: an http or
+/// https origin whose host is loopback, at any port, in every build.
+///
+/// The host is read from a parsed URI, never matched as a substring: a host
+/// that merely contains a loopback name, like `localhost.evil.com`, is its
+/// own host and stays refused. The authority must be a host and an optional
+/// numeric port exactly, because `http`'s own `host()` stops at the first
+/// `]` and would read `[::1].evil.com` as `[::1]`.
+fn is_loopback_origin(origin: &str) -> bool {
+    let Ok(uri) = origin.parse::<Uri>() else { return false };
+    let web_scheme = uri.scheme_str().is_some_and(|scheme| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    });
+    if !web_scheme {
+        return false;
+    }
+    let Some(authority) = uri.authority() else { return false };
+    let host = authority.host();
+    let Some(rest) = authority.as_str().strip_prefix(host) else { return false };
+    let port_only = rest.is_empty()
+        || rest
+            .strip_prefix(':')
+            .is_some_and(|port| !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()));
+    port_only && is_loopback_host(host)
+}
+
+/// Whether `host` is loopback: the `localhost` name, or any address in a
+/// loopback range. Every form counts, not three literals: `127.0.0.2`, an
+/// expanded `[0:0:0:0:0:0:0:1]` and an IPv4-mapped `[::ffff:127.0.0.1]` are
+/// all this machine.
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let literal = host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host);
+    literal.parse::<IpAddr>().is_ok_and(|address| match address {
+        IpAddr::V4(address) => address.is_loopback(),
+        IpAddr::V6(address) => address.to_canonical().is_loopback(),
+    })
+}
 
 /// Whether a request's `Origin` may open the socket.
 ///
@@ -42,23 +78,6 @@ pub(crate) fn allows(origin: Option<&str>, server: &ServerConfig) -> bool {
         return true;
     }
     own_origins(server).iter().any(|allowed| allowed == origin)
-}
-
-/// Whether `origin` is a page served on the user's own machine: an http or
-/// https origin whose host is loopback, at any port.
-///
-/// The host is read from a parsed URI, never matched as a substring: a host
-/// that merely contains a loopback name, like `localhost.evil.com`, is its
-/// own host and stays refused.
-fn is_loopback_origin(origin: &str) -> bool {
-    let Ok(uri) = origin.parse::<Uri>() else { return false };
-    let web_scheme = uri.scheme_str().is_some_and(|scheme| {
-        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
-    });
-    web_scheme
-        && uri.authority().is_some_and(|authority| {
-            LOOPBACK_HOSTS.iter().any(|host| authority.host().eq_ignore_ascii_case(host))
-        })
 }
 
 /// The origins the server itself is reached at, from `[server] bind` and
@@ -95,9 +114,10 @@ mod tests {
         assert!(!allows(Some("https://evil.example"), &config()));
     }
 
-    /// Any page the user serves on their own machine may attach: loopback
-    /// host, either web scheme, any port. Neither the port nor an allowed
-    /// origin is in the config, so only the loopback rule can allow these.
+    /// Any page the user serves on their own machine may attach: a loopback
+    /// host in any of its forms, either web scheme, any port. Neither the port
+    /// nor an allowed origin is in the config, so only the loopback rule can
+    /// allow these.
     #[test]
     fn a_loopback_origin_on_any_port_is_allowed() {
         for origin in [
@@ -107,6 +127,9 @@ mod tests {
             "https://127.0.0.1:53219",
             "http://[::1]:53219",
             "https://[::1]:53219",
+            "http://127.0.0.2:53219",
+            "http://[0:0:0:0:0:0:0:1]:53219",
+            "http://[::ffff:127.0.0.1]:53219",
             "http://localhost",
             "http://LOCALHOST:53219",
         ] {
@@ -115,15 +138,29 @@ mod tests {
     }
 
     /// The check is on the parsed host, not a substring: a host that merely
-    /// contains a loopback name is a page from somewhere else.
+    /// contains a loopback name is a page from somewhere else, and an
+    /// authority is a host and an optional numeric port exactly - `http`'s
+    /// own `host()` stops at the first `]` and would read `[::1].evil.com` as
+    /// `[::1]`.
     #[test]
     fn a_lookalike_host_is_refused() {
         for origin in [
             "http://localhost.evil.com:53219",
             "https://127.0.0.1.nip.io:53219",
             "http://localhost@evil.com",
-            "http://evil.com#localhost",
+            "http://[::1].evil.com",
+            "http://[::1]evil.com",
+            "http://[::1]:notaport",
         ] {
+            assert!(!allows(Some(origin), &config()), "{origin}");
+        }
+    }
+
+    /// The loopback allowance is for a page's web origin: another scheme, a
+    /// bare authority and a sandboxed frame's `null` are not one.
+    #[test]
+    fn a_non_web_origin_is_refused() {
+        for origin in ["ws://localhost:53219", "localhost:53219", "null"] {
             assert!(!allows(Some(origin), &config()), "{origin}");
         }
     }

@@ -318,10 +318,10 @@ docker build -f client/docker/Dockerfile -t forge-web client
 docker run -p 8080:8080 -v forge-web:/srv/forge-web forge-web
 ```
 
-A page served on loopback connects as it is, so the command above needs no
-config. The socket refuses any other browser origin it was not told to
-serve, so a forge reached from another address lists this image's origin in
-its `[server] allowed_origins`.
+`localhost` origins connect as they are, so the command above needs no
+config. A page served from any other host needs that page's own origin in
+the forge's `[server] allowed_origins`, whatever address the forge itself is
+reached at.
 
 The image ships with the build inside it, so an empty volume is seeded on
 first start. A small poller then keeps the volume at the published release:
