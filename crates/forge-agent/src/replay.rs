@@ -12,13 +12,14 @@ use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
 /// identically to live messages, unifying replay + live code paths.
 ///
 /// Replay-specific transforms applied here:
-/// - A TOP-LEVEL image block keeps its mime and the size its payload weighed,
-///   and loses that payload: the read draws the same attachment row the live
-///   path draws for it, and that row shows no bytes.
+/// - An image or document block keeps its mime and the size its payload
+///   weighed, and loses that payload: the read draws the same attachment row
+///   the live path draws for it, and that row shows no bytes. A queued
+///   prompt's own block list is walked the same way - its attachments draw the
+///   same row, and a payload left there rides every page read.
 ///
-///   **Top-level blocks only, by choice.** A `Document` block and an image
-///   nested in a tool result are passed through untouched - payload and all -
-///   because a call row draws a result's image from its own data URL, and
+///   **A tool result's nested image is passed through untouched** - payload and
+///   all - because a call row draws a result's image from its own data URL, and
 ///   nothing here should change what that gets.
 ///
 /// **Thinking blocks are kept.** A thinking block is the row the chat draws
@@ -151,30 +152,82 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
     out
 }
 
-/// Apply the replay-specific content-block transform: an `Image` block keeps
-/// its mime and the size its payload weighed, and loses the payload itself.
+/// Apply the replay-specific content-block transform: an attachment block
+/// keeps its mime and the size its payload weighed, and loses the payload
+/// itself.
+///
+/// A queued prompt is walked too: its `prompt` is a content-block list, and an
+/// image or document inside it is the same attachment row a typed turn's block
+/// draws - `client/src/chat/units.ts` reads both through `attachedFile`.
 /// Other variants pass through unchanged.
 fn transform_replay_content(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
-    content
-        .into_iter()
-        .map(|block| match block {
-            ContentBlock::Image { source, extras } => attachment(source, extras),
-            other => other,
-        })
-        .collect()
+    content.into_iter().map(transform_block).collect()
 }
 
-/// An image block as the read path keeps it.
+fn transform_block(block: ContentBlock) -> ContentBlock {
+    match block {
+        ContentBlock::Image { source, extras } => {
+            let (source, extras) = without_payload(source, extras);
+            ContentBlock::Image { source, extras }
+        }
+        ContentBlock::Document { source, extras } => {
+            let (source, extras) = without_payload(source, extras);
+            ContentBlock::Document { source, extras }
+        }
+        ContentBlock::QueuedCommand { prompt, command_mode, source_uuid, extras } => {
+            ContentBlock::QueuedCommand {
+                prompt: transform_prompt(prompt),
+                command_mode,
+                source_uuid,
+                extras,
+            }
+        }
+        other => other,
+    }
+}
+
+/// A queued prompt's block list with each nested attachment stripped.
 ///
-/// The block stays an image so the view's own attachment row draws it, as the
-/// live path already does. The payload dropped here is the block's OWN: the
-/// attachment row prints the size and nothing else, so those bytes would ride
-/// to a page that never draws them. What the block carries instead is that
-/// size, under the `forge_bytes` name - forge's own, so it cannot be read as a
-/// field the CLI wrote.
-fn attachment(source: Value, extras: Extras) -> ContentBlock {
+/// **Only a list is walked.** A prompt that reached the transcript as a string
+/// carries no block and no payload; anything else is left as the CLI wrote it.
+fn transform_prompt(prompt: Value) -> Value {
+    let Value::Array(blocks) = prompt else {
+        return prompt;
+    };
+    Value::Array(blocks.into_iter().map(strip_nested_attachment).collect())
+}
+
+fn strip_nested_attachment(block: Value) -> Value {
+    let Value::Object(mut fields) = block else {
+        return block;
+    };
+    let is_attachment =
+        matches!(fields.get("type").and_then(Value::as_str), Some("image" | "document"));
+    if !is_attachment {
+        return Value::Object(fields);
+    }
+    let size = fields
+        .get_mut("source")
+        .and_then(Value::as_object_mut)
+        .and_then(|source| source.remove("data"))
+        .and_then(|data| data.as_str().map(forge_primitives::payload_bytes));
+    if let Some(size) = size {
+        fields.insert("forge_bytes".to_owned(), json!(size));
+    }
+    Value::Object(fields)
+}
+
+/// An attachment block as the read path keeps it.
+///
+/// The block stays the kind it was so the view's own attachment row draws it,
+/// as the live path already does. The payload dropped here is the block's OWN:
+/// the attachment row prints the size and nothing else, so those bytes would
+/// ride to a page that never draws them. What the block carries instead is
+/// that size, under the `forge_bytes` name - forge's own, so it cannot be read
+/// as a field the CLI wrote.
+fn without_payload(source: Value, extras: Extras) -> (Value, Extras) {
     let Some(data) = source.get("data").and_then(Value::as_str) else {
-        return ContentBlock::Image { source, extras };
+        return (source, extras);
     };
     let size = forge_primitives::payload_bytes(data);
     let mut keeps = source;
@@ -183,7 +236,7 @@ fn attachment(source: Value, extras: Extras) -> ContentBlock {
     }
     let mut kept = extras;
     kept.insert("forge_bytes".to_owned(), json!(size));
-    ContentBlock::Image { source: keeps, extras: kept }
+    (keeps, kept)
 }
 
 #[cfg(test)]
@@ -337,6 +390,99 @@ mod tests {
             "a source with no payload is left as it came",
         );
         assert!(extras.is_empty(), "and nothing is invented for it");
+    }
+
+    /// **A queued prompt's attachment rides inside its `prompt` array**, and
+    /// the page draws the same attachment row a typed turn's block draws. Left
+    /// whole, a multi-megabyte screenshot queued mid-turn rides every page
+    /// read of the transcript - the cost the top-level transform exists to
+    /// avoid, on the shape it never walked.
+    #[test]
+    fn synthesize_strips_an_attachment_nested_in_a_queued_prompt() {
+        let data = "A".repeat(400);
+        let messages = vec![json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "queued_command",
+                    "prompt": [
+                        {"type":"text","text":"look at this"},
+                        {"type":"image","source":{"type":"base64","media_type":"image/png","data": data}},
+                        {"type":"document","source":{"type":"base64","media_type":"application/pdf","data": data}}
+                    ],
+                    "commandMode": "prompt",
+                    "source_uuid": "u-1"
+                }]
+            }
+        })];
+        let synthesized = synthesize_replay_messages(&messages);
+        let Message::User { message, .. } = &synthesized[0] else {
+            panic!("expected Message::User");
+        };
+        let ContentBlock::QueuedCommand { prompt, command_mode, source_uuid, .. } =
+            &message.content[0]
+        else {
+            panic!("expected the queued prompt to stay a queued prompt");
+        };
+        assert_eq!(command_mode.as_deref(), Some("prompt"), "the mode survives the walk");
+        assert_eq!(source_uuid.as_deref(), Some("u-1"), "and so does the source uuid");
+        let blocks = prompt.as_array().expect("the prompt is a block list");
+        assert_eq!(
+            blocks[0].get("text").and_then(Value::as_str),
+            Some("look at this"),
+            "a text block inside the prompt is left as it came",
+        );
+        for (at, kind) in [(1usize, "image"), (2, "document")] {
+            let block = &blocks[at];
+            assert_eq!(block.get("type").and_then(Value::as_str), Some(kind), "still {kind}");
+            assert_eq!(
+                block.get("source").and_then(|source| source.get("data")),
+                None,
+                "a queued {kind}'s payload does not ride to a page that draws no bytes",
+            );
+            assert_eq!(
+                block.get("forge_bytes").and_then(Value::as_u64),
+                Some(300),
+                "the size the queued {kind} weighed is what its row prints",
+            );
+        }
+    }
+
+    /// **A document is an attachment row like an image.** The client draws
+    /// both through the same row, from the mime and the measured size, so a
+    /// top-level document's payload is the same cost as a top-level image's
+    /// and loses it the same way.
+    #[test]
+    fn synthesize_strips_a_top_level_document_payload() {
+        let data = "B".repeat(400);
+        let messages = vec![json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type":"document","source":{"type":"base64","media_type":"application/pdf","data": data}}
+                ]
+            }
+        })];
+        let synthesized = synthesize_replay_messages(&messages);
+        let Message::User { message, .. } = &synthesized[0] else {
+            panic!("expected Message::User");
+        };
+        let ContentBlock::Document { source, extras } = &message.content[0] else {
+            panic!("expected the document block to stay a document");
+        };
+        assert_eq!(
+            source.get("media_type").and_then(Value::as_str),
+            Some("application/pdf"),
+            "the row names the mime the block carried",
+        );
+        assert_eq!(source.get("data"), None, "the payload does not ride to a page");
+        assert_eq!(
+            extras.get("forge_bytes").and_then(Value::as_u64),
+            Some(300),
+            "the size the document weighed is what the row prints",
+        );
     }
 
     #[test]
