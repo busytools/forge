@@ -20968,6 +20968,54 @@ provider = "anthropic"
         );
     }
 
+    /// The other comparison is the sanitised key, and it is built from the
+    /// resolved spelling: a run directory that resolves to a different path
+    /// from the project's worker directory but sanitises to the same key
+    /// still names the project.
+    #[tokio::test]
+    async fn a_sanitised_key_names_its_project_from_the_resolved_spelling() {
+        let holder = tempfile::tempdir().expect("holder");
+        let real = holder.path().join("real");
+        let project = real.join("a-b");
+        std::fs::create_dir_all(&project).expect("project dir");
+        run_git_in(&project, &["init", "-q"]);
+        // The run dir's existing ancestor: its last components are gone, so
+        // only the prefix can be canonicalised.
+        std::fs::create_dir_all(real.join("a")).expect("the run dir's existing ancestor");
+        let link = holder.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let cfg = tempfile::tempdir().expect("cfg");
+        let forge_dir = cfg.path().join("forge");
+        std::fs::create_dir_all(&forge_dir).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                "[[orgs]]\nname = \"TestOrg\"\naccounts = [\"acct-a\"]\n\
+                 [[orgs.projects]]\nname = \"proj-a\"\npath = \"{}\"\n\
+                 [[accounts]]\ndisplay_name = \"acct-a\"\ntoken = \"t\"\n\
+                 models = [\"claude-sonnet-5\"]\nprovider = \"anthropic\"\n",
+                project.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let ws = Arc::new(Workspace::new_for_test(cfg.path().to_owned()).expect("boot"));
+        let store = tempfile::tempdir().expect("store dir");
+        ws.install_db_for_test(
+            crate::store::Db::open(&store.path().join("db.redb")).expect("open db"),
+        );
+
+        // Resolves to `real/a/b/.claude/worktrees/shared`, which sanitises to
+        // the same key as the project's `real/a-b/.claude/worktrees/shared`.
+        let gone = link.join("a/b").join(".claude/worktrees/shared");
+        assert!(!gone.exists(), "the run directory is gone, which is the case under test");
+        assert_eq!(
+            ws.projects_composing(&gone, "shared"),
+            vec![("TestOrg".to_owned(), "proj-a".to_owned())],
+            "a sanitised key from the resolved spelling names its project",
+        );
+    }
+
     /// The mirror of the recreation case: the row says the worker runs in
     /// the project root, and the project is a repo. The ensure has to read
     /// the ROW, as the spawn does, or it mints a worktree the resumed
