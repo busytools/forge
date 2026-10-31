@@ -4627,7 +4627,7 @@ mod tests {
                 answer: forge_primitives::document::DocumentHandOffEnding::Done { review_id: None },
             })
             .expect("the answer lands on the parked ask");
-        assert!(fleet.workspace().pending_asks(&seat).is_empty(), "and the park releases",);
+        assert!(fleet.workspace().pending_asks(&seat).is_empty(), "and the park releases");
 
         drop(attached);
         let refused = fleet

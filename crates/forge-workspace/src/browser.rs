@@ -257,10 +257,10 @@ impl Workspace {
     /// answer at once with the ask's id.
     ///
     /// **The person's word arrives later**, as a follow-up turn through
-    /// [`Self::deliver_ask_answer`]: the CLI aborts an MCP call after 70
-    /// seconds and a person may take longer. The tab hold and the refusal
-    /// for a tab that is not the seat's are
-    /// [`Self::register_browser_hand_off`]'s, before any ask exists.
+    /// `deliver_ask_answer`: the CLI aborts an MCP call after 70 seconds and
+    /// a person may take longer. The tab hold and the refusal for a tab that
+    /// is not the seat's are `register_browser_hand_off`'s, before any ask
+    /// exists.
     pub async fn hand_off_browser(
         self: &Arc<Self>,
         caller: &SessionSlot,

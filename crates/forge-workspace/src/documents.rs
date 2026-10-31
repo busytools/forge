@@ -113,9 +113,8 @@ impl Workspace {
     ///
     /// **The reader's finish arrives later.** The `claude` CLI aborts an MCP
     /// `tools/call` after 70 seconds and a reader may take longer, so the
-    /// ending is dispatched as a follow-up turn through
-    /// [`Self::deliver_ask_answer`]. A refused read raises nothing and parks
-    /// on nothing.
+    /// ending is dispatched as a follow-up turn through `deliver_ask_answer`.
+    /// A refused read raises nothing and parks on nothing.
     pub fn hand_off_document(
         self: &Arc<Self>,
         seat: &SessionSlot,
