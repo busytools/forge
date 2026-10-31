@@ -2115,7 +2115,7 @@ mod tests {
     /// not such an fd. A line with no pipe is a host launched by hand.
     #[test]
     fn a_parent_pipe_is_parsed_and_a_standard_stream_is_refused() {
-        use std::os::fd::IntoRawFd;
+        use std::os::fd::AsRawFd as _;
         let args = |extra: &[&str]| -> Vec<String> {
             let mut args = vec!["--cef-host", "--profile", "/p/cef", "--port", "1", "--ring", "r"];
             args.extend_from_slice(extra);
@@ -2123,11 +2123,10 @@ mod tests {
         };
         assert!(super::parse(args(&[])).expect("parses").parent.is_none());
         let (read, _write) = super::parent_watch_pipe();
-        // The read end's number is handed over exactly as the spawn hands
-        // it. The parsed Args holds only the number, so this test gives up
-        // its own copy rather than leaving two owners of one fd.
-        let piped = super::parse(args(&["--parent-pipe", &read.into_raw_fd().to_string()]))
-            .expect("parses");
+        // The parsed Args holds only the fd number, so this test keeps the
+        // read end's owner alive for the call and lets it close at the end.
+        let piped =
+            super::parse(args(&["--parent-pipe", &read.as_raw_fd().to_string()])).expect("parses");
         assert!(piped.parent.is_some(), "the fd is the watch");
         assert!(
             super::parse(args(&["--parent-pipe", "2"])).is_none(),

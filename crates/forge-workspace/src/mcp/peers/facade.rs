@@ -503,10 +503,15 @@ mod lead_resolution_tests {
             },
         );
 
-        assert!(
-            matches!(result, Err(DeliverError::DispatchFailed { .. })),
-            "a prompt the pooled lead's missing task cannot take is a refusal; got {result:?}",
-        );
+        match result {
+            Err(DeliverError::DispatchFailed { message }) => assert!(
+                message.contains("the target's running session did not take the message"),
+                "the refusal is the running branch's own answer, not an unknown target: {message}",
+            ),
+            other => panic!(
+                "a prompt the pooled lead's missing task cannot take is a refusal; got {other:?}"
+            ),
+        }
     }
 
     #[test]

@@ -3578,13 +3578,54 @@ provider = "anthropic"
 
         let refusal = outcome.expect_err("a wake that never started is not a delivery");
         assert!(
-            refusal.contains("could not be woken"),
-            "the refusal names the wake, not just the prompt: {refusal}",
+            refusal.contains("parked message was returned to you"),
+            "the refusal is the parked-bucket read, not the dispatch error arm: {refusal}",
         );
         assert!(
             !workspace.peer_prompt_is_parked(&lead, &message_id),
             "the failed wake's arm expired the parked message",
         );
+    }
+
+    /// The running branch's own acceptance: a live lead takes the prompt and
+    /// the handler answers Ok, routing a `PromptUnder` to its session. A
+    /// branch that answered Err unconditionally would read every peer
+    /// message to a live lead as failed.
+    #[tokio::test]
+    async fn a_delivery_a_running_lead_takes_is_ok() {
+        let (workspace, _updates) = Workspace::testing_stub();
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        // The two facts the running branch resolves on: a pooled handle and
+        // a live command sender behind it.
+        let (handle, _commands) = Workspace::testing_stub_handle();
+        workspace.pool.lock().insert(
+            lead.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::new(handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "lead-session".to_owned(),
+            },
+        );
+        let (commands, mut routed) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(lead.clone(), commands);
+
+        let outcome = handle_deliver_peer_prompt(
+            &workspace,
+            &SessionSlot::from_str_for_test("caller-running"),
+            "forge".to_owned(),
+            fixture_wrapped(),
+        );
+
+        assert!(outcome.is_ok(), "a live session takes the prompt: {outcome:?}");
+        match routed.try_recv().expect("the prompt is routed to the lead's session") {
+            Command::PromptUnder { text, .. } => {
+                assert!(text.contains("fyi"), "the routed prose is the wrapped body: {text}");
+            }
+            other => panic!("expected PromptUnder; got {other:?}"),
+        }
     }
 
     /// I3 - `handle_deliver_peer_prompt` against a sleeping known
