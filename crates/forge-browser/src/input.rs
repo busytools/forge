@@ -131,6 +131,10 @@ pub enum HostInput {
     /// The files a person chose for a page's file dialog: server-local paths
     /// already written for CEF, or none when the dialog was dismissed.
     File { id: u64, paths: Vec<String> },
+    /// Answer a page's JavaScript dialog: `accept` is the button, and `prompt`
+    /// the text a prompt asks for. **The host owns the CEF callback**, so an
+    /// answer can only arrive this way (#2732).
+    Dialog { tab: u16, accept: bool, prompt: Option<String> },
     /// Begin a recording of `tab`'s viewport into `path`, a server-local file
     /// the service has already laid the page out for.
     RecordStart { tab: u16, path: String },

@@ -57,11 +57,11 @@ pub(super) const START_TIMEOUT: Duration = Duration::from_secs(15);
 /// fake in the profile's driver slot without a child process.
 #[async_trait::async_trait]
 pub trait TabDriver: Send + Sync {
-    /// The driver's tabs: each page's guid, its live target id and its row.
+    /// The driver's tabs: each page's CDP target id and its row.
     async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String>;
 
-    /// Bring one tab to the front by its Playwright index.
-    async fn select(&self, index: usize, bound: Duration) -> Result<(), String>;
+    /// Bring one tab to the front by its CDP target id.
+    async fn select(&self, target: &str, bound: Duration) -> Result<(), String>;
 
     /// Run one tool under a bound of its own.
     async fn call_within(
@@ -81,8 +81,8 @@ impl TabDriver for Driver {
         Driver::tabs_within(self, bound).await
     }
 
-    async fn select(&self, index: usize, bound: Duration) -> Result<(), String> {
-        Driver::select(self, index, bound).await
+    async fn select(&self, target: &str, bound: Duration) -> Result<(), String> {
+        Driver::select(self, target, bound).await
     }
 
     async fn call_within(
@@ -106,7 +106,7 @@ impl TabDriver for Driver {
 /// server decides who answers - the controlling person through the client's
 /// picker, or an agent's `browser_file_upload` - and the answer goes back
 /// through the same MCP tool that owns the captured chooser.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct FileChooser {
     pub multiple: bool,
     /// Whether the tab that raised it is the current one. The MCP's upload
@@ -117,14 +117,34 @@ pub struct FileChooser {
     pub url: String,
 }
 
+/// A page's JavaScript dialog, as the agent answered it. **The host owns the
+/// CEF callback**, so the answer cannot go through the page's CDP session; the
+/// patched MCP writes it here instead, and the server hands it to the host.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct DialogAnswer {
+    pub accept: bool,
+    #[serde(default, rename = "promptText")]
+    pub prompt: Option<String>,
+}
+
+/// One line the patched MCP wrote on the driver's socket. **The shapes do not
+/// overlap**, so an untagged read is exact: a chooser names `multiple` and
+/// `current`, an answer names `accept`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum DriverNotice {
+    File(FileChooser),
+    Dialog(DialogAnswer),
+}
+
 /// The driver child, and the MCP client speaking to it.
 pub struct Driver {
     /// Kept so the child is killed when the driver goes: a relaunch must not
     /// leave the old one holding the browser.
     _service: RunningService<rmcp::RoleClient, ()>,
     client: rmcp::Peer<rmcp::RoleClient>,
-    /// Every chooser the patched MCP surfaced, for the profile's own task.
-    choosers: broadcast::Sender<FileChooser>,
+    /// Every notice the patched MCP surfaced, for the profile's own task.
+    choosers: broadcast::Sender<DriverNotice>,
     chooser_task: tokio::task::JoinHandle<()>,
     _chooser_socket: ChooserSocket,
 }
@@ -200,6 +220,11 @@ impl Driver {
                 }
                 cmd.current_dir(output_dir);
                 cmd.env("FORGE_FILE_CHOOSER_SOCKET", chooser_socket);
+                // **The same socket, a second shape**: the host owns a page
+                // dialog's CEF callback, so the agent's answer comes back
+                // through here rather than through the page's CDP session,
+                // which CEF does not route to it (#2732).
+                cmd.env("FORGE_DIALOG_SOCKET", chooser_socket);
             }))
             .map_err(|why| format!("the driver would not start: {why}"))?;
 
@@ -258,8 +283,9 @@ impl Driver {
         })
     }
 
-    /// Every file chooser the patched MCP has surfaced for this driver.
-    pub fn file_choosers(&self) -> broadcast::Receiver<FileChooser> {
+    /// Every notice the patched MCP has surfaced for this driver: a page's
+    /// chooser, or the agent's answer to a page's dialog.
+    pub fn notices(&self) -> broadcast::Receiver<DriverNotice> {
         self.choosers.subscribe()
     }
 
@@ -300,7 +326,7 @@ impl Driver {
         self.tabs_within(CALL_TIMEOUT).await
     }
 
-    /// The driver's tabs: each page's guid, its live target id and its row.
+    /// The driver's tabs: each page's target id and its row.
     pub async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String> {
         let parts =
             self.call_raw("browser_tabs", serde_json::json!({ "action": "list" }), bound).await?;
@@ -315,11 +341,11 @@ impl Driver {
         Ok(tabs)
     }
 
-    /// Bring one tab to the front by its Playwright index.
-    pub async fn select(&self, index: usize, bound: Duration) -> Result<(), String> {
+    /// Bring one tab to the front by its CDP target id.
+    pub async fn select(&self, target: &str, bound: Duration) -> Result<(), String> {
         self.call_raw(
             "browser_tabs",
-            serde_json::json!({ "action": "select", "index": index }),
+            serde_json::json!({ "action": "select", "target": target }),
             bound,
         )
         .await
@@ -576,27 +602,27 @@ fn bind_chooser_socket(path: &Path) -> Result<UnixListener, String> {
     Ok(listener)
 }
 
-/// One connection is one chooser: the patched MCP writes a JSON line and
+/// One connection is one notice: the patched MCP writes a JSON line and
 /// closes, and the profile's task decides who answers it.
-async fn serve_choosers(listener: UnixListener, choosers: broadcast::Sender<FileChooser>) {
+async fn serve_choosers(listener: UnixListener, choosers: broadcast::Sender<DriverNotice>) {
     loop {
         let Ok((stream, _)) = listener.accept().await else { continue };
         let choosers = choosers.clone();
         tokio::spawn(async move {
-            // **One chooser is one short line**: a writer cannot make the
+            // **One notice is one short line**: a writer cannot make the
             // driver allocate an unbounded string, and the patched MCP's
-            // line (a mode, the tab's current flag and a 512-byte URL) is
-            // far under this.
+            // lines (a chooser's mode and URL, or a dialog's answer) are far
+            // under this.
             let mut lines = BufReader::new(stream.take(4096)).lines();
             let Ok(Some(line)) = lines.next_line().await else { return };
-            match serde_json::from_str::<FileChooser>(&line) {
-                Ok(chooser) => {
-                    let _ = choosers.send(chooser);
+            match serde_json::from_str::<DriverNotice>(&line) {
+                Ok(notice) => {
+                    let _ = choosers.send(notice);
                 }
                 Err(why) => {
                     tracing::debug!(
-                        "a file chooser line could not be read (event_name \
-                         browser_chooser_unreadable): {why}"
+                        "a driver notice could not be read (event_name \
+                         browser_notice_unreadable): {why}"
                     );
                 }
             }
@@ -640,7 +666,6 @@ pub fn node_path(stack: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tabs::index_of;
     use rmcp::model::CallToolResult;
 
     /// **An attach that never finished is the host's failure, not the
@@ -870,18 +895,16 @@ mod tests {
         assert!(browser_tabs_of("no tabs here").is_empty());
     }
 
-    /// **A page call selects the session's tab first.** The index comes from a
-    /// fresh listing, so a close by another session since the last call cannot
-    /// leave the selection one tab off.
+    /// **A listing carries the target id a call selects by**, and nothing
+    /// else names a page: the driver's own position renumbers on every close.
     #[test]
-    fn a_listing_gives_the_index_of_a_known_page() {
-        let listing = "FORGE-TABS [{\"i\":0,\"id\":\"A\",\"target\":\"tA\",\"title\":\"x\",\
-                       \"url\":\"u\",\"current\":false},{\"i\":1,\"id\":\"B\",\"target\":\"tB\",\
+    fn a_listing_carries_the_target_a_call_selects_by() {
+        let listing = "FORGE-TABS [{\"i\":0,\"target\":\"tA\",\"title\":\"x\",\
+                       \"url\":\"u\",\"current\":false},{\"i\":1,\"target\":\"tB\",\
                        \"title\":\"y\",\"url\":\"v\",\"current\":true}]\n";
         let tabs = crate::tabs::parse_export(listing).expect("the export parses");
-        assert_eq!(index_of(&tabs, "B"), Some(1), "the page guid names the tab");
-        assert_eq!(index_of(&tabs, "tB"), None, "a target id is not the name");
-        assert_eq!(index_of(&tabs, "C"), None);
+        assert_eq!(tabs[1].target, "tB", "the target is the page's name");
+        assert!(tabs[1].current, "and the row says whether it is the current tab");
     }
 
     #[test]
@@ -929,21 +952,21 @@ mod tests {
         assert!(args.contains(&"--allow-unrestricted-file-access".to_owned()), "{args:?}");
     }
 
-    /// **The patched MCP surfaces a chooser on the driver's socket**: one
-    /// line per connection, read into the event the profile answers. A line
-    /// that is not a chooser is dropped rather than read as one.
+    /// **The patched MCP surfaces a chooser and a dialog answer on the same
+    /// socket**: one line per connection, read into the notice the profile
+    /// routes. A line that is neither is dropped rather than read as one.
     #[tokio::test]
-    async fn a_chooser_line_reaches_the_driver_and_a_bad_one_does_not() {
+    async fn a_chooser_and_a_dialog_answer_reach_the_driver_and_a_bad_line_does_not() {
         use tokio::io::AsyncWriteExt as _;
 
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = dir.path().join("file-chooser.sock");
         let listener = bind_chooser_socket(&path).expect("the socket binds");
-        let (events, mut choosers) = broadcast::channel(4);
+        let (events, mut notices) = broadcast::channel(4);
         let task = tokio::spawn(serve_choosers(listener, events));
 
         let mut bad = tokio::net::UnixStream::connect(&path).await.expect("connect");
-        bad.write_all(b"not a chooser\n").await.expect("write the bad line");
+        bad.write_all(b"not a notice\n").await.expect("write the bad line");
         drop(bad);
         let mut good = tokio::net::UnixStream::connect(&path).await.expect("connect");
         good.write_all(
@@ -953,12 +976,32 @@ mod tests {
         .expect("write the chooser");
         drop(good);
 
-        let chooser = tokio::time::timeout(Duration::from_secs(2), choosers.recv())
+        let chooser = tokio::time::timeout(Duration::from_secs(2), notices.recv())
             .await
             .expect("the chooser arrives")
             .expect("the channel feeds");
+        let DriverNotice::File(chooser) = chooser else {
+            panic!("a chooser line is a chooser");
+        };
         assert!(chooser.multiple, "the mode is the page's");
         assert_eq!(chooser.url, "http://127.0.0.1:8799/");
+
+        // **The agent's dialog answer rides the same socket**, and is told
+        // apart from a chooser by its own shape.
+        let mut answer = tokio::net::UnixStream::connect(&path).await.expect("connect");
+        answer
+            .write_all(b"{\"accept\":true,\"promptText\":\"ada\"}\n")
+            .await
+            .expect("write the answer");
+        drop(answer);
+        let notice = tokio::time::timeout(Duration::from_secs(2), notices.recv())
+            .await
+            .expect("the answer arrives")
+            .expect("the channel feeds");
+        assert_eq!(
+            notice,
+            DriverNotice::Dialog(DialogAnswer { accept: true, prompt: Some("ada".to_owned()) }),
+        );
         task.abort();
     }
 

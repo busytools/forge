@@ -1,0 +1,12 @@
+      handle: async (tab2, params2, response2) => {
+        const dialogState = tab2.modalStates().find((state) => state.type === "dialog");
+        if (!dialogState)
+          throw new Error("No dialog visible");
+        tab2.clearModalState(dialogState);
+        await tab2.waitForCompletion(async () => {
+          if (params2.accept)
+            await dialogState.dialog.accept(params2.promptText);
+          else
+            await dialogState.dialog.dismiss();
+        });
+      },

@@ -24,10 +24,30 @@ can reference them instead of restating them:
 A learning that exists only in the handoff is not recorded - the handoff gets rewritten, memory
 persists.
 
+## Where the handoff goes: lead or worker
+
+The project memory directory is shared by every session in the project, so the destination
+depends on the SEAT, not only the project. Ask `agents__whoami` when that tool is available
+(forge sessions only):
+
+- **label `lead`, or no forge at all** -> `handoff.md` in the project memory directory, indexed
+  in `MEMORY.md` by Step 3. This is the project's rolling state, and the lead owns it.
+- **any other label (a forge worker)** -> `workers/<label>.md` in the same memory directory, and
+  **never** `handoff.md`, and **no** `MEMORY.md` line. A worker's continuity is already carried
+  by its own resumable session, its board row and its messages to the lead; the shared file is
+  the lead's, and a worker writing it overwrites the lead's rolling state with its own.
+
+The content and shape below are the same for both. Only the address differs.
+
+**The project index is the lead's as well.** Step 1's "update the memory index in the same edit"
+is the lead's duty; a worker records its learnings in its own file and leaves `MEMORY.md` alone,
+so the index never lists a seat that has gone.
+
 ## Step 2 - Write the handoff
 
 **Location: the session's project memory directory** - the one whose `MEMORY.md` auto-loads for
-this project. The file is `handoff.md` in that directory; rewrite it in place each time. Never
+this project. **The file is `handoff.md` in that directory** for a lead; a worker writes
+`workers/<label>.md` as the seat section says. Rewrite it in place each time. Never
 write it to /tmp (invisible to a fresh session and wiped on reboot) and never into the
 workspace's tracked tree (it is a generated doc; committing it pollutes git - the memory dir is
 the gitignored home for exactly this).
@@ -55,6 +75,8 @@ Add or update the `handoff.md` line in the project memory's `MEMORY.md` in the s
 line leads with a status token (SHIPPED / IN FLIGHT / BLOCKED) plus a one-line hook - the index
 line is what the next session actually sees; the file is only reachable through it.
 
+A worker writes no index line: its file is its own seat's, reached by the worker itself.
+
 ## Forge: close out and exit
 
 When forge hands the seat over, three things happen on top of the steps above.
@@ -71,7 +93,8 @@ open - with the reason it stopped and where its context lives. The next session 
 where this one stopped; anything left out is lost when the turn ends.
 
 **Exit through the tool.** Forge takes the note as you wrote it - there are no headings to fill
-in, and your Step 2 document is the note. Write it where Step 2 says, then pass the same text to
+in, and your Step 2 document is the note. Write it where the seat section and Step 2 say, then
+pass the same text to
 `agents__handoff` as `brief` as the turn's last act. Memory first, then close out what is
 running, then the note. Do not call `agents__handoff` for any other reason - a handoff starts at
 `/handoff` or at the automatic trigger (fill or compaction).

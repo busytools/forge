@@ -249,10 +249,10 @@ impl WorktreeDisposition {
 /// session task. `Workspace::dispatch` fans the variant into the
 /// matching task's command receiver.
 ///
-/// A reply channel cannot cross a socket, so the seven fields carrying one
-/// are `Option` and skipped on the wire: `#[serde(skip)]` reconstructs a
-/// field on deserialize, which needs a `Default`, and a bare
-/// `oneshot::Sender` has none while an `Option` does.
+/// A reply channel cannot cross a socket, so the fields carrying one are
+/// `Option` and skipped on the wire: `#[serde(skip)]` reconstructs a field
+/// on deserialize, which needs a `Default`, and a bare `oneshot::Sender` has
+/// none while an `Option` does.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Command {
@@ -275,6 +275,12 @@ pub enum Command {
         uuid: String,
         /// Who dispatched it, for the queued row's label.
         source: PromptSource,
+        /// The pressing view's own token for this press, like
+        /// [`Self::MarketplaceAdd`]'s: a refusal of this prompt echoes it, so
+        /// a composer with sends out on two seats marks the one that failed
+        /// (#1583). `None` from a view that minted none.
+        #[serde(default)]
+        dispatch_id: Option<u64>,
         /// Who submitted the words, for the frame the SESSION TASK draws
         /// before it hands the prompt to the CLI.
         ///
@@ -593,6 +599,13 @@ pub enum Command {
         caller: SessionSlot,
         target_project: String,
         wrapped: WrappedPrompt,
+        /// What happened to the prompt: `Ok(())` once it was accepted -
+        /// handed to the target's running session, or parked for a spawn
+        /// this handler kicked off - and `Err(reason)` when nothing could
+        /// take it. The sender's ack is built from this answer alone, the
+        /// way the worker engine's is (#2342).
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Result<(), String>>>,
     },
     /// Spawn a new worker session in `project_key`. Dispatched by
     /// the `agents__spawn` MCP Tool impl after caller-tag validation,
@@ -796,6 +809,18 @@ pub enum Command {
         project: String,
         branch: String,
         thread: ReviewThread,
+        /// The seat whose words this write sends: a landed take's words are
+        /// the seat's until a write carries them, and this is what tells the
+        /// composer which take the comment spends (#2283). `None` from a
+        /// client older than the field, and from a write no seat made.
+        #[serde(default)]
+        origin: Option<SessionSlot>,
+        /// **The words this press sent**, as the ask's `answered_with` states
+        /// its own: the thread carries every turn it ever had, so the composer
+        /// cannot tell the new comment from an old one that happens to match a
+        /// landed take (#2283). `None` from a client older than the field.
+        #[serde(default)]
+        sent_words: Option<String>,
         #[serde(skip)]
         respond: Option<oneshot::Sender<bool>>,
     },
@@ -895,7 +920,9 @@ impl Command {
     /// named one: what a refusal echoes and the outcome frames carry back.
     pub fn dispatch_id(&self) -> Option<u64> {
         match self {
-            Self::MarketplaceAdd { dispatch_id, .. } => *dispatch_id,
+            Self::MarketplaceAdd { dispatch_id, .. } | Self::PromptUnder { dispatch_id, .. } => {
+                *dispatch_id
+            }
             _ => None,
         }
     }
@@ -1991,6 +2018,10 @@ pub enum SessionUpdate {
         key: SessionSlot,
         #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
         peak_db: f32,
+        /// The take's own, as [`SessionUpdate::DictateStarted`] announced it:
+        /// a reading that arrives after a newer take started is the older
+        /// one's and belongs in no live meter.
+        generation: u64,
         /// The take's own, as [`SessionUpdate::DictateStarted`] announced
         /// it.
         #[serde(skip)]
@@ -1999,6 +2030,10 @@ pub enum SessionUpdate {
     /// The take from `key` was submitted and a transcript is in flight.
     DictateTranscribing {
         key: SessionSlot,
+        /// The take's own, as [`SessionUpdate::DictateStarted`] announced it:
+        /// a stale one must not move a newer take to `transcribing` while its
+        /// microphone still records.
+        generation: u64,
         /// The take's own, as [`SessionUpdate::DictateStarted`] announced
         /// it.
         #[serde(skip)]
@@ -2909,6 +2944,7 @@ mod dictate_level_wire_tests {
         let silent = SessionUpdate::DictateLevel {
             key: key.clone(),
             peak_db: f32::NEG_INFINITY,
+            generation: 1,
             initiator: None,
         };
         let encoded = serde_json::to_value(&silent).expect("a level encodes");
@@ -2924,13 +2960,45 @@ mod dictate_level_wire_tests {
         assert_eq!(peak_db, f32::NEG_INFINITY, "null must read back as no signal");
 
         // And a reading that IS a signal is untouched by the tolerance.
-        let heard = SessionUpdate::DictateLevel { key, peak_db: -22.5, initiator: None };
+        let heard =
+            SessionUpdate::DictateLevel { key, peak_db: -22.5, generation: 1, initiator: None };
         let encoded = serde_json::to_value(&heard).expect("a level encodes");
         let back: SessionUpdate = serde_json::from_value(encoded).expect("a level decodes");
         let SessionUpdate::DictateLevel { peak_db, .. } = back else {
             panic!("the level decoded into another update")
         };
         assert_eq!(peak_db, -22.5);
+    }
+
+    /// **A reading and a transcribing name the take they belong to.** They
+    /// are the two frames a client uses to draw a live take, and a frame
+    /// that arrived after a newer start is the older take's: without the
+    /// number the client cannot tell, and writes it into the live meter
+    /// (#839).
+    #[test]
+    fn a_reading_and_a_transcribing_cross_with_their_generation() {
+        let key = SessionSlot::from_str_for_test("take-generation".to_owned());
+        let level = SessionUpdate::DictateLevel {
+            key: key.clone(),
+            peak_db: -20.0,
+            generation: 7,
+            initiator: None,
+        };
+        let encoded = serde_json::to_value(&level).expect("a level encodes");
+        assert_eq!(
+            encoded["dictate_level"]["generation"],
+            serde_json::json!(7),
+            "a reading carries its take's own number: {encoded}"
+        );
+
+        let transcribing =
+            SessionUpdate::DictateTranscribing { key, generation: 7, initiator: None };
+        let encoded = serde_json::to_value(&transcribing).expect("a transcribing encodes");
+        assert_eq!(
+            encoded["dictate_transcribing"]["generation"],
+            serde_json::json!(7),
+            "and so does the frame that says it is transcribing: {encoded}"
+        );
     }
 
     /// A take that heard nothing crosses the peak in its END the same way a
@@ -2998,8 +3066,17 @@ mod dictate_wire_ownership_tests {
                 generation: 1,
                 initiator: Some(7),
             },
-            SessionUpdate::DictateLevel { key: key.clone(), peak_db: -20.0, initiator: Some(7) },
-            SessionUpdate::DictateTranscribing { key: key.clone(), initiator: Some(7) },
+            SessionUpdate::DictateLevel {
+                key: key.clone(),
+                peak_db: -20.0,
+                generation: 1,
+                initiator: Some(7),
+            },
+            SessionUpdate::DictateTranscribing {
+                key: key.clone(),
+                generation: 1,
+                initiator: Some(7),
+            },
             SessionUpdate::DictateProgress {
                 key: key.clone(),
                 generation: 1,
@@ -3097,6 +3174,26 @@ mod workers_command_tests {
             None,
             "a command no press names a dispatch for carries none",
         );
+    }
+
+    /// **A prompt's press names itself too** (#1583). The refusal of a
+    /// prompt echoes the dispatch id it carried, so a composer with sends
+    /// out on two seats marks the one the core refused rather than both -
+    /// and a view that minted none, which is every view before this field,
+    /// still parses.
+    #[test]
+    fn a_prompt_under_names_the_dispatch_its_press_made() {
+        let named: Command = serde_json::from_str(
+            r#"{"prompt_under":{"key":{"org":"Org","project":"p","label":"lead"},"text":"hi","attachments":[],"uuid":"u1","source":"you","dispatch_id":9}}"#,
+        )
+        .expect("a press that names its dispatch");
+        assert_eq!(named.dispatch_id(), Some(9), "the accessor reads the press's own id");
+
+        let bare: Command = serde_json::from_str(
+            r#"{"prompt_under":{"key":{"org":"Org","project":"p","label":"lead"},"text":"hi","attachments":[],"uuid":"u1","source":"you"}}"#,
+        )
+        .expect("a press that named none still parses");
+        assert_eq!(bare.dispatch_id(), None, "and answers none");
     }
 
     /// A move WITHOUT a place parses: the keyboard's lane step sends the

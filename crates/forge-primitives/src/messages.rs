@@ -26,6 +26,19 @@ pub fn names_a_dispatch(parent_tool_use_id: Option<&str>) -> bool {
     parent_tool_use_id.is_some_and(|parent| !parent.trim().is_empty())
 }
 
+/// Whether `message` ran under a sub-agent dispatch, the chat's own skip
+/// rule: such a frame is card material, so a chat read that carried it would
+/// spend its frame budget on a row no page draws.
+pub fn ran_under_a_dispatch(message: &Message) -> bool {
+    match message {
+        Message::Assistant { parent_tool_use_id, .. }
+        | Message::User { parent_tool_use_id, .. } => {
+            names_a_dispatch(parent_tool_use_id.as_deref())
+        }
+        _ => false,
+    }
+}
+
 /// One stream-json message.
 ///
 /// Wire-level dispatch on `type` and, for `type="system"`, on `subtype` is

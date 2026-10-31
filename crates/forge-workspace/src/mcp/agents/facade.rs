@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::SessionSlot;
 use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL};
-use crate::mcp::peers::facade::WorkspaceFacade;
+use crate::mcp::peers::facade::{DeliverError, WorkspaceFacade};
 use crate::mcp::peers::types::WrappedPrompt;
 use crate::mcp::workers::facade::{WorkerDeliverError, WorkerFacade, WorkerLeadDeliverError};
 
@@ -58,9 +58,14 @@ impl AgentDispatcher {
         if target.label() == LEAD_LABEL {
             return match self.peers.deliver_peer_prompt(caller, target.project(), wrapped) {
                 Ok(()) => Ok(()),
-                Err(err) => Err(format!(
-                    "project '{}' is no longer reachable ({err:?}); call agents__list to see \
-                     who you can reach.",
+                Err(DeliverError::UnknownTarget { .. }) => Err(format!(
+                    "project '{}' is no longer reachable; call agents__list to see who you can \
+                     reach.",
+                    target.project(),
+                )),
+                Err(DeliverError::DispatchFailed { message }) => Err(format!(
+                    "project '{}' did not take the message ({message}). Nothing was delivered, \
+                     so do not wait on an answer from it.",
                     target.project(),
                 )),
             };
@@ -293,5 +298,26 @@ mod tests {
             .await
             .expect_err("no live worker by that label");
         assert!(err.contains("ghost"), "the refusal names the label: {err}");
+    }
+
+    /// **A refused delivery tells the caller nothing was delivered.** The
+    /// handler's refusal is not an ambiguous failure; waiting on an answer
+    /// from a project that never took the message is exactly the overclaim
+    /// (#2342).
+    #[tokio::test]
+    async fn a_refused_delivery_says_nothing_was_delivered() {
+        let (peers, workers, dispatcher) = host();
+        let caller = caller_in_own_project(&workers);
+        *peers.force_deliver_error.lock() = Some(DeliverError::DispatchFailed {
+            message: "the target's running session did not take the message (closed)".to_owned(),
+        });
+        let err = dispatcher
+            .deliver(&caller, &target("other", "proj", None), message())
+            .await
+            .expect_err("the handler refused the delivery");
+        assert!(
+            err.contains("Nothing was delivered, so do not wait on an answer from it."),
+            "the caller-facing sentence says the message went nowhere: {err}",
+        );
     }
 }

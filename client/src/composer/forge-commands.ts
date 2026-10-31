@@ -22,9 +22,9 @@ interface ForgeCommand {
 
 export const FORGE_COMMANDS: ForgeCommand[] = [
   { name: '/compact', description: 'Compact session context' },
-  { name: '/effort', description: 'Set thinking effort' },
+  { name: '/effort', description: 'Show / set thinking effort' },
   { name: '/handoff', description: 'Hand off to a fresh session' },
-  { name: '/mode', description: 'Set session mode' },
+  { name: '/mode', description: 'Show / set session mode' },
   { name: '/model', description: 'Show / set session model' },
   { name: '/new', description: 'Start a fresh session' },
   { name: '/resume', description: 'Resume a session by ID' },

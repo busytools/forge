@@ -273,15 +273,31 @@
     // sent is dead, so the retry is a new prompt that happens to say the same
     // words - and the pile settles each by id, never by text.
     const id = mintPromptId();
-    echoes.post(seat, held.words, runningAt(connection, slot, newestTurn?.running === true), id);
+    // The press's own number, echoed by a refusal, exactly as the composer's
+    // own send carries it (#1583): a reason arriving later names this send.
+    const dispatch = echoes.mint();
+    echoes.post(
+      seat,
+      held.words,
+      runningAt(connection, slot, newestTurn?.running === true),
+      id,
+      dispatch,
+    );
     try {
       // Fire-and-forget like the composer's own send: the outcome rides the
-      // subscription rather than a reply, so there is nothing to await.
+      // subscription rather than a reply, so there is nothing here to await.
       // No seat handed over: this retry's refusal is drawn by the echo row
       // below, with the retry button the reader came here for - a notice line
       // beside it would tell the same loss twice.
       void connection.dispatch({
-        prompt_under: { key: slot, text: held.words, attachments: [], uuid: id, source: 'you' },
+        prompt_under: {
+          key: slot,
+          text: held.words,
+          attachments: [],
+          uuid: id,
+          source: 'you',
+          dispatch_id: dispatch,
+        },
       });
     } catch {
       // A closed socket throws rather than answering, so the row says why

@@ -89,13 +89,11 @@ fn driver_call(tool: &str, args: Value) -> Result<DriverCall<'_>, String> {
     }
 }
 
-/// One browser call's tool, deadline and the host it drives.
+/// One browser call's tool and deadline.
 struct Drive<'a> {
     tool: &'a str,
     args: Value,
     deadline: tokio::time::Instant,
-    port: u16,
-    generation: u64,
 }
 
 /// The driver a test's replacement installs, one-shot.
@@ -352,7 +350,7 @@ impl BrowserService {
                             &driver,
                             port,
                             deadline,
-                            ReconcilePass::Pairing { first: !request.warned },
+                            ReconcilePass { first: !request.warned },
                         ),
                     )
                     .await
@@ -1073,15 +1071,8 @@ impl BrowserService {
         // `browser_evaluate` would name a tool the session never called.
         let challenge = reported == "browser_challenge_state";
         let retry_args = args.clone();
-        let (tab, outcome) = self
-            .drive(
-                &profile,
-                seat,
-                &driver,
-                tab,
-                Drive { tool: driver_tool, args, deadline, port, generation },
-            )
-            .await;
+        let (tab, outcome) =
+            self.drive(&profile, &driver, tab, Drive { tool: driver_tool, args, deadline }).await;
         // **The agent answered a chooser the driver had not reported yet.**
         // One event is owed to this answer, so it is consumed rather than
         // asking a person for a chooser that no longer exists.
@@ -1199,32 +1190,48 @@ impl BrowserService {
     /// The session's tab for a page call: its current one, else the profile's
     /// own boot tab when nobody has adopted it, else a tab created through the
     /// host. Answers the tab and whether it was made for this call.
+    ///
+    /// **The boot tab's target is the browser's**, read from the host's own
+    /// page list: a page's renderer is never consulted, so a tab whose page
+    /// stopped answering cannot hold the first call either (#2732).
     async fn ensure_tab(
         &self,
         profile: &Arc<Profile>,
         seat: &SessionSlot,
         driver: &mut Arc<dyn TabDriver>,
         deadline: tokio::time::Instant,
-        generation: u64,
+        _generation: u64,
     ) -> Result<(u16, bool), String> {
         if let Some(tab) = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).current(seat)
         {
             return Ok((tab, false));
         }
         let boot = profile.boot.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some((number, _)) = boot {
-            // **The boot tab's target is the driver's, not the endpoint's.**
-            // The driver's listing is what a call selects by, so the adoption
-            // takes its row rather than a target read before the driver
-            // attached.
-            let listing =
-                self.tabs_recovering(profile, driver, "boot", deadline, generation).await?;
-            if let Some(first) = listing.first() {
+        if let Some((number, target)) = boot {
+            let port = {
+                let state = profile.state.lock().await;
+                state.host.as_ref().map(|host| host.port)
+            };
+            let first = match port {
+                Some(port) => spawn::page_list(port).await.into_iter().next().map(|page| {
+                    crate::tabs::DriverTab {
+                        index: 0,
+                        target: page.id,
+                        title: page.title,
+                        url: page.url,
+                        current: true,
+                    }
+                }),
+                // A test service has no host and no page list: the fake
+                // driver is the tab source.
+                None => driver.tabs_within(left(deadline)).await?.into_iter().next(),
+            };
+            if let Some(first) = first {
+                let target = if target.is_empty() { first.target } else { target };
                 let adopted = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).adopt(
                     number,
                     seat.clone(),
-                    &first.id,
-                    &first.target,
+                    &target,
                     &first.title,
                     &first.url,
                 );
@@ -1254,9 +1261,7 @@ impl BrowserService {
         // calling.
         #[cfg(test)]
         if profile.state.lock().await.host.is_none() {
-            let generation = { profile.state.lock().await.driver_generation };
-            let tabs =
-                self.tabs_recovering(profile, driver, "create", deadline, generation).await?;
+            let tabs = driver.tabs_within(left(deadline)).await?;
             let newest =
                 tabs.last().ok_or_else(|| "the fake driver has no tab to adopt".to_owned())?;
             // The fake's listing order is its creation order, so the newest
@@ -1266,7 +1271,6 @@ impl BrowserService {
             return profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).adopt(
                 number,
                 seat.clone(),
-                &newest.id,
                 &newest.target,
                 &newest.title,
                 &newest.url,
@@ -1398,21 +1402,22 @@ impl BrowserService {
         // it.
         let (fresh, fresh_generation) = {
             let _rebuilding = profile.rebuild.lock().await;
-            self.install_fresh_driver_locked(profile, deadline).await?
+            self.install_fresh_driver_locked(profile).await?
         };
         *driver = Arc::clone(&fresh);
-        let listing = match fresh.tabs_within(left(deadline)).await {
-            Ok(listing) => listing,
-            Err(why) if driver::died(&why) => {
-                // **A fresh driver that cannot list means the host's pages
-                // are wedged**, and this create never reaches
-                // `tabs_recovering`'s recovery: the call's failure path ends
-                // the host instead.
+        if let Err(why) = fresh.tabs_within(left(deadline)).await {
+            // **A fresh driver that cannot list means the host's pages are
+            // wedged**, and this create never reaches a listing recovery: the
+            // call's failure path ends the host instead.
+            if driver::died(&why) {
                 Self::mark_host_suspect(profile, fresh_generation).await;
-                return Err(why);
             }
-            Err(why) => return Err(why),
-        };
+            return Err(why);
+        }
+        // **The host's own page list names the tab it just made.** The
+        // browser answers this with a renderer stopped, so a create cannot
+        // be held by one (#2732).
+        let pages = spawn::page_list(port).await;
         let requested = {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             let known: HashSet<String> = tabs
@@ -1420,22 +1425,16 @@ impl BrowserService {
                 .into_iter()
                 .filter_map(|tab| tabs.target(tab).map(str::to_owned))
                 .collect();
-            let new_rows: Vec<crate::tabs::DriverTab> = listing
-                .iter()
-                .filter(|row| {
-                    !row.target.is_empty()
-                        && !before_targets.contains(&row.target)
-                        && !known.contains(&row.target)
+            let new_pages: Vec<spawn::PageTarget> = pages
+                .into_iter()
+                .filter(|page| {
+                    !page.id.is_empty()
+                        && !before_targets.contains(&page.id)
+                        && !known.contains(&page.id)
                 })
-                .cloned()
                 .collect();
-            // **Births and pages are both creation-ordered**, so the request's
-            // place among the host's births is its place among the new pages.
-            new_rows
-                .get(ours)
-                .map(|row| {
-                    tabs.adopt(number, seat.clone(), &row.id, &row.target, &row.title, &row.url)
-                })
+            choose_new_page(&new_pages, ours)
+                .map(|page| tabs.adopt(number, seat.clone(), &page.id, &page.title, &page.url))
                 .and_then(Result::ok)
         };
         let Some(requested) = requested else {
@@ -1478,6 +1477,11 @@ impl BrowserService {
     /// The `browser_tabs` tool, answered from the registry: **the host's
     /// numbers are the tab names**, and no driver call is needed to list,
     /// select or close one.
+    ///
+    /// **The browser's own page list is the only other reader here.** The
+    /// driver's tab listing used to run before this answer and attached a CDP
+    /// session to every page, so one paused renderer held every session's
+    /// listing for the whole call budget (#2732).
     async fn tabs_tool(
         &self,
         profile: &Arc<Profile>,
@@ -1487,18 +1491,8 @@ impl BrowserService {
         deadline: tokio::time::Instant,
     ) -> Result<Vec<BrowserPart>, String> {
         let action = args.get("action").and_then(Value::as_str).unwrap_or("list");
-        // **The list is reconciled before it is drawn.** A popup the host
-        // opened since the last page call is a tab by the time a session
-        // lists them, and a page the driver made for itself is closed here.
-        let port = {
-            let state = profile.state.lock().await;
-            state.host.as_ref().map(|host| host.port)
-        };
-        if let Some(port) = port {
-            self.reconcile(profile, driver, port, deadline, ReconcilePass::Call(seat)).await;
-        }
         match action {
-            "list" => {}
+            "list" => self.refresh_rows(profile).await,
             "new" => {
                 let number = self.create_tab(profile, seat, driver, left(deadline)).await?;
                 if let Some(url) =
@@ -1509,19 +1503,8 @@ impl BrowserService {
                         .call_within("browser_navigate", json!({ "url": url }), left(deadline))
                         .await?;
                     // **The new row is the page's name now**: a navigation
-                    // swaps the target and changes the title and url the
-                    // next list must show.
-                    let page = profile
-                        .tabs
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .id(number)
-                        .map(str::to_owned);
-                    if let (Some(page), Ok(listing)) =
-                        (page, driver.tabs_within(left(deadline)).await)
-                    {
-                        Self::tab_index(profile, number, &page, &listing);
-                    }
+                    // changes the title and url the next list must show.
+                    self.refresh_rows(profile).await;
                 }
             }
             "select" => {
@@ -1536,6 +1519,40 @@ impl BrowserService {
             other => return Err(format!("browser_tabs does not know the action '{other}'")),
         }
         Ok(vec![BrowserPart::Text { text: self.render_tabs(profile, seat) }])
+    }
+
+    /// Refresh the registry's titles and urls from the browser's own page
+    /// list. **A row is matched by its target**, the one name the browser and
+    /// the registry share, and a page the list does not carry keeps what the
+    /// row had.
+    async fn refresh_rows(&self, profile: &Arc<Profile>) {
+        let port = {
+            let state = profile.state.lock().await;
+            state.host.as_ref().map(|host| host.port)
+        };
+        let Some(port) = port else { return };
+        let pages = spawn::page_list(port).await;
+        if pages.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            let numbers = tabs.numbers();
+            for page in pages {
+                let Some(number) =
+                    numbers.iter().copied().find(|tab| tabs.target(*tab) == Some(page.id.as_str()))
+                else {
+                    continue;
+                };
+                if tabs.update(number, &page.title, &page.url) {
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.publish_rows(&profile.key).await;
+        }
     }
 
     /// `browser_close`: the calling session's current tab.
@@ -1601,83 +1618,62 @@ impl BrowserService {
         self.publish_rows(&profile.key).await;
     }
 
-    /// The driver's own tab list is the index authority: a session's call
-    /// selects its tab first, then drives it.
+    /// **A session's call selects its tab by target, then drives it.** No
+    /// listing runs before or after the tool: the driver keeps each page's
+    /// target id in memory, and the browser's page list is the only other
+    /// reader here. One paused renderer can therefore hold only its own
+    /// call (#2732).
     async fn drive(
         &self,
         profile: &Arc<Profile>,
-        seat: &SessionSlot,
         driver: &Arc<dyn TabDriver>,
         tab: u16,
         call: Drive<'_>,
     ) -> (u16, Result<Vec<BrowserPart>, String>) {
-        let Drive { tool, args, deadline, port, generation } = call;
-        let mut driver = Arc::clone(driver);
-        // **Two names, two jobs.** The page guid survives a navigation and is
-        // what the driver is asked for; the CDP target is where the page can
-        // be driven right now and is refreshed from every listing.
-        let (page, target) = {
+        let Drive { tool, args, deadline } = call;
+        let target = {
             let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            (
-                tabs.id(tab).map(str::to_owned).unwrap_or_default(),
-                tabs.target(tab).map(str::to_owned).unwrap_or_default(),
-            )
+            tabs.target(tab).map(str::to_owned).unwrap_or_default()
         };
-        let index =
-            match self.tabs_recovering(profile, &mut driver, tool, deadline, generation).await {
-                Ok(listing) => Self::tab_index(profile, tab, &page, &listing),
-                Err(why) => return (tab, Err(why)),
-            };
-        let Some(index) = index else {
-            // **A row that cannot be paired is not a closed tab.** Closing it
-            // is how a live document is lost: the page's target may predate a
-            // navigation, or a listing may not have read it. Log the row and
-            // refuse the call; the tab stays open, and the registry holds the
-            // orphan prune until it is paired or closed.
+        if target.is_empty() {
+            // **A row without a target is not a closed tab.** The browser
+            // never named its page, so there is nothing to drive and nothing
+            // to close; the row is left open and the prune held.
             tracing::warn!(
                 event_name = "browser_tab_unmatched",
                 profile = %profile.key,
                 tab,
-                target = %target,
-                "a tab's page is not in the driver's list; the tab is left open"
+                "a tab's page has no target; the tab is left open"
             );
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_unresolved(tab);
             return (
                 tab,
                 Err(format!(
-                    "tab {tab}'s page is not in the browser's list, so the tab was left open. \
+                    "tab {tab}'s page is not named by the browser, so the tab was left open. \
                      Call browser_tabs to see it, or open a new tab."
                 )),
             );
-        };
-        if let Err(why) = driver.select(index, left(deadline)).await {
+        }
+        if let Err(why) = driver.select(&target, left(deadline)).await {
             return (tab, Err(why));
         }
         self.focus(profile, tab).await;
         profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, true);
         self.publish_rows(&profile.key).await;
         let outcome = driver.call_within(tool, args, left(deadline)).await;
-        // A test service has no host to probe and no page targets to
-        // reconcile: the fake driver's answer is the whole of it.
+        // A test service has no browser to read.
         #[cfg(test)]
         if profile.state.lock().await.host.is_none() {
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
             self.publish_rows(&profile.key).await;
             return (tab, outcome);
         }
-        // **The driver's row is the target of record after the call.** A
-        // navigation swaps CEF's page target id while the driver's Tab
-        // survives it; without this the reconcile below would take the live
-        // page for an orphan and close it.
-        if outcome.is_ok()
-            && let Ok(listing) = driver.tabs_within(left(deadline)).await
-            && let Some(row) = listing.iter().find(|row| row.current)
-        {
-            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            tabs.retarget(tab, &row.target);
-            tabs.update(tab, &row.title, &row.url);
+        // **The title and url a call leaves are the browser's to say.** A
+        // navigation changes them without changing the page's target, and the
+        // page list answers with a renderer stopped.
+        if outcome.is_ok() {
+            self.refresh_rows(profile).await;
         }
-        self.reconcile(profile, &driver, port, deadline, ReconcilePass::Call(seat)).await;
         profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).mark_busy(tab, false);
         self.publish_rows(&profile.key).await;
         // **Failure handling is the caller's, after the chooser decision is
@@ -1685,67 +1681,6 @@ impl BrowserService {
         // chooser; an upload holds that lock across this call, and a second
         // acquisition here would deadlock the profile.
         (tab, outcome)
-    }
-
-    /// The driver's tabs, replacing a driver that is dead. **The backend
-    /// holds Tab -> Page**, and a dead page never resets itself upstream
-    /// (#2463, #2534); a fresh driver re-reads the context's pages and works
-    /// again. **The call that finds a dead page replaces it on that same
-    /// call**, so nothing waits for a restart. **A listing that ran out its
-    /// budget is dropped for the next call instead**: the call has nothing
-    /// left to rebuild with, and a second blind budget is what this rule
-    /// exists to stop.
-    async fn tabs_recovering(
-        &self,
-        profile: &Arc<Profile>,
-        driver: &mut Arc<dyn TabDriver>,
-        tool: &str,
-        deadline: tokio::time::Instant,
-        generation: u64,
-    ) -> Result<Vec<crate::tabs::DriverTab>, String> {
-        match driver.tabs_within(left(deadline)).await {
-            // **A listing that ran out its budget is a mute driver**, and the
-            // call has nothing left to rebuild with: the slot is dropped for
-            // the next call rather than a second budget spent here. A second
-            // mute after a fresh driver was installed is the host's pages.
-            Err(why) if driver::timed_out(&why) => {
-                if Self::drop_dead_driver(profile, generation, &why).await {
-                    Self::mark_host_suspect(profile, generation).await;
-                }
-                Err(why)
-            }
-            Err(why) if driver::died(&why) => {
-                tracing::warn!(
-                    event_name = "browser_driver_replaced",
-                    profile = %profile.key,
-                    tool,
-                    stale = driver::stale_page(&why),
-                    "the driver is dead; a fresh one is attached: {why}"
-                );
-                let (fresh, fresh_generation) =
-                    self.recover_driver(profile, generation, deadline).await?;
-                *driver = fresh;
-                match driver.tabs_within(left(deadline)).await {
-                    Ok(listing) => Ok(listing),
-                    Err(again) if driver::died(&again) => {
-                        // **A fresh driver that still cannot list means the
-                        // host's pages are wedged.** It is marked rather than
-                        // ended: an upload's call holds `file_decision`
-                        // across this listing, so taking it now would wait on
-                        // the task that is waiting on us. The call's own
-                        // failure path ends the host once the decision is
-                        // released, or refuses by name when another session's
-                        // tab is on it.
-                        Self::mark_host_suspect(profile, fresh_generation).await;
-                        // **The driver's own words go back unchanged**, so the
-                        // call's failure path can still classify them.
-                        Err(again)
-                    }
-                    other => other,
-                }
-            }
-            other => other,
-        }
     }
 
     /// Drop the profile's driver and attach a fresh one to the same host.
@@ -1757,7 +1692,6 @@ impl BrowserService {
         &self,
         profile: &Arc<Profile>,
         generation: u64,
-        deadline: tokio::time::Instant,
     ) -> Result<(Arc<dyn TabDriver>, u64), String> {
         let _rebuilding = profile.rebuild.lock().await;
         {
@@ -1784,7 +1718,6 @@ impl BrowserService {
                     state.driver = Some(Arc::clone(&fresh));
                     state.driver_generation
                 };
-                self.repair_tab_identity(profile, &fresh, left(deadline)).await;
                 return Ok((fresh, generation));
             }
             let state = profile.state.lock().await;
@@ -1794,7 +1727,7 @@ impl BrowserService {
                 return Ok((Arc::clone(driver), state.driver_generation));
             }
         }
-        self.install_fresh_driver_locked(profile, deadline).await
+        self.install_fresh_driver_locked(profile).await
     }
 
     /// The replacement itself; **the caller holds `profile.rebuild`**. Answers
@@ -1803,7 +1736,6 @@ impl BrowserService {
     async fn install_fresh_driver_locked(
         &self,
         profile: &Arc<Profile>,
-        deadline: tokio::time::Instant,
     ) -> Result<(Arc<dyn TabDriver>, u64), String> {
         {
             let mut state = profile.state.lock().await;
@@ -1838,73 +1770,11 @@ impl BrowserService {
             })?;
             (driver, state.driver_generation)
         };
-        self.repair_tab_identity(profile, &driver, left(deadline)).await;
         Ok((driver, generation))
     }
 
-    /// **A fresh driver names every page again.** The registry's rows are
-    /// re-paired by the CDP targets the new driver lists, so a session's tab
-    /// survives a driver replacement instead of being re-created as
-    /// about:blank; a row the listing does not name keeps its old name and is
-    /// answered as gone by the next call. **The caller's bound is the
-    /// listing's**: a replacement made under an upload's 10 s budget does not
-    /// lend its driver the full call budget.
-    async fn repair_tab_identity(
-        &self,
-        profile: &Arc<Profile>,
-        driver: &Arc<dyn TabDriver>,
-        bound: Duration,
-    ) {
-        let Ok(listing) = driver.tabs_within(bound).await else {
-            tracing::debug!(
-                event_name = "browser_tab_identity_unlisted",
-                profile = %profile.key,
-                "a fresh driver could not list its tabs, so no row was re-paired"
-            );
-            return;
-        };
-        let repaired =
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).reidentify_from(&listing);
-        if repaired > 0 {
-            tracing::debug!(
-                event_name = "browser_tab_identity_repaired",
-                profile = %profile.key,
-                repaired,
-                "a fresh driver renamed pages; their tabs follow the targets"
-            );
-        }
-    }
-
-    /// The Playwright index of `tab` in one listing, updating the row's title
-    /// and url from what the driver sees.
-    ///
-    /// **A driver replacement renames every page**, so a guid miss is not a
-    /// gone tab: the CDP target is the browser's name for the same page and
-    /// survives the replacement, so the row is re-paired by it and the call
-    /// drives the page the session already had.
-    fn tab_index(
-        profile: &Arc<Profile>,
-        tab: u16,
-        page: &str,
-        listing: &[crate::tabs::DriverTab],
-    ) -> Option<usize> {
-        let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-        let index = crate::tabs::index_of(listing, page).or_else(|| {
-            let target = tabs.target(tab).map(str::to_owned)?;
-            let at = crate::tabs::index_of_target(listing, &target)?;
-            let row = listing.get(at)?;
-            tabs.reidentify(tab, &row.id);
-            Some(at)
-        });
-        if let Some(entry) = index.and_then(|index| listing.get(index)) {
-            tabs.update(tab, &entry.title, &entry.url);
-            tabs.retarget(tab, &entry.target);
-        }
-        index
-    }
-
-    /// Adopt every popup the host opened during a call, then close the page
-    /// targets neither the registry nor the boot tab knows: **a page the
+    /// Adopt every popup the host opened since the last pass, then close the
+    /// page targets neither the registry nor the boot tab knows: **a page the
     /// driver created on its own is not a host tab and must not shift the
     /// indices**.
     /// **Answers whether it got a listing.** A pass that could not list paired
@@ -1915,7 +1785,7 @@ impl BrowserService {
         driver: &Arc<dyn TabDriver>,
         port: u16,
         deadline: tokio::time::Instant,
-        pass: ReconcilePass<'_>,
+        pass: ReconcilePass,
     ) -> bool {
         // **A reconcile in flight across a host death must not write its
         // events back over the empty list** the death just made. The
@@ -1928,17 +1798,13 @@ impl BrowserService {
                     tracing::warn!(
                         event_name = "browser_reconcile_unlisted",
                         profile = %profile.key,
-                        pass = pass.name(),
-                        seat = ?pass.seat(),
-                        "reconcile could not list the driver's tabs: {why}"
+                        "a popup's pairing pass could not list the driver's tabs: {why}"
                     );
                 } else {
                     tracing::debug!(
                         event_name = "browser_reconcile_unlisted",
                         profile = %profile.key,
-                        pass = pass.name(),
-                        seat = ?pass.seat(),
-                        "reconcile could not list the driver's tabs: {why}"
+                        "a popup's pairing pass could not list the driver's tabs: {why}"
                     );
                 }
                 self.publish_rows(&profile.key).await;
@@ -1984,7 +1850,7 @@ impl BrowserService {
             if remaining >= driver::START_TIMEOUT {
                 let driver_generation = { profile.state.lock().await.driver_generation };
                 if let Ok((fresh, _generation)) =
-                    self.recover_driver(profile, driver_generation, deadline).await
+                    self.recover_driver(profile, driver_generation).await
                     && let Ok(fresh_listing) = fresh.tabs_within(left(deadline)).await
                 {
                     unmatched = {
@@ -2092,17 +1958,15 @@ impl BrowserService {
         tab: u16,
         bound: Duration,
     ) -> Result<(), String> {
-        let page = profile
+        let target = profile
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .id(tab)
+            .target(tab)
+            .filter(|target| !target.is_empty())
             .map(str::to_owned)
-            .ok_or_else(|| format!("tab {tab} is not open"))?;
-        let listing = driver.tabs_within(bound).await?;
-        let index = Self::tab_index(profile, tab, &page, &listing)
-            .ok_or_else(|| format!("tab {tab}'s page is not in the driver's list any more"))?;
-        driver.select(index, bound).await?;
+            .ok_or_else(|| format!("tab {tab} is not open or its page is not named"))?;
+        driver.select(&target, bound).await?;
         self.focus(profile, tab).await;
         Ok(())
     }
@@ -2444,40 +2308,28 @@ impl BrowserService {
                 why: "the rebuilt driver did not come up",
             }));
         };
-        self.repair_tab_identity(profile, &fresh, left(deadline)).await;
         if repeatable(tool, reported, args) {
-            // **The page is found by the guid, with the target as the
-            // fallback a fresh driver's renaming needs.** A retry without a
-            // page would drive whatever the fresh driver calls current -
-            // another session's tab - so a miss makes no call at all.
-            let page = profile
+            // **The retry selects the same page by its target.** Selecting
+            // without one would drive whatever the fresh driver calls current
+            // - another session's tab - so a row with no target makes no call
+            // at all.
+            let target = profile
                 .tabs
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .id(tab)
+                .target(tab)
+                .filter(|target| !target.is_empty())
                 .map(str::to_owned);
-            let index = match fresh.tabs_within(left(deadline)).await {
-                Ok(listing) => {
-                    page.as_deref().and_then(|page| Self::tab_index(profile, tab, page, &listing))
-                }
-                Err(cannot) if driver::died(&cannot) => {
+            let Some(target) = target else {
+                log_rebuild(profile, reported, "rebuilt, the tab has no target", why);
+                return Err(dead_page_answer(DeadPageOutcome::TabGone { tab }));
+            };
+            if let Err(cannot) = fresh.select(&target, left(deadline)).await {
+                if driver::died(&cannot) {
                     return Err(self
                         .end_rebuilt_host(profile, seat, drove, fresh_generation, cannot)
                         .await);
                 }
-                // **A listing that failed for any other reason was never
-                // read**: nothing is known about the page, so it is not
-                // gone.
-                Err(cannot) => {
-                    log_rebuild(profile, reported, "rebuilt, the listing failed", why);
-                    return Err(dead_page_answer(DeadPageOutcome::ListFailed { why: &cannot }));
-                }
-            };
-            let Some(index) = index else {
-                log_rebuild(profile, reported, "rebuilt, the tab is not listed", why);
-                return Err(dead_page_answer(DeadPageOutcome::TabGone { tab }));
-            };
-            if let Err(cannot) = fresh.select(index, left(deadline)).await {
                 profile.state.lock().await.stale_since = Some(Instant::now());
                 log_rebuild(profile, reported, "rebuilt, selection failed", why);
                 return Err(dead_page_answer(DeadPageOutcome::RetryFailed { why: &cannot }));
@@ -2506,9 +2358,8 @@ impl BrowserService {
         Err(dead_page_answer(DeadPageOutcome::NotRepeated { tool: reported }))
     }
 
-    /// **A driver that stopped answering is replaced on this call.** The
-    /// replacement is the one `tabs_recovering` uses; the call is repeated
-    /// only where repeating cannot land twice.
+    /// **A driver that stopped answering is replaced on this call.** The call
+    /// is repeated only where repeating cannot land twice.
     async fn replace_dead_driver(
         &self,
         profile: &Arc<Profile>,
@@ -2535,10 +2386,7 @@ impl BrowserService {
             tool = reported,
             "the call found its driver dead; a fresh one is attached: {why}"
         );
-        let (fresh, fresh_generation) = match self
-            .recover_driver(profile, generation, deadline)
-            .await
-        {
+        let (fresh, fresh_generation) = match self.recover_driver(profile, generation).await {
             Ok(fresh) => fresh,
             Err(cannot) => {
                 // **A replacement that cannot start leaves the host suspect**:
@@ -2554,27 +2402,22 @@ impl BrowserService {
         if !repeatable_after_timeout(tool, reported, args) {
             return Err(dead_driver_answer(DeadDriverOutcome::NotRepeated { tool: reported, why }));
         }
-        let page =
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
-        let index = match fresh.tabs_within(left(deadline)).await {
-            Ok(listing) => {
-                page.as_deref().and_then(|page| Self::tab_index(profile, tab, page, &listing))
-            }
-            Err(cannot) if driver::died(&cannot) => {
+        let target = profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .target(tab)
+            .filter(|target| !target.is_empty())
+            .map(str::to_owned);
+        let Some(target) = target else {
+            return Err(dead_driver_answer(DeadDriverOutcome::TabGone));
+        };
+        if let Err(cannot) = fresh.select(&target, left(deadline)).await {
+            if driver::died(&cannot) {
                 return Err(self
                     .end_rebuilt_host(profile, seat, drove, fresh_generation, cannot)
                     .await);
             }
-            // **A listing that failed for any other reason was never read**:
-            // nothing is known about the page, so it is not gone.
-            Err(cannot) => {
-                return Err(dead_driver_answer(DeadDriverOutcome::ListFailed { why: &cannot }));
-            }
-        };
-        let Some(index) = index else {
-            return Err(dead_driver_answer(DeadDriverOutcome::TabGone));
-        };
-        if let Err(cannot) = fresh.select(index, left(deadline)).await {
             return Err(dead_driver_answer(DeadDriverOutcome::RetryFailed { why: &cannot }));
         }
         match fresh.call_within(tool, args.clone(), left(deadline)).await {
@@ -4271,6 +4114,26 @@ impl Profile {
     /// watcher is never asked and never cancels it. With no controller the
     /// chooser waits for an agent's own `browser_file_upload`, which is the
     /// same MCP tool that owns the captured chooser.
+    /// Hand the agent's dialog answer to the host that owns the dialog's CEF
+    /// callback. **The tab is the one the answer was made for**: the MCP
+    /// answers the current tab, and forge's current tab is the focused one,
+    /// read when the notice arrived.
+    async fn dialog_answer(&self, answer: driver::DialogAnswer, tab: u16) {
+        if tab == 0 {
+            return;
+        }
+        let input = {
+            let state = self.state.lock().await;
+            state.host.as_ref().map(|host| host.input.clone())
+        };
+        let Some(input) = input else { return };
+        let _ = input.send(input::host_line(&input::HostInput::Dialog {
+            tab,
+            accept: answer.accept,
+            prompt: answer.prompt,
+        }));
+    }
+
     async fn file_chooser(
         self: &Arc<Self>,
         chooser: driver::FileChooser,
@@ -4554,19 +4417,20 @@ impl Profile {
         // tests replace this handle with a gated one.
         let calls: Arc<dyn ChooserAnswer> = driver.clone();
         *self.chooser_answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(calls);
-        // **Every chooser the driver surfaces is the profile's to answer.**
-        // The task ends when the driver is replaced: its sender is dropped
-        // with the Arc, and `recv` then closes.
-        let mut choosers = driver.file_choosers();
+        // **Every notice the driver surfaces is the profile's to answer**: a
+        // page's chooser, or the agent's answer to a page's dialog. The task
+        // ends when the driver is replaced: its sender is dropped with the
+        // Arc, and `recv` then closes.
+        let mut notices = driver.notices();
         let this = Arc::clone(self);
         let generation = installed_generation(state);
         state.driver_generation = generation;
         tokio::spawn(async move {
             loop {
-                match choosers.recv().await {
-                    Ok(chooser) => {
+                match notices.recv().await {
+                    Ok(notice) => {
                         // **The tab and the driver are captured when the
-                        // chooser arrives**: by the time a queued event runs,
+                        // notice arrives**: by the time a queued event runs,
                         // `focused` may belong to another tab and this reader
                         // may belong to a replaced driver.
                         let tab = this
@@ -4574,7 +4438,14 @@ impl Profile {
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .unwrap_or(0);
-                        this.file_chooser(chooser, generation, tab).await;
+                        match notice {
+                            driver::DriverNotice::File(chooser) => {
+                                this.file_chooser(chooser, generation, tab).await;
+                            }
+                            driver::DriverNotice::Dialog(answer) => {
+                                this.dialog_answer(answer, tab).await;
+                            }
+                        }
                     }
                     // **A lagged reader keeps reading**: the newest chooser
                     // still matters, and a dropped event is not a closed
@@ -4932,6 +4803,20 @@ impl Profile {
                         );
                         profile.files.send_replace(Some(BrowserFileAsk { id, tab, multiple }));
                     }
+                    HostEvent::JsDialog { tab, dialog, message, state } => {
+                        // **A page's own dialog is information, not a warning**
+                        // (rule 20): an unanswered one is dismissed by the
+                        // host's deadline, which is what keeps its renderer
+                        // from holding the browser's calls (#2732).
+                        tracing::debug!(
+                            event_name = "browser_js_dialog",
+                            profile = %key,
+                            tab,
+                            dialog = %dialog,
+                            state = ?state,
+                            "a page's JavaScript dialog ({message})"
+                        );
+                    }
                     HostEvent::Download { tab, name, path, size } => {
                         let download = read_download(&dir, tab, &name, &path, size);
                         if downloads.send(download).is_err() {
@@ -5113,78 +4998,38 @@ impl Profile {
 /// not stall the watch for ever.
 const NAV_BOUND: Duration = Duration::from_secs(2);
 
-/// What the driver says about one tab's page.
+/// What the browser says about one tab's page.
 enum LiveTarget {
-    /// A target to drive: the driver's fresh one, else the registry's last.
+    /// A target to drive: the registry's, while the browser lists it.
     Found(String),
-    /// The driver listed its tabs and the page was not among them: the tab
-    /// was closed or its page is gone.
+    /// The browser listed its pages and the tab's target was not among them:
+    /// the tab was closed or its page is gone.
     Gone,
     /// Nothing to drive yet.
     Unknown,
 }
 
-/// The tab's live CDP target, refreshed from the driver when it can answer.
+/// The tab's CDP target, checked against the browser's own page list.
 ///
-/// **CEF swaps a page's target id on a navigation**, a person's click
-/// included; the registry's copy is only as fresh as the last call, so a
-/// history read, a Back and the nav watch ask the driver before they use it.
-/// The page guid is the identity that survives the swap.
+/// **The browser answers this with a renderer stopped**, so the history
+/// watch and a person's arrows never ask a page anything (#2732). A target
+/// the endpoint could not read is not a gone page: the registry's own answer
+/// stands.
 async fn live_target(profile: &Arc<Profile>, tab: u16) -> LiveTarget {
-    let driver = {
-        let state = profile.state.lock().await;
-        state.driver.as_ref().filter(|driver| driver.is_running()).map(Arc::clone)
+    let target =
+        profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).map(str::to_owned);
+    let Some(target) = target.filter(|target| !target.is_empty()) else {
+        return LiveTarget::Unknown;
     };
-    if let Some(driver) = driver
-        && let Ok(listing) = driver.tabs_within(NAV_BOUND).await
-    {
-        let page =
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(tab).map(str::to_owned);
-        let mut row = page
-            .as_deref()
-            .and_then(|page| crate::tabs::index_of(&listing, page))
-            .and_then(|at| listing.get(at));
-        // **A fresh driver renames every page; the CDP target survives it.**
-        // The same fallback the call path has, so a person's arrows keep
-        // working after a driver transport crash.
-        if row.is_none() {
-            // **The lock is scoped to the read**: a let-chain's guard lives
-            // to the end of the `if`, and the body needs the same lock.
-            let stored = {
-                let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-                tabs.target(tab).map(str::to_owned)
-            };
-            if let Some(target) = stored
-                && let Some(found) =
-                    crate::tabs::index_of_target(&listing, &target).and_then(|at| listing.get(at))
-            {
-                let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-                tabs.reidentify(tab, &found.id);
-                tabs.retarget(tab, &found.target);
-                row = Some(found);
-            }
-        }
-        match row {
-            Some(row) if !row.target.is_empty() => {
-                profile
-                    .tabs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .retarget(tab, &row.target);
-                return LiveTarget::Found(row.target.clone());
-            }
-            // **Only a listing with no row for the page is a gone tab.** A
-            // listed page whose target is empty is live: the export writes ""
-            // when its own CDP read throws, so the registry's last target is
-            // the one to try.
-            None if page.is_some() => return LiveTarget::Gone,
-            _ => {}
-        }
-    }
-    match profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(tab).map(str::to_owned)
-    {
-        Some(target) => LiveTarget::Found(target),
-        None => LiveTarget::Unknown,
+    let port = {
+        let state = profile.state.lock().await;
+        state.host.as_ref().map(|host| host.port)
+    };
+    let Some(port) = port else { return LiveTarget::Found(target) };
+    match spawn::page_list_of(port).await {
+        Some(pages) if pages.iter().any(|page| page.id == target) => LiveTarget::Found(target),
+        Some(_) => LiveTarget::Gone,
+        None => LiveTarget::Found(target),
     }
 }
 
@@ -5206,35 +5051,19 @@ const POPUP_PAIR_EVERY: Duration = Duration::from_millis(250);
 /// answers the birth instead of leaving it deferred until someone calls.
 const POPUP_PAIR_UNTIL: Duration = Duration::from_secs(12);
 
-/// Who asked for a reconcile: a session's call, or a popup birth waiting to
-/// be paired. A call answers a seat, so an unlisted pass can name it.
+/// A popup birth waiting to be paired, and whether its first pass warned.
 ///
 /// **A pairing pass retries every 250 ms for its birth's window**, so only
 /// its first unlisted pass is a problem worth a WARN; the retries stay at
 /// debug rather than repeating one line per attempt.
-enum ReconcilePass<'a> {
-    Call(&'a SessionSlot),
-    Pairing { first: bool },
+struct ReconcilePass {
+    first: bool,
 }
 
-impl ReconcilePass<'_> {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Call(_) => "call",
-            Self::Pairing { .. } => "pairing",
-        }
-    }
-
-    fn seat(&self) -> Option<&SessionSlot> {
-        match self {
-            Self::Call(seat) => Some(seat),
-            Self::Pairing { .. } => None,
-        }
-    }
-
+impl ReconcilePass {
     /// Whether this unlisted pass is a problem worth a WARN.
     fn warns(&self) -> bool {
-        matches!(self, Self::Call(_) | Self::Pairing { first: true })
+        self.first
     }
 }
 
@@ -5575,10 +5404,6 @@ enum DeadPageOutcome<'a> {
     Cooling,
     /// The fresh driver does not list the page, so no retry can land on it.
     TabGone { tab: u16 },
-    /// The fresh driver's tab list could not be read, so nothing is known
-    /// about the page: **a listing that failed was never read**, and its page
-    /// is not gone because of it.
-    ListFailed { why: &'a str },
 }
 
 /// **The host a call drove, as the identity a late failure may end.** A host
@@ -5638,12 +5463,8 @@ fn dead_page_answer(outcome: DeadPageOutcome<'_>) -> String {
              try again shortly."
         ),
         DeadPageOutcome::TabGone { tab } => format!(
-            "{died} and the driver was rebuilt, but tab {tab}'s page is not in the fresh driver's \
-             list; the tab was left open. Call browser_tabs to see it, or open a new tab."
-        ),
-        DeadPageOutcome::ListFailed { why } => format!(
-            "{died} and the driver was rebuilt, but its tab list could not be read ({why}), so \
-             nothing is known about the page; the tab was left open. Try again."
+            "{died} and the driver was rebuilt, but tab {tab} has no page target; the tab was \
+             left open. Call browser_tabs to see it, or open a new tab."
         ),
     }
 }
@@ -5752,11 +5573,8 @@ enum DeadDriverOutcome<'a> {
     RetryFailed { why: &'a str },
     /// The replacement driver could not start.
     ReplaceFailed { why: &'a str },
-    /// The fresh driver does not list the tab's page, so no retry can land.
+    /// The tab has no page target, so no retry can land.
     TabGone,
-    /// The fresh driver's tab list could not be read, so nothing is known
-    /// about the page: a listing that failed was never read.
-    ListFailed { why: &'a str },
 }
 
 /// **The driver is named as replaced, never as a page that died**: the
@@ -5792,12 +5610,8 @@ fn dead_driver_answer(outcome: DeadDriverOutcome<'_>) -> String {
             format!("the browser driver stopped answering and could not be replaced: {why}")
         }
         DeadDriverOutcome::TabGone => format!(
-            "{replaced}, but this session's page is not in the fresh driver's list; the tab is \
-             gone. Open a tab and run the call again."
-        ),
-        DeadDriverOutcome::ListFailed { why } => format!(
-            "{replaced}, but its tab list could not be read ({why}), so nothing is known about \
-             this session's page; the tab was left open. Try again."
+            "{replaced}, but this session's tab has no page target; the tab is open but cannot be \
+             driven. Call browser_tabs to see it, or open a new tab."
         ),
     }
 }
@@ -5854,6 +5668,23 @@ fn chooser_socket_path(profile_dir: &Path, profile: u16) -> Result<PathBuf, Stri
 /// spent budget answers a timeout rather than a silent skip.
 fn left(deadline: tokio::time::Instant) -> Duration {
     deadline.saturating_duration_since(tokio::time::Instant::now()).max(Duration::from_millis(1))
+}
+
+/// The page a create made, out of the page targets that appeared while it
+/// ran. **A blank page is the one a create asked for.** A popup born in the
+/// same window carries its own address, so the blank one is picked; when more
+/// than one is blank, CEF's list is newest-first, so the request's place among
+/// the host's births counts back from the newest.
+fn choose_new_page(pages: &[spawn::PageTarget], ours: usize) -> Option<&spawn::PageTarget> {
+    if pages.len() == 1 {
+        return pages.first();
+    }
+    let blank: Vec<&spawn::PageTarget> =
+        pages.iter().filter(|page| page.url == "about:blank").collect();
+    if blank.len() == 1 {
+        return blank.first().copied();
+    }
+    pages.get(pages.len().saturating_sub(1 + ours))
 }
 
 /// The pages reconcile closes: every page target the registry does not know,
@@ -6014,8 +5845,7 @@ fn pair_tab_events(
                     continue;
                 };
                 if let Some(opener) = opener {
-                    let _ =
-                        tabs.create_under(opener, tab, &row.id, &row.target, &row.title, &row.url);
+                    let _ = tabs.create_under(opener, tab, &row.target, &row.title, &row.url);
                 }
             }
             other => unmatched.push((event_generation, other)),
@@ -6296,163 +6126,301 @@ mod tests {
         assert!(refused.contains("is on tab 2, not tab 1"), "{refused}");
     }
 
-    /// **A navigation swaps the page's target, and the driver is asked
-    /// afresh.** A person's click leaves the registry's target stale until an
-    /// agent call; the history read, Back and the nav watch ask the driver by
-    /// the page guid that survives the swap.
+    /// **A browser endpoint that does not answer is not an empty browser.**
+    /// The registry's target stands, so a person's arrows and the history
+    /// watch never read a silent probe as a closed page (#2732).
     #[tokio::test]
-    async fn a_person_navigation_refreshes_the_target_from_the_driver() {
+    async fn a_silent_browser_endpoint_keeps_the_registry_target() {
         use super::{LiveTarget, live_target};
 
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
         let profile = service.find("O/default").await.expect("the profile");
-        assert_eq!(
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(1),
-            Some("T1"),
-        );
+        attach_dead_host(&service, &seat, dir.path()).await;
 
-        // The page navigated under a person's click: same guid, new target.
-        {
-            let mut tabs = seen.tabs.lock().expect("the fake's tabs");
-            tabs[0].target = "T2".to_owned();
-        }
         assert!(
-            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T2"),
-            "the driver's fresh target is the one to drive",
-        );
-        assert_eq!(
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(1),
-            Some("T2"),
-            "the registry follows the driver's listing",
+            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T1"),
+            "a silent endpoint leaves the registry's own target standing",
         );
     }
 
-    /// Wait until the fake has answered `want` listings, on the test's own
-    /// clock rather than a wall-clock sleep.
-    async fn wait_for_listings(fake: &FakeDriver, want: usize) {
-        while fake.listings() < want {
-            fake.changed.notified().await;
+    /// Give the profile a host endpoint, real or dead.
+    async fn attach_host_port(
+        service: &BrowserService,
+        seat: &SessionSlot,
+        dir: &std::path::Path,
+        port: u16,
+    ) {
+        let profile = service
+            .find(service.profile_for(seat).expect("the key").as_str())
+            .await
+            .expect("the profile");
+        let ring_name = format!("/forge-test-host-{}-{}", std::process::id(), profile.id);
+        let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
+        let (input, _input_rx) = std::sync::mpsc::channel();
+        profile.state.lock().await.host = Some(crate::spawn::ActiveHost {
+            pid: std::process::id(),
+            port,
+            ring: Arc::new(ring),
+            profile: dir.join("test-host"),
+            input,
+            reader: None,
+            monitor: None,
+        });
+    }
+
+    /// A profile whose host is a dead port: enough for the paths that read
+    /// `/json/list`, and nothing else answers on it.
+    async fn attach_dead_host(service: &BrowserService, seat: &SessionSlot, dir: &std::path::Path) {
+        attach_host_port(service, seat, dir, 9).await;
+    }
+
+    /// **A tab listing is the registry's answer, not the driver's.** The
+    /// driver's listing attached a CDP session to every page, so one paused
+    /// renderer held every session's `browser_tabs` for the whole call
+    /// budget and forge then ended the healthy host (#2732). A listing must
+    /// ask the driver nothing at all.
+    #[tokio::test]
+    async fn a_tab_listing_asks_the_driver_nothing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::default();
+        driver.push_target("T1");
+        let seen = driver.clone();
+        service.install_fake(&seat, driver).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("tab 1 is adopted");
+        attach_dead_host(&service, &seat, dir.path()).await;
+        let before = seen.listings();
+
+        let parts = service
+            .call(&seat, "browser_tabs", json!({ "action": "list" }))
+            .await
+            .expect("the listing answers");
+        assert!(
+            parts.iter().any(|part| matches!(
+                part,
+                forge_primitives::browser::BrowserPart::Text { text } if text.contains("(current)")
+            )),
+            "the adopted tab is drawn: {parts:?}",
+        );
+        assert_eq!(
+            seen.listings(),
+            before,
+            "a listing must not ask the driver, whose listing attaches a session to every page",
+        );
+    }
+
+    /// **A page call neither lists nor indexes.** It selects its tab by the
+    /// target the host registry already holds, so a neighbouring tab whose
+    /// renderer stopped answering cannot hold it (#2732).
+    #[tokio::test]
+    async fn a_page_call_selects_by_target_without_listing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::default();
+        driver.push_target("T1");
+        let seen = driver.clone();
+        service.install_fake(&seat, driver).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("tab 1 is adopted");
+        let profile = service.find("O/default").await.expect("the profile");
+        {
+            let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.adopt(2, seat.clone(), "T2", "two", "http://b/").expect("tab 2");
+            tabs.select(&seat, 2).expect("tab 2 is the session's");
+        }
+        let before = seen.listings();
+
+        service
+            .call(&seat, "browser_navigate", json!({ "url": "http://b/" }))
+            .await
+            .expect("the call drives tab 2");
+        assert_eq!(
+            seen.listings(),
+            before,
+            "a page call must not list the driver's tabs before or after the tool",
+        );
+        assert_eq!(
+            seen.selected().last().map(String::as_str),
+            Some("T2"),
+            "the tab is selected by its target, not an index: {:?}",
+            seen.selected(),
+        );
+    }
+
+    /// **`browser_tabs` refreshes its rows from the browser's own list.** A
+    /// title and url that changed since the row was adopted reach the answer,
+    /// matched by target, with no driver call.
+    #[tokio::test]
+    async fn a_listing_refreshes_its_rows_from_the_browser() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let seat = SessionSlot::lead("O", "p");
+        let driver = FakeDriver::with_blank("T1");
+        let seen = driver.clone();
+        service.install_fake(&seat, driver).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let pages = StubEndpoint::start(&[("T1", "http://refreshed/", "a new title")]);
+        attach_host_port(&service, &seat, dir.path(), pages.port).await;
+        let before = seen.listings();
+
+        let parts = service
+            .call(&seat, "browser_tabs", json!({ "action": "list" }))
+            .await
+            .expect("the listing answers");
+        let text = parts
+            .iter()
+            .find_map(|part| match part {
+                forge_primitives::browser::BrowserPart::Text { text } => Some(text.as_str()),
+                forge_primitives::browser::BrowserPart::Image { .. } => None,
+            })
+            .expect("a text answer");
+        assert!(text.contains("[a new title](http://refreshed/)"), "{text}");
+        assert_eq!(seen.listings(), before, "the refresh asked the driver nothing");
+    }
+
+    /// **A create's page is the blank one**, even beside a popup born in the
+    /// same window, and ties count back from CEF's newest-first list.
+    #[test]
+    fn a_create_takes_the_blank_page_the_host_listed() {
+        use super::{choose_new_page, spawn::PageTarget};
+
+        let page = |id: &str, url: &str| PageTarget {
+            id: id.to_owned(),
+            title: String::new(),
+            url: url.to_owned(),
+        };
+        let alone = [page("T1", "about:blank")];
+        assert_eq!(
+            choose_new_page(&alone, 0).map(|page| page.id.as_str()),
+            Some("T1"),
+            "a sole new page is the tab",
+        );
+
+        // Newest first, as CEF lists them: the popup was created last.
+        let with_popup = [page("pop", "http://sign-in/"), page("T1", "about:blank")];
+        assert_eq!(
+            choose_new_page(&with_popup, 0).map(|page| page.id.as_str()),
+            Some("T1"),
+            "a create's blank page outranks a popup's address",
+        );
+
+        let two_blanks = [page("new", "about:blank"), page("old", "about:blank")];
+        assert_eq!(
+            choose_new_page(&two_blanks, 0).map(|page| page.id.as_str()),
+            Some("old"),
+            "the first birth counts back from the newest",
+        );
+        assert_eq!(
+            choose_new_page(&two_blanks, 1).map(|page| page.id.as_str()),
+            Some("new"),
+            "and the second is the newest",
+        );
+        assert!(choose_new_page(&[], 0).is_none(), "no page is no tab");
+    }
+
+    /// A stub DevTools endpoint: `/json/list` answers with the pages given,
+    /// and a test can swap them mid-run. **No renderer sits behind it**, so
+    /// what a test reads is exactly the control plane's own answer.
+    struct StubEndpoint {
+        port: u16,
+        body: Arc<std::sync::Mutex<String>>,
+        hits: Arc<AtomicUsize>,
+    }
+
+    impl StubEndpoint {
+        fn start(pages: &[(&str, &str, &str)]) -> Self {
+            use std::io::{Read as _, Write as _};
+
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a stub endpoint");
+            let port = listener.local_addr().expect("the address").port();
+            let body = Arc::new(std::sync::Mutex::new(page_list_body(pages)));
+            let hits = Arc::new(AtomicUsize::new(0));
+            let served = Arc::clone(&body);
+            let counted = Arc::clone(&hits);
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let mut read = [0_u8; 2048];
+                    let _ = stream.read(&mut read);
+                    counted.fetch_add(1, Ordering::AcqRel);
+                    let body = served.lock().expect("the served body").clone();
+                    let answer = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: \
+                         {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(answer.as_bytes());
+                }
+            });
+            Self { port, body, hits }
+        }
+
+        fn set(&self, pages: &[(&str, &str, &str)]) {
+            *self.body.lock().expect("the served body") = page_list_body(pages);
+        }
+
+        fn hits(&self) -> usize {
+            self.hits.load(Ordering::Acquire)
         }
     }
 
-    /// **A watch whose focused page is gone stops asking.** The driver's tab
-    /// listing creates a page when it has none (upstream's `ensureTab`), so a
-    /// retry loop against a closed tab manufactures a page and a renderer on
-    /// every tick (#2581).
+    fn page_list_body(pages: &[(&str, &str, &str)]) -> String {
+        let rows: Vec<serde_json::Value> = pages
+            .iter()
+            .map(|(id, url, title)| json!({"id": id, "url": url, "title": title, "type": "page"}))
+            .collect();
+        serde_json::to_string(&rows).expect("a page list body")
+    }
+
+    /// **A watch whose focused page is gone stops asking.** The old retry
+    /// listed the driver every 500 ms; a closed tab is now a page the
+    /// browser's own list does not carry, so the watch lets its focus go
+    /// rather than probing for ever (#2581).
     #[tokio::test(start_paused = true)]
-    async fn a_nav_watch_whose_focused_page_is_gone_stops_listing() {
+    async fn a_nav_watch_stops_when_the_browser_no_longer_lists_its_page() {
         use super::start_nav_watch;
 
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
         let profile = service.find("O/default").await.expect("the profile");
-        assert_eq!(
-            *profile.focused.lock().unwrap_or_else(PoisonError::into_inner),
-            Some(1),
-            "the call focused its tab",
-        );
-        // The call listed too; the watch's own listing is the next one.
-        let base = seen.listings();
+        let pages = StubEndpoint::start(&[("T1", "http://a/", "one")]);
+        attach_host_port(&service, &seat, dir.path(), pages.port).await;
 
-        // Nothing answers on this port, so the watch lists with the page
-        // still there, finds it, and comes back around on its retry clock.
-        let watch = start_nav_watch(Arc::clone(&profile), 9);
-        wait_for_listings(&seen, base + 1).await;
+        let watch = start_nav_watch(Arc::clone(&profile), pages.port);
+        tokio::time::sleep(super::NAV_RETRY * 2).await;
+        assert!(!watch.is_finished(), "a listed page keeps the watch on its clock");
 
-        // The page closed: the driver lists and it is not there.
-        seen.close_all();
-        wait_for_listings(&seen, base + 2).await;
-        let settled = seen.listings();
-        tokio::time::sleep(super::NAV_RETRY * 8).await;
-        assert_eq!(
-            seen.listings(),
-            settled,
-            "a watch whose focused page is gone stops listing; every further listing is a page \
-             the driver would create",
-        );
+        // The page closed: the browser's own list no longer carries its tag.
+        pages.set(&[]);
+        for _ in 0..8 {
+            tokio::time::sleep(super::NAV_RETRY).await;
+            tokio::task::yield_now().await;
+            if watch.is_finished() {
+                break;
+            }
+        }
         assert_eq!(
             *profile.focused.lock().unwrap_or_else(PoisonError::into_inner),
             None,
-            "and it lets the focus go, so the next call refocuses",
+            "a watch whose page is gone lets the focus go",
         );
-        watch.abort();
-    }
-
-    /// **A listing that cannot name a target is not a gone tab.** An empty
-    /// target is a live page whose own CDP read failed, and a stale-page error
-    /// is another driver context's dead page; both fall back to the registry.
-    #[tokio::test]
-    async fn a_listing_without_a_target_falls_back_to_the_registry() {
-        use super::{LiveTarget, live_target};
-
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
-        let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
-        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
-        let profile = service.find("O/default").await.expect("the profile");
-
-        seen.clear_target();
-        assert!(
-            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T1"),
-            "a listed page with no target falls back to the registry target",
-        );
-
-        seen.stale_once();
-        assert!(
-            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T1"),
-            "a stale-page listing error falls back to the registry target",
-        );
-    }
-
-    /// **A renamed page is found by its target.** The person's arrows and the
-    /// history watch use the same fallback the call path has, so a driver
-    /// replacement does not freeze them on a page that is still there.
-    #[tokio::test]
-    async fn a_renamed_page_is_found_by_its_target() {
-        use super::{LiveTarget, live_target};
-
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
-        let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
-        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
-        let profile = service.find("O/default").await.expect("the profile");
-
-        seen.reidentify("P2");
-
-        assert!(
-            matches!(live_target(&profile, 1).await, LiveTarget::Found(target) if target == "T1"),
-            "the target names the page a fresh driver renamed",
-        );
-        assert_eq!(
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(1),
-            Some("P2"),
-            "and the row follows the fresh driver's name",
-        );
+        assert!(watch.is_finished(), "and it stops looking");
     }
 
     /// **A fresh driver that still times out ends the host.** A host kept on
-    /// process liveness alone with pages no driver can list is the wedge that
-    /// used to cost an hour; the call that finds it takes it down so the next
-    /// call starts a fresh browser. **The first mute listing only drops its
-    /// driver**: that call has spent its one budget, so the fresh driver is
-    /// the next call's.
+    /// process liveness alone with pages no driver can answer is the wedge
+    /// that used to cost an hour; the call that finds it takes it down so the
+    /// next call starts a fresh browser. **The first mute selection only
+    /// drops its driver**: that call has spent its one budget, so the fresh
+    /// driver is the next call's.
     #[tokio::test]
     async fn a_fresh_driver_that_still_times_out_ends_the_host() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -6467,10 +6435,10 @@ mod tests {
             })
             .await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
-        // Every listing times out from here, on the driver and on its
+        // Every selection times out from here, on the driver and on its
         // replacement.
-        wedged.timeout_every_listing();
-        successor.timeout_every_listing();
+        wedged.timeout_every_select();
+        successor.timeout_every_select();
         let profile = service.find("O/default").await.expect("the profile");
         let ring_name = format!("/forge-host-end-{}", std::process::id());
         let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
@@ -6485,19 +6453,19 @@ mod tests {
             monitor: None,
         });
 
-        // The first mute listing drops the driver rather than spending a
-        // second budget on it; a fresh driver that lists mute too is what
-        // proves the host's pages are wedged.
+        // The first mute selection drops the driver rather than spending a
+        // second budget on it; a fresh driver that is mute too is what proves
+        // the host's pages are wedged.
         let first = service
             .call(&seat, "browser_snapshot", json!({}))
             .await
-            .expect_err("a mute listing drops its driver for the next call");
+            .expect_err("a mute selection drops its driver for the next call");
         assert!(first.contains("the driver did not answer"), "{first}");
         assert!(
             profile.state.lock().await.driver.is_none(),
             "the mute driver was let go, not replaced inside the spent budget"
         );
-        assert_eq!(successor.listings(), 0, "the replacement waited for the next call");
+        assert!(successor.selected().is_empty(), "the replacement waited for the next call");
 
         let refused = service
             .call(&seat, "browser_snapshot", json!({}))
@@ -6507,8 +6475,8 @@ mod tests {
         assert!(refused.contains("pid"), "the host's identity is named: {refused}");
         assert!(profile.state.lock().await.host.is_none(), "the wedged host was taken down");
         assert!(
-            successor.listings() > 0,
-            "the replacement driver listed before the host was ended"
+            !successor.selected().is_empty(),
+            "the replacement tried to drive before the host was ended"
         );
         crate::osr::Ring::unlink(&ring_name);
     }
@@ -6577,10 +6545,10 @@ mod tests {
             reader: None,
             monitor: None,
         });
-        // Every listing times out from here, on the driver and its
+        // Every selection times out from here, on the driver and its
         // replacement: the second mute would end a host this call alone owned.
-        wedged.timeout_every_listing();
-        successor.timeout_every_listing();
+        wedged.timeout_every_select();
+        successor.timeout_every_select();
 
         let first = service
             .call(&lead, "browser_snapshot", json!({}))
@@ -6602,7 +6570,10 @@ mod tests {
             "and both sessions' tabs are still the host's pages",
         );
         assert!(profile.up.load(Ordering::Acquire), "the profile still reads as up");
-        assert!(successor.listings() > 0, "the replacement driver had to list before the refusal");
+        assert!(
+            !successor.selected().is_empty(),
+            "the replacement driver had to be driven before the refusal",
+        );
         crate::osr::Ring::unlink(&ring_name);
     }
 
@@ -6620,8 +6591,8 @@ mod tests {
         let (drove, ring) = install_test_host(&profile, 9).await;
         {
             let mut tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            tabs.adopt(1, seat.clone(), "T1", "T1", "", "").expect("the first tab");
-            tabs.adopt(2, seat.clone(), "T2", "T2", "", "").expect("the second tab");
+            tabs.adopt(1, seat.clone(), "T1", "", "").expect("the first tab");
+            tabs.adopt(2, seat.clone(), "T2", "", "").expect("the second tab");
         }
         *profile.host_suspect.lock().unwrap_or_else(PoisonError::into_inner) = Some(drove);
         let why = crate::driver::did_not_answer("browser_snapshot", Duration::from_secs(90));
@@ -6665,7 +6636,7 @@ mod tests {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(1, worker.clone(), "T1", "T1", "", "")
+            .adopt(1, worker.clone(), "T1", "", "")
             .expect("the worker's tab");
         // The seat is gone; its tab is still a page, and the sweep that
         // closes it has not run yet.
@@ -6715,7 +6686,7 @@ mod tests {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(1, worker.clone(), "T1", "T1", "", "")
+            .adopt(1, worker.clone(), "T1", "", "")
             .expect("the worker's tab");
 
         let refused = service
@@ -6763,7 +6734,7 @@ mod tests {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(1, worker.clone(), "T1", "T1", "", "")
+            .adopt(1, worker.clone(), "T1", "", "")
             .expect("the worker's tab");
         // The profile is closed, so no replacement driver can start.
         profile.ended.store(true, Ordering::Release);
@@ -6790,7 +6761,7 @@ mod tests {
 
     /// **A rebuild that replaces the host ends the host standing after it.**
     /// A rebuild starts a new host when the old one died, so the fresh
-    /// driver serves a host the call never looked up; a listing that dies
+    /// driver serves a host the call never looked up; a selection that dies
     /// there must end that host rather than answer for the one that is gone
     /// (#2573's shape).
     #[tokio::test]
@@ -6801,13 +6772,14 @@ mod tests {
         let installed = FakeDriver::with_blank("T1");
         let successor = FakeDriver::with_blank("T1");
         let fresh = successor.clone();
-        successor.timeout_every_listing();
+        successor.timeout_every_select();
         service
             .install_fake_with_successor(&seat, installed, move || {
                 Arc::new(successor.clone()) as Arc<dyn crate::driver::TabDriver>
             })
             .await;
         let profile = service.find("O/default").await.expect("the profile");
+        seed_tab(&profile, &seat);
         let ring_name = format!("/forge-replaced-host-{}", std::process::id());
         let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
         let (input, _input_rx) = std::sync::mpsc::channel();
@@ -6844,14 +6816,13 @@ mod tests {
 
         assert!(refused.contains("was ended"), "the standing host is named as ended: {refused}");
         assert!(profile.state.lock().await.host.is_none(), "the standing host was ended");
-        assert!(fresh.listings() > 0, "the replacement listed before the host was ended");
+        assert!(!fresh.selected().is_empty(), "the replacement drove before the host was ended");
         crate::osr::Ring::unlink(&ring_name);
     }
 
     /// **A host with no boot tab is ended from the create it wedges.** A
     /// create installs its own driver and lists with it; a listing that dies
-    /// there is the same wedge `tabs_recovering` ends, and this path never
-    /// reaches that recovery.
+    /// there is a wedged host, and this path never reaches a listing recovery.
     #[tokio::test]
     async fn a_create_whose_fresh_driver_cannot_list_ends_the_host() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -6943,14 +6914,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
         let profile = service.find("O/default").await.expect("the profile");
 
         // A host for watch_nav's port, and the finished handle the Gone path
         // leaves in the slot.
+        let pages = StubEndpoint::start(&[("T1", "http://a/", "one")]);
         let ring_name = format!("/forge-watch-{}", std::process::id());
         let ring = crate::osr::Ring::create(&ring_name, 4, 4).expect("a test ring");
         let (input, _input_rx) = std::sync::mpsc::channel();
@@ -6961,7 +6931,7 @@ mod tests {
         let mut state = profile.state.lock().await;
         state.host = Some(crate::spawn::ActiveHost {
             pid: std::process::id(),
-            port: 9,
+            port: pages.port,
             ring: Arc::new(ring),
             profile: dir.path().join("profile"),
             input,
@@ -6970,7 +6940,7 @@ mod tests {
         });
         state.nav_watch = Some(finished);
 
-        let before = seen.listings();
+        let before = pages.hits();
         profile.watch_nav(&mut state);
         assert!(
             state.nav_watch.as_ref().is_some_and(|watch| !watch.is_finished()),
@@ -6978,36 +6948,28 @@ mod tests {
         );
         drop(state);
 
-        let mut listed = false;
+        let mut probed = false;
         for _ in 0..20 {
-            if seen.listings() > before {
-                listed = true;
+            if pages.hits() > before {
+                probed = true;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(listed, "the fresh watch lists where the finished one stopped");
+        assert!(probed, "the fresh watch reads the page list where the finished one stopped");
         crate::osr::Ring::unlink(&ring_name);
     }
 
-    /// **A renamed page keeps the session's tab.** A fresh Playwright backend
-    /// gives every page a new guid; the tab is re-paired by its CDP target
-    /// rather than re-created as about:blank, so the number a tool printed is
-    /// the number a hand-off accepts. (The fake's ids change; no driver is
-    /// replaced in this test.)
+    /// **A later call keeps the session's tab.** It selects the target the
+    /// browser named rather than re-creating a tab, so the number a tool
+    /// printed is the number a hand-off accepts.
     #[tokio::test]
-    async fn a_renamed_page_keeps_the_sessions_tab() {
+    async fn a_later_call_keeps_the_sessions_tab() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
-        let profile = service.find("O/default").await.expect("the profile");
-
-        // A fresh driver against the same host: the same page, a new guid.
-        seen.reidentify("P2");
 
         let parts = service
             .call(&seat, "browser_navigate", json!({ "url": "http://a/" }))
@@ -7022,11 +6984,6 @@ mod tests {
         );
         let rows = service.tabs(&seat).await.expect("rows").rows;
         assert_eq!(rows.len(), 1, "one tab, not a new one: {rows:?}");
-        assert_eq!(
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(1),
-            Some("P2"),
-            "the registry follows the fresh driver's name for the same page",
-        );
         service
             .hand_off_started(&seat, 1)
             .await
@@ -7034,44 +6991,20 @@ mod tests {
         service.hand_off_finished(&seat, 1).await;
     }
 
-    /// **The registry follows a fresh driver's names for the pages it still
-    /// has.** The install-time repair is what keeps a listing or a hand-off
-    /// answered between two page calls.
+    /// **A selection that runs out its budget is a mute driver, let go for
+    /// the next call.** The call has spent its one budget, so it answers with
+    /// the named timeout instead of spending a second on a rebuild; the
+    /// successor answering the next call proves the driver was replaced.
+    /// **A live wedge is not constructible in CI**; this path is pinned by the
+    /// fake alone.
     #[tokio::test]
-    async fn a_fresh_driver_re_pairs_the_registry_by_target() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
-        let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
-        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
-        let profile = service.find("O/default").await.expect("the profile");
-        seen.reidentify("P2");
-
-        let driver: Arc<dyn crate::driver::TabDriver> = Arc::new(seen);
-        service.repair_tab_identity(&profile, &driver, crate::driver::CALL_TIMEOUT).await;
-
-        assert_eq!(
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).id(1),
-            Some("P2"),
-            "the row is re-paired with the fresh driver's name",
-        );
-    }
-
-    /// **A listing that runs out its budget is a mute driver, let go for the
-    /// next call.** The call has spent its one budget, so it answers with the
-    /// named timeout instead of spending a second on a rebuild; the successor
-    /// answering the next call proves the driver was replaced. **A live wedge
-    /// is not constructible in CI**; this path is pinned by the fake alone.
-    #[tokio::test]
-    async fn a_listing_timeout_drops_the_driver_for_the_next_call() {
+    async fn a_select_timeout_drops_the_driver_for_the_next_call() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
         let wedged = FakeDriver::with_blank("T1");
         let seen = wedged.clone();
-        seen.timeout_every_listing();
+        seen.timeout_every_select();
         let successor = FakeDriver::with_blank("T1");
         let fresh = successor.clone();
         service
@@ -7083,12 +7016,12 @@ mod tests {
         let refused = service
             .call(&seat, "browser_snapshot", json!({}))
             .await
-            .expect_err("a listing that outlived the call's budget is not retried on it");
+            .expect_err("a selection that outlived the call's budget is not retried on it");
         assert!(
             refused.contains("the driver did not answer"),
             "the call answers with its own named timeout: {refused}"
         );
-        assert_eq!(fresh.listings(), 0, "no second budget was spent on the successor");
+        assert_eq!(fresh.selected().len(), 0, "no second budget was spent on the successor");
 
         let parts = service
             .call(&seat, "browser_snapshot", json!({}))
@@ -7098,7 +7031,7 @@ mod tests {
             matches!(parts.first(), Some(forge_primitives::browser::BrowserPart::Text { text }) if text == "ok"),
             "the successor answered: {parts:?}"
         );
-        assert!(fresh.listings() > 0, "the successor replaced the dropped driver");
+        assert!(!fresh.selected().is_empty(), "the successor replaced the dropped driver");
     }
 
     /// **A mute call answers with its own named timeout and lets the driver
@@ -7136,7 +7069,7 @@ mod tests {
             profile.state.lock().await.driver.is_none(),
             "the mute driver was let go for the next call"
         );
-        assert_eq!(fresh.listings(), 0, "no second budget was spent on the successor");
+        assert!(fresh.selected().is_empty(), "no second budget was spent on the successor");
 
         let parts = service
             .call(&seat, "browser_snapshot", json!({}))
@@ -7146,7 +7079,7 @@ mod tests {
             matches!(parts.first(), Some(forge_primitives::browser::BrowserPart::Text { text }) if text == "ok"),
             "the successor answered: {parts:?}"
         );
-        assert!(fresh.listings() > 0, "the successor replaced the dropped driver");
+        assert!(!fresh.selected().is_empty(), "the successor replaced the dropped driver");
     }
 
     /// **A page call that mutes twice, with a fresh driver in between, ends
@@ -7192,7 +7125,7 @@ mod tests {
             .expect_err("a mute page call answers with its named timeout");
         assert!(first.contains("the driver did not answer"), "{first}");
         assert!(profile.state.lock().await.host.is_some(), "one mute leaves the host standing");
-        assert_eq!(fresh.listings(), 0, "no second budget was spent on the successor");
+        assert!(fresh.selected().is_empty(), "no second budget was spent on the successor");
 
         fresh.timeout_every_page_call();
         let refused = service
@@ -7202,7 +7135,7 @@ mod tests {
         assert!(refused.contains("stopped answering"), "{refused}");
         assert!(refused.contains("pid"), "the host's identity is named: {refused}");
         assert!(profile.state.lock().await.host.is_none(), "the wedged host was taken down");
-        assert!(fresh.listings() > 0, "the successor listed before the host was ended");
+        assert!(!fresh.selected().is_empty(), "the successor drove before the host was ended");
         crate::osr::Ring::unlink(&ring_name);
 
         // **The next browser starts from silence**: the flag went with the
@@ -7282,7 +7215,7 @@ mod tests {
                 &driver,
                 9,
                 tokio::time::Instant::now() + budget,
-                ReconcilePass::Pairing { first: true },
+                ReconcilePass { first: true },
             )
             .await;
 
@@ -7331,7 +7264,7 @@ mod tests {
                 &driver,
                 9,
                 tokio::time::Instant::now() + Duration::from_secs(1),
-                ReconcilePass::Pairing { first: true },
+                ReconcilePass { first: true },
             )
             .await;
 
@@ -7353,10 +7286,13 @@ mod tests {
         let wedged = FakeDriver::with_blank("T1");
         let seen = wedged.clone();
         let successor = FakeDriver::with_blank("T1");
-        let fresh = successor.clone();
+        let installed_handle = Arc::new(Mutex::new(None));
+        let record = Arc::clone(&installed_handle);
         service
             .install_fake_with_successor(&seat, wedged, move || {
-                Arc::new(successor.clone()) as Arc<dyn crate::driver::TabDriver>
+                let fresh: Arc<dyn crate::driver::TabDriver> = Arc::new(successor.clone());
+                *record.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&fresh));
+                fresh
             })
             .await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
@@ -7370,13 +7306,22 @@ mod tests {
         // the call can be run again rather than warning it may have landed.
         assert!(handed.contains("never reached the page"), "{handed}");
         assert!(handed.contains("can be run again now"), "{handed}");
-        assert!(fresh.listings() > 0, "the successor replaced the wedged driver");
+        let successor_driver =
+            installed_handle.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let Some(successor_driver) = successor_driver else {
+            panic!("the successor was never installed");
+        };
+        let profile = service.find("O/default").await.expect("the profile");
+        let installed = profile.state.lock().await.driver.as_ref().map(Arc::clone);
+        assert!(
+            installed.is_some_and(|driver| Arc::ptr_eq(&driver, &successor_driver)),
+            "the successor replaced the wedged driver",
+        );
     }
 
-    /// **A row that cannot be paired is left open and the call refused.** A
-    /// page whose guid and target both moved under the registry is not a
-    /// closed tab; closing it is how a filled form is lost, and the orphan
-    /// prune is held while the row is unresolved.
+    /// **A row the browser never named is left open and the call refused.**
+    /// A tab with no target is not a closed tab; closing it is how a filled
+    /// form is lost, and the orphan prune is held while the row is unresolved.
     #[tokio::test]
     async fn an_unpairable_tab_is_left_open_and_the_call_refused() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -7385,12 +7330,14 @@ mod tests {
         let fake = FakeDriver::with_blank("T1");
         let seen = fake.clone();
         service.install_fake(&seat, fake).await;
-        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
         let profile = service.find("O/default").await.expect("the profile");
-        // The page navigated and the driver was replaced: neither name the
-        // registry holds matches the listing.
-        seen.rename("P2", "T2");
-        let listing = seen.tabs.lock().expect("the tabs").clone();
+        // The browser never gave this row a target.
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(1, seat.clone(), "", "a tab", "http://a/")
+            .expect("the test's row");
         let drives = seen.selected().len();
 
         let refused = service
@@ -7401,7 +7348,7 @@ mod tests {
         assert_eq!(seen.selected().len(), drives, "the refused call drove nothing");
         assert_eq!(
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(1),
-            Some("T1"),
+            Some(""),
             "the tab is still open with its own row",
         );
         assert_eq!(
@@ -7410,8 +7357,15 @@ mod tests {
             "the row is marked unresolved",
         );
         let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+        let page = crate::tabs::DriverTab {
+            index: 0,
+            target: "T9".to_owned(),
+            title: String::new(),
+            url: String::new(),
+            current: false,
+        };
         assert!(
-            super::closed_as_orphans(&tabs, &listing, false).is_empty(),
+            super::closed_as_orphans(&tabs, &[page], false).is_empty(),
             "an unresolved row holds the orphan prune",
         );
     }
@@ -7632,47 +7586,6 @@ mod tests {
         crate::osr::Ring::unlink(&ring_name);
     }
 
-    /// **The repair's re-pair clears the unresolved flag, so the prune runs
-    /// again.** A transient listing miss holds the orphan prune; re-pairing
-    /// the row by its target releases it.
-    #[tokio::test]
-    async fn a_re_paired_row_lets_the_prune_run() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
-        let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        let seen = fake.clone();
-        service.install_fake(&seat, fake).await;
-        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
-        let profile = service.find("O/default").await.expect("the profile");
-        seen.rename("P2", "T2");
-        service
-            .call(&seat, "browser_snapshot", json!({}))
-            .await
-            .expect_err("an unpairable row refuses the call");
-        assert_eq!(
-            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).unresolved_tabs(),
-            vec![1],
-            "the row is unresolved and holds the prune",
-        );
-
-        // The target names it again, and a page no tab claims is listed.
-        seen.rename("P3", "T1");
-        seen.push_target("T9");
-        let driver: Arc<dyn crate::driver::TabDriver> = Arc::new(seen.clone());
-        service.repair_tab_identity(&profile, &driver, crate::driver::CALL_TIMEOUT).await;
-
-        let tabs = profile.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-        assert_eq!(tabs.id(1), Some("P3"), "the repair re-paired the row by target");
-        assert!(tabs.unresolved_tabs().is_empty(), "and cleared its flag");
-        let listing = seen.tabs.lock().expect("the tabs").clone();
-        assert_eq!(
-            super::closed_as_orphans(&tabs, &listing, false),
-            vec!["T9".to_owned()],
-            "the prune runs again",
-        );
-    }
-
     /// **A driver installed since this call's lookup is not this call's to
     /// clear.** The guard is inside the rebuild lock, so the newer driver is
     /// handed back untouched and its successor stands untouched too.
@@ -7692,13 +7605,11 @@ mod tests {
         let profile = service.find("O/default").await.expect("the profile");
         profile.state.lock().await.driver_generation = 5;
 
-        let (kept, _generation) = service
-            .recover_driver(&profile, 4, tokio::time::Instant::now() + crate::driver::CALL_TIMEOUT)
-            .await
-            .expect("the current driver is handed back");
+        let (kept, _generation) =
+            service.recover_driver(&profile, 4).await.expect("the current driver is handed back");
 
         let rows = kept.tabs_within(Duration::from_secs(1)).await.expect("the fake lists");
-        assert_eq!(rows[0].id, "T1", "the current driver, not the successor");
+        assert_eq!(rows[0].target, "T1", "the current driver, not the successor");
         assert_eq!(replacement.listings(), 0, "the successor was never installed");
     }
 
@@ -7743,7 +7654,7 @@ mod tests {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(2, seat.clone(), "p2", "t2", "two", "http://b/")
+            .adopt(2, seat.clone(), "t2", "two", "http://b/")
             .expect("a second tab");
         let first = profile.nav_receiver(one);
         let second = profile.nav_receiver(2);
@@ -9334,9 +9245,6 @@ mod tests {
             dead_page_answer(DeadPageOutcome::RebuildFailed { why: "the start timed out" }),
             dead_page_answer(DeadPageOutcome::Cooling),
             dead_page_answer(DeadPageOutcome::TabGone { tab: 2 }),
-            dead_page_answer(DeadPageOutcome::ListFailed {
-                why: "the driver's tab list carried no FORGE-TABS export",
-            }),
         ];
         for answer in answers {
             assert!(answer.contains("the browser's page context died"), "{answer}");
@@ -9352,11 +9260,6 @@ mod tests {
         let handed = dead_page_answer(DeadPageOutcome::NotRepeated { tool: "browser_tabs" });
         assert!(handed.contains("browser_tabs may already have landed"), "{handed}");
         assert!(handed.contains("check the page before running it again"), "{handed}");
-        let unread = dead_page_answer(DeadPageOutcome::ListFailed {
-            why: "the driver's tab list carried no FORGE-TABS export",
-        });
-        assert!(unread.contains("could not be read"), "{unread}");
-        assert!(unread.contains("nothing is known about the page"), "{unread}");
     }
 
     /// **Every dead-driver outcome names the replacement and the next move**,
@@ -9371,7 +9274,6 @@ mod tests {
             dead_driver_answer(DeadDriverOutcome::RetryFailed { why: "no element matches" }),
             dead_driver_answer(DeadDriverOutcome::ReplaceFailed { why: "the start timed out" }),
             dead_driver_answer(DeadDriverOutcome::TabGone),
-            dead_driver_answer(DeadDriverOutcome::ListFailed { why: "no FORGE-TABS export" }),
         ];
         for answer in answers {
             assert!(
@@ -9404,12 +9306,7 @@ mod tests {
         assert!(tabs.contains("never reached the page"), "{tabs}");
         assert!(tabs.contains("can be run again now"), "{tabs}");
         let gone = dead_driver_answer(DeadDriverOutcome::TabGone);
-        assert!(gone.contains("not in the fresh driver's list"), "{gone}");
-        let unread = dead_driver_answer(DeadDriverOutcome::ListFailed {
-            why: "the driver's tab list carried no FORGE-TABS export",
-        });
-        assert!(unread.contains("could not be read"), "{unread}");
-        assert!(unread.contains("nothing is known about this session's page"), "{unread}");
+        assert!(gone.contains("no page target"), "{gone}");
     }
 
     /// **A seat's entry is its org's profile**: two seats of one org share a
@@ -9697,7 +9594,7 @@ mod tests {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(2, seat.clone(), "T2", "T2", "", "about:blank")
+            .adopt(2, seat.clone(), "T2", "", "about:blank")
             .expect("tab 2");
         service.attach(7, &seat, Some(2)).await.expect("the move");
         assert_eq!(profile.controller(tab), None, "a move to another tab gives the role up");
@@ -10126,18 +10023,20 @@ mod tests {
         if tabs.target(1).is_some() {
             return 1;
         }
-        tabs.adopt(1, seat.clone(), "T1", "T1", "", "about:blank").expect("the test's tab")
+        tabs.adopt(1, seat.clone(), "T1", "", "about:blank").expect("the test's tab")
     }
 
-    /// A driver the call path can be tested against: it records the indices
+    /// A driver the call path can be tested against: it records the targets
     /// it selects and answers every tool with one text part.
     #[derive(Clone, Default)]
     pub(crate) struct FakeDriver {
         tabs: Arc<Mutex<Vec<crate::tabs::DriverTab>>>,
-        selected: Arc<Mutex<Vec<usize>>>,
+        selected: Arc<Mutex<Vec<String>>>,
         /// One listing that fails like a driver whose page outlived its
         /// renderer, so the recovery path has a real caller.
         stale_once: Arc<std::sync::atomic::AtomicBool>,
+        /// One page call that fails the same way.
+        stale_call_once: Arc<std::sync::atomic::AtomicBool>,
         /// An upload the driver refuses, so the failure path has a real
         /// caller that also holds the chooser decision.
         fail_upload: Arc<std::sync::atomic::AtomicBool>,
@@ -10159,6 +10058,9 @@ mod tests {
         timed_calls: Arc<std::sync::atomic::AtomicBool>,
         /// Every page call answers the driver's plain failure.
         fail_calls: Arc<std::sync::atomic::AtomicBool>,
+        /// Every selection answers the driver's own timeout, as a driver
+        /// stuck on a wedged page does.
+        slow_select: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl FakeDriver {
@@ -10166,7 +10068,6 @@ mod tests {
             let fake = Self::default();
             fake.tabs.lock().expect("the tabs").push(crate::tabs::DriverTab {
                 index: 0,
-                id: target.to_owned(),
                 target: target.to_owned(),
                 title: String::new(),
                 url: "about:blank".to_owned(),
@@ -10180,7 +10081,6 @@ mod tests {
             let index = tabs.len();
             tabs.push(crate::tabs::DriverTab {
                 index,
-                id: target.to_owned(),
                 target: target.to_owned(),
                 title: String::new(),
                 url: "about:blank".to_owned(),
@@ -10188,7 +10088,7 @@ mod tests {
             });
         }
 
-        fn selected(&self) -> Vec<usize> {
+        fn selected(&self) -> Vec<String> {
             self.selected.lock().expect("the selections").clone()
         }
 
@@ -10202,29 +10102,26 @@ mod tests {
             self.bounds.lock().expect("the bounds").clone()
         }
 
-        /// The page is gone: the next listing names none.
-        fn close_all(&self) {
-            self.tabs.lock().expect("the tabs").clear();
-        }
-
-        /// The page is listed but its target is empty, as the export writes it
-        /// when its own CDP read throws.
-        fn clear_target(&self) {
-            let mut tabs = self.tabs.lock().expect("the tabs");
-            if let Some(tab) = tabs.first_mut() {
-                tab.target.clear();
-            }
-        }
-
         /// The fake's next listing answers the stale-page error once.
         pub(crate) fn stale_once(&self) {
             self.stale_once.store(true, Ordering::Release);
+        }
+
+        /// The fake's next page call answers the stale-page error once.
+        pub(crate) fn stale_call_once(&self) {
+            self.stale_call_once.store(true, Ordering::Release);
         }
 
         /// **Every** listing answers the driver's own timeout: a retry on
         /// this same fake cannot pass, so only a real replacement can.
         pub(crate) fn timeout_every_listing(&self) {
             self.slow_listing.store(true, Ordering::Release);
+        }
+
+        /// **Every** selection answers the driver's own timeout: a retry on
+        /// this same fake cannot pass, so only a real replacement can.
+        fn timeout_every_select(&self) {
+            self.slow_select.store(true, Ordering::Release);
         }
 
         /// **Every** page call answers an initialise timeout, for the same
@@ -10236,25 +10133,6 @@ mod tests {
         /// The page call never answers while the listings still do.
         fn timeout_every_page_call(&self) {
             self.timed_calls.store(true, Ordering::Release);
-        }
-
-        /// A fresh driver attached to the same host names the same page
-        /// again: every Playwright guid changes, the target does not.
-        fn reidentify(&self, id: &str) {
-            let mut tabs = self.tabs.lock().expect("the tabs");
-            if let Some(tab) = tabs.first_mut() {
-                id.clone_into(&mut tab.id);
-            }
-        }
-
-        /// The page navigated and the driver was replaced: both names the
-        /// registry holds are gone.
-        fn rename(&self, id: &str, target: &str) {
-            let mut tabs = self.tabs.lock().expect("the tabs");
-            if let Some(tab) = tabs.first_mut() {
-                id.clone_into(&mut tab.id);
-                target.clone_into(&mut tab.target);
-            }
         }
 
         /// Every upload answers the driver's plain failure.
@@ -10336,7 +10214,6 @@ mod tests {
         let listing = [
             DriverTab {
                 index: 0,
-                id: "p1".to_owned(),
                 target: "boot".to_owned(),
                 title: String::new(),
                 url: "about:blank".to_owned(),
@@ -10344,7 +10221,6 @@ mod tests {
             },
             DriverTab {
                 index: 1,
-                id: "p2".to_owned(),
                 target: "made".to_owned(),
                 title: String::new(),
                 url: "about:blank".to_owned(),
@@ -10370,7 +10246,7 @@ mod tests {
     fn a_host_tab_not_yet_listed_waits_pending() {
         let seat = SessionSlot::lead("O", "p");
         let mut tabs = crate::tabs::TabRegistry::default();
-        tabs.adopt(1, seat.clone(), "p1", "T1", "", "about:blank").expect("the opener");
+        tabs.adopt(1, seat.clone(), "T1", "", "about:blank").expect("the opener");
         let event = crate::control::HostEvent::TabCreated {
             tab: 2,
             opener: Some(1),
@@ -10381,7 +10257,6 @@ mod tests {
         assert_eq!(waiting, vec![(1, event)], "no page, no adoption");
         let listing = [crate::tabs::DriverTab {
             index: 0,
-            id: "p2".to_owned(),
             target: "T2".to_owned(),
             title: String::new(),
             url: "u".to_owned(),
@@ -10389,7 +10264,7 @@ mod tests {
         }];
         let waiting = pair_tab_events(&mut tabs, &listing, waiting, 1);
         assert!(waiting.is_empty(), "the next pass adopts it");
-        assert_eq!(tabs.number_of("p2"), Some(2));
+        assert_eq!(tabs.target(2), Some("T2"));
         assert_eq!(tabs.owner(2), Some(&seat), "the opener's owner");
 
         // **An older receiver's close cannot close a live tab.** The close
@@ -10398,7 +10273,7 @@ mod tests {
         let stale = crate::control::HostEvent::TabClosed { tab: 2 };
         let waiting = pair_tab_events(&mut tabs, &listing, vec![(0, stale)], 1);
         assert!(waiting.is_empty(), "a stale close is dropped, not re-deferred");
-        assert_eq!(tabs.number_of("p2"), Some(2), "the live tab survives the stale close");
+        assert_eq!(tabs.target(2), Some("T2"), "the live tab survives the stale close");
 
         // **A NEWER receiver is the successor's**, not a stale one: its
         // events go back for the next pass, which will carry its generation,
@@ -10410,24 +10285,29 @@ mod tests {
             vec![(2, successor)],
             "a newer generation is re-deferred, not paired or dropped"
         );
-        assert_eq!(tabs.number_of("p2"), Some(2), "and this pass leaves the tab alone");
+        assert_eq!(tabs.target(2), Some("T2"), "and this pass leaves the tab alone");
     }
 
-    /// **A stale listing is a stale driver.** The `_page` error drops the
-    /// driver and the retried listing serves the call.
+    /// **A stale page is a dead driver context.** The `_page` error rebuilds
+    /// the driver and the retried call answers.
     #[tokio::test]
-    async fn a_stale_listing_recovers_the_driver() {
+    async fn a_stale_page_recovers_the_driver() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let seat = SessionSlot::lead("O", "p");
-        let driver = FakeDriver::with_blank("T1");
-        driver.stale_once();
-        service.install_fake(&seat, driver).await;
+        let stale = FakeDriver::with_blank("T1");
+        stale.stale_call_once();
+        let successor = FakeDriver::with_blank("T1");
+        service
+            .install_fake_with_successor(&seat, stale, move || {
+                Arc::new(successor.clone()) as Arc<dyn crate::driver::TabDriver>
+            })
+            .await;
 
         let parts = service
             .call(&seat, "browser_snapshot", json!({}))
             .await
-            .expect("the call recovers from the stale listing");
+            .expect("the call recovers from the stale page");
         assert!(
             matches!(parts.first(), Some(forge_primitives::browser::BrowserPart::Text { text }) if text == "ok"),
             "the retried call answers: {parts:?}"
@@ -10454,8 +10334,11 @@ mod tests {
             Ok(self.tabs.lock().expect("the tabs").clone())
         }
 
-        async fn select(&self, index: usize, _bound: Duration) -> Result<(), String> {
-            self.selected.lock().expect("the selections").push(index);
+        async fn select(&self, target: &str, bound: Duration) -> Result<(), String> {
+            self.selected.lock().expect("the selections").push(target.to_owned());
+            if self.slow_select.load(Ordering::Acquire) {
+                return Err(crate::driver::did_not_answer("browser_tabs", bound));
+            }
             Ok(())
         }
 
@@ -10480,6 +10363,11 @@ mod tests {
             if self.fail_calls.load(Ordering::Acquire) {
                 return Err(format!("{tool} failed"));
             }
+            if self.stale_call_once.swap(false, Ordering::AcqRel) {
+                return Err("browserBackend.callTool: Cannot read properties of undefined \
+                            (reading '_page')"
+                    .to_owned());
+            }
             Ok(vec![forge_primitives::browser::BrowserPart::Text { text: "ok".to_owned() }])
         }
 
@@ -10498,7 +10386,6 @@ mod tests {
         let driver = FakeDriver::default();
         driver.tabs.lock().expect("the tabs").push(crate::tabs::DriverTab {
             index: 0,
-            id: "T1".into(),
             target: "T1".into(),
             title: String::new(),
             url: "about:blank".into(),
@@ -10560,7 +10447,11 @@ mod tests {
         service.call(&worker, "browser_snapshot", json!({})).await.expect("the worker's call");
         service.call(&lead, "browser_snapshot", json!({})).await.expect("the lead's second call");
 
-        assert_eq!(seen.selected(), vec![0, 1, 0], "each call selected its caller's tab");
+        assert_eq!(
+            seen.selected(),
+            vec!["T1", "T2", "T1"],
+            "each call selected its caller's tab by target",
+        );
         let rows = service.tabs(&lead).await.expect("the rows").rows;
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].owner, lead);
@@ -10587,7 +10478,7 @@ mod tests {
             Ok(self.tabs.lock().expect("the fake's tabs").clone())
         }
 
-        async fn select(&self, _index: usize, _bound: Duration) -> Result<(), String> {
+        async fn select(&self, _target: &str, _bound: Duration) -> Result<(), String> {
             Ok(())
         }
 
@@ -10599,7 +10490,10 @@ mod tests {
         ) -> Result<Vec<BrowserPart>, String> {
             let now = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
             self.peak.fetch_max(now, Ordering::AcqRel);
-            tokio::time::sleep(Duration::from_millis(80)).await;
+            // Well inside the test bound: overlap is proved by the counters,
+            // so a loaded runner's scheduling cost must not read as a queue
+            // timeout on the second call.
+            tokio::time::sleep(Duration::from_millis(30)).await;
             self.in_flight.fetch_sub(1, Ordering::AcqRel);
             Ok(vec![BrowserPart::Text { text: "ok".to_owned() }])
         }
@@ -10626,7 +10520,6 @@ mod tests {
         let driver = SlowDriver {
             tabs: Arc::new(Mutex::new(vec![crate::tabs::DriverTab {
                 index: 0,
-                id: "T1".to_owned(),
                 target: "T1".to_owned(),
                 title: String::new(),
                 url: "about:blank".to_owned(),
@@ -11030,7 +10923,7 @@ mod tests {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(2, lead.clone(), "T2", "T2", "second", "http://b/")
+            .adopt(2, lead.clone(), "T2", "second", "http://b/")
             .expect("the lead's tab");
 
         let text = service.render_tabs(&profile, &worker);
@@ -11198,7 +11091,6 @@ mod server_guards {
     fn row(index: u16, target: &str) -> DriverTab {
         DriverTab {
             index: usize::from(index - 1),
-            id: target.to_owned(),
             target: target.to_owned(),
             title: String::new(),
             url: "about:blank".to_owned(),
@@ -11262,7 +11154,7 @@ mod server_guards {
             Ok(self.listing.clone())
         }
 
-        async fn select(&self, _index: usize, _bound: Duration) -> Result<(), String> {
+        async fn select(&self, _target: &str, _bound: Duration) -> Result<(), String> {
             Ok(())
         }
 
@@ -11321,7 +11213,7 @@ mod server_guards {
                         &listing,
                         9,
                         tokio::time::Instant::now() + super::PAIR_BOUND,
-                        ReconcilePass::Pairing { first: true },
+                        ReconcilePass { first: true },
                     )
                     .await
             })
@@ -11368,7 +11260,7 @@ mod server_guards {
                         &listing,
                         9,
                         tokio::time::Instant::now() + super::PAIR_BOUND,
-                        ReconcilePass::Pairing { first: true },
+                        ReconcilePass { first: true },
                     )
                     .await
             })
@@ -11388,141 +11280,6 @@ mod server_guards {
             !deferred.iter().any(|(_, event)| matches!(event, HostEvent::TabClosed { tab: 99 })),
             "a stable pass kept an event it did not pair: {deferred:?}"
         );
-    }
-
-    /// **A reconcile from a call that cannot list names itself at WARN, with
-    /// its seat, its profile and the driver's reason, and the rows it leaves
-    /// are the registry's.** A mute driver must neither fail the call nor
-    /// answer silently with stale rows.
-    #[tokio::test]
-    async fn a_call_reconcile_that_cannot_list_names_its_seat_and_the_reason() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
-        let seat = SessionSlot::lead("O", "p");
-        let fake = FakeDriver::with_blank("T1");
-        service.install_fake(&seat, fake.clone()).await;
-        let profile = service.find("O/default").await.expect("the profile");
-        profile
-            .tabs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .adopt(1, seat.clone(), "T1", "T1", "stale row", "http://stale/")
-            .expect("the registry's row");
-        let (_, ring) = install_host(&profile, dir.path(), 21).await;
-        fake.timeout_every_listing();
-
-        let caught = Caught::default();
-        let subscriber = tracing_subscriber::registry().with(caught.clone());
-        let guard = tracing::subscriber::set_default(subscriber);
-        let answer = service.call(&seat, "browser_tabs", json!({ "action": "list" })).await;
-        drop(guard);
-
-        let parts = answer.expect("the registry still answers the list");
-        let text = parts
-            .iter()
-            .find_map(|part| match part {
-                BrowserPart::Text { text } => Some(text.as_str()),
-                BrowserPart::Image { .. } => None,
-            })
-            .expect("the answer is one text part");
-        assert!(
-            text.contains("[stale row](http://stale/)"),
-            "the registry's row came back rather than a failure: {text}"
-        );
-        let (level, fields) = records(&caught)
-            .into_iter()
-            .find(|(_, fields)| fields.contains("event_name=\"browser_reconcile_unlisted\""))
-            .expect("the unlisted reconcile is named");
-        assert_eq!(
-            level,
-            tracing::Level::WARN,
-            "a driver that cannot list is forge's problem: {fields}"
-        );
-        assert!(fields.contains("profile=O/default"), "the profile is named: {fields}");
-        assert!(fields.contains("pass=\"call\""), "the pass that failed is named: {fields}");
-        assert!(
-            fields.contains("seat=Some(SessionSlot {"),
-            "the seat whose call it was is named: {fields}"
-        );
-        for named in ["org: \"O\"", "project: \"p\"", "label: \"lead\""] {
-            assert!(fields.contains(named), "the seat carries `{named}`: {fields}");
-        }
-        assert!(
-            fields.contains("did not answer browser_tabs"),
-            "the driver's reason is carried: {fields}"
-        );
-        crate::osr::Ring::unlink(&ring);
-    }
-
-    /// A driver that answers every listing until its page call has run, then
-    /// goes mute: what a successful call's post-call reconcile sees.
-    struct MuteAfterCall {
-        listing: Vec<DriverTab>,
-        called: AtomicBool,
-    }
-
-    #[async_trait::async_trait]
-    impl TabDriver for MuteAfterCall {
-        async fn tabs_within(&self, bound: Duration) -> Result<Vec<DriverTab>, String> {
-            if self.called.load(Ordering::Acquire) {
-                return Err(crate::driver::did_not_answer("browser_tabs", bound));
-            }
-            Ok(self.listing.clone())
-        }
-
-        async fn select(&self, _index: usize, _bound: Duration) -> Result<(), String> {
-            Ok(())
-        }
-
-        async fn call_within(
-            &self,
-            _tool: &str,
-            _args: Value,
-            _bound: Duration,
-        ) -> Result<Vec<BrowserPart>, String> {
-            self.called.store(true, Ordering::Release);
-            Ok(vec![BrowserPart::Text { text: "the page".to_owned() }])
-        }
-
-        fn is_running(&self) -> bool {
-            true
-        }
-    }
-
-    /// **The post-call reconcile names its seat too.** A call that succeeds
-    /// and then finds the driver mute leaves the same record as the registry
-    /// path, and it must say whose call it was.
-    #[tokio::test]
-    async fn a_page_calls_reconcile_names_the_seat() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
-        let seat = SessionSlot::lead("O", "p");
-        service
-            .install_fake_with_boot(
-                &seat,
-                MuteAfterCall { listing: vec![row(1, "T1")], called: AtomicBool::new(false) },
-                (1, "T1".to_owned()),
-            )
-            .await;
-        let profile = service.find("O/default").await.expect("the profile");
-        let (_, ring) = install_host(&profile, dir.path(), 22).await;
-
-        let caught = Caught::default();
-        let subscriber = tracing_subscriber::registry().with(caught.clone());
-        let guard = tracing::subscriber::set_default(subscriber);
-        let answer = service.call(&seat, "browser_snapshot", json!({})).await;
-        drop(guard);
-
-        assert!(answer.is_ok(), "the page call answered: {answer:?}");
-        let (level, fields) = records(&caught)
-            .into_iter()
-            .find(|(_, fields)| fields.contains("event_name=\"browser_reconcile_unlisted\""))
-            .expect("the post-call reconcile is named");
-        assert_eq!(level, tracing::Level::WARN, "a mute driver is forge's problem: {fields}");
-        assert!(fields.contains("pass=\"call\""), "the pass is named: {fields}");
-        assert!(fields.contains("seat=Some(SessionSlot {"), "the seat is named: {fields}");
-        assert!(fields.contains("label: \"lead\""), "the caller is named: {fields}");
-        crate::osr::Ring::unlink(&ring);
     }
 
     /// **A pairing pass that cannot list warns once and retries quietly.** The
@@ -11559,7 +11316,6 @@ mod server_guards {
         let pairing: Vec<(tracing::Level, String)> = records(&caught)
             .into_iter()
             .filter(|(_, fields)| fields.contains("event_name=\"browser_reconcile_unlisted\""))
-            .filter(|(_, fields)| fields.contains("pass=\"pairing\""))
             .collect();
         assert!(pairing.len() >= 3, "the spawned pass retried its unlisted listing: {pairing:?}");
         let warned = pairing.iter().filter(|(level, _)| *level == tracing::Level::WARN).count();
@@ -11574,7 +11330,6 @@ mod server_guards {
             "the retries stay at debug: {pairing:?}"
         );
         for (_, fields) in &pairing {
-            assert!(fields.contains("seat=None"), "a pairing pass has no seat: {fields}");
             assert!(
                 fields.contains("did not answer browser_tabs"),
                 "every record carries the driver's reason: {fields}"
@@ -11599,7 +11354,7 @@ mod server_guards {
             Ok(self.listing.clone())
         }
 
-        async fn select(&self, _index: usize, _bound: Duration) -> Result<(), String> {
+        async fn select(&self, _target: &str, _bound: Duration) -> Result<(), String> {
             Ok(())
         }
 
@@ -11667,7 +11422,6 @@ mod server_guards {
         let pairing: Vec<(tracing::Level, String)> = records(&caught)
             .into_iter()
             .filter(|(_, fields)| fields.contains("event_name=\"browser_reconcile_unlisted\""))
-            .filter(|(_, fields)| fields.contains("pass=\"pairing\""))
             .collect();
         assert_eq!(
             pairing.iter().filter(|(level, _)| *level == tracing::Level::WARN).count(),
@@ -11726,7 +11480,7 @@ mod server_guards {
                 &listing,
                 9,
                 tokio::time::Instant::now() + super::PAIR_BOUND,
-                ReconcilePass::Pairing { first: true },
+                ReconcilePass { first: true },
             ),
         )
         .await;
@@ -11814,8 +11568,7 @@ mod server_guards {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let paired =
-                    profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).number_of("T2")
-                        == Some(2);
+                    profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).target(2).is_some();
                 if paired {
                     return;
                 }
@@ -11867,7 +11620,7 @@ mod server_guards {
                 &listing,
                 port,
                 tokio::time::Instant::now() + super::PAIR_BOUND,
-                ReconcilePass::Pairing { first: true },
+                ReconcilePass { first: true },
             )
             .await;
 
@@ -11894,7 +11647,7 @@ mod server_guards {
                 &listing,
                 port,
                 tokio::time::Instant::now() + super::PAIR_BOUND,
-                ReconcilePass::Pairing { first: true },
+                ReconcilePass { first: true },
             )
             .await;
 
@@ -12058,7 +11811,7 @@ mod server_guards {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(1, seat.clone(), "T2", "T2", "", "")
+            .adopt(1, seat.clone(), "T2", "", "")
             .expect("the successor's row");
 
         let again = service.end_dead_host(&profile, &seat, first, "a second call ends it").await;
@@ -12412,7 +12165,7 @@ mod server_guards {
             .tabs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .adopt(1, seat, "T2", "T2", "", "")
+            .adopt(1, seat, "T2", "", "")
             .expect("the successor's row");
         let (_births, birth_events) = tokio::sync::mpsc::unbounded_channel();
         *profile.host_tab_events.lock().await = Some(birth_events);

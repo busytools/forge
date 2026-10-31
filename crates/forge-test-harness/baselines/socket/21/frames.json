@@ -653,6 +653,15 @@
         "text"
       ]
     },
+    "Error": {
+      "": [
+        "dispatch_id",
+        "kind",
+        "seat",
+        "what",
+        "why"
+      ]
+    },
     "FileContent": {
       "": [
         "content",
@@ -1302,6 +1311,25 @@
         "source"
       ]
     },
+    "PromptUnder": {
+      "": [
+        "prompt_under"
+      ],
+      "/prompt_under": [
+        "attachments",
+        "dispatch_id",
+        "key",
+        "origin",
+        "source",
+        "text",
+        "uuid"
+      ],
+      "/prompt_under/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "TaskReopen": {
       "": [
         "task_reopen"
@@ -1319,6 +1347,40 @@
         "id",
         "project",
         "reserved"
+      ]
+    },
+    "UpsertReviewThread": {
+      "": [
+        "upsert_review_thread"
+      ],
+      "/upsert_review_thread": [
+        "branch",
+        "origin",
+        "project",
+        "sent_words",
+        "thread"
+      ],
+      "/upsert_review_thread/origin": [
+        "label",
+        "org",
+        "project"
+      ],
+      "/upsert_review_thread/thread": [
+        "anchor",
+        "comments",
+        "commit",
+        "created_at",
+        "id",
+        "status",
+        "updated_at"
+      ],
+      "/upsert_review_thread/thread/anchor": [
+        "base_ref",
+        "content_hash",
+        "context",
+        "line",
+        "path",
+        "side"
       ]
     }
   },

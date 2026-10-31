@@ -838,8 +838,9 @@ pub enum WorktreeEnsure {
     /// attached to it. The branch predates the call and may hold the
     /// worker's only copy of its commits.
     AttachedExistingBranch,
-    /// `path` was created and `worktree-<label>` was minted at the
-    /// repo's current HEAD.
+    /// `path` was created and `worktree-<label>` was minted at claude's
+    /// fresh base: `origin/<default-branch>`, or the local HEAD when the
+    /// repo names no usable origin base.
     CreatedWithNewBranch,
 }
 
@@ -848,12 +849,13 @@ pub enum WorktreeEnsure {
 /// transcript lives under the worktree's storage key, so `claude
 /// --resume` cannot find it from any other directory. Anchored on the
 /// branch: attach the surviving `worktree-<label>` when despawn kept
-/// it, otherwise recreate the branch at the repo's current HEAD. Under
-/// claude's default `worktree.baseRef` of `fresh` that is not the base
-/// a fresh `--worktree <label>` would use, which cuts from
-/// `origin/<default-branch>`; local HEAD is that base only with
-/// `baseRef` set to `head`, or with no local `origin/<default>` ref and
-/// a fetch that fails.
+/// it, otherwise recreate the branch from `origin/<default-branch>` - the
+/// base claude's own `--worktree <label>` uses under its default
+/// `worktree.baseRef` of `fresh`.
+///
+/// **`worktree.baseRef = "head"` is not honoured.** forge always cuts from
+/// the origin base and falls back to the local HEAD only when the repo names
+/// no `origin/HEAD`, or names one that no longer resolves.
 ///
 /// A `path` that exists is judged by its REGISTRATION, not its presence:
 /// a worktree git still lists is reused, while a leftover directory git
@@ -919,7 +921,16 @@ pub fn ensure_worker_worktree(
         cmd.arg(path).arg(&branch);
         WorktreeEnsure::AttachedExistingBranch
     } else {
+        // **The base claude's own `--worktree` uses.** Its
+        // `worktree.baseRef` defaults to `fresh`, which cuts from
+        // `origin/<default-branch>`; a resume that recreates the branch at
+        // the local HEAD starts the worker from a commit its launcher would
+        // not have chosen whenever HEAD is ahead (#1594). A repo that names
+        // no remote default has no origin base and keeps the local HEAD.
         cmd.arg("-b").arg(&branch).arg(path);
+        if let Some(base) = origin_base(repo) {
+            cmd.arg(base);
+        }
         WorktreeEnsure::CreatedWithNewBranch
     };
     cmd.current_dir(repo);
@@ -1052,9 +1063,9 @@ fn listed_worktrees(listing: &str) -> Vec<ListedWorktree> {
 /// (and claude locks every worktree it creates), while a git older than
 /// 2.36 carries none for anything - so the line cannot tell a registration
 /// whose gitdir is gone from one whose gitdir is there, which is the half
-/// the link answers. It does not carry the whole question: a link whose
-/// gitdir EXISTS but is not a usable worktree gitdir still reads as
-/// reusable here, and git only refuses that one when the add is reached.
+/// the link answers. [`worktree_gitdir_resolves`] then asks whether that
+/// gitdir is one git can actually reuse, so a present-but-unusable
+/// registration is refused here rather than left for the add.
 fn obstacle_from_listing(
     entries: &[ListedWorktree],
     repo: &Path,
@@ -1076,11 +1087,12 @@ fn obstacle_from_listing(
         // one included - claude locks every worktree it creates.
         Some(_) if worktree_gitdir_resolves(path) => None,
         Some(_) => Some(format!(
-            "the worktree registration at {} cannot be used - its directory, or the gitdir it \
-             points at, is gone - so this worker's worktree cannot be created there; unlock it \
-             with `git worktree unlock {}` (which errors harmlessly when it is not locked), \
-             delete that directory if it is still there, then `git worktree prune` in {} and \
-             spawn again",
+            "the worktree registration at {} cannot be reused - its .git link is not the plain \
+             file git writes, the gitdir it names is gone or belongs to another repository, or \
+             its HEAD does not resolve - so this worker's worktree cannot be created there; \
+             unlock it with `git worktree unlock {}` (which errors harmlessly when it is not \
+             locked), delete that directory if it is still there, then `git worktree prune` in \
+             {} and spawn again",
             path.display(),
             path.display(),
             repo.display(),
@@ -1094,13 +1106,23 @@ fn obstacle_from_listing(
     }
 }
 
-/// Whether the worktree registered at `path` still points at a gitdir: its
-/// `.git` link file names one that exists. git reads that link itself when
-/// it decides to reuse or refuse a worktree, so a directory whose link is
-/// gone - or whose link points at a pruned gitdir - is unreusable however
-/// present the directory is. A link whose gitdir exists but is not a usable
-/// worktree gitdir answers `true` here and is left to the add to refuse.
+/// Whether the worktree registered at `path` still points at a gitdir git
+/// can reuse.
+///
+/// git reads several facts when it decides to reuse or refuse a worktree, so
+/// the link alone is not the question: the `.git` entry must be the plain
+/// link file git writes (not a symlink standing in for one), the gitdir it
+/// names must be there, that gitdir's own `gitdir` back-link must name THIS
+/// worktree's `.git` entry, and its HEAD must resolve. Each of those states
+/// is one git's own reuse probe returns null for, and the add then refuses -
+/// the silent failure this check exists to catch (#1593).
 fn worktree_gitdir_resolves(path: &Path) -> bool {
+    let Ok(link_meta) = std::fs::symlink_metadata(path.join(".git")) else {
+        return false;
+    };
+    if !link_meta.is_file() {
+        return false;
+    }
     let Ok(link) = std::fs::read_to_string(path.join(".git")) else {
         return false;
     };
@@ -1108,7 +1130,50 @@ fn worktree_gitdir_resolves(path: &Path) -> bool {
         return false;
     };
     let gitdir = Path::new(gitdir.trim());
-    if gitdir.is_absolute() { gitdir.is_dir() } else { path.join(gitdir).is_dir() }
+    let gitdir = if gitdir.is_absolute() { gitdir.to_path_buf() } else { path.join(gitdir) };
+    if !gitdir.is_dir() {
+        return false;
+    }
+    let Ok(back) = std::fs::read_to_string(gitdir.join("gitdir")) else {
+        return false;
+    };
+    let back = Path::new(back.trim());
+    let back = if back.is_absolute() { back.to_path_buf() } else { gitdir.join(back) };
+    // git writes the back link as the worktree's `.git` entry itself, so
+    // that file is what must canonicalize to this worktree's.
+    let (Ok(back), Ok(here)) =
+        (std::fs::canonicalize(back), std::fs::canonicalize(path.join(".git")))
+    else {
+        return false;
+    };
+    if back != here {
+        return false;
+    }
+    git_command::command("git")
+        .arg("--git-dir")
+        .arg(&gitdir)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Why the worktree a git worker's spawn put it in is not usable, or `None`
+/// when it is there and git can read it.
+///
+/// The spawn-time check runs before creation; this is the read after it. A
+/// tree that went away before the session connected otherwise leaves the
+/// worker reading live with nowhere to work (#1593).
+pub fn worktree_missing_reason(path: &Path) -> Option<String> {
+    if !path.is_dir() {
+        return Some(format!("its worktree {} is gone", path.display()));
+    }
+    if !worktree_gitdir_resolves(path) {
+        return Some(format!(
+            "its worktree {} is not a git worktree git can reuse",
+            path.display()
+        ));
+    }
+    None
 }
 
 /// Whether something at `path` is in the way of `git worktree add`, which
@@ -1244,6 +1309,22 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
 /// survives on a remote is still open for review.
 pub fn branch_ref_exists(repo: &Path, branch: &str) -> bool {
     repo_branch_names(repo).is_none_or(|repo| repo.names.contains(branch))
+}
+
+/// The ref claude's `--worktree` cuts a fresh branch from:
+/// `origin/<default-branch>` as the repo's `origin/HEAD` names it.
+///
+/// `None` when the repo names no remote default, or when the symref names a
+/// ref the remote no longer carries: a start point git cannot resolve would
+/// refuse the whole resume, so the caller falls back to the local HEAD.
+fn origin_base(repo: &Path) -> Option<String> {
+    let name = git_in_repo(repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])?
+        .trim()
+        .to_owned();
+    if name.is_empty() {
+        return None;
+    }
+    git_in_repo(repo, &["rev-parse", "--verify", "--quiet", &name]).map(|_| name)
 }
 
 /// Run `git -C repo <args>` with the ambient repo-location env scrubbed,
@@ -3242,6 +3323,13 @@ mod tests {
         branch
     }
 
+    /// The gitdir a worktree's `.git` link names.
+    fn worktree_gitdir(wt: &Path) -> PathBuf {
+        let link = fs::read_to_string(wt.join(".git")).expect("the worktree's link");
+        let gitdir = link.trim().strip_prefix("gitdir:").expect("a gitdir link").trim();
+        PathBuf::from(gitdir)
+    }
+
     fn git_stdout(repo: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .args(args)
@@ -3478,10 +3566,9 @@ mod tests {
     }
 
     /// The despawn-reaped-branch shape: nothing on the branch was
-    /// unreachable, so despawn deleted it. The branch is recreated at the
-    /// repo's current HEAD - under claude's default `worktree.baseRef` of
-    /// `fresh`, not the base its own `--worktree` would use; see
-    /// [`ensure_worker_worktree`].
+    /// unreachable, so despawn deleted it. A repo with no remote default
+    /// has no origin base to cut from, so the branch is recreated at the
+    /// local HEAD - the fallback [`ensure_worker_worktree`] documents.
     #[test]
     fn ensure_worker_worktree_recreates_the_branch_when_reaped() {
         let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
@@ -3501,6 +3588,61 @@ mod tests {
             git_stdout(dir.path(), &["rev-parse", "worktree-lbl"]),
             git_stdout(dir.path(), &["rev-parse", "HEAD"]),
             "the recreated branch starts at the repo's current HEAD"
+        );
+    }
+
+    /// claude's own `--worktree` cuts a fresh branch from
+    /// `origin/<default-branch>` (`worktree.baseRef` defaults to `fresh`),
+    /// so a resume that recreates the branch must start there too. Cutting
+    /// at the local HEAD starts a resumed worker from a commit its
+    /// launcher would not have chosen whenever HEAD is ahead (#1594).
+    #[test]
+    fn ensure_worker_worktree_cuts_a_recreated_branch_from_the_origin_base() {
+        let dir = init_repo_with_commit();
+        let origin = git_stdout(dir.path(), &["rev-parse", "HEAD"]);
+        // The remote's default branch sits where the clone found it...
+        run_git(dir.path(), &["update-ref", "refs/remotes/origin/main", &origin]);
+        run_git(
+            dir.path(),
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        );
+        // ...and local HEAD moves on ahead of it.
+        fs::write(dir.path().join("README.md"), "local work").expect("write advance");
+        run_git(dir.path(), &["commit", "-qam", "local ahead"]);
+        let local = git_stdout(dir.path(), &["rev-parse", "HEAD"]);
+        assert_ne!(origin, local, "fixture precondition: local HEAD is ahead of the origin base");
+
+        let wt = dir.path().join(".claude").join("worktrees").join("lbl");
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("recreate succeeds");
+
+        assert_eq!(outcome, WorktreeEnsure::CreatedWithNewBranch);
+        assert_eq!(
+            git_stdout(dir.path(), &["rev-parse", "worktree-lbl"]),
+            origin,
+            "the new branch starts at origin/HEAD's commit, the base claude's own path uses",
+        );
+    }
+
+    /// An `origin/HEAD` naming a ref the remote no longer carries is not a
+    /// base git can resolve: the recreate falls back to the local HEAD
+    /// rather than refusing the whole resume.
+    #[test]
+    fn ensure_worker_worktree_falls_back_when_origin_head_dangles() {
+        let dir = init_repo_with_commit();
+        let local = git_stdout(dir.path(), &["rev-parse", "HEAD"]);
+        run_git(
+            dir.path(),
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone"],
+        );
+        let wt = dir.path().join(".claude").join("worktrees").join("lbl");
+
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("recreate succeeds");
+
+        assert_eq!(outcome, WorktreeEnsure::CreatedWithNewBranch);
+        assert_eq!(
+            git_stdout(dir.path(), &["rev-parse", "worktree-lbl"]),
+            local,
+            "the local HEAD is the fallback when the origin base does not resolve",
         );
     }
 
@@ -3656,6 +3798,55 @@ mod tests {
         );
     }
 
+    /// **A gitdir that exists is not a usable worktree gitdir.** The
+    /// spawn-time check read only whether the linked directory was there,
+    /// so four states git's own reuse probe refuses - a link that is a
+    /// symlink, a gitdir with no HEAD, a HEAD naming a deleted branch, and
+    /// a link into another repository - all read as reusable and the spawn
+    /// started with nowhere to work (#1593).
+    #[test]
+    fn obstacle_refuses_a_registration_whose_gitdir_git_cannot_reuse() {
+        // A symlink standing in for the link file is not what git writes.
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let real = wt.join("real-link");
+        fs::rename(wt.join(".git"), &real).expect("move the link aside");
+        std::os::unix::fs::symlink(&real, wt.join(".git")).expect("symlink the link");
+        assert!(
+            worktree_creation_obstacle(dir.path(), "lbl", &wt).is_some(),
+            "a symlinked .git link is not a registration git reuses",
+        );
+
+        // A gitdir whose HEAD is gone.
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let gitdir = worktree_gitdir(&wt);
+        fs::remove_file(gitdir.join("HEAD")).expect("remove HEAD");
+        assert!(
+            worktree_creation_obstacle(dir.path(), "lbl", &wt).is_some(),
+            "a gitdir with no HEAD cannot be reused",
+        );
+
+        // A HEAD naming a branch the repo deleted.
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let gitdir = worktree_gitdir(&wt);
+        fs::write(gitdir.join("HEAD"), "ref: refs/heads/gone\n").expect("point HEAD at nothing");
+        assert!(
+            worktree_creation_obstacle(dir.path(), "lbl", &wt).is_some(),
+            "a HEAD naming a deleted branch cannot be reused",
+        );
+
+        // A link pointing into another repository: its gitdir's own back
+        // link names that repository's worktree, not this one.
+        let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
+        let (_other, other_wt, _other_branch) = init_repo_with_worker_worktree("lbl");
+        let other_gitdir = worktree_gitdir(&other_wt);
+        fs::write(wt.join(".git"), format!("gitdir: {}\n", other_gitdir.display()))
+            .expect("point at another repository");
+        assert!(
+            worktree_creation_obstacle(dir.path(), "lbl", &wt).is_some(),
+            "another repository's worktree gitdir is not this worktree's",
+        );
+    }
+
     /// A worktree whose `.git` link file is gone while its directory stands,
     /// LOCKED - which is claude's own shape, since it locks every worktree it
     /// creates. git refuses to add a worktree there (exit 128), and a locked
@@ -3672,7 +3863,7 @@ mod tests {
             .expect("a worktree git will not reuse is an obstacle");
 
         assert!(
-            obstacle.contains("cannot be used"),
+            obstacle.contains("cannot be reused"),
             "the obstacle names the registration git will not reuse: {obstacle}"
         );
     }

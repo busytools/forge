@@ -953,6 +953,26 @@ inspected.
     sweep found a dozen issues whose subject had died with the terminal
     removal and stayed open because no closer named them.
 
+28. **A skill forge ships is part of the binary: change the ASSET, and leave the
+    installed copy byte-identical.** The handoff skill is
+    `crates/forge-workspace/src/handoff/SKILL.md`, embedded with `include_str!` and
+    written to `<config_dir>/skills/handoff/SKILL.md`; `install_skill` compares the
+    two byte for byte and REWRITES the installed copy whenever they differ. So
+    editing the installed file alone is not a fix - the next server start, or any
+    install, replaces it with the embedded copy and the change vanishes. Every
+    skill forge ships follows the same rule: the asset under `crates/` is the
+    source of truth and moves in the same change, the installed copy is brought
+    to the same bytes in that pass, and any test that pins the shipped text
+    moves with it. **The installed copy matching is not the fix taking
+    effect**: the running server rewrites it from ITS OWN embedded bytes at
+    boot (`Replaced`), so until a binary built from the new asset is installed,
+    a restart reverts the file. The asset edit plus the release that ships it
+    is the whole change; a restart is a no-op only once that build is
+    installed (`SkillInstall::Unchanged`). Where a skill is Ved's own text plus forge additions, keep his
+    clauses verbatim - `the_shipped_skill_keeps_the_whole_handoff_procedure` pins
+    them - and add the forge rule as an override section rather than rewriting
+    his sentences.
+
 ## Claude Code worktree interop
 
 Non-guessable external conventions, recorded so forge does not reinvent

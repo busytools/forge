@@ -25,7 +25,6 @@
 use std::sync::{Arc, Weak};
 
 use crate::mcp::peers::types::{PeerLiveness, PeerStatus, WrappedPrompt};
-use tracing::warn;
 
 use crate::SessionSlot;
 use crate::protocol::Command;
@@ -40,6 +39,11 @@ use crate::workspace::Workspace;
 pub enum DeliverError {
     /// No project named `name` in forge.toml.
     UnknownTarget { name: String },
+    /// The command reached the handler and the handler refused it: the
+    /// target's session did not take the prompt, the project left
+    /// `forge.toml` between the tool's check and the dispatch, or the
+    /// workspace is shutting down. `message` says which.
+    DispatchFailed { message: String },
 }
 
 /// The narrow workspace-state surface peer-coordination tools call
@@ -57,11 +61,11 @@ pub trait WorkspaceFacade: Send + Sync {
 
     /// Deliver a wrapped peer prompt to `target_project`.
     ///
-    /// Synchronous return is the immediate decision: `Ok(())` means
-    /// `Command::DeliverPeerPrompt` has been dispatched, and whether the
-    /// target was running or asleep is that handler's business (it either
-    /// dispatches a `Command::Prompt` or parks the prompt and spawns).
-    /// `Err(UnknownTarget)` - target not in forge.toml.
+    /// The answer is the handler's own: `Ok(())` once the target's session
+    /// took the prompt or it was parked for a spawn the handler kicked off,
+    /// `Err(UnknownTarget)` for a project not in forge.toml, and
+    /// `Err(DispatchFailed)` when the handler refused the delivery. A
+    /// delivery that never left forge is never `Ok` (#2342).
     fn deliver_peer_prompt(
         &self,
         caller: &SessionSlot,
@@ -186,18 +190,20 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         if !ws.list_projects().iter().any(|v| v.name == target_project) {
             return Err(DeliverError::UnknownTarget { name: target_project.to_owned() });
         }
-        if let Err(err) = ws.dispatch(Command::DeliverPeerPrompt {
+        let (respond, mut reply) = tokio::sync::oneshot::channel();
+        ws.dispatch(Command::DeliverPeerPrompt {
             caller: caller.clone(),
             target_project: target_project.to_owned(),
             wrapped,
-        }) {
-            warn!(
-                target: "forge_workspace::mcp::peers",
-                error = ?err,
-                "Command::DeliverPeerPrompt dispatch failed; tool will still report the send"
-            );
-        }
-        Ok(())
+            respond: Some(respond),
+        })
+        .map_err(|err| DeliverError::DispatchFailed {
+            message: format!("the workspace did not take the command ({err:?})"),
+        })?;
+        // **The handler runs inline on this thread**, so its answer is
+        // already in the channel. An empty channel is still not a success:
+        // a delivery nobody answered is a delivery nobody can claim.
+        delivery_answer(reply.try_recv())
     }
 
     fn handoff(&self, caller: &SessionSlot, note: String) -> Result<(), HandoffError> {
@@ -212,6 +218,20 @@ impl WorkspaceFacade for ProdWorkspaceFacade {
         }
         ws.dispatch(Command::Handoff { key: caller.clone(), brief: Some(note) })
             .map_err(|_| HandoffError::SessionGone { slot: caller.display() })
+    }
+}
+
+/// The handler's answer narrowed to the facade's own: a command the
+/// workspace took but nobody answered is a refusal, not a success (#2342).
+fn delivery_answer(
+    reply: Result<Result<(), String>, tokio::sync::oneshot::error::TryRecvError>,
+) -> Result<(), DeliverError> {
+    match reply {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => Err(DeliverError::DispatchFailed { message }),
+        Err(_) => Err(DeliverError::DispatchFailed {
+            message: "the delivery handler took the command and answered nothing".to_owned(),
+        }),
     }
 }
 
@@ -373,6 +393,23 @@ mod tests {
             Err(DeliverError::UnknownTarget { ref name }) if name == "forced"
         ));
     }
+
+    /// **A handler that answers nothing is not an ack.** The command was
+    /// taken; the empty channel is the delivery nobody can claim, and
+    /// mapping it to `Ok(())` is the warn-and-Ok overclaim returning
+    /// (#2342).
+    #[test]
+    fn a_handler_that_answers_nothing_is_not_an_ack() {
+        let (sender, mut reply) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        drop(sender);
+        match delivery_answer(reply.try_recv()) {
+            Err(DeliverError::DispatchFailed { message }) => assert!(
+                message.contains("answered nothing"),
+                "the refusal says the command was taken but unanswered: {message}",
+            ),
+            other => panic!("an empty answer must not read as delivered; got {other:?}"),
+        }
+    }
 }
 
 /// Worker-shadow resolution for `lead_session_view` - the shared gate
@@ -454,6 +491,51 @@ mod lead_resolution_tests {
             sender_name: "forge".to_owned(),
             sender_org: "Personal".to_owned(),
             body: "hi".to_owned(),
+        }
+    }
+
+    /// **A delivery no session could take is not a success.** The running
+    /// branch is chosen on the pool entry alone; the dispatch then finds no
+    /// session task, and that has to reach the caller as an error rather
+    /// than the old warn-and-Ok (#2342).
+    #[test]
+    fn a_delivery_no_session_can_take_is_not_acked() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("beta", "/tmp/beta");
+        let slot = SessionSlot::lead("TestOrg", "beta");
+        let (handle, _commands) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            slot,
+            crate::workspace::PooledAgent {
+                handle: std::sync::Arc::new(handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-no-task".to_owned(),
+            },
+        );
+        let facade = ProdWorkspaceFacade::from_arc(&ws);
+
+        let result = facade.deliver_peer_prompt(
+            &SessionSlot::from_str_for_test("caller"),
+            "beta",
+            WrappedPrompt {
+                id: MessageId::mint(),
+                kind: WrappedKind::Message,
+                sender_name: "forge".to_owned(),
+                sender_org: "Personal".to_owned(),
+                body: "hi".to_owned(),
+            },
+        );
+
+        match result {
+            Err(DeliverError::DispatchFailed { message }) => assert!(
+                message.contains("the target's running session did not take the message"),
+                "the refusal is the running branch's own answer, not an unknown target: {message}",
+            ),
+            other => panic!(
+                "a prompt the pooled lead's missing task cannot take is a refusal; got {other:?}"
+            ),
         }
     }
 

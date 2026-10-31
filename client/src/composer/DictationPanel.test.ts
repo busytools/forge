@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -25,6 +27,20 @@ vi.mock('./mic', async (importOriginal) => {
       ]),
   };
 });
+
+// A path rather than a URL: this file runs under jsdom, where `import.meta.url`
+// is the dev server's and not a file the disk can be read at.
+const sheet = readFileSync('src/assets/web.css', 'utf8');
+
+/** The last rule body the sheet writes for this exact selector. */
+function sheetRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const found = [...sheet.matchAll(new RegExp(`^\\s*${escaped}\\s*\\{([^}]*)\\}`, 'gm'))];
+  const body = found.at(-1)?.[1];
+  // A miss must not read as an empty rule: a not.toContain leg would pass on it.
+  if (body === undefined) throw new Error(`the sheet writes no rule for ${selector}`);
+  return body;
+}
 
 let app: Record<string, unknown> | null = null;
 
@@ -61,6 +77,29 @@ async function drawn(): Promise<void> {
 }
 
 describe('the panel rows', () => {
+  /**
+   * **The device door's mark answers its own state.** It drew a literal
+   * chevron that said the same thing open and closed, while every other
+   * disclosure on the page draws the shared arrow, turned by the state the
+   * button already announces (#1504).
+   */
+  it('turns the device door arrow by the open state it announces', async () => {
+    await drawn();
+
+    const trigger = document.querySelector<HTMLButtonElement>('.pop .dev');
+    if (trigger === null) throw new Error('the panel drew no input-device trigger');
+    expect(trigger.getAttribute('aria-expanded'), 'the walk left the list open').toBe('true');
+    expect(
+      trigger.querySelector('svg.arw'),
+      'the shared arrow, not a literal glyph',
+    ).not.toBeNull();
+    expect(trigger.textContent, 'and no literal chevron beside it').not.toContain('▸');
+    const turned = sheetRule('.pop .dev[aria-expanded="true"] .arw');
+    expect(turned, 'the sheet turns the arrow by the state the button announces').toContain(
+      'rotate(90deg)',
+    );
+  });
+
   it("carry their own name, not the sheet's bare one", async () => {
     await drawn();
 
@@ -113,6 +152,7 @@ describe('the model rows', () => {
       button.textContent?.includes('cohere-transcribe'),
     );
     expect(dev, 'the transcribing row drew no door').not.toBeUndefined();
+    expect(dev?.querySelector('svg.arw'), 'and the row draws the shared arrow').not.toBeNull();
     dev?.click();
     flushSync();
 

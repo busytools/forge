@@ -1111,7 +1111,8 @@ async fn run_recording(
     // capture holds channel receivers and is not Sync.
     let meter = capture.meter();
     let cap = capture.max_capture();
-    let submit = record_until_stopped(&key, &meter, &mut stop, &updates, cap, initiator).await;
+    let submit =
+        record_until_stopped(&key, &meter, &mut stop, &updates, cap, generation, initiator).await;
     if !submit {
         drop(capture);
         clear_recording_if_ours(&ws, &key, initiator);
@@ -1125,7 +1126,11 @@ async fn run_recording(
         return;
     }
 
-    let _ = updates.send(SessionUpdate::DictateTranscribing { key: key.clone(), initiator });
+    let _ = updates.send(SessionUpdate::DictateTranscribing {
+        key: key.clone(),
+        generation,
+        initiator,
+    });
     let Ok(ticket) = capture.finish_with(options) else {
         tracing::warn!(
             event_name = "dictate_submit_failed",
@@ -1267,6 +1272,7 @@ async fn record_until_stopped(
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
     updates: &crate::update_fanout::UpdateFanout,
     cap: Duration,
+    generation: u64,
     initiator: Option<u64>,
 ) -> bool {
     let deadline = Instant::now() + cap;
@@ -1288,6 +1294,7 @@ async fn record_until_stopped(
                 let _ = updates.send(SessionUpdate::DictateLevel {
                     key: key.clone(),
                     peak_db,
+                    generation,
                     initiator,
                 });
             }
@@ -1931,6 +1938,78 @@ mod dictate_lifecycle_tests {
             ws.dictate_runtime.lock().recordings.is_empty(),
             "a resolved take leaves no live entry behind"
         );
+    }
+
+    /// **The readings and the submit name the take they belong to** (#839).
+    /// A reader drops a frame that is not its live take's, so a constant or a
+    /// stale number here leaves the meter and the phase unheard - silently,
+    /// because every frame still arrives.
+    #[tokio::test]
+    async fn the_readings_and_the_submit_carry_the_takes_generation() {
+        let (ws, mut updates) = crate::Workspace::testing_stub();
+        let (_dir, engine) = synthetic_engine();
+        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
+        let session = key("generation");
+        live_session(&ws, &session);
+
+        ws.dispatch(Command::DictateStream {
+            key: session.clone(),
+            options: DictateAxes::default(),
+            surface: None,
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+        ws.dictate_push(&session, &[0.5; 320], Some(1));
+
+        let started = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let frame = updates.recv().await.expect("the stream stays open");
+                if let SessionUpdate::DictateStarted { generation, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
+                    break generation;
+                }
+            }
+        })
+        .await
+        .expect("the take announces itself");
+
+        let level = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let frame = updates.recv().await.expect("the stream stays open");
+                if let SessionUpdate::DictateLevel { generation, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
+                    break generation;
+                }
+            }
+        })
+        .await
+        .expect("a level arrives while the take is live");
+
+        ws.dispatch(Command::DictateStop {
+            key: session.clone(),
+            submit: true,
+            initiator: Some(1),
+        })
+        .expect("dispatch");
+        let transcribing = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = updates.recv().await.expect("the stream stays open");
+                match std::sync::Arc::unwrap_or_clone(frame.update) {
+                    SessionUpdate::DictateTranscribing { generation, .. } => break generation,
+                    SessionUpdate::DictateEnded { .. } => {
+                        panic!("the take ended before it said it was transcribing")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the take submits");
+
+        assert_eq!(level, started, "a level names the take it belongs to");
+        assert_eq!(transcribing, started, "and so does the frame that submits it");
     }
 
     /// **The surface a client names on its take reaches the ending update.**

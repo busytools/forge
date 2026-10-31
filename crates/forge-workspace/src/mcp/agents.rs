@@ -13,7 +13,7 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
 use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
-use crate::mcp::agents::target::{AgentTarget, LEAD_LABEL, TargetError};
+use crate::mcp::agents::target::{AgentTarget, TargetError};
 // Only `build_server` names this, and that is gated on the test features -
 // so an ungated import is unused in the configuration install.sh builds.
 #[cfg(any(test, feature = "testing"))]
@@ -526,33 +526,7 @@ pub(crate) fn add_lead_tools(
 }
 
 fn format_spawn_error(err: &WorkerSpawnError) -> String {
-    match err {
-        WorkerSpawnError::NotLeadCaller => {
-            "agents__spawn is lead-only; this session is a worker. Workers cannot \
-             spawn other workers in v1."
-                .to_owned()
-        }
-        WorkerSpawnError::EmptyLabel => "label must be non-empty after trim".to_owned(),
-        WorkerSpawnError::ReservedLabel => format!(
-            "label '{LEAD_LABEL}' is reserved - agents__send_message uses it as \
-             the addressing keyword for the caller's project's own agent. Pick a different label."
-        ),
-        WorkerSpawnError::EmptyCharter => "charter must be non-empty after trim".to_owned(),
-        WorkerSpawnError::UnknownCallerProject => {
-            "could not resolve caller to a known project (forge bug)".to_owned()
-        }
-        WorkerSpawnError::DispatchFailed { message } => {
-            format!("worker spawn failed: {message}")
-        }
-        WorkerSpawnError::WorktreeCreationFailed { reason } => {
-            format!("worktree creation failed: {reason}")
-        }
-        WorkerSpawnError::ResumeLookupFailed { label, message } => format!(
-            "could not look up a prior session for '{label}': {message}. Nothing was spawned, \
-             because a failed lookup is not the same answer as no prior session; retry, or \
-             spawn without resume_session to start fresh"
-        ),
-    }
+    err.message()
 }
 
 fn format_despawn_error(err: &WorkerDespawnError) -> String {

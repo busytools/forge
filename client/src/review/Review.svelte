@@ -645,7 +645,7 @@
    * to the composer.
    */
   $effect(() => {
-    const words = landing.place(boxKey(slot), composer.notice);
+    const words = landing.place(boxKey(slot), composer.notice, composer.take?.generation ?? null);
     // The arm the notice spent (or left standing) is what the seal reads.
     landingArmed = landing.armed;
     if (words === null) return;
@@ -870,7 +870,7 @@
       baseRef: record?.git.defaultBranch ?? '',
       commit: scopeCommit,
     });
-    const { went } = await write(upsertCommand(slot, branch, thread));
+    const { went } = await write(upsertCommand(slot, branch, thread, at.text));
     if (went) drafts.add(thread.id);
     return went;
   }
@@ -878,7 +878,7 @@
   async function replied(thread: { id: string }, text: string): Promise<boolean> {
     const full = threads.find((held) => held.id === thread.id);
     if (full === undefined) return false;
-    const { went } = await write(upsertCommand(slot, branch, withReply(full, text)));
+    const { went } = await write(upsertCommand(slot, branch, withReply(full, text), text));
     if (went) drafts.add(full.id);
     return went;
   }
@@ -894,7 +894,9 @@
   async function editedTurn(thread: { id: string }, index: number, text: string): Promise<boolean> {
     const full = threads.find((held) => held.id === thread.id);
     if (full === undefined) return false;
-    const { went } = await write(upsertCommand(slot, branch, withEditedTurn(full, index, text)));
+    const { went } = await write(
+      upsertCommand(slot, branch, withEditedTurn(full, index, text), text),
+    );
     if (!went) return false;
     reply.thread = null;
     reply.index = null;

@@ -121,12 +121,13 @@ fi
 
 # --- the driver patches: applied on every run -----------------------------
 #
-# Three patches, each pinned to the @playwright/mcp bundle's own excerpt: the
-# file chooser surface (Playwright intercepts it, so the host asks the person
-# or answers the agent through the MCP's own upload tool), the stable tab ids
-# the service keys on, and a tab listing that reads instead of creating. They
-# are reapplied here so a stack vendored before a patch is brought up to it,
-# and the patch fails loudly when a version bump changes a pinned needle.
+# Every patch is pinned to the @playwright/mcp bundle's own excerpt: the file
+# chooser surface (Playwright intercepts it, so the host asks the person or
+# answers the agent through the MCP's own upload tool), the per-page target id
+# the service keys on and the listing that reads it from memory, selection by
+# that target, and a listing that reads instead of creating. They are
+# reapplied here so a stack vendored before a patch is brought up to it, and
+# the patch fails loudly when a version bump changes a pinned needle.
 node "$SCRIPT_DIR/patch_browser_stack.mjs" "$STACK"
 
 # **The patched listing is checked by running it, not by reading it**: a
@@ -135,7 +136,13 @@ node "$SCRIPT_DIR/patch_browser_stack.mjs" "$STACK"
 # (#2581).
 node "$SCRIPT_DIR/check_browser_stack_list.mjs" "$STACK"
 
-printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nforge-driver-patches 3\n' \
+# **A listing must not wait on a renderer.** Run against stub tabs - one whose
+# CDP attach never settles - so a bundle that reads the target id per listing
+# fails here rather than holding every session's calls behind one paused page
+# (#2732).
+node "$SCRIPT_DIR/check_browser_stack_tabs.mjs" "$STACK"
+
+printf 'node %s %s\n@playwright/mcp %s (npm integrity)\nforge-driver-patches 6\n' \
     "$NODE_VERSION" "$NODE_SHA256" "$PLAYWRIGHT_MCP_VERSION" \
     > "$STACK/manifest.txt"
 

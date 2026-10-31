@@ -2535,7 +2535,7 @@ export class Chat {
         // back where the live path draws the words: inside the running row.
         const above = named[named.length - 1];
         if (above !== undefined && queuedPrompt(row)) {
-          const messages = [...(copies[copies.length - 1] ?? [])];
+          let messages = [...(copies[copies.length - 1] ?? [])];
           // **The row grows below, so its index grows with it.** A frame the
           // loop itself appends is one the next asks have to find - an index
           // that only read its constructor would answer for the row as it
@@ -2549,10 +2549,11 @@ export class Chat {
             if (carried.carries(message)) continue;
             const paired = pairedWith(messages, message, answered);
             if (paired === null) {
-              // An unmatched copy lands here, at the END of the row, so where
-              // its live echo never arrived it can sit below frames the row
-              // already held (#1584).
-              messages.push(message);
+              // **An unmatched copy keeps the page's position, settled row or
+              // not.** Its live echo never arrived, and appending it put it
+              // below frames the row already held - frames the page says came
+              // after it (#1584).
+              messages = rejoin(messages, [message], messagesOf(row));
               carried.add(message);
               answered.add(message);
             } else {
