@@ -8,9 +8,11 @@
  * of what said a control was there - under the 3:1 WCAG 1.4.11 asks of a
  * control's boundary. These two draw `--ctl` now: 3.25:1 against `--s1` and
  * 3.02:1 against `--s2`. That is a claim about this screen; the rest of the
- * controls whose boundary is their only mark are pinned the same way in
+ * `--line`-bounded controls are pinned the same way in
  * `assets/control-ink.test.ts`, and `--line` stays the hairline on dividers,
  * chips and cards, where the boundary is not what identifies anything.
+ * Tone-tinted state borders are a separate class, named there with their
+ * measurements; this file does not claim them.
  *
  * **Why the pin is here rather than only in `contrast.test.ts`.** That file
  * measures the palette against itself, and it now carries the pairs this

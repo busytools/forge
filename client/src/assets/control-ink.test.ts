@@ -26,12 +26,21 @@
  * their boundary at a narrow width, and a scanner that skipped every nested
  * rule could never fail for them.
  *
- * **Named exclusions, so the class is a claim with edges.** `.files-filter`
- * and `.sg-open` draw a bottom rule on a text field and a text link - the
- * underline is the idiom, not a boxed control boundary - so they stay the
- * hairline. `.qcard.cur`'s ring is recorded in `contrast.test.ts` as
- * decoration. Nothing else interactive is left out: a boxed control boundary
- * here is `--ctl`, the `--s3` lift, or a button state's own solid tone.
+ * **The class this file closes is the `--line` one.** Every control whose
+ * boxed boundary was the hairline now draws `--ctl`, or the `--s3` lift.
+ *
+ * **Named exclusions, so the class is a claim with edges.**
+ * - `.files-filter` and `.sg-open` draw a bottom rule on a text field and a
+ *   text link - the underline is the idiom, not a boxed control boundary - so
+ *   they stay the hairline.
+ * - `.qcard.cur`'s ring is recorded in `contrast.test.ts` as decoration.
+ * - **Tone-tinted state borders are a separate class, and are NOT closed
+ *   here**: `.sendb` (accent 45%, ~2.4:1), `.b-door` (~2.26), `.b-no` (~2.0),
+ *   `.dock .btn.d` (~2.0), `.rv-a.danger` (~2.0) and
+ *   `.settings-row-action.danger` (~1.8) draw a state tone as their boundary
+ *   at rest. The tone carries the meaning, so whether each also needs a mark
+ *   that holds 3:1 is its own decision; and because this pin reads a base
+ *   selector, a state override is outside its reach by construction.
  */
 
 import { readFileSync } from 'node:fs';

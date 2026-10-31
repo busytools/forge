@@ -150,7 +150,8 @@
   .bz-it .nm { color: var(--text); }
   .bz-it .tx { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .bz-it .owner { color: var(--dim); font-size: var(--fs-label); margin-left: auto; white-space: nowrap; }
-  .bz-it .show { border: 1px solid var(--line); border-radius: 7px; padding: 2px 8px;
+  .bz-it .show { border: 1px solid color-mix(in srgb, var(--ctl) 90%, var(--text));
+    border-radius: 7px; padding: 2px 8px;
     color: var(--text); background: var(--s3); font-size: var(--fs-label); }
   /* The bar's tab picker: the profile's tabs, one row per tab. */
   .bpick { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }

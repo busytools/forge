@@ -346,11 +346,13 @@ const DRAWN: readonly Pair[] = [
  * rule that inks it, `.sess .facts .sep`, is a middot at 1.42:1.
  *
  * A border that identifies a control is a different job: it takes the 3:1 of
- * 1.4.11, and every control whose boundary is its ONLY mark draws `--ctl` over
- * the ground it encloses - the two rows above for the connect screen, and the
- * rest pinned where each rule lives, in `assets/control-ink.test.ts`. Which
- * token a rule NAMES is not this file's to check. Named rather than left out,
- * so a token arriving without a pair still fails.
+ * 1.4.11, and every control that drew the `--line` hairline as its only mark
+ * now draws `--ctl` over the ground it encloses - the two rows above for the
+ * connect screen, and the rest pinned where each rule lives, in
+ * `assets/control-ink.test.ts`. Which token a rule NAMES is not this file's to
+ * check. Tone-tinted state borders (accent, warn, bad) are a separate class,
+ * named with their measurements in that same file; they are not claimed here.
+ * Named rather than left out, so a token arriving without a pair still fails.
  */
 const NOT_INK = ['--line'];
 

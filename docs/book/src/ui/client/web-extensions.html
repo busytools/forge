@@ -96,13 +96,16 @@
     padding: 9px 12px; margin-bottom: 12px; }
   .find::placeholder { color: var(--dim); }
 
+  /* The page's chips here are BUTTONS (update, install, repair), so the pill's
+     boundary is the control mark; a state that is a button marks itself in its
+     own solid tone, because the tint measures under 3:1. */
   .chip { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono);
-    font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 9px;
+    font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--ctl); border-radius: 9px;
     color: var(--muted); background: none; white-space: nowrap; }
-  .chip.warn { color: var(--warn); border-color: rgba(201,161,59,.45); background: rgba(201,161,59,.08); }
-  .chip.dim { color: var(--dim); }
-  .chip.blue { color: var(--blue); border-color: rgba(97,160,224,.35); }
-  .chip.bad { color: var(--bad); border-color: rgba(224,104,62,.45); background: rgba(224,104,62,.08); }
+  .chip.warn { color: var(--warn); border-color: var(--warn); background: rgba(201,161,59,.08); }
+  .chip.dim { color: var(--dim); border-color: var(--ctl); }
+  .chip.blue { color: var(--blue); border-color: var(--blue); }
+  .chip.bad { color: var(--bad); border-color: var(--bad); background: rgba(224,104,62,.08); }
   .btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono); font-size: 13px;
     border-radius: 10px; }
   .btn.go { background: var(--ok); color: var(--bg); font-weight: 640; padding: 7px 14px; }
