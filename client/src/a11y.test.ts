@@ -1,6 +1,6 @@
 import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import Board from './board/Board.svelte';
 import Pinned from './chat/Pinned.svelte';
@@ -15,12 +15,14 @@ import { subagents } from './chat/subagents.svelte';
 import { tasks } from './chat/tasks.svelte';
 import Composer from './composer/Composer.svelte';
 import type { ComposerProps, ComposerRecord } from './composer/view';
+import { surface } from './browser/surface.svelte';
 import type { FileEntry } from './composer/wire';
 import FileTree from './components/FileTree.svelte';
 import type { TreeRow } from './components/tree';
 import { fileIcon, folderIcon, rootIcon } from './files/icons';
 import { foldsFor, indexTreeRows } from './files/tree';
 import {
+  browserHandOffAsk,
   permissionAsk,
   questionAsk,
   record,
@@ -52,6 +54,17 @@ import type { Connection } from './socket';
 import { violationsOf } from './testing/axe';
 import { updateState } from './update/state';
 import { DEFAULT_SETTINGS } from './wire/types';
+
+/**
+ * The browser's link, as the surface's own gate: a page draws the takeover
+ * only when the link says it can, and a server render installs none. The
+ * open-takeover render below needs that gate open, and nothing else here
+ * reaches the link.
+ */
+vi.mock('./browser/link', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./browser/link')>();
+  return { ...actual, drawsSurface: (): boolean => true };
+});
 
 /**
  * A connection the server render never reaches: the session page subscribes in
@@ -300,6 +313,45 @@ describe('axe over the rendered pages', () => {
       ),
       'a take transcribing',
     ).toEqual([]);
+  });
+
+  /**
+   * **The takeover's bar draws over the composer**, and the closed render
+   * never reached it: a regression in the bar's own semantics was unpinned
+   * (#2571). The surface state is left as it was found, the way the store's
+   * other case in this file leaves it.
+   */
+  it('draws the open browser takeover with no violations', async () => {
+    const was = {
+      phase: surface.phase,
+      profile: surface.profile,
+      tab: surface.tab,
+      seat: surface.seat,
+    };
+    surface.phase = 'live';
+    surface.profile = 'Busytools/default';
+    surface.tab = 2;
+    surface.seat = SLOT;
+    try {
+      const html = `<main>${
+        render(Composer, {
+          props: {
+            record: record({ pending_asks: [browserHandOffAsk()] }),
+            slot: SLOT,
+            seat: seatRead(),
+            connection: wire().connection,
+            dictation: false,
+          } satisfies ComposerProps,
+        }).body
+      }</main>`;
+      expect(html, 'the bar drew, so axe saw it').toContain('back to chat');
+      expect(await idsOf(html)).toEqual([]);
+    } finally {
+      surface.phase = was.phase;
+      surface.profile = was.profile;
+      surface.tab = was.tab;
+      surface.seat = was.seat;
+    }
   });
 
   it('draws a turn of the conversation with no violations', async () => {
