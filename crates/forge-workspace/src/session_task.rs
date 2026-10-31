@@ -325,13 +325,7 @@ impl SessionTask {
                 history_updates,
                 compaction_count,
             } => {
-                let mut read = history_updates.unwrap_or_default();
-                // **Sub-agent frames are card material, not chat rows.** The
-                // card fold takes them from this same read (`hold_view_facts`
-                // runs before this arm); the chat window is cut over the
-                // rest, so they cannot spend its frame budget on rows only
-                // the SUBAGENTS surface draws (#1763).
-                read.retain(|message| !forge_primitives::messages::ran_under_a_dispatch(message));
+                let read = history_updates.unwrap_or_default();
                 // **The read becomes a window HERE, and the update carries
                 // it.** A resume hands over the whole transcript, and every
                 // consumer of it - the transport's copy seeded from the
@@ -587,6 +581,17 @@ impl SessionTask {
                         }
                     }
                 } else {
+                    // **A git worker whose worktree is gone is failed BEFORE
+                    // it is kicked, announced or handed its parked prompts.**
+                    // Those are this branch's side effects, and doing them
+                    // first announced a dead worker live and dispatched
+                    // crons, Gotify, Slack and peer prompts into a session
+                    // the failure then released (#1593).
+                    if self.workspace.upgrade().is_some_and(|workspace| {
+                        workspace.fail_worker_without_worktree(&self.key, &cwd)
+                    }) {
+                        return false;
+                    }
                     self.connected_once = true;
                     // When the connecting session is a project's lead and
                     // persists workers that are not live yet, dispatch
@@ -3304,9 +3309,13 @@ fn hold_view_facts(domain: &mut DomainSession, event: &AgentEvent) {
         domain.cards_snapshot = domain.card_tracker.cards();
         // A monitor started before this process did is in the transcript
         // the connect carries, so the same fold runs over it: a view
-        // opening the session sees the monitor rather than nothing.
+        // opening the session sees the monitor rather than nothing. A
+        // sub-agent's Monitor call is the instance's, not the session's.
         if let Some(history) = history_updates {
             for msg in history {
+                if forge_primitives::messages::ran_under_a_dispatch(msg) {
+                    continue;
+                }
                 fold_monitor(domain, msg, MonitorOrigin::Transcript);
             }
             // A transcript's monitors are all settled, so the seed drains in
@@ -9486,11 +9495,12 @@ provider = "anthropic"
         }
     }
 
-    /// A resumed conversation's sub-agent frames feed the card fold, not the
-    /// chat: they are trimmed from the Connected history so they cannot spend
-    /// its frame budget on rows only the SUBAGENTS surface draws (#1763).
+    /// A resumed conversation carries its sub-agent frames to the page: they
+    /// are the dispatch row's expansion, and the card fold must open a card
+    /// for an instance whose sidecar settled every call even though its only
+    /// dispatch answer is the launch acknowledgement (#1763).
     #[tokio::test]
-    async fn subagent_frames_stay_out_of_the_connected_history() {
+    async fn subagent_frames_ride_the_connected_history() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         let session_key = SessionSlot::from_str_for_test("sidecar-chat-uuid");
         let domain =
@@ -9533,9 +9543,28 @@ provider = "anthropic"
             "uuid": "c1",
         }))
         .expect("the sub-agent frame decodes");
+        let dispatch_ack = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_a",
+                 "content": "Async agent launched successfully"}
+            ]},
+            "session_id": "sidecar-chat",
+            "uuid": "u1",
+        }))
+        .expect("the dispatch ack decodes");
+        let child_result = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_child", "content": "total 0"}
+            ]},
+            "session_id": "sidecar-chat",
+            "uuid": "u2",
+        }))
+        .expect("the child result decodes");
         let mut event = connected_event("sidecar-chat", "/tmp/sidecar");
         if let AgentEvent::Connected { history_updates, .. } = &mut event {
-            *history_updates = Some(vec![dispatch, child]);
+            *history_updates = Some(vec![dispatch, dispatch_ack, child, child_result]);
         }
 
         task.translate_event(event);
@@ -9546,10 +9575,100 @@ provider = "anthropic"
                 history_len = Some(history.len());
             }
         }
-        assert_eq!(history_len, Some(1), "the sub-agent frame is not a chat row");
+        assert_eq!(history_len, Some(4), "the sub-agent frames ride the page as the row expansion");
         let cards = domain.lock().cards_snapshot.clone();
-        assert_eq!(cards.len(), 1, "the card fold still opened the instance");
+        assert_eq!(cards.len(), 1, "the folded instance gets its card");
         assert_eq!(cards[0].calls, 1, "and its call is the card's");
+        assert!(
+            !cards[0].running,
+            "every sidecar call settled means the instance is settled, not hidden",
+        );
+    }
+
+    /// **The worktree check runs before the first connect's side effects.**
+    /// A git worker whose worktree is gone must not be announced live,
+    /// kicked, or handed its parked prompts, because the failure then
+    /// releases the session those prompts were dispatched into (#1593).
+    #[tokio::test]
+    async fn a_git_worker_without_a_worktree_is_failed_before_the_first_connect_effects() {
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
+        let session_key = SessionSlot::worker("TestOrg", "proj-x", "builder");
+        let project_key = crate::ProjectKey::new("proj-x");
+        workspace.insert_live_worker(
+            &project_key,
+            crate::mcp::workers::types::WorkerEntry {
+                label: "builder".to_owned(),
+                charter: "charter".to_owned(),
+                slot: session_key.clone(),
+                session_id: Some(forge_primitives::SessionId::new("builder-session")),
+                status: forge_primitives::WorkerLiveness::Spawning,
+                spawned_at: std::time::SystemTime::UNIX_EPOCH,
+                spawned_by: SessionSlot::lead("TestOrg", "proj-x"),
+                needs_tag: true,
+                is_git_repo_at_spawn: true,
+                cwd: None,
+                diagnostic: None,
+                kick: None,
+            },
+        );
+        let (handle, _commands) = Agent::testing_stub();
+        let handle = Arc::new(handle);
+        workspace.pool.lock().insert(
+            session_key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "builder-session".to_owned(),
+            },
+        );
+        let (commands, mut routed) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(session_key.clone(), commands);
+        let (_task_tx, task_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let domain =
+            Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
+        let mut task = SessionTask {
+            key: session_key.clone(),
+            handle,
+            command_rx: task_rx,
+            domain: Arc::clone(&domain),
+            update_tx: workspace.update_sender(),
+            connected_once: false,
+            workspace: Arc::downgrade(&workspace),
+            compaction_count: 0,
+            successor: None,
+            teardown_done: None,
+        };
+        let cwd = tempfile::tempdir().expect("cwd");
+
+        let alive =
+            task.translate_event(connected_event("builder-session", &cwd.path().to_string_lossy()));
+
+        assert!(!alive, "the task stops rather than continue on a failed worker");
+        let mut connected = false;
+        while let Ok(frame) = update_rx.try_recv() {
+            if matches!(&*frame.update, SessionUpdate::Connected { .. }) {
+                connected = true;
+            }
+        }
+        assert!(!connected, "the dead worker is never announced live");
+        assert!(routed.try_recv().is_err(), "and nothing is dispatched into its session");
+        let entry = workspace
+            .list_live_workers(&project_key)
+            .into_iter()
+            .find(|entry| entry.label == "builder")
+            .expect("the row stays as the visible failure");
+        assert_eq!(entry.status, forge_primitives::WorkerLiveness::Failed);
+        assert!(
+            entry.diagnostic.is_some_and(|reason| reason.contains("worktree")),
+            "the row names the missing worktree",
+        );
+        assert!(
+            !workspace.session_is_pooled(&session_key),
+            "and the session is released with the failure",
+        );
     }
 
     /// A compaction boundary moves the task's count, which is the handoff
@@ -10456,6 +10575,26 @@ provider = "anthropic"
             domain.monitors[0].task_id, None,
             "with no task id, which is why nothing could ever settle it",
         );
+    }
+
+    /// **A sub-agent's Monitor call is not the session's.** The connect-time
+    /// fold that seeds monitors skips a parented frame, so a resumed
+    /// conversation does not grow a monitor row from work an instance ran.
+    #[test]
+    fn a_subagents_monitor_call_is_not_seeded() {
+        let mut domain = empty_domain();
+        let mut framed = monitor_tool_use("tu-mon", "ci-watch");
+        if let forge_primitives::Message::Assistant { parent_tool_use_id, .. } = &mut framed {
+            *parent_tool_use_id = Some("toolu_dispatch".to_owned());
+        }
+        let mut event = connected_event("s-mon", "/tmp/mon");
+        if let AgentEvent::Connected { history_updates, .. } = &mut event {
+            *history_updates = Some(vec![framed]);
+        }
+
+        apply_event_to_domain(&mut domain, &event);
+
+        assert!(domain.monitors.is_empty(), "the instance's monitor is not the session's");
     }
 
     /// A live tool call is not settled: its task is running and the

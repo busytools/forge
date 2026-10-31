@@ -443,14 +443,11 @@ impl ViewSurface {
         let Some((session_id, cwd)) = self.transcript_place(slot, cwd_raw) else {
             return ConversationHistory::default();
         };
-        // **The session's own rows only.** A sub-agent's frames are card
-        // material and never chat rows, so this read neither folds them nor
-        // pays for their parse (#1763).
-        let read = forge_workspace::session_history_main_thread(
-            self.workspace.config_dir(),
-            &session_id,
-            &cwd,
-        );
+        // **A dispatch row's expansion is drawn from these frames.** The
+        // page carries the sub-agent's own rows so the chat can render the
+        // timeline under the call; the row list skips them client-side
+        // (#1763).
+        let read = forge_workspace::session_history(self.workspace.config_dir(), &session_id, &cwd);
         ConversationHistory {
             messages: crate::transcript::notices_as_blocks(read.messages),
             compaction_count: read.compaction_count,
@@ -680,13 +677,12 @@ mod tests {
         assert_eq!(read.messages.len(), 2, "the record places the read the caller could not");
     }
 
-    /// **A sub-agent's frames are card material, not chat rows.** The resume
-    /// read folds a sidecar in under its dispatch for the card fold, and
-    /// this read serves the chat: the parented frames are trimmed here so
-    /// they cannot spend the conversation's frame budget on rows no page
-    /// draws (#1763).
+    /// **A dispatch row's expansion is drawn from these frames.** The read
+    /// folds a sidecar in under its dispatch, and the page must carry the
+    /// sub-agent's own rows so the chat can render the call's timeline; the
+    /// client's row list is what skips them, not this read (#1763).
     #[test]
-    fn conversation_omits_subagent_frames() {
+    fn conversation_carries_subagent_frames() {
         let (workspace, _dir) = crate::surface::testing::workspace();
         let lead = SessionSlot::lead("TestOrg", "forge");
         workspace.seed_test_running_session_id(&lead, SESSION_A);
@@ -715,12 +711,20 @@ mod tests {
 
         let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&lead, Path::new(""));
 
-        assert_eq!(read.messages.len(), 2, "the transcript's own rows are the chat");
+        assert_eq!(
+            read.messages.len(),
+            3,
+            "the transcript's two rows plus the sidecar frame the row expansion draws",
+        );
         assert!(
-            read.messages
-                .iter()
-                .all(|message| !forge_primitives::messages::ran_under_a_dispatch(message)),
-            "no parented frame reaches the chat",
+            read.messages.iter().any(|message| matches!(
+                message,
+                forge_primitives::Message::Assistant {
+                    parent_tool_use_id: Some(parent),
+                    ..
+                } if parent == "toolu_a"
+            )),
+            "the sub-agent frame is carried and names the dispatch it ran under",
         );
     }
 

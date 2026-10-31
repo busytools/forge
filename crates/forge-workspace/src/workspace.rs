@@ -9691,6 +9691,43 @@ impl Workspace {
     ///
     /// Idempotent - calling twice for the same session_key is a no-op
     /// if the entry is already `Running`.
+    /// Mark a git worker Failed and release its session when the worktree its
+    /// connect is about to run in is gone or unusable. Answers whether it
+    /// did, so the first-connect branch can stop before it kicks the worker,
+    /// announces it live or hands it parked prompts (#1593).
+    pub(crate) fn fail_worker_without_worktree(
+        self: &Arc<Self>,
+        slot: &SessionSlot,
+        cwd: &str,
+    ) -> bool {
+        let Some((project_key, label, is_git, _, _)) = self.worker_lookup_for_session(slot) else {
+            return false;
+        };
+        if !is_git {
+            return false;
+        }
+        let path =
+            crate::mcp::workers::types::worker_tag_dir(std::path::Path::new(cwd), &label, true);
+        let Some(reason) = forge_agent::env::worktree::worktree_missing_reason(&path) else {
+            return false;
+        };
+        tracing::warn!(
+            target: "forge_workspace::workspace",
+            event_name = "worker_worktree_gone_at_connect",
+            slot = %slot.display(),
+            label = %label,
+            worktree = %path.display(),
+            "the worker's worktree is not usable at connect; the worker is marked failed",
+        );
+        transition_worker_to_failed(self, &project_key, slot, Some(reason));
+        // A Failed row means nothing is running: every other Failed
+        // transition releases the session, and a pooled handle here would let
+        // a later re-spawn fast-path a child under an id the row no longer
+        // means.
+        self.release_session(slot);
+        true
+    }
+
     pub(crate) fn apply_worker_tag_or_rollback(
         self: &Arc<Self>,
         session_key: &SessionSlot,
@@ -9771,7 +9808,7 @@ impl Workspace {
             project_key,
             label,
             &effective_cwd,
-            WorkerTagFacts { check_worktree: is_git_repo_at_spawn, needs_tag, minted_row },
+            WorkerTagFacts { needs_tag, minted_row },
             config_dir,
             WorkerTagRetryBudget {
                 max_attempts: WORKER_TAG_RETRY_ATTEMPTS,
@@ -9796,7 +9833,7 @@ impl Workspace {
         budget: WorkerTagRetryBudget,
     ) {
         use tracing::Instrument;
-        let WorkerTagFacts { check_worktree, needs_tag, minted_row } = facts;
+        let WorkerTagFacts { needs_tag, minted_row } = facts;
         let workspace = Arc::clone(self);
         let project_key = project_key.clone();
         let session_key = session_key.clone();
@@ -9822,39 +9859,6 @@ impl Workspace {
         };
         let project = format!("{org}/{name}");
         tokio::spawn(async move {
-            // **The connect-time worktree read runs here, off the actor.**
-            // It shells out to git, and this task already carries the tag
-            // write for the same reason. A worker whose tree is gone or is
-            // not a git worktree git can reuse reads Failed with the reason,
-            // and its session is released: a Failed row means nothing is
-            // running (#1593).
-            if check_worktree {
-                let cwd = effective_cwd.clone();
-                let gone = tokio::task::spawn_blocking(move || {
-                    forge_agent::env::worktree::worktree_missing_reason(&cwd)
-                })
-                .await
-                .ok()
-                .flatten();
-                if let Some(reason) = gone {
-                    tracing::warn!(
-                        target: "forge_workspace::workspace",
-                        event_name = "worker_worktree_gone_at_connect",
-                        slot = %session_key.display(),
-                        label = %label,
-                        worktree = %effective_cwd.display(),
-                        "the worker's worktree is not usable at connect; the worker is marked failed",
-                    );
-                    transition_worker_to_failed(
-                        &workspace,
-                        &project_key,
-                        &session_key,
-                        Some(reason),
-                    );
-                    workspace.release_session(&session_key);
-                    return;
-                }
-            }
             let tag = forge_primitives::worker_tag(&label);
             let result = tag_session_with_retry(
                 &config_dir,
@@ -10380,12 +10384,11 @@ pub(crate) struct WorkerTagRetryBudget {
     delay: Duration,
 }
 
-/// The three facts the connect-time tag path decides on: whether the
-/// worktree is re-read (a git worker), whether the JSONL still needs its tag,
-/// and whether this spawn minted the row a rollback would delete.
+/// The two facts the connect-time tag path decides on: whether the JSONL
+/// still needs its tag, and whether this spawn minted the row a rollback
+/// would delete.
 #[derive(Clone, Copy)]
 pub(crate) struct WorkerTagFacts {
-    check_worktree: bool,
     needs_tag: bool,
     minted_row: bool,
 }
@@ -18050,7 +18053,7 @@ mod tag_retry_tests {
             &project_key,
             "idle",
             cwd.path(),
-            WorkerTagFacts { check_worktree: false, needs_tag: true, minted_row: true },
+            WorkerTagFacts { needs_tag: true, minted_row: true },
             cfg.path(),
             retry_budget,
         );
@@ -18102,7 +18105,7 @@ mod tag_retry_tests {
     /// Drive the connect-time worktree check for a worker whose session is
     /// pooled behind the row, and answer the row's status, its reason, and
     /// whether the pool, sender and domain were released with the failure.
-    async fn connect_worktree_check(
+    fn connect_worktree_check(
         cwd: &std::path::Path,
     ) -> (forge_primitives::WorkerLiveness, Option<String>, bool) {
         let (workspace, _updates) = Workspace::testing_stub();
@@ -18146,35 +18149,8 @@ mod tag_retry_tests {
         workspace.command_senders.lock().insert(session_key.clone(), cmd_tx);
         workspace.register_domain_session(session_key.clone(), Some(Arc::clone(&handle)));
 
-        let cfg = tempdir().expect("cfg");
-        workspace.apply_worker_tag_or_rollback_with_config_dir(
-            &session_key,
-            "11111111-1111-4111-8111-111111111111",
-            &project_key,
-            "builder",
-            &cwd.to_string_lossy(),
-            true,
-            true,
-            true,
-            cfg.path(),
-        );
-
-        // The read runs in the detached tag task, so the failed transition
-        // and its release land after this call returns.
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let failed = workspace.list_live_workers(&project_key).iter().any(|entry| {
-                    entry.label == "builder"
-                        && entry.status == forge_primitives::WorkerLiveness::Failed
-                });
-                if failed && !workspace.session_is_pooled(&session_key) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the connect failure lands within budget");
+        let failed = workspace.fail_worker_without_worktree(&session_key, &cwd.to_string_lossy());
+        assert!(failed, "the connect check refuses a git worker without a usable worktree");
         let entry = workspace
             .list_live_workers(&project_key)
             .into_iter()
@@ -18189,10 +18165,10 @@ mod tag_retry_tests {
     /// A worker whose worktree went missing between its creation and its
     /// first connect reads Failed with the reason, not Running, and the
     /// session behind it is released (#1593).
-    #[tokio::test]
-    async fn a_worker_whose_worktree_is_gone_by_connect_reads_failed() {
+    #[test]
+    fn a_worker_whose_worktree_is_gone_by_connect_reads_failed() {
         let cwd = tempdir().expect("cwd");
-        let (status, diagnostic, released) = connect_worktree_check(cwd.path()).await;
+        let (status, diagnostic, released) = connect_worktree_check(cwd.path());
 
         assert_eq!(
             status,
@@ -18210,12 +18186,12 @@ mod tag_retry_tests {
     /// The same check for a tree that is there but is not a git worktree git
     /// can reuse: the branch the tag-write also reads, and the reason says
     /// so rather than that the directory is gone (#1593).
-    #[tokio::test]
-    async fn a_worker_whose_worktree_is_not_a_git_worktree_reads_failed() {
+    #[test]
+    fn a_worker_whose_worktree_is_not_a_git_worktree_reads_failed() {
         let cwd = tempdir().expect("cwd");
         let worktree = cwd.path().join(".claude/worktrees/builder");
         fs::create_dir_all(&worktree).expect("the worktree dir stands");
-        let (status, diagnostic, released) = connect_worktree_check(cwd.path()).await;
+        let (status, diagnostic, released) = connect_worktree_check(cwd.path());
 
         assert_eq!(status, forge_primitives::WorkerLiveness::Failed);
         let diagnostic = diagnostic.expect("the row carries the reason");

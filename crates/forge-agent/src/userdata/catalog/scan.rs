@@ -946,6 +946,7 @@ fn subagent_sidecars_with_budget(
         if size > budget {
             tracing::debug!(
                 target: "forge_agent::userdata::catalog",
+                event_name = "subagent_sidecar_budget_skipped",
                 session = %session_id,
                 sidecar = %sidecar.display(),
                 "subagent sidecar skipped: the resume read's budget is spent",
