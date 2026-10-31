@@ -284,7 +284,6 @@ fn host_command(
     profile_id: u16,
     encoding: (u16, u8),
     frames: &Path,
-    watched: bool,
 ) -> std::process::Command {
     let mut command = std::process::Command::new(exe);
     command
@@ -304,14 +303,13 @@ fn host_command(
         .arg("--fps")
         .arg(encoding.0.to_string())
         .arg("--quality")
-        .arg(encoding.1.to_string());
-    if watched {
+        .arg(encoding.1.to_string())
         // **The host outlives an orderly server and not a killed one.** The
         // read end is the identity: EOF means the server's process - and
         // every copy of the write end it holds - is gone, where a pid could
         // be recycled or belong to an unreaped zombie (#2499).
-        command.arg("--parent-pipe").arg(PARENT_WATCH_FD.to_string());
-    }
+        .arg("--parent-pipe")
+        .arg(PARENT_WATCH_FD.to_string());
     command
 }
 
@@ -366,7 +364,7 @@ pub fn spawn_with(
     let (parent_read, parent_write) = open_parent_watch()?;
     let parent_read_fd = parent_read.as_raw_fd();
     let mut command =
-        host_command(exe, profile, port, ring, width, height, profile_id, encoding, frames, true);
+        host_command(exe, profile, port, ring, width, height, profile_id, encoding, frames);
     command
         // **Pointer input rides this pipe.** CEF's own mouse calls are what
         // route into a windowless popup, so the host's gestures come down
@@ -1060,11 +1058,13 @@ mod tests {
             )
         };
         let read_fd = read.as_raw_fd();
-        let probe = "import fcntl\n\
-                     try:\n\
-                     \x20   print(fcntl.fcntl(3, fcntl.F_GETFD))\n\
-                     except OSError as error:\n\
-                     \x20   print('closed', error.errno)\n";
+        let probe = format!(
+            "import fcntl\n\
+             try:\n\
+             \x20   print(fcntl.fcntl({PARENT_WATCH_FD}, fcntl.F_GETFD))\n\
+             except OSError as error:\n\
+             \x20   print('closed', error.errno)\n"
+        );
         let mut command = std::process::Command::new("python3");
         command.arg("-c").arg(probe).stdout(std::process::Stdio::piped());
         // SAFETY: the child arranges the production state (the read end on
@@ -1091,7 +1091,7 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&output.stdout).trim(),
             "0",
-            "fd 3 survives the exec with no close-on-exec bit",
+            "fd {PARENT_WATCH_FD} survives the exec with no close-on-exec bit",
         );
     }
 
@@ -1310,7 +1310,6 @@ mod tests {
             1,
             (30, 75),
             Path::new("/tmp/forge-frames.sock"),
-            true,
         );
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
         let at = args
@@ -1319,25 +1318,8 @@ mod tests {
             .expect("the watch flag is on the line");
         assert_eq!(
             args.get(at + 1).map(|fd| fd.to_string_lossy().into_owned()),
-            Some("3".to_owned()),
+            Some(PARENT_WATCH_FD.to_string()),
             "the read end is dup'd to the fixed fd the host reads"
-        );
-
-        let bare = host_command(
-            Path::new("/tmp/Forge Browser"),
-            Path::new("/tmp/forge-profile/cef"),
-            9411,
-            "/forge-ring",
-            1440,
-            900,
-            1,
-            (30, 75),
-            Path::new("/tmp/forge-frames.sock"),
-            false,
-        );
-        assert!(
-            !bare.get_args().any(|arg| arg == "--parent-pipe"),
-            "a launch that holds no pipe carries no flag",
         );
     }
 
