@@ -3088,15 +3088,28 @@ impl Workspace {
         // gone along with the field that carried it.
         let account_dir = self.config_dir.clone();
 
-        // Fast path: cache hit. A wake that resolved to a session already
-        // in the pool hands back its handle; parked payloads are not a
-        // concern here, because they are addressed to a slot rather than
-        // to a key and this path never moved one.
-        {
+        // Fast path: cache hit, but only while a session task still
+        // consumes the slot. A pooled handle a task has left behind
+        // answers nothing - the seat takes no prompt and no child starts -
+        // and handing it back made every later spawn fast-path a seat that
+        // could never start again (#2683).
+        let pooled = {
             let pool = self.pool.lock();
-            if let Some(existing) = pool.get(&session_slot) {
-                return Ok(Arc::clone(&existing.handle));
+            pool.get(&session_slot)
+                .map(|existing| (Arc::clone(&existing.handle), existing.session_id.clone()))
+        };
+        if let Some((existing, session_id)) = pooled {
+            if self.pooled_handle_has_task(&session_slot) {
+                return Ok(existing);
             }
+            tracing::info!(
+                target: "forge_workspace::workspace",
+                event_name = "pooled_handle_without_task",
+                slot = %session_slot.display(),
+                occupant = %session_id,
+                "a pooled handle has no session task behind it; rebuilding the session",
+            );
+            self.release_session_if_current(&session_slot, &existing);
         }
 
         // Resolve which account this spawn lands under: the walk over
@@ -3461,8 +3474,14 @@ impl Workspace {
             }
             let mut pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_slot) {
-                rollback.armed = false;
-                return Ok(Arc::clone(&existing.handle));
+                // A concurrent spawn won the slot: its handle is the one to
+                // hand back, but only while a task consumes it. A handle
+                // whose task is gone is this spawn's to replace, the same
+                // stale entry the fast path refuses above.
+                if self.pooled_handle_has_task(&session_slot) {
+                    rollback.armed = false;
+                    return Ok(Arc::clone(&existing.handle));
+                }
             }
             pool.insert(
                 session_slot.clone(),
@@ -3478,21 +3497,28 @@ impl Workspace {
             rollback.armed = false;
         }
 
-        // Spawn the per-session `SessionTask` actor. Idempotent -
-        // a second `get_agent_handle` call for the same key reuses
-        // the existing task. The command channel is created only
-        // on the cold path (no existing sender), held by the
-        // workspace until the task takes its receiver.
-        let cmd_rx = {
+        // Spawn the per-session `SessionTask` actor. A second
+        // `get_agent_handle` call for the same key never reaches here while
+        // its task is alive - both fast paths answer it first - so a sender
+        // still registered at this point belongs to a task the pool has
+        // left behind, and keeping it would install this handle with no
+        // task: the state a seat could never start from (#2683). The new
+        // task takes the slot.
+        let (cmd_rx, replaced_sender) = {
             let mut senders = self.command_senders.lock();
-            if senders.contains_key(&session_slot) {
-                None
-            } else {
-                let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
-                senders.insert(session_slot.clone(), cmd_tx);
-                Some(cmd_rx)
-            }
+            let replaced = senders.remove(&session_slot).is_some();
+            let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
+            senders.insert(session_slot.clone(), cmd_tx);
+            (Some(cmd_rx), replaced)
         };
+        if replaced_sender {
+            tracing::info!(
+                target: "forge_workspace::workspace",
+                event_name = "orphaned_command_sender_replaced",
+                slot = %session_slot.display(),
+                "a command sender had no live task behind it; the rebuilt session takes the slot",
+            );
+        }
         if let Some(cmd_rx) = cmd_rx {
             // `domain_arc` was hoisted above the spawn. Stamp the live
             // `Arc<AgentHandle>` onto its `conn` slot
@@ -4765,6 +4791,14 @@ impl Workspace {
     /// Whether an agent is currently pooled for `slot`.
     pub(crate) fn session_is_pooled(&self, slot: &SessionSlot) -> bool {
         self.pool.lock().contains_key(slot)
+    }
+
+    /// Whether the slot's pooled handle still has a session task consuming
+    /// its commands. The teardown signal is the task's own record of itself:
+    /// unanswered while it runs, answered as it drops. A pooled handle with
+    /// no such task is one no spawn may hand back (#2683).
+    fn pooled_handle_has_task(&self, slot: &SessionSlot) -> bool {
+        self.session_teardown(slot).is_some()
     }
 
     /// When the transcript of the session at `slot` was last written,

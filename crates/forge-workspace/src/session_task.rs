@@ -2423,6 +2423,13 @@ impl Drop for SessionTask {
                     });
                 }
             }
+            // **Every exit releases the pool, not only `run`'s tail.** A
+            // task that ends by panic, a dropped runtime or an early return
+            // never reaches that tail, and its pooled handle outlived it:
+            // every later spawn fast-pathed a seat with nothing behind it
+            // (#2683). The identity check keeps a superseded task from
+            // taking its successor's entry.
+            workspace.release_session_if_current(&self.key, &self.handle);
         }
     }
 }
@@ -3923,6 +3930,43 @@ mod tests {
             teardown_done: None,
         };
         (task, cmds)
+    }
+
+    /// A task that ends any way but `run`'s own tail - a panic, or a
+    /// dropped runtime - takes its pool entry with it. The tail alone left
+    /// a handle pooled with nothing behind it, and every later spawn
+    /// fast-pathed the dead seat (#2683).
+    #[tokio::test]
+    async fn dropping_a_session_task_releases_its_pooled_handle() {
+        let (workspace, _updates) = crate::Workspace::testing_stub();
+        let key = SessionSlot::from_str_for_test("drop-task-key");
+        let (task, _update_rx) = review_task_for(&workspace, &key);
+        let handle = Arc::clone(&task.handle);
+        workspace.pool.lock().insert(
+            key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::clone(&handle),
+                account: forge_gateway::AccountKey("acct-a".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "drop-task".to_owned(),
+            },
+        );
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(key.clone(), cmd_tx);
+        workspace.register_domain_session(key.clone(), Some(Arc::clone(&handle)));
+
+        drop(task);
+
+        assert!(!workspace.pool.lock().contains_key(&key), "the pool entry goes with its task");
+        assert!(
+            !workspace.command_senders.lock().contains_key(&key),
+            "and the command sender the seat was addressed by",
+        );
+        assert!(
+            !workspace.domain_handles.lock().contains_key(&key),
+            "and the domain handle that pointed at it",
+        );
     }
 
     /// A handoff swaps under the id its row names, leaves the brief where
