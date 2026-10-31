@@ -1044,9 +1044,9 @@ describe('axe over the rendered pages', () => {
   });
 
   /**
-   * The settings page: the sub-nav's buttons, the area's table with its row
-   * headers, and the class chips. Rendered inside a landmark, which is what
-   * the page's own `<main>` gives it in the app.
+   * The settings page: the sub-nav's buttons, the pane's instance cards, and
+   * each line's class badge. Rendered inside a landmark, which is what the
+   * page's own `<main>` gives it in the app.
    */
   it('draws the settings page with no violations', async () => {
     const html = render(SettingsBody, {
