@@ -344,11 +344,7 @@
    * to the composer.
    */
   $effect(() => {
-    const words = landing.place(
-      boxKey(slot),
-      composer.notice,
-      composer.take?.generation ?? null,
-    );
+    const words = landing.place(boxKey(slot), composer.notice, composer.take?.generation ?? null);
     if (words === null) return;
     if (
       composer.take === null &&

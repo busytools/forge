@@ -120,7 +120,12 @@ class Echoes {
   take(key: string): void {
     const held = this.#held.get(key);
     if (held === undefined || held.state !== 'sending' || held.running) return;
-    this.#held.set(key, { state: 'taken', words: held.words, id: held.id, dispatch: held.dispatch });
+    this.#held.set(key, {
+      state: 'taken',
+      words: held.words,
+      id: held.id,
+      dispatch: held.dispatch,
+    });
   }
 
   /**

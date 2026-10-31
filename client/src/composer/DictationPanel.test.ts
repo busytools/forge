@@ -89,7 +89,10 @@ describe('the panel rows', () => {
     const trigger = document.querySelector<HTMLButtonElement>('.pop .dev');
     if (trigger === null) throw new Error('the panel drew no input-device trigger');
     expect(trigger.getAttribute('aria-expanded'), 'the walk left the list open').toBe('true');
-    expect(trigger.querySelector('svg.arw'), 'the shared arrow, not a literal glyph').not.toBeNull();
+    expect(
+      trigger.querySelector('svg.arw'),
+      'the shared arrow, not a literal glyph',
+    ).not.toBeNull();
     expect(trigger.textContent, 'and no literal chevron beside it').not.toContain('▸');
     const turned = sheetRule('.pop .dev[aria-expanded="true"] .arw');
     expect(turned, 'the sheet turns the arrow by the state the button announces').toContain(

@@ -4420,9 +4420,10 @@ describe('the conversation the chat draws', () => {
       expect(carriers, 'the copy draws in one row, not a second one').toHaveLength(1);
       const order = (carriers[0]?.messages ?? []).map((message) => JSON.stringify(message));
       const at = (needle: string): number => order.findIndex((held) => held.includes(needle));
-      expect(at('call one'), 'precondition: the frame the prompt followed is drawn').toBeGreaterThan(
-        -1,
-      );
+      expect(
+        at('call one'),
+        'precondition: the frame the prompt followed is drawn',
+      ).toBeGreaterThan(-1);
       expect(
         at('the words that never echoed'),
         'the copy sits after the frame it followed on the page',

@@ -905,7 +905,7 @@ describe('applyUpdate', () => {
      * take or move it to `transcribing` while the microphone still records
      * (#839).
      */
-    it('drops a superseded take\'s reading and transcribing', () => {
+    it("drops a superseded take's reading and transcribing", () => {
       const first = applyUpdate(empty(), {
         dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
       });
@@ -916,7 +916,7 @@ describe('applyUpdate', () => {
       const stale = applyUpdate(second, {
         dictate_level: { key: SLOT, peak_db: -20, generation: 1 },
       });
-      expect(stale, 'the older take\'s reading is not the live meter').toBe(second);
+      expect(stale, "the older take's reading is not the live meter").toBe(second);
 
       const moved = applyUpdate(second, {
         dictate_transcribing: { key: SLOT, generation: 1 },
