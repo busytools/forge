@@ -451,6 +451,10 @@ const COMPRESSED_JSON_TAG = 3;
  * it sends frames over its threshold compressed.
  */
 function declaringCompression(url: string): string {
+  // **A browser without the API must not declare the capability** (#2560):
+  // the server would compress for it, every large frame would fail to
+  // inflate, and the seat would load forever with only a console report.
+  if (typeof DecompressionStream === 'undefined') return url;
   const parsed = new URL(url);
   parsed.searchParams.set('deflate', '1');
   return parsed.toString();
@@ -1130,7 +1134,21 @@ export function connect(
       if (data instanceof ArrayBuffer) {
         const bytes = new Uint8Array(data);
         if (bytes[0] === COMPRESSED_JSON_TAG) {
-          return inflate(bytes.subarray(1)).then(acceptText);
+          return inflate(bytes.subarray(1)).then(acceptText, (why: unknown) => {
+            // **A frame this client cannot inflate is a stream it cannot
+            // read.** Whatever asked for it - a page, a record, an update -
+            // would wait on an answer that died here, so the socket is
+            // dropped and the reconnect's own asks are the recovery: the
+            // conversation clears its page in flight on the status change
+            // and re-reads the record. The payload is gone, so the seat it
+            // belonged to cannot be named; the kind and the size can.
+            report('a compressed frame did not inflate', {
+              kind: COMPRESSED_JSON_TAG,
+              bytes: bytes.byteLength,
+              why,
+            });
+            dropped();
+          });
         }
         // **A binary message is a relayed browser frame.** The phone's canvas
         // draws it; a page with no viewer ignores it, which is the desktop,

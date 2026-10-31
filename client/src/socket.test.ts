@@ -334,6 +334,44 @@ describe('the connection', () => {
   });
 
   /**
+   * **A browser without `DecompressionStream` must not declare the
+   * capability** (#2560): it could not honour it, every large frame would
+   * fail to inflate, and the seat would load forever. The dial carries no
+   * query at all.
+   */
+  it('declares compression only where the platform can inflate it', async () => {
+    const held = globalThis.DecompressionStream;
+    try {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: undefined,
+        configurable: true,
+      });
+      const { server } = await connected();
+      expect(server.dials, 'a browser that cannot inflate declared it anyway').toEqual(['/socket']);
+    } finally {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: held,
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
+  /**
+   * **A compressed frame that will not inflate drops the socket** (#2560):
+   * whatever asked for it would wait on an answer that died in the decoder,
+   * so the connection is re-dialled and every ask re-made. A seat left
+   * loading forever is the failure this prevents.
+   */
+  it('drops the socket when a compressed frame will not inflate', async () => {
+    const { server } = await connected();
+    expect(server.dials, 'precondition: one dial so far').toHaveLength(1);
+    server.sendBinary(Buffer.from([3, 0, 1, 2, 3, 4]));
+    await until(() => server.dials.length === 2, 'the reconnect dial');
+    expect(server.dials, 'a broken compressed frame left the socket standing').toHaveLength(2);
+  });
+
+  /**
    * **The review page's own read carries its flag to the server.** It is the
    * one subscribe that may wait on the network, so the flag has to ride the
    * ask rather than be inferred from the subject.
