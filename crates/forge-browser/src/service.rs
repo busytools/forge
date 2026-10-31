@@ -10198,7 +10198,10 @@ mod tests {
         ) -> Result<Vec<BrowserPart>, String> {
             let now = self.in_flight.fetch_add(1, Ordering::AcqRel) + 1;
             self.peak.fetch_max(now, Ordering::AcqRel);
-            tokio::time::sleep(Duration::from_millis(80)).await;
+            // Well inside the test bound: overlap is proved by the counters,
+            // so a loaded runner's scheduling cost must not read as a queue
+            // timeout on the second call.
+            tokio::time::sleep(Duration::from_millis(30)).await;
             self.in_flight.fetch_sub(1, Ordering::AcqRel);
             Ok(vec![BrowserPart::Text { text: "ok".to_owned() }])
         }
