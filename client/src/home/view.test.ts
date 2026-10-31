@@ -481,6 +481,29 @@ describe('the fleet the snapshot describes', () => {
         kind: 'never-started',
       },
     );
+
+    // **A live seat's own mark outranks the catalog's.** The dormant seed is
+    // only the seed: a project with an idle seat and history behind it draws
+    // the seat, never the sleep.
+    const seated = fleetRows({
+      ...FLEET,
+      agents: [
+        {
+          ...agent('Busytools', 'notes', 'lead', 'Idle'),
+          last_activity: { secs_since_epoch: 2_500, nanos_since_epoch: 0 },
+        },
+      ],
+      projects: [
+        withSessions(project('Busytools', 'notes'), {
+          secs_since_epoch: 2_500,
+          nanos_since_epoch: 0,
+        }),
+      ],
+    }).find((entry) => entry.name === 'notes');
+    expect(seated?.state, "a live seat's own state wins over the catalog's sleep").toEqual({
+      kind: 'lifecycle',
+      lifecycle: 'Idle',
+    });
   });
 
   it('names a worker row for the worker and only the lead for its project', () => {

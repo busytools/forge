@@ -650,13 +650,11 @@ export function whenOf(row: Row, now: number): string {
 
 /**
  * The same cell for a fleet row, which reads its witnesses rather than a
- * state: a project holds no seats the moment its sessions close, and its
- * strongest state is then the reducer's `never-started` seed - so the state
- * would word `never` over a project that wrote ten minutes ago, which is
- * every project but the `auto_start` ones after a restart.
+ * state: a project holds no seats the moment its sessions close, so the mark
+ * comes from the same dormant decision and the age from the same catalog -
+ * `never` only where neither a seat nor a session is behind the row.
  *
- * `never` is the row with neither a seat nor a session behind it; `now` is a
- * live seat that has not written yet.
+ * `never` is that row; `now` is a live seat that has not written yet.
  */
 export function ageOf(row: Pick<FleetViewRow, 'lastActivity' | 'seats'>, now: number): string {
   if (row.lastActivity !== null) return elapsedLabel(row.lastActivity, now);
