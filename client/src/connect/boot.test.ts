@@ -1,10 +1,18 @@
 import { type AddressInfo, WebSocketServer } from 'ws';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PROTOCOL_VERSION } from '../protocol';
-import { connectTo } from './attempt';
+import { HANDSHAKE_MS, connectTo } from './attempt';
 import { boot } from './boot';
 import { rememberedAddress, rememberAddress } from './remembered';
+
+/**
+ * The launch waits on a real handshake, so the file's deadline is that
+ * handshake plus the test's own work. The suite default is 5 s - the same
+ * number as the handshake - which turns a loaded machine into a timeout that
+ * names nothing about the launch.
+ */
+vi.setConfig({ testTimeout: HANDSHAKE_MS + 5_000 });
 
 /** A forge that greets, which is all a launch needs one to do. */
 async function stubServer() {
