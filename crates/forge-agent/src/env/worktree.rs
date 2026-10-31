@@ -1087,11 +1087,12 @@ fn obstacle_from_listing(
         // one included - claude locks every worktree it creates.
         Some(_) if worktree_gitdir_resolves(path) => None,
         Some(_) => Some(format!(
-            "the worktree registration at {} cannot be used - its directory, or the gitdir it \
-             points at, is gone - so this worker's worktree cannot be created there; unlock it \
-             with `git worktree unlock {}` (which errors harmlessly when it is not locked), \
-             delete that directory if it is still there, then `git worktree prune` in {} and \
-             spawn again",
+            "the worktree registration at {} cannot be reused - its .git link is not the plain \
+             file git writes, the gitdir it names is gone or belongs to another repository, or \
+             its HEAD does not resolve - so this worker's worktree cannot be created there; \
+             unlock it with `git worktree unlock {}` (which errors harmlessly when it is not \
+             locked), delete that directory if it is still there, then `git worktree prune` in \
+             {} and spawn again",
             path.display(),
             path.display(),
             repo.display(),
@@ -3862,7 +3863,7 @@ mod tests {
             .expect("a worktree git will not reuse is an obstacle");
 
         assert!(
-            obstacle.contains("cannot be used"),
+            obstacle.contains("cannot be reused"),
             "the obstacle names the registration git will not reuse: {obstacle}"
         );
     }

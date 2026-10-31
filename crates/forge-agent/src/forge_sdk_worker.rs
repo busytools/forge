@@ -630,9 +630,39 @@ pub(crate) fn load_history_messages(
     cwd: &str,
     session_id: &str,
 ) -> forge_primitives::ConversationHistory {
+    load_history_messages_with(config_dir, prev_session_id, cwd, session_id, true)
+}
+
+/// [`load_history_messages`] over the session's own rows only: sub-agent
+/// sidecars are neither opened nor folded. A handoff or a page read wants the
+/// conversation as chat rows and must not pay for frames no row draws
+/// (#1763).
+pub(crate) fn load_history_messages_main_thread(
+    config_dir: &Path,
+    prev_session_id: &str,
+    cwd: &str,
+    session_id: &str,
+) -> forge_primitives::ConversationHistory {
+    load_history_messages_with(config_dir, prev_session_id, cwd, session_id, false)
+}
+
+fn load_history_messages_with(
+    config_dir: &Path,
+    prev_session_id: &str,
+    cwd: &str,
+    session_id: &str,
+    fold_sidecars: bool,
+) -> forge_primitives::ConversationHistory {
     let dir = if cwd.is_empty() { None } else { Some(cwd) };
-    let history =
-        crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
+    let history = if fold_sidecars {
+        crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir)
+    } else {
+        crate::userdata::catalog::scan::read_session_messages_main_thread(
+            config_dir,
+            prev_session_id,
+            dir,
+        )
+    };
     let compaction_count = history.compaction_count;
     let messages = crate::userdata::catalog::scan::messages_from_rows(history.messages, session_id);
     forge_primitives::ConversationHistory {

@@ -443,14 +443,16 @@ impl ViewSurface {
         let Some((session_id, cwd)) = self.transcript_place(slot, cwd_raw) else {
             return ConversationHistory::default();
         };
-        let read = forge_workspace::session_history(self.workspace.config_dir(), &session_id, &cwd);
-        let mut messages = crate::transcript::notices_as_blocks(read.messages);
-        // **Sub-agent frames are card material, not chat rows.** The cards
-        // come from the workspace's fold; a chat read that carried these
-        // would spend its frame budget on rows no page draws (#1763).
-        messages.retain(|message| !forge_primitives::messages::ran_under_a_dispatch(message));
+        // **The session's own rows only.** A sub-agent's frames are card
+        // material and never chat rows, so this read neither folds them nor
+        // pays for their parse (#1763).
+        let read = forge_workspace::session_history_main_thread(
+            self.workspace.config_dir(),
+            &session_id,
+            &cwd,
+        );
         ConversationHistory {
-            messages,
+            messages: crate::transcript::notices_as_blocks(read.messages),
             compaction_count: read.compaction_count,
             session_id: Some(session_id),
         }

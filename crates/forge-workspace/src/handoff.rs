@@ -93,9 +93,16 @@ pub(crate) async fn ground_truth(
         let session_id = seat.from.to_owned();
         let cwd = seat.cwd.to_path_buf();
         // The read is the whole transcript; the brief needs the files and calls
-        // in it, which only a pass over the file can answer.
+        // in it, which only a pass over the file can answer. **The session's own
+        // rows only**: a sub-agent's reads and edits are the sub-agent's work,
+        // not the predecessor's, and the brief hands the successor the
+        // predecessor's. Sidecar frames also carry no chat row.
         tokio::task::spawn_blocking(move || {
-            forge_agent::session_history(&config_dir, &session_id, &cwd.to_string_lossy())
+            forge_agent::session_history_main_thread(
+                &config_dir,
+                &session_id,
+                &cwd.to_string_lossy(),
+            )
         })
         .await
     };
@@ -711,9 +718,14 @@ fn is_machine_prompt(message: &Message) -> bool {
 /// Every tool call's id, name and input, in transcript order.
 fn tool_uses(messages: &[Message]) -> impl Iterator<Item = (&str, &str, &serde_json::Value)> {
     messages.iter().flat_map(|message| {
-        let Message::Assistant { message: envelope, .. } = message else {
+        let Message::Assistant { message: envelope, parent_tool_use_id, .. } = message else {
             return Vec::new().into_iter();
         };
+        // A sub-agent's calls are the instance's, not the session's: they
+        // never name the predecessor's files or reads in the brief.
+        if forge_primitives::messages::names_a_dispatch(parent_tool_use_id.as_deref()) {
+            return Vec::new().into_iter();
+        }
         envelope
             .content
             .iter()
@@ -1396,8 +1408,10 @@ impl crate::Workspace {
         tokio::spawn(async move {
             let config_dir = workspace.config_dir().to_path_buf();
             let read_id = occupant.clone();
+            // The successor's OWN reads are what the measurement counts; a
+            // sub-agent's reads are not the successor re-reading the brief.
             let read = tokio::task::spawn_blocking(move || {
-                forge_agent::session_history(&config_dir, &read_id, &cwd)
+                forge_agent::session_history_main_thread(&config_dir, &read_id, &cwd)
             })
             .await;
             let messages = read.map(|history| history.messages).unwrap_or_default();
@@ -1857,6 +1871,30 @@ mod tests {
                 .any(|line| line.contains("uncommitted: 60 paths, newest 20 shown (40 omitted)")),
             "the line states the total and what it omits: {:?}",
             section.lines,
+        );
+    }
+
+    /// **A sub-agent's calls are the instance's, not the session's.**
+    /// A parented Read or Edit never names the predecessor's files or read
+    /// set, whether the handoff read folded a sidecar or a caller handed the
+    /// fold a parented frame (#1763).
+    #[test]
+    fn a_subagents_calls_stay_out_of_the_brief() {
+        let mut child = call("t-child", "Read", serde_json::json!({ "file_path": "p/child.txt" }));
+        if let Message::Assistant { parent_tool_use_id, .. } = &mut child {
+            *parent_tool_use_id = Some("toolu_dispatch".to_owned());
+        }
+        let main = call("t-main", "Edit", serde_json::json!({ "file_path": "p/main.txt" }));
+        let messages = vec![child, main];
+
+        let section = files_section(&messages, &HandoffGitState::default(), &[]);
+        let body = section.lines.join("\n");
+
+        assert!(body.contains("p/main.txt"), "the session's own edit is named: {body}");
+        assert!(!body.contains("p/child.txt"), "a sub-agent's read is not the brief's: {body}");
+        assert!(
+            !read_set(&messages, &[]).iter().any(|path| path == "p/child.txt"),
+            "and it is not in the successor's read set",
         );
     }
 
