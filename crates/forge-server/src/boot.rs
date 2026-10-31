@@ -237,17 +237,29 @@ fn install_browser(
     // look. Off the boot thread: each prune is a CEF tree.
     let reaper = Arc::clone(&fleet);
     let prune_workspace = Arc::downgrade(workspace);
-    tokio::spawn(async move {
-        reaper.reap_stale().await;
-        let _ = tokio::task::spawn_blocking(move || {
-            forge_browser::host_bundle::prune_other_versions(&move || {
-                prune_workspace.upgrade().is_some_and(|workspace| workspace.sole_instance())
-            });
-        })
-        .await;
-    });
+    let reap = async move { reaper.reap_stale().await };
+    tokio::spawn(reap_then_prune(reap, move || {
+        forge_browser::host_bundle::prune_other_versions(&move || {
+            prune_workspace.upgrade().is_some_and(|workspace| workspace.sole_instance())
+        });
+    }));
     workspace.install_browser_host(Arc::new(HostedBrowser(Arc::clone(&fleet))));
     Ok(fleet)
+}
+
+/// Await the stale-host reap, then run the prune on a blocking thread.
+///
+/// **The order is the contract.** The reaper identifies an orphan by its
+/// executable's path, and `proc_pidpath` answers nothing for an unlinked
+/// binary, so a prune that removed a host's bundle first would take the
+/// identity away. Off the async workers because each prune is a CEF tree.
+#[cfg(target_os = "macos")]
+async fn reap_then_prune<F>(reap: impl std::future::Future<Output = ()>, prune: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    reap.await;
+    let _ = tokio::task::spawn_blocking(prune).await;
 }
 
 /// A platform with no CEF host: the browser tools answer the no-host refusal
@@ -664,11 +676,11 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
-    use super::configure_fleet_profiles;
     use super::{
         BOOT_WAVE_WAIT, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
     };
+    #[cfg(target_os = "macos")]
+    use super::{configure_fleet_profiles, reap_then_prune};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -912,6 +924,27 @@ port = 49201
         start_subsystems(&workspace);
 
         assert!(workspace.test_usage_poller_started(), "the boot wave starts the usage poller");
+    }
+
+    /// **The prune runs after the reap.** Reversing them is invisible to
+    /// every behavioural test that does not need the identity a prune can
+    /// unlink, so the order itself is pinned.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_prune_runs_after_the_reap() {
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reaped = Arc::clone(&order);
+        let pruned = Arc::clone(&order);
+        reap_then_prune(
+            async move {
+                reaped.lock().expect("the order").push("reap");
+            },
+            move || {
+                pruned.lock().expect("the order").push("prune");
+            },
+        )
+        .await;
+        assert_eq!(*order.lock().expect("the order"), vec!["reap", "prune"]);
     }
 
     /// **The wave starts the rotation announcer**: the one watcher that turns

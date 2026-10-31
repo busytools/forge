@@ -598,7 +598,12 @@ pub async fn end_verified(pid: u32, port: u16, profile: &Path) -> bool {
         // the ring is this sweep's to touch.
         return !probe(port).await;
     }
+    // **A host that matches and cannot answer is still the host.** The
+    // endpoint is not the identity - the binary and the arguments are - so a
+    // wedged host is signalled rather than left holding the profile while
+    // its record and lock are cleared around it.
     if !probe(port).await {
+        end(pid).await;
         return true;
     }
     if !is_our_host(pid, profile, Some(port)) {
@@ -732,9 +737,7 @@ pub fn is_our_host(pid: u32, profile: &Path, port: Option<u16>) -> bool {
         // cannot read it.** `proc_pidpath` returns nothing for a process
         // whose executable was unlinked - the state a prune leaves a live
         // host in - and refusing that pid would clear the lock around it.
-        if let Some(path) = binary_path(pid)
-            && !(is_staged_host(&path, &install_root) || is_code_sign_clone(&path))
-        {
+        if !host_path_identifies(binary_path(pid).as_deref(), &install_root) {
             return false;
         }
     }
@@ -742,6 +745,19 @@ pub fn is_our_host(pid: u32, profile: &Path, port: Option<u16>) -> bool {
         return false;
     };
     host_matches(&args, profile, port)
+}
+
+/// Whether an executable path either identifies a staged host or is absent.
+///
+/// **Absent is not a refusal.** The kernel cannot name the path of a process
+/// whose binary was unlinked, and a prune leaves a live host in exactly that
+/// state; the arguments below still identify it.
+#[cfg(target_os = "macos")]
+fn host_path_identifies(path: Option<&Path>, install_root: &Path) -> bool {
+    match path {
+        Some(path) => is_staged_host(path, install_root) || is_code_sign_clone(path),
+        None => true,
+    }
 }
 
 /// One process's BSD info, from the kernel. `None` when it will not answer
@@ -768,28 +784,37 @@ fn proc_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     Some(unsafe { info.assume_init() })
 }
 
-/// Whether the process that spawned `pid` is still running. `None` when the
-/// kernel will not answer for `pid`.
-#[cfg(target_os = "macos")]
-fn parent_alive(pid: u32) -> Option<bool> {
-    let parent = proc_info(pid)?.pbi_ppid;
-    if parent == 0 {
-        return Some(false);
-    }
-    // A zombie parent is dead: it has exited and only its entry remains.
-    proc_info(parent).map(|info| info.pbi_status != libc::SZOMB)
+/// The server a host was launched under, from the host's own `--parent`.
+///
+/// **The kernel's ppid cannot answer this.** A child whose parent exits is
+/// reparented to launchd (pid 1), which reads as alive - the trap the host's
+/// own exit path documents and the reason the spawn line carries the server's
+/// pid at all.
+fn named_parent(pid: u32) -> Option<u32> {
+    let args = process_argv(pid)?;
+    arg_value(&args, "--parent")?.parse().ok()
 }
 
-/// Whether `pid` is an orphan whose server is gone. **The parent is the
-/// discriminator**: another config dir's live server owns its browser hosts,
-/// and this boot must not signal them; an orphan's parent has exited.
+/// Whether `pid` is an orphan whose server is gone.
 ///
-/// `false` when the kernel will not answer: a host that cannot be placed is
-/// left alone rather than risked.
+/// **A live peer's server is what must be spared**, so the answer comes from
+/// the host's own `--parent`: a host whose named server is gone, or is a
+/// zombie, is an orphan. A host with no `--parent` is a stand-in whose
+/// server never named itself, and it is reaped like an orphan; a host whose
+/// arguments cannot be read is treated the same way, because nothing is
+/// known to be live and the caller has already matched it as a host of this
+/// profile.
 fn orphaned(pid: u32) -> bool {
     #[cfg(target_os = "macos")]
     {
-        parent_alive(pid) == Some(false)
+        let Some(parent) = named_parent(pid) else { return true };
+        if parent == 0 {
+            return true;
+        }
+        match proc_info(parent) {
+            Some(info) => info.pbi_status == libc::SZOMB,
+            None => true,
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1255,21 +1280,70 @@ mod tests {
         );
     }
 
-    /// **The parent is the orphan discriminator.** A live peer's host has a
-    /// live parent, so a boot must not signal it; an orphan's parent is gone.
+    /// **An unreadable path falls through to the arguments**, which is what a
+    /// prune leaves behind: the binary is unlinked and `proc_pidpath` answers
+    /// nothing.
     #[cfg(target_os = "macos")]
     #[test]
-    fn the_parent_check_separates_a_live_parent_from_a_gone_pid() {
-        assert_eq!(parent_alive(std::process::id()), Some(true), "this test's own parent is alive");
-        assert_eq!(parent_alive(u32::MAX - 1), None, "a pid that does not exist has no answer");
+    fn an_unreadable_path_leaves_the_arguments_the_identity() {
+        let root = std::path::Path::new("/Users/x/Library/Application Support/forge/browser-host");
+        let staged = root.join("0.9.0").join("Forge Browser.app/Contents/MacOS/Forge Browser");
         assert!(
-            !orphaned(std::process::id()),
-            "a host with a live parent belongs to a live server",
+            host_path_identifies(None, root),
+            "an unlinked binary is not a refusal: the arguments still name the host",
         );
+        assert!(host_path_identifies(Some(&staged), root), "a staged host's path identifies it");
         assert!(
-            !orphaned(u32::MAX - 1),
-            "a host that cannot be placed is left alone rather than risked",
+            !host_path_identifies(
+                Some(std::path::Path::new("/tmp/Forge Browser.app/Contents/MacOS/Forge Browser")),
+                root
+            ),
+            "a readable path that is not a staged host is refused",
         );
+    }
+
+    /// **The orphan discriminator is the host's own `--parent`.** The kernel's
+    /// ppid answers launchd for a reparented child, which reads as alive; this
+    /// test's stand-ins are all direct children of a live process, so a
+    /// ppid-based check would answer "live" for every one of them.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn orphaned_reads_the_hosts_own_parent() {
+        use std::process::{Command, Stdio};
+
+        let stand_in = |extra: &[String]| {
+            Command::new("/bin/sh")
+                .args(["-c", "while :; do sleep 0.05; done", "forge-host"])
+                .args(extra)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("a stand-in host")
+        };
+        let gone = u32::MAX - 1;
+        let mut orphan = stand_in(&["--parent".to_owned(), gone.to_string()]);
+        let mut live = stand_in(&["--parent".to_owned(), std::process::id().to_string()]);
+        let mut unnamed = stand_in(&[]);
+        // The kernel records the argument list asynchronously; a read too
+        // early would answer "unknown" for every case and pass for the wrong
+        // reason.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while named_parent(orphan.id()).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the stand-in's arguments never became readable",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(named_parent(orphan.id()), Some(gone), "the host names its server");
+        assert!(orphaned(orphan.id()), "a host whose named server is gone is an orphan");
+        assert!(!orphaned(live.id()), "a host whose named server is alive is a peer's");
+        assert!(orphaned(unnamed.id()), "a host that names no parent is reaped like an orphan");
+        for child in [&mut orphan, &mut live, &mut unnamed] {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     #[test]

@@ -25186,7 +25186,21 @@ provider = "anthropic"
         let app_support = dir.path().join("app-support");
         std::fs::create_dir_all(&app_support).expect("the app-support dir");
         let legacy = app_support.join("db.redb");
-        drop(crate::store::Db::open(&legacy).expect("a store at the old path"));
+        {
+            // A row in the legacy store, so the read below proves the DATA
+            // moved and not just the file: a remove-file-and-open-fresh
+            // would pass a file-existence check.
+            let old = crate::store::Db::open(&legacy).expect("a store at the old path");
+            crate::store::cron_names::put(
+                &old,
+                "p-adopt",
+                &forge_primitives::cron::CronName {
+                    cron_id: "c1".to_owned(),
+                    description: Some("Morning summary".to_owned()),
+                },
+            )
+            .expect("seed a row in the legacy store");
+        }
         let home_config = dirs::home_dir().expect("a home dir").join(".claude");
         // The boot creates the config dir before opening the store; a runner
         // without one gets an empty directory this test never writes into.
@@ -25198,6 +25212,12 @@ provider = "anthropic"
         assert!(
             store_path(&app_support, &home_config).is_file(),
             "into this config dir's own store",
+        );
+        let rows = crate::store::cron_names::for_uuids(&opened, &["p-adopt"]).expect("read");
+        assert_eq!(
+            rows.get("p-adopt").and_then(|name| name.description.as_deref()),
+            Some("Morning summary"),
+            "the adopted store carries the legacy store's rows",
         );
         drop(opened);
     }

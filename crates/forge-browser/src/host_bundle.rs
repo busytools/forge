@@ -184,6 +184,36 @@ mod tests {
         assert!(stray.is_file(), "a non-directory entry is not a staged bundle and is left alone");
     }
 
+    /// **The shared check is asked before EVERY removal**, not hoisted out
+    /// of the loop: a peer that appears between two removals keeps its
+    /// bundle. The closure answers true once, so a hoisted check would keep
+    /// removing and a per-removal one stops after the first.
+    #[test]
+    fn the_shared_check_is_asked_before_each_removal() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser-host");
+        staged(&root.join("0.0.1"), Some("0.0.1"));
+        staged(&root.join("0.0.2"), Some("0.0.2"));
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+
+        let removed = prune_other_versions_in(&root, env!("CARGO_PKG_VERSION"), &|| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+        });
+
+        assert_eq!(removed.len(), 1, "the first removal ran and the second was refused");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the check ran once per other-version directory",
+        );
+        let left = std::fs::read_dir(&root)
+            .expect("the root")
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .count();
+        assert_eq!(left, 1, "exactly one other version's bundle survives");
+    }
+
     /// **A shared machine prunes nothing.** The peer check is asked again
     /// before each removal, so a peer that appeared after the boot's first
     /// look keeps its bundle.
