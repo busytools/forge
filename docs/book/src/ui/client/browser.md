@@ -111,7 +111,8 @@ while the tab was held takes it with it when the ask resolves.
 never handed back as the driver's `_page` TypeError. A driver that cannot
 attach within its 30 s bound is replaced; a host no fresh driver can list is
 named and ended, except that a host another session's page is open on is left
-running and the holder is named back instead.
+running and the holder is named back instead; when its endpoint has stopped
+answering, only the idle clock releases it.
 
 **Every viewer is a watcher until it takes the role on that tab.** A surface
 attaches to one tab and receives every frame that tab paints; **exactly one

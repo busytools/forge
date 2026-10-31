@@ -2215,12 +2215,15 @@ impl BrowserService {
                 .replace_dead_driver(profile, seat, generation, drove, tab, again, deadline, &why)
                 .await;
         }
-        // **A host ended here takes other sessions' tabs with it, so the
-        // sentence names them** (#2728); the probe asks twice so a moment's
-        // stall is not taken for a wedge.
+        // **A host another session's page is open on is left running even
+        // with its endpoint gone**: it is a shared host, and the idle clock
+        // is its only fallback until the stability cut (#2728).
         let holders =
             profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).other_owners(seat);
-        let host_up = spawn::probe_settled(port).await;
+        // **A driver built against a browser that is gone is dropped.** The
+        // probe is the browser's own liveness, not the driver's; a host that
+        // is not answering is torn down so the next call starts a fresh one.
+        let host_up = spawn::probe(port).await;
         let _decision = profile.file_decision.lock().await;
         // **A test profile has no host to probe**, so the fake driver is not
         // a dead one to clear. The decision lock is still taken above, which
@@ -2232,17 +2235,17 @@ impl BrowserService {
         let mut state = profile.state.lock().await;
         let alive = state.driver.as_ref().is_some_and(|driver| driver.is_running());
         if clear_if_dead(&mut state, generation, alive && host_up, profile) && !host_up {
+            if !holders.is_empty() {
+                log_shared_host(profile, pid, port, &holders, true, &why);
+                let host = DeadHost::Shared { pid, port, holders, wedged: true };
+                return Err(dead_host_answer(profile, host, &why));
+            }
             // **The cause is published before the tab senders close.** A
             // call that finds the host gone may be the first to notice it;
             // without this a viewer reads "tab N was closed" and never
             // hears that the browser went.
-            let took = if holders.is_empty() {
-                String::new()
-            } else {
-                format!(", taking {} with it", holders_words(&holders))
-            };
             profile.failures.send_replace(Some(format!(
-                "the browser host stopped answering (pid {pid}){took}; the next call brings it back"
+                "the browser host stopped answering (pid {pid}); the next call brings it back"
             )));
             profile.teardown(&mut state, Some(HostEnd::Unresponsive), &why).await;
         }
@@ -2284,15 +2287,13 @@ impl BrowserService {
                 None => return DeadHost::AlreadyGone,
             }
             if !holders.is_empty() {
-                tracing::debug!(
-                    event_name = "browser_host_shared",
-                    profile = %profile.key,
-                    pid = drove.pid,
-                    port = drove.port,
-                    holders = %holders_words(&holders),
-                    "a failing call left the host running; another session holds a tab: {why}"
-                );
-                return DeadHost::Shared { pid: drove.pid, port: drove.port, holders };
+                log_shared_host(profile, drove.pid, drove.port, &holders, false, why);
+                return DeadHost::Shared {
+                    pid: drove.pid,
+                    port: drove.port,
+                    holders,
+                    wedged: false,
+                };
             }
             state.driver = None;
             state.cdp.clear();
@@ -5615,8 +5616,10 @@ enum DeadHost {
     /// Another host serves the profile now; this call ends nothing.
     NotOurs,
     /// Other sessions hold tabs on this host, so it was left running. Each
-    /// entry is a session and how long it has held its oldest tab.
-    Shared { pid: u32, port: u16, holders: Vec<(SessionSlot, Duration)> },
+    /// entry is a session and how long it has held its oldest tab; `wedged`
+    /// says the endpoint stopped answering, which only the idle clock
+    /// releases until the stability cut (#2728).
+    Shared { pid: u32, port: u16, holders: Vec<(SessionSlot, Duration)>, wedged: bool },
 }
 
 /// **The answer never leads with the driver's `_page` TypeError**: it names
@@ -5687,14 +5690,42 @@ fn dead_host_answer(profile: &Profile, host: DeadHost, why: &str) -> String {
             profile.dir.display(),
         ),
         DeadHost::NotOurs => format!("the browser driver stopped answering: {why}"),
-        DeadHost::Shared { pid, port, holders } => format!(
+        DeadHost::Shared { pid, port, holders, wedged: false } => format!(
             "the browser host (pid {pid}, port {port}, profile {}) is in use by {}, so it was left \
              running rather than ended: {why}. Call browser_tabs to see the tabs, or try again \
              once it closes the tab it holds.",
             profile.dir.display(),
             holders_words(&holders),
         ),
+        DeadHost::Shared { pid, port, holders, wedged: true } => format!(
+            "the browser host (pid {pid}, port {port}, profile {}) stopped answering and holds \
+             {}, so it was left running rather than ended: {why}. The idle clock releases it once \
+             nothing touches the profile.",
+            profile.dir.display(),
+            holders_words(&holders),
+        ),
     }
+}
+
+/// **A shared host a failing call left running**, as the record a host that
+/// does not recover is diagnosed by.
+fn log_shared_host(
+    profile: &Profile,
+    pid: u32,
+    port: u16,
+    holders: &[(SessionSlot, Duration)],
+    wedged: bool,
+    why: &str,
+) {
+    tracing::debug!(
+        event_name = "browser_host_shared",
+        profile = %profile.key,
+        pid,
+        port,
+        holders = %holders_words(holders),
+        wedged,
+        "a failing call left the host running; another session holds a tab: {why}"
+    );
 }
 
 /// **Who else is holding a host, as the refusal names them**: each session
@@ -6675,12 +6706,11 @@ mod tests {
         crate::osr::Ring::unlink(&ring);
     }
 
-    /// **A shared host whose endpoint really is gone is still ended, and the
-    /// sentence says whose pages went with it.** This is the wedge path the
-    /// policy keeps apart from a driver deadline: it asks the endpoint twice,
-    /// so a busy host is not mistaken for a dead one.
+    /// **A genuinely wedged shared host is left to the idle clock.** Ending
+    /// it is the patched-on escape the stability cut replaces, so the caller
+    /// is refused, the holder is named, and nothing is taken down (#2728).
     #[tokio::test]
-    async fn a_wedged_shared_host_is_ended_and_names_its_holders() {
+    async fn a_wedged_shared_host_is_left_to_the_idle_clock() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let lead = SessionSlot::lead("O", "p");
@@ -6695,7 +6725,7 @@ mod tests {
             .adopt(1, worker.clone(), "T1", "T1", "", "")
             .expect("the worker's tab");
 
-        let _ = service
+        let refused = service
             .after_failure(
                 &profile,
                 &lead,
@@ -6709,13 +6739,17 @@ mod tests {
                 Call { tool: "browser_snapshot", reported: "browser_snapshot", args: &json!({}) },
                 Err("the page answered with a script error".to_owned()),
             )
-            .await;
+            .await
+            .expect_err("a wedged shared host is not ended");
 
-        assert!(profile.state.lock().await.host.is_none(), "a gone endpoint ends the host");
-        assert!(!profile.up.load(Ordering::Acquire), "and the profile reads as down");
-        let sentence = profile.failures.borrow().clone().expect("the refusal is published");
-        assert!(sentence.contains("O/p/w"), "the holder is named: {sentence}");
-        assert!(sentence.contains("taking"), "and says what went with it: {sentence}");
+        assert!(refused.contains("O/p/w"), "the holder is named: {refused}");
+        assert!(refused.contains("idle clock"), "and its only fallback: {refused}");
+        assert!(profile.state.lock().await.host.is_some(), "the host was left running");
+        assert_eq!(
+            profile.tabs.lock().unwrap_or_else(PoisonError::into_inner).numbers(),
+            vec![1],
+            "and the foreign tab is still its page",
+        );
         crate::osr::Ring::unlink(&ring);
     }
 
