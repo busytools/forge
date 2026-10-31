@@ -24,6 +24,21 @@ can reference them instead of restating them:
 A learning that exists only in the handoff is not recorded - the handoff gets rewritten, memory
 persists.
 
+## Where the handoff goes: lead or worker
+
+The project memory directory is shared by every session in the project, so the destination
+depends on the SEAT, not only the project. Ask `agents__whoami` when that tool is available
+(forge sessions only):
+
+- **label `lead`, or no forge at all** -> `handoff.md` in the project memory directory, indexed
+  in `MEMORY.md` by Step 3. This is the project's rolling state, and the lead owns it.
+- **any other label (a forge worker)** -> `workers/<label>.md` in the same memory directory, and
+  **never** `handoff.md`, and **no** `MEMORY.md` line. A worker's continuity is already carried
+  by its own resumable session, its board row and its messages to the lead; the shared file is
+  the lead's, and a worker writing it overwrites the lead's rolling state with its own.
+
+The content and shape below are the same for both. Only the address differs.
+
 ## Step 2 - Write the handoff
 
 **Location: the session's project memory directory** - the one whose `MEMORY.md` auto-loads for
@@ -54,6 +69,8 @@ accordingly.
 Add or update the `handoff.md` line in the project memory's `MEMORY.md` in the same pass. The
 line leads with a status token (SHIPPED / IN FLIGHT / BLOCKED) plus a one-line hook - the index
 line is what the next session actually sees; the file is only reachable through it.
+
+A worker writes no index line: its file is its own seat's, reached by the worker itself.
 
 ## Forge: close out and exit
 
