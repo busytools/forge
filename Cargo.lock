@@ -1227,6 +1227,7 @@ dependencies = [
  "forge-browser",
  "forge-dictate",
  "forge-primitives",
+ "forge-sdk",
  "forge-server",
  "forge-workspace",
  "futures-util",
