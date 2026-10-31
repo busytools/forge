@@ -10,9 +10,10 @@
  * seat, and spent by the first snapshot that lands for it: the guard stays
  * for every snapshot no return asked for.
  *
- * **The mark is a seat's, not a page's.** It is set where the read is asked
- * (`connect/resync.ts`), so it exists whether or not a chat column is mounted,
- * and a seat's mark cannot arm another seat's snapshot.
+ * **The mark is a seat's, not a page's.** It is set by `session/live.ts` when
+ * the refresh actually goes out - `connect/resync.ts` only passes the intent
+ * through - so it exists whether or not a chat column is mounted, and a
+ * seat's mark cannot arm another seat's snapshot.
  */
 
 import { subjectKey } from '../protocol';
@@ -29,20 +30,15 @@ export function markReturn(connection: Connection, slot: SessionSlot): void {
   else held.add(key);
 }
 
-/** Whether `slot` owes a return read, spending the mark when it does. */
+/**
+ * Whether `slot` owes a return read, spending the mark when it does.
+ *
+ * **The next snapshot spends it**, whatever made that snapshot authoritative:
+ * a drop's reconnect answer is numbered the same way a return's is, and the
+ * chat spends the mark before it asks whether `missed` or `!landed` already
+ * said yes. No separate clearing is needed on a drop.
+ */
 export function takeReturn(connection: Connection, slot: SessionSlot): boolean {
   const held = RETURNS.get(connection);
   return held !== undefined && held.delete(subjectKey({ session: slot }));
-}
-
-/**
- * Drop a seat's mark without spending it.
- *
- * **A drop replaces it with a stronger fact.** The reconnect's snapshot is
- * the first word after the socket died, so the chat's `missed` already makes
- * it authoritative - and a mark outliving the read it named would arm a
- * later, ordinary snapshot instead.
- */
-export function clearReturn(connection: Connection, slot: SessionSlot): void {
-  RETURNS.get(connection)?.delete(subjectKey({ session: slot }));
 }

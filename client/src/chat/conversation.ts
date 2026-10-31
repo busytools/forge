@@ -27,7 +27,7 @@ import { MORE_TURNS, slotOf, subjectKey } from '../protocol';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import { cannotPaint } from '../paint';
 import { inFlightOf } from '../session/apply';
-import { clearReturn, takeReturn } from '../session/returns';
+import { takeReturn } from '../session/returns';
 import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { handoffFrame, handoffKey, handoffOf, type HandoffRecord } from '../wire/handoff';
@@ -1870,9 +1870,6 @@ export class Chat {
         // so the next snapshot is the only word on those holds - `armed`
         // reads this rather than trusting every snapshot's listing.
         this.missed = true;
-        // A drop's reconnect snapshot is already the first word after the
-        // gap, so a return mark it outlived would arm a later ordinary read.
-        clearReturn(this.connection, this.slot);
         const held = this.inFlight !== null;
         this.inFlight = null;
         // **The cursor an ask went out for goes with the ask** (#2420): a

@@ -22,7 +22,7 @@ import type { ToolLeaf } from './leaves';
 import { cronNames } from './cron-names.svelte';
 import { echoes } from './echoes.svelte';
 import { outputs } from './outputs.svelte';
-import { markReturn } from '../session/returns';
+import { markReturn, takeReturn } from '../session/returns';
 import { refused } from '../refusals';
 
 // Every record the class publishes is frozen, so an in-place edit where a
@@ -7164,11 +7164,12 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
   });
 
   /**
-   * **A mark does not outlive a socket drop.** The reconnect's snapshot is
-   * already the first word after the gap, so the mark is dropped with the
-   * socket; a later ordinary listing must not be armed by it.
+   * **The reconnect's snapshot spends a return mark.** It is already the
+   * first word after the gap, and the spend happens whatever made the
+   * snapshot authoritative, so a later ordinary listing is not armed by a
+   * mark that outlived its read.
    */
-  it('drops a return mark across a socket drop', () => {
+  it("spends a return mark on the reconnect's own snapshot", () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -7182,12 +7183,13 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     markReturn(server.connection, LEAD);
     server.reach('closed');
     server.reach('open');
-    // The reconnect's own snapshot.
+    // The reconnect's own snapshot, fresh by the drop, spends the mark.
     server.send({
       kind: 'snapshot',
       subject: { session: LEAD },
       data: { header: { turn_in_flight: false }, state: { queue: [] } },
     });
+    expect(takeReturn(server.connection, LEAD), 'the reconnect answer spent the mark').toBe(false);
     // An ordinary snapshot listing a new prompt afterwards.
     server.send({
       kind: 'snapshot',
