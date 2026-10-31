@@ -206,10 +206,10 @@ function streamed(read: SessionRead): string[] {
 /**
  * The streamed rows with repeats dropped, keeping each first occurrence.
  *
- * **A duplicate stretch is a known defect outside this cut** (a repaired
- * range can re-apply rows already drawn). Rule 25's property for this test is
- * that the stretch is complete and in order, so repeats are folded out and a
- * hole or a row out of turn still fails.
+ * **The order and the completeness checks read this**, so a hole or a row out
+ * of turn fails without a repeat exiting on the way. `streamed` itself is
+ * asserted separately: a repaired range that re-drew rows would otherwise
+ * hide here (#2564).
  */
 function carried(read: SessionRead): string[] {
   const seen = new Set<string>();
@@ -295,6 +295,12 @@ describe('a whole-record answer slower than the bound', () => {
         words.length,
         "the rows above the answer's encode point never reached the record",
       ).toBeGreaterThanOrEqual(emitted);
+      // **A repaired range must not re-draw rows the taken record already
+      // carries** (#2564): a row drawn twice is the same turn spliced onto
+      // itself. `streamed` is every row in the order the record holds them.
+      expect(streamed(get(view)), 'the repaired stretch left duplicated rows').toEqual(
+        Array.from({ length: streamed(get(view)).length }, (_, at) => `u${at + 1}`),
+      );
     } finally {
       stop();
       connection.close();
