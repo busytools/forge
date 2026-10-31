@@ -1781,7 +1781,7 @@ pub(crate) mod tests {
         let middle = json!({ "kind": "update", "update": "two" });
         let mut frame = vec![3_u8];
         frame.extend_from_slice(&gzipped(middle.to_string().as_bytes()));
-        stub.send_binary(frame);
+        stub.send_binary(&frame);
         let _ = stub.say.send(json!({ "kind": "update", "update": "three" }));
 
         let mut seen = Vec::new();
@@ -1939,13 +1939,14 @@ pub(crate) mod tests {
                     // **The dial's request line is the handshake's first
                     // bytes**, and what a client declared lives on it; a test
                     // that does not read it cannot see the declaration.
-                    let head = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-                    let tee = Tee { inner: stream, head: std::sync::Arc::clone(&head) };
+                    let request_bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                    let tee = Tee { inner: stream, head: std::sync::Arc::clone(&request_bytes) };
                     let Ok(ws) = tokio_tungstenite::accept_async(tee).await else {
                         return;
                     };
                     let request =
-                        String::from_utf8_lossy(&head.lock().expect("the head log")).to_string();
+                        String::from_utf8_lossy(&request_bytes.lock().expect("the head log"))
+                            .to_string();
                     if let Some(target) =
                         request.lines().next().and_then(|line| line.split_whitespace().nth(1))
                         && let Ok(mut held) = uris.lock()
@@ -1999,7 +2000,7 @@ pub(crate) mod tests {
         /// Push one binary frame, in the same order the text pushes take:
         /// both kinds ride one channel, so a compressed frame cannot overtake
         /// the text frame written before it.
-        pub(crate) fn send_binary(&self, frame: Vec<u8>) {
+        pub(crate) fn send_binary(&self, frame: &[u8]) {
             let _ = self.say.send(json!({ "__binary": frame }));
         }
 
