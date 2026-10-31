@@ -124,20 +124,29 @@ describe('the weights the client asks of its vendored face', () => {
         }),
       ),
     );
-    // The denominators, so a scan that stopped reading cannot pass: the sheet
-    // alone carries about a hundred declarations, the components carry their
-    // own, and the two emitters are the only `.ts` files that write a weight
-    // inline - a scan that skipped either family fails here.
-    expect(declarations.length, 'the scan read the whole client').toBeGreaterThanOrEqual(90);
+    // **A count per family, not one total**: web.css alone satisfies a total
+    // floor, so a scan that skipped every component or emitter would pass it.
+    // Each family has to contribute its own declarations, and both emitters
+    // have to contribute a parsed weight, not merely appear in the file list.
     expect(
-      declarations.filter((entry) => entry.path.endsWith('.svelte')).length,
-      'the scan reached the component styles',
+      files.filter((path) => path.endsWith('.svelte')).length,
+      'the scan reached the component files',
+    ).toBeGreaterThanOrEqual(20);
+    const sheetWeightsRead = declarations.filter((entry) => entry.path.endsWith('assets/web.css'));
+    expect(
+      sheetWeightsRead.length,
+      "the sheet's own declarations were read",
+    ).toBeGreaterThanOrEqual(90);
+    const componentWeightsRead = declarations.filter((entry) => entry.path.endsWith('.svelte'));
+    expect(
+      componentWeightsRead.length,
+      'the component styles declared their own weights',
     ).toBeGreaterThanOrEqual(5);
     for (const path of ['format/diff.ts', 'format/highlight.ts']) {
       expect(
-        files.some((file) => file.endsWith(path)),
-        `the scan reached the inline emitter ${path}`,
-      ).toBe(true);
+        declarations.filter((entry) => entry.path.endsWith(path)).length,
+        `the scan parsed a weight from the inline emitter ${path}`,
+      ).toBeGreaterThanOrEqual(1);
     }
 
     const synthesized = declarations.filter((entry) => entry.weight > ceiling);
