@@ -984,10 +984,14 @@ pub struct Workspace {
     /// `(workspace, conversation, parent ts)`. In memory: a restart costs one
     /// extra whole read per thread, which is cheaper than a schema.
     pub(crate) slack_thread_full_reads:
-        Mutex<std::collections::HashMap<(String, String, String), std::time::SystemTime>>,
+        Mutex<std::collections::HashMap<(String, String, String), std::time::Instant>>,
     /// Followed threads whose next walk is their first since the row was
     /// created, keyed the same way.
     pub(crate) slack_thread_first_walks: Mutex<std::collections::HashSet<(String, String, String)>>,
+    /// The newest edit stamp a whole read has judged, keyed the same way: an
+    /// edit is measured against this, never against the reply cursor.
+    pub(crate) slack_thread_edit_watermarks:
+        Mutex<std::collections::HashMap<(String, String, String), String>>,
     /// Conversations whose own-post ledger could not be read this run,
     /// keyed `(workspace, conversation)`. The read is retried on every
     /// message; this only decides whether the failure is worth a line a
@@ -2297,6 +2301,7 @@ impl Workspace {
             slack_author_failures: Mutex::new(std::collections::HashSet::new()),
             slack_thread_full_reads: Mutex::new(std::collections::HashMap::new()),
             slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
+            slack_thread_edit_watermarks: Mutex::new(std::collections::HashMap::new()),
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),

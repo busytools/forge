@@ -638,11 +638,11 @@ impl Workspace {
             return;
         }
         if created {
-            self.slack_thread_first_walks.lock().insert((
-                workspace.to_owned(),
-                conversation.to_owned(),
-                parent_ts.to_owned(),
-            ));
+            let key = (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned());
+            // The edits this row must judge start at its seed: anything older
+            // was the previous row's, and the first walk is ts-only anyway.
+            self.slack_thread_edit_watermarks.lock().insert(key.clone(), since.to_owned());
+            self.slack_thread_first_walks.lock().insert(key);
         }
     }
 
@@ -652,6 +652,7 @@ impl Workspace {
         let key = (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned());
         self.slack_thread_full_reads.lock().remove(&key);
         self.slack_thread_first_walks.lock().remove(&key);
+        self.slack_thread_edit_watermarks.lock().remove(&key);
     }
 
     /// Record that the user is in a thread, so every later walk reads past the
@@ -1142,6 +1143,7 @@ impl Workspace {
             if kept.is_empty() {
                 let _ =
                     crate::store::slack::remove_thread(db, workspace, &conversation, &parent_ts);
+                self.forget_thread_clocks(workspace, &conversation, &parent_ts);
             } else {
                 let _ = crate::store::slack::set_thread(
                     db,
@@ -1447,7 +1449,7 @@ impl SlackHost for SlackSubsystemHost {
         workspace: &str,
         conversation: &str,
         parent_ts: &str,
-    ) -> Option<std::time::SystemTime> {
+    ) -> Option<std::time::Instant> {
         let ws = self.0.upgrade()?;
         ws.slack_thread_full_reads
             .lock()
@@ -1460,7 +1462,7 @@ impl SlackHost for SlackSubsystemHost {
         workspace: &str,
         conversation: &str,
         parent_ts: &str,
-        at: std::time::SystemTime,
+        at: std::time::Instant,
     ) {
         let Some(ws) = self.0.upgrade() else { return };
         ws.slack_thread_full_reads
@@ -1468,13 +1470,49 @@ impl SlackHost for SlackSubsystemHost {
             .insert((workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()), at);
     }
 
-    fn take_thread_first_walk(&self, workspace: &str, conversation: &str, parent_ts: &str) -> bool {
+    fn thread_first_walk(&self, workspace: &str, conversation: &str, parent_ts: &str) -> bool {
         let Some(ws) = self.0.upgrade() else { return false };
-        ws.slack_thread_first_walks.lock().remove(&(
+        ws.slack_thread_first_walks.lock().contains(&(
             workspace.to_owned(),
             conversation.to_owned(),
             parent_ts.to_owned(),
         ))
+    }
+
+    fn clear_thread_first_walk(&self, workspace: &str, conversation: &str, parent_ts: &str) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.slack_thread_first_walks.lock().remove(&(
+            workspace.to_owned(),
+            conversation.to_owned(),
+            parent_ts.to_owned(),
+        ));
+    }
+
+    fn thread_edit_watermark(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+    ) -> Option<String> {
+        let ws = self.0.upgrade()?;
+        ws.slack_thread_edit_watermarks
+            .lock()
+            .get(&(workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()))
+            .cloned()
+    }
+
+    fn set_thread_edit_watermark(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        ts: &str,
+    ) {
+        let Some(ws) = self.0.upgrade() else { return };
+        ws.slack_thread_edit_watermarks.lock().insert(
+            (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()),
+            ts.to_owned(),
+        );
     }
 
     fn first_author_failure(&self, workspace: &str, user: &str) -> bool {
@@ -2902,6 +2940,52 @@ mod tests {
                 .expect("read"),
             None,
             "a cursor with no watcher is a stale backlog waiting to replay",
+        );
+    }
+
+    /// **The real host is what seeds the clocks**, and nothing else drives
+    /// it: a new row is a first walk, its edit watermark starts at the seed,
+    /// and the mark is cleared only by the walk that read it.
+    #[test]
+    fn a_new_thread_seeds_its_clocks_and_the_first_walk_mark() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        // A seed inside the idle window, or the host refuses to write the row
+        // at all.
+        let since = format!(
+            "{}.000000",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the clock is past the epoch")
+                .as_secs()
+        );
+        let owner =
+            SlackThreadOwner { project: "forge".to_owned(), team_role: Some("tester".to_owned()) };
+        ws.follow_slack_thread("acme", "C1", "100.0", owner.clone(), &since);
+        let host = SlackSubsystemHost::new(&ws);
+
+        assert!(host.thread_first_walk("acme", "C1", "100.0"), "a new row is a first walk");
+        assert_eq!(
+            host.thread_edit_watermark("acme", "C1", "100.0").as_deref(),
+            Some(since.as_str()),
+            "the edit watermark starts at the row's seed",
+        );
+        host.clear_thread_first_walk("acme", "C1", "100.0");
+        assert!(!host.thread_first_walk("acme", "C1", "100.0"), "and is cleared once read");
+
+        host.mark_thread_full_read("acme", "C1", "100.0", std::time::Instant::now());
+        assert!(
+            host.thread_full_read_at("acme", "C1", "100.0").is_some(),
+            "a whole-read attempt is stamped",
+        );
+
+        let second = SlackThreadOwner { project: "forge".to_owned(), team_role: None };
+        ws.follow_slack_thread("acme", "C1", "100.0", second, &since);
+        assert!(
+            !host.thread_first_walk("acme", "C1", "100.0"),
+            "following an existing row again does not re-arm the mark",
         );
     }
 
