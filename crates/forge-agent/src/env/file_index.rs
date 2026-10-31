@@ -190,6 +190,19 @@ pub fn start_watch(
 /// costs the index. Paths under `.git` are ignored by the filter, so a commit
 /// or a stage fires nothing at all - those ride the caller's own cadence.
 pub fn start_change_watch(root: PathBuf, respect_gitignore: bool) -> (Receiver<()>, CancelToken) {
+    start_change_watch_inner(root, respect_gitignore, None)
+}
+
+/// [`start_change_watch`] with an optional mark for when notify is listening.
+///
+/// The arming happens on the watch's own thread, and a write sent before it
+/// lands is swallowed; a caller that needs to write exactly once waits for
+/// this mark rather than polling.
+fn start_change_watch_inner(
+    root: PathBuf,
+    respect_gitignore: bool,
+    armed: Option<mpsc::Sender<()>>,
+) -> (Receiver<()>, CancelToken) {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = Arc::clone(&cancel);
     let (tx, rx) = mpsc::channel::<()>();
@@ -213,6 +226,9 @@ pub fn start_change_watch(root: PathBuf, respect_gitignore: bool) -> (Receiver<(
         {
             tracing::warn!(target: "forge_agent::env::file_index", %err, "change watch start failed");
             return;
+        }
+        if let Some(armed) = armed {
+            let _ = armed.send(());
         }
 
         let mut filter = WatchFilter::new(&root, respect_gitignore);
@@ -662,23 +678,44 @@ mod tests {
         );
     }
 
+    /// The wait ends when the watch reports, so this bound is reached only by
+    /// a stuck watch or a delivery slower still. It sits under nextest's
+    /// 120 s kill, where this runs, so the failure names the property instead
+    /// of dying as a bare timeout.
+    const WEDGE: Duration = Duration::from_secs(100);
+
     /// The change watch reports a write to the tree.
+    ///
+    /// **The write is sent once, after the watch says it is listening.** The
+    /// arming happens on the watch's own thread; a write that beat it would
+    /// be reported as swallowed, which is a race rather than the property.
     #[test]
     fn the_change_watch_reports_a_write() {
         let dir = fixture();
         let root = dir.path();
-        let (rx, _cancel) = start_change_watch(root.to_path_buf(), true);
+        let (armed_tx, armed_rx) = mpsc::channel();
+        let (rx, _cancel) = start_change_watch_inner(root.to_path_buf(), true, Some(armed_tx));
 
-        // Written in a loop because the watch is armed on its own thread: a
-        // write sent before notify is listening would be called a swallowed
-        // event by a test that wrote once.
-        for attempt in 0..50 {
-            touch(&root.join(format!("src/write-{attempt}.rs")));
-            if rx.recv_timeout(Duration::from_millis(100)).is_ok() {
-                return;
+        match armed_rx.recv_timeout(WEDGE) {
+            Ok(()) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("the change watch never armed within {WEDGE:?}")
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("the change watch ended before it armed")
             }
         }
-        panic!("a write to the watched tree is reported rather than swallowed");
+
+        touch(&root.join("src/write.rs"));
+        match rx.recv_timeout(WEDGE) {
+            Ok(()) => {}
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "a write to the watched tree was swallowed: nothing was reported within {WEDGE:?}"
+            ),
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("the change watch ended without reporting the write")
+            }
+        }
     }
 
     #[test]
