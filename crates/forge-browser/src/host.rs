@@ -1584,6 +1584,11 @@ pub fn run(args: &Args) -> ExitCode {
         // CEF before the frame it causes is asked for.
         runtime.apply_inputs();
         runtime.popups.bootstrap(elapsed_ms());
+        // **A dialog nobody answers is dismissed on this thread.** Its CEF
+        // callback is the UI thread's, and this pump is that thread; the
+        // deadline is what keeps one paused page from holding the browser's
+        // calls for ever (#2732).
+        crate::jsdialog::expire(elapsed_ms());
         // **8 ms, not 16.** A BeginFrame every screen refresh is the paint
         // rate, but a click landing just after one waited out the whole
         // interval; asking more often lets the next frame start sooner and
@@ -1799,6 +1804,13 @@ cef::wrap_client! {
 
         fn dialog_handler(&self) -> Option<DialogHandler> {
             Some(crate::dialog::handler(self.tab))
+        }
+
+        /// **A page's JavaScript dialog is answered here.** With no handler
+        /// CEF raises a modal nothing in this windowless host can draw or
+        /// answer, and the page's own thread waits behind it for ever (#2732).
+        fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
+            Some(crate::jsdialog::handler(self.tab))
         }
 
         fn download_handler(&self) -> Option<DownloadHandler> {

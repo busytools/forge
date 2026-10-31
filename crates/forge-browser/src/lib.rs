@@ -35,6 +35,8 @@ pub mod engine;
 #[cfg(target_os = "macos")]
 pub mod host;
 #[cfg(target_os = "macos")]
+pub mod jsdialog;
+#[cfg(target_os = "macos")]
 pub mod osr;
 #[cfg(target_os = "macos")]
 pub mod record;

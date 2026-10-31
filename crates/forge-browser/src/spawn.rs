@@ -484,6 +484,46 @@ pub async fn page_url(port: u16) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// One page target from a host's own `/json/list`.
+///
+/// **The browser answers this with a renderer stopped**: it is the control
+/// plane a tab listing is built from, and nothing a page runs can hold it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageTarget {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+}
+
+/// Every page target on a host's endpoint, from `/json/list`. An endpoint
+/// that did not answer is an empty list.
+pub async fn page_list(port: u16) -> Vec<PageTarget> {
+    page_list_of(port).await.unwrap_or_default()
+}
+
+/// [`page_list`], answering `None` when the endpoint itself did not answer:
+/// **a silent endpoint is not an empty browser**, and a caller deciding a
+/// page is gone must tell the two apart.
+pub async fn page_list_of(port: u16) -> Option<Vec<PageTarget>> {
+    let url = format!("{}/json/list", endpoint(port));
+    let answer = tokio::task::spawn_blocking(move || http_get(&url)).await.ok().flatten()?;
+    let (_, body) = answer.split_once("\r\n\r\n")?;
+    let entries = serde_json::from_str::<serde_json::Value>(body).ok()?.as_array().cloned()?;
+    Some(
+        entries
+            .iter()
+            .filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("page"))
+            .filter_map(|entry| {
+                Some(PageTarget {
+                    id: entry.get("id")?.as_str()?.to_owned(),
+                    title: entry.get("title")?.as_str()?.to_owned(),
+                    url: entry.get("url")?.as_str()?.to_owned(),
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Every page target on a host's endpoint, as (target id, url) pairs, from
 /// `/json/list`. The browser tools diff this around a creation to learn the
 /// tab they just opened.

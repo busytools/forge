@@ -30,6 +30,10 @@ pub enum HostEvent {
     /// A page's file chooser: the client's picker answers with the files'
     /// bytes, and the host is handed server-local paths.
     FileDialog { id: u64, tab: u16, multiple: bool },
+    /// A page's JavaScript dialog. **The host answers every one**: this line
+    /// says it was raised, and a second line with `dismissed` says the
+    /// deadline ran out before its agent answered.
+    JsDialog { tab: u16, dialog: String, message: String, dismissed: bool },
     /// A download finished on the server: the tab it started from, the file's
     /// name, its path beside the profile, and how many bytes it holds.
     Download { tab: u16, name: String, path: String, size: u64 },
@@ -68,6 +72,29 @@ mod tests {
         assert_eq!(parse(&line), Some(event));
         assert!(parse("").is_none());
         assert!(parse("{\"kind\":\"other\"}").is_none());
+    }
+
+    /// **A dialog's raise and its dismissal are two lines of one shape**, so a
+    /// server can tell an answered dialog from one the deadline closed.
+    #[test]
+    fn a_js_dialog_round_trips_its_line() {
+        let shown = HostEvent::JsDialog {
+            tab: 2,
+            dialog: "confirm".to_owned(),
+            message: "are you sure?".to_owned(),
+            dismissed: false,
+        };
+        let line = serde_json::to_string(&shown).expect("a line");
+        assert!(line.contains("js_dialog"), "the server matches the kind: {line}");
+        assert_eq!(parse(&line), Some(shown));
+
+        let dismissed = HostEvent::JsDialog {
+            tab: 2,
+            dialog: "confirm".to_owned(),
+            message: "are you sure?".to_owned(),
+            dismissed: true,
+        };
+        assert_eq!(parse(&serde_json::to_string(&dismissed).expect("a line")), Some(dismissed));
     }
 
     /// **A tab's birth and end are named on the control line**, with the tab

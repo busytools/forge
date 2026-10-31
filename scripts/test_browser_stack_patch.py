@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the vendored Playwright file chooser patch. Run:
+"""Tests for the vendored Playwright patches. Run:
 python3 scripts/test_browser_stack_patch.py
 
 Playwright intercepts a page's file chooser for every tab, so CEF's own
@@ -8,9 +8,14 @@ surface each chooser on the socket forge binds; the host then asks the
 controlling person or answers with the agent's own paths, both through the
 MCP tool that owns the captured chooser.
 
-The needle is exact for the pinned @playwright/mcp bundle: a version bump
+Its tab listing is also patched twice: the target id a call selects by is
+cached per page so a listing never asks a renderer anything, and the select
+arm takes that target instead of a position.
+
+Every needle is exact for the pinned @playwright/mcp bundle: a version bump
 must fail the patch at install time, not ship a driver that never surfaces a
-chooser. Stdlib only, like the other script tests.
+chooser or holds every call behind one paused page. Stdlib only, like the
+other script tests.
 """
 
 import re
@@ -23,35 +28,53 @@ PATCHER = Path(__file__).resolve().parent / "patch_browser_stack.mjs"
 FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-filechooser.txt"
 TABS_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tabids.txt"
 TABLIST_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tablist.txt"
+TABSELECT_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tabselect.txt"
+TABSCHEMA_FIXTURE = Path(__file__).resolve().parent / "playwright-mcp-0.0.83-tabschema.txt"
 VENDOR = Path(__file__).resolve().parent / "vendor_browser_stack.sh"
 MARKER = "FORGE_FILE_CHOOSER_SOCKET"
-TABS_MARKER = "FORGE_TAB_IDS_PATCH 2"
+TABS_MARKER = "FORGE_TAB_IDS_PATCH 3"
 TABLIST_MARKER = "FORGE_TAB_LIST_READS 1"
+TABSELECT_MARKER = "FORGE_SELECT_TARGET 1"
+TABSCHEMA_MARKER = "FORGE_SELECT_TARGET_SCHEMA 1"
 
 
 def run_patcher(*args: str) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(["node", str(PATCHER), *args], capture_output=True, text=True)
 
 
-def needle() -> str:
-    result = run_patcher("--print-needle")
+def printed(flag: str) -> str:
+    result = run_patcher(flag)
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return result.stdout.rstrip("\n")
+
+
+def needle() -> str:
+    return printed("--print-needle")
 
 
 def tabs_needle() -> str:
-    result = run_patcher("--print-tabs-needle")
-    if result.returncode != 0:
-        raise AssertionError(result.stderr)
-    return result.stdout.rstrip("\n")
+    return printed("--print-tabs-needle")
 
 
 def tablist_needle() -> str:
-    result = run_patcher("--print-tablist-needle")
-    if result.returncode != 0:
-        raise AssertionError(result.stderr)
-    return result.stdout.rstrip("\n")
+    return printed("--print-tablist-needle")
+
+
+def tabselect_needle() -> str:
+    return printed("--print-tabselect-needle")
+
+
+def tabschema_needle() -> str:
+    return printed("--print-tabschema-needle")
+
+
+def pinned_bundle() -> str:
+    """A bundle carrying every excerpt the patch expects, in one file."""
+    return (
+        f"// before\n{needle()}\n{tabs_needle()}\n{tablist_needle()}\n"
+        f"{tabselect_needle()}\n{tabschema_needle()}\n// after\n"
+    )
 
 
 class BrowserStackPatchTest(unittest.TestCase):
@@ -65,10 +88,10 @@ class BrowserStackPatchTest(unittest.TestCase):
         path.write_text(body)
         return path
 
-    def test_the_needle_is_the_pinned_versions_excerpt(self) -> None:
+    def test_the_needles_are_the_pinned_versions_excerpts(self) -> None:
         pin = re.search(r'^PLAYWRIGHT_MCP_VERSION="([^"]+)"', VENDOR.read_text(), re.MULTILINE)
         self.assertIsNotNone(pin, "the vendor script names its pin")
-        self.assertEqual(pin.group(1), "0.0.83", "the fixture below is that version's excerpt")
+        self.assertEqual(pin.group(1), "0.0.83", "the fixtures below are that version's excerpts")
         fixture = FIXTURE.read_text().rstrip("\n")
         self.assertIn('"filechooser"', fixture)
         self.assertEqual(
@@ -91,11 +114,23 @@ class BrowserStackPatchTest(unittest.TestCase):
             tablist_fixture,
             "the patcher's list-arm needle is the checked-in 0.0.83 excerpt",
         )
+        tabselect_fixture = TABSELECT_FIXTURE.read_text().rstrip("\n")
+        self.assertIn("selectTab", tabselect_fixture)
+        self.assertEqual(
+            tabselect_needle(),
+            tabselect_fixture,
+            "the patcher's select-arm needle is the checked-in 0.0.83 excerpt",
+        )
+        tabschema_fixture = TABSCHEMA_FIXTURE.read_text().rstrip("\n")
+        self.assertIn("z25.number()", tabschema_fixture)
+        self.assertEqual(
+            tabschema_needle(),
+            tabschema_fixture,
+            "the patcher's schema needle is the checked-in 0.0.83 excerpt",
+        )
 
     def test_the_pinned_listener_is_patched_once_and_carries_the_socket(self) -> None:
-        bundle = self.bundle(
-            f"// before\n{needle()}\n{tabs_needle()}\n{tablist_needle()}\n// after\n"
-        )
+        bundle = self.bundle(pinned_bundle())
 
         first = run_patcher("--bundle", str(bundle))
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -116,7 +151,7 @@ class BrowserStackPatchTest(unittest.TestCase):
         old = run_patcher("--print-old").stdout.rstrip("\n")
         self.assertIn("FORGE_FILE_CHOOSER_SOCKET", old)
         self.assertNotIn("FORGE_FILE_CHOOSER_PATCH 2", old)
-        bundle = self.bundle(f"// before\n{old}\n{tabs_needle()}\n{tablist_needle()}\n// after\n")
+        bundle = self.bundle(f"// before\n{old}\n{pinned_bundle()}\n// after\n")
 
         updated = run_patcher("--bundle", str(bundle))
         self.assertEqual(updated.returncode, 0, updated.stderr)
@@ -132,39 +167,98 @@ class BrowserStackPatchTest(unittest.TestCase):
         bundle = self.bundle("// a Playwright bundle this patch does not know\n")
 
         result = run_patcher("--bundle", str(bundle))
-
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("does not carry the file chooser listener", result.stderr)
         self.assertEqual(bundle.read_text(), "// a Playwright bundle this patch does not know\n")
 
-    def test_the_pinned_tab_listing_is_patched_once_and_carries_target_ids(self) -> None:
-        bundle = self.bundle(
-            f"// before\n{needle()}\n{tabs_needle()}\n{tablist_needle()}\n// after\n"
-        )
+    def test_the_pinned_tab_listing_is_patched_once_and_reads_no_renderer(self) -> None:
+        bundle = self.bundle(pinned_bundle())
 
         first = run_patcher("--bundle", str(bundle))
         self.assertEqual(first.returncode, 0, first.stderr)
         patched = bundle.read_text()
         self.assertEqual(patched.count(TABS_MARKER), 1, "the tab patch marker appears once")
         self.assertEqual(patched.count("FORGE-TABS "), 1, "the export line appears once")
-        self.assertEqual(patched.count("_guid"), 1, "one borrowed private field")
-        self.assertEqual(patched.count("Target.getTargetInfo"), 1, "the page's live target id")
         self.assertEqual(
-            patched.count("context.tabs()"), 1, "the tab list is captured once, before the awaits"
+            patched.count("Target.getTargetInfo"),
+            1,
+            "the target id is read once per page, not once per tab per listing",
         )
-        self.assertEqual(patched.count("FORGE_FILE_CHOOSER_PATCH 2"), 1)
-        self.assertIn("JSON.stringify(forgeRows)", patched)
-        self.assertIn('"FORGE-TABS " + JSON.stringify(forgeRows) + "\\n"', patched)
+        self.assertIn("forgeTab.forgeTarget = forgeTarget", patched, "the id is cached on the tab")
+        self.assertIn("forgeTargetAt", patched, "a failed read is retried after a window")
+        self.assertNotIn("_guid", patched, "the driver no longer exports a page guid")
+        self.assertNotIn("headerSnapshot", patched, "a listing reads no title from the page")
 
         second = run_patcher("--bundle", str(bundle))
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertIn("already applied", second.stdout)
         self.assertEqual(bundle.read_text(), patched, "a second run rewrites nothing")
 
-    def test_the_pinned_list_arm_lists_without_creating_a_page(self) -> None:
-        bundle = self.bundle(
-            f"// before\n{tablist_needle()}\n{needle()}\n{tabs_needle()}\n// after\n"
+    def test_a_version_2_tab_listing_is_updated_in_place(self) -> None:
+        # The version-2 block, as an older stack carries it.
+        version_2 = (
+            "        const forgeOpenTabs = context.tabs();\n"
+            "        const tabHeaders = await Promise.all(forgeOpenTabs.map((tab2) => tab2.headerSnapshot()));\n"
+            "        const result2 = renderTabsMarkdown(tabHeaders);\n"
+            "        // FORGE_TAB_IDS_PATCH 2: the guid names the tab, the target id is\n"
+            "        // where CDP drives it right now.\n"
+            "        const forgeRows = [];\n"
+            "        for (let i = 0; i < forgeOpenTabs.length; i++) {\n"
+            "          const forgeTab = forgeOpenTabs[i];\n"
+            '          let forgeTarget = "";\n'
+            "          try {\n"
+            "            const forgeSession = await forgeTab.page.context().newCDPSession(forgeTab.page);\n"
+            '            const forgeInfo = await forgeSession.send("Target.getTargetInfo");\n'
+            '            forgeTarget = (forgeInfo && forgeInfo.targetInfo && forgeInfo.targetInfo.targetId) || "";\n'
+            "            await forgeSession.detach().catch(() => {});\n"
+            "          } catch (forgeWhy) {\n"
+            '            forgeTarget = "";\n'
+            "          }\n"
+            "          forgeRows.push({\n"
+            "            i,\n"
+            '            id: forgeTab.page._guid || "",\n'
+            "            target: forgeTarget,\n"
+            "            title: tabHeaders[i].title,\n"
+            "            url: tabHeaders[i].url,\n"
+            "            current: tabHeaders[i].current\n"
+            "          });\n"
+            "        }\n"
+            '        response2.addTextResult("FORGE-TABS " + JSON.stringify(forgeRows) + "\\n" + result2.join("\\n"));'
         )
+        bundle = self.bundle(
+            f"// before\n{needle()}\n{version_2}\n{tablist_needle()}\n"
+            f"{tabselect_needle()}\n{tabschema_needle()}\n// after\n"
+        )
+
+        updated = run_patcher("--bundle", str(bundle))
+        self.assertEqual(updated.returncode, 0, updated.stderr)
+        self.assertIn("updated", updated.stdout)
+        self.assertIn("FORGE_TAB_IDS_PATCH 3", bundle.read_text())
+
+        again = run_patcher("--bundle", str(bundle))
+        self.assertIn("already applied", again.stdout)
+
+    def test_the_select_arm_takes_a_target(self) -> None:
+        bundle = self.bundle(pinned_bundle())
+
+        first = run_patcher("--bundle", str(bundle))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        patched = bundle.read_text()
+        self.assertIn(TABSELECT_MARKER, patched)
+        self.assertIn("params2.target !== void 0", patched)
+        self.assertIn("findIndex((tab2) => tab2.forgeTarget === params2.target)", patched)
+        self.assertIn(TABSCHEMA_MARKER, patched)
+        self.assertIn(
+            'target: z25.string().optional().describe("CDP target id of the tab to select.")',
+            patched,
+        )
+
+        second = run_patcher("--bundle", str(bundle))
+        self.assertIn("already applied", second.stdout)
+        self.assertEqual(bundle.read_text(), patched, "a second run rewrites nothing")
+
+    def test_the_pinned_list_arm_lists_without_creating_a_page(self) -> None:
+        bundle = self.bundle(pinned_bundle())
 
         first = run_patcher("--bundle", str(bundle))
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -187,7 +281,10 @@ class BrowserStackPatchTest(unittest.TestCase):
         self.assertEqual(bundle.read_text(), patched, "a second run rewrites nothing")
 
     def test_a_bundle_without_the_pinned_list_arm_fails_loudly(self) -> None:
-        body = f"// before\n{needle()}\n{tabs_needle()}\n// after\n"
+        body = (
+            f"// before\n{needle()}\n{tabs_needle()}\n{tabselect_needle()}\n"
+            f"{tabschema_needle()}\n// after\n"
+        )
         bundle = self.bundle(body)
 
         result = run_patcher("--bundle", str(bundle))
@@ -199,6 +296,16 @@ class BrowserStackPatchTest(unittest.TestCase):
             result.stdout,
             "a patch the file never got is not reported as applied",
         )
+        self.assertEqual(bundle.read_text(), body, "nothing is written when a needle is missing")
+
+    def test_a_bundle_without_the_pinned_select_arm_fails_loudly(self) -> None:
+        body = f"// before\n{needle()}\n{tabs_needle()}\n{tablist_needle()}\n// after\n"
+        bundle = self.bundle(body)
+
+        result = run_patcher("--bundle", str(bundle))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not carry the select arm", result.stderr)
         self.assertEqual(bundle.read_text(), body, "nothing is written when a needle is missing")
 
     def test_a_bundle_without_the_pinned_tab_listing_fails_loudly(self) -> None:
