@@ -586,14 +586,19 @@
     onpeek={columned ? null : () => handOffToRail()}
   />
 
+  {#if surface.phase !== 'closed' && drawsSurface()}
+    <!-- The browser's own surface, over the whole window: the page under
+         it measures the box and draws the states; the shell draws the
+         frames at exactly this rect (on the phone this page paints them on
+         a canvas instead). **A sibling of the chat column, not a child**:
+         the takeover bar gates every sibling on its own path inert, and a
+         picture inside `main.chat` would be gated with the chat - the
+         canvas and its keyboard field unreachable on every client that
+         paints them (#2726). -->
+    <BrowserSurface {connection} />
+  {/if}
+
   <main class="chat">
-    {#if surface.phase !== 'closed' && drawsSurface()}
-      <!-- The browser's own surface, over the whole window: the page under
-           it measures the box and draws the states; the shell draws the
-           frames at exactly this rect (on the phone this page paints them on
-           a canvas instead). -->
-      <BrowserSurface {connection} />
-    {/if}
     <div class="sess">
       <!-- The chip: the brand's own mark as the face of the one projects
            control. It counts seats that want a PERSON - a question, a

@@ -462,13 +462,14 @@
    * composer.** The native overlay takes first responder on attach; this
    * clears any DOM focus the composer still holds, so a keystroke cannot
    * land in a draft nobody can see. A later phase change (a failure, a
-   * retry) leaves the bar's own field alone.
+   * retry) leaves the bar's own field alone. **The bar is a sibling of
+   * `.surf`, not part of it**, so the focus it takes on open survives here.
    */
   $effect(() => {
     const open = surface.phase !== 'closed';
     if (open && surfaceWasClosed) {
       const active = document.activeElement;
-      if (active instanceof HTMLElement && active.closest('.comp') !== null) {
+      if (active instanceof HTMLElement && active.closest('.surf') !== null) {
         active.blur();
       }
       // The line starts shut on every takeover, as the bar's own state did
@@ -600,6 +601,9 @@
   const surfaceIsMine = $derived(
     surface.phase !== 'closed' && surface.seat !== null && boxKey(surface.seat) === boxKey(slot),
   );
+
+  /** Whether the takeover is up: its bar is on screen and this box is behind it. */
+  const takeoverUp = $derived(surface.phase !== 'closed' && drawsSurface());
 
   /**
    * The hand-off this takeover stands in front of: this seat's parked ask.
@@ -1433,7 +1437,7 @@
 </script>
 
 <div class="comp">
-  {#if surface.phase !== 'closed' && drawsSurface()}
+  {#if takeoverUp}
     <TakeoverBar
       title={takeoverTitle}
       reason={takeoverAsk?.request.reason ?? null}
@@ -1473,6 +1477,7 @@
     class:done={ring === 'done'}
     class:load={ring === 'load'}
     class:err={blocker !== null && blocker.bad}
+    inert={takeoverUp}
   >
     <!-- The open, said on the band rather than in a line: a line that comes
          with it moves the composer (Ved, in the #2159 look), and the band is

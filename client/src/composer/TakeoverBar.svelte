@@ -14,6 +14,8 @@
    * picture while the takeover is up, so the open and a refusal draw above
    * this row.
    */
+  import { onMount } from 'svelte';
+
   import Icon from '../components/Icon.svelte';
   import Field from './Field.svelte';
   import TakeCard from './TakeCard.svelte';
@@ -137,6 +139,83 @@
   });
   let barEl = $state<HTMLDivElement | null>(null);
 
+  /** The element that had the keyboard before the bar took it. */
+  let restoreTo: HTMLElement | null = null;
+
+  /** Every stop Tab may take inside the bar; a disabled control is not one. */
+  function stops(): HTMLElement[] {
+    const bar = barEl;
+    if (bar === null) return [];
+    return [
+      ...bar.querySelectorAll<HTMLElement>(
+        'a[href], button, select, textarea, input, [tabindex]:not([tabindex="-1"])',
+      ),
+    ].filter((el) => !el.hasAttribute('disabled') && el.getAttribute('aria-hidden') !== 'true');
+  }
+
+  /**
+   * **The bar is the only thing on screen while it is up**, so it owns the
+   * keyboard: Tab wraps at both ends rather than walking into the chat the
+   * native layer is covering.
+   */
+  function trap(event: KeyboardEvent): void {
+    if (event.key !== 'Tab') return;
+    const list = stops();
+    const first = list[0];
+    const last = list[list.length - 1];
+    if (first === undefined || last === undefined) return;
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === barEl)) {
+      event.preventDefault();
+      last.focus({ preventScroll: true });
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+    }
+  }
+
+  onMount(() => {
+    const bar = barEl;
+    const had = document.activeElement;
+    restoreTo = had instanceof HTMLElement && had !== document.body ? had : null;
+    // **Capture, because the feedback field stops its own keys**: the Field's
+    // handler ends the event before it bubbles to this bar, so a Tab pressed
+    // in the last stop would leave the surface.
+    bar?.addEventListener('keydown', trap, true);
+    bar?.focus({ preventScroll: true });
+    // **Everything behind the bar is inert, and the bar is inside that page**:
+    // the walk marks each sibling on the bar's own path, so the chat, rail
+    // and composer stop being tabbable while the picture covers them. **The
+    // picture itself is kept live**: on every client that paints its own
+    // canvas the gestures and the keyboard field are in there, and inert
+    // would make them unreachable.
+    const gated: HTMLElement[] = [];
+    let node: Element | null = bar;
+    while (node !== null && node.parentElement !== null) {
+      const parent = node.parentElement;
+      for (const sibling of parent.children) {
+        if (sibling === node || !(sibling instanceof HTMLElement)) continue;
+        if (sibling.classList.contains('takeover')) continue;
+        if (sibling.hasAttribute('inert')) continue;
+        sibling.setAttribute('inert', '');
+        gated.push(sibling);
+      }
+      node = parent;
+    }
+    return () => {
+      bar?.removeEventListener('keydown', trap, true);
+      for (const behind of gated) behind.removeAttribute('inert');
+      // **Only focus this bar still holds goes back**: a person who clicked
+      // elsewhere has chosen their own place. A detached bar leaves focus on
+      // the body, which is the same hand letting go.
+      const active = document.activeElement;
+      if (active === document.body || (bar !== null && bar.contains(active))) {
+        restoreTo?.focus({ preventScroll: true });
+      }
+      restoreTo = null;
+    };
+  });
+
   // The page area starts under the bar; a row the bar grows by (a take's card)
   // would otherwise be drawn underneath the native picture.
   $effect(() => {
@@ -195,7 +274,13 @@
   }
 </script>
 
-<div class="takeover-bar" role="region" aria-label="the browser takeover" bind:this={barEl}>
+<div
+  class="takeover-bar"
+  role="region"
+  aria-label="the browser takeover"
+  tabindex="-1"
+  bind:this={barEl}
+>
   <div class="tb-row">
     <button class="tb-btn d" type="button" onclick={onback}>back to chat</button>
     <span class="tb-nav" role="group" aria-label="the page's history">

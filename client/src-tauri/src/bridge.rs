@@ -49,6 +49,7 @@ use tauri::Emitter as _;
 use tauri::Manager as _;
 use tokio::sync::mpsc;
 
+use crate::perf;
 use crate::records::{self, Records};
 use crate::socket::{Socket, SocketEvent, Status};
 
@@ -176,6 +177,13 @@ struct State {
     /// Which attach (or lower) is current. A re-attach that lands after a
     /// later lower or a second attach is stale, and takes itself back.
     attach_generation: u64,
+    /// The profile the viewed page belongs to, from the last `browser_view`:
+    /// **the perf marks name it**, so two profiles' tab 2s are not one page
+    /// in the log (#2645).
+    view_profile: Option<String>,
+    /// The tab a gesture is waiting for a frame from: the round trip's other
+    /// end, spent by the first frame on that tab (#2645).
+    awaiting_paint: Option<u16>,
     /// The seat the page has on screen, as the last `showing` said.
     shown: Option<SessionSlot>,
     /// The asks this half has announced, over the home reads it sees.
@@ -285,6 +293,8 @@ impl Bridge {
                 refreshed: HashMap::new(),
                 attach: None,
                 attach_generation: 0,
+                view_profile: None,
+                awaiting_paint: None,
                 shown: None,
                 asks: crate::asks::Asks::default(),
             }),
@@ -532,7 +542,56 @@ impl Bridge {
     pub fn browser_input(&self, event: forge_primitives::browser::BrowserInputEvent) {
         let seq = self.input_seq.fetch_add(1, Ordering::Relaxed) + 1;
         if let Some(socket) = self.socket() {
+            // **A gesture with no socket never leaves**, so it is not marked:
+            // a mark with no frame after it would read as a page that never
+            // drew what was never sent.
+            self.mark_browser_input(&event);
             socket.browser_input(seq, event);
+        }
+    }
+
+    /// **A gesture's mark, and the frame it will wait on** (#2645): the round
+    /// trip is read from here to the first frame drawn for its tab.
+    fn mark_browser_input(&self, event: &forge_primitives::browser::BrowserInputEvent) {
+        // **The desktop overlay is the only shell that draws the picture**:
+        // everywhere else the page paints its own canvas and marks there, so
+        // a shell mark beside it would write every gesture twice.
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let Some(name) = gesture_mark(event) else { return };
+        let Some(app) = self.app.as_ref() else { return };
+        let (tab, profile) = {
+            let mut state = self.lock();
+            // **A closed connection drops the gesture**, so a mark written
+            // for it would pair with no frame at all.
+            if state.status != "open" {
+                return;
+            }
+            let Some(tab) = state.attach.as_ref().and_then(|attach| attach.tab) else { return };
+            state.awaiting_paint = Some(tab);
+            (tab, state.view_profile.clone())
+        };
+        perf::note_browser_input(app, name, profile.as_deref(), tab);
+    }
+
+    /// **The frame that answers a gesture is the first drawn for its tab**
+    /// (#2645). The overlay draws what the socket hands it, so the sink is
+    /// where the desktop's end of the round trip is marked; the page marks
+    /// its own canvas after the draw.
+    fn browser_painted(&self, bytes: &[u8]) {
+        // The same platform rule as the input mark: one writer per client.
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let Some(frame) = crate::browser::split_frame(bytes) else { return };
+        let Some(app) = self.app.as_ref() else { return };
+        let (owed, profile) = {
+            let mut state = self.lock();
+            (perf::paint_owed(&mut state.awaiting_paint, frame.tab), state.view_profile.clone())
+        };
+        if owed {
+            perf::note_browser_paint(app, profile.as_deref(), frame.tab, frame.seq);
         }
     }
 
@@ -590,7 +649,11 @@ impl Bridge {
         let frames: crate::socket::FrameSink = match &self.app {
             Some(app) => {
                 let app = app.clone();
-                Arc::new(move |bytes: &[u8]| crate::browser::frame(&app, bytes))
+                let bridge = Arc::clone(self);
+                Arc::new(move |bytes: &[u8]| {
+                    crate::browser::frame(&app, bytes);
+                    bridge.browser_painted(bytes);
+                })
             }
             None => Arc::new(|_: &[u8]| {}),
         };
@@ -1321,6 +1384,9 @@ impl Bridge {
                     }
                     let _ = app.emit("browser_view", message.clone());
                 }
+                if let Some(profile) = message.get("profile").and_then(Value::as_str) {
+                    self.lock().view_profile = Some(profile.to_owned());
+                }
                 self.forward(message, None);
             }
             // **The strip follows the pushed tab list**: the page listens for
@@ -1363,10 +1429,11 @@ impl Bridge {
                 let data = message.get("data").and_then(Value::as_str).map(str::to_owned);
                 let error = message.get("error").and_then(Value::as_str).map(str::to_owned);
                 let dropped = dropped_of(message);
+                let lost = lost_of(message);
                 if let Some(app) = self.app.as_ref() {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        save_download(&app, name, data, error, dropped).await;
+                        save_download(&app, name, data, error, dropped, lost).await;
                     });
                 }
                 self.forward(message, None);
@@ -1583,13 +1650,14 @@ async fn save_download(
     data: Option<String>,
     error: Option<String>,
     dropped: bool,
+    lost: Option<u64>,
 ) {
     use base64::Engine as _;
     use tauri_plugin_dialog::DialogExt as _;
     use tauri_plugin_fs::FsExt as _;
 
     if let Some(error) = error {
-        say_download_refused(app, &error, dropped);
+        say_download_refused(app, &error, dropped, lost);
         return;
     }
     let Some(data) = data else { return };
@@ -1600,6 +1668,7 @@ async fn save_download(
                 app,
                 &format!("the download's bytes did not arrive intact: {why}"),
                 false,
+                None,
             );
             return;
         }
@@ -1616,7 +1685,7 @@ async fn save_download(
         file.write_all(&bytes)
     });
     if let Err(why) = written {
-        say_download_refused(app, &format!("the file could not be saved: {why}"), false);
+        say_download_refused(app, &format!("the file could not be saved: {why}"), false, None);
     }
 }
 
@@ -1628,6 +1697,13 @@ async fn save_download(
 /// they always did.
 fn dropped_of(message: &Value) -> bool {
     message.get("dropped").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// How many offers a drop cost, when the server counted them. **The title
+/// says one loss or many from it**; absent on any other download, and on a
+/// server that predates the field.
+fn lost_of(message: &Value) -> Option<u64> {
+    message.get("lost").and_then(Value::as_u64)
 }
 
 /// The event name a download's refusal is logged under.
@@ -1644,8 +1720,17 @@ fn download_event(dropped: bool) -> &'static str {
 /// never reached a save door at all, so it says so; anything that did reach
 /// one - a write that failed, bytes that did not arrive intact - keeps the
 /// words it always had.
-fn refusal_title(dropped: bool) -> &'static str {
-    if dropped { "a download was dropped before it was read" } else { "the download was not saved" }
+fn refusal_title(dropped: bool, lost: Option<u64>) -> &'static str {
+    if !dropped {
+        return "the download was not saved";
+    }
+    // **The title agrees with the body's count.** A count that did not arrive
+    // is an older server, whose drop was always titled as one loss; a known
+    // many is the only case that reads plural.
+    match lost {
+        Some(count) if count != 1 => "downloads were dropped before they were read",
+        _ => "a download was dropped before it was read",
+    }
 }
 
 /// Tell the person a download did not arrive, and why.
@@ -1653,19 +1738,19 @@ fn refusal_title(dropped: bool) -> &'static str {
 /// **The line is the dialog's shadow**: a person who never saw the alert can
 /// still find out what happened, and the reason is the same sentence.
 #[cfg(target_os = "macos")]
-fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
+fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool, lost: Option<u64>) {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication};
     use objc2_foundation::NSString;
 
     tauri_plugin_log::log::info!(
         "{} (event_name {}): {why}",
-        refusal_title(dropped),
+        refusal_title(dropped, lost),
         download_event(dropped)
     );
     let app = app.clone();
     let why = why.to_owned();
-    let title = refusal_title(dropped);
+    let title = refusal_title(dropped, lost);
     // **The alert is AppKit's own, run modally.** The dialog plugin's alert
     // picked a window of its own and was never seen (measured 2026-10-24);
     // one started from the app's own event loop is the one a person sees.
@@ -1689,16 +1774,16 @@ fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool) {
+fn say_download_refused(app: &tauri::AppHandle, why: &str, dropped: bool, lost: Option<u64>) {
     use tauri_plugin_dialog::DialogExt as _;
     tauri_plugin_log::log::info!(
         "{} (event_name {}): {why}",
-        refusal_title(dropped),
+        refusal_title(dropped, lost),
         download_event(dropped)
     );
     app.dialog()
         .message(why)
-        .title(refusal_title(dropped))
+        .title(refusal_title(dropped, lost))
         .kind(tauri_plugin_dialog::MessageDialogKind::Error)
         .show(|_| {});
 }
@@ -1749,6 +1834,26 @@ fn describe(message: &Value) -> String {
 /// detach is the server's to hear.
 fn take_attach(state: &mut State) -> Option<Attach> {
     state.attach.take()
+}
+
+/// The perf mark a gesture leaves, or `None` where it is not a step.
+///
+/// **A pointer move is a stream**, one per frame at a mouse's speed, so it is
+/// not marked; and a key's release is part of its press rather than a second
+/// gesture (#2645).
+fn gesture_mark(event: &forge_primitives::browser::BrowserInputEvent) -> Option<&'static str> {
+    use forge_primitives::browser::{BrowserInputEvent, MouseAction};
+    match event {
+        // A pointer move is a stream, and a key's release is part of its
+        // press: neither is a step of its own.
+        BrowserInputEvent::Mouse { action: MouseAction::Move, .. }
+        | BrowserInputEvent::Key { down: false, .. } => None,
+        BrowserInputEvent::Mouse { action: MouseAction::Press, .. } => Some("mouse:press"),
+        BrowserInputEvent::Mouse { action: MouseAction::Release, .. } => Some("mouse:release"),
+        BrowserInputEvent::Wheel { .. } => Some("wheel"),
+        BrowserInputEvent::Key { down: true, .. } => Some("key"),
+        BrowserInputEvent::Text { .. } => Some("text"),
+    }
 }
 
 /// Whether one browser refusal writes a line: **only a refused input can be
@@ -1846,15 +1951,78 @@ mod tests {
     #[test]
     fn a_dropped_download_does_not_claim_a_failed_save() {
         assert_eq!(
-            refusal_title(true),
+            refusal_title(true, Some(1)),
             "a download was dropped before it was read",
             "the dropped offer's own title",
         );
         assert_eq!(
-            refusal_title(false),
+            refusal_title(true, Some(3)),
+            "downloads were dropped before they were read",
+            "a counted loss is not titled as one loss",
+        );
+        assert_eq!(
+            refusal_title(true, None),
+            "a download was dropped before it was read",
+            "an older server's drop keeps the title it always had",
+        );
+        assert_eq!(
+            refusal_title(false, None),
             "the download was not saved",
             "and a genuine save failure keeps the words it had",
         );
+    }
+
+    /// **A gesture is marked where it leaves, and a pointer move is not a
+    /// gesture**: it is one per frame at a mouse's speed, and one line per
+    /// frame would drown the file the round trip is read from (#2645). A
+    /// key's release is part of its press, not a second gesture.
+    #[test]
+    fn a_pointer_move_is_not_a_gesture_mark() {
+        use forge_primitives::browser::{BrowserInputEvent, InputModifiers, MouseAction};
+
+        let modifiers = InputModifiers::default();
+        let mouse = |action| BrowserInputEvent::Mouse {
+            action,
+            x: 1.0,
+            y: 2.0,
+            button: 0,
+            clicks: 1,
+            modifiers,
+        };
+        assert_eq!(gesture_mark(&mouse(MouseAction::Press)), Some("mouse:press"));
+        assert_eq!(gesture_mark(&mouse(MouseAction::Release)), Some("mouse:release"));
+        assert_eq!(gesture_mark(&mouse(MouseAction::Move)), None, "a move is a stream");
+
+        let key = |down| BrowserInputEvent::Key {
+            down,
+            key: "Enter".to_owned(),
+            code: "Enter".to_owned(),
+            windows_vk: 13,
+            modifiers,
+        };
+        assert_eq!(gesture_mark(&key(true)), Some("key"));
+        assert_eq!(gesture_mark(&key(false)), None, "a release is not a gesture of its own");
+
+        assert_eq!(gesture_mark(&BrowserInputEvent::Text { text: "hi".to_owned() }), Some("text"),);
+        assert_eq!(
+            gesture_mark(&BrowserInputEvent::Wheel {
+                x: 1.0,
+                y: 2.0,
+                delta_x: 0.0,
+                delta_y: 40.0,
+                modifiers,
+            }),
+            Some("wheel"),
+        );
+    }
+
+    /// **The drop's count is the server's, under its own key.** A save carries
+    /// no count, and a value that is not a number is not one.
+    #[test]
+    fn the_lost_count_is_read_from_the_drop_only() {
+        assert_eq!(lost_of(&json!({ "lost": 3 })), Some(3), "the server counted them");
+        assert_eq!(lost_of(&json!({})), None, "a save carries none");
+        assert_eq!(lost_of(&json!({ "lost": "many" })), None, "a non-number is not a count");
     }
 
     /// **Only an explicit true marks a dropped offer.** The flag is what the

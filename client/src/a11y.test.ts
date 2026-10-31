@@ -1,6 +1,6 @@
 import { JSDOM } from 'jsdom';
 import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import Board from './board/Board.svelte';
 import Pinned from './chat/Pinned.svelte';
@@ -15,12 +15,14 @@ import { subagents } from './chat/subagents.svelte';
 import { tasks } from './chat/tasks.svelte';
 import Composer from './composer/Composer.svelte';
 import type { ComposerProps, ComposerRecord } from './composer/view';
+import { surface } from './browser/surface.svelte';
 import type { FileEntry } from './composer/wire';
 import FileTree from './components/FileTree.svelte';
 import type { TreeRow } from './components/tree';
 import { fileIcon, folderIcon, rootIcon } from './files/icons';
 import { foldsFor, indexTreeRows } from './files/tree';
 import {
+  browserHandOffAsk,
   permissionAsk,
   questionAsk,
   record,
@@ -52,6 +54,17 @@ import type { Connection } from './socket';
 import { violationsOf } from './testing/axe';
 import { updateState } from './update/state';
 import { DEFAULT_SETTINGS } from './wire/types';
+
+/**
+ * The browser's link, as the surface's own gate: a page draws the takeover
+ * only when the link says it can, and a server render installs none. The
+ * open-takeover render below needs that gate open, and nothing else here
+ * reaches the link.
+ */
+vi.mock('./browser/link', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./browser/link')>();
+  return { ...actual, drawsSurface: (): boolean => true };
+});
 
 /**
  * A connection the server render never reaches: the session page subscribes in
@@ -300,6 +313,99 @@ describe('axe over the rendered pages', () => {
       ),
       'a take transcribing',
     ).toEqual([]);
+  });
+
+  /**
+   * **The takeover's bar draws over the composer**, and the closed render
+   * never reached it: a regression in the bar's own semantics was unpinned
+   * (#2571). **The bar's own names are asserted**, and the role is held with
+   * a tab list so the arrows and the picker are in the audited markup too,
+   * not only the bar's empty state. The surface state is left as it was
+   * found, the way the store's other case in this file leaves it.
+   */
+  it('draws the open browser takeover with no violations', async () => {
+    const was = {
+      phase: surface.phase,
+      profile: surface.profile,
+      tab: surface.tab,
+      seat: surface.seat,
+      viewer: surface.viewer,
+      controller: surface.controller,
+      nav: surface.nav,
+      tabs: surface.tabs,
+    };
+    surface.phase = 'live';
+    surface.profile = 'Busytools/default';
+    surface.tab = 2;
+    surface.seat = SLOT;
+    surface.viewer = 7;
+    surface.controller = 7;
+    surface.nav = { can_back: true, can_forward: true };
+    surface.tabs = {
+      profile: 'Busytools/default',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 2,
+          title: 'the sign-in page',
+          url: 'https://example.com/',
+          owner: SLOT,
+          state: 'held',
+        },
+        {
+          number: 3,
+          title: '',
+          url: 'https://example.org/',
+          owner: SLOT,
+          state: 'idle',
+        },
+      ],
+    };
+    try {
+      const html = `<main>${
+        render(Composer, {
+          props: {
+            record: record({ pending_asks: [browserHandOffAsk()] }),
+            slot: SLOT,
+            seat: seatRead(),
+            connection: wire().connection,
+            dictation: false,
+          } satisfies ComposerProps,
+        }).body
+      }</main>`;
+      // **The server render is where the composer's own inert is proved**:
+      // the bar's mount walk covers it in a browser, so the mounted test
+      // cannot tell the attribute from the walk.
+      expect(html, 'the composer behind the picture is inert').toMatch(
+        /<div class="surf[^"]*"[^>]*\binert\b/,
+      );
+      for (const name of [
+        'aria-label="the browser takeover"',
+        'aria-label="back"',
+        'aria-label="forward"',
+        'aria-label="the tab to view"',
+        'back to chat',
+        'release control',
+        'Done',
+        'Not now',
+        "something's wrong\u{2026}",
+      ]) {
+        expect(html, `the bar draws ${name}`).toContain(name);
+      }
+      expect(await idsOf(html)).toEqual([]);
+    } finally {
+      surface.phase = was.phase;
+      surface.profile = was.profile;
+      surface.tab = was.tab;
+      surface.seat = was.seat;
+      surface.viewer = was.viewer;
+      surface.controller = was.controller;
+      surface.nav = was.nav;
+      surface.tabs = was.tabs;
+    }
   });
 
   it('draws a turn of the conversation with no violations', async () => {
