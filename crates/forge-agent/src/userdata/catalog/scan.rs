@@ -2911,6 +2911,24 @@ mod tests {
             vec!["beta-own", "alpha-own"],
             "a transcript that changed after its scan must be read, not skipped",
         );
+
+        // **A path the cache has never seen is read, not skipped.** The cache
+        // cannot vouch for a transcript created after its scan.
+        write_session_jsonl(&dir, "gamma-own", &transcript(Some("forge:worker:alpha")));
+        let fresh = list_sessions(
+            tmp.path(),
+            Some(&cwd),
+            None,
+            0,
+            Workers::Only("alpha".to_owned()),
+            Some(&warm),
+        )
+        .await;
+        let fresh_ids = session_ids(&fresh);
+        assert!(
+            fresh_ids.iter().any(|id| id.as_str() == "gamma-own"),
+            "a transcript the cache has not scanned must be read: {fresh_ids:?}",
+        );
     }
 
     /// **The cap bounds the reads, not only the answer** (#2567). A label
@@ -2933,7 +2951,11 @@ mod tests {
         let cwd = cwd.to_string_lossy().into_owned();
         let dir = dir_for(tmp.path(), &cwd);
         fs::create_dir_all(&dir).unwrap();
-        for at in 0..8 {
+        // **Created oldest-first, so directory order and mtime order
+        // disagree.** run-7 is written first and run-0 last; a scan that
+        // trusts readdir's order answers the oldest rows and the assertion
+        // below fails.
+        for at in (0..8).rev() {
             let path = write_session_jsonl(
                 &dir,
                 &format!("run-{at}"),
