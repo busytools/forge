@@ -439,8 +439,20 @@ const BROWSER_FRAME_TAG = 1;
  * `ServerMessage` body, gzipped, for a client that declared it can inflate
  * one. The server sends it only to a connection that asked (see
  * [`declaringCompression`]), so a server that predates it never sends one.
+ * `forge_primitives::wire::COMPRESSED_JSON_TAG` is the Rust half's copy, and
+ * a test there pins the two together.
  */
 const COMPRESSED_JSON_TAG = 3;
+
+/**
+ * The bound on what a compressed frame may inflate to, in bytes.
+ *
+ * **The same bound the shell's socket documents**: the socket's own frame
+ * bound limits the COMPRESSED bytes, and a gzip body can inflate far past
+ * them, so both halves stop one byte past the limit rather than grow without
+ * bound.
+ */
+const MAX_INFLATED_BYTES = 256 << 20;
 
 /**
  * The address this page dials, with the compression capability declared.
@@ -468,9 +480,28 @@ function declaringCompression(url: string): string {
  * caller awaits it inside the one ordered queue, so the frames behind it are
  * delivered after it.
  */
-async function inflate(bytes: Uint8Array): Promise<string> {
+export async function inflate(
+  bytes: Uint8Array,
+  limit: number = MAX_INFLATED_BYTES,
+): Promise<string> {
   const body = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return await new Response(body).text();
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let read = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    read += value.byteLength;
+    if (read > limit) {
+      await reader.cancel();
+      throw new Error(
+        `a compressed frame inflated past the ${limit} byte bound this socket documents`,
+      );
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 /**
@@ -1134,21 +1165,32 @@ export function connect(
       if (data instanceof ArrayBuffer) {
         const bytes = new Uint8Array(data);
         if (bytes[0] === COMPRESSED_JSON_TAG) {
-          return inflate(bytes.subarray(1)).then(acceptText, (why: unknown) => {
-            // **A frame this client cannot inflate is a stream it cannot
-            // read.** Whatever asked for it - a page, a record, an update -
-            // would wait on an answer that died here, so the socket is
-            // dropped and the reconnect's own asks are the recovery: the
-            // conversation clears its page in flight on the status change
-            // and re-reads the record. The payload is gone, so the seat it
-            // belonged to cannot be named; the kind and the size can.
-            report('a compressed frame did not inflate', {
-              kind: COMPRESSED_JSON_TAG,
-              bytes: bytes.byteLength,
-              why,
-            });
-            dropped();
-          });
+          return inflate(bytes.subarray(1)).then(
+            (text) => {
+              // **A frame that outlived its socket is not the new one's to
+              // deliver** (#2560): the inflate is the one async step on the
+              // inbound path, and a reconnect may have replaced the socket
+              // while it ran.
+              if (next !== socket) return;
+              acceptText(text);
+            },
+            (why: unknown) => {
+              if (next !== socket) return;
+              // **A frame this client cannot inflate is a stream it cannot
+              // read.** Whatever asked for it - a page, a record, an update -
+              // would wait on an answer that died here, so the socket is
+              // dropped and the reconnect's own asks are the recovery: the
+              // conversation clears its page in flight on the status change
+              // and re-reads the record. The payload is gone, so the seat it
+              // belonged to cannot be named; the kind and the size can.
+              report('a compressed frame did not inflate', {
+                kind: COMPRESSED_JSON_TAG,
+                bytes: bytes.byteLength,
+                why,
+              });
+              dropped();
+            },
+          );
         }
         // **A binary message is a relayed browser frame.** The phone's canvas
         // draws it; a page with no viewer ignores it, which is the desktop,

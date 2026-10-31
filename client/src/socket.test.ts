@@ -14,6 +14,7 @@ import { ownSettingsFrame, settingsFrame } from './settings/frame';
 import {
   connect,
   DIAL_BOUND_MS,
+  inflate,
   LIVENESS_DEAD_MS,
   LIVENESS_EVERY_MS,
   RETRY_MS,
@@ -334,6 +335,19 @@ describe('the connection', () => {
   });
 
   /**
+   * **The inflate is bounded exactly as the shell's is** (#2560): a gzip body
+   * can inflate past the socket's frame bound, and a page that reads the
+   * decoder without a stop is the unbounded read the shell refuses.
+   */
+  it('bounds what a compressed frame may inflate to', async () => {
+    const body = gzipSync(Buffer.from('0123456789'));
+    await expect(inflate(new Uint8Array(body), 10)).resolves.toBe('0123456789');
+    await expect(inflate(new Uint8Array(body), 9)).rejects.toThrow(
+      'past the 9 byte bound this socket documents',
+    );
+  });
+
+  /**
    * **A browser without `DecompressionStream` must not declare the
    * capability** (#2560): it could not honour it, every large frame would
    * fail to inflate, and the seat would load forever. The dial carries no
@@ -369,6 +383,62 @@ describe('the connection', () => {
     server.sendBinary(Buffer.from([3, 0, 1, 2, 3, 4]));
     await until(() => server.dials.length === 2, 'the reconnect dial');
     expect(server.dials, 'a broken compressed frame left the socket standing').toHaveLength(2);
+  });
+
+  /**
+   * **A compressed frame that outlives its socket is not delivered to the
+   * next one** (#2560): the inflate is the one async step on the inbound
+   * path, so a reconnect can land while it runs. The frame belongs to the
+   * connection that asked for it.
+   */
+  it('drops a compressed frame that outlived its socket', async () => {
+    const held = globalThis.DecompressionStream;
+    let began: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      began = resolve;
+    });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const encoder = new TextEncoder();
+    class SlowDecompressionStream {
+      constructor() {
+        return new TransformStream<Uint8Array, Uint8Array>({
+          async transform(_chunk, controller) {
+            began();
+            await gate;
+            controller.enqueue(
+              encoder.encode(JSON.stringify({ kind: 'update', update: 'catalog_loaded' })),
+            );
+          },
+        });
+      }
+    }
+    try {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: SlowDecompressionStream,
+        configurable: true,
+      });
+      const { server, conn } = await connected();
+      let updates = 0;
+      conn.onMessage((message) => {
+        if (message.kind === 'update') updates += 1;
+      });
+      server.sendBinary(Buffer.from([3, 9, 9, 9]));
+      await started;
+      server.drop();
+      await until(() => server.dials.length === 2, 'the reconnect dial');
+      release();
+      await quiet(50);
+      expect(updates, 'the replaced socket delivered a frame nobody asked for').toBe(0);
+    } finally {
+      Object.defineProperty(globalThis, 'DecompressionStream', {
+        value: held,
+        configurable: true,
+        writable: true,
+      });
+    }
   });
 
   /**
