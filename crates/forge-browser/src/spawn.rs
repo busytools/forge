@@ -89,6 +89,16 @@ fn is_ours(pid: u32) -> bool {
     locked().contains_key(&pid)
 }
 
+/// Release the write end of `pid`'s parent watch without ending the host, so
+/// a test can make the spawning process "go away" for the one resource the
+/// host watches. Production never releases it early - the entry holds it for
+/// the host's whole life - so this exists only to drive the host's own pipe
+/// handling from a test.
+#[cfg(any(test, feature = "testing"))]
+pub fn drop_parent_watch_for_test(pid: u32) -> bool {
+    locked().get_mut(&pid).and_then(|held| held._parent_watch.take()).is_some()
+}
+
 /// A running host, as the server keeps it.
 pub struct ActiveHost {
     pub pid: u32,

@@ -159,37 +159,6 @@ impl Host {
         log: &Path,
         capture_events: bool,
     ) -> Self {
-        Self::launch_with_watch(exe, profile, port, ring, size, args, log, capture_events, None)
-    }
-
-    /// Start a host with the read end of a parent-watch pipe inherited as
-    /// fd 3, the way the server hands its own over: the test holds the write
-    /// end, so dropping it is the server's process ending.
-    #[cfg(target_os = "macos")]
-    pub fn start_watched(
-        exe: &Path,
-        profile: &Path,
-        port: u16,
-        ring: &str,
-        size: &str,
-        args: &[String],
-        log: &Path,
-        watch: std::os::fd::OwnedFd,
-    ) -> Self {
-        Self::launch_with_watch(exe, profile, port, ring, size, args, log, false, Some(watch))
-    }
-
-    fn launch_with_watch(
-        exe: &Path,
-        profile: &Path,
-        port: u16,
-        ring: &str,
-        size: &str,
-        args: &[String],
-        log: &Path,
-        capture_events: bool,
-        watch: Option<std::os::fd::OwnedFd>,
-    ) -> Self {
         let mut command = Command::new(exe);
         command
             .arg("--cef-host")
@@ -208,24 +177,7 @@ impl Host {
             .stdin(Stdio::piped())
             .stdout(if capture_events { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::from(std::fs::File::create(log).expect("the host log")));
-        // **The watch's read end goes across exec as fd 3**, when the test
-        // asked for one; the write end stays with the caller.
-        if let Some(read) = &watch {
-            use std::os::fd::AsRawFd as _;
-            use std::os::unix::process::CommandExt as _;
-            let fd = read.as_raw_fd();
-            // SAFETY: dup2 in the child between fork and exec.
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::dup2(fd, 3) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
         let mut child = command.spawn().expect("the host starts");
-        drop(watch);
         let events = child.stdout.take().map(|stdout| {
             let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let sink = std::sync::Arc::clone(&lines);
