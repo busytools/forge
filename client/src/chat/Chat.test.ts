@@ -1701,6 +1701,37 @@ describe('the arrival mark', () => {
       vi.useRealTimers();
     }
   });
+
+  it('keeps the arrival mark on a turn while it is being written', () => {
+    // **A window is the whole mark for a finished turn, and not for a running
+    // one.** Rows that arrive inside a turn being written are what the reader
+    // watches land, so the mark has to outlive the window for as long as the
+    // turn runs - the animation rides the wrapper's last row, so each new one
+    // enters on its own.
+    vi.useFakeTimers();
+    try {
+      const server = stub();
+      draw({}, server);
+      server.answer([turn('t1')]);
+      server.send({
+        kind: 'snapshot',
+        subject: { session: LEAD },
+        data: { header: { turn_in_flight: true } },
+      });
+      flushSync();
+
+      vi.advanceTimersByTime(450);
+      flushSync();
+
+      const items = [...document.querySelectorAll('.conv > *')];
+      expect(
+        items.at(-1)?.classList.contains('arriving'),
+        'a running turn dropped its mark with the window',
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 /**

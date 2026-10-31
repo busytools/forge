@@ -93,7 +93,7 @@
    * overhang check holds the pin until it is.
    */
   const ROW_ESTIMATE_PX = 120;
-  /** How long the arrival mark stays on the newest item's wrapper. */
+  /** How long a finished arrival's mark stays on the newest item's wrapper. */
   const ARRIVE_MS = 300;
   /** The longest a return's hold waits for a paint before it lifts anyway. */
   const HOLD_MAX_MS = 250;
@@ -188,12 +188,13 @@
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
   /**
-   * The item whose arrival fade is owed, dropped again after the window.
+   * The turn a finished arrival's mark is owed for, dropped after the window.
    *
-   * The mark cannot sit on `newest` itself: a CSS animation restarts per
-   * element insertion, and the list recreates items as they leave its
-   * window - a class still carried would replay the fade on the next scroll
-   * back to the foot. The window is twice the animation's length.
+   * **A window rather than the turn's own life**: the list recreates items as
+   * they leave its window, and a class still carried would replay the
+   * entrance on the next scroll back to the foot. The window is twice the
+   * animation's length. A turn still being written does not need it - its
+   * mark is held by `arrival` below for as long as it runs.
    */
   let arriving = $state<string | null>(null);
   $effect(() => {
@@ -205,6 +206,19 @@
     }, ARRIVE_MS);
     return () => clearTimeout(timer);
   });
+
+  /**
+   * The item whose wrapper carries the arrival mark.
+   *
+   * **A turn still being written keeps the mark for its whole life**, so every
+   * row that arrives inside it enters the same way; a turn that lands finished
+   * holds it for one window instead. The mark is a class on the WRAPPER and
+   * the animation rides its last row, so rows already drawn keep still - only
+   * the one that has just become the last enters.
+   */
+  const arrival = $derived(
+    newest === null ? null : newestTurn?.running === true || arriving === newest ? newest : null,
+  );
 
   /**
    * The echo goes the moment the conversation carries the words.
@@ -1843,7 +1857,7 @@
     data={held.turns}
     getKey={(turn: HeldTurn) => turn.key}
     itemProps={({ item }: { item: HeldTurn }) => ({
-      ...(item.key === arriving ? { class: 'arriving' } : {}),
+      ...(item.key === arrival ? { class: 'arriving' } : {}),
       // **A row the list has not measured is drawn, not hidden.** virtua
       // paints the slot and sets `visibility: hidden` until a row reports its
       // height, which is the black a fast scroll meets (#2398). The style
