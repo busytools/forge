@@ -1564,17 +1564,15 @@ pub fn page_within(
         // budget is not a page that ran out of history: its cursor is what
         // says the turns above it are still askable, and a reader of the log
         // should not have to tell a short page from a finished walk.
-        if first > window_first {
-            if let Some((_, seat)) = cap {
-                tracing::debug!(
-                    event_name = "page_cut_by_budget",
-                    slot = %seat.display(),
-                    budget,
-                    turns_kept = kept.len(),
-                    turns_available = ends_at - window_first,
-                    "the page stopped at its byte budget; its cursor names the turns above it",
-                );
-            }
+        if let Some((_, seat)) = cap.filter(|_| first > window_first) {
+            tracing::debug!(
+                event_name = "page_cut_by_budget",
+                slot = %seat.display(),
+                budget,
+                turns_kept = kept.len(),
+                turns_available = ends_at - window_first,
+                "the page stopped at its byte budget; its cursor names the turns above it",
+            );
         }
         kept.reverse();
         (first, kept)

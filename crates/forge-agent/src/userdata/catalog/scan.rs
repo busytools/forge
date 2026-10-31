@@ -736,12 +736,8 @@ pub async fn list_sessions(
     if let (Workers::Only(label), Some(cache)) = (&workers, tag_cache) {
         let wanted = worker_tag(label);
         let before = candidates.len();
-        candidates.retain(|path| match cache.settled_tag(path) {
-            Some(Some(tag)) => tag == wanted,
-            Some(None) => false,
-            // Not cached, or behind its file: its tag is not known, so read it.
-            None => true,
-        });
+        // `None` is a tag this cache cannot vouch for, and that file is read.
+        candidates.retain(|path| cache.carries_tag(path, &wanted).unwrap_or(true));
         if before > candidates.len() {
             tracing::debug!(
                 target: "forge_agent::catalog::scan",
@@ -1475,14 +1471,14 @@ impl SessionTagCache {
         self.prior.get(path.to_str()?).cloned()
     }
 
-    /// The tag this transcript carried at its last scan, when the file has
-    /// not changed since. `None` when nothing is cached or the entry is
-    /// behind the file on disk - a `/new` re-tag lands in the bytes since,
-    /// so a stale entry cannot rule a transcript out.
-    fn settled_tag(&self, path: &Path) -> Option<Option<String>> {
+    /// Whether this transcript carried `wanted` at its last scan, when the
+    /// file has not changed since. `None` when the tag is not known - nothing
+    /// is cached, or the entry is behind the file on disk, where a `/new`
+    /// re-tag can land - so the caller reads the file rather than deciding.
+    fn carries_tag(&self, path: &Path, wanted: &str) -> Option<bool> {
         let size = std::fs::metadata(path).ok()?.len();
         let held = self.get(path)?;
-        (held.scanned_len == size).then_some(held.tag)
+        (held.scanned_len == size).then(|| held.tag.as_deref() == Some(wanted))
     }
 
     fn put(&self, path: &Path, scan: SessionTagScan) {

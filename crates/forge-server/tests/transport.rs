@@ -4322,7 +4322,7 @@ async fn a_zero_more_page_cap_serves_the_asked_turns() {
     let ServerMessage::Page { turns, .. } = next_server(&mut socket).await else {
         panic!("a page is the answer to a request for more")
     };
-    assert_eq!(page_words(&turns).len(), 8, "a 0 cap serves every turn the client asked for",);
+    assert_eq!(page_words(&turns).len(), 8, "a 0 cap serves every turn the client asked for");
 }
 
 /// `turn N` as `N`, so an order check compares the numbers rather than the
