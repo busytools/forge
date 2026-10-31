@@ -826,7 +826,12 @@ fn frames_record() -> Value {
             seq: None,
             span: 0,
         },
-        ServerMessage::Page { conversation: seat.clone(), turns: Vec::new(), cursor: None },
+        ServerMessage::Page {
+            conversation: seat.clone(),
+            turns: Vec::new(),
+            cursor: None,
+            cron_names: std::collections::BTreeMap::new(),
+        },
         ServerMessage::Reply { reply_to: 1, body: Value::Null },
         ServerMessage::Error {
             what: "what".to_owned(),
@@ -1069,6 +1074,7 @@ fn frames_record() -> Value {
                 messages: vec![json!({ "type": "user" })],
             }],
             cursor: Some("message-1".to_owned()),
+            cron_names: std::collections::BTreeMap::new(),
         }),
     );
     // **The repair's answer, where the numbers ARE the contract.** A client

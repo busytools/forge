@@ -547,7 +547,12 @@ impl SessionTask {
                         for prompt in held {
                             let sender = prompt.sender.clone();
                             let first = prompt.text.lines().next().unwrap_or_default().to_owned();
-                            let uuid = forge_sdk::request_id::next_forged_prompt_id();
+                            // **The id the hold carried, not a fresh one.** The
+                            // delivery frame and the transcript row already
+                            // share it, and a cron's pairing is stored under
+                            // it - a new id here would orphan the row's
+                            // schedule (#1815).
+                            let uuid = prompt.uuid;
                             if let Err(error) = workspace.dispatch(Command::PromptUnder {
                                 key: key.clone(),
                                 text: prompt.text,
@@ -2699,13 +2704,18 @@ fn held_while_swapping(
             text: text.clone(),
             attachments: attachments.clone(),
             source: PromptSource::You,
+            // A plain prompt carries no id yet; this is the one it keeps
+            // through the hold and the drain, so the transcript row the
+            // successor writes carries it.
+            uuid: forge_sdk::request_id::next_prompt_id(),
             sender: None,
         },
-        Command::PromptUnder { key: _, text, attachments, source, .. } => {
+        Command::PromptUnder { key: _, text, attachments, source, uuid, .. } => {
             crate::handoff::HeldPrompt {
                 text: text.clone(),
                 attachments: attachments.clone(),
                 source: *source,
+                uuid: uuid.clone(),
                 sender: None,
             }
         }
@@ -4179,6 +4189,7 @@ mod tests {
                 text: "held".to_owned(),
                 attachments: Vec::new(),
                 source: crate::protocol::PromptSource::You,
+                uuid: "held-1".to_owned(),
                 sender: None,
             },
         );
@@ -4245,6 +4256,7 @@ mod tests {
                 text: "[Message id=m-1] are you up?".to_owned(),
                 attachments: Vec::new(),
                 source: crate::protocol::PromptSource::Peer,
+                uuid: "peer-1".to_owned(),
                 sender: Some(sender.clone()),
             },
         );
@@ -4295,6 +4307,7 @@ mod tests {
                 text: "sent during the swap".to_owned(),
                 attachments: Vec::new(),
                 source: crate::protocol::PromptSource::You,
+                uuid: "held-swap".to_owned(),
                 sender: None,
             },
         );
@@ -4423,6 +4436,7 @@ mod tests {
                 text: "sent during the swap".to_owned(),
                 attachments: Vec::new(),
                 source: crate::protocol::PromptSource::You,
+                uuid: "held-swap".to_owned(),
                 sender: None,
             },
         );
@@ -4591,6 +4605,7 @@ mod tests {
                 text: "sent during the swap".to_owned(),
                 attachments: Vec::new(),
                 source: crate::protocol::PromptSource::You,
+                uuid: "held-swap".to_owned(),
                 sender: None,
             },
         );
@@ -4603,12 +4618,19 @@ mod tests {
             "nothing waits on the previous occupant's judgment",
         );
         let dispatched = workspace.drain_test_dispatch_buffer();
-        assert!(
-            dispatched.iter().any(|command| matches!(
-                command,
-                Command::PromptUnder { text, .. } if text == "sent during the swap"
-            )),
-            "and what the swap held goes to the occupant that is here: {dispatched:?}",
+        let held = dispatched
+            .iter()
+            .find_map(|command| match command {
+                Command::PromptUnder { text, uuid, .. } if text == "sent during the swap" => {
+                    Some(uuid.clone())
+                }
+                _ => None,
+            })
+            .expect("what the swap held goes to the occupant that is here");
+        assert_eq!(
+            held, "held-swap",
+            "the drain keeps the id the hold carried: a fresh one would orphan a cron row's \
+             schedule pairing (#1815)",
         );
     }
 

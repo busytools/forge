@@ -232,6 +232,58 @@ describe('the press', () => {
     expect(refusals).toEqual([{ tone: 'bad', text: busyLine(SEAT) }]);
   });
 
+  /// **The key's release lands through `act`, so the refusal has to be there
+  /// too.** The bound key refuses a foreign take's begin; without this the
+  /// release that follows still submitted the take left on the other seat.
+  it('refuses to finish a take that belongs to another seat', async () => {
+    let seat = SEAT;
+    const { dictate, shared, refusals } = dictation({ seat: () => seat });
+    await dictate.begin();
+    seat = ELSEWHERE;
+
+    dictate.act('finish');
+    expect(shared.sent, 'nothing is stopped for the seat on screen').toHaveLength(1);
+    expect(refusals).toEqual([{ tone: 'bad', text: busyLine(SEAT) }]);
+  });
+
+  /// **An open belongs to the seat it was made for.** A press during a slow
+  /// open on the seat left behind named the microphone busy and queued no
+  /// stop, where the take that lands must belong to the seat it was pressed
+  /// on and nothing else.
+  it('refuses to end an open that belongs to another seat', async () => {
+    let seat = SEAT;
+    mic.held.gated = true;
+    const { dictate, shared, refusals } = dictation({ seat: () => seat });
+    dictate.toggle();
+    seat = ELSEWHERE;
+
+    dictate.act('finish');
+    expect(refusals, 'the seat moved to names the busy microphone').toEqual([
+      { tone: 'bad', text: busyLine(SEAT) },
+    ]);
+
+    mic.held.release?.();
+    await vi.waitUntil(() => dictate.take !== null);
+    expect(
+      shared.sent.map((entry) => Object.keys(entry.command)[0]),
+      'the open lands with no stop queued against it',
+    ).toEqual(['dictate_stream']);
+  });
+
+  /// **A take on another seat is not a take this seat holds.** The bound key
+  /// reads `held` to choose stop or begin; counting the left seat's take there
+  /// made the key submit a capture the reader cannot see, where the mic's own
+  /// press refuses it by name.
+  it('does not count a take left on another seat as this seat holding one', async () => {
+    let seat = SEAT;
+    const { dictate } = dictation({ seat: () => seat });
+    await dictate.begin();
+    expect(dictate.held, 'the take is on the seat this page shows').toBe(true);
+
+    seat = ELSEWHERE;
+    expect(dictate.held, 'and the seat moved to holds nothing').toBe(false);
+  });
+
   it('holds a release that lands while the microphone is still opening', async () => {
     mic.held.gated = true;
     const { dictate, shared } = dictation();

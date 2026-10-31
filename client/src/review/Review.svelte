@@ -788,6 +788,7 @@
     // `offered` already asks for a drawn box, so a take can never land in a
     // hidden one here.
     machine: () => false,
+    barLine: () => false,
     onBegin: () => {
       const at = pttBox();
       if (at === null) return;
@@ -1481,7 +1482,7 @@
     gap: 8px;
     max-width: 460px;
     background: var(--s1);
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: 8px;
     padding: 4px 10px;
     cursor: pointer;
@@ -1489,7 +1490,7 @@
     color: inherit;
   }
   .rv-scope-btn:hover {
-    border-color: var(--ctl);
+    border-color: var(--text);
   }
   .rv-scope-now {
     font-family: var(--mono);
@@ -1521,7 +1522,7 @@
     font-size: var(--fs-data);
     color: var(--muted);
     background: none;
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: 8px;
     padding: 3px 9px;
     cursor: pointer;
@@ -1558,7 +1559,7 @@
     font-family: var(--mono);
     font-size: var(--fs-data);
     color: var(--muted);
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-left: 0;
     padding: 3px 8px;
     white-space: nowrap;
@@ -1705,7 +1706,7 @@
   }
   .rv-mode {
     display: flex;
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: 99px;
     overflow: hidden;
   }

@@ -419,6 +419,40 @@ describe('a structured value, read the way the block draws it', () => {
     });
   });
 
+  it('names a level from the result legend where the criteria named none', () => {
+    // The result's legend is on the wire and was read nowhere: a structured
+    // level with no naming field fell back to the generic `structured value`,
+    // while the model's own words for that position sat unread beside it.
+    const text = JSON.stringify({
+      model: 'm',
+      answer: {
+        type: 'score',
+        score: 0.8,
+        probabilities: { 0: 0.2, 1: 0.8 },
+        legend: { 0: 'could wait', 1: 'needs doing today' },
+      },
+    });
+    const score = decisionOf(
+      'mcp__forge__systemone__ask_score',
+      {
+        state: 'a ticket',
+        instructions: 'How urgent?',
+        criteria: [{ urgency: 'low' }, 'Soon'],
+      },
+      result(text),
+    );
+
+    expect(score?.answer, 'the legend names the level the criteria could not').toEqual({
+      kind: 'score',
+      score: 0.8,
+      levels: [
+        { name: 'could wait', value: 0.2, raw: { urgency: 'low' } },
+        { name: 'Soon', value: 0.8, raw: null },
+      ],
+      confidence: null,
+    });
+  });
+
   it('keeps the whole distribution when a level is not a string', () => {
     // One structured level used to take every row with it: `levelsOf` refused
     // the criteria array and the block drew a bare number.

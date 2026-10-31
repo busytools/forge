@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
 
   import { echoes } from '../chat/echoes.svelte';
   import Pinned from '../chat/Pinned.svelte';
@@ -471,6 +471,9 @@
       if (active instanceof HTMLElement && active.closest('.comp') !== null) {
         active.blur();
       }
+      // The line starts shut on every takeover, as the bar's own state did
+      // when it was mounted per open.
+      barOpen = false;
     }
     surfaceWasClosed = !open;
   });
@@ -636,6 +639,16 @@
    * cannot answer still carries what was spoken into it.
    */
   const barLineHolds = $derived(takeoverAsk !== null);
+
+  /**
+   * Whether the push-to-talk key belongs to the bar's line.
+   *
+   * **The ask is parked on the bar and the bar offers its own toggle**: a
+   * press may open and focus the line only where the reader can also close
+   * it. The page still opening, or showing a tab the hand-off did not name,
+   * has no such control, so the key begins nothing there.
+   */
+  const barTakesKey = $derived(barLineHolds && answering);
 
   /**
    * Whether the dock is the box a landing belongs to.
@@ -1020,6 +1033,11 @@
    * away, so there is no element to focus and no observable difference to
    * pin. It becomes load-bearing the day a morph keeps the field mounted
    * under the dock.
+   *
+   * **Under a takeover the bar's line is that box.** It is the only text box
+   * above the page, so a begin opens it if it was shut and puts the keyboard
+   * in its field; the page under the bar keeps every press that is not a
+   * take's own.
    */
   bindPushToTalk({
     dictate: () => dictate,
@@ -1027,7 +1045,18 @@
     bind: () => composer.bind,
     mode: () => composer.mode,
     machine: () => machineInForce(composer) !== null,
+    // **Only where the bar's own toggle is offered**, so a press can never
+    // open a line the reader has no control to close (the page still opening,
+    // or on a tab the hand-off did not name).
+    barLine: () => barTakesKey,
     onBegin: () => {
+      if (barTakesKey) {
+        barOpen = true;
+        // The field is drawn by that state, so it takes the keyboard once
+        // the render lands.
+        void tick().then(() => barField?.focus({ preventScroll: true }));
+        return;
+      }
       // Never scrolls: the box is already on screen, and a key press that
       // scrolled the page would move the chat under the reader.
       if (focusOf(where) === 'composer') field?.focus({ preventScroll: true });
@@ -1241,6 +1270,46 @@
    */
   let barRefused = $state<string | null>(null);
 
+  /**
+   * Whether the takeover bar's feedback line is open, and its field.
+   *
+   * **Held here rather than in the bar** because the push-to-talk key opens
+   * the line: the bar's field is the only text box above the page, so a press
+   * with the caret anywhere on that page begins a take there, and a begin that
+   * needed a click into the field first is the click the key exists to spare.
+   */
+  let barOpen = $state(false);
+  let barField: HTMLElement | null = null;
+
+  /** The bar's feedback field, handed over on mount and given back on
+   *  teardown. A stable function, so the field's own effect does not re-run
+   *  on every render of this box. */
+  function keepBarField(el: HTMLElement | null): void {
+    barField = el;
+  }
+
+  /**
+   * Whether the bar drew its take row at the last run: the field comes back
+   * when the row goes, and the keyboard with it.
+   *
+   * **The row is keyed on the record's phase, not on this page's take.** A
+   * release leaves the record showing the take transcribing for a drain after
+   * the local capture has gone - the field is still replaced by the card
+   * there - so a focus driven by `dictate.take` fired while no field existed
+   * and never ran again when the record cleared.
+   */
+  let barRowWas = false;
+  $effect(() => {
+    const drawn = rowPhase !== null;
+    if (barRowWas && !drawn && barOpen && barLineHolds) {
+      // **The field returns with the words**, and a reader who just dictated
+      // them is about to type or press Enter; the dock's landing takes the
+      // keyboard back the same way.
+      void tick().then(() => barField?.focus({ preventScroll: true }));
+    }
+    barRowWas = drawn;
+  });
+
   /** Done, Not now or feedback: the hand-off's answer, and the takeover comes down. */
   function takeoverAnswer(ending: 'done' | 'not_now' | 'feedback'): void {
     if (takeoverAsk === null || !answering) return;
@@ -1401,6 +1470,8 @@
       {dictation}
       takeline={barRefused !== null ? { tone: 'bad', text: barRefused } : takeoverLine}
       opening={openingShown}
+      bind:open={barOpen}
+      field={keepBarField}
       ondismiss={() => {
         // **Only a line that is there is dismissed.** Typing with no take
         // line must not clear one the reader already typed away, or a

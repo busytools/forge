@@ -214,7 +214,7 @@ header.top.pagetop .title .s { font-family: var(--mono); font-size: var(--fs-lab
   color: var(--dim); }
 header.top.pagetop .back { margin-left: auto; font-family: var(--mono);
   font-size: var(--fs-label); color: var(--muted); text-decoration: none;
-  border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; }
+  border: 1px solid var(--ctl); border-radius: 9px; padding: 6px 11px; }
 header.top.pagetop .back:hover { border-color: var(--ctl); color: var(--text); }
 .versions { font-family: var(--mono); font-size: 13.5px; color: var(--dim); }
 /* Each build is a labelled pair: the name quiet, the version brighter, and
@@ -563,7 +563,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 }
 .b-add:hover { filter: brightness(1.08); }
 .b-in {
-  background: var(--bg); border: 0; box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--bg); border: 0; box-shadow: inset 0 0 0 1px var(--ctl);
   border-radius: 10px; color: var(--text); font: inherit; font-size: var(--fs-data);
   padding: 8px 11px; min-width: 220px;
 }
@@ -809,11 +809,11 @@ button.b-epic-pill { cursor: pointer; }
 .dr-ask .answer { display: flex; gap: 8px; margin-top: 10px; }
 .dr-ask input {
   flex: 1; min-width: 0; background: var(--s2); color: var(--text);
-  border: 1px solid var(--line); border-radius: 7px;
+  border: 1px solid var(--ctl); border-radius: 7px;
   padding: 6px 9px; font-family: var(--mono); font-size: 12px;
 }
 .dr-btn {
-  border: 1px solid var(--line); background: var(--s2); color: var(--text);
+  border: 1px solid var(--ctl); background: var(--s2); color: var(--text);
   border-radius: 7px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
 }
 .dr-btn.go { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
@@ -914,11 +914,11 @@ button.b-epic-pill { cursor: pointer; }
 .fleet-miss.no-row { border-color: rgba(224,104,62,.5); color: var(--bad); }
 .fleet-open {
   color: var(--blue); text-decoration: none; font-family: var(--mono);
-  font-size: var(--fs-label); border: 1px solid var(--line); border-radius: 6px;
+  font-size: var(--fs-label); border: 1px solid var(--ctl); border-radius: 6px;
   padding: 6px 10px; white-space: nowrap;
   position: relative; z-index: 1;
 }
-.fleet-open:hover { border-color: var(--ctl); }
+.fleet-open:hover { border-color: var(--text); }
 .fleet-open:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 @media (pointer: coarse) {
   /* Every control a finger reaches takes a 44px target. */
@@ -1335,13 +1335,15 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The picked tab: the bar's one door into the profile's other tabs. A native
    select, so the keyboard and a finger get their own pickers for free. */
-.tb-pick { max-width: 26ch; min-width: 0; border: 1px solid var(--line); border-radius: 8px;
+.tb-pick { max-width: 26ch; min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--ctl) 90%, var(--text)); border-radius: 8px;
   padding: 3px 6px; background: var(--s3); color: var(--text);
   font-family: var(--mono); font-size: var(--fs-label); }
 .tb-pick:disabled { opacity: .45; }
 @media (pointer: coarse) { .tb-pick { min-height: 44px; } }
 .tb-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-.tb-btn { border: 1px solid var(--line); border-radius: 8px; padding: 4px 11px;
+.tb-btn { border: 1px solid color-mix(in srgb, var(--ctl) 90%, var(--text));
+  border-radius: 8px; padding: 4px 11px;
   background: var(--s3); color: var(--text); font-family: var(--ui); font-size: var(--fs-data); }
 .tb-btn.d { color: var(--muted); background: transparent; }
 /* A finger's targets: the bar's buttons take both axes here, and the feedback
@@ -1383,7 +1385,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .tb-line.bad { color: var(--bad); }
 .tb-line.opening { color: var(--muted); }
 .tb-field { flex: 1; font: inherit; font-size: var(--fs-data); padding: 5px 10px;
-  border: 1px solid var(--line); border-radius: 8px; background: var(--s1); color: var(--text); }
+  border: 1px solid var(--ctl); border-radius: 8px; background: var(--s1); color: var(--text); }
 .takeover-page { position: absolute; inset: 0; display: flex;
   flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
 /* The phone's picture: the server's frames painted where the native layer
@@ -1436,7 +1438,7 @@ main.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; 
 .needchip .ch-ic { width: 13px; height: 13px; }
 .needchip.bad { color: var(--bad); border-color: rgba(224,104,62,.4);
   background: rgba(224,104,62,.08); }
-.needchip.calm { color: var(--muted); border-color: var(--line); background: none; }
+.needchip.calm { color: var(--muted); border-color: var(--ctl); background: none; }
 /* A thumb, not a cursor: the chip opens up on a coarse pointer. */
 @media (pointer: coarse) { .needchip { min-height: 44px; padding: 0 12px; } }
 .sess .f-org { overflow: hidden; text-overflow: ellipsis; }
@@ -1685,7 +1687,7 @@ details.sfold div.wk:hover { background: none; }
   font-family: var(--mono); font-size: var(--fs-data); color: var(--bad); }
 .mine .why .ic { width: 12px; height: 12px; flex: 0 0 12px; color: var(--bad); }
 .mine .retry { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
-  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+  background: transparent; border: 1px solid var(--ctl); border-radius: 6px;
   padding: 1px 7px; cursor: pointer; }
 .mine .retry:hover { color: var(--muted); }
 .work { padding: 2px 0; }
@@ -1900,7 +1902,7 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 .bz-list .bz-state .tx { color: var(--muted); font-size: var(--fs-data); min-width: 0; }
 .bz-list .bz-state .bz-engine { margin-left: auto; opacity: .8; }
 .bz-list .bz-take { margin-left: auto; flex: none; background: none; cursor: pointer;
-  border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; font: inherit;
+  border: 1px solid var(--ctl); border-radius: 8px; padding: 3px 10px; font: inherit;
   font-size: var(--fs-label); color: var(--muted); }
 .bz-list .bz-take:hover { color: var(--text); background: var(--s3); }
 /* The row's second button hugs the first: two auto margins split the free
@@ -2032,8 +2034,13 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
 /* A settled row is kept, not alive: its name drops to the muted tone while
    the check in the mark slot says why it is still here. */
 .sg-list .sg-it.settled .nm { color: var(--muted); }
-/* A task that moved since the last read: the reveal's own tint for a beat. */
+/* A task that moved since the last read: the reveal's own tint for a beat.
+   The tint is under the row's dim pieces for six seconds, and `--dim` on it
+   measures 4.43:1, so those pieces take `--muted` while it lasts. */
 .sg-list .sg-it.hit { animation: sg-flash 6s ease-out 1; }
+.sg-list .sg-it.hit .tx,
+.sg-list .sg-it.hit .n,
+.sg-list .sg-it.hit .sha { color: var(--muted); }
 @media (pointer: coarse) { .sg-seg .sg-tog, .sg-list .sg-it { min-height: 44px; } }
 /* The status depth under a server row: the tools it offers and what backs it,
    wrapping rather than eliding - the panel is where the detail lives now, so
@@ -2048,7 +2055,12 @@ details.leaf > summary .sg-fig + .arw { margin-left: 8px; }
    and leaves. Long and gentle - the reader is moving their eyes across the
    column, and the row has to still be lit when they arrive. */
 details.leaf.sg-hit { animation: sg-flash 6s ease-out 1; }
-@keyframes sg-flash { 0% { background: rgba(244,118,0,.16); } 100% { background: transparent; } }
+/* The flash's tint is under the row's summary text for six seconds, and
+   `--dim` on it measured 4.43:1 - so the two dim lines take `--muted` (5.90)
+   for as long as the tint lasts. */
+details.leaf.sg-hit > summary .sg-ty,
+details.leaf.sg-hit > summary .sg-fig { color: var(--muted); }
+@keyframes sg-flash { 0% { background: color-mix(in srgb, var(--accent) 16%, var(--bg)); } 100% { background: transparent; } }
 details.leaf[open] > summary .arw { color: var(--accent); }
 /* A call the wire reports as still running says so at the row, which is the
    one thing its own launch result cannot: that result is a clean one. */
@@ -2330,9 +2342,9 @@ details.leaf.running > summary { color: var(--text); }
    from it: a request, not a status - the state is that it is there at all. */
 .follow { position: absolute; right: 18px; bottom: 14px; z-index: 6;
   width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
-  background: var(--s2); border: 1px solid var(--line); color: var(--muted);
+  background: var(--s2); border: 1px solid var(--ctl); color: var(--muted);
   cursor: pointer; }
-.follow:hover { color: var(--text); border-color: var(--ctl); }
+.follow:hover { color: var(--text); border-color: var(--text); }
 .follow .ic { width: 16px; height: 16px; }
 
 /* The header's compaction count, which is a way in rather than a label: it
@@ -2434,7 +2446,7 @@ details.handoff[open] > summary .arw { color: var(--accent); }
 .handoff .sessions, .handoff .sid, .handoff .fact { display: contents; }
 .handoff .sid .v { display: flex; align-items: center; gap: 8px; min-width: 0;
   overflow-wrap: anywhere; color: var(--muted); }
-.handoff .sessions .cp { color: var(--dim); background: none; border: 1px solid var(--line);
+.handoff .sessions .cp { color: var(--dim); background: none; border: 1px solid var(--ctl);
   border-radius: 5px; padding: 2px 5px; display: inline-flex; align-items: center; }
 .handoff .hint { color: var(--dim); font-size: 12px; margin: 6px 0 0; }
 .handoff .lbl { color: var(--accent); font-size: 11px; letter-spacing: .08em;
@@ -3027,7 +3039,7 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 /* The in-force chip is filled and outlined as well as coloured, so the state
    is not carried by hue alone. */
 .pop .chip { font-family: var(--mono); font-size: var(--fs-label); padding: 4px 10px;
-  border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
+  border: 1px solid var(--ctl); border-radius: 9px; color: var(--muted);
   background: none; white-space: nowrap; }
 .pop .chip.on { border-color: rgba(244,118,0,.5); background: var(--s3); color: var(--text);
   box-shadow: inset 0 0 0 1px rgba(244,118,0,.22); }
@@ -3042,9 +3054,9 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   color: var(--bad); white-space: nowrap; }
 .pop .dev.missing .nm { color: var(--bad); }
 .pop .dev { margin-top: 9px; width: 100%; display: flex; align-items: center; gap: 9px;
-  padding: 8px 10px; border: 1px solid var(--line); border-radius: 11px;
+  padding: 8px 10px; border: 1px solid var(--ctl); border-radius: 11px;
   background: var(--s2); cursor: pointer; color: var(--dim); }
-.pop .dev:hover { border-color: var(--ctl); }
+.pop .dev:hover { border-color: var(--text); }
 .pop .dev .nm { font-size: var(--fs-base); color: var(--text); }
 /* The shared arrow, shown on a button the way the row links show it, and
    turned by the state the button announces (#1504). */
@@ -3060,8 +3072,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .pop .drow .nm { font-size: var(--fs-base); color: var(--text); }
 /* The row the role already runs is the one in force, marked without hue: the
    chip's own fill, and a word a screen reader hears. */
-.pop .drow.on { background: rgba(244,118,0,.08); }
+.pop .drow.on { background: color-mix(in srgb, var(--accent) 8%, var(--s1)); }
 .pop .drow.on .nm { color: var(--accent); }
+/* The row's detail text is lifted while the tint is under it: `--dim` on the
+   tint measured 4.48:1, under the text floor, where `--muted` measures 5.97. */
+.pop .drow.on .def { color: var(--muted); }
 .pop .drow .def { margin-left: auto; font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 .pop .ft { padding: 13px 15px 14px; }
@@ -3236,7 +3251,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    primary and leading (the settled design), the refusal last - left-aligned
    under the body rather than scattered to the far edge. */
 .dock .acts { display: flex; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
-.dock .btn { border: 1px solid var(--line); border-radius: 9px; background: none;
+.dock .btn { border: 1px solid var(--ctl); border-radius: 9px; background: none;
   color: var(--muted); font-family: var(--mono); font-size: var(--fs-label);
   padding: 7px 13px; cursor: pointer; }
 .dock .btn:hover { color: var(--text); border-color: var(--ctl); }
@@ -3253,7 +3268,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 .dock .qrow:focus-within .n { color: var(--hot); }
 /* Bare, because the takeover bar's feedback line draws the same mic and send. */
 .micb { flex: none; width: 26px; height: 26px; border-radius: 8px;
-  border: 1px solid var(--line); background: none; color: var(--dim);
+  border: 1px solid var(--ctl); background: none; color: var(--dim);
   display: grid; place-items: center; cursor: pointer; }
 .micb:hover { color: var(--accent); border-color: var(--ctl); }
 .dock .qrow .micb { margin-left: auto; }
@@ -3369,7 +3384,7 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
 /* The copy control is shared: the header's id row and the handoff row's
    session ids both draw it, so the look lives on the control rather than on
    one page's container. */
-.cp { color: var(--dim); background: none; border: 1px solid var(--line);
+.cp { color: var(--dim); background: none; border: 1px solid var(--ctl);
   border-radius: 5px; padding: 2px 5px; cursor: pointer;
   display: inline-flex; align-items: center; }
 .cp .ic { width: 13px; height: 13px; }
@@ -3667,7 +3682,13 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   border: 1px solid var(--line); border-radius: 9px; color: var(--muted);
   background: none; white-space: nowrap; }
 .models-page button.chip { cursor: pointer; }
-.models-page button.chip:hover { border-color: var(--ctl); color: var(--text); }
+/* A chip that is a BUTTON is an action: its pill boundary is the only mark,
+   so it takes the control mark. A chip that is a span is a state and keeps
+   the hairline. */
+.models-page button.chip,
+.extensions-page button.chip { border-color: var(--ctl); }
+.models-page button.chip:hover,
+.extensions-page button.chip:hover { border-color: var(--text); color: var(--text); }
 /* One download and one activation run at a time, so a second control is
    disabled rather than offered and then refused; a disabled one still says
    what it would do. */
@@ -3742,7 +3763,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    would be a second step for nothing */
 .models-page .find { display: block; width: 100%; min-width: 0; font-family: var(--mono);
   font-size: var(--fs-data); color: var(--text); background: var(--s1);
-  border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; }
+  border: 1px solid var(--ctl); border-radius: 9px; padding: 8px 11px; }
 .models-page .find::placeholder { color: var(--dim); }
 /* What can be searched before a reader knows a name: the feed's families as
    chips, and its fastest rows as links in the note under them. */
@@ -3980,7 +4001,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
    width and the sheet rules hide them while the columns are there. */
 .files-sheets { display: none; gap: 8px; }
 .files-sheetbtn { font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
-  background: none; border: 1px solid var(--line); border-radius: 99px; padding: 4px 12px;
+  background: none; border: 1px solid var(--ctl); border-radius: 99px; padding: 4px 12px;
   cursor: pointer; }
 .files-railhold { display: contents; }
 .files-sheetclose { display: none; }
@@ -4124,7 +4145,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
     font-size: var(--fs-label);
     color: var(--text);
     background: none;
-    border: 1px solid var(--line);
+    border: 1px solid var(--ctl);
     border-radius: 9px;
     padding: 5px 12px;
     margin-bottom: 10px;
@@ -4219,9 +4240,9 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
   padding: 2px 0 0; }
 .rv-acts { display: flex; gap: 8px; padding-top: 6px; align-items: center; }
 .rv-a { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
-  background: none; border: 1px solid var(--line); border-radius: 6px; padding: 2px 9px;
+  background: none; border: 1px solid var(--ctl); border-radius: 6px; padding: 2px 9px;
   cursor: pointer; }
-.rv-a:hover { color: var(--text); border-color: var(--ctl); }
+.rv-a:hover { color: var(--text); border-color: var(--text); }
 .rv-a.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
 .rv-a.on:hover { background: var(--hot); }
 /* The one act that cannot be undone wears the error tone at its confirm. */
@@ -4230,9 +4251,9 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 .rv-a:disabled { opacity: .45; cursor: default; }
 .rv-reply { padding-top: 6px; }
 .rv-txarea { width: 100%; box-sizing: border-box; background: var(--s1);
-  color: var(--text); border: 1px solid var(--line); border-radius: 7px;
+  color: var(--text); border: 1px solid var(--ctl); border-radius: 7px;
   font-family: var(--ui); font-size: var(--fs-base); padding: 6px 8px; resize: vertical; }
-.rv-txarea:focus { outline: none; border-color: var(--ctl); }
+.rv-txarea:focus { outline: none; border-color: var(--accent); }
 /* The comment box holds a take's settings panel, so it is the card the panel
    hangs off - the composer's own arrangement, over a box of this page's. */
 .rv-thread.comment { position: relative; }
@@ -4266,7 +4287,7 @@ details.leaf > summary .fam-meter .fam-f { display: block; height: 100%;
 /* A resolved thread collapses to one line in the canvas. */
 .rv-marker { display: flex; align-items: center; gap: 9px; margin: 0;
   max-width: 100%; min-width: 0; box-sizing: border-box;
-  padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px;
+  padding: 5px 10px; border: 1px solid var(--ctl); border-radius: 8px;
   background: var(--s1); font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); }
 .rv-mk-word { color: var(--muted); flex: none; }
@@ -4458,16 +4479,23 @@ details[open] > summary .arw { opacity: 1; }
 .extensions-page .chip.blue { color: var(--blue); border-color: rgba(97,160,224,.35); }
 .extensions-page .chip.bad { color: var(--bad); border-color: rgba(224,104,62,.45);
   background: rgba(224,104,62,.08); }
-.extensions-page button.chip { cursor: pointer; }
-.extensions-page button.chip:hover { border-color: var(--ctl); color: var(--text); }
+/* **A button's state keeps a boundary that holds.** The base button rule is
+   outranked by each state's (0,3,0) tint, and the warn tint measures 2.42:1;
+   a state that is a BUTTON marks itself in its own solid tone instead. A
+   state that is a span keeps its tint, because the span is not a control. */
+.extensions-page button.chip.warn { border-color: var(--warn); }
+.extensions-page button.chip.bad { border-color: var(--bad); }
+.extensions-page button.chip.blue { border-color: var(--blue); }
+.extensions-page button.chip.dim { border-color: var(--ctl); }
+.extensions-page button.chip:hover { border-color: var(--text); color: var(--text); }
 .extensions-page button.chip:disabled { opacity: .5; cursor: default; }
 .extensions-page .btn { border: 0; cursor: pointer; font: inherit; font-family: var(--mono);
   font-size: 13px; border-radius: 10px; }
 .extensions-page .btn.go { background: var(--ok); color: var(--bg); font-weight: 640; padding: 7px 14px; }
 .extensions-page .btn.go:hover { filter: brightness(1.06); }
 .extensions-page .btn.ghost { background: transparent; color: var(--muted);
-  box-shadow: inset 0 0 0 1px var(--line); padding: 7px 12px; }
-.extensions-page .btn.ghost:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--ctl); }
+  box-shadow: inset 0 0 0 1px var(--ctl); padding: 7px 12px; }
+.extensions-page .btn.ghost:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
 .extensions-page .btn.add { background: var(--accent); color: var(--bg); font-weight: 640;
   border-radius: 999px; padding: 8px 15px; }
 .extensions-page .btn.add:hover { filter: brightness(1.08); }
@@ -4513,13 +4541,13 @@ details[open] > summary .arw { opacity: 1; }
   color: var(--dim); }
 .extensions-page .ext-pane-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .extensions-page .find { display: block; width: 100%; font-family: var(--mono); font-size: var(--fs-data);
-  color: var(--text); background: var(--s1); border: 1px solid var(--line);
+  color: var(--text); background: var(--s1); border: 1px solid var(--ctl);
   border-radius: 9px; padding: 9px 12px; margin-bottom: 12px; }
 .extensions-page .find::placeholder { color: var(--dim); }
 .extensions-page .find:focus { outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(244,118,0,.12); }
 
-.extensions-page .ext-add-in { background: var(--bg); border: 0; box-shadow: inset 0 0 0 1px var(--line);
+.extensions-page .ext-add-in { background: var(--bg); border: 0; box-shadow: inset 0 0 0 1px var(--ctl);
   border-radius: 10px; color: var(--text); font-family: var(--mono);
   font-size: var(--fs-data); padding: 8px 11px; min-width: 220px; }
 .extensions-page .ext-add-in::placeholder { color: var(--dim); }
@@ -4620,15 +4648,15 @@ details[open] > summary .arw { opacity: 1; }
 .extensions-page .ext-dlg-s { font-size: var(--fs-data); color: var(--muted); margin: 6px 0 14px; }
 .extensions-page .ext-scopes { display: flex; flex-direction: column; gap: 6px; }
 .extensions-page .ext-scope { display: flex; align-items: center; gap: 10px; font-size: var(--fs-data);
-  color: var(--text); padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+  color: var(--text); padding: 8px 10px; border: 1px solid var(--ctl); border-radius: 10px;
   cursor: pointer; }
-.extensions-page .ext-scope:hover { border-color: var(--ctl); }
+.extensions-page .ext-scope:hover { border-color: var(--text); }
 .extensions-page .ext-scope b { font-weight: 600; }
 .extensions-page .ext-scope span { color: var(--muted); }
 .extensions-page .ext-dlg-field { display: flex; align-items: center; gap: 10px; margin-top: 12px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 .extensions-page .ext-dlg-field select { background: var(--bg); color: var(--text);
-  border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+  border: 1px solid var(--ctl); border-radius: 9px; padding: 8px 10px; }
 .extensions-page .ext-dlg-note { margin-top: 12px; font-size: var(--fs-label); color: var(--warn); }
 .extensions-page .ext-dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
@@ -4763,9 +4791,9 @@ details[open] > summary .arw { opacity: 1; }
 
 /* ---------- the editor ---------- */
 .settings-page button.settings-mode { font-family: var(--mono); font-size: 11px;
-  color: var(--muted); border: 1px solid var(--line); border-radius: 99px;
+  color: var(--muted); border: 1px solid var(--ctl); border-radius: 99px;
   padding: 2px 9px; white-space: nowrap; background: none; cursor: pointer; }
-.settings-page button.settings-mode:hover { border-color: var(--ctl); color: var(--text); }
+.settings-page button.settings-mode:hover { border-color: var(--text); color: var(--text); }
 .settings-page button.settings-mode.editing { color: var(--hot);
   border-color: rgba(244,118,0,.45); background: var(--sel); }
 
@@ -4779,10 +4807,10 @@ details[open] > summary .arw { opacity: 1; }
 .settings-page .settings-restart .settings-link { margin-left: auto; }
 
 .settings-page .settings-add, .settings-page .settings-row-action { font-family: var(--mono);
-  font-size: 11px; color: var(--muted); background: none; border: 1px solid var(--line);
+  font-size: 11px; color: var(--muted); background: none; border: 1px solid var(--ctl);
   border-radius: 99px; padding: 3px 10px; cursor: pointer; white-space: nowrap; }
 .settings-page .settings-add:hover, .settings-page .settings-row-action:hover {
-  border-color: var(--ctl); color: var(--text); }
+  border-color: var(--text); color: var(--text); }
 .settings-page .settings-row-action.danger { color: var(--bad);
   border-color: rgba(224,104,62,.4); }
 .settings-page .settings-row-action.danger:hover { background: rgba(224,104,62,.1);
@@ -4801,7 +4829,7 @@ details[open] > summary .arw { opacity: 1; }
 
 .settings-page .settings-rows input, .settings-page .settings-rows select,
 .list-editor input { font-family: var(--mono); font-size: 13px;
-  color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  color: var(--text); background: var(--bg); border: 1px solid var(--ctl);
   border-radius: 7px; padding: 5px 8px; min-width: 0; width: 100%; }
 .settings-page .settings-rows input:focus, .settings-page .settings-rows select:focus,
 .list-editor input:focus { outline: none; border-color: var(--accent);
@@ -4813,7 +4841,7 @@ details[open] > summary .arw { opacity: 1; }
 .toggle { display: inline-flex; align-items: center; gap: 9px;
   background: none; border: 0; padding: 0; cursor: pointer; font: inherit; color: var(--muted); }
 .toggle .track { width: 30px; height: 17px; border-radius: 99px;
-  border: 1px solid var(--line); background: var(--s2); position: relative; }
+  border: 1px solid var(--ctl); background: var(--s2); position: relative; }
 .toggle .thumb { position: absolute; top: 2px; left: 2px; width: 11px;
   height: 11px; border-radius: 50%; background: var(--dim); }
 .toggle.on .track { border-color: var(--accent); background: var(--sel); }
@@ -4822,13 +4850,13 @@ details[open] > summary .arw { opacity: 1; }
 .list-editor { display: flex; flex-direction: column; gap: 5px; }
 .list-item { display: flex; align-items: center; gap: 6px; }
 .list-x { font-family: var(--mono); font-size: 13px; color: var(--muted);
-  background: none; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px;
+  background: none; border: 1px solid var(--ctl); border-radius: 6px; padding: 2px 8px;
   cursor: pointer; }
 .list-x:hover { color: var(--bad); border-color: rgba(224,104,62,.4); }
 .list-add { align-self: flex-start; font-family: var(--mono); font-size: 11px;
-  color: var(--muted); background: none; border: 1px dashed var(--line); border-radius: 7px;
+  color: var(--muted); background: none; border: 1px dashed var(--ctl); border-radius: 7px;
   padding: 3px 10px; cursor: pointer; }
-.list-add:hover { border-color: var(--ctl); color: var(--text); }
+.list-add:hover { border-color: var(--text); color: var(--text); }
 
 /* The bottom dock holds the restart banner directly above the save bar: the
    bar is sticky, and a banner at the page top is off-screen when it lands. */
@@ -4853,9 +4881,9 @@ details[open] > summary .arw { opacity: 1; }
 .settings-btn:disabled { opacity: .5; cursor: default; }
 .settings-btn.go { background: var(--accent); color: var(--bg); font-weight: 640; }
 .settings-btn.ghost { background: transparent; color: var(--muted);
-  box-shadow: inset 0 0 0 1px var(--line); }
-.settings-btn.ghost:hover { color: var(--text);
   box-shadow: inset 0 0 0 1px var(--ctl); }
+.settings-btn.ghost:hover { color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--text); }
 .settings-btn.danger { background: var(--bad); color: var(--bg); font-weight: 640; }
 
 .settings-scrim { position: fixed; inset: 0; z-index: 40; display: flex;
@@ -4886,7 +4914,7 @@ details[open] > summary .arw { opacity: 1; }
   .settings-page .settings-rail { flex: none; width: 100%; padding: 0 0 10px; display: flex;
     flex-wrap: wrap; gap: 6px; }
   .settings-page .settings-rail-item { width: auto; flex: 0 0 auto; margin-bottom: 0;
-    border: 1px solid var(--line); padding: 6px 11px; }
+    border: 1px solid var(--ctl); padding: 6px 11px; }
   .settings-page header.top .back { order: 1; }
   .settings-page header.top .title { order: 3; flex-basis: 100%; }
   .settings-page header.top .settings-meta { order: 4; }
@@ -4982,7 +5010,7 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-compose { margin: 4px 0 10px 2.2rem; display: flex; flex-direction: column;
   gap: 8px; position: relative; }
 .doc-page .doc-compose textarea { width: 100%; min-height: 64px; resize: vertical;
-  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); border: 1px solid var(--ctl);
   border-radius: var(--r); padding: 8px 10px; font-family: var(--ui);
   font-size: var(--fs-base); }
 .doc-page .doc-compose-acts { display: flex; gap: 8px; justify-content: flex-end; }
@@ -4994,10 +5022,10 @@ details[open] > summary .arw { opacity: 1; }
 .doc-page .doc-dictateline.warn { color: var(--warn); }
 .doc-page .doc-comment-btn, .doc-page .doc-cancel-btn, .doc-page .doc-finish-btn {
   font-family: var(--mono); font-size: var(--fs-label); border-radius: 9px;
-  padding: 6px 12px; cursor: pointer; border: 1px solid var(--line);
+  padding: 6px 12px; cursor: pointer; border: 1px solid var(--ctl);
   background: var(--s1); color: var(--muted); }
 .doc-page .doc-comment-btn:not(:disabled):hover, .doc-page .doc-finish-btn:not(:disabled):hover {
-  color: var(--text); border-color: var(--ctl); }
+  color: var(--text); border-color: var(--text); }
 .doc-page .doc-comment-btn:disabled, .doc-page .doc-finish-btn:disabled { color: var(--dim); cursor: default; }
 /* Comments written against an earlier version: their captured lines kept,
    the same shape the code review's parked section draws. */
