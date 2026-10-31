@@ -320,12 +320,13 @@ async fn next_view_event(viewing: &mut Option<Viewing>) -> ViewEvent {
                     // what says so on the wire.
                     let why = if lost == 1 {
                         "a finished download was dropped before this viewer read it: the \
-                         browser held at most the profile's backlog"
+                         profile's backlog holds at most four finished downloads at a time"
                             .to_owned()
                     } else {
                         format!(
                             "{lost} finished downloads were dropped before this viewer read \
-                             them: the browser held at most the profile's backlog"
+                             them: the profile's backlog holds at most four finished downloads \
+                             at a time"
                         )
                     };
                     return ViewEvent::Download {
@@ -6568,10 +6569,11 @@ mod tests {
                 );
                 assert_eq!(lost, Some(1), "and the count the title is read from");
                 let why = download.error.expect("a lag is answered with its own reason");
-                assert!(
-                    why.contains("a finished download was dropped")
-                        && why.contains("profile's backlog"),
-                    "the words name one profile-level loss rather than a failed write: {why}",
+                assert_eq!(
+                    why,
+                    "a finished download was dropped before this viewer read it: the profile's \
+                     backlog holds at most four finished downloads at a time",
+                    "the words name one profile-level loss in plain words",
                 );
                 assert!(download.bytes.is_empty(), "there are no bytes to save");
             }
