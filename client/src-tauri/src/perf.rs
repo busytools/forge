@@ -10,6 +10,12 @@
 //! A write that fails is answered, never thrown: the page's sink swallows it
 //! by design, and this side logs the reason so the failure is not silent.
 
+#![allow(
+    clippy::needless_pass_by_value,
+    reason = "tauri's IPC macro hands every command argument by value; a reference is not a \
+              CommandArg"
+)]
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -288,7 +294,7 @@ mod tests {
             }
         });
         let failures = failures.into_inner().expect("count");
-        assert!(failures.is_empty(), "every append rolled without losing a batch: {failures:?}",);
+        assert!(failures.is_empty(), "every append rolled without losing a batch: {failures:?}");
     }
 
     #[test]

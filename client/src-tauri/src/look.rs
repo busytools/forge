@@ -9,7 +9,14 @@
 //! its own windows without Screen Recording. Production bundles never
 //! compile this module.
 
-#![allow(unsafe_code, reason = "AppKit and CoreGraphics are its window and its pixels")]
+#![allow(
+    unsafe_code,
+    clippy::ref_as_ptr,
+    clippy::ptr_cast_constness,
+    clippy::cast_precision_loss,
+    reason = "AppKit and CoreGraphics are its window and its pixels, so the pointers and pixel \
+              widths are the C API's own"
+)]
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -155,12 +162,12 @@ fn answer(app: &tauri::AppHandle, request: &Value) -> Value {
             use objc2::rc::Retained;
             use objc2_app_kit::{NSApplication, NSSavePanel};
 
-            let Some(_main) = objc2::MainThreadMarker::new() else {
+            let Some(mtm) = objc2::MainThreadMarker::new() else {
                 return json!({ "error": "not the main thread" });
             };
-            let application = NSApplication::sharedApplication(_main);
+            let application = NSApplication::sharedApplication(mtm);
             let mut cancelled = 0;
-            for window in application.windows().iter() {
+            for window in &application.windows() {
                 let class = window.class().name().to_string_lossy().into_owned();
                 if !(class.contains("OpenPanel") || class.contains("SavePanel")) {
                     continue;
@@ -216,7 +223,7 @@ fn click_page(x: f64, y: f64) -> Value {
     use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSView};
     use objc2_foundation::NSPoint;
 
-    let Some(_main) = objc2::MainThreadMarker::new() else {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
         return json!({ "error": "not the main thread" });
     };
     let Some((view_address, _, _, _)) = crate::browser::cef::surface::look_overlay() else {
@@ -232,7 +239,7 @@ fn click_page(x: f64, y: f64) -> Value {
     let frame = view.frame();
     // SAFETY: main thread, and the view is in its hierarchy.
     let superview = unsafe { view.superview() }.map(|view| view.bounds().size);
-    let application = NSApplication::sharedApplication(_main);
+    let application = NSApplication::sharedApplication(mtm);
     // **A click lands in the key window**, so bring the app forward the way
     // a person would before clicking.
     application.activate();
@@ -274,7 +281,7 @@ fn overlay_state() -> Value {
     };
     let gravity = layer.contentsGravity().to_string();
     // SAFETY: main thread, and the slot holds the view whose contents it is.
-    let contents = unsafe { layer.contents() }.map(|_| true).unwrap_or(false);
+    let contents = unsafe { layer.contents() }.is_some();
     json!({
         "gravity": gravity,
         "contents": contents,
@@ -290,12 +297,12 @@ fn overlay_state() -> Value {
 fn windows() -> Value {
     use objc2_app_kit::NSApplication;
 
-    let Some(_main) = objc2::MainThreadMarker::new() else {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
         return json!({ "error": "not the main thread" });
     };
-    let app = NSApplication::sharedApplication(_main);
+    let app = NSApplication::sharedApplication(mtm);
     let mut rows = Vec::new();
-    for window in app.windows().iter() {
+    for window in &app.windows() {
         let frame = window.frame();
         rows.push(json!({
             "class": window.class().name().to_string_lossy(),
