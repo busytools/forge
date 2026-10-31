@@ -4368,6 +4368,38 @@ describe('the dock', () => {
   });
 
   /**
+   * **A preview is line-structured, and its lines are the structure.**
+   * The CLI writes these payloads as lines - a plan, a diff, a list of
+   * steps - and the reader was shown them joined into one paragraph, which
+   * is the wrong document rather than a wrapping of the right one (#1634).
+   */
+  it('keeps the lines a preview is written in', () => {
+    open({
+      record: record({
+        pending_asks: [
+          questionAsk('tu-q', {
+            options: [
+              {
+                option_id: 'q-plan',
+                label: 'The plan',
+                description: null,
+                preview: 'step one\nstep two',
+              },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const preview = document.querySelector('.dock .preview');
+    if (!(preview instanceof HTMLElement)) throw new Error('the dock drew no preview region');
+    expect(
+      preview.innerHTML,
+      'the preview renders the lines it was written in, not one joined paragraph',
+    ).toContain('<br>');
+  });
+
+  /**
    * **The rest of the keys are still the dock's.** The region takes the keys
    * that scroll it and gives every other one back: a character typed while the
    * keyboard is in the preview is the first character of the reader's own

@@ -920,10 +920,12 @@
        panel is drawn. **A tab stop, because it is a document**: the keys that
        read the rest of it have to reach it. It is not a widget, so it takes
        no widget role for being focusable. -->
-  {#snippet previewRegion(label: string, text: string)}
+  {#snippet previewRegion(label: string, text: string, lines: boolean)}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
     <div class="preview" tabindex="0" role="region" aria-label={label} data-preview>
-      <Prose {text} />
+      <!-- An option's preview is line-structured ASCII the CLI writes as
+           lines, so its breaks are the document (#1634). -->
+      <Prose {text} preserveLines={lines} />
     </div>
   {/snippet}
 
@@ -1037,7 +1039,7 @@
          markdown renderer and the same panel: Slack text IS markdown, the
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
-      {@render previewRegion('the post held for approval', ask.request.text)}
+      {@render previewRegion('the post held for approval', ask.request.text, false)}
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1143,7 +1145,7 @@
            rendered as markdown rather than shown as its source - the same
            renderer the conversation's prose uses, which escapes what it is
            handed. -->
-        {@render previewRegion("the marked option's preview", markedRow.preview)}
+        {@render previewRegion("the marked option's preview", markedRow.preview, true)}
       {/if}
     {/if}
 
