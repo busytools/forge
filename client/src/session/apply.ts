@@ -874,7 +874,13 @@ function withTake(
  */
 function ofThisTake(take: Record<string, unknown>, payload: Record<string, unknown>): boolean {
   const heldGeneration = take['generation'];
-  return heldGeneration === undefined || heldGeneration === payload['generation'];
+  const sent = payload['generation'];
+  // **An absent number on either side checks nothing.** A one-release-old
+  // server sends a reading or a transcribing phase without the field, and
+  // reading that as another take's would drop every frame of a live take
+  // (#839) - so absence is this take's, the same tolerance `Take.generation`
+  // and `dispatch_id` get.
+  return heldGeneration === undefined || sent === undefined || heldGeneration === sent;
 }
 
 /** One reading, as a fraction of the take's own range, keeping the newest cells. */

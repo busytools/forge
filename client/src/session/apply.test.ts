@@ -926,6 +926,25 @@ describe('applyUpdate', () => {
       );
     });
 
+    /**
+     * **A server one release behind sends neither frame with a generation.**
+     * Absence is this take's - the same tolerance `Take.generation` and
+     * `dispatch_id` get - or a new client would drop every reading and the
+     * transcribing phase of a take that is running (#839).
+     */
+    it("takes a frame with no generation as this take's", () => {
+      const started = applyUpdate(empty(), {
+        dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
+      });
+      const heard = applyUpdate(started, { dictate_level: { key: SLOT, peak_db: -20 } });
+      expect(take(heard)['peak_db'], 'the older server feeds the live meter').toBe(-20);
+
+      const moved = applyUpdate(heard, { dictate_transcribing: { key: SLOT } });
+      expect(take(moved)['phase'], 'and its transcribing phase moves the take').toBe(
+        'transcribing',
+      );
+    });
+
     it('keeps a stalled take alive for its own generation only', () => {
       const first = applyUpdate(empty(), {
         dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
