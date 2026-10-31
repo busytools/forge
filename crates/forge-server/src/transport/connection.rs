@@ -3520,7 +3520,7 @@ enum BelowFloor {
 /// stopped at and answers the rows strictly older than it, so the walk crosses
 /// a window whose front is a cut inside a running turn - where the frame
 /// numbering is unusable - exactly as it crosses one that ends on a turn. The
-/// page is cut, rendered and cursor-written by the same [`page`] the held
+/// page is cut, rendered and cursor-written by the same [`page_within`] the held
 /// window's pages are, and the cursor it hands back names its own oldest row,
 /// so the page below it seeks.
 ///
@@ -3588,7 +3588,7 @@ async fn rows_below_floor(
 
 /// The page a span of transcript rows answers with, cursors and all.
 ///
-/// **The same [`page`] the held window is cut by**, so a page below the seam
+/// **The same [`page_within`] the held window is cut by**, so a page below the seam
 /// is the same kind of page as one above it: whole turns where the span holds
 /// them, and within a running turn the run itself. **The cursor is the byte of
 /// the page's own oldest row**, so the page below it seeks rather than
