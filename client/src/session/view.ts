@@ -459,6 +459,12 @@ export interface ConversationProps {
    * rather than props, because the chat must not reach for the record.
    */
   queue?: Snippet;
+  /**
+   * The column's report of its own `loaded` flag, which the band draws the
+   * read wait from. The column owns the turns and their first page, so it is
+   * the only thing that knows when the page landed.
+   */
+  onloaded?: (loaded: boolean) => void;
 }
 
 /** What the composer is handed, and what its own task writes against. */

@@ -1017,7 +1017,7 @@
       <span class="qm"><Icon name={barMark} /></span>
       <span class="t">{barText}</span>
       {#if depth > 1}<span class="cnt">+{depth - 1}</span>{/if}
-      <span class="chevc" aria-hidden="true">&#9652;</span>
+      <Icon name="fold-up" class="chevc" />
     </button>
     {#if take !== null}{@render wordsRow()}{/if}
   {:else}

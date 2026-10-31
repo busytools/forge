@@ -18,7 +18,6 @@
   import { closingSeat } from './close';
   import { chosenAfterPop, railEntry, railOnTop, type RailSide } from './rail-history';
   import Queue from '../chat/Queue.svelte';
-  import { conversationsFor } from '../chat/conversations';
   import { emptyComposer } from '../composer/view';
   import { rememberedRailMode, rememberRailMode, type RailMode } from './rail-mode';
   import { connectors } from '../chat/connectors.svelte';
@@ -215,14 +214,11 @@
   /**
    * Whether the conversation column is still waiting for its first page.
    *
-   * Read from the conversation the COLUMN folds rather than from the page's
-   * own read: the column owns the turns and their `loaded` flag, and the band's
-   * line has to agree with what the column is showing. An entry not yet in the
-   * map is a page that has not come back.
+   * **Reported by the column**, which owns the turns and their `loaded` flag:
+   * the band's line has to agree with what the column is showing, and the
+   * column is the only thing that knows when the page landed.
    */
-  const reading = $derived(
-    conversationsFor(connection).kept.get(subjectKey({ session: slot }))?.loaded !== true,
-  );
+  let reading = $state(true);
   /** Whether this seat's name needs its org on the header line (#1707). */
   const collides = $derived(orgNeeded(wire, slot));
   const facts = $derived(record === null ? null : headerFacts(record.header));
@@ -562,6 +558,9 @@
     slot,
     connection,
     queue: seatQueue,
+    onloaded: (loaded: boolean) => {
+      reading = !loaded;
+    },
   });
 </script>
 

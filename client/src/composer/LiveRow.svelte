@@ -102,6 +102,8 @@
 
   /** The gap the sheet draws when no layout has computed one (jsdom, a row not yet painted). */
   const GAP_FLOOR = 2;
+  /** What the +N takes before it is drawn, so the first measurement reserves it. */
+  const MORE_FLOOR = 36;
 
   /**
    * Which chips fit, measured from the row and the chips themselves.
@@ -126,36 +128,64 @@
     const style = getComputedStyle(row);
     const pad =
       (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
-    const limit = width - pad;
+    const content = width - pad;
+    // The row's own gap between items, and the chips' gap inside their track:
+    // two different spaces, and a sum that uses one for both is a row that
+    // clips its last chip by a few pixels at every width.
+    const gap = Number.parseFloat(style.columnGap) || GAP_FLOOR;
     const track = row.querySelector<HTMLElement>('.live-segs');
-    const gap =
+    const segGap =
       Number.parseFloat(track === null ? '' : getComputedStyle(track).columnGap) || GAP_FLOOR;
-    const lead = [
+    const fixed: HTMLElement[] = [];
+    for (const el of [
       row.querySelector<HTMLElement>('[data-ask]'),
       row.querySelector<HTMLElement>('[data-fig]'),
       row.querySelector<HTMLElement>('[data-div]'),
       row.querySelector<HTMLElement>('[data-draft]'),
-    ];
-    let used = 0;
-    for (const el of lead) if (el !== null) used += el.offsetWidth + gap;
+    ]) {
+      if (el !== null) fixed.push(el);
+    }
+    // The divider carries its own side margins, which no gap accounts for.
+    const margin = (el: HTMLElement): number => {
+      const cs = getComputedStyle(el);
+      return (Number.parseFloat(cs.marginLeft) || 0) + (Number.parseFloat(cs.marginRight) || 0);
+    };
+    let fixedWidth = 0;
+    for (const el of fixed) {
+      // The figures may be shrunk by the row; the measurement uses the width
+      // they want, so hiding a chip cannot make the fit flip back and forth.
+      const width = el === row.querySelector('[data-fig]') ? el.scrollWidth : el.offsetWidth;
+      fixedWidth += width + margin(el);
+    }
     const chips = [...row.querySelectorAll<HTMLElement>('[data-chip]')].filter(
       (el) => el.firstElementChild !== null,
     );
-    let all = used;
-    for (const el of chips) all += el.offsetWidth + gap;
-    if (all <= limit) {
+    const chipsWidth = (count: number): number => {
+      let sum = 0;
+      for (let at = 0; at < count; at += 1) {
+        const el = chips[at];
+        if (el === undefined) break;
+        sum += el.offsetWidth + (at === 0 ? 0 : segGap);
+      }
+      return sum;
+    };
+    // The +N is the last item whenever it is drawn, and it carries a margin
+    // of its own. Items: the fixed ones, the chips' track, and the button.
+    const more = moreEl;
+    const moreWidth = more === null ? MORE_FLOOR : more.offsetWidth + margin(more);
+    const all = fixedWidth + chipsWidth(chips.length) + gap * fixed.length;
+    if (all <= content) {
       if (hidden.length > 0) hidden = [];
       return;
     }
-    const reserve = (moreEl?.offsetWidth ?? 0) + gap;
-    const names: string[] = [];
-    for (const el of chips) {
-      if (names.length === 0 && used + el.offsetWidth + gap + reserve <= limit) {
-        used += el.offsetWidth + gap;
-        continue;
-      }
-      names.push(el.dataset.chip ?? '');
+    const fits = (count: number): boolean =>
+      fixedWidth + chipsWidth(count) + moreWidth + gap * (fixed.length + 1) <= content;
+    let shown = 0;
+    for (let at = 1; at <= chips.length; at += 1) {
+      if (fits(at)) shown = at;
+      else break;
     }
+    const names = chips.slice(shown).map((el) => el.dataset.chip ?? '');
     const same = names.length === hidden.length && names.every((name, at) => name === hidden[at]);
     if (!same) hidden = names;
   }
@@ -175,6 +205,7 @@
     const watching = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(run);
     watching?.observe(row);
     for (const el of row.querySelectorAll('[data-chip]')) watching?.observe(el);
+    if (moreEl !== null) watching?.observe(moreEl);
     window.addEventListener('resize', run);
     return () => {
       watching?.disconnect();
@@ -185,6 +216,8 @@
   $effect(() => {
     const row = rowEl;
     void rows;
+    // The +N is drawn and observed only once there is something behind it.
+    void hidden.length;
     if (row === null) return;
     return watch(row);
   });
@@ -392,21 +425,22 @@
         <span class="show">&#183; show</span>
       </button>
     {/if}
-    <button
-      class="live-more"
-      class:idle={hidden.length === 0}
-      bind:this={moreEl}
-      type="button"
-      aria-expanded={open}
-      aria-label={hidden.length > 0 ? `${hidden.length} more` : undefined}
-      onclick={toggle}
-      onkeydown={(event) => {
-        if (event.key !== 'Escape') return;
-        close();
-      }}
-    >
-      +{hidden.length}
-    </button>
+    {#if hidden.length > 0}
+      <button
+        class="live-more"
+        bind:this={moreEl}
+        type="button"
+        aria-expanded={open}
+        aria-label={`${hidden.length} more`}
+        onclick={toggle}
+        onkeydown={(event) => {
+          if (event.key !== 'Escape') return;
+          close();
+        }}
+      >
+        +{hidden.length}
+      </button>
+    {/if}
   </div>
 {/if}
 

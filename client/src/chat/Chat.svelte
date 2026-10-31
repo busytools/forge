@@ -53,6 +53,7 @@
     waking = false,
     spawning = false,
     queue = undefined,
+    onloaded = () => {},
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -63,6 +64,9 @@
     /** The waiting prompts, drawn above the pinned row: the page owns the
      *  queue's data, and its place is the column's foot. */
     queue?: Snippet | undefined;
+    /** Report of the column's own `loaded` flag, which the band's read wait
+     *  is drawn from. */
+    onloaded?: (loaded: boolean) => void;
   } = $props();
 
   /** How near the top the reader has to be before the turns above are asked for. */
@@ -109,6 +113,13 @@
    * of every message a proxy call on each frame's re-derivation.
    */
   let held = $state.raw<Conversation>(NOTHING);
+
+  // **The column reports its own `loaded` flag.** The band draws the read
+  // wait from it, and this column is the only thing that knows when the first
+  // page landed.
+  $effect(() => {
+    onloaded(held.loaded);
+  });
   /**
    * The element that scrolls, which is the list's own viewport.
    *

@@ -2737,7 +2737,10 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
   border-bottom: 1px solid var(--line); overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
 /* The turn's figures lead, in the strip's own order and its own component. */
-.live-row .live-fig { display: inline-flex; align-items: center; gap: 6px; flex: none;
+/* The figures give way before the doors do: at a narrow width the row shrinks
+   them, and the +N stays reachable at its end. */
+.live-row .live-fig { display: inline-flex; align-items: center; gap: 6px;
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
   white-space: nowrap; padding: 3px 8px 3px 6px; color: var(--muted); }
 .live-row .live-fig > span { white-space: nowrap; }
 .live-row .live-fig .sep { color: var(--dim); opacity: .6; }
@@ -2747,6 +2750,9 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 /* The chips share one list: one copy of each segment, in the strip's order. */
 .live-row .live-segs { display: flex; align-items: center; gap: 2px; flex: none; }
 .live-row .live-chip { position: relative; display: inline-flex; flex: none; }
+/* A segment whose store says nothing renders no element, and its wrapper must
+   not spend a gap on the row. */
+.live-row .live-segs > .live-chip:empty { display: none; }
 /* The row draws the same chips the strip does, in the row's own dress: a pill
    rather than the strip's hover box, so a dozen of them read as one line of
    doors. */
@@ -2787,7 +2793,6 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
   cursor: pointer; }
 .live-row .live-more:hover, .live-row .live-more[aria-expanded="true"] {
   color: var(--hot); border-color: var(--accent); }
-.live-row .live-more.idle { visibility: hidden; }
 @media (pointer: coarse) {
   .live-row .live-more, .live-row .live-door,
   .live-row .sg-tog, .live-row .bz-tog { min-height: 44px; }
@@ -3255,7 +3260,10 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
    moves the band (it took the band from 121px to 557px while it sat in the
    box's flow). */
 .surf > .ac { position: absolute; left: 12px; right: 12px;
-  bottom: calc(100% + 8px); z-index: 5; }
+  bottom: calc(100% + 8px); z-index: 5;
+  /* Over the conversation, not in it: a translucent ground let the chat's
+     rows read through the list. */
+  background: linear-gradient(180deg, var(--s2), var(--s1)); }
 
 /* ---------- the dock: the prompt's lane of the surface ---------- */
 
