@@ -2099,12 +2099,15 @@ where
                 for anchor in anchors {
                     match rows_below_floor(state, &seat, &cwd, anchor, turns).await {
                         BelowFloor::Page(page) => {
+                            let cron_names =
+                                crate::transport::wire::cron_names_of(&state.surface, &page.turns);
                             return send(
                                 socket,
                                 ServerMessage::Page {
                                     conversation,
                                     turns: page.turns,
                                     cursor: page.cursor,
+                                    cron_names,
                                 },
                             )
                             .await;
@@ -2137,7 +2140,12 @@ where
                 }
                 return send(
                     socket,
-                    ServerMessage::Page { conversation, turns: Vec::new(), cursor: None },
+                    ServerMessage::Page {
+                        conversation,
+                        turns: Vec::new(),
+                        cursor: None,
+                        cron_names: std::collections::BTreeMap::new(),
+                    },
                 )
                 .await;
             }
@@ -2200,9 +2208,15 @@ where
                     .await;
                 }
             };
+            let cron_names = crate::transport::wire::cron_names_of(&state.surface, &page.turns);
             send(
                 socket,
-                ServerMessage::Page { conversation, turns: page.turns, cursor: page.cursor },
+                ServerMessage::Page {
+                    conversation,
+                    turns: page.turns,
+                    cursor: page.cursor,
+                    cron_names,
+                },
             )
             .await
         }

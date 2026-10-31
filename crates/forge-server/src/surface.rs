@@ -451,6 +451,16 @@ impl ViewSurface {
         }
     }
 
+    /// The schedules the fired prompts in `uuids` came from, keyed by the
+    /// prompt's own id: the read half of the pairing the delivery frame
+    /// carries once.
+    pub fn cron_names(
+        &self,
+        uuids: &[&str],
+    ) -> std::collections::BTreeMap<String, forge_primitives::cron::CronName> {
+        self.workspace.cron_names(uuids)
+    }
+
     /// The rows of `slot`'s transcript that sit strictly before `below`, for a
     /// paging read that has walked below the held window's floor.
     ///
