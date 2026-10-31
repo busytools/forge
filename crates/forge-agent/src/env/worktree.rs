@@ -919,7 +919,16 @@ pub fn ensure_worker_worktree(
         cmd.arg(path).arg(&branch);
         WorktreeEnsure::AttachedExistingBranch
     } else {
+        // **The base claude's own `--worktree` uses.** Its
+        // `worktree.baseRef` defaults to `fresh`, which cuts from
+        // `origin/<default-branch>`; a resume that recreates the branch at
+        // the local HEAD starts the worker from a commit its launcher would
+        // not have chosen whenever HEAD is ahead (#1594). A repo that names
+        // no remote default has no origin base and keeps the local HEAD.
         cmd.arg("-b").arg(&branch).arg(path);
+        if let Some(base) = origin_base(repo) {
+            cmd.arg(base);
+        }
         WorktreeEnsure::CreatedWithNewBranch
     };
     cmd.current_dir(repo);
@@ -1244,6 +1253,22 @@ pub fn reap_worktree_branch(repo: &Path, branch: &str) -> BranchReapOutcome {
 /// survives on a remote is still open for review.
 pub fn branch_ref_exists(repo: &Path, branch: &str) -> bool {
     repo_branch_names(repo).is_none_or(|repo| repo.names.contains(branch))
+}
+
+/// The ref claude's `--worktree` cuts a fresh branch from:
+/// `origin/<default-branch>` as the repo's `origin/HEAD` names it.
+///
+/// `None` when the repo names no remote default, or when the symref names a
+/// ref the remote no longer carries: a start point git cannot resolve would
+/// refuse the whole resume, so the caller falls back to the local HEAD.
+fn origin_base(repo: &Path) -> Option<String> {
+    let name = git_in_repo(repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])?
+        .trim()
+        .to_owned();
+    if name.is_empty() {
+        return None;
+    }
+    git_in_repo(repo, &["rev-parse", "--verify", "--quiet", &name]).map(|_| name)
 }
 
 /// Run `git -C repo <args>` with the ambient repo-location env scrubbed,
@@ -3478,10 +3503,9 @@ mod tests {
     }
 
     /// The despawn-reaped-branch shape: nothing on the branch was
-    /// unreachable, so despawn deleted it. The branch is recreated at the
-    /// repo's current HEAD - under claude's default `worktree.baseRef` of
-    /// `fresh`, not the base its own `--worktree` would use; see
-    /// [`ensure_worker_worktree`].
+    /// unreachable, so despawn deleted it. A repo with no remote default
+    /// has no origin base to cut from, so the branch is recreated at the
+    /// local HEAD - the fallback [`ensure_worker_worktree`] documents.
     #[test]
     fn ensure_worker_worktree_recreates_the_branch_when_reaped() {
         let (dir, wt, _branch) = init_repo_with_worker_worktree("lbl");
@@ -3501,6 +3525,38 @@ mod tests {
             git_stdout(dir.path(), &["rev-parse", "worktree-lbl"]),
             git_stdout(dir.path(), &["rev-parse", "HEAD"]),
             "the recreated branch starts at the repo's current HEAD"
+        );
+    }
+
+    /// claude's own `--worktree` cuts a fresh branch from
+    /// `origin/<default-branch>` (`worktree.baseRef` defaults to `fresh`),
+    /// so a resume that recreates the branch must start there too. Cutting
+    /// at the local HEAD starts a resumed worker from a commit its
+    /// launcher would not have chosen whenever HEAD is ahead (#1594).
+    #[test]
+    fn ensure_worker_worktree_cuts_a_recreated_branch_from_the_origin_base() {
+        let dir = init_repo_with_commit();
+        let origin = git_stdout(dir.path(), &["rev-parse", "HEAD"]);
+        // The remote's default branch sits where the clone found it...
+        run_git(dir.path(), &["update-ref", "refs/remotes/origin/main", &origin]);
+        run_git(
+            dir.path(),
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        );
+        // ...and local HEAD moves on ahead of it.
+        fs::write(dir.path().join("README.md"), "local work").expect("write advance");
+        run_git(dir.path(), &["commit", "-qam", "local ahead"]);
+        let local = git_stdout(dir.path(), &["rev-parse", "HEAD"]);
+        assert_ne!(origin, local, "fixture precondition: local HEAD is ahead of the origin base");
+
+        let wt = dir.path().join(".claude").join("worktrees").join("lbl");
+        let outcome = ensure_worker_worktree(dir.path(), "lbl", &wt).expect("recreate succeeds");
+
+        assert_eq!(outcome, WorktreeEnsure::CreatedWithNewBranch);
+        assert_eq!(
+            git_stdout(dir.path(), &["rev-parse", "worktree-lbl"]),
+            origin,
+            "the new branch starts at origin/HEAD's commit, the base claude's own path uses",
         );
     }
 
