@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_primitives::SessionSlot;
-use forge_primitives::document::DocumentHandOffEnding;
 
 use crate::workspace::Workspace;
 
@@ -18,17 +17,19 @@ use crate::workspace::Workspace;
 pub trait DocumentFacade: Send + Sync {
     /// Read the document out of `seat`'s own tree or its project's
     /// `vault_roots`, ask the clients drawing that seat to open it, and
-    /// **park until the reader answers** - answering with the resolved
-    /// path and the ending the park released on.
+    /// answer at once with the resolved path and the ask's id.
     ///
-    /// A refused read raises nothing and parks on nothing; a forge with no
-    /// attached client is the read's sibling failure, its own sentence.
+    /// **The reader's finish is not the call's answer.** It arrives later as
+    /// a follow-up turn, because the CLI aborts an MCP call at 70 seconds
+    /// and a reader may take longer. A refused read raises nothing and parks
+    /// on nothing; a forge with no attached client is the read's sibling
+    /// failure, its own sentence.
     async fn hand_off(
         &self,
         seat: &SessionSlot,
         path: &str,
         reviewable: bool,
-    ) -> Result<(String, DocumentHandOffEnding), String>;
+    ) -> Result<(String, uuid::Uuid), String>;
 }
 
 /// Production impl: the workspace's own read and parked ask.
@@ -49,11 +50,11 @@ impl DocumentFacade for ProdDocumentFacade {
         seat: &SessionSlot,
         path: &str,
         reviewable: bool,
-    ) -> Result<(String, DocumentHandOffEnding), String> {
+    ) -> Result<(String, uuid::Uuid), String> {
         let Some(workspace) = self.workspace.upgrade() else {
             return Err("the workspace went away before the document was handed".to_owned());
         };
-        workspace.hand_off_document(seat, path, reviewable).await
+        workspace.hand_off_document(seat, path, reviewable)
     }
 }
 
@@ -67,7 +68,7 @@ pub struct MockDocumentFacade {
     /// a failed assertion rather than a silent mismatch.
     pub seats: parking_lot::Mutex<Vec<SessionSlot>>,
     /// The outcome every call answers with.
-    pub answer: parking_lot::Mutex<Result<(String, DocumentHandOffEnding), String>>,
+    pub answer: parking_lot::Mutex<Result<(String, uuid::Uuid), String>>,
 }
 
 #[cfg(test)]
@@ -78,7 +79,7 @@ impl MockDocumentFacade {
             seats: parking_lot::Mutex::new(Vec::new()),
             answer: parking_lot::Mutex::new(Ok((
                 "/proj/docs/readme.md".to_owned(),
-                DocumentHandOffEnding::Done { review_id: None },
+                uuid::Uuid::new_v4(),
             ))),
         }
     }
@@ -96,7 +97,7 @@ impl DocumentFacade for MockDocumentFacade {
         seat: &SessionSlot,
         path: &str,
         reviewable: bool,
-    ) -> Result<(String, DocumentHandOffEnding), String> {
+    ) -> Result<(String, uuid::Uuid), String> {
         self.seats.lock().push(seat.clone());
         self.calls.lock().push((path.to_owned(), reviewable));
         self.answer.lock().clone()

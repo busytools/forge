@@ -2,13 +2,17 @@
 //! held until their answer.
 //!
 //! Mirrors [`crate::browser`]'s relay shape rather than inventing a second
-//! parked one: [`Workspace::hand_off_document`] registers the call and
-//! awaits its ending; a client answers **not now** to decline, and the
+//! parked one: [`Workspace::hand_off_document`] registers the ask and answers
+//! the call at once with its id, and a spawned waiter delivers the ending as
+//! a follow-up turn; a client answers **not now** to decline, and the
 //! viewer's **done** - after the reader's comments were filed - releases it
 //! with what the finish filed. Nothing parks without a client attached to
 //! draw the ask.
 
+use std::sync::Arc;
+
 use forge_primitives::document::{DocumentHandOffAsk, DocumentHandOffEnding};
+use forge_primitives::review::doc_scope_ref;
 use tokio::sync::oneshot;
 
 use crate::SessionSlot;
@@ -104,20 +108,20 @@ impl Workspace {
     }
 
     /// Hand one document to the reader: read it out of `seat`'s own tree,
-    /// ask the clients drawing that seat to open it, and park until the
-    /// reader answers.
+    /// ask the clients drawing that seat to open it, and answer at once with
+    /// the resolved path and the ask's id.
     ///
-    /// **The answer is the finish, not the open.** The reader accepts, reads
-    /// and comments; the viewer's done releases the call with what the
-    /// finish filed, `NotNow` releases it with their decline, and the
-    /// waiter's own drop with [`DocumentHandOffEnding::Abandoned`]. A
-    /// refused read raises nothing and parks on nothing.
-    pub async fn hand_off_document(
-        &self,
+    /// **The reader's finish arrives later.** The `claude` CLI aborts an MCP
+    /// `tools/call` after 70 seconds and a reader may take longer, so the
+    /// ending is dispatched as a follow-up turn through
+    /// [`Self::deliver_ask_answer`]. A refused read raises nothing and parks
+    /// on nothing.
+    pub fn hand_off_document(
+        self: &Arc<Self>,
         seat: &SessionSlot,
         path: &str,
         reviewable: bool,
-    ) -> Result<(String, DocumentHandOffEnding), String> {
+    ) -> Result<(String, uuid::Uuid), String> {
         let Some(cwd) = self.cwd_for_session(seat) else {
             return Err(format!("forge holds no session for {}", seat.display()));
         };
@@ -138,30 +142,39 @@ impl Workspace {
         else {
             return Err(NO_VIEWER_CLIENT.to_owned());
         };
-        // A waiter that goes away releases the park. Resolving an id the
-        // normal path already removed is a no-op, so the guard needs no
-        // arming flag: it only ever fires on the drop.
-        let _guard = AbandonOnDrop { workspace: self, id, seat };
-        Ok((resolved, ending.await.unwrap_or(DocumentHandOffEnding::Abandoned)))
+        let workspace = Arc::downgrade(self);
+        let seat = seat.clone();
+        let at = resolved.clone();
+        tokio::spawn(async move {
+            let ending = ending.await.unwrap_or(DocumentHandOffEnding::Abandoned);
+            if let Some(workspace) = workspace.upgrade() {
+                workspace.deliver_ask_answer(&seat, document_answer(&at, id, ending));
+            }
+        });
+        Ok((resolved, id))
     }
 }
 
-/// Releases a parked hand-off as [`DocumentHandOffEnding::Abandoned`] when
-/// the awaiting call goes away mid-ask - a cancelled turn must not leave the
-/// registry holding a sender nothing awaits, or an ask no view can close.
-struct AbandonOnDrop<'a> {
-    workspace: &'a Workspace,
-    id: uuid::Uuid,
-    seat: &'a SessionSlot,
-}
-
-impl Drop for AbandonOnDrop<'_> {
-    fn drop(&mut self) {
-        self.workspace.resolve_document_hand_off(
-            self.id,
-            self.seat,
-            DocumentHandOffEnding::Abandoned,
-        );
+/// The follow-up turn a finished document hand-off delivers.
+fn document_answer(resolved: &str, id: uuid::Uuid, ending: DocumentHandOffEnding) -> String {
+    match ending {
+        DocumentHandOffEnding::Done { review_id: Some(review_id) } => format!(
+            "[documents__hand_off {id}] The reader finished at {resolved}, and their comments are \
+             filed as the review {review_id} under the document's own scope, {} - read them back \
+             with review__get and pass that scope.",
+            doc_scope_ref(resolved),
+        ),
+        DocumentHandOffEnding::Done { review_id: None } => format!(
+            "[documents__hand_off {id}] The reader finished at {resolved} without leaving comments."
+        ),
+        DocumentHandOffEnding::NotNow => format!(
+            "[documents__hand_off {id}] The reader said not now, so nothing opened. The document \
+             is not being shown."
+        ),
+        DocumentHandOffEnding::Abandoned => format!(
+            "[documents__hand_off {id}] The reader's client went away before they answered, so \
+             the hand-off ended without an answer."
+        ),
     }
 }
 
@@ -170,7 +183,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use forge_primitives::document::DocumentHandOffEnding;
+
     use crate::SessionSlot;
+    use crate::mcp::documents::facade::ProdDocumentFacade;
     use crate::workspace::Workspace;
 
     /// A workspace holding one project rooted at `cwd` with `roots` as
@@ -225,18 +241,103 @@ mod tests {
         let (ws, seat) = ws_with_project(&tree.to_string_lossy(), vec![base.join("vault")]);
         let refusal = ws
             .hand_off_document(&seat, &plan, false)
-            .await
-            .expect_err("no client is attached, so the park is what refuses");
+            .expect_err("no client is attached, so the ask is what refuses it");
         assert_eq!(refusal, super::NO_VIEWER_CLIENT, "the read got past containment");
 
         let (no_roots, no_roots_seat) = ws_with_project(&tree.to_string_lossy(), Vec::new());
         let refusal = no_roots
             .hand_off_document(&no_roots_seat, &plan, false)
-            .await
             .expect_err("outside the tree and every root");
         assert!(
             refusal.contains("resolves outside the session's tree"),
             "the control is the refusal sentence: {refusal}"
         );
+    }
+
+    /// **The CLI's own boundary.** The `claude` binary aborts an MCP
+    /// `tools/call` after 70 seconds, so a hand-off that waited on the reader
+    /// would die mid-ask. This drives the wire's own `mcp_message`
+    /// control_request, and the mock CLI finishes its turn only once the tool
+    /// has answered - which a waiting call never does.
+    #[tokio::test]
+    async fn the_hand_off_tool_answers_the_cli_while_the_reader_has_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path().canonicalize().expect("canonical");
+        std::fs::create_dir_all(base.join("tree/docs")).expect("the tree");
+        std::fs::write(base.join("tree/docs/readme.md"), b"# hi\n").expect("the document");
+        let (ws, seat) = ws_with_project(&base.join("tree").to_string_lossy(), Vec::new());
+        ws.note_client_attached();
+        // The ask needs an answering stream to park on, and the stub's own
+        // receiver is dropped when the helper returns.
+        let _answerer = ws.subscribe_answerer();
+
+        let server =
+            crate::mcp::documents::build_server(ProdDocumentFacade::from_workspace(&ws), seat);
+        let binary = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude_mcp_ask.sh");
+        let opts = forge_sdk::OptionsBuilder::new()
+            .binary(binary)
+            .permission_mode(forge_sdk::PermissionMode::BypassPermissions)
+            .mcp_server("forge", server)
+            .build();
+        let (client, mut events) = forge_sdk::Client::spawn(opts).await.expect("spawn");
+        client.send_user_message("hand the document off").await.expect("send");
+
+        let mut finished = false;
+        while let Ok(Some(item)) =
+            tokio::time::timeout(std::time::Duration::from_secs(15), events.recv()).await
+        {
+            let msg = item.expect("read");
+            if matches!(msg, forge_primitives::Message::Result { .. }) {
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished, "the mock's turn ended, so the tools/call was answered");
+        assert_eq!(
+            ws.document_handoffs.lock().len(),
+            1,
+            "the ask is still parked - the call answered before the reader did",
+        );
+        client.disconnect().await.expect("disconnect");
+    }
+
+    /// The follow-up names the ask it answers, so the agent can match it to
+    /// the call that raised it; a finish that filed a review also names the
+    /// scope it landed under and the review's id, while a finish with
+    /// nothing commented names neither.
+    #[test]
+    fn a_finished_hand_offs_follow_up_names_the_review_and_its_scope() {
+        let id = uuid::Uuid::new_v4();
+        let with_review = super::document_answer(
+            "/proj/docs/readme.md",
+            id,
+            DocumentHandOffEnding::Done { review_id: Some("r-7".to_owned()) },
+        );
+        assert!(with_review.contains(&id.to_string()), "the ask is named: {with_review}");
+        assert!(with_review.contains("r-7"), "the review is named: {with_review}");
+        assert!(with_review.contains("doc:/proj/docs/readme.md"), "and the scope: {with_review}");
+
+        let without = super::document_answer(
+            "/proj/docs/readme.md",
+            id,
+            DocumentHandOffEnding::Done { review_id: None },
+        );
+        assert!(!without.contains("doc:"), "nothing commented, so no scope: {without}");
+    }
+
+    /// A decline and an abandoned client each say so, in their own words:
+    /// neither may read as a finish.
+    #[test]
+    fn a_declined_or_abandoned_follow_up_says_which_it_was() {
+        let id = uuid::Uuid::new_v4();
+        let declined =
+            super::document_answer("/proj/docs/readme.md", id, DocumentHandOffEnding::NotNow);
+        assert!(declined.contains("not now"), "{declined}");
+        assert!(!declined.contains("finished"), "a decline is not a finish: {declined}");
+
+        let abandoned =
+            super::document_answer("/proj/docs/readme.md", id, DocumentHandOffEnding::Abandoned);
+        assert!(abandoned.contains("went away"), "{abandoned}");
+        assert!(!abandoned.contains("finished"), "an abandoned ask is not a finish: {abandoned}");
     }
 }

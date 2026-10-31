@@ -95,6 +95,23 @@ the user wants recurring or deferred \
 work - a morning summary, a reminder, a follow-up check later - rather \
 than assuming you can only act in the current turn.";
 
+/// Append-text teaching the held-ask contract: a tool that hands work to a
+/// person answers with the ask's id, and the person's answer arrives later
+/// as a turn of its own. Every session carrying the `forge` server reads it,
+/// because the tool descriptions are read once at call time and the
+/// follow-up turn brings nothing but this.
+const FORGE_HELD_ASK_SYSTEM_PROMPT: &str = "\
+Some forge MCP tools hand work to a person and finish before that person \
+answers: documents__hand_off, browser_hand_off, slack__post, slack__edit, \
+slack__react and slack__attachment. Each answers with the ask's id and does \
+not wait for the person, because a person can take minutes or hours and the \
+CLI aborts a tool call that waits. The answer arrives later as a new user \
+turn that begins with that tool's name and the ask's id in brackets; read \
+that turn as the result of the call and carry on from it. Never read the \
+immediate return as the answer, and do not call the same tool again for the \
+same work while its ask is open - a follow-up that says the person declined \
+or the ask ended is the answer too.";
+
 /// Append-text for what forge's own surfaces depend on and the CLI
 /// cannot know: the tool tree labels a Bash card with the
 /// `description`, delegation goes through the delegation paths forge
@@ -277,18 +294,18 @@ itself - use the `browser_*` tools when your tool list carries them: \
 unreadable, and act through the snapshot rather than scraping HTML. \
 Anything only the person can do - a CAPTCHA, a sign-in, a confirmation - \
 goes through `browser_hand_off`: name the tab you are handing over, and \
-their screen raises that tab exactly as it stands. Done lowers it, and it \
-answers like any ask. An agent never names a profile: forge resolves it \
+their screen raises that tab exactly as it stands. Done lowers it; the \
+person's answer arrives as the follow-up turn that names the ask. An agent \
+never names a profile: forge resolves it \
 from the session's org and project - the org's profile, or the project's \
 own override - and every tab belongs to the session that opened it. Never \
 launch a browser \
 to drive a page, and never drive the \
 person's own browser or its tabs - the family reaches only the server's \
 browser, through this session's own tab. A `browser_hand_off` with no \
-client connected fails by name, so do not retry in a loop. Treat a \
-hand-off's return as an unverified claim: the ask has landed only when \
-the person says so in chat, and a false done is worse than a false \
-decline because you would proceed as though they answered.\n\
+client connected fails by name, so do not retry in a loop. The return is \
+the ask, never the answer: do not proceed as though the person answered \
+until the follow-up says so.\n\
 \n\
 Slack is reached through the `slack__*` tools and no other way. Never \
 send Slack traffic by reading a `[[slack]]` token from forge.toml and \
@@ -297,7 +314,9 @@ connector. Those tools hold a post for the user's decision before \
 anything is sent, and a direct call puts words in their name outside \
 that gate - holding the credential is not permission to use it. The \
 same holds for any other tool whose post is held for approval, Slack \
-attachments included. When a `slack__*` call fails, report its exact \
+attachments included. A held call answers with the draft's id; the \
+decision, and what was posted, arrive in the follow-up turn that names it. \
+When a `slack__*` call fails, report its exact \
 error and stop. A refusal is the user's decision, \
 not yours: offer the text to whoever owns it (the user in a lead \
 session, your lead in a worker session) and wait. A partial post \
@@ -326,6 +345,8 @@ fn build_forge_system_prompt(
     out.push_str(FORGE_MCP_TRUST_SYSTEM_PROMPT);
     out.push_str("\n\n");
     out.push_str(FORGE_CRON_SYSTEM_PROMPT);
+    out.push_str("\n\n");
+    out.push_str(FORGE_HELD_ASK_SYSTEM_PROMPT);
     out.push_str("\n\n");
     out.push_str(FORGE_SESSION_CONDUCT_SYSTEM_PROMPT);
     for section in [preamble, charter] {
@@ -3365,6 +3386,32 @@ mod tests {
         assert!(!bare.contains("CATALOG"));
     }
 
+    /// **The held-ask contract is taught once, for every session.** A tool
+    /// that hands work to a person returns before that person answers, and
+    /// the answer arrives as a follow-up turn. A trim that drops the
+    /// paragraph leaves the model reading the immediate return as the
+    /// person's answer - the false done this contract exists to end.
+    #[test]
+    fn the_base_append_teaches_the_held_ask_follow_up() {
+        let bare = build_forge_system_prompt(true, None, None);
+        assert!(
+            bare.contains("documents__hand_off, browser_hand_off, slack__post"),
+            "the tools it applies to are named: {bare}",
+        );
+        assert!(
+            bare.contains("does not wait for the person"),
+            "the immediate return is not the answer: {bare}",
+        );
+        assert!(
+            bare.contains("arrives later as a new user turn"),
+            "where the answer arrives is pinned: {bare}",
+        );
+        assert!(
+            bare.contains("do not call the same tool again for the same work"),
+            "and so is the one thing a waiting model gets wrong: {bare}",
+        );
+    }
+
     /// The systemone cues reach every session, and the names in them are
     /// tools that can be renamed - pinned so a rename fails here instead of
     /// shipping a cue that resolves to nothing. Each of the three tools is
@@ -3518,21 +3565,14 @@ mod tests {
     #[test]
     fn the_conduct_block_carries_the_hand_off_return_rule() {
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("Treat a hand-off's return as an unverified claim"),
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("The return is the ask, never the answer"),
             "the rule's handle is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("the ask has landed only when the person says so in chat"),
-            "the confirmation that lands the ask is pinned",
-        );
-        assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "a false done is worse than a false decline because you would proceed as though \
-                 they answered"
+                "do not proceed as though the person answered until the follow-up says so"
             ),
-            "the asymmetry and its reason are pinned",
+            "the moment the ask is settled is pinned",
         );
     }
 

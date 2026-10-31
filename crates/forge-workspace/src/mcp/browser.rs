@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
-use forge_primitives::browser::{BrowserPart, HandOffEnding};
+use forge_primitives::browser::BrowserPart;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
@@ -122,8 +122,9 @@ impl Tool for BrowserTool {
 impl BrowserTool {
     /// **The one tool whose logic is the core's own.** Every other tool
     /// forwards to the host because a `target` ref only means something in
-    /// the client's page state; the hand-off parks on the person, and the
-    /// wait - with no timeout - is the answer.
+    /// the client's page state; the hand-off raises an ask on the person and
+    /// answers with its id, and the person's word arrives later as a
+    /// follow-up turn - the CLI would abort a call that waited for it.
     async fn hand_off(&self, args: Value) -> Result<Vec<BrowserPart>, String> {
         // **An ask with no words is no ask**: a blank reason parks on the
         // person a prompt that says nothing, so it is refused here rather
@@ -141,28 +142,14 @@ impl BrowserTool {
         let Ok(tab) = u16::try_from(tab) else {
             return Err(format!("`tab` is a tab's number, not {tab}"));
         };
-        match self.facade.hand_off(&self.slot, reason, tab).await? {
-            HandOffEnding::Done => Ok(vec![BrowserPart::Text {
-                text: "The person is done in the browser; carry on from where you left off."
-                    .to_owned(),
-            }]),
-            HandOffEnding::NotNow => Err(
-                "The person declined to act for now; the browser is as it was - decide what to \
-                 do instead."
-                    .to_owned(),
+        let id = self.facade.hand_off(&self.slot, reason, tab).await?;
+        Ok(vec![BrowserPart::Text {
+            text: format!(
+                "Asked the person to act in tab {tab} (ask {id}). This call does not wait: \
+                 their answer arrives as a follow-up turn naming that ask, so carry on - do not \
+                 ask again for this step."
             ),
-            // **The person is still on the page**: they sent their words as
-            // a prompt beside this result, so the answer names that rather
-            // than reading as a decline.
-            HandOffEnding::Feedback => Ok(vec![BrowserPart::Text {
-                text: "The person sent you a message about the page instead of Done or Not \
-                       now; read it and carry on - the browser is as it was."
-                    .to_owned(),
-            }]),
-            // The waiter cannot outlive a drop that sends this, so seeing it
-            // here would mean the registry and the waiter disagree.
-            HandOffEnding::Abandoned => Err("The hand-off ended without an answer.".to_owned()),
-        }
+        }])
     }
 }
 
@@ -437,12 +424,14 @@ mod tests {
         assert!(!encoded.contains("no browser-capable client"), "{encoded}");
     }
 
-    /// The hand-off is the one tool that does not forward: it parks on the
-    /// person, and what comes back to the model is the ending - Done means
-    /// carry on.
+    /// The hand-off is the one tool that does not forward: it raises an ask
+    /// on the person and answers with the ask's id, naming the follow-up the
+    /// person's word will arrive in.
     #[tokio::test]
-    async fn a_hand_off_parks_on_the_person_and_a_done_answers_it() {
+    async fn a_hand_off_answers_with_the_ask_the_person_will_answer() {
         let mock = Arc::new(MockBrowserFacade::new());
+        let id = uuid::Uuid::new_v4();
+        *mock.hand_off_answer.lock() = Ok(id);
         let tool = BrowserTool {
             spec: spec_named("browser_hand_off"),
             facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
@@ -464,48 +453,11 @@ mod tests {
             "the reason and the tab cross to the park verbatim",
         );
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert!(text.contains("carry on"), "Done tells the model to carry on: {text}");
-    }
-
-    /// A decline is a tool error with the person's answer in it, so the model
-    /// reads it as "not this way" rather than as a success.
-    #[tokio::test]
-    async fn a_hand_off_decline_is_a_tool_error() {
-        let mock = Arc::new(MockBrowserFacade::new());
-        *mock.hand_off_answer.lock() = Ok(HandOffEnding::NotNow);
-        let tool = BrowserTool {
-            spec: spec_named("browser_hand_off"),
-            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
-            slot: seat(),
-        };
-
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
-
-        assert!(out.is_error, "{:?}", out.blocks);
-        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert!(text.contains("declined"), "{text}");
-    }
-
-    /// **A message from the person is not a refusal**, so it is not a tool
-    /// error and does not tell the model to decide what to do instead: the
-    /// person's words are a prompt riding beside this result, and the answer
-    /// names them as one.
-    #[tokio::test]
-    async fn a_hand_off_feedback_is_not_a_decline() {
-        let mock = Arc::new(MockBrowserFacade::new());
-        *mock.hand_off_answer.lock() = Ok(HandOffEnding::Feedback);
-        let tool = BrowserTool {
-            spec: spec_named("browser_hand_off"),
-            facade: Arc::clone(&mock) as Arc<dyn BrowserFacade>,
-            slot: seat(),
-        };
-
-        let out = tool.call(ToolInput { value: json!({ "reason": "sign in", "tab": 2 }) }).await;
-
-        assert!(!out.is_error, "{:?}", out.blocks);
-        let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert!(text.contains("sent you a message"), "the person spoke: {text}");
-        assert!(!text.contains("declined"), "and the answer never reads as a decline: {text}");
+        assert!(text.contains(&id.to_string()), "the answer names the ask: {text}");
+        assert!(
+            text.contains("does not wait") && text.contains("follow-up"),
+            "and says the person's word is still to come: {text}",
+        );
     }
 
     /// No tab is the call's own mistake too: the person is asked to look at

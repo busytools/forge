@@ -595,14 +595,15 @@ impl Tool for Post {
 
     fn description(&self) -> &'static str {
         "Post a message to Slack as the user - a root message, or a reply into an existing \
-         thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
-         until the user decides in the dock prompt, with no timeout of its own, and a rejected \
-         draft posts nothing. Text past 4000 characters is split into numbered parts automatically, each a \
-         separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
-         the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
-         in the order they went out; slack__edit, slack__react and a reply each take one. Any \
-         session in the project may call this. If this call fails, report the exact error and \
-         stop - never fall back to Slack's web API with the configured token."
+         thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call answers at once \
+         with the draft's id and does not wait for the decision; the decision and the post's \
+         result arrive later as a follow-up turn naming that draft, and a rejected draft posts \
+         nothing. Text past 4000 characters is split into numbered parts automatically, each a \
+         separate message. The follow-up carries {workspace, ts, conversation_name, parts}: \
+         `workspace` is the resolved `[[slack]]` label it posted into, and `ts` names every \
+         message it posted, in the order they went out; slack__edit, slack__react and a reply \
+         each take one. Any session in the project may call this. If this call fails, report the \
+         exact error and stop - never fall back to Slack's web API with the configured token."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -637,15 +638,11 @@ impl Tool for Post {
             text: args.text,
         };
         match self.facade.post(&self.slot, request).await {
-            Ok(outcome) => match serde_json::to_string_pretty(&serde_json::json!({
-                "workspace": outcome.workspace,
-                "ts": outcome.ts,
-                "conversation_name": outcome.conversation_name,
-                "parts": outcome.parts,
-            })) {
-                Ok(json) => ToolOutput::text(json),
-                Err(err) => tool_error(format!("response serialization failed: {err}")),
-            },
+            Ok(id) => ToolOutput::text(format!(
+                "Held for approval (draft {id}). This call does not wait: the decision and the \
+                 post's result arrive as a follow-up turn naming that draft, so carry on - do \
+                 not post again while it is open."
+            )),
             Err(err) => tool_error(format_post_error(&err)),
         }
     }
@@ -676,11 +673,12 @@ impl Tool for Edit {
         "Update or delete one of YOUR OWN Slack messages: pass `text` to replace its body, or \
          `delete: true` to remove it. BOTH ARE HELD FOR APPROVAL like slack__post - a \
          replacement puts new words in front of people as you, and a deletion changes what they \
-         see on a message attributed to you and cannot be undone by editing again. The call does \
-         not return until the user decides, with no timeout of its own, and a rejected draft \
-         leaves the message untouched. Slack refuses a message you did not post - including an edit of \
-         your own thread reply, which a channel-history lookup cannot see. Any session in \
-         the project may call this."
+         see on a message attributed to you and cannot be undone by editing again. The call \
+         answers at once with the draft's id and does not wait for the decision; the follow-up \
+         turn naming that draft says whether it was approved and applied, and a rejected draft \
+         leaves the message untouched. Slack refuses a message you did not post - including an \
+         edit of your own thread reply, which a channel-history lookup cannot see. Any session \
+         in the project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -718,9 +716,11 @@ impl Tool for Edit {
             text: if delete { None } else { args.text },
         };
         match self.facade.edit(&self.slot, request).await {
-            Ok(()) => {
-                ToolOutput::text(if delete { "deleted".to_owned() } else { "updated".to_owned() })
-            }
+            Ok(id) => ToolOutput::text(format!(
+                "Held for approval (draft {id}). This call does not wait: the follow-up turn \
+                 naming that draft says whether the {} was approved and applied.",
+                if delete { "deletion" } else { "replacement" },
+            )),
             Err(err) => tool_error(format_edit_error(&err)),
         }
     }
@@ -750,7 +750,9 @@ impl Tool for React {
         "Add a reaction to a Slack message, or remove one with `remove: true`. `name` is Slack's \
          shortcode without colons, e.g. `white_check_mark`. Removing requires being the original \
          reaction's author. HELD FOR APPROVAL like slack__post: a reaction is authored content \
-         in the user's name. Any session in the project may call this."
+         in the user's name - the call answers at once with the draft's id, and the follow-up \
+         turn naming it says whether the change was approved and applied. Any session in the \
+         project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -786,7 +788,10 @@ impl Tool for React {
             add: !args.remove.unwrap_or(false),
         };
         match self.facade.react(&self.slot, request).await {
-            Ok(()) => ToolOutput::text("reaction applied".to_owned()),
+            Ok(id) => ToolOutput::text(format!(
+                "Held for approval (draft {id}). This call does not wait: the follow-up turn \
+                 naming that draft says whether the reaction change was approved and applied."
+            )),
             Err(err) => tool_error(format_react_error(&err)),
         }
     }
@@ -837,7 +842,9 @@ impl Tool for Attachment {
          cannot escape the directory); the returned path is where it landed. Pass `path` with \
          `conversation` to upload a local file into that conversation, optionally into a thread \
          with `thread_ts`. An upload is HELD FOR APPROVAL like slack__post, because it posts new \
-         content; fetching is not. Any session in the project may call this."
+         content: the call answers at once with the draft's id, and the follow-up turn naming it \
+         says whether it was approved and posted. Fetching is not gated. Any session in the \
+         project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -901,7 +908,10 @@ impl Tool for Attachment {
                     title: None,
                 };
                 match self.facade.post_attachment(&self.slot, request).await {
-                    Ok(()) => ToolOutput::text("uploaded".to_owned()),
+                    Ok(id) => ToolOutput::text(format!(
+                        "Held for approval (draft {id}). This call does not wait: the follow-up \
+                         turn naming that draft says whether the upload was approved and posted."
+                    )),
                     Err(err) => tool_error(format_attachment_error(&err)),
                 }
             }
@@ -1552,7 +1562,7 @@ impl Tool for Bookmarks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::slack::facade::{MockSlackFacade, SlackPostOutcome, SlackWorkspaceError};
+    use crate::mcp::slack::facade::{MockSlackFacade, SlackWorkspaceError};
     use crate::mcp::test_support::text_of;
     use forge_connectors::slack::AuthTest;
     use forge_primitives::slack::{
@@ -1724,36 +1734,28 @@ mod tests {
         assert_eq!(rows, serde_json::json!([]), "an empty list, not prose");
     }
 
-    /// Editing, deleting or reacting all take the ts, and Slack has
-    /// already sent it: a count is not a handle. The conversation's name
-    /// and the part count come along so a reader can name the channel
-    /// without a second lookup and see that the text was split.
+    /// A held post answers with the draft's id and says where the result
+    /// arrives; the posted ts, the channel's name and the part count come
+    /// in the follow-up turn, because the CLI aborts a call that waits for
+    /// the person.
     #[tokio::test]
-    async fn slack_post_reports_the_ts_the_channel_and_the_part_count() {
+    async fn slack_post_answers_the_draft_and_names_its_follow_up() {
         let mock = Arc::new(MockSlackFacade::new());
-        *mock.post_result.lock() = Some(Ok(SlackPostOutcome {
-            workspace: "acme".to_owned(),
-            ts: vec!["1790186552.442169".to_owned(), "1790186552.442170".to_owned()],
-            conversation_name: "granite-staging".to_owned(),
-            parts: 2,
-        }));
+        let id = uuid::Uuid::new_v4();
+        *mock.post_result.lock() = Some(Ok(id));
         let tool = Post { facade: mock, slot: caller_slot() };
 
         let out =
             tool.call(input(serde_json::json!({ "conversation": "C1", "text": "hello" }))).await;
 
-        assert!(!out.is_error, "the post succeeds: {}", text_of(&out));
+        assert!(!out.is_error, "the draft is held: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the record stays one text block: {out:?}");
-        let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the posted record");
-        assert_eq!(
-            json["ts"],
-            serde_json::json!(["1790186552.442169", "1790186552.442170"]),
-            "the ts of every message, in the order they went out",
+        let text = text_of(&out);
+        assert!(text.contains(&id.to_string()), "the answer names the draft: {text}");
+        assert!(
+            text.contains("does not wait") && text.contains("follow-up turn"),
+            "and says where the decision arrives: {text}",
         );
-        assert_eq!(json["conversation_name"], "granite-staging");
-        assert_eq!(json["parts"], 2, "so a reader sees the text went out in two messages");
-        assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
     }
 
     /// A failed `slack__post` is the moment the configured token looks
