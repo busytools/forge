@@ -2729,14 +2729,13 @@ details.leaf.nrow details.raw pre { margin: 4px 0 2px; padding: 6px 9px; border:
 /* What this seat is holding, one line, above the body: the turn's own figures
    and the seat's segments. It NEVER wraps - a chip that does not fit collapses
    behind +N - because the ragged wrap is what grew the band to three rows
-   between 780 and 860px (Ved, in the #2159 look). `overflow-x` is the fallback
-   for the frame before the row is measured, not an affordance: once measured,
-   nothing on the row is out of reach. */
+   between 780 and 860px (Ved, in the #2159 look). Nor is it a sideways
+   scroller: the row clips the frame before it is measured, and the +N is the
+   door for whatever does not fit. */
 .live-row { position: relative; display: flex; align-items: center; gap: 2px;
   flex-wrap: nowrap; padding: 5px 10px 5px 8px;
-  border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--line); overflow: hidden;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.live-row::-webkit-scrollbar { display: none; }
 /* The turn's figures lead, in the strip's own order and its own component. */
 .live-row .live-fig { display: inline-flex; align-items: center; gap: 6px; flex: none;
   white-space: nowrap; padding: 3px 8px 3px 6px; color: var(--muted); }
