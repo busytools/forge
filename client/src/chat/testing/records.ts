@@ -79,10 +79,10 @@ interface ListHandle {
 /**
  * What the list itself REPORTS: its model, which lags the element below.
  *
- * Nothing reads it today, and nothing is meant to: it is kept, with the
- * handle's size getters, because that is the surface a real `virtua` list
- * exposes and a stub that shed it would stop standing in for one. `element` is
- * the half the column decides from.
+ * Read through the handle's `getScrollSize`, which is where the column's foot
+ * pin asks how much content the list has measured. It is kept, with the size
+ * getters, because that is the surface a real `virtua` list exposes; `element`
+ * is the half the browser reports.
  */
 export const reported = { size: 0, viewport: 0 };
 

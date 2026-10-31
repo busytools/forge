@@ -512,24 +512,26 @@ describe('whether the column follows the newest end', () => {
     server.frame();
     await settle();
 
-    // The pin stops at the measured end rather than at the browser's.
+    // **The pin stops at the measured end, exactly.** The model's foot is
+    // `TOTAL - VIEWPORT` plus the viewport's top padding, which jsdom reports
+    // as none today, so the exact number is also what pins that premise.
     expect(pinned().length, 'the lagging pin still lands').toBeGreaterThan(0);
     for (const pin of pinned()) {
-      expect(pin.asked, 'no pin is written past the end the list measured').toBeLessThanOrEqual(
-        TOTAL - VIEWPORT,
-      );
+      expect(pin.asked, 'the pin holds at the end the list measured').toBe(TOTAL - VIEWPORT);
     }
 
-    // The measurement lands, and the column comes back for the rest of it.
+    // **The measurement lands with NO size report behind it**, so the deferred
+    // pin is the only thing that can move the reader: one frame is enough for
+    // that and nothing else.
+    const before = pinned().length;
     setModel(TOTAL + 40);
-    resized();
-    await settle();
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    flushSync();
 
     const grown = Math.floor(TOTAL + 40);
-    expect(pinned().at(-1), 'the real foot is pinned once the row is measured').toEqual({
-      asked: grown,
-      landed: grown - VIEWPORT,
-    });
+    expect(pinned().slice(before), 'the deferred pin lands on the measured end').toEqual([
+      { asked: grown, landed: grown - VIEWPORT },
+    ]);
   });
 
   it('does not pin onto a slot the list has reserved for the newest turn but not drawn', async () => {

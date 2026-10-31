@@ -188,37 +188,40 @@
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
   /**
-   * The turn a finished arrival's mark is owed for, dropped after the window.
+   * The newest turn's arrival mark, held for a moment after it last took a row.
    *
-   * **A window rather than the turn's own life**: the list recreates items as
-   * they leave its window, and a class still carried would replay the
-   * entrance on the next scroll back to the foot. The window is twice the
-   * animation's length. A turn still being written does not need it - its
-   * mark is held by `arrival` below for as long as it runs.
+   * **Keyed on the turn GROWING, not on the core's running answer.** A turn
+   * takes its last rows after that answer clears - the closing text lands on
+   * the completion frame and after it - and those are the rows the reader is
+   * waiting for. Every publish that rebuilds the newest turn re-arms the
+   * window, so a turn being written holds the mark throughout and a row
+   * landing as it settles enters too.
+   *
+   * **A window, not the turn's own life**: the list recreates items as they
+   * leave its window, and a class still carried would replay the entrance on
+   * the next scroll back to the foot. The window is longer than the
+   * animation.
    */
-  let arriving = $state<string | null>(null);
+  let touched = $state<{ key: string; at: number } | null>(null);
   $effect(() => {
-    const key = newest;
-    if (key === null) return;
-    arriving = key;
+    const turn = newestTurn;
+    if (turn === null) return;
+    const at = Date.now();
+    touched = { key: turn.key, at };
     const timer = setTimeout(() => {
-      if (arriving === key) arriving = null;
+      if (touched !== null && touched.key === turn.key && touched.at === at) touched = null;
     }, ARRIVE_MS);
     return () => clearTimeout(timer);
   });
 
   /**
-   * The item whose wrapper carries the arrival mark.
+   * The item whose wrapper carries the arrival mark, if any.
    *
-   * **A turn still being written keeps the mark for its whole life**, so every
-   * row that arrives inside it enters the same way; a turn that lands finished
-   * holds it for one window instead. The mark is a class on the WRAPPER and
-   * the animation rides its last row, so rows already drawn keep still - only
-   * the one that has just become the last enters.
+   * The mark is a class on the WRAPPER and the animation rides its last row,
+   * so rows already drawn keep still - only the one that has just become the
+   * last enters.
    */
-  const arrival = $derived(
-    newest === null ? null : newestTurn?.running === true || arriving === newest ? newest : null,
-  );
+  const arrival = $derived(touched !== null && touched.key === newest ? newest : null);
 
   /**
    * The echo goes the moment the conversation carries the words.
@@ -1240,16 +1243,14 @@
     const model = modelFoot();
     let target = foot;
     if (model !== null && max > model) {
-      // The list's measurement is a callback behind the browser's count, so
-      // this write holds at the model and comes back for the rest next frame.
-      // Two frames is the whole of that wait; past it the browser's foot is
-      // written anyway rather than leaving the reader short of the end.
+      // **The pin never passes the end the list has measured.** It holds
+      // there and comes back for the growth on a later frame; the two-frame
+      // budget bounds only the deferred retries, never the hold, so a stream
+      // that grows the row every frame still cannot write past the model.
+      target = model;
       if (repinTries < REPIN_TRIES) {
-        target = model;
         repinTries += 1;
         repin();
-      } else {
-        repinTries = 0;
       }
     } else {
       repinTries = 0;
@@ -1270,7 +1271,7 @@
     return foot;
   }
 
-  /** How many frames a pin holds at the list's model while it measures a row. */
+  /** How many deferred retries one hold at the list's model schedules. */
   const REPIN_TRIES = 2;
   /** How many of those frames the current hold has already spent. */
   let repinTries = 0;
@@ -1302,6 +1303,11 @@
    * behind the browser is the content the list has measured, and a column
    * whose room changed - the composer taking space - must pin on that change
    * at once rather than wait for a measurement nothing moved.
+   *
+   * `padTop` is exact while the column carries no bottom padding: the
+   * browser's scrollable end counts the pane's top padding and the list's
+   * measured content stops below it. A bottom padding would sit on the
+   * browser's end alone and need a term of its own.
    */
   function modelFoot(): number | null {
     if (list === null || viewport === null) return null;

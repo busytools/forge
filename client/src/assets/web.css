@@ -3520,11 +3520,15 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
 /* ---------- arriving at the foot ----------
    The newest turn's last row settles in as it arrives. The mark rides the
    item's own wrapper (`itemProps` in the column, where each item is the last
-   child of its own wrapper) and is held for a turn while it is being written,
-   so every row that arrives inside one enters the same way; the row a stream
-   grows into is not remounted, so nothing replays at 50Hz. Transform and
-   opacity only - no layout moves - so the entrance cannot fight the follow's
-   own arithmetic. A row mid-reveal keeps its own flash. */
+   child of its own wrapper) and is held for a moment after the turn last took
+   a row, so every row that arrives - the closing ones after the core says the
+   turn is over included - enters the same way; the row a stream grows into is
+   not remounted, so nothing replays at 50Hz.
+
+   Transform and opacity only, and the rise does not reach the scroller's
+   overflow in this shape (measured: a 50px translate moves scrollHeight by 0,
+   the list's sized container draws no extra scrollable box), so the entrance
+   cannot pull the foot pin after it. A row mid-reveal keeps its own flash. */
 @keyframes arrive-fade {
   from { opacity: .35; }
   to { opacity: 1; }
