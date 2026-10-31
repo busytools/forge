@@ -345,7 +345,7 @@
         font-family: var(--mono);
         font-size: var(--fs-label);
         color: var(--muted);
-        border: 1px solid var(--line);
+        border: 1px solid var(--ctl);
         border-radius: 8px;
         padding: 2px 9px;
       }
@@ -387,7 +387,7 @@
         min-height: 44px;
         background: var(--bg);
         color: var(--muted);
-        border: 1px solid var(--line);
+        border: 1px solid var(--ctl);
         border-radius: var(--r);
         padding: 8px 10px;
         font-family: var(--ui);
@@ -479,13 +479,15 @@
         font-size: var(--fs-label);
         border-radius: 9px;
         padding: 6px 12px;
-        border: 1px solid var(--line);
+        border: 1px solid var(--ctl);
         background: var(--s1);
         color: var(--muted);
       }
+      /* The comment button hovered: the sheet lifts both its label and its
+         boundary to the prose tone. */
       .strip .doc-comment-btn {
         color: var(--text);
-        border-color: var(--ctl);
+        border-color: var(--text);
       }
       .strip .doc-stale {
         margin: 16px 0 8px;
