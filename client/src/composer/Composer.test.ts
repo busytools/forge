@@ -8242,7 +8242,10 @@ describe("the takeover bar's feedback line", () => {
       document.querySelector('.takeover-bar textarea'),
       'the card still holds the line while the record transcribes',
     ).toBeNull();
-    expect(document.activeElement, 'and the keyboard sits on the page').toBe(document.body);
+    expect(
+      document.activeElement,
+      'and the keyboard is in the bar the takeover owns, not the field the card replaced',
+    ).toBe(document.querySelector('.takeover-bar'));
 
     // The record clears a flush later: the field returns with the words.
     harness.page.record = record({
