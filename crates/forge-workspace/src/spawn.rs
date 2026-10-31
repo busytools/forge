@@ -9854,10 +9854,11 @@ mod lead_charter_tests {
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
-                "under disk pressure, have live workers push their branches and clean inside \
-                 their own trees"
+                "under disk pressure, have live workers push their branches and clean their \
+                 build targets inside their own trees"
             ),
-            "the reclaim that survives a live worker is pinned: {DEFAULT_LEAD_CHARTER}",
+            "the reclaim that survives a live worker is pinned with what it cleans: \
+             {DEFAULT_LEAD_CHARTER}",
         );
     }
 
@@ -10027,8 +10028,9 @@ mod lead_charter_tests {
     #[test]
     fn lead_charter_carries_the_prose_audit_lens() {
         assert!(
-            DEFAULT_LEAD_CHARTER.contains("one lens that audits the prose, not the code"),
-            "the lens and its subject are pinned: {DEFAULT_LEAD_CHARTER}",
+            DEFAULT_LEAD_CHARTER
+                .contains("Every review round gets one lens that audits the prose, not the code"),
+            "the lens, its every-round duty and its subject are pinned: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
@@ -10098,6 +10100,11 @@ mod lead_charter_tests {
                  conversation, not your relay of it"
             ),
             "the seat that needs the word is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("have the user paste it into that worker's chat"),
+            "the route reconciling the rule with 'the user talks ONLY to you' is pinned: \
+             {DEFAULT_LEAD_CHARTER}",
         );
     }
 

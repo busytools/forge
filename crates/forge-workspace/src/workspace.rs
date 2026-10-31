@@ -19142,6 +19142,10 @@ mod worker_respawn_tests {
             "the note sends a resumed worker to the clock and the schedules",
         );
         assert!(
+            DYNAMIC_WORKER_RESTART_NOTE.contains("believe the clock and the schedules"),
+            "the note names which side wins, not only that they may disagree",
+        );
+        assert!(
             DYNAMIC_WORKER_RESTART_NOTE.contains("still do the concrete asks"),
             "the note keeps the brief's asks, which are usually right",
         );

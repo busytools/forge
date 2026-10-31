@@ -3846,6 +3846,10 @@ mod tests {
             "the authority a resumed session checks is pinned",
         );
         assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(", believe them over the brief's prose"),
+            "the tie-breaker between the clock and the brief is pinned",
+        );
+        assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("still do the brief's concrete asks"),
             "the asks survive a stale timestamp, and that half is pinned",
         );
