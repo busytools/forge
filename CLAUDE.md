@@ -122,9 +122,11 @@ temp file renamed over the path. A running forge watches this one file
 and re-reads it on a change, applying what can take effect without a
 restart and naming the keys that need one. All runtime state (durable crons, Gotify subs, Slack
 subs and sweep watermarks, dynamic workers, session ids, usage cache)
-lives in one machine-local redb DB beside the lock. None of it belongs
-in a synced config dir: the DB churns roughly once a minute, redb's
-binary file cannot be merged, and the lock's inode must stay put.
+lives in one machine-local redb DB per config dir, under `<app-support>/stores/`
+beside the per-config-dir lock, so a second config dir owns its own state.
+None of it belongs in a synced config dir: the DB churns roughly once a
+minute, redb's binary file cannot be merged, and the lock's inode must stay
+put.
 
 **No model assumptions in code.** The binary is generic over whatever
 model the `claude` CLI can drive: every model-shaped value the machinery

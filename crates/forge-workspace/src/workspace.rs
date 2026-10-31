@@ -1514,27 +1514,59 @@ fn persist_session_tag_cache(
     }
 }
 
-/// Open the machine-local redb store at `<app_support>/db.redb`,
-/// creating the app-support dir first. Returns `None` (with a warn) when
-/// the dir can't be created or the DB can't open - forge then runs
-/// without durable crons, subscriptions, tasks or dynamic workers this
-/// session (hard rule #14: no cwd fallback).
-fn open_db(app_support: &Path) -> Option<crate::store::Db> {
-    if let Err(error) = std::fs::create_dir_all(app_support) {
+/// This config dir's redb store: `<app_support>/stores/<hex-hash>.redb`,
+/// keyed the way the single-instance lock is.
+fn store_path(app_support: &Path, config_dir: &Path) -> PathBuf {
+    app_support.join("stores").join(format!("{}.redb", forge_sdk::config_dir_hash(config_dir)))
+}
+
+/// Open this config dir's redb store, creating the directories first.
+/// Returns `None` (with a warn) when they can't be created or the DB can't
+/// open - forge then runs without durable crons, subscriptions, tasks or
+/// dynamic workers this session (hard rule #14: no cwd fallback).
+///
+/// **The store is keyed by the config dir, as the lock is.** A machine-wide
+/// `<app_support>/db.redb` from before the split is adopted by the first
+/// config dir to boot: the common machine has one config dir, and that file
+/// is its state. A second config dir starts empty, which is the isolation
+/// this keying exists for.
+fn open_db(app_support: &Path, config_dir: &Path) -> Option<crate::store::Db> {
+    let path = store_path(app_support, config_dir);
+    let stores = path.parent()?;
+    if let Err(error) = std::fs::create_dir_all(stores) {
         tracing::warn!(
             target: "forge_workspace::workspace",
             %error,
-            path = %app_support.display(),
-            "creating the app-support dir failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
+            path = %stores.display(),
+            "creating the app-support stores dir failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
         );
         return None;
     }
-    match crate::store::Db::open(&app_support.join("db.redb")) {
+    let legacy = app_support.join("db.redb");
+    if !path.exists() && legacy.is_file() {
+        match std::fs::rename(&legacy, &path) {
+            Ok(()) => tracing::info!(
+                target: "forge_workspace::workspace",
+                from = %legacy.display(),
+                to = %path.display(),
+                "the machine-wide store is adopted by this config dir",
+            ),
+            Err(error) => tracing::warn!(
+                target: "forge_workspace::workspace",
+                %error,
+                from = %legacy.display(),
+                to = %path.display(),
+                "the machine-wide store could not be adopted; this config dir starts with an empty store",
+            ),
+        }
+    }
+    match crate::store::Db::open(&path) {
         Ok(db) => Some(db),
         Err(error) => {
             tracing::warn!(
                 target: "forge_workspace::workspace",
                 %error,
+                path = %path.display(),
                 "opening the redb store failed; durable crons, subscriptions, tasks and dynamic workers will not persist",
             );
             None
@@ -1946,7 +1978,7 @@ impl Workspace {
         // subscriptions all live in it. A failure to resolve the app-
         // support dir or open the DB degrades to no durable state this run
         // (non-fatal, like the state cache) - no cwd fallback (hard rule #14).
-        let mut db = app_support.as_deref().and_then(open_db);
+        let mut db = app_support.as_deref().and_then(|base| open_db(base, &config_dir));
 
         // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
@@ -14430,7 +14462,8 @@ provider = "anthropic"
         let _workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         // The test constructor redirects redb into the config dir's own
         // tempdir, so no test ever opens the real machine store (#392).
-        let redirected = dir.path().join("app-support").join("db.redb");
+        let base = dir.path().join("app-support");
+        let redirected = store_path(&base, dir.path());
         assert!(redirected.exists(), "new_for_test opens redb under the tempdir app-support base");
     }
 
@@ -24620,6 +24653,49 @@ provider = "anthropic"
             row.summary, "opening prompt",
             "the title is the transcript's, not the mirror's placeholder",
         );
+    }
+
+    /// **The store is the config dir's.** Two config dirs under one
+    /// app-support base open side by side, each on its own file, so neither
+    /// collides with the other's lock-backed writer nor inherits its crons,
+    /// subscriptions and worker rows.
+    #[test]
+    fn each_config_dir_opens_its_own_store() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        let one = dir.path().join("config-one");
+        let two = dir.path().join("config-two");
+
+        let first = open_db(&app_support, &one).expect("the first config dir's store");
+        let second = open_db(&app_support, &two).expect("the second config dir's own store");
+
+        assert_ne!(
+            store_path(&app_support, &one),
+            store_path(&app_support, &two),
+            "the path carries the config dir, like the lock's",
+        );
+        assert!(store_path(&app_support, &one).is_file(), "the first store was created");
+        assert!(store_path(&app_support, &two).is_file(), "and the second beside it");
+        drop((first, second));
+    }
+
+    /// **A machine-wide store from before the split is adopted once.** The
+    /// common machine has one config dir, and the old file is its state; the
+    /// first config dir to boot takes it, and the old path is left empty.
+    #[test]
+    fn a_machine_wide_store_is_adopted_by_the_first_config_dir() {
+        let dir = tempdir().expect("tempdir");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(&app_support).expect("the app-support dir");
+        let legacy = app_support.join("db.redb");
+        drop(crate::store::Db::open(&legacy).expect("a store at the old path"));
+        let config_dir = dir.path().join("config");
+
+        let adopted = open_db(&app_support, &config_dir).expect("the adopted store");
+
+        assert!(store_path(&app_support, &config_dir).is_file(), "it is this config dir's now");
+        assert!(!legacy.exists(), "and no longer at the machine-wide path");
+        drop(adopted);
     }
 }
 

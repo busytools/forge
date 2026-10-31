@@ -1,8 +1,9 @@
 //! Machine-local embedded database (redb).
 //!
-//! A single redb file at `<app-support>/db.redb` holds forge's durable
-//! per-machine state. One forge instance runs per machine, so one DB;
-//! redb takes an exclusive file lock on open, so a second opener on the
+//! One redb file per config dir at
+//! `<app-support>/stores/<hex-hash-of-config-dir>.redb` holds that config
+//! dir's durable per-machine state, keyed the way the single-instance lock
+//! is. redb takes an exclusive file lock on open, so a second opener on the
 //! same path fails here rather than corrupting.
 //!
 //! This wrapper is deliberately general - open plus the raw handle.
